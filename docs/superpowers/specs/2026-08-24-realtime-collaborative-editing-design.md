@@ -19,7 +19,7 @@ Verified against the working tree of `compendiq-ce` on 2026-08-24 (parent checko
 
 Compendiq already shows who is on a page (#301: SSE + Redis `presence:page:{id}`, `PresenceAvatarStack`). Editing is still single-user: each editor holds a local TipTap draft, Save does `PUT /api/pages/:id` with `UpdatePageSchema.version`, and a second saver hits the optimistic-concurrency 409 at `backend/src/routes/knowledge/pages-crud.ts` (~1379–1442 standalone, ~1483–1486 Confluence). Concurrent work is discarded.
 
-This design adds an opt-in Yjs CRDT session per page, gated by `admin_settings.collab_editing_enabled` (default **false**). Authenticated clients with page access open a WebSocket to `GET /api/collab/:pageId`. A Fastify 5 gateway (`@fastify/websocket` + `y-protocols`) **completes the 101 upgrade**, then closes with y-websocket permanent codes **before SyncStep1** if auth, ACL, flag, or page state fail — because a browser `WebSocket()` cannot see HTTP 401 on a failed handshake (it only gets 1006). It stamps awareness identity server-side, fans **incremental** `doc.on('update')` payloads across pods on Redis pub/sub (same duplicate-subscriber pattern as `presence-service.ts`, with `Y.applyUpdate(..., 'redis')` so receives do not loop), and persists Yjs binary state in `page_collaborative_docs`. TipTap v3 Collaboration + `@tiptap/extension-collaboration-caret` bind a named `collabExtensions()` schema to `Y.XmlFragment` field `'default'`. Save/Publish becomes `POST /api/pages/:id/collab/commit`. For Confluence, `client.updatePage` runs **first** (same order as PUT); `pages.version` is never bumped before the remote write succeeds. #301 SSE stays for viewers and as the fallback when the flag is off.
+This design adds an opt-in Yjs CRDT session per page, gated by `admin_settings.collab_editing_enabled` (default **false**). Authenticated clients with page access open a WebSocket to `GET /api/collab/:pageId` **from edit mode** (read mode stays on #301 SSE). A Fastify 5 gateway (`@fastify/websocket` + `y-protocols`) **completes the 101 upgrade**, then closes with y-websocket permanent codes **before SyncStep1** if auth, ACL, flag, or page state fail — because a browser `WebSocket()` cannot see HTTP 401 on a failed handshake (it only gets 1006). It stamps awareness identity server-side, fans **incremental** `doc.on('update')` payloads across pods on Redis pub/sub (same duplicate-subscriber pattern as `presence-service.ts`, with `Y.applyUpdate(..., 'redis')` so receives do not loop), and persists Yjs binary state in `page_collaborative_docs`. TipTap v3 Collaboration + `@tiptap/extension-collaboration-caret` bind a named `collabExtensions()` schema to `Y.XmlFragment` field `'default'`. Save/Publish becomes `POST /api/pages/:id/collab/commit`. For Confluence, `client.updatePage` runs **first** (same order as PUT); `pages.version` is never bumped before the remote write succeeds. #301 SSE stays for viewers and as the fallback when the flag is off.
 
 Hocuspocus is **not** added. `@fastify/websocket` + `y-protocols` is enough; Hocuspocus v2+ is a second listen/crossws stack and a custom multiplexed protocol that generic `y-websocket` cannot speak.
 
@@ -129,6 +129,8 @@ TipTap Collaboration binds `Y.XmlFragment` field **`'default'`** (the TipTap def
 
 **Do not** let two clients independently `setContent` into an empty fragment — that is the well-known y-prosemirror dual-init duplication. Initialization is server-side, once, locked.
 
+**BYTEA is valid only while it still corresponds to live `body_html`.** A non-collab writer can change `body_html` while the room is empty; loading a leftover `doc_state` on the next join would resurrect CRDT state that no longer matches the page. Pick **DELETE**, not a `pages.version` stamp-and-compare: `DELETE FROM page_collaborative_docs WHERE page_id = $1` on every non-collab writer that updates `body_html` while `sCard(collab:active:{pageId}) = 0` — PUT, restore, Apply, draft-publish, inbound sync, and flag-off rollback. The no-row init path (this section) must be reachable after those writes, not only on first-ever join. A live room (`sCard > 0`) still 409s those HTTP writers (Decision D); it does not DELETE.
+
 BYTEA persist is **always** the full `encodeStateAsUpdate` (a snapshot of the doc). Redis pub/sub is **never** that: it publishes the **incremental** `update` argument from `doc.on('update')`. Mixing those two is how Goal 4 becomes a full-document flood on every keystroke.
 
 ### C. What is live vs snapshotted vs committed
@@ -179,7 +181,9 @@ When the flag is on **and** a collab room exists for the page, the article Save 
 | `POST /api/pages/:id/draft/publish` | `pages-crud.ts` (~1840) | 409. Publishing copies `draft_body_html` onto the live row and bumps version. Draft PUT (~1790) writes `draft_body_*` only and is **not** gated. |
 | Inbound Confluence **sync** that would write `body_html` | `sync-service.ts` `applyConflictPolicyForExistingPage` | **Not** a 409 to an HTTP client. While `collab:active:{pageId}` is non-empty: apply inbound HTML **only if the remote Confluence `version.number` actually increased**. Skip the HTML-equality / confluence-wins overwrite of a live room (lossy snapshot HTML would look like `htmlChanged` even when nobody edited Confluence). If the remote version **did** increase: rebuild the Y.Doc from the new HTML, persist BYTEA, send control `doc_reset`, close sockets with **1001** so `y-websocket` reconnects. |
 
-Live-room detection: Redis key `collab:active:{pageId}` (SET of `{podId}:{connId}`, **TTL 45 s**, refreshed on **every ping and every inbound frame**). Ping interval is **15 s** (3× headroom, matching presence’s 10 s heartbeat vs 30 s TTL). In-process room map is not enough across pods.
+**Empty-room BYTEA invalidation.** The 409 is only for a **live** room. When `sCard = 0`, the four HTTP writers and inbound sync (and flag-off rollback) **do** write `body_html` and must then `DELETE FROM page_collaborative_docs WHERE page_id = $1` so the next join re-inits from HTML (Decision B). Do not leave a BYTEA row that predates the new HTML.
+
+Live-room detection: Redis key `collab:active:{pageId}` (SET of `{podId}:{connId}`, **TTL 45 s**, refreshed on **every ping and every inbound frame**). Ping interval is **15 s** (3× headroom, matching presence’s 10 s heartbeat vs 30 s TTL). In-process room map is not enough across pods. The last member stays in the SET until the 10 s empty-room grace fires (room lifecycle) so this 409 and the heap agree.
 
 ### E. Awareness vs #301 SSE (dual-run)
 
@@ -271,8 +275,8 @@ CSP `connect-src 'self'` in `frontend/nginx-security-headers.conf` already allow
 Read through `makeCachedSetting` (`cached-setting.ts`) on channel `collab:enabled:changed` (extend the `CacheBusChannel` union in `redis-cache-bus.ts` in the same PR that publishes). Soft-fail default is **false**.
 
 - Flag off: gateway completes 101 then closes **4403** before SyncStep1; frontend mounts today’s editor; SSE presence only.
-- Flag on: PageViewPage opens the provider; Editor mounts Collaboration + CollaborationCaret; Save goes to `/collab/commit`.
-- Mid-session off: cache-bus fires; every pod tombstones its rooms (**4403**) and drops `collab:active:*`.
+- Flag on: `PageViewPage` mounts the provider **only in edit mode**. Read mode keeps the #301 SSE heartbeat. Read-only WS joins (ACE without write) are an **explicit** edit-mode (or “follow” toggle) path — not implied for every page view. In edit mode, Editor mounts Collaboration + CollaborationCaret; Save goes to `/collab/commit`.
+- Mid-session off: cache-bus fires; every pod tombstones its rooms (**4403**) and drops `collab:active:*`. Flag-off rollback **DELETE**s `page_collaborative_docs` rows (Decision B) — BYTEA must not outlive the HTML that replaced it.
 
 Hard cutover is unsafe because `Editor.tsx` carries many custom Confluence nodes through y-prosemirror. The flag is the rollback.
 
@@ -291,7 +295,7 @@ Goal 4 is not “publish JSON”. It is a receive path that cannot loop and cann
 1. Publish the **incremental** `update` from `doc.on('update', (update, origin) => …)`, not `Y.encodeStateAsUpdate(doc)`.
 2. `Y.applyUpdate(doc, update, 'redis')` on receive. The update handler **must not** re-publish when `origin === 'redis'`. A Redis envelope `origin` UUID only stops the **publisher** from applying its own bus message; it does not stop `doc.on('update')` from looping.
 3. On receive: apply to the in-memory doc **and** forward the binary frame to local sockets except the originating conn (when the update came from a local socket).
-4. Awareness: `awareness.applyUpdate` / `encodeAwarenessUpdate`. Never `Y.applyUpdate`.
+4. Awareness: `awareness.applyAwarenessUpdate` / `awareness.encodeAwarenessUpdate`. Never `Y.applyUpdate`.
 5. Cold join: **subscribe (and queue) before BYTEA load**. Pub/sub does not replay. If B loads BYTEA then subscribes, it misses A’s increments permanently (client `resyncInterval` only syncs against **this** pod’s doc).
 6. If `collab:active:{pageId}` already contains another `podId`, send control `state_dump_request`. That pod replies with one **full** `Y.encodeStateAsUpdate(doc)` (the only bus payload that is a full dump). Apply with origin `'redis'`. Then apply the queued incrementals (idempotent).
 
@@ -390,7 +394,7 @@ Register `/collab/config` **before** `/collab/:pageId` (same reason `/pages/tras
 | `frontend/src/features/pages/collab-colors.ts` | Deterministic palette from `userId` |
 | `frontend/src/features/pages/use-presence.ts` | Unchanged SSE hook |
 | `frontend/src/features/pages/PresenceAvatarStack.tsx` | Accept merged viewers; pencil = `isEditing` |
-| `frontend/src/features/pages/PageViewPage.tsx` | Flag + provider; merge awareness; Save → commit; disable localStorage drafts while collab |
+| `frontend/src/features/pages/PageViewPage.tsx` | Flag + provider **only in edit mode**; merge awareness; Save → commit; disable localStorage drafts while collab |
 | `frontend/src/shared/components/article/Editor.tsx` | Collaboration + CollaborationCaret when `ydoc` is passed; `StarterKit.undoRedo: false` in that branch |
 
 ### Handshake sequence
@@ -496,7 +500,7 @@ interface CollabRoom {
 1. `SADD collab:active:{pageId} {podId}:{connId}` + `EXPIRE 45`.
 2. **Subscribe to `collab:doc:{pageId}` and start queuing** — before any BYTEA read.
 3. If the SET already contains another `podId`, publish `{ kind: 'state_dump_request', origin }`.
-4. Load or init BYTEA under `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`.
+4. Load or init BYTEA under `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)`. **No row** (first join **or** after an empty-room `DELETE FROM page_collaborative_docs`) → init from current `body_html` (Decision B). A present row is loaded as-is; it exists only because no empty-room `body_html` writer has run since the last persist.
 5. Apply queued incrementals with `Y.applyUpdate(doc, u, 'redis')`. Apply a state-dump the same way if it arrives.
 6. `userCanEditPage` → `writable` on the socket (verbatim PUT predicates).
 7. Stamp awareness `{ id, name, color }` from `users.display_name` / `username` (same query as `fetchUserMeta` in `pages-presence.ts`).
@@ -520,7 +524,7 @@ function allowReadOnlyFrame(buf: Uint8Array): boolean {
 
 Drop forbidden frames. After 8 drops on one socket, close **4403**. Do not apply the update. Refresh TTL on accepted frames (including read-only SyncStep1 / awareness) so a quiet viewer still holds `collab:active`.
 
-**Last disconnect:** persist BYTEA + HTML snapshot **immediately**, `SREM` the active member, start a 10 s empty-room grace (reconnect), then drop the in-memory doc.
+**Last disconnect:** persist BYTEA + HTML snapshot **immediately**. Do **not** `SREM` the last `collab:active` member yet. Start a 10 s empty-room grace (reconnect). Keep that last member (or a `{podId}:grace` sentinel) until the grace fires **and** the in-memory `Y.Doc` is dropped, so `assertNoLiveCollabRoom` and the heap agree — a PUT during the 10 s window still 409s. A reconnect during grace cancels the timer, `SADD`s the new conn, and does not re-init from BYTEA. When grace fires: `SREM` the last member / sentinel, then drop the in-memory doc.
 
 **Liveness:** every 60 s, `getUserSecurityState(userId)` (already cached 30 s, #737). `deactivated` / `missing` / role mismatch → 4401.
 
@@ -815,6 +819,9 @@ if await sCard(collab:active:{pageId}) > 0:
     write body_html as today
     rebuildCollabDocFromHtml(pageId, html)
     control doc_reset + close 1001
+else:
+  write body_html as today
+  DELETE FROM page_collaborative_docs WHERE page_id = $1  // empty-room invalidation
 ```
 
 Integration test: collab types one paragraph, sync runs with **unchanged** remote `version.number`, Y.Doc still has the paragraph (and `body_html` was not reverted to the last Confluence conversion).
@@ -843,7 +850,7 @@ Remote carets: a **dedicated palette**, not Steel, not status hues, not amber. H
 | Awareness refresh / expiry | 15 s / 30 s | y-protocols defaults |
 | Server ping | **15 s** | Was 30 s in the first draft — too tight vs TTL |
 | Active-set TTL | **45 s** | ≥3× ping, matching presence. Refresh on ping **and** inbound frames. 31 s idle still 409s PUT. |
-| Empty-room grace | 10 s | Reconnect window |
+| Empty-room grace | 10 s | Reconnect window. Last `collab:active` member is **not** `SREM`’d until grace fires and the in-memory `Y.Doc` is dropped. |
 | nginx WS timeouts | 3600 s | `/api/` SSE stays 300 s |
 | Security re-check | 60 s | `getUserSecurityState` |
 | `maxPayload` | 10 MiB | First sync of a large article |
@@ -1053,7 +1060,7 @@ Traces: one span around commit (and around Confluence `updatePage` in PR 6). Do 
 4. **PR 6** Confluence commit **and** inbound-sync-while-collab (Decision D/C). Enable per deployment after a golden-page check (layout + expand + draw.io + table + comment).
 5. **PR 7** two-session E2E in CI (flag on in the e2e env only).
 
-Rollback: `PUT /api/admin/settings { "collabEditingEnabled": false }`. Cache-bus tombstones rooms with 4403. Editors remount the single-user path on next load. BYTEA rows can stay. No migration down.
+Rollback: `PUT /api/admin/settings { "collabEditingEnabled": false }`. Cache-bus tombstones rooms with 4403. Editors remount the single-user path on next load. Then `DELETE FROM page_collaborative_docs` for the affected pages (Decision B) — BYTEA must not outlive the HTML that replaced it. No migration down.
 
 There is no percentage canary of sockets. The flag **is** the canary.
 
@@ -1070,7 +1077,7 @@ There is no percentage canary of sockets. The flag **is** the canary.
 | WS idle timeouts / Vite without `ws: true` | **High** without PR 4 | Dedicated `/api/collab/` 3600 s + 15 s ping; Vite `ws: true`; corporate nginx overrides `Connection ""`. |
 | Handshake 1006 reconnect storm | **High** | 101 then 4401. WHATWG recovery test. |
 | Awareness spoofing | Medium | Server stamp (Decision E). |
-| Apply / restore / draft-publish clobber | Medium | `assertNoLiveCollabRoom` on all four writers. |
+| Apply / restore / draft-publish clobber | Medium | `assertNoLiveCollabRoom` on all four writers while live; `DELETE FROM page_collaborative_docs` when the room is empty. |
 | Two tabs, old PUT vs collab | Medium | 409 `collab_session_active`. |
 | Confluence commit bumps local version then 5xx | **High** without Decision D | `updatePage` first; local row from `confPage.version.number`; failure leaves version unchanged. |
 | `@fastify/compress` interfering with the upgrade | Medium | Confirm compress skips `Upgrade`. Exclude `/api/collab/` if a test shows a 400. |
@@ -1180,7 +1187,7 @@ Each child issue later maps 1:1 onto these nodes.
   - `packages/contracts` — `COLLAB_WS_PROTOCOL`, `CollabConfigSchema`, `collabEditingEnabled` on admin settings
   - `backend/src/routes/foundation/admin.ts` — read/write the flag, publish cache-bus
   - Call `tombstoneCollabRoomAfterCommit` from: `pages-crud.ts` single+bulk after committed SQL; `sync-service.ts` `detectDeletedPages`, `softDeleteVanishedPage`, `purgeDeletedPages`. Confluence intent: 1001 or skip until committed — **never** 4404 on a path that rolls `deleted_at` back.
-  - Tests: `pages-collab.test.ts`, `collab-room-service.test.ts` — real Postgres + Redis; ephemeral listen **or** `injectWS()`; **WHATWG-shaped client recovers from expired token (4401 → refresh → sync)**; protocol JWT; `Authorization` header via `ws`; HTTP 401 only if testing non-upgrade `inject()`; read-only prefix drop; Redis fan-out across two subscribers **with a delayed second subscriber**; no-republish when origin is redis; trash → 4404 after commit; bulk trash + `detectDeletedPages`; Confluence-intent rollback does **not** 4404 permanently; flag off → 4403; 31 s idle still 409s `assertNoLiveCollabRoom`; redact test
+  - Tests: `pages-collab.test.ts`, `collab-room-service.test.ts` — real Postgres + Redis; ephemeral listen **or** `injectWS()`; **WHATWG-shaped client recovers from expired token (4401 → refresh → sync)**; protocol JWT; `Authorization` header via `ws`; HTTP 401 only if testing non-upgrade `inject()`; read-only prefix drop; Redis fan-out across two subscribers **with a delayed second subscriber**; no-republish when origin is redis; trash → 4404 after commit; bulk trash + `detectDeletedPages`; Confluence-intent rollback does **not** 4404 permanently; flag off → 4403; 31 s idle still 409s `assertNoLiveCollabRoom`; last disconnect still 409s PUT during the 10 s empty-room grace (last member not `SREM`’d yet); redact test
   - `docs/architecture/03-backend-domains.md`
 - **Dependencies:** PR 1 (table + flag row exist)
 - **Description:** A fixture `y-websocket` client can join, sync an in-memory doc, and see updates from a second client on another “pod”. Persistence is still in-memory; process restart loses the CRDT (acceptable while the flag is off). No Editor.tsx changes. No nginx/Vite changes.
@@ -1198,7 +1205,7 @@ Each child issue later maps 1:1 onto these nodes.
   - `backend/src/routes/knowledge/pages-collab.ts` — `POST /api/pages/:id/collab/commit` (**standalone** path only)
   - **409 `collab_session_active` via `assertNoLiveCollabRoom`:** `pages-crud.ts` PUT and **draft-publish**; **`pages-versions.ts` restore** (not pages-crud); **`llm-conversations.ts` Apply** (`POST /api/llm/improvements/apply`)
   - `packages/contracts/src/schemas/pages.ts` — commit schemas; optional `collabSessionActive` on page detail
-  - Tests: init-from-HTML golden fixtures **including draw.io and comment**; BYTEA load/save; debounce + last-disconnect flush; snapshot does **not** bump `pages.version`, does **not** stamp `local_modified_*`, does **not** re-queue summary/quality, **does** set `embedding_dirty`; two concurrent commits retry once; PUT / restore / Apply / draft-publish 409 while room live; advisory two-key lock; dual-join does not duplicate content
+  - Tests: init-from-HTML golden fixtures **including draw.io and comment**; BYTEA load/save; debounce + last-disconnect flush; snapshot does **not** bump `pages.version`, does **not** stamp `local_modified_*`, does **not** re-queue summary/quality, **does** set `embedding_dirty`; two concurrent commits retry once; PUT / restore / Apply / draft-publish 409 while room live; **PUT / restore / Apply / draft-publish / inbound sync with `sCard = 0` run `DELETE FROM page_collaborative_docs` and the next join re-inits from HTML**; advisory two-key lock; dual-join does not duplicate content
   - `docs/architecture/11-content-pipeline.md`
 - **Dependencies:** PR 2
 - **Description:** Live truth is the Y.Doc. Postgres holds BYTEA and a version-less HTML snapshot for FTS/embeddings. Standalone Save from a future client can commit without 409ing a peer. Confluence push and inbound-sync-while-collab are PR 6.
@@ -1233,7 +1240,7 @@ Each child issue later maps 1:1 onto these nodes.
   - `frontend/src/features/pages/PageViewPage.tsx`
   - `frontend/src/features/pages/PresenceAvatarStack.tsx` / tests
   - Settings admin toggle for `collabEditingEnabled` (muted, not amber)
-  - Tests: flag off ≡ old path; WHATWG expired-token recovery at the hook; no `collaboration-cursor` string in the repo
+  - Tests: flag off ≡ old path; provider mounts **only in edit mode** (read mode does not open a WS); WHATWG expired-token recovery at the hook; no `collaboration-cursor` string in the repo
   - `docs/architecture/04-frontend-structure.md`
   - **`/impeccable` required** on caret chips, selection tint, and the stack
 - **Dependencies:** PR 4 (Vite WS + nginx); conceptually needs PR 3 for commit

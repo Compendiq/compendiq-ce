@@ -166,6 +166,13 @@ read `body_html`, parse into `Y.XmlFragment` field `'default'` with
 Initialization is server-side, once, locked — two clients `setContent` into
 an empty fragment is dual-init duplication.
 
+BYTEA is valid only while it still corresponds to live `body_html`. Every
+non-collab writer that updates `body_html` while the room is empty (PUT,
+restore, Apply, draft-publish, inbound sync with `sCard = 0`, flag-off
+rollback) must `DELETE FROM page_collaborative_docs WHERE page_id = $1`.
+The no-row init path is how the next join recovers — not first-ever join
+only. A live room still 409s those HTTP writers; it does not DELETE.
+
 ## Neighborhoods
 
 ESLint: gateway and persistence live in **`core` + `routes/knowledge`**.
@@ -236,6 +243,12 @@ Subscribe (and queue) **before** the BYTEA load. Pub/sub does not replay.
 refreshed on every ping (15 s) and every inbound frame. Yjs state is not
 stored in Redis.
 
+Last disconnect: persist BYTEA + HTML **immediately**. Do **not** `SREM`
+the last member until the 10 s empty-room grace fires **and** the
+in-memory `Y.Doc` is dropped (a `{podId}:grace` sentinel is equivalent),
+so `assertNoLiveCollabRoom` and the heap agree. A reconnect during grace
+cancels the timer.
+
 ## Feature flag
 
 `admin_settings.collab_editing_enabled`, `'0'` / `'1'`, default `'0'`
@@ -243,10 +256,13 @@ stored in Redis.
 
 - Flag off: gateway completes 101 then closes **4403** before SyncStep1;
   frontend mounts today's editor; SSE presence only.
-- Flag on: PageViewPage opens the provider; Editor mounts Collaboration +
+- Flag on: `PageViewPage` mounts the provider **only in edit mode**. Read
+  mode keeps the #301 SSE heartbeat. Read-only WS joins (ACE without
+  write) are an **explicit** edit-mode (or "follow" toggle) path, not
+  implied for every page view. In edit mode, Editor mounts Collaboration +
   CollaborationCaret; Save goes to `/collab/commit`.
 - Mid-session off: cache-bus `collab:enabled:changed`; every pod tombstones
-  its rooms (**4403**).
+  its rooms (**4403**). Rollback `DELETE`s `page_collaborative_docs` rows.
 
 Hard cutover is unsafe because `Editor.tsx` carries many custom Confluence
 nodes through y-prosemirror. The flag is the rollback.

@@ -34,6 +34,50 @@ describe('docs/architecture index for collab (#1443)', () => {
   });
 });
 
+const specPath = path.resolve(
+  architectureDir,
+  '../superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md',
+);
+
+/**
+ * #1450 review locks — these sentences are the contract later PRs implement.
+ * A silent delete from the spec or from diagram 12 would reopen the BYTEA
+ * stale-join hole, the empty-room 409 gap, the read-mode WS, or the
+ * awareness API name mix-up.
+ */
+describe('collab design locks (#1443 / #1450 review)', () => {
+  const spec = fs.readFileSync(specPath, 'utf8');
+  const arch = fs.readFileSync(path.join(architectureDir, '12-realtime-collaboration.md'), 'utf8');
+
+  it('invalidates BYTEA after empty-room body_html writes via DELETE', () => {
+    expect(spec).toMatch(/DELETE FROM page_collaborative_docs/);
+    expect(spec).toMatch(/BYTEA is valid only while it still corresponds to live `body_html`/);
+    expect(spec).not.toMatch(/BYTEA rows can stay/);
+    expect(arch).toMatch(/DELETE FROM page_collaborative_docs/);
+    expect(arch).toMatch(/empty-room/);
+  });
+
+  it('delays SREM of the last collab:active member until empty-room grace fires', () => {
+    expect(spec).toMatch(/Do \*\*not\*\* `SREM` the last `collab:active` member/);
+    expect(spec).toMatch(/assertNoLiveCollabRoom.*heap|heap.*assertNoLiveCollabRoom/s);
+    expect(arch).toMatch(/SREM/);
+    expect(arch).toMatch(/empty-room grace/);
+  });
+
+  it('mounts the collab provider only in edit mode', () => {
+    expect(spec).toMatch(/only in edit mode/);
+    expect(arch).toMatch(/only in edit mode/);
+    expect(spec).not.toMatch(/Flag on: PageViewPage opens the provider/);
+    expect(arch).not.toMatch(/Flag on: PageViewPage opens the provider/);
+  });
+
+  it('names awareness applyAwarenessUpdate, not awareness.applyUpdate', () => {
+    expect(spec).toMatch(/applyAwarenessUpdate/);
+    expect(spec).toMatch(/encodeAwarenessUpdate/);
+    expect(spec).not.toMatch(/Awareness: `awareness\.applyUpdate`/);
+  });
+});
+
 function collabFlagSeedSql(): string {
   const migrationSql = fs.readFileSync(
     path.join(migrationsDir, '102_page_collaborative_docs.sql'),
