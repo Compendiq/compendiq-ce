@@ -19,6 +19,9 @@
  * actually asserting (which local rows get soft-deleted, and which are spared).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   setupTestDb,
   truncateAllTables,
@@ -452,6 +455,45 @@ describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#76
     await purgeDeletedPages(client as never, 'DEV');
 
     expect(await rowExists('purge-403')).toBe(true);
+  });
+
+  /**
+   * Fixer r1 — the purge's `discardPageIconForDeletedPage(id)` was pinned by
+   * nothing: removing it left every sync suite green, although the
+   * `RETURNING id, confluence_id` this PR added exists solely for that line.
+   *
+   * The #1349 sweep is structurally forbidden to walk `page-icons/` (a
+   * reserved root name), so an event-driven delete is the ONLY thing that ever
+   * collects an uploaded mark. Real bytes on a real temp `ATTACHMENTS_DIR`,
+   * and a live sibling's icon has to survive — a `rm -rf` of the store would
+   * pass a test that only checked the deleted page's directory.
+   */
+  it('takes the purged page’s icon with it and leaves a live page’s alone', async () => {
+    const iconRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'purge-icons-'));
+    const previousDir = process.env.ATTACHMENTS_DIR;
+    process.env.ATTACHMENTS_DIR = iconRoot;
+    try {
+      const purgedId = await insertPage('purge-icon', 'DEV');
+      const liveId = await insertPage('live-icon', 'DEV');
+      await softDelete('purge-icon', THIRTY_ONE_DAYS);
+      for (const id of [purgedId, liveId]) {
+        await fs.mkdir(path.join(iconRoot, 'page-icons', String(id)), { recursive: true });
+        await fs.writeFile(path.join(iconRoot, 'page-icons', String(id), 'abc123.png'), 'icon');
+      }
+
+      const client = makeClient({ liveIds: ['live-icon'], goneForGetPage: ['purge-icon'] });
+      await purgeDeletedPages(client as never, 'DEV');
+
+      expect(await rowExists('purge-icon')).toBe(false);
+      await expect(fs.stat(path.join(iconRoot, 'page-icons', String(purgedId)))).rejects.toThrow();
+      await expect(
+        fs.stat(path.join(iconRoot, 'page-icons', String(liveId), 'abc123.png')),
+      ).resolves.toBeTruthy();
+    } finally {
+      if (previousDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = previousDir;
+      await fs.rm(iconRoot, { recursive: true, force: true });
+    }
   });
 
   it('leaves rows younger than 30 days untouched (no confirmation fetch)', async () => {

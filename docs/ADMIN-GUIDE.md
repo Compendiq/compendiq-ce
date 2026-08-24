@@ -1225,6 +1225,139 @@ Pick one of the following when upgrading an existing install:
 
 2. Restart the services. Migrations run automatically.
 
+## Attachment Storage & Orphan Sweep
+
+`ATTACHMENTS_DIR` (default `data/attachments`) holds two stores that grow with
+use: the Confluence cache `<confluence_id | page id>/<file>` (synced
+attachments, pasted images — standalone pages key by numeric id, so the
+keyspace is shared with Confluence ids) and the local store
+`local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
+rows in `local_attachments`). Sync and page deletes clean their own pages;
+everything else is covered by the observability card and the sweep shipped in
+#1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
+store** for uploaded page marks: it is reserved by name, never walked and never
+swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's
+`icon_value` is the sha that names the file — but they are deliberately out of
+scope for #1349, because they are the only copy of an uploaded mark and a wrong
+verdict there is unrecoverable rather than a re-fetch. Removal is therefore
+event-driven, and since #1349 **every** permanent delete performs it: unsetting
+or replacing an icon deletes the old file, a standalone hard delete or trash
+purge removes the icon directory beside that page's attachment directories —
+the icon *unconditionally*, because `page-icons/<pk>/` is keyed by `pages.id`
+alone and no other page can own it, while the attachment directories follow the
+per-store rules stated further down — and a Confluence page that is
+hard-deleted (singly or in bulk), purged from the trash after its 30-day
+window, or removed with its space by **Unsync** does the same.
+"Unconditionally" is about *ownership*, not timing: each of those removals runs
+only once the row-deleting transaction has committed. If that local cleanup
+fails after the page is already gone in Confluence — the row survives, hidden
+and soft-deleted, for the 30-day trash purge to collect — the mark stays on
+disk with it and goes when the purge removes the row.
+A *soft* delete deliberately does not: a trashed page is restorable and its
+mark is its own content, not a re-fetchable cache.
+
+**Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
+**Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
+so the sub-tab hop is part of the path). The card shows per-store bytes / file / directory counts and the
+last sweep summary, read from a persisted record — the figures are as fresh as
+the last **completed** walk (they carry a "Measured … ago" date; a refused or
+failed run leaves them standing rather than clobbering them with its own
+partial view), and **Dry run** is how you refresh them.
+
+**How to run a sweep:**
+
+1. Press **Dry run**. It walks both stores, measures them, and lists orphan
+   candidates without touching a single file. On a large corpus this takes
+   minutes; the card polls until it finishes.
+2. Review the candidates. The card's **Show the N candidates** disclosure
+   lists them — store, key, filename, whole-directory vs single-file, and
+   bytes — up to a bounded sample (the heading says so when the run found more
+   than the sample holds). `GET /api/admin/attachments/sweep` returns the same
+   sample if you would rather script the review.
+3. Press **Delete orphans** and confirm. The live run re-walks and re-checks
+   every candidate at delete time — it never trusts a stale dry-run list. When
+   it finishes, the card's figures are the tree as it stands **after** the
+   delete, so what it just removed no longer shows as a candidate.
+
+**What is deleted:** only files that (a) sit in a directory whose key matches
+no page row at all — including soft-deleted/trashed pages and folders, which
+all count as owners — or (b) are image-like files referenced by **no body
+text anywhere**: every page's `body_html`, draft and storage format (live and
+trashed), every retained version, every pending sync version, every template,
+every comment and every saved AI conversation (#1361 persists a matched
+image's URL per assistant turn) feed one global keep-set per store, because
+attachment URLs are copied verbatim between bodies. The keep-set outranks the directory
+verdict too: a pageless directory that still holds even one referenced
+filename is skipped whole and reported as *keep-protected* rather than
+deleted, so a referenced file is never removed at either level. A pageless
+directory that holds **sub-folders or links** is likewise never judged:
+attachment directories are flat by construction, so anything under a key-shaped
+name that is not a plain file — a nested tree, a symlink — is something the walk
+cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
+a candidate (paste and sync both write files before the referencing row
+exists); the card says how many candidates are waiting out that window, so a
+freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)
+are never touched.
+
+**An image attached to a live Confluence page but embedded in no body is
+treated as cache** and may be removed — the attachments macro and the article
+view fetch attachments lazily through `GET /api/attachments/:pageId/:filename`,
+which caches whatever filename it was asked for, and nothing in the corpus
+references those files. Removing one costs a re-fetch from Confluence the next
+time it is viewed, not the file: Confluence remains the copy of record.
+(Non-image attachments on the same path are excluded by the rule above, so a
+cached PDF is left alone either way.) Locally uploaded images are a different
+matter and are protected by their `local_attachments` row.
+
+`local_attachments` rows whose file is missing on disk are
+**counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
+metadata. Files the sweep deletes take their `page_image_embeddings` rows with
+them and the owning pages are re-queued for image indexing.
+
+A directory whose name is not a usable attachment key — `tmp.12345/`,
+`12345 (copy)/`, anything a person or another tool left under
+`ATTACHMENTS_DIR` — is never opened, never judged and never removed. It is
+also not *measured*, so its bytes are missing from the per-store figures; the
+card says how many such directories the walk stepped over, so a store carrying
+a large one does not silently under-report its size.
+
+**The keep-set rule belongs to the sweep, not to the delete routes.** A
+permanent page delete removes that page's directories directly (that is the
+leak the sweep does not have to converge), and that removal consults no
+keep-set: `local/<pk>/` and `page-icons/<pk>/` go unconditionally, and
+`<pk>/` in the shared Confluence-style tree goes only when no page claims
+that `confluence_id` and the directory has aged past a 5-minute grace. So if
+you copy editor HTML containing an image out of one standalone page into
+another and then permanently delete the *source* page, the copy loses its
+picture. Nothing in the product duplicates pages, so this needs a deliberate
+copy/paste between two pages to reach; if you rely on that pattern, re-upload
+the image into the page that keeps it rather than pasting its URL.
+
+**Refusals:** any run refuses when the attachments root is missing or
+unreadable, and a live run stands a store down when it has zero files on disk
+while the database still references it — the signature of an unmounted volume.
+That verdict is **per store**: with both stores anomalous the run refuses
+outright, and with only one the run completes, sweeps the sound store and
+names the skipped one in an amber note on the card (otherwise an instance
+whose re-fetchable Confluence cache is legitimately empty could never clear
+its local orphans, which are not re-fetchable). Nothing is ever deleted on the
+strength of a missing directory alone.
+
+**Bookkeeping:** the sweep is single-flight (worker lock
+`attachment-sweep`), manual-only (no schedule), admin-rate-limited, and every
+run — dry runs included — emits a `RETENTION_PRUNED` audit event on
+`attachments_orphan_sweep` with counts by reason class, so the Data Retention
+Attestation report (Report 7) covers it. That report's *table* and *rows
+pruned* columns read the event's `table` / `rows_pruned` keys, which name the
+one **table** this sweep prunes rows from — `page_image_embeddings` — and the
+row count it removed there. Files are not rows: what was deleted on disk is in
+the same event's `files_pruned` / `directories_pruned` / `bytes_pruned`, beside
+`dry_run`, which is what tells a heartbeat from a real prune. No retention
+window is reported because there is no retention policy here (Phase 3 was left
+out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
+`GET /api/admin/attachments/stats`, `GET|POST /api/admin/attachments/sweep`
+(body `{ "dryRun": true|false }`).
+
 ## Backup Strategy
 
 ### PostgreSQL

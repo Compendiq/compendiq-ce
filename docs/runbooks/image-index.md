@@ -327,6 +327,16 @@ when the knobs below exclude it, or when the `pages` row itself is purged
 (`ON DELETE CASCADE`) — and the whole table is emptied by the model-change
 rebuild in §8.
 
+One more remover exists since #1349, and it cannot collide with the rule
+above: the **attachment orphan sweep** (Settings → Knowledge → Spaces & Sync →
+Sync schedule, the Attachment storage card; docs/ADMIN-GUIDE.md "Attachment
+Storage & Orphan Sweep")
+deletes the `page_image_embeddings` rows of files it removes from disk — a
+safety net, since a file it removes is by definition referenced by no body
+anywhere, while a `missing` row's file IS still referenced and therefore sits
+in the sweep's keep-set and never becomes a candidate. The sweep is also what
+bounds the attachment tree this index is built over.
+
 ### What is skipped, and why
 
 Skipping is not failing: the page still clears its flag, and the reason is

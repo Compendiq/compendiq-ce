@@ -563,6 +563,54 @@ together, which matters most for #1114's query-side prefix.
     attachment write to notice it). It is CLEARED only
     by a page whose scan had no failure, so the flag is the retry queue as well
     as the work queue. Design of record: ADR-025.
+- **The attachment stores are filesystem-only, and #1349 gives them a
+  reconciler.** Two trees under `ATTACHMENTS_DIR`:
+  `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on
+  standalone pages land here keyed by PK, so the keyspace is SHARED with
+  Confluence ids) and `local/<page_id>/<file>` (the local store, whose metadata
+  rows are `local_attachments`). Three intake paths write and only page-scoped
+  cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
+  standalone hard-delete and trash purge now remove both directories, plus the
+  page's `page-icons/<pk>/` mark, which nothing but the icon route itself ever
+  removed and which no sweep will ever collect
+  (`core/services/standalone-attachment-cleanup.ts`). The mark is keyed by
+  `pages.id` alone, so the same removal rides every other HARD delete too —
+  the Confluence delete route (single and bulk), sync's 30-day
+  `purgeDeletedPages` and `unsyncSpace`, through
+  `discardPageIconForDeletedPage` — each of them behind its own COMMITTED row
+  delete (`DELETE … RETURNING id`), never on a cleanup transaction's rollback
+  branch, where the page still exists and the mark is its only copy. And never
+  a soft delete, which is restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
+  page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
+  grace window, because deleting a shared-keyspace directory can evict a live
+  Confluence page's whole cache, and during a FIRST sync the claim does not
+  exist yet (attachments are downloaded before the `pages` INSERT). Everything else is
+  the admin-triggered, dry-run-first orphan sweep
+  (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
+  Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
+  and the RESERVED root entries are skipped by name
+  (`ATTACHMENT_ROOT_RESERVED_DIRNAMES` — `local/` and the page-icon store
+  `page-icons/`; both match the Confluence tree's key pattern, so a naive walk
+  lists a whole other store as one orphan and a live run deletes it), a directory is
+  orphaned only when NO page row — trashed included — claims its key AND none
+  of its files carries a kept filename (the keep-set outranks the directory
+  verdict; a keep-intersecting pageless directory is skipped whole and
+  counted as keep-protected), and a
+  file only against a GLOBAL per-store keep-set fed from every body text in
+  the system (pages `body_html`/`draft_body_html`/`body_storage` live and
+  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`,
+  and `llm_conversations.messages` — #1361 persists a matched image's
+  `attachmentUrl` per assistant turn),
+  because attachment URLs are copied verbatim between bodies. A 24h mtime
+  grace window covers sync/paste races (both write files before the row that
+  references them), only image-like files are per-file candidates in the
+  Confluence tree (non-image lazily-cached attachments have no enumerator),
+  local rows whose FILE is missing are counted, never deleted, and a live run
+  refuses against an empty-on-disk store the database still references. Files
+  a live run deletes take their `page_image_embeddings` rows with them and
+  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  `admin_settings` JSON rows (`attachment_sweep_last_run`,
+  `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index

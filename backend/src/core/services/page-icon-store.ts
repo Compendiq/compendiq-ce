@@ -13,9 +13,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sniffImageFormat } from './image-validator.js';
+import { logger } from '../utils/logger.js';
 import type { ImageFormat } from '@compendiq/contracts';
 
-const SUBDIR = 'page-icons';
+/**
+ * The reserved entry name this store owns under `ATTACHMENTS_DIR` (#1349).
+ *
+ * Exported because it is a RESERVATION, not an implementation detail: the tree
+ * sits inside the Confluence-style attachment root and `page-icons` matches
+ * that tree's key allow-list, so any walker over the root must skip it by name
+ * or judge it a keyless — hence orphaned — directory. Migrations 095/096 store
+ * only the sha, so these files are the only copy of an uploaded mark.
+ */
+export const PAGE_ICON_STORE_DIRNAME = 'page-icons';
+const SUBDIR = PAGE_ICON_STORE_DIRNAME;
 const MAX_ICON_BYTES = 512 * 1024;
 
 export class PageIconStoreError extends Error {
@@ -91,6 +102,39 @@ export async function readPageIconImage(
 
 export async function deletePageIconImage(pageId: number): Promise<void> {
   await fs.rm(pageIconDir(pageId), { recursive: true, force: true });
+}
+
+/**
+ * {@link deletePageIconImage} for a page whose row has just been HARD-deleted,
+ * best-effort and never throwing (#1349 review r2).
+ *
+ * The icon store is keyed by `pages.id` alone and the #1349 orphan sweep is
+ * structurally forbidden from walking it (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`
+ * — an `rm -rf` there is unrecoverable, since migrations 095/096 persist only
+ * the sha). So an event-driven delete is the ONLY thing that ever collects a
+ * mark, and r1 wired exactly one of the two delete events: the standalone
+ * hard-delete/purge. A hard-deleted or purged CONFLUENCE page — which
+ * `pages-icon.ts`'s `assertCanEdit` really does let an editor give a mark —
+ * leaked its icon forever, with the bytes absent from the card's figures too.
+ *
+ * Call it only where the ROW is gone. A soft delete (trash, sync's
+ * `detectDeletedPages`) is restorable, and the mark is the page's own content:
+ * `cleanPageAttachments` beside those call sites is clearing a re-fetchable
+ * CACHE, which this is not.
+ *
+ * Never fatal, mirroring `cleanPageAttachments` at the same call sites: the
+ * database work has already committed, and a filesystem hiccup must not fail a
+ * request or a sync cycle. The residue is inert bytes.
+ */
+export async function discardPageIconForDeletedPage(pageId: number): Promise<void> {
+  try {
+    await deletePageIconImage(pageId);
+  } catch (err) {
+    logger.warn(
+      { err, pageId },
+      'page-icon-store: could not remove a hard-deleted page’s icon directory (orphaned files only — DB is consistent)',
+    );
+  }
 }
 
 export { MAX_ICON_BYTES };

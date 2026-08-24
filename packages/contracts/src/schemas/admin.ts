@@ -670,3 +670,171 @@ export const ConfidenceDistributionSchema = z.object({
   rerank: ConfidenceDistributionBucketSchema,
 });
 export type ConfidenceDistribution = z.infer<typeof ConfidenceDistributionSchema>;
+
+// ─── #1349 — attachment storage observability + orphan sweep ─────────────────
+// Shared contract for `GET /api/admin/attachments/stats`,
+// `POST /api/admin/attachments/sweep` and `GET /api/admin/attachments/sweep`.
+// New named schemas appended at the end of this file by convention (parallel
+// lanes append their own; never reorder).
+
+/**
+ * One store's figures as the last walk measured them. The two stores are
+ * walked SEPARATELY: the Confluence-style tree (`<ATTACHMENTS_DIR>/<key>/`)
+ * and the local store (`<ATTACHMENTS_DIR>/local/<page_id>/`).
+ */
+export const AttachmentStoreSweepStatsSchema = z.object({
+  /** Total bytes of the store's plain files (dot-files excluded). */
+  bytes: z.number().int().nonnegative(),
+  /** Plain files counted (dot-files excluded). */
+  files: z.number().int().nonnegative(),
+  /** Attachment-key directories walked. */
+  directories: z.number().int().nonnegative(),
+  /** Directories whose key matches no page row at all (grace-window aged). */
+  orphanDirectories: z.number().int().nonnegative(),
+  orphanDirectoryBytes: z.number().int().nonnegative(),
+  /** Files orphaned inside a directory that DOES belong to a page. */
+  orphanFiles: z.number().int().nonnegative(),
+  orphanFileBytes: z.number().int().nonnegative(),
+  /** Candidates skipped only because they are younger than the grace window. */
+  graceSkipped: z.number().int().nonnegative(),
+  /**
+   * Pageless directories skipped because a contained filename sits in the
+   * keep-set — some body text still references a file inside, so the
+   * directory-level verdict stands down (never deleted, counted here).
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  keepProtectedDirectories: z.number().int().nonnegative().default(0),
+  /**
+   * Pageless directories skipped because they hold an entry the walk could not
+   * MEASURE (#1349 review r1) — a subdirectory, or anything else that is not a
+   * plain file (a symlink, socket or device; verification round). An
+   * attachment key directory is flat by construction, so such an entry under
+   * one is something else wearing a key-shaped name — and the walk counts only
+   * plain files, which would make the keep-set and grace-window checks vacuous
+   * and the whole thing a `bytes: 0` recursive delete. Structural, never
+   * judged, counted here.
+   *
+   * The NAME is historical and kept deliberately: renaming it would orphan
+   * every persisted stats record. The card's copy says "sub-folders or links".
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  nestedDirectories: z.number().int().nonnegative().default(0),
+  /**
+   * Store-root directories whose NAME is not a usable attachment key (fixer
+   * r1) — `tmp.12345/`, `12345 (copy)/`, a numeric name above `pages.id`'s
+   * int4 range. Each is dropped BEFORE the walk opens it, so it contributes to
+   * none of `bytes` / `files` / `directories` and is judged by nothing.
+   * Skipping is the correct verdict; leaving it uncounted was not, on a card
+   * whose contract is to name every verdict the walk declined to reach — its
+   * bytes were simply missing from the figures. Reserved store names
+   * (`local/`, `page-icons/`) and dot-directories are NOT counted here: the
+   * first two are other stores and the third is #1169 debris, neither of which
+   * this store was ever going to measure.
+   * Defaulted so records persisted before the field existed still parse.
+   */
+  unkeyedDirectories: z.number().int().nonnegative().default(0),
+  /** Directories whose readdir failed — never judged, reported instead. */
+  unreadableDirectories: z.number().int().nonnegative(),
+});
+export type AttachmentStoreSweepStats = z.infer<typeof AttachmentStoreSweepStatsSchema>;
+
+/** One orphan candidate (dry run) or deletion (live run), for the sample list. */
+export const AttachmentSweepCandidateSchema = z.object({
+  store: z.enum(['confluence', 'local']),
+  /** Attachment-key directory (`confluence_id` | page id | local page id). */
+  key: z.string(),
+  /** `null` = the whole directory is the candidate. */
+  filename: z.string().nullable(),
+  bytes: z.number().int().nonnegative(),
+  reason: z.enum(['orphan_directory', 'orphan_file']),
+});
+export type AttachmentSweepCandidate = z.infer<typeof AttachmentSweepCandidateSchema>;
+
+/** What a live run deleted; `null` on a dry run (nothing is ever touched). */
+export const AttachmentSweepDeletedSchema = z.object({
+  directories: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+  /** `page_image_embeddings` rows removed for files the sweep deleted (safety net). */
+  imageEmbeddingRows: z.number().int().nonnegative(),
+  /** Pages marked `image_embedding_dirty` because their files were removed. */
+  pagesMarkedDirty: z.number().int().nonnegative(),
+});
+export type AttachmentSweepDeleted = z.infer<typeof AttachmentSweepDeletedSchema>;
+
+/**
+ * What the last sweep run (dry or live) did — the persisted record the admin
+ * card reads. `refused` means the run declined to judge or delete anything
+ * (an unreadable root, or a live run where BOTH stores are empty on disk while
+ * the database still references them — a mis-pointed `ATTACHMENTS_DIR`). When
+ * only one store is anomalous the run completes, sweeps the sound store and
+ * carries the reason in `note`.
+ */
+export const AttachmentSweepRunSchema = z.object({
+  /** ISO-8601 completion time. */
+  at: z.string(),
+  dryRun: z.boolean(),
+  status: z.enum(['completed', 'refused', 'failed']),
+  /**
+   * Human-readable reason for `refused` / `failed` — and, since #1349 review
+   * r1, for a `completed` live run that swept ONE store because the other was
+   * anomalous (empty on disk while the database references it). Null on an
+   * unqualified completion.
+   */
+  note: z.string().nullable(),
+  durationMs: z.number().int().nonnegative(),
+  /** Per-store figures; null when the walk never completed. */
+  stores: z
+    .object({
+      confluence: AttachmentStoreSweepStatsSchema,
+      local: AttachmentStoreSweepStatsSchema,
+    })
+    .nullable(),
+  /** `local_attachments` rows whose file is missing on disk — counted, never deleted. */
+  missingLocalFiles: z.number().int().nonnegative(),
+  /** Bounded sample of candidates/deletions; `candidatesTotal` is the real count. */
+  candidateSample: z.array(AttachmentSweepCandidateSchema),
+  candidatesTotal: z.number().int().nonnegative(),
+  deleted: AttachmentSweepDeletedSchema.nullable(),
+});
+export type AttachmentSweepRun = z.infer<typeof AttachmentSweepRunSchema>;
+
+/** `GET /api/admin/attachments/sweep` — status + the persisted last run. */
+export const AttachmentSweepStatusSchema = z.object({
+  /** Whether the sweep worker lock is held right now; the card polls on it. */
+  running: z.boolean(),
+  lastRun: AttachmentSweepRunSchema.nullable(),
+});
+export type AttachmentSweepStatus = z.infer<typeof AttachmentSweepStatusSchema>;
+
+/** `POST /api/admin/attachments/sweep` body. */
+export const AttachmentSweepTriggerSchema = z.object({
+  dryRun: z.boolean(),
+});
+export type AttachmentSweepTrigger = z.infer<typeof AttachmentSweepTriggerSchema>;
+
+/** `POST /api/admin/attachments/sweep` 202 response. */
+export const AttachmentSweepTriggerResponseSchema = z.object({
+  started: z.boolean(),
+  alreadyRunning: z.boolean(),
+});
+export type AttachmentSweepTriggerResponse = z.infer<typeof AttachmentSweepTriggerResponseSchema>;
+
+/**
+ * `GET /api/admin/attachments/stats` — read from the persisted record only.
+ * The GET never walks the tree (the card polls it); a fresh figure is
+ * obtained by pressing Dry run. `stores: null` + `computedAt: null` is the
+ * explicit "no run yet" state.
+ */
+export const AttachmentStorageStatsSchema = z.object({
+  computedAt: z.string().nullable(),
+  running: z.boolean(),
+  stores: z
+    .object({
+      confluence: AttachmentStoreSweepStatsSchema,
+      local: AttachmentStoreSweepStatsSchema,
+    })
+    .nullable(),
+  missingLocalFiles: z.number().int().nonnegative().nullable(),
+});
+export type AttachmentStorageStats = z.infer<typeof AttachmentStorageStatsSchema>;
