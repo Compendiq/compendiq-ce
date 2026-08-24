@@ -10,6 +10,7 @@ import { query } from '../../core/db/postgres.js';
 import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
 import { setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
+import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { buildKnowledgeTestApp, insertUser } from './pages.test-helpers.js';
 import { notionRoutes } from './notion.js';
 
@@ -135,10 +136,138 @@ describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', (
     }
   });
 
-  it('GET handler source never decrypts or names the secret', () => {
+  it('GET /notion/connection handler source never decrypts or names the secret', () => {
     const src = readFileSync(new URL('./notion.ts', import.meta.url), 'utf8');
-    expect(src).not.toContain('getDecryptedNotionToken');
-    expect(src).not.toContain('decryptPat');
-    expect(src).toContain('getNotionConnectionStatus');
+    const start = src.indexOf("fastify.get('/notion/connection'");
+    const end = src.indexOf("fastify.put('/notion/connection'");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const connectionGet = src.slice(start, end);
+    expect(connectionGet).not.toContain('getDecryptedNotionToken');
+    expect(connectionGet).not.toContain('decryptPat');
+    expect(connectionGet).toContain('getNotionConnectionStatus');
+  });
+});
+
+describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
+  let server: FakeNotionServer;
+  let userId: string;
+
+  beforeAll(async () => {
+    await setupTestDb();
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            title: {
+              type: 'title',
+              title: [{ type: 'text', plain_text: 'Handbook' }],
+            },
+          },
+        },
+        {
+          object: 'database',
+          id: 'crm',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          title: [{ type: 'text', plain_text: 'CRM' }],
+        },
+        {
+          object: 'page',
+          id: 'nested',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          properties: {
+            title: {
+              type: 'title',
+              title: [{ type: 'text', plain_text: 'Nested notes' }],
+            },
+          },
+        },
+      ],
+      databaseQueryResults: {
+        crm: [
+          {
+            object: 'page',
+            id: 'row-only-via-query',
+            properties: {
+              title: { type: 'title', title: [{ type: 'text', plain_text: 'Secret row' }] },
+            },
+          },
+        ],
+      },
+    });
+    setNotionApiBaseUrlForTests(server.baseUrl);
+  });
+
+  afterAll(async () => {
+    setNotionApiBaseUrlForTests(null);
+    await server.close();
+    await teardownTestDb();
+  });
+
+  beforeEach(async () => {
+    await truncateAllTables();
+    userId = await insertUser('notion-tree-user');
+    server.requests.length = 0;
+  });
+
+  afterEach(() => {
+    expect(JSON.stringify(server.requests.map((r) => r.url))).not.toContain('api.notion.com');
+    expect(server.requests.some((r) => r.url.includes('/query'))).toBe(false);
+  });
+
+  async function app() {
+    return buildKnowledgeTestApp(() => userId, async (fastify) => {
+      await fastify.register(notionRoutes, { prefix: '/api' });
+    });
+  }
+
+  it('returns 400 when no token is stored and never echoes a secret', async () => {
+    const instance = await app();
+    try {
+      const res = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ statusCode: 400 });
+      expect(res.body).not.toContain(TOKEN);
+      expect(res.body).not.toMatch(/ntn_|secret_/);
+    } finally {
+      await instance.close();
+    }
+  });
+
+  it('returns pages and databases with skip labels; GET body never includes the token', async () => {
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const res = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain(TOKEN);
+      const body = res.json() as {
+        nodes: Array<{
+          id: string;
+          type: string;
+          selectable: boolean;
+          skipReason?: string;
+          children: Array<{ id: string; type: string; selectable: boolean; skipReason?: string }>;
+        }>;
+      };
+      expect(Object.keys(body).sort()).toEqual(['nodes']);
+      const handbook = body.nodes.find((n) => n.id === 'handbook');
+      expect(handbook).toMatchObject({ type: 'page', selectable: true });
+      const crm = handbook?.children.find((c) => c.id === 'crm');
+      const nested = handbook?.children.find((c) => c.id === 'nested');
+      expect(crm).toMatchObject({
+        type: 'database',
+        selectable: false,
+        skipReason: NOTION_UNSUPPORTED_LABEL,
+      });
+      expect(nested).toMatchObject({ type: 'page', selectable: true });
+      expect(JSON.stringify(body)).not.toContain('row-only-via-query');
+    } finally {
+      await instance.close();
+    }
   });
 });

@@ -22,6 +22,11 @@ export interface FakeNotionState {
   pages?: Record<string, Record<string, unknown>>;
   databases?: Record<string, Record<string, unknown>>;
   blockChildren?: Record<string, Array<Record<string, unknown>>>;
+  /**
+   * Rows returned ONLY if a caller POSTs `/v1/databases/:id/query`.
+   * Child B must never hit this — row-pages are search page objects or they stay skipped.
+   */
+  databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
 }
 
 export interface FakeNotionServer {
@@ -124,6 +129,18 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
         return;
       }
       send(res, 200, page);
+      return;
+    }
+
+    const dbQueryMatch = /^\/v1\/databases\/([^/]+)\/query$/.exec(path);
+    if (method === 'POST' && dbQueryMatch) {
+      const dbId = dbQueryMatch[1]!;
+      send(res, 200, {
+        object: 'list',
+        results: state.databaseQueryResults?.[dbId] ?? [],
+        next_cursor: null,
+        has_more: false,
+      });
       return;
     }
 
