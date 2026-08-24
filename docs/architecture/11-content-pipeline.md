@@ -443,8 +443,8 @@ the URL the store already serves:
 
 | Notion block | `body_html` |
 |--------------|-------------|
-| `heading_1` / `heading_2` / `heading_3` / `heading_4` | `<h1>`–`<h4>` |
-| `paragraph` | `<p>` |
+| `heading_1` / `heading_2` / `heading_3` / `heading_4` | `<h1>`–`<h4>` (toggleable headings also emit nested children) |
+| `paragraph` | `<p>` (nested children follow the paragraph) |
 | `bulleted_list_item` | `<ul><li>` (consecutive items grouped; nested children stay nested) |
 | `numbered_list_item` | `<ol><li>` |
 | `to_do` | `<ul data-type="taskList"><li data-type="taskItem" data-checked>` |
@@ -453,8 +453,9 @@ the URL the store already serves:
 | `code` | `<pre><code class="language-x">` |
 | `divider` | `<hr>` |
 | `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
-| `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later) |
-| `child_page`, page mentions, links | `<a href="/pages/{id}">` when that Notion id is in this run's imported set; otherwise the Notion URL |
+| `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
+| `child_page`, `link_to_page`, page mentions | `<a href="/pages/{id}">` when that Notion page id is in this run's imported set; otherwise the Notion URL. `link_to_page` databases always stay Notion URLs |
+| `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside a column is still skipped |
 | `child_database`, `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
 
 Rich-text annotations map to `<strong>` / `<em>` / `<del>` / `<code>` / `<a>`.

@@ -52,6 +52,15 @@ const SUPPORTED_TYPES = new Set([
   'table',
   'image',
   'child_page',
+  'link_to_page',
+]);
+
+/** Layout wrappers whose nested supported blocks must still import. */
+const TRANSPARENT_TYPES = new Set([
+  'column_list',
+  'column',
+  'toggle',
+  'synced_block',
 ]);
 
 export interface NotionBlock {
@@ -182,25 +191,30 @@ function convertSequence(blocks: readonly NotionBlock[], ctx: ConvertCtx): strin
 
 function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
   const type = block.type;
+  if (TRANSPARENT_TYPES.has(type)) {
+    return renderTransparent(block, ctx);
+  }
   if (!SUPPORTED_TYPES.has(type)) {
     skip(block, ctx);
     return '';
   }
   switch (type) {
     case 'heading_1':
-      return wrapRich('h1', payload(block, type), ctx);
+      return wrapRich('h1', block, ctx);
     case 'heading_2':
-      return wrapRich('h2', payload(block, type), ctx);
+      return wrapRich('h2', block, ctx);
     case 'heading_3':
-      return wrapRich('h3', payload(block, type), ctx);
+      return wrapRich('h3', block, ctx);
     case 'heading_4':
-      return wrapRich('h4', payload(block, type), ctx);
+      return wrapRich('h4', block, ctx);
     case 'paragraph':
-      return wrapRich('p', payload(block, type), ctx);
+      return wrapRich('p', block, ctx);
     case 'quote': {
-      const inner = wrapRich('p', payload(block, type), ctx);
-      const nested = convertSequence(childrenOf(block), ctx);
-      return `<blockquote>${inner}${nested}</blockquote>`;
+      const data = payload(block, type);
+      const inner = renderRichText(asRichArray(data.rich_text), ctx);
+      const nested = convertSequence(childrenOf(block, data), ctx);
+      const p = inner ? `<p>${inner}</p>` : '';
+      return `<blockquote>${p}${nested}</blockquote>`;
     }
     case 'code':
       return renderCode(payload(block, type));
@@ -214,6 +228,8 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
       return renderImage(block, ctx);
     case 'child_page':
       return renderChildPage(block, ctx);
+    case 'link_to_page':
+      return renderLinkToPage(block, ctx);
     default:
       skip(block, ctx);
       return '';
@@ -240,10 +256,26 @@ function childrenOf(block: NotionBlock, extra?: Record<string, unknown>): Notion
   return merged.filter((child): child is NotionBlock => isRecord(child) && typeof child.type === 'string');
 }
 
-function wrapRich(tag: string, data: Record<string, unknown>, ctx: ConvertCtx): string {
+function wrapRich(tag: string, block: NotionBlock, ctx: ConvertCtx): string {
+  const data = payload(block, block.type);
   const html = renderRichText(asRichArray(data.rich_text), ctx);
-  if (!html && tag === 'p') return '';
-  return `<${tag}>${html}</${tag}>`;
+  const nested = convertSequence(childrenOf(block, data), ctx);
+  if (!html && tag === 'p') return nested;
+  return `<${tag}>${html}</${tag}>${nested}`;
+}
+
+function renderTransparent(block: NotionBlock, ctx: ConvertCtx): string {
+  const data = payload(block, block.type);
+  const kids = childrenOf(block, data);
+  if (block.type === 'toggle') {
+    const title = renderRichText(asRichArray(data.rich_text), ctx);
+    return (title ? `<p>${title}</p>` : '') + convertSequence(kids, ctx);
+  }
+  if (block.type === 'synced_block' && kids.length === 0) {
+    skip(block, ctx);
+    return '';
+  }
+  return convertSequence(kids, ctx);
 }
 
 function renderList(tag: 'ul' | 'ol', items: readonly NotionBlock[], ctx: ConvertCtx): string {
@@ -318,7 +350,7 @@ function renderTableRow(row: NotionBlock, ctx: ConvertCtx, asHeader: boolean): s
 
 function renderImage(block: NotionBlock, ctx: ConvertCtx): string {
   const data = payload(block, 'image');
-  const sourceUrl = fileUrlOf(data);
+  const sourceUrl = safeHref(fileUrlOf(data));
   if (!sourceUrl) {
     skip(block, ctx);
     return '';
@@ -348,6 +380,22 @@ function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
   const href = resolvePageHref(notionId, undefined, ctx) ?? (notionId ? notionWebUrl(notionId) : '');
   if (!href) return `<p>${escapeHtml(title)}</p>`;
   return `<p><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></p>`;
+}
+
+function renderLinkToPage(block: NotionBlock, ctx: ConvertCtx): string {
+  const data = payload(block, 'link_to_page');
+  const kind = typeof data.type === 'string' ? data.type : '';
+  if (kind === 'page_id' && typeof data.page_id === 'string') {
+    const href = resolvePageHref(data.page_id, undefined, ctx);
+    const label = 'Untitled';
+    if (!href) return `<p>${label}</p>`;
+    return `<p><a href="${escapeHtml(href)}">${label}</a></p>`;
+  }
+  if (kind === 'database_id' && typeof data.database_id === 'string') {
+    return `<p><a href="${escapeHtml(notionWebUrl(data.database_id))}">Untitled</a></p>`;
+  }
+  skip(block, ctx);
+  return '';
 }
 
 function renderRichText(items: readonly Record<string, unknown>[], ctx: ConvertCtx): string {
@@ -397,10 +445,8 @@ function resolvePageHref(notionId: string, fallbackHref: string | null | undefin
 
 function safeHref(url: string | null | undefined): string | null {
   if (!url) return null;
-  const trimmed = url.trim();
-  if (trimmed.startsWith('/pages/')) return trimmed;
   try {
-    const parsed = new URL(trimmed);
+    const parsed = new URL(url.trim());
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
   } catch {
     return null;
@@ -422,16 +468,18 @@ function fileUrlOf(data: Record<string, unknown>): string | null {
 }
 
 function filenameFromUrl(sourceUrl: string, fallbackId: string): string {
-  let candidate = '';
+  let base = '';
   try {
-    const parsed = new URL(sourceUrl);
-    candidate = path.basename(parsed.pathname);
+    base = path.basename(new URL(sourceUrl).pathname);
   } catch {
-    candidate = '';
+    base = '';
   }
+  const id = normalizeNotionId(fallbackId) || 'image';
+  const ext = path.extname(base);
+  const candidate = canStoreLocalFilename(base) ? `${id}-${base}` : `${id}${ext || '.png'}`;
   if (canStoreLocalFilename(candidate)) return candidate;
-  const safe = `notion-${fallbackId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'image'}.png`;
-  return canStoreLocalFilename(safe) ? safe : 'notion-image.png';
+  const fallback = `${id.slice(0, 32)}.png`;
+  return canStoreLocalFilename(fallback) ? fallback : 'notion-image.png';
 }
 
 function asRichArray(value: unknown): Record<string, unknown>[] {

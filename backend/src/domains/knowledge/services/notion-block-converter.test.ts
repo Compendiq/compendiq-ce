@@ -155,9 +155,10 @@ describe('convertNotionBlocks', () => {
       }),
     ]);
 
+    const filename = 'img-photo.png';
     const expectedSrc = buildPageImageUrl({
       source: 'local',
-      key: 'photo.png',
+      key: filename,
       pageId: LOCAL_PAGE_ID,
       pageSource: 'standalone',
     });
@@ -166,7 +167,7 @@ describe('convertNotionBlocks', () => {
       {
         blockId: 'img',
         kind: 'image',
-        filename: 'photo.png',
+        filename,
         sourceUrl,
         alt: 'A photo',
       },
@@ -293,6 +294,160 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyText).toBe(htmlToText(result.bodyHtml));
     expect(result.bodyText).toContain('Title');
     expect(result.bodyText).toContain('Body copy');
+  });
+
+  it('walks column_list, column, toggle, and synced_block so nested supported blocks survive', () => {
+    const result = convert([
+      block('cols', 'column_list', {
+        children: [
+          block('col-a', 'column', {
+            children: [block('p-a', 'paragraph', { rich_text: [rich('Left col')] })],
+          }),
+          block('col-b', 'column', {
+            children: [block('p-b', 'paragraph', { rich_text: [rich('Right col')] })],
+          }),
+        ],
+      }),
+      block('tog', 'toggle', {
+        rich_text: [rich('Toggle title')],
+        children: [block('p-t', 'paragraph', { rich_text: [rich('Hidden body')] })],
+      }),
+      block('sync', 'synced_block', {
+        children: [block('p-s', 'paragraph', { rich_text: [rich('Synced copy')] })],
+      }),
+    ]);
+
+    expect(result.bodyHtml).toContain('<p>Left col</p>');
+    expect(result.bodyHtml).toContain('<p>Right col</p>');
+    expect(result.bodyHtml).toContain('Toggle title');
+    expect(result.bodyHtml).toContain('<p>Hidden body</p>');
+    expect(result.bodyHtml).toContain('<p>Synced copy</p>');
+    expect(result.skips.filter((s) => s.type === 'child_database')).toEqual([]);
+  });
+
+  it('does not flatten a child_database nested in a column, but still imports sibling paragraphs', () => {
+    const result = convert([
+      block('cols', 'column_list', {
+        children: [
+          block('col-a', 'column', {
+            children: [
+              block('p-a', 'paragraph', { rich_text: [rich('Keep')] }),
+              block('db', 'child_database', { title: 'CRM' }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+
+    expect(result.bodyHtml).toContain('<p>Keep</p>');
+    expect(result.bodyHtml).not.toContain('CRM');
+    expect(result.skips.map((s) => s.type)).toEqual(['child_database']);
+  });
+
+  it('emits nested children of a toggle heading and of a paragraph', () => {
+    const result = convert([
+      block('h2', 'heading_2', {
+        rich_text: [rich('Open me')],
+        is_toggleable: true,
+        children: [block('p-h', 'paragraph', { rich_text: [rich('Under heading')] })],
+      }),
+      block('p', 'paragraph', {
+        rich_text: [rich('Lead')],
+        children: [block('p-n', 'paragraph', { rich_text: [rich('Nested para')] })],
+      }),
+    ]);
+
+    expect(result.bodyHtml).toContain('<h2>Open me</h2>');
+    expect(result.bodyHtml).toContain('<p>Under heading</p>');
+    expect(result.bodyHtml).toContain('<p>Lead</p>');
+    expect(result.bodyHtml).toContain('<p>Nested para</p>');
+    expect(result.skips).toEqual([]);
+  });
+
+  it('namespaces image filenames so two blocks sharing a basename do not collide', () => {
+    const result = convert([
+      block('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'image', {
+        type: 'file',
+        file: { url: 'https://files.example.test/a/image.png' },
+        caption: [],
+      }),
+      block('11111111-2222-3333-4444-555555555555', 'image', {
+        type: 'external',
+        external: { url: 'https://cdn.example.test/b/image.png' },
+        caption: [],
+      }),
+    ]);
+
+    const names = result.attachments.map((a) => a.filename);
+    expect(names).toHaveLength(2);
+    expect(names[0]).not.toBe(names[1]);
+    expect(names[0]).toContain('image.png');
+    expect(names[1]).toContain('image.png');
+    const srcs = [...result.bodyHtml.matchAll(/src="([^"]+)"/g)].map((m) => m[1]);
+    expect(srcs).toHaveLength(2);
+    expect(srcs[0]).not.toBe(srcs[1]);
+  });
+
+  it('skips image blocks whose sourceUrl is not http(s) and records no attachment', () => {
+    const js = convert([
+      block('bad-js', 'image', {
+        type: 'external',
+        external: { url: 'javascript:alert(1)' },
+        caption: [rich('nope')],
+      }),
+    ]);
+    const file = convert([
+      block('bad-file', 'image', {
+        type: 'file',
+        file: { url: 'file:///etc/passwd' },
+        caption: [],
+      }),
+    ]);
+
+    expect(js.bodyHtml).not.toContain('<img');
+    expect(js.bodyHtml.toLowerCase()).not.toContain('javascript:');
+    expect(js.attachments).toEqual([]);
+    expect(js.skips.map((s) => s.blockId)).toEqual(['bad-js']);
+    expect(file.bodyHtml).not.toContain('<img');
+    expect(file.attachments).toEqual([]);
+    expect(file.skips.map((s) => s.blockId)).toEqual(['bad-file']);
+  });
+
+  it('turns link_to_page into a Notion URL, or /pages/:id when that page is imported', () => {
+    const pageId = '3c612f56-fdd0-4a30-a4d6-bda7d7426309';
+    const skippedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const dbId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const result = convert(
+      [
+        block('l1', 'link_to_page', { type: 'page_id', page_id: pageId }),
+        block('l2', 'link_to_page', { type: 'page_id', page_id: skippedId }),
+        block('l3', 'link_to_page', { type: 'database_id', database_id: dbId }),
+      ],
+      new Map([[pageId, 99]]),
+    );
+
+    expect(result.bodyHtml).toContain('<a href="/pages/99">');
+    expect(result.bodyHtml).toContain(`href="https://www.notion.so/${skippedId.replace(/-/g, '')}"`);
+    expect(result.bodyHtml).toContain(`href="https://www.notion.so/${dbId.replace(/-/g, '')}"`);
+    expect(result.bodyHtml).not.toContain(`/pages/${dbId}`);
+    expect(result.skips).toEqual([]);
+  });
+
+  it('does not treat a Notion-authored /pages/ path as an internal Compendiq URL', () => {
+    const result = convert([
+      block('p', 'paragraph', {
+        rich_text: [
+          {
+            ...rich('trap'),
+            text: { content: 'trap', link: { url: '/pages/1' } },
+            href: '/pages/1',
+          },
+        ],
+      }),
+    ]);
+
+    expect(result.bodyHtml).not.toContain('href="/pages/1"');
+    expect(result.bodyHtml).toContain('trap');
   });
 });
 
