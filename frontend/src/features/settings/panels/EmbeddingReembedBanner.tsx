@@ -9,7 +9,10 @@ interface Pending {
 
 interface Props {
   currentDimensions: number;
+  /** Unsaved embedding identity change. Wipe is not offered in this state. */
   pending: Pending | null;
+  /** Live assignment the destructive rebuild actually embeds with. */
+  live?: Pending | null;
 }
 
 type Stage = 'idle' | 'probing' | 'confirm' | 'running';
@@ -36,7 +39,7 @@ interface ReembedJobStatus {
   failedReason?: string;
 }
 
-export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
+export function EmbeddingReembedBanner({ currentDimensions, pending, live }: Props) {
   const [stage, setStage] = useState<Stage>('idle');
   const [newDims, setNewDims] = useState<number | null>(null);
   const [jobStatus, setJobStatus] = useState<ReembedJobStatus | null>(null);
@@ -92,15 +95,17 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   // progress while polling continues — only collapse to null when we're
   // NOT actively tracking a job.
   const hasRunningJob = stage === 'running' && jobStatus !== null;
-  if (!pending && !hasRunningJob) return null;
+  const midFlight = stage === 'probing' || stage === 'confirm' || hasRunningJob;
+  if (pending && !midFlight) return null;
+  if (!pending && !live && !midFlight) return null;
 
   async function start() {
-    if (!pending) return;
+    if (!live) return;
     setStage('probing');
     try {
       const probe = await apiFetch<{ dimensions: number; error?: string }>(
         '/admin/embedding/probe',
-        { method: 'POST', body: JSON.stringify(pending) },
+        { method: 'POST', body: JSON.stringify(live) },
       );
       if (probe.error) {
         toast.error(probe.error);
@@ -146,14 +151,14 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
       <div className="nm-card border-destructive/30 p-3 text-sm">
         {heavy ? (
           <p>
-            ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
+            Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
             <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the
             HNSW index. Continue?
           </p>
         ) : (
           <p>
-            ⚠ Embedding model changed (dimension stays at {currentDimensions}). Existing
-            vectors will be inconsistent until re-embedded. Continue?
+            This rebuilds the current index (dimension stays at {currentDimensions}). Existing
+            vectors will be replaced. Continue?
           </p>
         )}
         <div className="mt-2 flex gap-2">
@@ -203,15 +208,13 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   }
 
   return (
-    <div className="nm-card border-warning/30 flex items-center justify-between p-3 text-sm">
-      <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
-      <button
-        className="nm-button-primary"
-        disabled={stage !== 'idle'}
-        onClick={start}
-      >
-        {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Probe & re-embed'}
-      </button>
-    </div>
+    <button
+      type="button"
+      className="nm-action-destructive"
+      disabled={stage !== 'idle'}
+      onClick={start}
+    >
+      {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Wipe current index'}
+    </button>
   );
 }

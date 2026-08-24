@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { LlmProvider, UsecaseAssignments } from '@compendiq/contracts';
 import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN } from '@compendiq/contracts';
@@ -86,6 +86,24 @@ describe('UsecaseAssignmentsSection', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     useAuthStore.getState().clearAuth();
+  });
+
+  it('renders the embedding action under the Embedding row, not above the form', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+        embeddingAction={<button type="button">Start re-embed</button>}
+      />,
+      { wrapper: Wrapper },
+    );
+    const row = screen.getByTestId('usecase-row-embedding');
+    expect(within(row).getByRole('button', { name: /start re-embed/i })).toBeInTheDocument();
   });
 
   it('renders the rerank row with disabled-not-inherited semantics (#1104)', () => {

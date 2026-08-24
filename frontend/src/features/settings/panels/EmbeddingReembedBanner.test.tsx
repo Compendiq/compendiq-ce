@@ -27,13 +27,27 @@ describe('EmbeddingReembedBanner', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders nothing when pending is null', () => {
+  it('renders nothing when there is no live pair and nothing pending', () => {
     const Wrapper = createWrapper();
     const { container } = render(
-      <EmbeddingReembedBanner currentDimensions={1024} pending={null} />,
+      <EmbeddingReembedBanner currentDimensions={1024} pending={null} live={null} />,
       { wrapper: Wrapper },
     );
     expect(container.firstChild).toBeNull();
+  });
+
+  it('does not offer Wipe while an unsaved model change is pending', () => {
+    const Wrapper = createWrapper();
+    const { container } = render(
+      <EmbeddingReembedBanner
+        currentDimensions={1024}
+        pending={{ providerId: 'p1', model: 'qwen3-embedding:4b' }}
+        live={{ providerId: 'p0', model: 'bge-m3' }}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole('button', { name: /wipe current index/i })).toBeNull();
   });
 
   it('clicking probe-and-reembed fires probe call', async () => {
@@ -55,11 +69,14 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'bge-m3' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'bge-m3' }}
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    const wipe = screen.getByRole('button', { name: /^Wipe current index$/i });
+    expect(wipe).toHaveClass('nm-action-destructive');
+    fireEvent.click(wipe);
     await waitFor(() => {
       expect(spy).toHaveBeenCalledWith(
         expect.stringContaining('/admin/embedding/probe'),
@@ -82,11 +99,12 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'other-model' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'other-model' }}
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
     await screen.findByText(/delete all existing embeddings/i);
     expect(screen.getByText(/1024 → 768/)).toBeTruthy();
   });
@@ -108,11 +126,12 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'other-model' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'other-model' }}
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
     await screen.findByText(/delete all existing embeddings/i);
 
     expect(screen.queryByText(/re-embed worker not yet implemented/i)).toBeNull();
@@ -138,11 +157,12 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'other-model' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'other-model' }}
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
     await screen.findByText(/delete all existing embeddings/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
     await waitFor(() => {
@@ -176,12 +196,13 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'bge-m3-instruct' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'bge-m3-instruct' }}
       />,
       { wrapper: Wrapper },
     );
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
-    await screen.findByText(/inconsistent until re-embedded/i);
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
+    await screen.findByText(/dimension stays at 1024/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
     await waitFor(() => {
       const reembedCall = spy.mock.calls.find(
@@ -230,13 +251,14 @@ describe('EmbeddingReembedBanner', () => {
     render(
       <EmbeddingReembedBanner
         currentDimensions={1024}
-        pending={{ providerId: 'p1', model: 'bge-m3-instruct' }}
+        pending={null}
+        live={{ providerId: 'p1', model: 'bge-m3-instruct' }}
       />,
       { wrapper: Wrapper },
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /probe/i }));
-    await screen.findByText(/inconsistent until re-embedded/i);
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
+    await screen.findByText(/dimension stays at 1024/i);
     fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
 
     // Wait for the 2-second poll interval to fire at least once and the

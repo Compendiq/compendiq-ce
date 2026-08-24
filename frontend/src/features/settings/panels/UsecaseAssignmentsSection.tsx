@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import * as Popover from '@radix-ui/react-popover';
 import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from '@compendiq/contracts';
@@ -91,6 +92,12 @@ interface Props {
    */
   imageTargetDimensions: number | null;
   onImageTargetDimensionsChange: (next: number | null) => void;
+  /**
+   * The embedding row's next action (re-embed). Lives under this row so the
+   * control that starts the index change sits where the assignment changed —
+   * not above the form, and not competing with Save.
+   */
+  embeddingAction?: ReactNode;
 }
 
 export function UsecaseAssignmentsSection({
@@ -100,6 +107,7 @@ export function UsecaseAssignmentsSection({
   onChange,
   imageTargetDimensions,
   onImageTargetDimensionsChange,
+  embeddingAction,
 }: Props) {
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
     onChange({ ...assignments, [u]: { ...assignments[u], ...patch } });
@@ -146,8 +154,12 @@ export function UsecaseAssignmentsSection({
               <span className="flex items-center gap-1 text-sm font-medium">
                 {USECASE_LABELS[u]}
                 {u === 'embedding' && (
-                  <span title="Changing requires re-embedding all pages" aria-label="embedding-warning">
-                    ⚠
+                  <span
+                    title="A model change is started from this row, not from Save"
+                    aria-label="embedding-info"
+                    className="text-muted-foreground"
+                  >
+                    <Info size={14} aria-hidden="true" />
                   </span>
                 )}
                 {u === 'rerank' && (
@@ -168,6 +180,7 @@ export function UsecaseAssignmentsSection({
                 value={row.providerId ?? ''}
                 onChange={(e) => update(u, { providerId: e.target.value || null })}
                 data-testid={`usecase-${u}-provider`}
+                {...(u === 'embedding' ? { 'aria-describedby': 'embedding-assignment-help' } : {})}
               >
                 <option value="">{NON_INHERITING[u] ?? 'Inherit default'}</option>
                 {providers.map((p) => (
@@ -202,6 +215,15 @@ export function UsecaseAssignmentsSection({
               cramming them there would have squeezed the four columns the other
               use cases share.
             */}
+            {u === 'embedding' && (
+              <div className="space-y-2">
+                <p id="embedding-assignment-help" className="text-xs text-muted-foreground">
+                  A model change is started from this row, not from Save. Search keeps the current
+                  index until the re-embed finishes.
+                </p>
+                {embeddingAction}
+              </div>
+            )}
             {u === 'chat' && chatDefault && <ChatVisionCapability vision={chatDefault.vision} />}
             {/*
               #1115: the image leg's strip is always rendered, not only when
