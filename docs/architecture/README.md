@@ -20,6 +20,7 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 | 9 | RAG Chat Flow | [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) | Ask pipeline: retrieve → prompt → stream |
 | 10 | Enterprise License Flow | [`10-flow-enterprise-license.md`](./10-flow-enterprise-license.md) | Open-core plugin loading + license persistence |
 | 11 | Content Format Pipeline | [`11-content-pipeline.md`](./11-content-pipeline.md) | Confluence XHTML ↔ HTML ↔ Markdown ↔ Editor |
+| 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs CRDT gateway, dual-run presence, BYTEA persist |
 
 ## Runbooks
 
@@ -62,6 +63,7 @@ Quick reference for what to update when:
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
+| Collab gateway (`pages-collab.ts`, `@fastify/websocket`, Redis `collab:*`), `page_collaborative_docs`, or `collab_editing_enabled` | `12-realtime-collaboration.md` (and `06-data-model.md` if the table or FK changes) |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
 becomes stale and you are not sure how to update it, flag it in the PR
