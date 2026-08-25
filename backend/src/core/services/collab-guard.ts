@@ -3,7 +3,7 @@
  * non-empty. Wired on PUT, restore, Apply, and draft-publish.
  */
 import type { PoolClient } from 'pg';
-import { getPool } from '../db/postgres.js';
+import { query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import * as redisCache from './redis-cache.js';
 import type { RedisClientType } from 'redis';
@@ -73,16 +73,6 @@ export async function invalidateCollabDocAfterBodyWrite(
     await client.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
     return;
   }
-  const owned = await getPool().connect();
-  try {
-    await owned.query('BEGIN');
-    await owned.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
-    await owned.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
-    await owned.query('COMMIT');
-  } catch (err) {
-    try { await owned.query('ROLLBACK'); } catch { /* */ }
-    throw err;
-  } finally {
-    owned.release();
-  }
+  // PUT / restore / Apply / inbound sync mock `query()`, not `getPool()`.
+  await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
 }
