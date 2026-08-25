@@ -346,20 +346,26 @@ export async function readCachedAttachmentFile(
  * Entries under `ATTACHMENTS_DIR` that are STORES of their own rather than
  * attachment keys (#1349, fixer external round).
  *
- * Both sit inside the Confluence-style root and both names pass that tree's
- * key allow-list (`page-icons` because `-` is in it), so a walker that treats
- * every root entry as a key finds no page row for either and judges the whole
- * store one orphan directory. `local/` was reserved from the start; the
- * page-icon store was not, and a live sweep deleted every uploaded page mark
- * — permanently, because migrations 095/096 persist only the sha.
+ * They sit inside the Confluence-style root and their names pass that tree's
+ * key allow-list (`page-icons` / `client-models` because `-` is in it), so a
+ * walker that treats every root entry as a key finds no page row for them
+ * and judges the whole store one orphan directory. `local/` was reserved
+ * from the start; the page-icon store was not, and a live sweep deleted
+ * every uploaded page mark — permanently, because migrations 095/096 persist
+ * only the sha. `#1418` adds `client-models/` for operator-supplied ONNX
+ * weights on the same volume; forgetting that reservation is the same loss.
  *
  * Anything that enumerates the root must skip these by name, and
  * `removeCachedAttachmentDirectory` refuses them outright so a future walker
  * that forgets cannot repeat it.
  */
+/** Operator-supplied on-device model weights (#1418). Same attachments volume. */
+export const CLIENT_MODEL_STORE_DIRNAME = 'client-models';
+
 export const ATTACHMENT_ROOT_RESERVED_DIRNAMES: ReadonlySet<string> = new Set([
   LOCAL_STORE_DIRNAME,
   PAGE_ICON_STORE_DIRNAME,
+  CLIENT_MODEL_STORE_DIRNAME,
 ]);
 
 /**

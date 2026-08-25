@@ -12,7 +12,8 @@
  *
  * The two stores are walked SEPARATELY. The Confluence-style tree is
  * `readdir(attachmentsRootNow())` minus the RESERVED entries
- * (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`: `local/` and `page-icons/`) — each
+ * (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`: `local/`, `page-icons/`, and
+ * `client-models/` for #1418 weights) — each
  * lives INSIDE the same root and each name matches the tree's key pattern, so
  * a naive walk lists a whole other store as one "orphan directory" and a live
  * run deletes it recursively. The local store is walked under

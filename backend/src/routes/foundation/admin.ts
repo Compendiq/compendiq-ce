@@ -465,7 +465,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention', 'client_inference_enabled')`,
     );
 
     const map: Record<string, string> = {};
@@ -583,6 +583,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragEfSearch: efSearch.value,
       ragEfSearchFromEnv: efSearch.source === 'env',
       collabEditingEnabled: isCollabEditingEnabled(),
+      clientInferenceEnabled: (() => {
+        const raw = map['client_inference_enabled'];
+        if (!raw) return false;
+        const v = raw.trim().toLowerCase();
+        return v === '1' || v === 'true' || v === 'on';
+      })(),
     };
   });
 
@@ -720,6 +726,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       updates.push({
         key: 'collab_editing_enabled',
         value: body.collabEditingEnabled ? '1' : '0',
+      });
+    }
+    if (body.clientInferenceEnabled !== undefined) {
+      updates.push({
+        key: 'client_inference_enabled',
+        value: body.clientInferenceEnabled ? 'true' : 'false',
       });
     }
 

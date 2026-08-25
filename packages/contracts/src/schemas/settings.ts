@@ -57,6 +57,11 @@ export type InlineCompletionDelay = z.infer<typeof InlineCompletionDelaySchema>;
 export const InlineCompletionModeSchema = z.enum(['word', 'full']);
 export type InlineCompletionMode = z.infer<typeof InlineCompletionModeSchema>;
 
+/** Hunspell language ids served from /app/data/client-models/hunspell/ (#1418). */
+export const ClientSpellcheckLanguageSchema = z.enum(['en_US', 'de_DE']);
+export type ClientSpellcheckLanguage = z.infer<typeof ClientSpellcheckLanguageSchema>;
+export const ClientSpellcheckLanguagesSchema = z.array(ClientSpellcheckLanguageSchema);
+
 // #1402 (phase 1/3): per-user onboarding checklist state. Deliberately
 // narrower than the issue's literal draft — `patConfigured` and
 // `spacesSelected` are NOT persisted here because both are safely derivable
@@ -107,6 +112,12 @@ export const UserSettingsSchema = z.object({
   inlineCompletionDelay: InlineCompletionDelaySchema,
   inlineCompletionMode: InlineCompletionModeSchema,
   inlineCompletionCodeOnly: z.boolean(),
+  // #1418 — on-device WebGPU + Hunspell. Defaults live on the columns, not
+  // here: a field-level default on the patch schema would wipe siblings.
+  clientInferenceEnabled: z.boolean(),
+  clientInferenceWithoutServer: z.boolean(),
+  clientSpellcheckEnabled: z.boolean(),
+  clientSpellcheckLanguages: ClientSpellcheckLanguagesSchema,
   onboardingState: OnboardingStateSchema,
 });
 
@@ -125,6 +136,12 @@ export const UpdateSettingsSchema = z.object({
   inlineCompletionDelay: InlineCompletionDelaySchema.optional(),
   inlineCompletionMode: InlineCompletionModeSchema.optional(),
   inlineCompletionCodeOnly: z.boolean().optional(),
+  // #1418: no field-level defaults — an omitted key must stay absent so a
+  // PUT of an unrelated editor pref cannot reset these columns.
+  clientInferenceEnabled: z.boolean().optional(),
+  clientInferenceWithoutServer: z.boolean().optional(),
+  clientSpellcheckEnabled: z.boolean().optional(),
+  clientSpellcheckLanguages: ClientSpellcheckLanguagesSchema.optional(),
   // #771: true → record dismissal of the Confluence-PAT onboarding banner
   // (server stores NOW() in user_settings.confluence_pat_prompt_dismissed_at);
   // false → clear the dismissal so the banner can reappear.
@@ -151,6 +168,15 @@ export const SettingsResponseSchema = z.object({
   inlineCompletionDelay: InlineCompletionDelaySchema,
   inlineCompletionMode: InlineCompletionModeSchema,
   inlineCompletionCodeOnly: z.boolean(),
+  clientInferenceEnabled: z.boolean(),
+  clientInferenceWithoutServer: z.boolean(),
+  /**
+   * Read-only copy of `admin_settings.client_inference_enabled`. Authors
+   * cannot turn the worker on against a disabled admin flag (SPEC-001).
+   */
+  clientInferenceAdminEnabled: z.boolean(),
+  clientSpellcheckEnabled: z.boolean(),
+  clientSpellcheckLanguages: ClientSpellcheckLanguagesSchema,
   // #771: whether the user dismissed the Confluence-PAT onboarding banner.
   // Derived server-side from confluence_pat_prompt_dismissed_at IS NOT NULL —
   // the timestamp itself is never exposed.

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import type {
+  ClientSpellcheckLanguage,
   InlineCompletionDelay,
   InlineCompletionMode,
   SettingsResponse,
@@ -30,35 +31,52 @@ const MODES: ReadonlyArray<{
   { value: 'full', label: 'Full suggestion', detail: 'One concise line' },
 ];
 
+const SPELL_LANGUAGES: ReadonlyArray<{
+  value: ClientSpellcheckLanguage;
+  label: string;
+}> = [
+  { value: 'en_US', label: 'English (US)' },
+  { value: 'de_DE', label: 'German' },
+];
+
 function PreferenceSwitch({
   id,
   checked,
   onCheckedChange,
   label,
   help,
+  describedBy,
+  ariaDisabled = false,
 }: {
   id: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   label: string;
   help: string;
+  describedBy?: string;
+  ariaDisabled?: boolean;
 }) {
+  const helpId = `${id}-help`;
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-4">
       <div className="min-w-0">
         <label htmlFor={id} className="cursor-pointer text-sm font-medium text-foreground">
           {label}
         </label>
-        <p id={`${id}-help`} className="mt-0.5 text-xs leading-5 text-muted-foreground">
+        <p id={helpId} className="mt-0.5 text-xs leading-5 text-muted-foreground">
           {help}
         </p>
       </div>
       <Switch.Root
         id={id}
         checked={checked}
-        onCheckedChange={onCheckedChange}
-        aria-describedby={`${id}-help`}
-        className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action"
+        onCheckedChange={(next) => {
+          if (ariaDisabled) return;
+          onCheckedChange(next);
+        }}
+        aria-describedby={describedBy ? `${helpId} ${describedBy}` : helpId}
+        aria-disabled={ariaDisabled || undefined}
+        className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action aria-disabled:opacity-70"
       >
         <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
       </Switch.Root>
@@ -77,11 +95,28 @@ export function EditorPreferencesTab({
   const [delay, setDelay] = useState(settings.inlineCompletionDelay);
   const [mode, setMode] = useState(settings.inlineCompletionMode);
   const [codeOnly, setCodeOnly] = useState(settings.inlineCompletionCodeOnly);
+  const [clientEnabled, setClientEnabled] = useState(settings.clientInferenceEnabled);
+  const [withoutServer, setWithoutServer] = useState(settings.clientInferenceWithoutServer);
+  const [spellEnabled, setSpellEnabled] = useState(settings.clientSpellcheckEnabled);
+  const [spellLangs, setSpellLangs] = useState<ClientSpellcheckLanguage[]>(
+    settings.clientSpellcheckLanguages,
+  );
+  const adminOn = settings.clientInferenceAdminEnabled;
   const changed = enabled !== settings.inlineCompletionEnabled
     || delay !== settings.inlineCompletionDelay
     || mode !== settings.inlineCompletionMode
-    || codeOnly !== settings.inlineCompletionCodeOnly;
+    || codeOnly !== settings.inlineCompletionCodeOnly
+    || clientEnabled !== settings.clientInferenceEnabled
+    || withoutServer !== settings.clientInferenceWithoutServer
+    || spellEnabled !== settings.clientSpellcheckEnabled
+    || spellLangs.join(',') !== settings.clientSpellcheckLanguages.join(',');
   const mac = isMac();
+
+  function toggleSpellLanguage(lang: ClientSpellcheckLanguage) {
+    const has = spellLangs.includes(lang);
+    if (has && spellEnabled && spellLangs.length === 1) return;
+    setSpellLangs(has ? spellLangs.filter((item) => item !== lang) : [...spellLangs, lang]);
+  }
 
   return (
     <div className="space-y-6">
@@ -191,6 +226,111 @@ export function EditorPreferencesTab({
         </div>
       </section>
 
+      <section aria-labelledby="client-inference-heading">
+        <div className="mb-3">
+          <h3 id="client-inference-heading" className="text-sm font-semibold text-foreground">
+            On-device suggestions (WebGPU)
+          </h3>
+          <p id="client-inference-fallback" className="mt-1 text-sm leading-6 text-muted-foreground">
+            Falls back to the server model when the on-device model is not ready.
+          </p>
+        </div>
+
+        <div className="divide-y divide-border rounded-xl border border-border">
+          <PreferenceSwitch
+            id="client-inference-enabled"
+            checked={clientEnabled}
+            onCheckedChange={setClientEnabled}
+            ariaDisabled={!adminOn}
+            describedBy="client-inference-fallback client-inference-admin-note"
+            label="On-device suggestions (WebGPU)"
+            help="Needs administrator enablement and a compatible GPU. Drafts stay in this browser. The model downloads once per browser."
+          />
+          <p id="client-inference-admin-note" className="px-4 py-3 text-xs leading-5 text-muted-foreground">
+            {adminOn
+              ? 'An administrator has enabled on-device suggestions for this instance.'
+              : 'An administrator has not enabled on-device suggestions.'}
+          </p>
+
+          <PreferenceSwitch
+            id="client-inference-without-server"
+            checked={withoutServer}
+            onCheckedChange={setWithoutServer}
+            ariaDisabled={!clientEnabled}
+            label="Use on-device suggestions when no server model is assigned"
+            help="Air-gapped use when no inline-completion model is assigned. Off keeps ghost text off until a server model exists."
+          />
+
+          <div className="px-4 py-4">
+            <button
+              type="button"
+              className="nm-button-ghost h-8"
+              disabled
+              aria-describedby="client-inference-predownload-help"
+            >
+              Pre-download on-device model
+            </button>
+            <p id="client-inference-predownload-help" className="mt-2 text-xs leading-5 text-muted-foreground">
+              Downloads only in this browser. Size is shown once the model manifest is available.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="spellcheck-heading">
+        <div className="mb-3">
+          <h3 id="spellcheck-heading" className="text-sm font-semibold text-foreground">
+            Spellcheck
+          </h3>
+          <p id="spellcheck-bilingual" className="mt-1 text-sm leading-6 text-muted-foreground">
+            English and German. A word is flagged only if every enabled language rejects it.
+          </p>
+        </div>
+
+        <div className="divide-y divide-border rounded-xl border border-border">
+          <PreferenceSwitch
+            id="client-spellcheck-enabled"
+            checked={spellEnabled}
+            onCheckedChange={setSpellEnabled}
+            describedBy="spellcheck-bilingual"
+            label="Spellcheck"
+            help="Hunspell-format English and German lint in the article editor. Does not use the on-device GPU model."
+          />
+
+          <fieldset className="px-4 py-4">
+            <legend className="text-sm font-medium text-foreground">Languages</legend>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Keep at least one language on while spellcheck is enabled.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {SPELL_LANGUAGES.map((option) => {
+                const checked = spellLangs.includes(option.value);
+                const lastOn = spellEnabled && checked && spellLangs.length === 1;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="checkbox"
+                    aria-checked={checked}
+                    aria-disabled={lastOn || undefined}
+                    onClick={() => toggleSpellLanguage(option.value)}
+                    className={cn(
+                      'rounded-lg border px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      checked
+                        ? 'border-border-interactive bg-muted text-foreground'
+                        : 'border-border text-muted-foreground hover:border-border-interactive',
+                      lastOn && 'opacity-70',
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        </div>
+      </section>
+
       <button
         type="button"
         className="nm-button-primary"
@@ -200,6 +340,10 @@ export function EditorPreferencesTab({
           inlineCompletionDelay: delay,
           inlineCompletionMode: mode,
           inlineCompletionCodeOnly: codeOnly,
+          clientInferenceEnabled: clientEnabled,
+          clientInferenceWithoutServer: withoutServer,
+          clientSpellcheckEnabled: spellEnabled,
+          clientSpellcheckLanguages: spellLangs,
         })}
         data-testid="editor-preferences-save"
       >

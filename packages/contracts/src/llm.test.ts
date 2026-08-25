@@ -34,6 +34,10 @@ describe('LlmUsecaseSchema', () => {
   it('accepts inline_completion (#1417)', () => {
     expect(() => LlmUsecaseSchema.parse('inline_completion')).not.toThrow();
   });
+  it('rejects client_inference — the browser model is not an ADR-021 use case (#1418 SPEC-010)', () => {
+    expect(LlmUsecaseSchema.options).not.toContain('client_inference');
+    expect(() => LlmUsecaseSchema.parse('client_inference')).toThrow();
+  });
 });
 
 describe('LlmProviderInputSchema', () => {

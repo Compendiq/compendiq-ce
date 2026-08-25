@@ -63,6 +63,24 @@ async function writeFileAt(relative: string, data: Buffer | string): Promise<str
   return full;
 }
 
+describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
+  it('reserves client-models so the orphan sweep cannot delete operator weights', () => {
+    expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
+    expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
+    expect(store.ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
+  });
+
+  it('refuses to remove the client-models store by name', async () => {
+    await writeFileAt(path.join('client-models', 'qwen2.5-0.5b-instruct-q4', 'model.onnx'), 'weights');
+    await expect(store.removeCachedAttachmentDirectory('client-models')).rejects.toThrow(/reserved/i);
+    const kept = await fsReal.readFile(
+      path.join(tmpDir, 'client-models', 'qwen2.5-0.5b-instruct-q4', 'model.onnx'),
+      'utf8',
+    );
+    expect(kept).toBe('weights');
+  });
+});
+
 describe('resolveAttachmentBytes (#1115)', () => {
   it('reads the Confluence cache tree keyed by confluence_id', async () => {
     await writeFileAt(path.join('44556677', 'diagram.png'), pngBytes());

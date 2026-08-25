@@ -1,6 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { UpdateSettingsSchema, TestConfluenceSchema, OnboardingStateSchema } from '@compendiq/contracts';
+import {
+  UpdateSettingsSchema,
+  TestConfluenceSchema,
+  OnboardingStateSchema,
+} from '@compendiq/contracts';
+import type { ClientSpellcheckLanguage } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
@@ -12,6 +17,21 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
+
+function isTruthyAdminFlag(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'on';
+}
+
+const CLIENT_SPELLCHECK_DEFAULT: ClientSpellcheckLanguage[] = ['en_US', 'de_DE'];
+
+async function readClientInferenceAdminEnabled(): Promise<boolean> {
+  const result = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = 'client_inference_enabled'`,
+  );
+  return isTruthyAdminFlag(result.rows[0]?.setting_value);
+}
 
 // #1402 (review, external round): shared by GET and PUT's row-ensure INSERTs.
 // auth.ts caches liveness for USER_SECURITY_CACHE_TTL_MS (30s; #737), so a
@@ -49,16 +69,24 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
       inline_completion_mode: 'word' | 'full';
       inline_completion_code_only: boolean;
+      client_inference_enabled: boolean;
+      client_inference_without_server: boolean;
+      client_spellcheck_enabled: boolean;
+      client_spellcheck_languages: ClientSpellcheckLanguage[] | null;
       onboarding_state: Record<string, unknown> | null;
     }>(
       `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
               show_space_home_content, custom_prompts,
               confluence_pat_prompt_dismissed_at,
               inline_completion_enabled, inline_completion_delay,
-              inline_completion_mode, inline_completion_code_only, onboarding_state
+              inline_completion_mode, inline_completion_code_only,
+              client_inference_enabled, client_inference_without_server,
+              client_spellcheck_enabled, client_spellcheck_languages,
+              onboarding_state
          FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
+    const clientInferenceAdminEnabled = await readClientInferenceAdminEnabled();
     // #721: Use explicit editor assignments rather than getUserAccessibleSpaces
     // so that admins see only the spaces they've chosen to sync — not every
     // space in the DB (which getUserAccessibleSpaces returns for admins).
@@ -82,6 +110,11 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         inlineCompletionDelay: 'balanced',
         inlineCompletionMode: 'full',
         inlineCompletionCodeOnly: false,
+        clientInferenceEnabled: false,
+        clientInferenceWithoutServer: true,
+        clientInferenceAdminEnabled,
+        clientSpellcheckEnabled: false,
+        clientSpellcheckLanguages: CLIENT_SPELLCHECK_DEFAULT,
         // #1402: same empty-object-in, fully-defaulted-out pattern as below —
         // a brand new row has never had any onboarding activity recorded.
         onboardingState: OnboardingStateSchema.parse({}),
@@ -104,6 +137,13 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       inlineCompletionDelay: row.inline_completion_delay,
       inlineCompletionMode: row.inline_completion_mode,
       inlineCompletionCodeOnly: row.inline_completion_code_only,
+      clientInferenceEnabled: row.client_inference_enabled ?? false,
+      clientInferenceWithoutServer: row.client_inference_without_server ?? true,
+      clientInferenceAdminEnabled,
+      clientSpellcheckEnabled: row.client_spellcheck_enabled ?? false,
+      clientSpellcheckLanguages: row.client_spellcheck_languages?.length
+        ? row.client_spellcheck_languages
+        : CLIENT_SPELLCHECK_DEFAULT,
       // #1402: always fully defaulted — a row that predates this migration (or
       // predates a given flag being added) still returns every key. Uses
       // safeParse (not .parse) so an unreadable stored value — a bad out-of-band
@@ -233,6 +273,63 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.inlineCompletionCodeOnly !== undefined) {
       updates.push(`inline_completion_code_only = $${paramIdx++}`);
       values.push(body.inlineCompletionCodeOnly);
+    }
+
+    if (body.clientInferenceEnabled === true) {
+      const adminOn = await readClientInferenceAdminEnabled();
+      if (!adminOn) {
+        throw fastify.httpErrors.unprocessableEntity(
+          'On-device suggestions are disabled by an administrator',
+        );
+      }
+    }
+
+    if (
+      body.clientInferenceEnabled !== undefined
+      || body.clientInferenceWithoutServer !== undefined
+      || body.clientSpellcheckEnabled !== undefined
+      || body.clientSpellcheckLanguages !== undefined
+    ) {
+      const current = await query<{
+        client_spellcheck_enabled: boolean;
+        client_spellcheck_languages: ClientSpellcheckLanguage[] | null;
+      }>(
+        `SELECT client_spellcheck_enabled, client_spellcheck_languages
+           FROM user_settings WHERE user_id = $1`,
+        [request.userId],
+      );
+      const currentRow = current.rows[0];
+      const nextSpellOn = body.clientSpellcheckEnabled
+        ?? currentRow?.client_spellcheck_enabled
+        ?? false;
+      const nextLangs = body.clientSpellcheckLanguages
+        ?? currentRow?.client_spellcheck_languages
+        ?? CLIENT_SPELLCHECK_DEFAULT;
+      if (nextSpellOn && nextLangs.length === 0) {
+        throw fastify.httpErrors.unprocessableEntity(
+          'Select at least one spellcheck language while spellcheck is on',
+        );
+      }
+    }
+
+    if (body.clientInferenceEnabled !== undefined) {
+      updates.push(`client_inference_enabled = $${paramIdx++}`);
+      values.push(body.clientInferenceEnabled);
+    }
+
+    if (body.clientInferenceWithoutServer !== undefined) {
+      updates.push(`client_inference_without_server = $${paramIdx++}`);
+      values.push(body.clientInferenceWithoutServer);
+    }
+
+    if (body.clientSpellcheckEnabled !== undefined) {
+      updates.push(`client_spellcheck_enabled = $${paramIdx++}`);
+      values.push(body.clientSpellcheckEnabled);
+    }
+
+    if (body.clientSpellcheckLanguages !== undefined) {
+      updates.push(`client_spellcheck_languages = $${paramIdx++}::jsonb`);
+      values.push(JSON.stringify(body.clientSpellcheckLanguages));
     }
 
     // #1402: PARTIAL, top-level MERGE — never a bare assignment. A client sends

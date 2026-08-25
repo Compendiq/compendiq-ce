@@ -62,7 +62,17 @@ const validReadPayload = {
   ragConfidenceCalibration: { similarity: null, rerank: null },
   // #1444 — collab gateway flag, required on read (seeded '0').
   collabEditingEnabled: false,
+  // #1418 — on-device WebGPU inference, required on read (seeded 'false').
+  clientInferenceEnabled: false,
 } as const;
+
+describe('client inference admin flag (#1418)', () => {
+  it('is required on read and optional on update with no default', () => {
+    expect(AdminSettingsSchema.parse(validReadPayload).clientInferenceEnabled).toBe(false);
+    expect(UpdateAdminSettingsSchema.parse({ clientInferenceEnabled: true }).clientInferenceEnabled).toBe(true);
+    expect(UpdateAdminSettingsSchema.parse({})).not.toHaveProperty('clientInferenceEnabled');
+  });
+});
 
 describe('AdminSettingsSchema (read)', () => {
   it('accepts explicit null for drawioEmbedUrl (backend returns null when unset)', () => {
@@ -503,6 +513,7 @@ describe('retrieval knobs (#1118)', () => {
       // panel can render honestly.
       'ragEfSearchFromEnv',
       'collabEditingEnabled',
+      'clientInferenceEnabled',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
