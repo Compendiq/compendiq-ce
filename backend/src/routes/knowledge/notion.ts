@@ -1,10 +1,16 @@
 import type { FastifyInstance } from 'fastify';
-import { ConnectNotionSchema, NotionConnectionResponseSchema } from '@compendiq/contracts';
+import {
+  ConnectNotionSchema,
+  NotionConnectionResponseSchema,
+  NotionTreeResponseSchema,
+} from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
-import { NotionError } from '../../domains/knowledge/services/notion-client.js';
+import { NotionClient, NotionError } from '../../domains/knowledge/services/notion-client.js';
+import { fetchNotionWorkspaceTree } from '../../domains/knowledge/services/notion-tree.js';
 import {
   connectNotionToken,
   disconnectNotionToken,
+  getDecryptedNotionToken,
   getNotionConnectionStatus,
 } from '../../domains/knowledge/services/notion-token-service.js';
 
@@ -46,6 +52,35 @@ export async function notionRoutes(fastify: FastifyInstance) {
     const status = await disconnectNotionToken(request.userId);
     await logAuditEvent(request.userId, 'NOTION_TOKEN_UPDATED', 'settings', request.userId, { connected: false }, request);
     return toResponse(status);
+  });
+
+  fastify.get('/notion/tree', async (request, reply) => {
+    const token = await getDecryptedNotionToken(request.userId);
+    if (!token) {
+      return reply.status(400).send({
+        error: 'ClientError',
+        message: 'Notion is not connected',
+        statusCode: 400,
+      });
+    }
+    try {
+      const client = new NotionClient(token);
+      const nodes = await fetchNotionWorkspaceTree(client);
+      return NotionTreeResponseSchema.parse({ nodes });
+    } catch (err) {
+      if (err instanceof NotionError && err.statusCode >= 400) {
+        const status =
+          err.statusCode === 503 || err.statusCode === 529
+            ? 503
+            : err.statusCode >= 500
+              ? 502
+              : err.statusCode;
+        const body = { error: 'ClientError', message: err.message, statusCode: status };
+        expectNoSecret(body, token);
+        return reply.status(status).send(body);
+      }
+      throw err;
+    }
   });
 }
 

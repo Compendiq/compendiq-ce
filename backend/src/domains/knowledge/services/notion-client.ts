@@ -193,6 +193,10 @@ export class NotionClient {
     return this.fetchJson(`/v1/databases/${encodeURIComponent(databaseId)}`);
   }
 
+  async getBlock(blockId: string): Promise<Record<string, unknown>> {
+    return this.fetchJson(`/v1/blocks/${encodeURIComponent(blockId)}`);
+  }
+
   async getBlockChildren(
     blockId: string,
     params: { startCursor?: string; pageSize?: number } = {},
