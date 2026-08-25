@@ -192,7 +192,7 @@ is the editor wiring.
 flowchart TB
     page["PageViewPage"]
     cfg["GET /api/collab/config"]
-    hook["useCollabProvider<br/>y-websocket protocols v1 plus JWT<br/>4401 refresh · 4403/4404 destroy · disableBc"]
+    hook["useCollabProvider<br/>y-websocket 3.1 protocols v1 plus JWT<br/>4401 closed connect · 4403/4404 destroy · disableBc"]
     ed["Editor<br/>Collaboration plus CollaborationCaret<br/>StarterKit undoRedo false"]
     sse["usePresence SSE (issue 301)"]
     stack["PresenceAvatarStack<br/>merge by userId · pencil = collab room"]
@@ -208,7 +208,7 @@ flowchart TB
   `if (!token) return` — never `protocols: [compendiq.collab.v1, '']`.
 - **Save** goes to `POST /api/pages/:id/collab/commit` (title only) while
   collab is live; the flag-off path still `PUT`s `bodyHtml` + `version`.
-- **Carets** use a dedicated palette (`collab-colors.ts`), measured ≥3:1 on
+- **Carets** use a dedicated palette (`shared/lib/collab-colors.ts`), measured ≥3:1 on
   Graphite and Paper `--surface-card`. Steel and status hues are not a caret
   palette. `@tiptap/extension-collaboration-caret` — not the v2
   `collaboration-cursor` name.

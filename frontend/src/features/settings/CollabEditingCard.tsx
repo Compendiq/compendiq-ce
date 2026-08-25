@@ -5,11 +5,6 @@ import { toast } from 'sonner';
 import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 
-/**
- * Admin toggle for `collabEditingEnabled`. Muted copy, never amber at rest —
- * the flag is off by default because Confluence nodes have not been through
- * y-prosemirror on every deployment.
- */
 export function CollabEditingCard() {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<AdminSettings>({

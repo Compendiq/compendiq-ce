@@ -17,6 +17,9 @@ const { refreshAccessTokenOnce, MockWebsocketProvider } = vi.hoisted(() => {
       getStates: () => Map<number, unknown>;
     };
 
+    protocols: string[] = [];
+    connect = vi.fn();
+
     constructor(
       public serverUrl: string,
       public roomname: string,
@@ -28,6 +31,7 @@ const { refreshAccessTokenOnce, MockWebsocketProvider } = vi.hoisted(() => {
         awareness?: unknown;
       },
     ) {
+      this.protocols = opts.protocols ?? [];
       this.awareness = {
         on: vi.fn(),
         off: vi.fn(),
@@ -107,46 +111,46 @@ describe('useCollabProvider', () => {
     expect(inst.opts.resyncInterval).toBe(30_000);
   });
 
-  it('on 4401 refreshes the access token and reconnects with the new jwt', async () => {
+  it('on 4401 closed refreshes the JWT, updates protocols, and connect()s the same instance', async () => {
     refreshAccessTokenOnce.mockResolvedValue('jwt-fresh');
     renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
     const first = MockWebsocketProvider.instances[0]!;
     expect(first.opts.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-old']);
 
     await act(async () => {
-      first.emit('connection-close', { code: 4401 } as CloseEvent);
+      first.emit('closed', { code: 4401, reason: 'unauthorized' });
     });
 
     await waitFor(() => {
       expect(refreshAccessTokenOnce).toHaveBeenCalledTimes(1);
-      expect(MockWebsocketProvider.instances).toHaveLength(2);
+      expect(first.connect).toHaveBeenCalledTimes(1);
     });
-    expect(first.destroyed).toBe(true);
-    const second = MockWebsocketProvider.instances[1]!;
-    expect(second.opts.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
-    expect(second.doc).toBe(first.doc);
+    expect(first.destroyed).toBe(false);
+    expect(MockWebsocketProvider.instances).toHaveLength(1);
+    expect(first.protocols).toEqual([COLLAB_WS_PROTOCOL, 'jwt-fresh']);
   });
 
-  it('on 4403 destroys the provider and does not reconnect', async () => {
+  it('on 4403 closed destroys the provider and does not reconnect', async () => {
     const { result } = renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
     const first = MockWebsocketProvider.instances[0]!;
 
     await act(async () => {
-      first.emit('connection-close', { code: 4403 } as CloseEvent);
+      first.emit('closed', { code: 4403, reason: 'forbidden' });
     });
 
     expect(first.destroyed).toBe(true);
+    expect(first.connect).not.toHaveBeenCalled();
     expect(MockWebsocketProvider.instances).toHaveLength(1);
     expect(result.current.error).toBe('forbidden');
     expect(refreshAccessTokenOnce).not.toHaveBeenCalled();
   });
 
-  it('on 4404 destroys the provider and does not reconnect', async () => {
+  it('on 4404 closed destroys the provider and does not reconnect', async () => {
     const { result } = renderHook(() => useCollabProvider({ pageId: '42', enabled: true }));
     const first = MockWebsocketProvider.instances[0]!;
 
     await act(async () => {
-      first.emit('connection-close', { code: 4404 } as CloseEvent);
+      first.emit('closed', { code: 4404, reason: 'not_found' });
     });
 
     expect(first.destroyed).toBe(true);

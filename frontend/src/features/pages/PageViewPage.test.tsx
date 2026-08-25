@@ -1480,6 +1480,12 @@ describe('PageViewPage', () => {
       expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
     });
 
+    async function waitForCollabConfig(): Promise<void> {
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith('/collab/config');
+      });
+    }
+
     it('flag on: provider mounts only in edit mode, and the editor receives the ydoc', async () => {
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === '/collab/config') return { enabled: true };
@@ -1500,6 +1506,7 @@ describe('PageViewPage', () => {
           expect.objectContaining({ enabled: false }),
         );
       });
+      await waitForCollabConfig();
 
       fireEvent.click(screen.getByText('Edit'));
 
@@ -1509,6 +1516,87 @@ describe('PageViewPage', () => {
         );
       });
       expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'true');
+    });
+
+    it('latches collab vs local at Edit so a late config fetch cannot remount', async () => {
+      let resolveConfig: ((value: { enabled: boolean }) => void) | undefined;
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') {
+          return new Promise<{ enabled: boolean }>((resolve) => {
+            resolveConfig = resolve;
+          });
+        }
+        return {};
+      });
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(await screen.findByText('Edit'));
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+
+      await act(async () => {
+        resolveConfig?.({ enabled: true });
+      });
+      expect(useCollabProviderMock.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({ enabled: false }),
+      );
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+    });
+
+    it('keeps the collab editor mounted when synced goes false after first sync', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return {};
+      });
+      const live = {
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [] as unknown[],
+        error: null as string | null,
+      };
+      useCollabProviderMock.mockImplementation(() => live);
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+
+      live.synced = false;
+      fireEvent.change(screen.getByTestId('edit-title-input'), {
+        target: { value: 'Engineering Handbook' },
+      });
+      expect(screen.queryByTestId('collab-connecting')).toBeNull();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+    });
+
+    it('Done confirms when title diverged and leaves the session without isDirty', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return {};
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.change(screen.getByTestId('edit-title-input'), {
+        target: { value: 'Renamed in collab' },
+      });
+      fireEvent.click(screen.getByText('Done'));
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /discard changes/i }));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
     });
 
     it('flag on: Save posts /collab/commit, not PUT with a stale version', async () => {
@@ -1528,6 +1616,7 @@ describe('PageViewPage', () => {
       }));
 
       render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
       fireEvent.click(await screen.findByText('Edit'));
       fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
         target: { value: 'Updated Engineering Handbook' },
@@ -1567,6 +1656,7 @@ describe('PageViewPage', () => {
       }));
 
       render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
       fireEvent.click(await screen.findByText('Edit'));
       fireEvent.click(screen.getByText('Save'));
 
@@ -1593,6 +1683,7 @@ describe('PageViewPage', () => {
       }));
 
       render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
       fireEvent.click(await screen.findByText('Edit'));
 
       await waitFor(() => {

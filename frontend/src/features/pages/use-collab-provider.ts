@@ -6,7 +6,7 @@ import { Awareness } from 'y-protocols/awareness';
 import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import { refreshAccessTokenOnce } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
-import { caretColorForUserId } from './collab-colors';
+import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import type { CollabAwarenessUser } from './merge-presence';
 
 const MESSAGE_CONTROL = 4;
@@ -49,10 +49,11 @@ function closeCodeError(code: number): CollabJoinError | null {
 }
 
 /**
- * y-websocket provider for `/api/collab/:pageId`.
+ * y-websocket 3.1 provider for `/api/collab/:pageId`.
  *
  * - `if (!token) return` — never `protocols: [v1, '']`.
- * - 4401 → `refreshAccessTokenOnce()` then a new provider on the same Y.Doc.
+ * - 4401 on `closed` (shouldConnect already false) → refresh JWT, set
+ *   `protocols`, `connect()` on the same instance.
  * - 4403 / 4404 → destroy, do not reconnect.
  * - `doc_reset` / close 1001 `doc_reset` → destroy provider **and** Y.Doc,
  *   then a new pair so TipTap remounts. Never reconnect onto the old document.
@@ -161,23 +162,35 @@ export function useCollabProvider({
       ws.on('sync', (isSynced: boolean) => {
         if (!cancelled) setSynced(isSynced);
       });
-      ws.on('connection-close', (event: CloseEvent | null) => {
-        if (cancelled || !event) return;
+      ws.on('closed', (event: { code: number; reason: string }) => {
+        if (cancelled) return;
         if (event.code === 4401) {
-          ws.destroy();
-          if (current === ws) current = null;
           void refreshAccessTokenOnce().then((fresh) => {
-            if (cancelled) return;
+            if (cancelled || current !== ws) return;
             if (!fresh) {
+              ws.destroy();
+              current = null;
               setError('unauthorized');
               setProvider(null);
               setSynced(false);
               return;
             }
-            connect(fresh);
+            ws.protocols = [COLLAB_WS_PROTOCOL, fresh];
+            ws.connect();
           });
           return;
         }
+        const joinError = closeCodeError(event.code);
+        if (joinError === 'forbidden' || joinError === 'not_found') {
+          ws.destroy();
+          if (current === ws) current = null;
+          setProvider(null);
+          setSynced(false);
+          setError(joinError);
+        }
+      });
+      ws.on('connection-close', (event: CloseEvent | null) => {
+        if (cancelled || !event) return;
         if (event.code === 1001 && event.reason === 'doc_reset') {
           if (current === ws) {
             const jwt = useAuthStore.getState().accessToken;
@@ -190,15 +203,6 @@ export function useCollabProvider({
             setProvider(null);
             setSynced(false);
           }
-          return;
-        }
-        const joinError = closeCodeError(event.code);
-        if (joinError === 'forbidden' || joinError === 'not_found') {
-          ws.destroy();
-          if (current === ws) current = null;
-          setProvider(null);
-          setSynced(false);
-          setError(joinError);
         }
       });
     };

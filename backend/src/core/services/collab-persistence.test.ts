@@ -11,7 +11,7 @@ import * as Y from 'yjs';
 import type { WebSocket } from 'ws';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { isRedisAvailable } from '../../test-redis-helper.js';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import { setRedisClient } from './redis-cache.js';
 import {
@@ -19,7 +19,10 @@ import {
   COLLAB_EMPTY_ROOM_GRACE_MS,
   type CollabRuntime,
 } from './collab-room-service.js';
-import { COLLAB_PERSIST_DEBOUNCE_MS } from './collab-persistence.js';
+import {
+  COLLAB_PERSIST_DEBOUNCE_MS,
+  persistAndSnapshot,
+} from './collab-persistence.js';
 import { yDocToHtml } from './collab-schema.js';
 
 const dbAvailable = await isDbAvailable();
@@ -310,5 +313,50 @@ describe.skipIf(!canRun)('empty-room BYTEA invalidation (#1445)', () => {
     const again = await runtime.getOrCreateRoom(pageId);
     expect(fragmentText(again.doc)).toContain('AFTER_WRITE');
     expect(fragmentText(again.doc)).not.toContain(UNIQUE);
+  }, 20_000);
+});
+
+describe.skipIf(!canRun)('resetFromHtml vs in-flight persist (#1474)', () => {
+  it('in-flight persistAndSnapshot on B does not write the typed paragraph over a reset', async () => {
+    const owner = await insertUser('reset_inflight');
+    const pageId = await insertPage({ ownerId: owner, html: '<p>SEED</p>' });
+    const runtimeB = await createCollabRuntime(main!, 'persist-pod-b');
+    try {
+      await runtime!.attachSocket(pageId, {
+        id: 'a1', ws: stubWs(), userId: owner, writable: true,
+      });
+      await runtimeB.attachSocket(pageId, {
+        id: 'b1', ws: stubWs(), userId: owner, writable: true,
+      });
+      const roomB = runtimeB.getRoom(pageId)!;
+      roomB.persistable = true;
+      appendText(roomB.doc, ' COLLAB_TYPED_PARAGRAPH');
+
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+        const persistP = persistAndSnapshot(pageId, roomB.doc);
+        await new Promise((r) => setTimeout(r, 50));
+        const resetP = runtime!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
+        await new Promise((r) => setTimeout(r, 50));
+        await holder.query('ROLLBACK');
+        await resetP;
+        await persistP;
+      } finally {
+        holder.release();
+      }
+
+      const stored = await collabRow(pageId);
+      expect(stored.rows).toHaveLength(1);
+      const loaded = new Y.Doc();
+      Y.applyUpdate(loaded, new Uint8Array(stored.rows[0]!.doc_state));
+      expect(fragmentText(loaded)).toContain('REMOTE_WINS');
+      expect(fragmentText(loaded)).not.toContain('COLLAB_TYPED_PARAGRAPH');
+      const page = await pageRow(pageId);
+      expect(page.rows[0]!.body_html).not.toContain('COLLAB_TYPED_PARAGRAPH');
+    } finally {
+      await runtimeB.close();
+    }
   }, 20_000);
 });
