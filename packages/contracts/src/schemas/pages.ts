@@ -64,6 +64,7 @@ export const PageDetailSchema = PageSummarySchema.extend({
   hasDraft: z.boolean().default(false),
   draftUpdatedAt: z.coerce.date().nullable().optional(),
   verifiedAt: z.coerce.date().nullable().optional(),
+  collabSessionActive: z.boolean().optional(),
 });
 
 export const CreatePageSchema = z.object({

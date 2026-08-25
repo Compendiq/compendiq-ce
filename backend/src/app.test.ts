@@ -413,6 +413,36 @@ describe('buildApp — error handler information leakage', () => {
 
     await app.close();
   });
+
+  it('forwards only allow-listed collab error codes', async () => {
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    app.get('/test/leaky-code', async () => {
+      throw Object.assign(new Error('hidden'), { statusCode: 400, code: 'internal_topology' });
+    });
+    app.get('/test/collab-code', async () => {
+      throw Object.assign(new Error('session'), { statusCode: 409, code: 'collab_session_active' });
+    });
+    app.get('/test/confluence-code', async () => {
+      throw Object.assign(new Error('remote'), { statusCode: 409, code: 'confluence_modified' });
+    });
+
+    const leaky = await app.inject({ method: 'GET', url: '/test/leaky-code' });
+    expect(leaky.statusCode).toBe(400);
+    expect(leaky.json().code).toBeUndefined();
+
+    const collab = await app.inject({ method: 'GET', url: '/test/collab-code' });
+    expect(collab.statusCode).toBe(409);
+    expect(collab.json().code).toBe('collab_session_active');
+
+    const conf = await app.inject({ method: 'GET', url: '/test/confluence-code' });
+    expect(conf.statusCode).toBe(409);
+    expect(conf.json().code).toBe('confluence_modified');
+
+    await app.close();
+  });
 });
 
 describe('buildApp — Swagger UI gating', () => {

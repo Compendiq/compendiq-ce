@@ -1,12 +1,18 @@
 /**
- * Collab gateway (#1444): GET /api/collab/config and GET /api/collab/:pageId
- * (WebSocket). Completes the 101, then 4401/4403/4404 before SyncStep1.
- * Do not throw `authenticate` in onRequest — browsers cannot see HTTP 401.
+ * Collab gateway (#1444/#1445): GET /api/collab/config, GET /api/collab/:pageId
+ * (WebSocket), POST /api/pages/:id/collab/commit (standalone). Completes the
+ * 101, then 4401/4403/4404 before SyncStep1. Do not throw `authenticate` in
+ * onRequest on the WS route — browsers cannot see HTTP 401.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { COLLAB_WS_PROTOCOL, CollabConfigSchema } from '@compendiq/contracts';
-import { query } from '../../core/db/postgres.js';
+import {
+  COLLAB_WS_PROTOCOL,
+  CollabCommitResponseSchema,
+  CollabCommitSchema,
+  CollabConfigSchema,
+} from '@compendiq/contracts';
+import { getPool, query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
 import { verifyToken } from '../../core/plugins/auth.js';
 import { getUserSecurityState } from '../../core/services/user-security-cache.js';
@@ -14,10 +20,15 @@ import { userCanAccessPage, userCanEditPage } from '../../core/services/rbac-ser
 import { isCollabEditingEnabled } from '../../core/services/collab-flag.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import {
+  COLLAB_COMMIT_DUMP_TIMEOUT_MS,
   COLLAB_PING_INTERVAL_MS,
   getDefaultCollabRuntime,
   refreshCollabActiveTtl,
 } from '../../core/services/collab-room-service.js';
+import { htmlFromPersistedDoc, snapshotRoomHtml } from '../../core/services/collab-persistence.js';
+import { htmlToText } from '../../core/services/content-converter.js';
+import { RedisCache } from '../../core/services/redis-cache.js';
+import { logAuditEvent } from '../../core/services/audit-service.js';
 
 const UPGRADE_LIMIT_PER_MIN = 20;
 
@@ -99,6 +110,155 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     onRequest: [fastify.authenticate],
   }, async () => {
     return CollabConfigSchema.parse({ enabled: isCollabEditingEnabled() });
+  });
+
+  fastify.post('/pages/:id/collab/commit', {
+    onRequest: [fastify.authenticate],
+  }, async (request) => {
+    const rawId = (request.params as { id: string }).id;
+    const pageId = Number(rawId);
+    if (!Number.isInteger(pageId) || pageId <= 0) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    const body = CollabCommitSchema.parse(request.body);
+    const userId = request.userId;
+
+    const writable = await userCanEditPage(userId, pageId);
+    if (!writable) {
+      throw fastify.httpErrors.forbidden('Not authorized to edit this page');
+    }
+
+    const page = await query<{
+      id: number;
+      version: number;
+      source: string;
+      visibility: string;
+      deleted_at: Date | null;
+      page_type: string | null;
+    }>(
+      `SELECT id, version, source, visibility, deleted_at, page_type FROM pages WHERE id = $1`,
+      [pageId],
+    );
+    if (page.rows.length === 0 || page.rows[0]!.deleted_at) {
+      throw fastify.httpErrors.notFound('Page not found');
+    }
+    const existing = page.rows[0]!;
+    if ((existing.page_type ?? 'page') === 'folder') {
+      throw fastify.httpErrors.badRequest('Folder pages cannot have body content');
+    }
+    if (existing.source !== 'standalone') {
+      throw fastify.httpErrors.unprocessableEntity('Confluence collab commit is not available yet');
+    }
+
+    const runtime = getDefaultCollabRuntime();
+    const local = runtime?.getRoom(pageId);
+    let html: string | null = null;
+    if (local) {
+      html = snapshotRoomHtml(local.doc);
+    } else {
+      let live = 0;
+      try {
+        const redis = getRedisClient();
+        if (redis) live = Number(await redis.sCard(`collab:active:${pageId}`));
+      } catch {
+        // unread SET: fall through to BYTEA
+      }
+      if (live > 0) {
+        if (!runtime) {
+          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
+        }
+        const created = await runtime.getOrCreateRoom(pageId);
+        const dumped = await runtime.waitForPeerStateDump(pageId, COLLAB_COMMIT_DUMP_TIMEOUT_MS);
+        if (!dumped) {
+          if (created.sockets.size === 0) {
+            // Dump never arrived — do not snapshot the BYTEA-loaded heap onto body_html.
+            created.persistable = false;
+            await runtime.dropRoom(pageId);
+          }
+          throw fastify.httpErrors.serviceUnavailable('Collaborative state is not available on this pod');
+        }
+        html = snapshotRoomHtml(created.doc);
+        if (created.sockets.size === 0) await runtime.dropRoom(pageId);
+      } else {
+        html = await htmlFromPersistedDoc(pageId);
+      }
+    }
+    if (html === null) {
+      throw fastify.httpErrors.conflict('No collaborative session for this page');
+    }
+    const bodyText = htmlToText(html);
+
+    const client = await getPool().connect();
+    let newVersion = existing.version;
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query<{ version: number }>(
+        'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+        [pageId],
+      );
+      if (locked.rows.length === 0) {
+        await client.query('ROLLBACK');
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+      let expected = locked.rows[0]!.version;
+      const write = async (expectedVersion: number) => client.query(
+        `UPDATE pages SET
+           title = $2, body_html = $3, body_text = $4,
+           version = version + 1,
+           last_modified_at = NOW(),
+           local_modified_at = NOW(),
+           local_modified_by = $5,
+           embedding_dirty = TRUE,
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
+           embedding_status = 'not_embedded', embedded_at = NULL,
+           summary_status = 'pending', summary_retry_count = 0,
+           quality_status = 'pending', quality_retry_count = 0
+         WHERE id = $1 AND version = $6
+         RETURNING version`,
+        [pageId, body.title, html, bodyText, userId, expectedVersion],
+      );
+      let updated = await write(expected);
+      if ((updated.rowCount ?? 0) === 0) {
+        const again = await client.query<{ version: number }>(
+          'SELECT version FROM pages WHERE id = $1 FOR UPDATE',
+          [pageId],
+        );
+        expected = again.rows[0]!.version;
+        updated = await write(expected);
+      }
+      if ((updated.rowCount ?? 0) === 0) {
+        await client.query('ROLLBACK');
+        throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
+      }
+      newVersion = updated.rows[0]!.version as number;
+      await client.query('COMMIT');
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* */ }
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    runtime?.broadcastControl(pageId, { type: 'pages_version', version: newVersion });
+    logger.info({ pageId, version: newVersion, confluence: false }, 'collab.commit');
+
+    const cache = new RedisCache(fastify.redis);
+    if (existing.visibility === 'shared') {
+      await cache.invalidateAcrossUsers('pages');
+    } else {
+      await cache.invalidate(userId, 'pages');
+    }
+    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(pageId), { source: 'collab_commit', title: body.title }, request);
+
+    return CollabCommitResponseSchema.parse({
+      id: pageId,
+      title: body.title,
+      version: newVersion,
+      source: 'standalone' as const,
+    });
   });
 
   fastify.get('/collab/:pageId', {

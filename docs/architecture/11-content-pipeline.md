@@ -14,6 +14,22 @@ representations that flow through the rest of the system.
 | **Markdown** | no page column — derived per call; **persisted as `page_embeddings.chunk_text`** for embedded pages since #1265 | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`); chunk_text reaches RAG context, citations and (flattened) search snippets |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
 | **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text` and local-attachment intents; never a live sync and never `pages.source = 'notion'` |
+| **Yjs BYTEA** | `page_collaborative_docs.doc_state` | Live collab CRDT. Full `Y.encodeStateAsUpdate`. Not Redis. |
+
+## Collaborative snapshot vs commit (#1445)
+
+When `collab_editing_enabled` is on, the in-memory `Y.Doc` is the live
+truth. Two writers move `body_html`:
+
+| Path | What it writes | What it must not write |
+|------|----------------|------------------------|
+| **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_embedding_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
+| **Commit** (`POST /api/pages/:id/collab/commit`, standalone) | Snapshot HTML from the Y.Doc, then `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Confluence `updatePage` is a later PR. |
+
+A non-collab `body_html` writer (PUT, restore, Apply, draft-publish) **409s**
+`collab_session_active` while `collab:active:{pageId}` is non-empty. When the
+room is empty it writes HTML as today and `DELETE FROM page_collaborative_docs`
+so the next join re-inits from HTML (Decision B).
 
 ## Flow
 

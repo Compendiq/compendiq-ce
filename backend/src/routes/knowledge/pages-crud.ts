@@ -23,6 +23,7 @@ import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
+import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
@@ -1397,6 +1398,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Not authorized to edit this page');
       }
 
+      await rejectIfLiveCollabRoom(existingPage.id, (m) => fastify.httpErrors.conflict(m));
+
       // Optimistic concurrency check
       if (body.version !== undefined && body.version < existingPage.version) {
         throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -1461,6 +1464,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
       }
 
+      await invalidateCollabDocAfterBodyWrite(existingPage.id);
+
       // A shared page's list rows (title/snippet) and a visibility flip both
       // change what OTHER users see (#893) — their cached trees/lists would
       // serve stale data for up to the cache TTL (15 min) if we only
@@ -1494,6 +1499,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Access denied to this space');
       }
     }
+
+    await rejectIfLiveCollabRoom(existingPage.id, (m) => fastify.httpErrors.conflict(m));
 
     const client = await getClientForUser(userId);
     if (!client) {
@@ -1557,6 +1564,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       [id, body.title, confPage.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, confPage.version.number],
     );
+
+    await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
     // Confluence pages are visible to every user with space access (#893), so
     // clear every user's cached lists/trees, not just the editor's.
@@ -1921,6 +1930,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (!page.draft_body_html) throw fastify.httpErrors.badRequest('No draft to publish');
 
+    await rejectIfLiveCollabRoom(page.id, (m) => fastify.httpErrors.conflict(m));
+
     // Atomically: save current live to page_versions, swap draft -> live, clear draft.
     // Must use a dedicated client — pool.query() draws random connections per call,
     // so BEGIN/COMMIT would run on different connections (non-atomic).
@@ -1970,6 +1981,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } finally {
       txClient.release();
     }
+
+    await invalidateCollabDocAfterBodyWrite(page.id);
 
     // For Confluence articles, push updated content upstream (best-effort)
     let publishedVersion = page.version + 1;
