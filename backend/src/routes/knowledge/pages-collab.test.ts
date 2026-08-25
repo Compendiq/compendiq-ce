@@ -622,6 +622,12 @@ describe('GET /api/collab/:pageId route options (#1444)', () => {
     expect(src).toMatch(/rateLimit:\s*false/);
     expect(src).not.toMatch(/rateLimit:\s*\{\s*max:\s*UPGRADE_LIMIT_PER_MIN/);
   });
+
+  it('pending frames are capped in the WS join handler', () => {
+    const src = fs.readFileSync(fileURLToPath(new URL('./pages-collab.ts', import.meta.url)), 'utf8');
+    expect(src).toMatch(/pending\.length\s*>=\s*2/);
+    expect(src).toMatch(/pending\.length = 0/);
+  });
 });
 
 describe.skipIf(!canRun)('collab upgrade Redis limiter (#1444)', () => {
@@ -1187,6 +1193,40 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(page.rows[0]!.summary_status).toBe('pending');
     expect(page.rows[0]!.quality_status).toBe('pending');
     expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+    ws.close();
+  });
+
+  it('updatePage 409 re-GETs the real remote version', async () => {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    let gets = 0;
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      gets += 1;
+      return {
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: gets === 1 ? 4 : 9, when: '2026-08-24T00:00:00Z' },
+      } as never;
+    });
+    vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockRejectedValue(
+      new ConfluenceError('Version conflict', 409),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Should not land' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      code: 'confluence_modified',
+      remoteVersion: 9,
+      localVersion: 4,
+    });
+    expect(gets).toBe(2);
     ws.close();
   });
 

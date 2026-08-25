@@ -100,7 +100,14 @@ async function commitConfluencePage(args: {
     );
   } catch (err) {
     if (err instanceof ConfluenceError && err.statusCode === 409) {
-      throwConfluenceModified(fastify, existing.version + 1, existing.version);
+      let remoteVersion = existing.version + 1;
+      try {
+        const again = await client.getPage(existing.confluence_id);
+        remoteVersion = again.version.number;
+      } catch {
+        // GET failed — keep local+1 rather than invent a number we did not see.
+      }
+      throwConfluenceModified(fastify, remoteVersion, existing.version);
     }
     throw err;
   }
@@ -438,6 +445,7 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     const finish = (code: number, reason: string): void => {
       if (closed) return;
       closed = true;
+      pending.length = 0;
       clearInterval(pingTimer);
       if (securityTimer) clearInterval(securityTimer);
       try { socket.close(code, reason); } catch { /* */ }
@@ -447,6 +455,10 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
       const buf = toUint8(data);
       if (closed) return;
       if (!live || pageId === null || connId === null || !runtime) {
+        if (pending.length >= 2) {
+          finish(4403, 'readonly');
+          return;
+        }
         pending.push(buf);
         return;
       }

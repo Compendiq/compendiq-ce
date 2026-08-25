@@ -8,6 +8,9 @@
  * *renders* in the editor until the old attachment directory is cleaned up.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rewriteAttachmentRefs, parentKeyFor } from './page-relocate-service.js';
 import {
   htmlToConfluence,
@@ -272,5 +275,21 @@ describe('parentKeyFor (#1123)', () => {
     // Defensive: a Confluence-sourced row mid-relocate has already had its
     // confluence_id cleared, and children of it key on the numeric id.
     expect(parentKeyFor('confluence', 42, null)).toBe('42');
+  });
+});
+
+describe('relocate collab invalidation', () => {
+  it('409s a live collab room and DELETEs BYTEA after each body_html rewrite', () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'page-relocate-service.ts'),
+      'utf8',
+    );
+    expect(src).toMatch(/rejectIfLiveCollabRoom/);
+    const bodyHtmlUpdates = [...src.matchAll(/body_html\s*=/g)];
+    expect(bodyHtmlUpdates.length).toBeGreaterThanOrEqual(3);
+    expect(src).toMatch(/invalidateCollabDocAfterBodyWrite\(page\.id, txClient\)/);
+    expect(src).toMatch(/invalidateCollabDocAfterBodyWrite\(snapshot\.id, txClient\)/);
+    const invalidateCalls = [...src.matchAll(/invalidateCollabDocAfterBodyWrite\(/g)];
+    expect(invalidateCalls.length).toBe(3);
   });
 });

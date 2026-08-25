@@ -29,13 +29,13 @@ const ACTIVE_PREFIX = 'collab:active:';
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
+const MESSAGE_QUERY_AWARENESS = 3;
 export const MESSAGE_CONTROL = 4;
 
 export type CollabControl =
   | { type: 'pages_version'; version: number }
   | { type: 'doc_reset' }
-  | { type: 'tombstone' }
-  | { type: 'state_dump_request' };
+  | { type: 'tombstone' };
 
 export type CollabBusKind =
   | 'sync'
@@ -67,10 +67,12 @@ export interface CollabSocket {
   writable: boolean;
   readonlyDrops: number;
   identity?: CollabIdentity;
+  awarenessClientIds: Set<number>;
 }
 
 export interface CollabRoom {
   pageId: number;
+  epoch: number;
   doc: Y.Doc;
   awareness: awarenessProtocol.Awareness;
   sockets: Map<string, CollabSocket>;
@@ -84,6 +86,8 @@ export interface CollabRoom {
   dumpReceived: boolean;
   pagesVersion: number;
   lastWriterUserId: string | null;
+  /** Redis SET suffixes (`room`, conn ids, `grace`) this room instance owns. */
+  heldActiveSuffixes: Set<string>;
 }
 
 export type CollabInboundResult = 'ok' | 'dropped' | 'close_4403';
@@ -92,7 +96,7 @@ export interface CollabRuntime {
   podId: string;
   getOrCreateRoom: (pageId: number) => Promise<CollabRoom>;
   getRoom: (pageId: number) => CollabRoom | undefined;
-  attachSocket: (pageId: number, socket: Omit<CollabSocket, 'readonlyDrops'>) => Promise<CollabSocket>;
+  attachSocket: (pageId: number, socket: Omit<CollabSocket, 'readonlyDrops' | 'awarenessClientIds'>) => Promise<CollabSocket>;
   detachSocket: (pageId: number, connId: string) => Promise<void>;
   handleInboundFrame: (pageId: number, connId: string, buf: Uint8Array) => CollabInboundResult;
   refreshActiveTtl: (pageId: number) => Promise<void>;
@@ -162,6 +166,7 @@ export async function createCollabRuntime(
   const rooms = new Map<number, CollabRoom>();
   const inflight = new Map<number, Promise<CollabRoom>>();
   const dumpWaiters = new Map<number, Array<(ok: boolean) => void>>();
+  let nextEpoch = 1;
   let subscriber: RedisClientType | null = null;
 
   function resolveDumpWaiters(pageId: number, ok: boolean): void {
@@ -251,49 +256,55 @@ export async function createCollabRuntime(
 
   function applyBusMessage(room: CollabRoom, msg: CollabBusMessage): void {
     if (msg.origin === podId) return;
-    if (msg.kind === 'state_dump_request') {
-      const dump = Y.encodeStateAsUpdate(room.doc);
-      void publish(room.pageId, { origin: podId, kind: 'state_dump', update: b64(dump) });
-      logger.info({ pageId: room.pageId }, 'collab.state_dump');
-      return;
-    }
-    if (msg.kind === 'freeze') {
-      freezeRoom(room);
-      return;
-    }
-    if (msg.kind === 'tombstone') {
-      const code = typeof msg.code === 'number' ? msg.code : 4404;
-      const reason = msg.reason ?? 'tombstone';
-      if (reason === 'doc_reset') freezeRoom(room);
-      void closeRoomSockets(room, code, reason).then(() => {
-        rooms.delete(room.pageId);
-      });
-      return;
-    }
-    if ((msg.kind === 'sync' || msg.kind === 'state_dump') && msg.update) {
-      const buf = fromB64(msg.update);
-      Y.applyUpdate(room.doc, buf, 'redis');
-      forwardUpdate(room, buf);
-      if (msg.kind === 'state_dump') {
-        room.dumpReceived = true;
-        room.persistable = true;
-        resolveDumpWaiters(room.pageId, true);
+    try {
+      if (msg.kind === 'state_dump_request') {
+        const dump = Y.encodeStateAsUpdate(room.doc);
+        void publish(room.pageId, { origin: podId, kind: 'state_dump', update: b64(dump) });
+        logger.info({ pageId: room.pageId }, 'collab.state_dump');
+        return;
       }
-      return;
-    }
-    if (msg.kind === 'awareness' && msg.update) {
-      const buf = fromB64(msg.update);
-      awarenessProtocol.applyAwarenessUpdate(room.awareness, buf, 'redis');
-      forwardAwareness(room, buf);
-      return;
-    }
-    if (msg.kind === 'control' && msg.update) {
-      try {
+      if (msg.kind === 'freeze') {
+        freezeRoom(room);
+        return;
+      }
+      if (msg.kind === 'tombstone') {
+        const code = typeof msg.code === 'number' ? msg.code : 4404;
+        const reason = msg.reason ?? 'tombstone';
+        if (reason === 'doc_reset') freezeRoom(room);
+        void closeRoomSockets(room, code, reason).then(() => {
+          rooms.delete(room.pageId);
+        });
+        return;
+      }
+      if ((msg.kind === 'sync' || msg.kind === 'state_dump') && msg.update) {
+        // Join dumps must still apply while persistable is false (BYTEA
+        // missing). Freeze/doc_reset is resettingPageIds — that dump is the
+        // old CRDT and must not land or unfreeze the room.
+        if (msg.kind === 'state_dump' && persist.isCollabResetting(room.pageId)) return;
+        const buf = fromB64(msg.update);
+        Y.applyUpdate(room.doc, buf, 'redis');
+        forwardUpdate(room, buf);
+        if (msg.kind === 'state_dump') {
+          room.dumpReceived = true;
+          if (!persist.isCollabResetting(room.pageId)) {
+            room.persistable = true;
+          }
+          resolveDumpWaiters(room.pageId, true);
+        }
+        return;
+      }
+      if (msg.kind === 'awareness' && msg.update) {
+        const buf = fromB64(msg.update);
+        awarenessProtocol.applyAwarenessUpdate(room.awareness, buf, 'redis');
+        forwardAwareness(room, buf);
+        return;
+      }
+      if (msg.kind === 'control' && msg.update) {
         const control = JSON.parse(Buffer.from(msg.update, 'base64').toString('utf8')) as CollabControl;
         sendControl(room, control);
-      } catch (err) {
-        logger.debug({ err, pageId: room.pageId }, 'collab: control parse failed');
       }
+    } catch (err) {
+      logger.warn({ err, pageId: room.pageId, kind: msg.kind }, 'collab: bus apply failed');
     }
   }
 
@@ -303,7 +314,11 @@ export async function createCollabRuntime(
     try {
       while (room.inboundQueue.length > 0) {
         const msg = room.inboundQueue.shift()!;
-        applyBusMessage(room, msg);
+        try {
+          applyBusMessage(room, msg);
+        } catch (err) {
+          logger.warn({ err, pageId: room.pageId, kind: msg.kind }, 'collab: bus apply failed');
+        }
       }
     } finally {
       room.flushing = false;
@@ -330,6 +345,12 @@ export async function createCollabRuntime(
   }
 
   async function closeRoomSockets(room: CollabRoom, code: number, reason: string): Promise<void> {
+    if (reason === 'doc_reset') {
+      // Backup for proxies that strip the close reason; only on sockets we
+      // are about to close, never as a room-wide invitation to rejoin.
+      const frame = encodeControlFrame({ type: 'doc_reset' });
+      for (const sock of room.sockets.values()) sendBin(sock.ws, frame);
+    }
     for (const sock of room.sockets.values()) {
       try {
         sock.ws.close(code, reason);
@@ -342,14 +363,16 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
-    if (reason !== 'doc_reset') {
-      await persist.flushCollabPersist(room);
-    }
-    persist.endCollabReset(room.pageId);
     if (room.persistTimer) {
       clearTimeout(room.persistTimer);
       room.persistTimer = null;
     }
+    if (reason === 'doc_reset') {
+      await room.persistChain;
+    } else {
+      await persist.flushCollabPersist(room);
+    }
+    persist.endCollabReset(room.pageId);
     try {
       room.doc.destroy();
     } catch {
@@ -357,15 +380,13 @@ export async function createCollabRuntime(
     }
   }
 
-  async function sremOurActiveMembers(pageId: number): Promise<void> {
+  async function sremSuffixes(pageId: number, suffixes: Iterable<string>): Promise<void> {
+    const members = [...suffixes].map((s) => `${podId}:${s}`);
+    if (members.length === 0) return;
     try {
-      const key = activeKey(pageId);
-      const members = await main.sMembers(key);
-      const ours = members.filter((m) => m.startsWith(`${podId}:`));
-      if (ours.length > 0) await main.sRem(key, ours);
-      if ((await main.sCard(key)) === 0) await main.del(key);
+      await main.sRem(activeKey(pageId), members);
     } catch (err) {
-      logger.debug({ err, pageId }, 'collab: srem our active members failed');
+      logger.debug({ err, pageId }, 'collab: srem active members failed');
     }
   }
 
@@ -380,13 +401,20 @@ export async function createCollabRuntime(
       }
       return;
     }
+    const epoch = room.epoch;
+    const held = [...room.heldActiveSuffixes];
     rooms.delete(pageId);
     if (room.emptyGrace) {
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
     await persist.flushCollabPersist(room);
-    await sremOurActiveMembers(pageId);
+    persist.endCollabReset(pageId);
+    const successor = rooms.get(pageId);
+    const toDrop = successor && successor.epoch !== epoch
+      ? held.filter((s) => s !== 'room')
+      : held;
+    await sremSuffixes(pageId, toDrop);
     try {
       room.doc.destroy();
     } catch {
@@ -441,6 +469,13 @@ export async function createCollabRuntime(
       updated: number[];
       removed: number[];
     }, origin: unknown) => {
+      if (typeof origin === 'string' && origin !== 'redis') {
+        const sock = room.sockets.get(origin);
+        if (sock) {
+          for (const id of added.concat(updated)) sock.awarenessClientIds.add(id);
+          for (const id of removed) sock.awarenessClientIds.delete(id);
+        }
+      }
       if (origin === 'redis') return;
       const changed = added.concat(updated, removed);
       if (changed.length === 0) return;
@@ -461,6 +496,7 @@ export async function createCollabRuntime(
     awareness.setLocalState(null);
     const room: CollabRoom = {
       pageId,
+      epoch: nextEpoch++,
       doc,
       awareness,
       sockets: new Map(),
@@ -474,9 +510,13 @@ export async function createCollabRuntime(
       dumpReceived: false,
       pagesVersion: 0,
       lastWriterUserId: null,
+      heldActiveSuffixes: new Set(['room']),
     };
     wireDoc(room);
     rooms.set(pageId, room);
+
+    // Spec join order: SADD then BYTEA so PUT 409s during init.
+    await saddActive(pageId, 'room');
 
     try {
       const loaded = await persist.loadOrInitCollabDoc(pageId, room.doc);
@@ -491,8 +531,6 @@ export async function createCollabRuntime(
       logger.warn({ err, pageId }, 'collab: persist init failed');
       throw err;
     }
-
-    await saddActive(pageId, 'room');
 
     try {
       const members = await main.sMembers(activeKey(pageId));
@@ -528,9 +566,10 @@ export async function createCollabRuntime(
     if (buf.length < 1) return 'dropped';
     const isSyncStep1 = buf.length >= 2 && buf[0] === MESSAGE_SYNC && buf[1] === 0;
     const isAwareness = buf[0] === MESSAGE_AWARENESS;
+    const isQueryAwareness = buf[0] === MESSAGE_QUERY_AWARENESS;
 
     if (!sock.writable) {
-      if (!isSyncStep1 && !isAwareness) {
+      if (!isSyncStep1 && !isAwareness && !isQueryAwareness) {
         sock.readonlyDrops += 1;
         logger.info({ pageId, userId: sock.userId, connId: sock.id }, 'collab.readonly_drop');
         if (sock.readonlyDrops >= COLLAB_READONLY_DROP_LIMIT) return 'close_4403';
@@ -556,6 +595,10 @@ export async function createCollabRuntime(
         awarenessProtocol.applyAwarenessUpdate(room.awareness, update, connId);
         return 'ok';
       }
+      if (messageType === MESSAGE_QUERY_AWARENESS) {
+        sendAwarenessSnapshot(room, sock.ws);
+        return 'ok';
+      }
     } catch (err) {
       logger.debug({ err, pageId }, 'collab: inbound frame parse failed');
       return 'dropped';
@@ -563,9 +606,16 @@ export async function createCollabRuntime(
     return 'dropped';
   }
 
+  function sendAwarenessSnapshot(room: CollabRoom, ws: WebSocket): void {
+    const ids = [...room.awareness.getStates().keys()];
+    if (ids.length === 0) return;
+    const encoded = awarenessProtocol.encodeAwarenessUpdate(room.awareness, ids);
+    sendBin(ws, encodeAwarenessFrame(encoded));
+  }
+
   async function attachSocket(
     pageId: number,
-    socket: Omit<CollabSocket, 'readonlyDrops'>,
+    socket: Omit<CollabSocket, 'readonlyDrops' | 'awarenessClientIds'>,
   ): Promise<CollabSocket> {
     const room = await getOrCreateRoom(pageId);
     if (room.emptyGrace) {
@@ -574,10 +624,13 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
       await sremActive(pageId, 'grace');
+      room.heldActiveSuffixes.delete('grace');
     }
-    const full: CollabSocket = { ...socket, readonlyDrops: 0 };
+    const full: CollabSocket = { ...socket, readonlyDrops: 0, awarenessClientIds: new Set() };
     room.sockets.set(full.id, full);
     await saddActive(pageId, full.id);
+    room.heldActiveSuffixes.add(full.id);
+    sendAwarenessSnapshot(room, full.ws);
     logger.info(
       { pageId, userId: full.userId, writable: full.writable, connId: full.id },
       'collab.join',
@@ -597,7 +650,11 @@ export async function createCollabRuntime(
       );
     }
     if (room.sockets.size > 0) {
+      if (sock && sock.awarenessClientIds.size > 0) {
+        awarenessProtocol.removeAwarenessStates(room.awareness, [...sock.awarenessClientIds], connId);
+      }
       await sremActive(pageId, connId);
+      room.heldActiveSuffixes.delete(connId);
       return;
     }
     await persist.flushCollabPersist(room);
@@ -606,6 +663,7 @@ export async function createCollabRuntime(
     // during the reconnect window. Idempotent — do not replace an armed timer.
     if (room.emptyGrace) return;
     await saddActive(pageId, 'grace');
+    room.heldActiveSuffixes.add('grace');
     await refreshActiveTtl(pageId);
     room.emptyGrace = setTimeout(() => {
       void dropRoom(pageId);
@@ -619,14 +677,13 @@ export async function createCollabRuntime(
     if (room) freezeRoom(room);
     // Freeze peers before BYTEA replace so their persistChain cannot land after it.
     await publish(pageId, { origin: podId, kind: 'freeze', reason: 'doc_reset' });
-    if (room) await room.persistChain;
     try {
+      if (room) await room.persistChain;
       await persist.replaceCollabDocFromHtml(pageId, html);
+      await tombstone(pageId, 1001, 'doc_reset');
     } finally {
       persist.endCollabReset(pageId);
     }
-    broadcastControl(pageId, { type: 'doc_reset' });
-    await tombstone(pageId, 1001, 'doc_reset');
   }
 
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {
@@ -682,11 +739,13 @@ export async function createCollabRuntime(
     const ids = [...rooms.keys()];
     for (const id of ids) {
       const room = rooms.get(id);
+      const held = room ? [...room.heldActiveSuffixes] : [];
       if (room) {
         await closeRoomSockets(room, 1001, 'shutdown');
+        persist.endCollabReset(id);
         rooms.delete(id);
       }
-      await sremOurActiveMembers(id);
+      await sremSuffixes(id, held);
     }
     const sub = subscriber;
     subscriber = null;

@@ -6,6 +6,9 @@
  * with origin `'redis'` must not republish.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createClient, type RedisClientType } from 'redis';
 import { isRedisAvailable } from '../../test-redis-helper.js';
 import type { WebSocket } from 'ws';
@@ -426,5 +429,179 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
       replaceSpy.mockRestore();
       flushSpy.mockRestore();
     }
+  });
+
+  it('SADDs room before BYTEA load so PUT 409s during init', async () => {
+    if (!main) throw new Error('unreachable');
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const spy = vi.spyOn(persist, 'loadOrInitCollabDoc').mockImplementation(async () => {
+      await gate;
+      return { pagesVersion: 1 };
+    });
+    const pageId = nextPageId();
+    const attachP = runtimeA!.attachSocket(pageId, {
+      id: 'init', ws: stubWs(), userId: 'user-a', writable: true,
+    });
+    try {
+      await vi.waitFor(async () => {
+        expect(Number(await main.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+      });
+      await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'collab_session_active',
+      });
+    } finally {
+      release?.();
+      await attachP;
+      spy.mockRestore();
+    }
+  });
+
+  it('reconnect at the drop timer boundary does not SREM the new connection; PUT still 409s', async () => {
+    if (!main) throw new Error('unreachable');
+    const pageId = nextPageId();
+    let releaseDropFlush: () => void = () => {};
+    let calls = 0;
+    const dropFlushStarted = new Promise<void>((resolveStarted) => {
+      vi.spyOn(persist, 'flushCollabPersist').mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) return;
+        resolveStarted();
+        await new Promise<void>((r) => { releaseDropFlush = r; });
+      });
+    });
+    try {
+      await runtimeA!.attachSocket(pageId, {
+        id: 'first', ws: stubWs(), userId: 'user-a', writable: true,
+      });
+      await runtimeA!.detachSocket(pageId, 'first');
+      await dropFlushStarted;
+      expect(runtimeA!.getRoom(pageId)).toBeUndefined();
+
+      await runtimeA!.attachSocket(pageId, {
+        id: 'reconnect', ws: stubWs(), userId: 'user-a', writable: true,
+      });
+      expect(runtimeA!.getRoom(pageId)?.sockets.has('reconnect')).toBe(true);
+      expect(await main.sMembers(`collab:active:${pageId}`)).toContain(`${runtimeA!.podId}:reconnect`);
+      expect(await main.sMembers(`collab:active:${pageId}`)).toContain(`${runtimeA!.podId}:room`);
+
+      releaseDropFlush();
+      await new Promise((r) => setTimeout(r, 80));
+
+      const members = await main.sMembers(`collab:active:${pageId}`);
+      expect(members).toContain(`${runtimeA!.podId}:reconnect`);
+      expect(members).toContain(`${runtimeA!.podId}:room`);
+      await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'collab_session_active',
+      });
+    } finally {
+      vi.mocked(persist.flushCollabPersist).mockRestore();
+    }
+  }, 20_000);
+
+  it('sends an awareness snapshot to a joining socket when states already exist', async () => {
+    const pageId = nextPageId();
+    const sent: Uint8Array[] = [];
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1', ws: stubWs(), userId: 'user-a', writable: true,
+      identity: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    const { frame } = encodeAwarenessFrame({
+      user: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    expect(runtimeA!.handleInboundFrame(pageId, 'a1', frame)).toBe('ok');
+
+    await runtimeA!.attachSocket(pageId, {
+      id: 'b1',
+      ws: {
+        readyState: 1,
+        send(data: Uint8Array) { sent.push(data); },
+        close() {},
+      } as unknown as WebSocket,
+      userId: 'user-b',
+      writable: true,
+    });
+    expect(sent.length).toBeGreaterThan(0);
+  });
+
+  it('removeAwarenessStates on detach so remaining peers drop the leaver', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.attachSocket(pageId, {
+      id: 'a1', ws: stubWs(), userId: 'user-a', writable: true,
+      identity: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    await runtimeA!.attachSocket(pageId, {
+      id: 'b1', ws: stubWs(), userId: 'user-b', writable: true,
+    });
+    const { frame } = encodeAwarenessFrame({
+      user: { id: 'user-a', name: 'Alice', color: 'hsl(10 50% 40%)' },
+    });
+    expect(runtimeA!.handleInboundFrame(pageId, 'a1', frame)).toBe('ok');
+    const namesBefore = [...(runtimeA!.getRoom(pageId)?.awareness.getStates().values() ?? [])]
+      .map((s) => (s as { user?: { name?: string } }).user?.name);
+    expect(namesBefore).toContain('Alice');
+
+    await runtimeA!.detachSocket(pageId, 'a1');
+    const namesAfter = [...(runtimeA!.getRoom(pageId)?.awareness.getStates().values() ?? [])]
+      .map((s) => (s as { user?: { name?: string } }).user?.name)
+      .filter((n): n is string => typeof n === 'string');
+    expect(namesAfter).not.toContain('Alice');
+  });
+
+  it('ignores state_dump while a doc_reset freeze is in flight', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.getOrCreateRoom(pageId);
+    const roomB = await runtimeB!.getOrCreateRoom(pageId);
+    persist.beginCollabReset(pageId);
+    roomB.persistable = false;
+    const dumpDoc = new Y.Doc();
+    dumpDoc.getText('t').insert(0, 'SHOULD_NOT_APPLY');
+    const dump = Y.encodeStateAsUpdate(dumpDoc);
+    dumpDoc.destroy();
+    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+      origin: runtimeA!.podId,
+      kind: 'state_dump',
+      update: Buffer.from(dump).toString('base64'),
+    }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(roomB.doc.getText('t').toString()).not.toContain('SHOULD_NOT_APPLY');
+    expect(roomB.persistable).toBe(false);
+    persist.endCollabReset(pageId);
+  });
+
+  it('a throwing bus apply does not skip the rest of the queue', async () => {
+    const pageId = nextPageId();
+    await runtimeA!.getOrCreateRoom(pageId);
+    const roomB = await runtimeB!.getOrCreateRoom(pageId);
+    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+      origin: runtimeA!.podId,
+      kind: 'sync',
+      update: '!!!not-a-yjs-update!!!',
+    }));
+    const good = Y.encodeStateAsUpdate((() => {
+      const d = new Y.Doc();
+      d.getText('t').insert(0, 'after-bad');
+      return d;
+    })());
+    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+      origin: runtimeA!.podId,
+      kind: 'sync',
+      update: Buffer.from(good).toString('base64'),
+    }));
+    await vi.waitFor(() => {
+      expect(roomB.doc.getText('t').toString()).toContain('after-bad');
+    }, { timeout: 4_000 });
+  });
+
+  it('client-facing CollabControl does not include state_dump_request', () => {
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'collab-room-service.ts'),
+      'utf8',
+    );
+    const controlBlock = src.slice(src.indexOf('export type CollabControl'), src.indexOf('export type CollabBusKind'));
+    expect(controlBlock).not.toMatch(/state_dump_request/);
+    expect(src).toMatch(/export type CollabBusKind[\s\S]*state_dump_request/);
   });
 });

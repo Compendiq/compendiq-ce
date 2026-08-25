@@ -2,7 +2,9 @@
  * Competing-writer guard (#1444/#1445). 409s when `collab:active:{pageId}` is
  * non-empty. Wired on PUT, restore, Apply, and draft-publish.
  */
-import { query } from '../db/postgres.js';
+import type { PoolClient } from 'pg';
+import { getPool } from '../db/postgres.js';
+import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import * as redisCache from './redis-cache.js';
 import type { RedisClientType } from 'redis';
 
@@ -62,6 +64,25 @@ export async function assertNoLiveCollabRoom(pageId: number): Promise<void> {
 }
 
 /** Decision B: leftover BYTEA must not outlive a non-collab body_html write. */
-export async function invalidateCollabDocAfterBodyWrite(pageId: number): Promise<void> {
-  await query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+export async function invalidateCollabDocAfterBodyWrite(
+  pageId: number,
+  client?: PoolClient,
+): Promise<void> {
+  if (client) {
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+    await client.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    return;
+  }
+  const owned = await getPool().connect();
+  try {
+    await owned.query('BEGIN');
+    await owned.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+    await owned.query('DELETE FROM page_collaborative_docs WHERE page_id = $1', [pageId]);
+    await owned.query('COMMIT');
+  } catch (err) {
+    try { await owned.query('ROLLBACK'); } catch { /* */ }
+    throw err;
+  } finally {
+    owned.release();
+  }
 }

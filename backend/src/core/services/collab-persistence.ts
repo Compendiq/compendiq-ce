@@ -90,20 +90,23 @@ export function endCollabReset(pageId: number): void {
   resettingPageIds.delete(pageId);
 }
 
-export async function persistCollabDocState(pageId: number, doc: Y.Doc): Promise<number> {
-  const docState = Buffer.from(Y.encodeStateAsUpdate(doc));
-  const stateVector = Buffer.from(Y.encodeStateVector(doc));
-  try {
-    await query(
-      `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
+export function isCollabResetting(pageId: number): boolean {
+  return resettingPageIds.has(pageId);
+}
+
+const UPSERT_DOC_STATE = `INSERT INTO page_collaborative_docs (page_id, doc_state, state_vector, version, updated_at)
        VALUES ($1, $2, $3, 1, NOW())
        ON CONFLICT (page_id) DO UPDATE SET
          doc_state = EXCLUDED.doc_state,
          state_vector = EXCLUDED.state_vector,
          version = page_collaborative_docs.version + 1,
-         updated_at = NOW()`,
-      [pageId, docState, stateVector],
-    );
+         updated_at = NOW()`;
+
+export async function persistCollabDocState(pageId: number, doc: Y.Doc): Promise<number> {
+  const docState = Buffer.from(Y.encodeStateAsUpdate(doc));
+  const stateVector = Buffer.from(Y.encodeStateVector(doc));
+  try {
+    await query(UPSERT_DOC_STATE, [pageId, docState, stateVector]);
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === '23503') return 0;
@@ -116,7 +119,29 @@ export async function replaceCollabDocFromHtml(pageId: number, html: string): Pr
   const doc = new Y.Doc();
   try {
     applyHtmlToYDoc(doc, html);
-    await persistCollabDocState(pageId, doc);
+    const docState = Buffer.from(Y.encodeStateAsUpdate(doc));
+    const stateVector = Buffer.from(Y.encodeStateVector(doc));
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+      try {
+        await client.query(UPSERT_DOC_STATE, [pageId, docState, stateVector]);
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === '23503') {
+          await client.query('ROLLBACK');
+          return;
+        }
+        throw err;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* */ }
+      throw err;
+    } finally {
+      client.release();
+    }
   } finally {
     doc.destroy();
   }
@@ -124,33 +149,63 @@ export async function replaceCollabDocFromHtml(pageId: number, html: string): Pr
 
 export async function persistAndSnapshot(pageId: number, doc: Y.Doc): Promise<void> {
   if (resettingPageIds.has(pageId)) return;
-  const t0 = Date.now();
-  const bytes = await persistCollabDocState(pageId, doc);
-  if (bytes === 0 || resettingPageIds.has(pageId)) return;
-  logger.info({ pageId, duration_ms: Date.now() - t0, bytes }, 'collab.persist');
-
-  const t1 = Date.now();
+  // Capture BYTEA + HTML before any await so a concurrent keystroke cannot
+  // tear the two representations apart. The lock then serializes with
+  // loadOrInit / replaceCollabDocFromHtml.
+  let docState: Buffer;
+  let stateVector: Buffer;
   let html: string;
+  let bodyText: string;
   try {
+    docState = Buffer.from(Y.encodeStateAsUpdate(doc));
+    stateVector = Buffer.from(Y.encodeStateVector(doc));
     html = yDocToHtml(doc);
+    bodyText = htmlToText(html);
   } catch (err) {
     logger.warn({ err, pageId }, 'collab: snapshot HTML failed');
     return;
   }
-  const bodyText = htmlToText(html);
-  await query(
-    `UPDATE pages SET
-       body_html = $2,
-       body_text = $3,
-       embedding_dirty = TRUE,
-       image_embedding_dirty = CASE
-         WHEN body_html IS DISTINCT FROM $2 THEN TRUE
-         ELSE image_embedding_dirty
-       END
-     WHERE id = $1 AND deleted_at IS NULL`,
-    [pageId, html, bodyText],
-  );
-  logger.info({ pageId, duration_ms: Date.now() - t1, html_bytes: html.length }, 'collab.snapshot');
+
+  const t0 = Date.now();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, $2)', [COLLAB_INIT_LOCK_KEY, pageId]);
+    if (resettingPageIds.has(pageId)) {
+      await client.query('ROLLBACK');
+      return;
+    }
+    try {
+      await client.query(UPSERT_DOC_STATE, [pageId, docState, stateVector]);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === '23503') {
+        await client.query('ROLLBACK');
+        return;
+      }
+      throw err;
+    }
+    await client.query(
+      `UPDATE pages SET
+         body_html = $2,
+         body_text = $3,
+         embedding_dirty = TRUE,
+         image_embedding_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $2 THEN TRUE
+           ELSE image_embedding_dirty
+         END
+       WHERE id = $1 AND deleted_at IS NULL`,
+      [pageId, html, bodyText],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+  logger.info({ pageId, duration_ms: Date.now() - t0, bytes: docState.length }, 'collab.persist');
+  logger.info({ pageId, duration_ms: Date.now() - t0, html_bytes: html.length }, 'collab.snapshot');
 }
 
 export function scheduleCollabPersist(room: CollabPersistHandle & { persistable?: boolean }): void {
@@ -168,7 +223,10 @@ export async function flushCollabPersist(room: CollabPersistHandle & { persistab
     clearTimeout(room.persistTimer);
     room.persistTimer = null;
   }
-  if (room.persistable === false) return;
+  if (room.persistable === false) {
+    await room.persistChain;
+    return;
+  }
   enqueuePersist(room);
   await room.persistChain;
 }
