@@ -18,6 +18,7 @@ import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import {
   formatConfirmCopy,
   isSelectablePage,
+  NOTION_IMPORT_MAX_PAGES,
   notionTitleById,
   summarizeImport,
   toggleSelectedPage,
@@ -50,6 +51,19 @@ function errorMessage(err: unknown): string {
 
 function isLocationPickerTarget(target: EventTarget | null): boolean {
   return target instanceof Element && Boolean(target.closest('[data-location-picker-content]'));
+}
+
+function TreeRetryButton({ inFlight, onRetry }: { inFlight: boolean; onRetry: () => void }) {
+  return (
+    <button
+      type="button"
+      className="nm-button-ghost mt-2 h-8 px-2 text-xs aria-disabled:opacity-70"
+      aria-disabled={inFlight || undefined}
+      onClick={onRetry}
+    >
+      {inFlight ? 'Retrying…' : 'Retry'}
+    </button>
+  );
 }
 
 function resultStatusLabel(status: NotionImportItem['status']): string {
@@ -147,6 +161,14 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const openRef = useRef(open);
   openRef.current = open;
   const importPending = runImport.isPending;
+  const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const treeRegionRef = useRef<HTMLElement | null>(null);
+  const setTreeRegionRef = (node: HTMLElement | null) => {
+    treeRegionRef.current = node;
+  };
+  const visibilityGroupRef = useRef<HTMLDivElement | null>(null);
+  const restoreFocusAfterImport = useRef(false);
+  const restoreFocusAfterTreeRetry = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -167,7 +189,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     setResultItems(null);
     setStep('connect');
     setTreeRetryInFlight(false);
-  }, [open]);
+    restoreFocusAfterImport.current = false;
+    restoreFocusAfterTreeRetry.current = false;
+  }, [open, setStep]);
 
   const nodes = useMemo(() => tree.data?.nodes ?? [], [tree.data?.nodes]);
   const titlesById = useMemo(() => notionTitleById(nodes), [nodes]);
@@ -188,6 +212,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     try {
       await connect.mutateAsync(pasted);
       setToken('');
+      setSelected(new Set());
       setStep('pick');
     } catch (err) {
       toast.error(errorMessage(err));
@@ -214,6 +239,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
         visibility,
       });
       if (!shouldCommitImportResult(stepRef.current, openRef.current)) return;
+      restoreFocusAfterImport.current = true;
       setResultItems(response.items);
       setStep('result');
     } catch (err) {
@@ -232,12 +258,30 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
   const retryTree = () => {
     if (treeRetryInFlight) return;
+    restoreFocusAfterTreeRetry.current = true;
     setTreeRetryInFlight(true);
     void tree.refetch().finally(() => setTreeRetryInFlight(false));
   };
 
-  const canContinuePick = summary.importCount > 0;
-  const canImport = Boolean(spaceKey) && summary.importCount > 0;
+  useEffect(() => {
+    if (!restoreFocusAfterImport.current || step !== 'result') return;
+    restoreFocusAfterImport.current = false;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    titleRef.current?.focus();
+  }, [step]);
+
+  useEffect(() => {
+    if (!restoreFocusAfterTreeRetry.current) return;
+    if (treeRetryInFlight) return;
+    if (tree.isError && !tree.data) return;
+    restoreFocusAfterTreeRetry.current = false;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    treeRegionRef.current?.focus();
+  }, [treeRetryInFlight, tree.isError, tree.data]);
+
+  const overPageCap = summary.importCount > NOTION_IMPORT_MAX_PAGES;
+  const canContinuePick = summary.importCount > 0 && !overPageCap;
+  const canImport = Boolean(spaceKey) && summary.importCount > 0 && !overPageCap;
   const importDisabled = !canImport || importPending;
   const treeFailed = tree.isError || treeRetryInFlight;
   const treeHasCache = Boolean(tree.data);
@@ -277,7 +321,13 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
         >
           <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
             <div className="min-w-0">
-              <Dialog.Title className="text-base font-semibold text-foreground">{title}</Dialog.Title>
+              <Dialog.Title
+                ref={titleRef}
+                tabIndex={-1}
+                className="text-base font-semibold text-foreground outline-none"
+              >
+                {title}
+              </Dialog.Title>
               <Dialog.Description className="mt-1 text-xs text-muted-foreground">
                 One-shot migrate into a local space. Databases stay in Notion.
               </Dialog.Description>
@@ -353,14 +403,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden />
                     <div>
                       <p>{errorMessage(tree.error)}</p>
-                      <button
-                        type="button"
-                        className="nm-button-ghost mt-2 h-8 px-2 text-xs aria-disabled:opacity-70"
-                        aria-disabled={treeRetryInFlight || undefined}
-                        onClick={retryTree}
-                      >
-                        {treeRetryInFlight ? 'Retrying…' : 'Retry'}
-                      </button>
+                      <TreeRetryButton inFlight={treeRetryInFlight} onRetry={retryTree} />
                     </div>
                   </div>
                 ) : tree.isPending && !treeHasCache ? (
@@ -369,9 +412,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     Loading workspace…
                   </p>
                 ) : nodes.length === 0 ? (
-                  <p data-testid="notion-import-tree-empty" className="text-sm text-muted-foreground">
-                    No pages are visible to this integration. Share pages with it in Notion, then retry.
-                  </p>
+                  <div
+                    ref={setTreeRegionRef}
+                    tabIndex={-1}
+                    data-testid="notion-import-tree-empty"
+                    className="text-sm text-muted-foreground outline-none"
+                  >
+                    <p>No pages are visible to this integration. Share pages with it in Notion, then retry.</p>
+                    <TreeRetryButton inFlight={treeRetryInFlight} onRetry={retryTree} />
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     {treeFailed && treeHasCache ? (
@@ -383,20 +432,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                         <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
                         <div className="min-w-0">
                           <p>Could not refresh the Notion tree. Showing the last loaded pages.</p>
-                          <button
-                            type="button"
-                            className="nm-button-ghost mt-2 h-8 px-2 text-xs aria-disabled:opacity-70"
-                            aria-disabled={treeRetryInFlight || undefined}
-                            onClick={retryTree}
-                          >
-                            {treeRetryInFlight ? 'Retrying…' : 'Retry'}
-                          </button>
+                          <TreeRetryButton inFlight={treeRetryInFlight} onRetry={retryTree} />
                         </div>
                       </div>
                     ) : null}
                     <ul
+                      ref={setTreeRegionRef}
+                      tabIndex={-1}
                       data-testid="notion-import-tree"
-                      className="list-none rounded-md border border-border bg-card px-2 py-1"
+                      className="list-none rounded-md border border-border bg-card px-2 py-1 outline-none"
                     >
                       {nodes.map((node) => (
                         <TreeNodeRow
@@ -481,14 +525,36 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       Visibility
                     </span>
                     <div
+                      ref={visibilityGroupRef}
                       className="inline-flex items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
                       role="radiogroup"
                       aria-labelledby="notion-import-visibility-label"
+                      onKeyDown={(event) => {
+                        if (importPending) return;
+                        if (
+                          event.key !== 'ArrowRight' &&
+                          event.key !== 'ArrowLeft' &&
+                          event.key !== 'ArrowUp' &&
+                          event.key !== 'ArrowDown'
+                        ) {
+                          return;
+                        }
+                        event.preventDefault();
+                        const next: Visibility = visibility === 'private' ? 'shared' : 'private';
+                        setVisibility(next);
+                        queueMicrotask(() => {
+                          visibilityGroupRef.current
+                            ?.querySelector<HTMLButtonElement>(`[data-visibility="${next}"]`)
+                            ?.focus();
+                        });
+                      }}
                     >
                       <button
                         type="button"
                         role="radio"
+                        data-visibility="private"
                         aria-checked={visibility === 'private'}
+                        tabIndex={visibility === 'private' ? 0 : -1}
                         className={cn(
                           'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium',
                           visibility === 'private' ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
@@ -508,7 +574,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       <button
                         type="button"
                         role="radio"
+                        data-visibility="shared"
                         aria-checked={visibility === 'shared'}
+                        tabIndex={visibility === 'shared' ? 0 : -1}
                         className={cn(
                           'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium',
                           visibility === 'shared' ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
@@ -575,6 +643,14 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-3">
             {step === 'pick' && (
               <>
+                {overPageCap ? (
+                  <p
+                    data-testid="notion-import-page-cap"
+                    className="mr-auto text-xs text-muted-foreground"
+                  >
+                    Select at most {NOTION_IMPORT_MAX_PAGES} pages.
+                  </p>
+                ) : null}
                 <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={requestClose}>
                   Cancel
                 </button>

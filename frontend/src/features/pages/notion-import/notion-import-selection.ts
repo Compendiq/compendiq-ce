@@ -1,5 +1,8 @@
 import type { NotionTreeNode, NotionTreePageNode } from '@compendiq/contracts';
 
+/** Matches `NotionImportRequestSchema.pageIds.max(200)`. */
+export const NOTION_IMPORT_MAX_PAGES = 200;
+
 export type ImportSummary = {
   importCount: number;
   importIds: string[];

@@ -315,6 +315,7 @@ describe('NotionImportDialog connection never-echo', () => {
     );
     expect(src).toContain("'/notion/connection'");
     expect(src).toContain("'/notion/tree'");
+    expect(src).toContain("removeQueries({ queryKey: ['notion', 'tree'] })");
     expect(src).not.toMatch(/notion\/(?:connection|tree)\?.*token/);
     expect(src).not.toMatch(/api\.notion\.com/);
   });
@@ -385,7 +386,7 @@ describe('NotionImportDialog empty and error', () => {
   it('keeps a cached tree under a degraded strip when refetch fails', async () => {
     connected = true;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(['notion', 'tree'], MIXED_TREE);
+    queryClient.setQueryData(['notion', 'tree'], MIXED_TREE, { updatedAt: 0 });
     routes = [
       { match: /\/notion\/connection$/, method: 'GET', respond: () => ({ body: { hasToken: true } }) },
       {
@@ -537,5 +538,143 @@ describe('NotionImportDialog destination and lock', () => {
       'utf8',
     );
     expect(src).toMatch(/node\.skipReason/);
+  });
+});
+
+describe('NotionImportDialog tree cache and empty retry', () => {
+  it('drops the cached tree on disconnect so a new Connect cannot POST old ids', async () => {
+    const { queryClient } = renderDialog();
+    await connectWithDummyToken();
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(queryClient.getQueryData(['notion', 'tree'])).toEqual(MIXED_TREE);
+
+    fireEvent.click(screen.getByRole('button', { name: /disconnect/i }));
+    await screen.findByRole('heading', { name: 'Connect Notion' });
+    expect(queryClient.getQueryData(['notion', 'tree'])).toBeUndefined();
+
+    const held = deferResponse();
+    givenHappyPath({
+      tree: {
+        nodes: [{ id: 'other', title: 'Other space', type: 'page', selectable: true, children: [] }],
+      },
+    });
+    routes = routes.map((route) =>
+      route.match.test('/notion/tree') ? { ...route, respond: () => held.promise } : route,
+    );
+
+    fireEvent.change(screen.getByLabelText(/internal integration token/i), { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+    await screen.findByRole('heading', { name: 'Choose pages' });
+
+    expect(screen.queryByRole('checkbox', { name: 'Handbook' })).toBeNull();
+    expect(screen.getByText(/loading workspace/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
+
+    held.resolve({
+      body: {
+        nodes: [{ id: 'other', title: 'Other space', type: 'page', selectable: true, children: [] }],
+      },
+    });
+    expect(await screen.findByRole('checkbox', { name: 'Other space' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Handbook' })).toBeNull();
+  });
+
+  it('lets an empty tree retry instead of keeping a successful [] cache', async () => {
+    givenHappyPath({ tree: { nodes: [] } });
+    renderDialog();
+    await connectWithDummyToken();
+    expect(screen.getByTestId('notion-import-tree-empty')).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: /^retry$/i });
+    expect(screen.getByTestId('notion-import-tree-empty').textContent).toMatch(/retry/i);
+
+    givenHappyPath({ tree: MIXED_TREE });
+    connected = true;
+    fireEvent.click(retry);
+    expect(await screen.findByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+  });
+
+  it('rehomes focus to the tree after a successful no-cache Retry', async () => {
+    connected = true;
+    const held = deferResponse();
+    let treeGets = 0;
+    routes = [
+      { match: /\/notion\/connection$/, method: 'GET', respond: () => ({ body: { hasToken: true } }) },
+      {
+        match: /\/notion\/tree$/,
+        method: 'GET',
+        respond: () => {
+          treeGets += 1;
+          if (treeGets === 1) return { status: 502, body: { message: 'Notion is unreachable' } };
+          return held.promise;
+        },
+      },
+      { match: /\/spaces\/local/, method: 'GET', respond: () => ({ body: LOCAL_SPACES }) },
+    ];
+    renderDialog();
+    const retry = await screen.findByRole('button', { name: /^retry$/i });
+    retry.focus();
+    fireEvent.click(retry);
+    await screen.findByRole('button', { name: /retrying/i });
+    held.resolve({ body: MIXED_TREE });
+    await screen.findByTestId('notion-import-tree');
+    await waitFor(() => {
+      expect(screen.getByTestId('notion-import-tree')).toHaveFocus();
+    });
+  });
+});
+
+describe('NotionImportDialog picker cap and a11y', () => {
+  it('disables Continue when more than 200 pages are selected', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: Array.from({ length: 201 }, (_, i) => ({
+          id: `p${i}`,
+          title: `Cap page ${i}`,
+          type: 'page',
+          selectable: true,
+          children: [],
+        })),
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes).toHaveLength(201);
+    for (const box of boxes) fireEvent.click(box);
+    expect(screen.getByTestId('notion-import-page-cap')).toHaveTextContent(/200/);
+    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
+  });
+
+  it('rehomes focus to the result heading after a successful Import', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    const importBtn = screen.getByRole('button', { name: /^import$/i });
+    importBtn.focus();
+    fireEvent.click(importBtn);
+    await screen.findByTestId('notion-import-result');
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Import finished' })).toHaveFocus();
+    });
+  });
+
+  it('moves visibility with arrow keys on one tab stop', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+
+    const privateRadio = screen.getByRole('radio', { name: /private/i });
+    const sharedRadio = screen.getByRole('radio', { name: /shared/i });
+    expect(privateRadio).toHaveAttribute('tabindex', '0');
+    expect(sharedRadio).toHaveAttribute('tabindex', '-1');
+    privateRadio.focus();
+    fireEvent.keyDown(screen.getByRole('radiogroup', { name: /visibility/i }), { key: 'ArrowRight' });
+    expect(sharedRadio).toHaveAttribute('aria-checked', 'true');
+    expect(sharedRadio).toHaveAttribute('tabindex', '0');
   });
 });

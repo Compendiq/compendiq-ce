@@ -1,11 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { NotionImportRequest } from '@compendiq/contracts';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import type { NotionImportRequest, NotionTreeResponse } from '@compendiq/contracts';
 import {
   NotionConnectionResponseSchema,
   NotionImportResponseSchema,
   NotionTreeResponseSchema,
 } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+
+function dropCachedTree(queryClient: QueryClient) {
+  queryClient.removeQueries({ queryKey: ['notion', 'tree'] });
+  void queryClient.invalidateQueries({ queryKey: ['notion'] });
+}
 
 export function useNotionConnection(enabled = true) {
   return useQuery({
@@ -26,7 +31,7 @@ export function useConnectNotion() {
         }),
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['notion'] });
+      dropCachedTree(queryClient);
     },
   });
 }
@@ -39,7 +44,7 @@ export function useDisconnectNotion() {
         await apiFetch('/notion/connection', { method: 'DELETE' }),
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['notion'] });
+      dropCachedTree(queryClient);
     },
   });
 }
@@ -49,6 +54,10 @@ export function useNotionTree(enabled: boolean) {
     queryKey: ['notion', 'tree'],
     queryFn: async () => NotionTreeResponseSchema.parse(await apiFetch('/notion/tree')),
     enabled,
+    staleTime: (query) => {
+      const data = query.state.data as NotionTreeResponse | undefined;
+      return data && data.nodes.length === 0 ? 0 : 30_000;
+    },
   });
 }
 
