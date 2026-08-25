@@ -63,7 +63,8 @@ Embed the Yjs sync/awareness protocol in Fastify 5:
 
 - `@fastify/websocket` (Fastify 5 peer) + `y-protocols` + `yjs` (same
   major as TipTap 3) + `lib0`
-- Frontend: `y-websocket`, `@tiptap/extension-collaboration`,
+- Frontend: `y-websocket@^3.1.0` (2.x always reconnects; 3.1 treats
+  4400–4499 as permanent and emits `closed`), `@tiptap/extension-collaboration`,
   `@tiptap/extension-collaboration-caret`, `@tiptap/y-tiptap`
 
 **Rejected:** Hocuspocus (custom multiplexed protocol, second listen/crossws
@@ -116,7 +117,7 @@ sequenceDiagram
 
 | Code | When |
 |------|------|
-| **4401** | Missing / invalid / expired JWT, deactivated user (y-websocket permanent — client refreshes, then reconnects) |
+| **4401** | Missing / invalid / expired JWT, deactivated user (y-websocket 3.1 permanent — client handles `closed`, refreshes JWT, `connect()`s) |
 | **4403** | Authenticated but no page access, or flag off at join or mid-session, or write attempted while read-only |
 | **4404** | Missing page, `page_type = 'folder'`, or committed trash (`deleted_at`) |
 | **1001** | Transient resync after `doc_reset` or in-flight Confluence hide — reconnect |

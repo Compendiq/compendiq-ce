@@ -107,7 +107,9 @@ Operations are commutative, associative, and idempotent (`Y.applyUpdate`). TipTa
 | Side | Packages | Not added |
 |------|----------|-----------|
 | Backend | `yjs` (same major as the frontend; TipTap 3 tracks Yjs 13), `y-protocols`, `lib0`, `@fastify/websocket` (Fastify `5.x` peer) | `@hocuspocus/server`, `@hocuspocus/provider`, `@hocuspocus/extension-redis` |
-| Frontend | `yjs`, `y-websocket`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `@tiptap/y-tiptap` | `y-indexeddb`, Liveblocks, the v2 package name `@tiptap/extension-collaboration-cursor` |
+| Frontend | `yjs`, `y-websocket@^3.1.0`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `@tiptap/y-tiptap` | `y-indexeddb`, Liveblocks, the v2 package name `@tiptap/extension-collaboration-cursor`, `y-websocket` 2.x |
+
+Pin `y-websocket@^3.1.0`. 2.x **always reconnects**, including after 4401–4404, so a dead JWT loops forever. 3.1 treats **4400–4499 as permanent** (`shouldReconnect` returns false; `shouldConnect` is already false) and emits `closed`. `use-collab-provider` handles **4401** on that `closed` event: update `protocols` with `[compendiq.collab.v1, freshJwt]` then `connect()` on the same instance. **4403 / 4404** stay `destroy()`.
 
 Pin the `y-protocols` package name to whatever TipTap 3 / `y-websocket` currently import (`y-protocols`, not a hypothetical `@y/protocols` until the app moves to Yjs 16).
 
@@ -246,7 +248,7 @@ Browser `WebSocket()` cannot set `Authorization`. `authenticate` in `backend/src
 
 Read-only is not theoretical: `userCanAccessPage` can return true via a page-level ACE (`inherit_perms = false`) while PUT still requires space membership. ACE-only users join as read-only. PROTOCOL.md §6 byte prefix is enforced on every inbound frame.
 
-**Close codes** (y-websocket treats **4400–4499 as permanent** — the client must not reconnect):
+**Close codes** (y-websocket **3.1** treats **4400–4499 as permanent** — the client must not reconnect; 2.x always reconnects and must not be used):
 
 | Code | When |
 |------|------|
@@ -297,7 +299,7 @@ Goal 4 is not “publish JSON”. It is a receive path that cannot loop and cann
 3. On receive: apply to the in-memory doc **and** forward the binary frame to local sockets except the originating conn (when the update came from a local socket).
 4. Awareness: `awareness.applyAwarenessUpdate` / `awareness.encodeAwarenessUpdate`. Never `Y.applyUpdate`.
 5. Cold join: **subscribe (and queue) before BYTEA load**. Pub/sub does not replay. If B loads BYTEA then subscribes, it misses A’s increments permanently (client `resyncInterval` only syncs against **this** pod’s doc).
-6. If `collab:active:{pageId}` already contains another `podId`, send control `state_dump_request`. That pod replies with one **full** `Y.encodeStateAsUpdate(doc)` (the only bus payload that is a full dump). Apply with origin `'redis'`. Then apply the queued incrementals (idempotent).
+6. If `collab:active:{pageId}` already contains another `podId`, publish bus `{ kind: 'state_dump_request' }` (not a client type-4). That pod replies with one **full** `Y.encodeStateAsUpdate(doc)` (the only bus payload that is a full dump). Apply with origin `'redis'`. Then apply the queued incrementals (idempotent).
 
 ### K. Schema is a named `collabExtensions()` list, not a name-only ratchet
 
@@ -390,8 +392,8 @@ Register `/collab/config` **before** `/collab/:pageId` (same reason `/pages/tras
 
 | File | Role |
 |------|------|
-| `frontend/src/features/pages/use-collab-provider.ts` | `y-websocket` to `/api/collab/:pageId`; 4401 → refresh + reconnect; 4403/4404 → destroy; 1001 → reconnect; no empty protocol |
-| `frontend/src/features/pages/collab-colors.ts` | Deterministic palette from `userId` |
+| `frontend/src/features/pages/use-collab-provider.ts` | `y-websocket@^3.1.0` to `/api/collab/:pageId`; 4401 on `closed` → refresh JWT, set `protocols`, `connect()`; 4403/4404 → destroy; 1001 `doc_reset` → remount; no empty protocol |
+| `frontend/src/shared/lib/collab-colors.ts` | Deterministic palette from `userId` |
 | `frontend/src/features/pages/use-presence.ts` | Unchanged SSE hook |
 | `frontend/src/features/pages/PresenceAvatarStack.tsx` | Accept merged viewers; pencil = `isEditing` |
 | `frontend/src/features/pages/PageViewPage.tsx` | Flag + provider **only in edit mode**; merge awareness; Save → commit; disable localStorage drafts while collab |
@@ -632,9 +634,9 @@ const doc = prosemirrorJSONToYDoc(getCollabSchema(), json, 'default');
 
 ```ts
 import { generateHTML } from '@tiptap/html';
-import { yXmlFragmentToProseMirrorJSON } from '@tiptap/y-tiptap';
+import { yDocToProsemirrorJSON } from '@tiptap/y-tiptap';
 
-const json = yXmlFragmentToProseMirrorJSON(doc.getXmlFragment('default'), getCollabSchema());
+const json = yDocToProsemirrorJSON(doc, 'default');
 const html = generateHTML(json, collabExtensions());
 const bodyText = htmlToText(html); // core/services/content-converter.ts
 ```
@@ -693,9 +695,10 @@ export const MESSAGE_CONTROL = 4;
 type CollabControl =
   | { type: 'pages_version'; version: number }
   | { type: 'doc_reset' }
-  | { type: 'tombstone' }
-  | { type: 'state_dump_request' };
+  | { type: 'tombstone' };
 ```
+
+`state_dump_request` is a **bus** kind (`CollabBusMessage.kind`), never a client-facing type-4 control.
 
 State-dump **bytes** travel on the Redis bus (`kind: 'state_dump'`), not as a client-bound type-4 JSON blob (too large). Type 4 tells the **client** to expect a new SyncStep2 after 1001.
 
@@ -1236,7 +1239,7 @@ Each child issue later maps 1:1 onto these nodes.
   - `frontend/package.json` — `yjs`, `y-websocket`, `@tiptap/extension-collaboration`, `@tiptap/extension-collaboration-caret`, `@tiptap/y-tiptap`
   - `frontend/src/shared/components/article/Editor.tsx` — optional `ydoc`; disable `undoRedo` when set
   - `frontend/src/features/pages/use-collab-provider.ts` — `if (!token) return`; 4401 refresh; 4403/4404 destroy
-  - `frontend/src/features/pages/collab-colors.ts` + `collab-caret-contrast.test.ts`
+  - `frontend/src/shared/lib/collab-colors.ts` + `collab-caret-contrast.test.ts`
   - `frontend/src/features/pages/PageViewPage.tsx`
   - `frontend/src/features/pages/PresenceAvatarStack.tsx` / tests
   - Settings admin toggle for `collabEditingEnabled` (muted, not amber)
