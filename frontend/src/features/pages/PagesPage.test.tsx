@@ -338,6 +338,17 @@ describe('PagesPage', () => {
     expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
+  it('opens the Notion import wizard from a ghost control beside New Page', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const importBtn = screen.getByTestId('import-notion-button');
+    expect(importBtn.className).toContain('nm-button-ghost');
+    expect(importBtn.className).not.toContain('nm-button-primary');
+    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
+    fireEvent.click(importBtn);
+    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect Notion' })).toBeInTheDocument();
+  });
+
   it('renders the advanced filters toggle button', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const btn = screen.getByTestId('advanced-filters-toggle');
