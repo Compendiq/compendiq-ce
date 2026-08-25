@@ -28,7 +28,7 @@ flowchart LR
     end
 
     host -- "FRONTEND_PORT → 8081" --> fe
-    fe -- "HTTP proxy /api<br/>(shared frontend-net)" --> be
+    fe -- "HTTP /api + WS /api/collab/<br/>(shared frontend-net)" --> be
     be -- "HTTP (backend-net)" --> mcp
     mcp -- "HTTP" --> searx
     be -- "SQL (data-net)" --> pg
@@ -55,7 +55,7 @@ proxy can reach it) and `data-net` (so it can reach postgres/redis). The
 
 | Network       | internal | Members                         | Purpose |
 |---------------|----------|---------------------------------|---------|
-| `frontend-net`| no       | frontend, backend               | Browser → frontend (host-published) and frontend nginx proxy → backend API. The frontend can reach the backend and nothing else. |
+| `frontend-net`| no       | frontend, backend               | Browser → frontend (host-published) and frontend nginx proxy → backend API (HTTP `/api/` plus WebSocket `/api/collab/`). The frontend can reach the backend and nothing else. |
 | `backend-net` | no       | backend, mcp-docs, searxng, redis | Backend → sidecars (mcp-docs, and mcp-docs → redis). **No frontend** — the browser-facing container cannot reach the sidecars or cache. |
 | `data-net`    | **yes**  | postgres, redis, backend        | No external exposure; DB/cache reachable only from the backend. |
 
@@ -67,8 +67,15 @@ isolation holds trivially.
 
 The `backend` container publishes **no host port** — all API traffic goes
 through the frontend nginx proxy, which applies the CSP / security headers
-(`frontend/nginx-security-headers.conf`). `postgres` and `redis` **must
-not** publish host ports in production. Development overrides
+(`frontend/nginx-security-headers.conf`). Collaborative editing
+(`GET /api/collab/:pageId`) is a WebSocket: the bundled edge has a sibling
+`location ^~ /api/collab/` that issues HTTP/1.1 Upgrade with a 3600s idle
+timeout. The generic `/api/` location stays SSE (`proxy_read_timeout 300`)
+and does **not** Upgrade. Operators who front Compendiq with their own
+proxy must do the same — the corporate nginx guide's server-scope
+`Connection ""` is hostile to Upgrade unless a dedicated `/api/collab/`
+location overrides it. See [`docs/integrations/reverse-proxy/`](../integrations/reverse-proxy/).
+`postgres` and `redis` **must not** publish host ports in production. Development overrides
 (`docker/docker-compose.*.yml`) may expose them for debugging — bound to
 `127.0.0.1` only, and never merged into production.
 

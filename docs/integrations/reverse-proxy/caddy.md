@@ -4,7 +4,7 @@ _last-verified: 2026-04-24 (draft ships with v0.4; founder VM test pending befor
 
 ## Who this is for
 
-You like Caddy because TLS is handled automatically and the config file is five lines. You want to front Compendiq with Caddy on a public (or LAN + internal CA) hostname and keep the LLM and presence streams working — Caddy's only gotcha with Compendiq is default response buffering on long-lived connections.
+You like Caddy because TLS is handled automatically and the config file is five lines. You want to front Compendiq with Caddy on a public (or LAN + internal CA) hostname and keep the LLM / presence streams **and** collaborative-editing WebSockets working — Caddy's gotchas with Compendiq are default response buffering on SSE and a too-short read timeout on long-lived sockets.
 
 ## Architecture
 
@@ -55,6 +55,20 @@ compendiq.corp.example.com {
         }
     }
 
+    # Collaborative editing (Yjs WebSocket). Caddy upgrades WebSockets
+    # automatically; the matcher exists so we can pin a 1h read timeout
+    # without stretching it across the SPA. Browsers use HTTP/1.1 Upgrade
+    # (RFC 6455), not RFC 8441 Extended CONNECT — Caddy still accepts
+    # HTTP/1.1 on an HTTP/2 site for that handshake.
+    @collab {
+        path /api/collab*
+    }
+    reverse_proxy @collab 127.0.0.1:8081 {
+        transport http {
+            read_timeout 1h
+        }
+    }
+
     # Everything else.
     reverse_proxy 127.0.0.1:8081
 
@@ -80,7 +94,7 @@ Replace the site block's first line with:
 ```caddyfile
 compendiq.corp.internal {
     tls internal
-    # ...same @sse matcher + reverse_proxy blocks as above
+    # ...same @sse and @collab matchers + reverse_proxy blocks as above
 }
 ```
 
@@ -101,6 +115,9 @@ Compendiq's `trustProxy: true` honours Caddy's `X-Forwarded-*` headers (which Ca
 The `@sse` matcher isn't firing — Caddy is routing the request through the generic `reverse_proxy` which buffers. Two usual causes:
 - `path_regexp` is case-sensitive and anchored. Check your actual path: `/api/pages/abc/presence` matches, `/api/pages/abc/presence/heartbeat` (if a future backend adds it) does not.
 - The matcher block order matters in a Caddyfile. Put the `@sse` matcher **before** the catch-all `reverse_proxy` line — Caddy evaluates top-to-bottom.
+
+**1b. Collaborative editing never connects, or the socket dies around a minute in.**
+The `@collab` matcher (`path /api/collab*`) must sit **before** the catch-all `reverse_proxy`, with `read_timeout 1h` on that proxy. Caddy upgrades WebSockets on its own — do not add a `header_up Connection` that overrides the Upgrade. If the matcher is missing, the generic proxy's default read timeout cuts the idle socket.
 
 **2. "502 Bad Gateway" on first request.**
 Compendiq isn't bound on `127.0.0.1:8081`. Run `ss -tlnp | grep 8081` — if the bind is `0.0.0.0:8081` or missing entirely, fix the Compose `ports:` line and restart the frontend container.
