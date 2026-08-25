@@ -54,6 +54,17 @@ vi.mock('../../knowledge/services/version-tracker.js', () => ({
   saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #1448 inbound sync invalidates leftover BYTEA (or resets a live room).
+// Those calls are extra `query()` / Redis hits this queue does not model —
+// an unqueued DELETE shifts `purgeDeletedPages` onto undefined.
+vi.mock('../../../core/services/collab-guard.js', () => ({
+  isLiveCollabRoom: vi.fn().mockResolvedValue(false),
+  invalidateCollabDocAfterBodyWrite: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../../../core/services/collab-room-service.js', () => ({
+  resetCollabRoomFromHtml: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../../core/utils/crypto.js', () => ({
   decryptPat: vi.fn().mockReturnValue('decrypted-pat'),
 }));
@@ -280,6 +291,7 @@ describe('syncPage attachment cache invalidation', () => {
         existingVersion !== null
           ? {
               rows: [{
+                id: 1,
                 version: existingVersion,
                 title: 'Old',
                 body_html: existingBodyHtml,
