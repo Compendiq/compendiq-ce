@@ -3,6 +3,8 @@ import {
   ConnectNotionSchema,
   NOTION_UNSUPPORTED_LABEL,
   NotionConnectionResponseSchema,
+  NotionImportRequestSchema,
+  NotionImportResponseSchema,
   NotionTreeResponseSchema,
 } from './notion.js';
 
@@ -128,5 +130,62 @@ describe('NotionTreeResponseSchema', () => {
     if (node.selectable) throw new Error('expected skipped node');
     expect(node.linkedFromId).toBe('db-1');
     expect(node.id).toBe('linked:handbook:db-1');
+  });
+});
+
+describe('NotionImportRequestSchema', () => {
+  it('requires a non-empty pageIds list and defaults visibility to shared', () => {
+    expect(NotionImportRequestSchema.parse({ pageIds: ['page-1'] })).toEqual({
+      pageIds: ['page-1'],
+      visibility: 'shared',
+    });
+  });
+
+  it('accepts local destination fields like standalone create', () => {
+    expect(
+      NotionImportRequestSchema.parse({
+        pageIds: ['a', 'b'],
+        spaceKey: 'wiki',
+        parentId: 12,
+        visibility: 'private',
+      }),
+    ).toEqual({
+      pageIds: ['a', 'b'],
+      spaceKey: 'wiki',
+      parentId: '12',
+      visibility: 'private',
+    });
+  });
+
+  it('rejects an empty selection and a leaked token field (strict)', () => {
+    expect(() => NotionImportRequestSchema.parse({ pageIds: [] })).toThrow();
+    expect(() =>
+      NotionImportRequestSchema.parse({ pageIds: ['page-1'], token: 'secret_should_not_pass' }),
+    ).toThrow();
+  });
+});
+
+describe('NotionImportResponseSchema', () => {
+  it('reports per-item success, skip, fail, and already_imported without a token', () => {
+    const parsed = NotionImportResponseSchema.parse({
+      items: [
+        { notionPageId: 'p1', status: 'success', localPageId: 9 },
+        { notionPageId: 'db1', status: 'skip', reason: NOTION_UNSUPPORTED_LABEL },
+        { notionPageId: 'p2', status: 'fail', reason: 'Notion resource not found' },
+        { notionPageId: 'p3', status: 'already_imported', localPageId: 4 },
+      ],
+    });
+    expect(parsed.items.map((i) => i.status)).toEqual([
+      'success',
+      'skip',
+      'fail',
+      'already_imported',
+    ]);
+    expect(() =>
+      NotionImportResponseSchema.parse({
+        items: [{ notionPageId: 'p1', status: 'success', localPageId: 1 }],
+        token: 'secret_should_not_pass',
+      }),
+    ).toThrow();
   });
 });

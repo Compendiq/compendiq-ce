@@ -78,6 +78,7 @@ erDiagram
         int version
         int parent_id FK
         text source "confluence | standalone"
+        text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty

@@ -1076,8 +1076,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; title: string; source: string;
       created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
+      notion_page_id: string | null;
     }>(
-      'SELECT id, title, source, created_by_user_id, deleted_at, visibility FROM pages WHERE id = $1',
+      'SELECT id, title, source, created_by_user_id, deleted_at, visibility, notion_page_id FROM pages WHERE id = $1',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -1093,6 +1094,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
     if (!page.deleted_at) {
       throw fastify.httpErrors.badRequest('Page is not in trash');
+    }
+
+    if (page.notion_page_id) {
+      const clash = await query<{ id: number }>(
+        `SELECT id FROM pages
+          WHERE created_by_user_id = $1
+            AND deleted_at IS NULL
+            AND id <> $2
+            AND notion_page_id IS NOT NULL
+            AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
+          LIMIT 1`,
+        [page.created_by_user_id, page.id, page.notion_page_id],
+      );
+      if (clash.rows.length > 0) {
+        throw fastify.httpErrors.conflict('A live import of this Notion page already exists');
+      }
     }
 
     await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);

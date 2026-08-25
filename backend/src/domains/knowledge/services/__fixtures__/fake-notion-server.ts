@@ -24,6 +24,8 @@ export interface FakeNotionState {
   blockChildren?: Record<string, Array<Record<string, unknown>>>;
   /** GET /v1/blocks/:id (parent-chain lookup). */
   blocks?: Record<string, Record<string, unknown>>;
+  /** Status to return for GET /v1/blocks/:id instead of the block object. */
+  blockErrors?: Record<string, number>;
   /** Status to return for GET /v1/blocks/:id/children instead of a list. */
   blockChildrenErrors?: Record<string, number>;
   /**
@@ -31,11 +33,14 @@ export interface FakeNotionState {
    * Child B must never hit this — row-pages are search page objects or they stay skipped.
    */
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
+  /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
+  files?: Record<string, { contentType: string; body: Buffer | string }>;
 }
 
 export interface FakeNotionServer {
   baseUrl: string;
   requests: FakeNotionRequest[];
+  state: FakeNotionState;
   close: () => Promise<void>;
 }
 
@@ -192,12 +197,31 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const blockMatch = /^\/v1\/blocks\/([^/]+)$/.exec(path);
     if (method === 'GET' && blockMatch) {
+      const errorStatus = state.blockErrors?.[blockMatch[1]!];
+      if (errorStatus) {
+        send(res, errorStatus, {
+          object: 'error',
+          status: errorStatus,
+          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+          message: 'upstream',
+        });
+        return;
+      }
       const block = state.blocks?.[blockMatch[1]!];
       if (!block) {
         send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
         return;
       }
       send(res, 200, block);
+      return;
+    }
+
+    const file = state.files?.[path] ?? state.files?.[url.split('?')[0] ?? path];
+    if (method === 'GET' && file) {
+      const bytes = typeof file.body === 'string' ? Buffer.from(file.body) : file.body;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', file.contentType);
+      res.end(bytes);
       return;
     }
 
@@ -213,6 +237,7 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
   return {
     baseUrl,
     requests,
+    state,
     close: () =>
       new Promise((resolve, reject) => {
         // Undici keep-alive holds pooled sockets; `close()` alone waits on

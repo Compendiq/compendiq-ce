@@ -434,9 +434,12 @@ already-fetched Notion block objects (nested `children` attached by the
 caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
 download intents, and a skip report. It never calls `api.notion.com`.
 
-The later import orchestrator creates **standalone** pages and writes image
-bytes through the local attachment store. This conversion step only spells
-the URL the store already serves:
+`notion-import-service.ts` (#1465) is that orchestrator: given a confirmed
+selection and a local destination, it creates **standalone** pages (never
+`pages.source = 'notion'`), keeps hierarchy among selected pages, stores
+`notion_page_id` for idempotency, and writes image bytes through
+`putLocalAttachment`. This conversion step only spells the URL the store
+already serves:
 
 `buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
 → `/api/local-attachments/{pageId}/{file}`.

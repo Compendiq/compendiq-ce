@@ -2,11 +2,18 @@ import type { FastifyInstance } from 'fastify';
 import {
   ConnectNotionSchema,
   NotionConnectionResponseSchema,
+  NotionImportRequestSchema,
+  NotionImportResponseSchema,
   NotionTreeResponseSchema,
 } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { RedisCache } from '../../core/services/redis-cache.js';
 import { NotionClient, NotionError } from '../../domains/knowledge/services/notion-client.js';
 import { fetchNotionWorkspaceTree } from '../../domains/knowledge/services/notion-tree.js';
+import {
+  NotionImportError,
+  runNotionImport,
+} from '../../domains/knowledge/services/notion-import-service.js';
 import {
   connectNotionToken,
   disconnectNotionToken,
@@ -19,6 +26,7 @@ function toResponse(status: { hasToken: boolean }) {
 }
 
 export async function notionRoutes(fastify: FastifyInstance) {
+  const cache = new RedisCache(fastify.redis);
   fastify.addHook('onRequest', fastify.authenticate);
 
   fastify.get('/notion/connection', async (request) => {
@@ -78,6 +86,68 @@ export async function notionRoutes(fastify: FastifyInstance) {
         const body = { error: 'ClientError', message: err.message, statusCode: status };
         expectNoSecret(body, token);
         return reply.status(status).send(body);
+      }
+      throw err;
+    }
+  });
+
+  fastify.post('/notion/import', async (request, reply) => {
+    const body = NotionImportRequestSchema.parse(request.body);
+    const token = await getDecryptedNotionToken(request.userId);
+    if (!token) {
+      return reply.status(400).send({
+        error: 'ClientError',
+        message: 'Notion is not connected',
+        statusCode: 400,
+      });
+    }
+    try {
+      const client = new NotionClient(token);
+      const items = await runNotionImport({
+        userId: request.userId,
+        client,
+        pageIds: body.pageIds,
+        spaceKey: body.spaceKey,
+        parentId: body.parentId,
+        visibility: body.visibility,
+      });
+      const created = items.filter((i) => i.status === 'success');
+      if (created.length > 0) {
+        if (body.visibility === 'shared') {
+          await cache.invalidateAcrossUsers('pages');
+        } else {
+          await cache.invalidate(request.userId, 'pages');
+        }
+      }
+      for (const item of created) {
+        await logAuditEvent(
+          request.userId,
+          'PAGE_CREATED',
+          'page',
+          String(item.localPageId),
+          { source: 'standalone', notionPageId: item.notionPageId },
+          request,
+        );
+      }
+      const payload = NotionImportResponseSchema.parse({ items });
+      expectNoSecret(payload, token);
+      return payload;
+    } catch (err) {
+      if (err instanceof NotionImportError) {
+        const bodyOut = { error: 'ClientError', message: err.message, statusCode: err.statusCode };
+        expectNoSecret(bodyOut, token);
+        return reply.status(err.statusCode).send(bodyOut);
+      }
+      if (err instanceof NotionError && err.statusCode >= 400) {
+        const status =
+          err.statusCode === 503 || err.statusCode === 529
+            ? 503
+            : err.statusCode >= 500
+              ? 502
+              : err.statusCode;
+        const bodyOut = { error: 'ClientError', message: err.message, statusCode: status };
+        expectNoSecret(bodyOut, token);
+        return reply.status(status).send(bodyOut);
       }
       throw err;
     }
