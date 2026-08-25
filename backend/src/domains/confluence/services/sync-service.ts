@@ -17,6 +17,8 @@ import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js'
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../../core/services/collab-tombstone.js';
+import { invalidateCollabDocAfterBodyWrite, isLiveCollabRoom } from '../../../core/services/collab-guard.js';
+import { resetCollabRoomFromHtml } from '../../../core/services/collab-room-service.js';
 import { emitWebhookEvent } from '../../../core/services/webhook-emit-hook.js';
 import { getSyncConflictPolicy } from '../../../core/services/sync-conflict-policy-service.js';
 import { decryptPat } from '../../../core/utils/crypto.js';
@@ -660,6 +662,7 @@ async function syncPage(
   // restriction sync) runs unlocked — those are HTTP calls and we don't
   // want to hold the row lock for the duration.
   const existing = await query<{
+    id: number;
     version: number;
     title: string;
     body_html: string;
@@ -667,7 +670,7 @@ async function syncPage(
     local_modified_at: Date | null;
     last_synced: Date | null;
   }>(
-    `SELECT version, title, body_html, body_text, local_modified_at, last_synced
+    `SELECT id, version, title, body_html, body_text, local_modified_at, last_synced
        FROM pages
       WHERE confluence_id = $1`,
     [page.id],
@@ -824,6 +827,7 @@ async function syncPage(
     counts.pagesCreated++;
   } else {
     counts.pagesUpdated++;
+    await reconcileCollabAfterInboundBodyWrite(existing.rows[0]!.id, bodyHtml);
   }
 
   // Sync Confluence view restrictions → access_control_entries. Runs after
@@ -836,6 +840,14 @@ async function syncPage(
 // ─────────────────────────────────────────────────────────────────────────
 //  Conflict-detection branch (Compendiq/compendiq-ee#118)
 // ─────────────────────────────────────────────────────────────────────────
+
+async function reconcileCollabAfterInboundBodyWrite(pageId: number, html: string): Promise<void> {
+  if (await isLiveCollabRoom(pageId)) {
+    await resetCollabRoomFromHtml(pageId, html);
+  } else {
+    await invalidateCollabDocAfterBodyWrite(pageId);
+  }
+}
 
 interface ApplyConflictPolicyArgs {
   confluenceId: string;
@@ -939,6 +951,15 @@ async function applyConflictPolicyForExistingPage(
     const htmlChangedNow =
       row.body_html !== args.bodyHtml || row.body_text !== args.bodyText;
     if (!htmlChangedNow) {
+      await conn.query('COMMIT');
+      return;
+    }
+
+    // Live collab: snapshot HTML is not byte-identical to the last Confluence
+    // conversion, so htmlChanged is a false conflict unless the remote version
+    // actually moved. Skip confluence-wins overwrite of the CRDT session.
+    const live = await isLiveCollabRoom(row.id);
+    if (live && args.confluenceVersion <= row.version) {
       await conn.query('COMMIT');
       return;
     }
@@ -1081,6 +1102,7 @@ async function applyConflictPolicyForExistingPage(
     );
     await conn.query('COMMIT');
     args.counts.pagesUpdated++;
+    await reconcileCollabAfterInboundBodyWrite(row.id, args.bodyHtml);
 
     if (hasLocalEdits) {
       await logAuditEvent(

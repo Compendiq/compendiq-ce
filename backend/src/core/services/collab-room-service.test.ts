@@ -22,6 +22,7 @@ import { assertNoLiveCollabRoom } from './collab-guard.js';
 import { COLLAB_INIT_LOCK_KEY } from '../db/advisory-locks.js';
 import { setRedisClient } from './redis-cache.js';
 import * as persist from './collab-persistence.js';
+import { yDocToHtml } from './collab-schema.js';
 
 const redisAvailable = await isRedisAvailable();
 
@@ -346,5 +347,54 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     flush.mockRestore();
     destroy.mockRestore();
     runtimeA = await createCollabRuntime(main!, 'pod-a');
+  });
+
+  it('resetFromHtml on A: BYTEA is inbound HTML; B does not flush the typed paragraph over it (#1448)', async () => {
+    const pageId = nextPageId();
+    const byteaHtml: string[] = [];
+    const replaceSpy = vi.spyOn(persist, 'replaceCollabDocFromHtml').mockImplementation(async (_id, html) => {
+      byteaHtml.push(html);
+    });
+    const flushSpy = vi.spyOn(persist, 'flushCollabPersist').mockImplementation(async (room) => {
+      if (room.persistable === false) return;
+      byteaHtml.push(yDocToHtml(room.doc));
+    });
+
+    try {
+      await runtimeA!.attachSocket(pageId, {
+        id: 'a1', ws: stubWs(), userId: 'user-a', writable: true,
+      });
+      await runtimeB!.attachSocket(pageId, {
+        id: 'b1', ws: stubWs(), userId: 'user-b', writable: true,
+      });
+      const roomA = runtimeA!.getRoom(pageId)!;
+      const roomB = runtimeB!.getRoom(pageId)!;
+      roomA.persistable = true;
+      roomB.persistable = true;
+
+      roomB.doc.transact(() => {
+        const fragment = roomB.doc.getXmlFragment('default');
+        const p = new Y.XmlElement('paragraph');
+        const t = new Y.XmlText();
+        t.insert(0, 'COLLAB_TYPED_PARAGRAPH');
+        p.insert(0, [t]);
+        fragment.push([p]);
+      });
+      expect(yDocToHtml(roomB.doc)).toContain('COLLAB_TYPED_PARAGRAPH');
+
+      await runtimeA!.resetFromHtml(pageId, '<p>REMOTE_WINS</p>');
+
+      await vi.waitFor(() => {
+        expect(runtimeB!.getRoom(pageId)).toBeUndefined();
+      }, { timeout: 2_000 });
+
+      expect(byteaHtml.some((h) => h.includes('REMOTE_WINS'))).toBe(true);
+      const last = byteaHtml[byteaHtml.length - 1] ?? '';
+      expect(last).toContain('REMOTE_WINS');
+      expect(last).not.toContain('COLLAB_TYPED_PARAGRAPH');
+    } finally {
+      replaceSpy.mockRestore();
+      flushSpy.mockRestore();
+    }
   });
 });

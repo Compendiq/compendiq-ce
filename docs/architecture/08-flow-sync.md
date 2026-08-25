@@ -137,6 +137,15 @@ sequenceDiagram
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
 - **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column
   is written from Confluence's own version counter; no double-writes.
+- **Live collab rooms (#1448)** — while `collab:active:{pageId}` is non-empty,
+  inbound sync must not treat snapshot HTML drift as `htmlChanged` and
+  confluence-wins overwrite the CRDT session. `applyConflictPolicyForExistingPage`
+  skips that overwrite unless the remote `version.number` **increased**. On
+  increase: apply the inbound HTML, rebuild BYTEA, send control `doc_reset`,
+  close sockets **1001**. Collab **commit** for Confluence pages GETs the
+  remote version first; a moved version is 409 `{ code: 'confluence_modified' }`
+  with the room left live, and `client.updatePage` runs **before** the local
+  `pages.version` write (same order as PUT).
 - **Timezone-safe incremental window (#858)** — `getModifiedPages` builds the
   `lastmodified >=` lower bound as a **minute-granular CQL datetime literal**
   (`yyyy/MM/dd HH:mm`, from the UTC wall-clock) widened by a **24h overlap

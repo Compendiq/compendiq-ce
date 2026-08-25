@@ -42,6 +42,7 @@ export type CollabBusKind =
   | 'awareness'
   | 'control'
   | 'tombstone'
+  | 'freeze'
   | 'state_dump_request'
   | 'state_dump';
 
@@ -101,6 +102,8 @@ export interface CollabRuntime {
   waitForPeerStateDump: (pageId: number, timeoutMs?: number) => Promise<boolean>;
   /** Flush, SREM this pod's members, destroy the Y.Doc. No-op if sockets remain. */
   dropRoom: (pageId: number) => Promise<void>;
+  /** Rebuild BYTEA from inbound HTML, `doc_reset`, close sockets 1001. */
+  resetFromHtml: (pageId: number, html: string) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -254,9 +257,15 @@ export async function createCollabRuntime(
       logger.info({ pageId: room.pageId }, 'collab.state_dump');
       return;
     }
+    if (msg.kind === 'freeze') {
+      freezeRoom(room);
+      return;
+    }
     if (msg.kind === 'tombstone') {
       const code = typeof msg.code === 'number' ? msg.code : 4404;
-      void closeRoomSockets(room, code, msg.reason ?? 'tombstone').then(() => {
+      const reason = msg.reason ?? 'tombstone';
+      if (reason === 'doc_reset') freezeRoom(room);
+      void closeRoomSockets(room, code, reason).then(() => {
         rooms.delete(room.pageId);
       });
       return;
@@ -311,6 +320,15 @@ export async function createCollabRuntime(
     flush(room);
   }
 
+  function freezeRoom(room: CollabRoom): void {
+    room.persistable = false;
+    persist.beginCollabReset(room.pageId);
+    if (room.persistTimer) {
+      clearTimeout(room.persistTimer);
+      room.persistTimer = null;
+    }
+  }
+
   async function closeRoomSockets(room: CollabRoom, code: number, reason: string): Promise<void> {
     for (const sock of room.sockets.values()) {
       try {
@@ -324,7 +342,10 @@ export async function createCollabRuntime(
       clearTimeout(room.emptyGrace);
       room.emptyGrace = null;
     }
-    await persist.flushCollabPersist(room);
+    if (reason !== 'doc_reset') {
+      await persist.flushCollabPersist(room);
+    }
+    persist.endCollabReset(room.pageId);
     if (room.persistTimer) {
       clearTimeout(room.persistTimer);
       room.persistTimer = null;
@@ -592,6 +613,22 @@ export async function createCollabRuntime(
     if (typeof room.emptyGrace.unref === 'function') room.emptyGrace.unref();
   }
 
+  async function resetFromHtml(pageId: number, html: string): Promise<void> {
+    persist.beginCollabReset(pageId);
+    const room = rooms.get(pageId);
+    if (room) freezeRoom(room);
+    // Freeze peers before BYTEA replace so their persistChain cannot land after it.
+    await publish(pageId, { origin: podId, kind: 'freeze', reason: 'doc_reset' });
+    if (room) await room.persistChain;
+    try {
+      await persist.replaceCollabDocFromHtml(pageId, html);
+    } finally {
+      persist.endCollabReset(pageId);
+    }
+    broadcastControl(pageId, { type: 'doc_reset' });
+    await tombstone(pageId, 1001, 'doc_reset');
+  }
+
   async function tombstone(pageId: number, code: number, reason = 'tombstone'): Promise<void> {
     const room = rooms.get(pageId);
     if (room) {
@@ -675,6 +712,7 @@ export async function createCollabRuntime(
     broadcastControl,
     waitForPeerStateDump,
     dropRoom,
+    resetFromHtml,
     close,
   };
 }
@@ -693,6 +731,15 @@ export async function initCollabBus(main: RedisClientType): Promise<() => Promis
 
 export function getDefaultCollabRuntime(): CollabRuntime | null {
   return defaultRuntime;
+}
+
+export async function resetCollabRoomFromHtml(pageId: number, html: string): Promise<void> {
+  const runtime = getDefaultCollabRuntime();
+  if (runtime) {
+    await runtime.resetFromHtml(pageId, html);
+    return;
+  }
+  await persist.replaceCollabDocFromHtml(pageId, html);
 }
 
 export async function tombstoneCollabRoom(pageId: number, code: number, reason?: string): Promise<void> {

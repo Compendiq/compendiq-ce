@@ -428,6 +428,14 @@ describe('buildApp — error handler information leakage', () => {
     app.get('/test/confluence-code', async () => {
       throw Object.assign(new Error('remote'), { statusCode: 409, code: 'confluence_modified' });
     });
+    app.get('/test/confluence-versions', async () => {
+      throw Object.assign(new Error('remote'), {
+        statusCode: 409,
+        code: 'confluence_modified',
+        remoteVersion: 9,
+        localVersion: 7,
+      });
+    });
 
     const leaky = await app.inject({ method: 'GET', url: '/test/leaky-code' });
     expect(leaky.statusCode).toBe(400);
@@ -440,6 +448,13 @@ describe('buildApp — error handler information leakage', () => {
     const conf = await app.inject({ method: 'GET', url: '/test/confluence-code' });
     expect(conf.statusCode).toBe(409);
     expect(conf.json().code).toBe('confluence_modified');
+
+    const versions = await app.inject({ method: 'GET', url: '/test/confluence-versions' });
+    expect(versions.json()).toMatchObject({
+      code: 'confluence_modified',
+      remoteVersion: 9,
+      localVersion: 7,
+    });
 
     await app.close();
   });

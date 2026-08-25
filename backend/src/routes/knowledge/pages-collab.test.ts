@@ -40,7 +40,10 @@ import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombs
 import { _resetCollabRoomsForTest, createCollabRuntime, getDefaultCollabRuntime } from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { yDocToHtml } from '../../core/services/collab-schema.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import { ConfluenceClient, ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { __internal as syncInternal } from '../../domains/confluence/services/sync-service.js';
 
 const dbAvailable = await isDbAvailable();
 const redisAvailable = dbAvailable ? await isRedisAvailable() : false;
@@ -101,16 +104,44 @@ async function insertConfluencePage(opts: {
   spaceKey: string;
   confluenceId: string;
   inheritPerms?: boolean;
+  version?: number;
+  bodyHtml?: string;
 }): Promise<number> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name) VALUES ($1, $1)
+     ON CONFLICT (space_key) DO NOTHING`,
+    [opts.spaceKey],
+  );
+  const html = opts.bodyHtml ?? '<p></p>';
   const r = await query<{ id: number }>(
     `INSERT INTO pages (
         confluence_id, space_key, title, body_storage, body_html, body_text,
         version, source, visibility, last_synced, inherit_perms
-     ) VALUES ($1, $2, 'Conf page', '<p></p>', '<p></p>', '', 1, 'confluence', 'shared', NOW(), $3)
+     ) VALUES ($1, $2, 'Conf page', $3, $3, $4, $5, 'confluence', 'shared', NOW(), $6)
      RETURNING id`,
-    [opts.confluenceId, opts.spaceKey, opts.inheritPerms ?? true],
+    [opts.confluenceId, opts.spaceKey, html, 'x', opts.version ?? 1, opts.inheritPerms ?? true],
   );
   return r.rows[0]!.id;
+}
+
+async function seedConfluenceCredentials(userId: string): Promise<void> {
+  await query(
+    `UPDATE user_settings SET confluence_url = $2, confluence_pat = $3 WHERE user_id = $1`,
+    [userId, 'https://confluence.example.com', encryptPat('test-pat-1448')],
+  );
+}
+
+function typeParagraphIntoRoom(pageId: number, text: string): void {
+  const room = getDefaultCollabRuntime()?.getRoom(pageId);
+  expect(room).toBeDefined();
+  room!.doc.transact(() => {
+    const fragment = room!.doc.getXmlFragment('default');
+    const p = new Y.XmlElement('paragraph');
+    const t = new Y.XmlText();
+    t.insert(0, text);
+    p.insert(0, [t]);
+    fragment.push([p]);
+  });
 }
 
 async function grantSpaceRead(userId: string, spaceKey: string): Promise<void> {
@@ -1018,6 +1049,284 @@ describe.skipIf(!canRun)('collab commit multi-pod dump (#1445 review)', () => {
     });
     expect(put.statusCode).toBe(200);
     expect(put.json().code).not.toBe('collab_session_active');
+  }, 20_000);
+});
+
+describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function seedLiveConfluencePage(opts?: { version?: number; bodyHtml?: string }): Promise<{
+    token: string;
+    userId: string;
+    pageId: number;
+    confluenceId: string;
+    ws: WebSocket;
+  }> {
+    const { token, userId } = await createUser(`collab_cf_${pageIdEntropy()}`);
+    const spaceKey = `CF${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `cf-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: opts?.version ?? 4,
+      bodyHtml: opts?.bodyHtml ?? '<p>commit-seed</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await seedConfluenceCredentials(userId);
+    await enableCollabFlag();
+    const ws = await openAndSync(pageId, token);
+    return { token, userId, pageId, confluenceId, ws };
+  }
+
+  it('remote version moved → 409 confluence_modified, no updatePage, local version unchanged, room live', async () => {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const getPage = vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+      id: confluenceId,
+      title: 'Conf page',
+      status: 'current',
+      type: 'page',
+      version: { number: 7, when: '2026-08-24T00:00:00Z' },
+    } as never);
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockRejectedValue(
+      new Error('updatePage must not run'),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Should not land' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      code: 'confluence_modified',
+      remoteVersion: 7,
+      localVersion: 4,
+    });
+    expect(getPage).toHaveBeenCalledWith(confluenceId);
+    expect(updatePage).not.toHaveBeenCalled();
+    const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+    expect(page.rows[0]!.version).toBe(4);
+    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('remote unchanged → updatePage first with current local version, then local row from confPage.version.number', async () => {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    const order: string[] = [];
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockImplementation(async () => {
+      order.push('getPage');
+      return {
+        id: confluenceId,
+        title: 'Conf page',
+        status: 'current',
+        type: 'page',
+        version: { number: 4, when: '2026-08-24T00:00:00Z' },
+      } as never;
+    });
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockImplementation(async () => {
+      order.push('updatePage');
+      const still = await query<{ version: number; last_synced: Date | null }>(
+        'SELECT version, last_synced FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(still.rows[0]!.version).toBe(4);
+      return {
+        id: confluenceId,
+        title: 'Pushed',
+        status: 'current',
+        type: 'page',
+        version: { number: 5, when: '2026-08-24T00:01:00Z' },
+        body: { storage: { value: '<p>from-confluence</p>' } },
+      } as never;
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Pushed' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      id: pageId,
+      title: 'Pushed',
+      version: 5,
+      source: 'confluence',
+      pushedToConfluence: true,
+    });
+    expect(updatePage).toHaveBeenCalledTimes(1);
+    expect(updatePage.mock.calls[0]![0]).toBe(confluenceId);
+    expect(updatePage.mock.calls[0]![1]).toBe('Pushed');
+    expect(updatePage.mock.calls[0]![3]).toBe(4);
+    expect(order.indexOf('updatePage')).toBeGreaterThanOrEqual(0);
+
+    const page = await query<{
+      version: number;
+      title: string;
+      body_storage: string | null;
+      last_synced: Date | null;
+      local_modified_at: Date | null;
+      summary_status: string;
+      quality_status: string;
+    }>(
+      `SELECT version, title, body_storage, last_synced, local_modified_at, summary_status, quality_status
+         FROM pages WHERE id = $1`,
+      [pageId],
+    );
+    expect(page.rows[0]!.version).toBe(5);
+    expect(page.rows[0]!.title).toBe('Pushed');
+    expect(page.rows[0]!.body_storage).toBeTruthy();
+    expect(page.rows[0]!.last_synced).not.toBeNull();
+    expect(page.rows[0]!.local_modified_at).toBeNull();
+    expect(page.rows[0]!.summary_status).toBe('pending');
+    expect(page.rows[0]!.quality_status).toBe('pending');
+    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+    ws.close();
+  });
+
+  it('Confluence 5xx → local version unchanged, room live', async () => {
+    const { token, pageId, confluenceId, ws } = await seedLiveConfluencePage({ version: 4 });
+    vi.spyOn(ConfluenceClient.prototype, 'getPage').mockResolvedValue({
+      id: confluenceId,
+      title: 'Conf page',
+      status: 'current',
+      type: 'page',
+      version: { number: 4, when: '2026-08-24T00:00:00Z' },
+    } as never);
+    vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockRejectedValue(
+      new ConfluenceError('Confluence unavailable', 503),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'No write' },
+    });
+
+    expect(res.statusCode).toBe(503);
+    const page = await query<{ version: number; title: string }>(
+      'SELECT version, title FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(page.rows[0]!.version).toBe(4);
+    expect(page.rows[0]!.title).toBe('Conf page');
+    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+});
+
+describe.skipIf(!canRun)('inbound sync while collab:active (#1448)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('unchanged remote version skips confluence-wins overwrite so the typed paragraph stays in the Y.Doc', async () => {
+    const { token, userId } = await createUser(`collab_sync_skip_${pageIdEntropy()}`);
+    const spaceKey = `SK${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `c-skip-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: 3,
+      bodyHtml: '<p>seed-html</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await enableCollabFlag();
+    const ws = await openAndSync(pageId, token);
+    typeParagraphIntoRoom(pageId, 'COLLAB_TYPED_PARAGRAPH');
+    expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('COLLAB_TYPED_PARAGRAPH');
+
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+    await syncInternal.applyConflictPolicyForExistingPage({
+      confluenceId,
+      confluenceVersion: 3,
+      pageDbTitle: 'Conf page',
+      bodyStorage: 'INCOMING-STORAGE',
+      bodyHtml: '<p>confluence-conversion-mismatch</p>',
+      bodyText: 'confluence-conversion-mismatch',
+      parentId: null,
+      labels: [],
+      author: 'remote',
+      lastModified: new Date('2026-08-24T12:00:00Z'),
+      syncRunId: '1448-skip-run',
+      counts,
+    });
+
+    expect(yDocToHtml(getDefaultCollabRuntime()!.getRoom(pageId)!.doc)).toContain('COLLAB_TYPED_PARAGRAPH');
+    const row = await query<{ body_html: string; version: number }>(
+      'SELECT body_html, version FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(row.rows[0]!.body_html).not.toBe('<p>confluence-conversion-mismatch</p>');
+    expect(row.rows[0]!.version).toBe(3);
+    expect(counts.pagesUpdated).toBe(0);
+    expect(Number(await getRedisClient()!.sCard(`collab:active:${pageId}`))).toBeGreaterThan(0);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
+  it('remote version increased while live: rebuild Y.Doc, BYTEA, doc_reset, close 1001', async () => {
+    const { token, userId } = await createUser(`collab_sync_inc_${pageIdEntropy()}`);
+    const spaceKey = `IN${pageIdEntropy().slice(0, 6).toUpperCase()}`;
+    const confluenceId = `c-inc-${pageIdEntropy()}`;
+    const pageId = await insertConfluencePage({
+      spaceKey,
+      confluenceId,
+      version: 3,
+      bodyHtml: '<p>seed-html</p>',
+    });
+    await grantSpaceRead(userId, spaceKey);
+    await enableCollabFlag();
+    const ws = await openAndSync(pageId, token);
+    typeParagraphIntoRoom(pageId, 'COLLAB_TYPED_PARAGRAPH');
+    const closedP = waitClose(ws);
+    const controlP = waitControl(ws);
+
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+    await syncInternal.applyConflictPolicyForExistingPage({
+      confluenceId,
+      confluenceVersion: 4,
+      pageDbTitle: 'Conf page',
+      bodyStorage: '<p>REMOTE_WINS</p>',
+      bodyHtml: '<p>REMOTE_WINS</p>',
+      bodyText: 'REMOTE_WINS',
+      parentId: null,
+      labels: [],
+      author: 'remote',
+      lastModified: new Date('2026-08-24T12:00:00Z'),
+      syncRunId: '1448-inc-run',
+      counts,
+    });
+
+    const closed = await closedP;
+    expect(closed.code).toBe(1001);
+    const control = await controlP;
+    expect(control.type).toBe('doc_reset');
+    expect(counts.pagesUpdated).toBe(1);
+    expect(getDefaultCollabRuntime()?.getRoom(pageId)).toBeUndefined();
+
+    const persisted = await persist.htmlFromPersistedDoc(pageId);
+    expect(persisted).toContain('REMOTE_WINS');
+    expect(persisted).not.toContain('COLLAB_TYPED_PARAGRAPH');
+
+    const second = openWhatwg(pageId, token);
+    await waitOpen(second);
+    const doc = new Y.Doc();
+    second.send(encodeSyncStep1(doc));
+    const reply = await waitMessage(second);
+    applySyncFrame(doc, reply);
+    const html = yDocToHtml(doc);
+    expect(html).toContain('REMOTE_WINS');
+    expect(html).not.toContain('COLLAB_TYPED_PARAGRAPH');
+    second.close();
   }, 20_000);
 });
 

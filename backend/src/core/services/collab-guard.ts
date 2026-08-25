@@ -44,17 +44,20 @@ function readRedisClient(): RedisClientType | null {
   }
 }
 
-export async function assertNoLiveCollabRoom(pageId: number): Promise<void> {
+export async function isLiveCollabRoom(pageId: number): Promise<boolean> {
   const redis = readRedisClient();
-  if (!redis) return;
+  if (!redis) return false;
   try {
-    const n = await redis.sCard(`collab:active:${pageId}`);
-    if (n > 0) {
-      throw new CollabSessionActiveError();
-    }
-  } catch (err) {
-    if (err instanceof CollabSessionActiveError) throw err;
-    // Redis blip: do not 409 a writer on an unread SET.
+    return Number(await redis.sCard(`collab:active:${pageId}`)) > 0;
+  } catch {
+    // Redis blip: fail open (treat as empty) so inbound sync does not skip forever.
+    return false;
+  }
+}
+
+export async function assertNoLiveCollabRoom(pageId: number): Promise<void> {
+  if (await isLiveCollabRoom(pageId)) {
+    throw new CollabSessionActiveError();
   }
 }
 
