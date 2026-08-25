@@ -64,6 +64,7 @@ Quick reference for what to update when:
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
 | Collab gateway (`pages-collab.ts`, `@fastify/websocket`, Redis `collab:*`), `page_collaborative_docs`, or `collab_editing_enabled` | `12-realtime-collaboration.md` (and `06-data-model.md` if the table or FK changes) |
+| Collab editor (`use-collab-provider.ts`, Editor Collaboration + Caret, PresenceAvatarStack merge, `collabEditingEnabled` toggle) | `04-frontend-structure.md`, `12-realtime-collaboration.md` |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
 becomes stale and you are not sure how to update it, flag it in the PR

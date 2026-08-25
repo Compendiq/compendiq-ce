@@ -89,10 +89,12 @@ vi.mock('../../shared/components/article/Editor', async () => {
       content,
       onChange,
       onEditorReady,
+      ydoc,
     }: {
       content: string;
       onChange?: (dirty: boolean) => void;
       onEditorReady?: (editor: { getHTML: () => string } | null) => void;
+      ydoc?: unknown;
     }) => {
       const htmlRef = React.useRef(content);
       React.useEffect(() => {
@@ -108,6 +110,7 @@ vi.mock('../../shared/components/article/Editor', async () => {
       return (
         <textarea
           aria-label="Article editor"
+          data-has-ydoc={ydoc ? 'true' : 'false'}
           defaultValue={content}
           onChange={(event) => {
             htmlRef.current = event.target.value;
@@ -184,8 +187,21 @@ vi.mock('../../shared/lib/api', () => ({
   },
 }));
 
+const mockSetPresenceEditing = vi.fn();
+let mockPresenceViewers: Array<{ userId: string; name: string; role: string; isEditing: boolean }> = [];
 vi.mock('./use-presence', () => ({
-  usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
+  usePresence: () => ({
+    viewers: mockPresenceViewers,
+    selfIsEditing: false,
+    setEditing: mockSetPresenceEditing,
+  }),
+}));
+
+const { useCollabProviderMock } = vi.hoisted(() => ({
+  useCollabProviderMock: vi.fn(),
+}));
+vi.mock('./use-collab-provider', () => ({
+  useCollabProvider: (opts: unknown) => useCollabProviderMock(opts),
 }));
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
@@ -338,6 +354,16 @@ describe('PageViewPage', () => {
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
     mockDraftContent = null;
+    mockPresenceViewers = [];
+    mockSetPresenceEditing.mockReset();
+    useCollabProviderMock.mockReset();
+    useCollabProviderMock.mockImplementation(() => ({
+      ydoc: null,
+      provider: null,
+      synced: false,
+      awarenessUsers: [],
+      error: null,
+    }));
     vi.mocked(apiFetch).mockClear();
     vi.mocked(apiFetch).mockResolvedValue({} as never);
     localStorage.clear();
@@ -1425,6 +1451,122 @@ describe('PageViewPage', () => {
       });
     });
 
+  });
+
+  describe('collaborative editing (#1447)', () => {
+    it('flag off: provider stays disabled in edit mode and SSE still drives presence', async () => {
+      mockPresenceViewers = [
+        { userId: 'u1', name: 'Alice', role: 'editor', isEditing: true },
+        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
+      ];
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByTestId('presence-avatar-stack')).toBeInTheDocument();
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+      const alice = screen.getByText('Alice').closest('[data-testid="presence-avatar"]');
+      expect(alice).toHaveAttribute('data-is-editing', 'true');
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false, pageId: 'page-1' }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+    });
+
+    it('flag on: provider mounts only in edit mode, and the editor receives the ydoc', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return {};
+      });
+      const ydoc = { __ydoc: true };
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc,
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false }),
+        );
+      });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: true, pageId: 'page-1' }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'true');
+    });
+
+    it('flag on: Save posts /collab/commit, not PUT with a stale version', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        if (path === '/pages/page-1/collab/commit') {
+          return { id: 1, title: 'Updated Engineering Handbook', version: 8, source: 'standalone' };
+        }
+        return {};
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
+        target: { value: 'Updated Engineering Handbook' },
+      });
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith(
+          '/pages/page-1/collab/commit',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ title: 'Updated Engineering Handbook' }),
+          }),
+        );
+      });
+      expect(mockUpdatePage).not.toHaveBeenCalled();
+    });
+
+    it('flag on: SSE usePresence still runs so viewers stay on the stack', async () => {
+      mockPresenceViewers = [
+        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
+      ];
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return {};
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [{ id: 'u3', name: 'Nia', color: '#5C6B8A' }],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(await screen.findByText('Edit'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Nia')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+      expect(mockSetPresenceEditing).toHaveBeenCalledWith(false);
+    });
   });
 
 });
