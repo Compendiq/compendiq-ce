@@ -13,6 +13,7 @@ representations that flow through the rest of the system.
 | **Plain text** | `pages.body_text` | FTS (`tsvector`), snippets, coverage probe |
 | **Markdown** | no page column — derived per call; **persisted as `page_embeddings.chunk_text`** for embedded pages since #1265 | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`); chunk_text reaches RAG context, citations and (flattened) search snippets |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
+| **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text` and local-attachment intents; never a live sync and never `pages.source = 'notion'` |
 
 ## Flow
 
@@ -24,6 +25,7 @@ flowchart LR
     ED["Editor (TipTap v3)<br/>HTML"]
 
     UP["Upload<br/>pdf · docx · odt · rtf · md · txt"]
+    NT["Notion<br/>blocks"]
 
     CF -- "confluenceToHtml()" --> DB
     DB -- "htmlToConfluence()" --> CF
@@ -31,6 +33,7 @@ flowchart LR
     LLM -- "markdownToHtml()" --> DB
     DB <--> ED
     UP -- "extractDocumentText()" --> LLM
+    NT -- "convertNotionBlocks()" --> DB
 
     classDef ext fill:#fff,stroke:#333
     classDef data fill:#eef6ff,stroke:#4a90e2
@@ -38,6 +41,7 @@ flowchart LR
     classDef ui fill:#eefbe8,stroke:#4caf50
     class CF ext
     class UP ext
+    class NT ext
     class DB data
     class LLM ai
     class ED ui
@@ -419,6 +423,45 @@ plus 25 MB of XML in one body — 40,195,416 bytes. `nginx-api-body-limit.test.t
 parses every `bodyLimit` out of the backend route modules and fails if the edge
 drops below any of them, so raising a route's limit past the edge is caught
 here rather than in production.
+
+## Notion import (#1459 / #1464)
+
+Selective Notion migrate is a **conversion into the existing three forms**,
+not a fourth editor format and not a `pages.source = 'notion'` row.
+`convertNotionBlocks()` in
+`backend/src/domains/knowledge/services/notion-block-converter.ts` takes
+already-fetched Notion block objects (nested `children` attached by the
+caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
+download intents, and a skip report. It never calls `api.notion.com`.
+
+The later import orchestrator creates **standalone** pages and writes image
+bytes through the local attachment store. This conversion step only spells
+the URL the store already serves:
+
+`buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
+→ `/api/local-attachments/{pageId}/{file}`.
+
+| Notion block | `body_html` |
+|--------------|-------------|
+| `heading_1` / `heading_2` / `heading_3` / `heading_4` | `<h1>`–`<h4>` (toggleable headings also emit nested children) |
+| `paragraph` | `<p>` (nested children follow the paragraph) |
+| `bulleted_list_item` | `<ul><li>` (consecutive items grouped; nested children stay nested) |
+| `numbered_list_item` | `<ol><li>` |
+| `to_do` | `<ul data-type="taskList"><li data-type="taskItem" data-checked>` |
+| `quote` | `<blockquote>` |
+| `callout` | `<div class="panel-info\|note\|warning\|tip">` (same panel classes as Confluence info/note/warning/tip) |
+| `code` | `<pre><code class="language-x">` |
+| `divider` | `<hr>` |
+| `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
+| `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
+| `child_page`, `link_to_page`, page mentions | `<a href="/pages/{id}">` when that Notion page id is in this run's imported set; otherwise the Notion URL. `link_to_page` databases always stay Notion URLs |
+| `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside a column is still skipped |
+| `child_database`, `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
+
+Rich-text annotations map to `<strong>` / `<em>` / `<del>` / `<code>` / `<a>`.
+HTML is sanitized with `isomorphic-dompurify` at the same XSS bar as Markdown
+import (script tags and `javascript:` URLs stripped). A skipped or unselected
+Notion item is never rewritten to an internal page link.
 
 ## Why store three forms?
 
