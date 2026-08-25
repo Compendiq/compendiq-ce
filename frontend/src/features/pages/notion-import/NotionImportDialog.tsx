@@ -16,12 +16,16 @@ import { cn } from '../../../shared/lib/cn';
 import { LocationPicker, type LocationSelection } from '../../../shared/components/LocationPicker';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import {
+  canContinueNotionPick,
+  exceedsImportPageCap,
   formatConfirmCopy,
   isSelectablePage,
   NOTION_IMPORT_MAX_PAGES,
   notionTitleById,
+  shouldCommitImportResult,
   summarizeImport,
   toggleSelectedPage,
+  type NotionImportStep,
 } from './notion-import-selection';
 import {
   useConnectNotion,
@@ -36,11 +40,40 @@ export interface NotionImportDialogProps {
   onClose: () => void;
 }
 
-type Step = 'connect' | 'pick' | 'confirm' | 'result';
 type Visibility = 'private' | 'shared';
 
-export function shouldCommitImportResult(step: Step, open: boolean): boolean {
-  return open && step === 'confirm';
+export function NotionImportPickFooter({
+  importCount,
+  importPending,
+  onCancel,
+  onContinue,
+}: {
+  importCount: number;
+  importPending: boolean;
+  onCancel: () => void;
+  onContinue: () => void;
+}) {
+  const overPageCap = exceedsImportPageCap(importCount);
+  return (
+    <>
+      {overPageCap ? (
+        <p data-testid="notion-import-page-cap" className="mr-auto text-xs text-muted-foreground">
+          Select at most {NOTION_IMPORT_MAX_PAGES} pages.
+        </p>
+      ) : null}
+      <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={onCancel}>
+        Cancel
+      </button>
+      <button
+        type="button"
+        className="nm-button-primary h-8 px-3 text-xs"
+        disabled={!canContinueNotionPick(importCount) || importPending}
+        onClick={onContinue}
+      >
+        Continue
+      </button>
+    </>
+  );
 }
 
 function errorMessage(err: unknown): string {
@@ -144,7 +177,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     isPending: localSpacesPending,
   } = useLocalSpaces(open);
 
-  const [step, setStepState] = useState<Step>('connect');
+  const [step, setStepState] = useState<NotionImportStep>('connect');
   const [token, setToken] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [spaceKey, setSpaceKey] = useState('');
@@ -154,7 +187,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [treeRetryInFlight, setTreeRetryInFlight] = useState(false);
 
   const stepRef = useRef(step);
-  const setStep = useCallback((next: Step) => {
+  const setStep = useCallback((next: NotionImportStep) => {
     stepRef.current = next;
     setStepState(next);
   }, []);
@@ -279,9 +312,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     treeRegionRef.current?.focus();
   }, [treeRetryInFlight, tree.isError, tree.data]);
 
-  const overPageCap = summary.importCount > NOTION_IMPORT_MAX_PAGES;
-  const canContinuePick = summary.importCount > 0 && !overPageCap;
-  const canImport = Boolean(spaceKey) && summary.importCount > 0 && !overPageCap;
+  const canImport = Boolean(spaceKey) && canContinueNotionPick(summary.importCount);
   const importDisabled = !canImport || importPending;
   const treeFailed = tree.isError || treeRetryInFlight;
   const treeHasCache = Boolean(tree.data);
@@ -642,27 +673,12 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-3">
             {step === 'pick' && (
-              <>
-                {overPageCap ? (
-                  <p
-                    data-testid="notion-import-page-cap"
-                    className="mr-auto text-xs text-muted-foreground"
-                  >
-                    Select at most {NOTION_IMPORT_MAX_PAGES} pages.
-                  </p>
-                ) : null}
-                <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={requestClose}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="nm-button-primary h-8 px-3 text-xs"
-                  disabled={!canContinuePick || importPending}
-                  onClick={() => setStep('confirm')}
-                >
-                  Continue
-                </button>
-              </>
+              <NotionImportPickFooter
+                importCount={summary.importCount}
+                importPending={importPending}
+                onCancel={requestClose}
+                onContinue={() => setStep('confirm')}
+              />
             )}
             {step === 'confirm' && (
               <>

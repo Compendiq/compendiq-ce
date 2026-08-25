@@ -5,7 +5,8 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { useAuthStore } from '../../../stores/auth-store';
-import { NotionImportDialog, shouldCommitImportResult } from './NotionImportDialog';
+import { NotionImportDialog, NotionImportPickFooter } from './NotionImportDialog';
+import { shouldCommitImportResult } from './notion-import-selection';
 
 const TOKEN = 'ntn_dummy_secret_do_not_echo';
 
@@ -538,6 +539,8 @@ describe('NotionImportDialog destination and lock', () => {
       'utf8',
     );
     expect(src).toMatch(/node\.skipReason/);
+    expect(src).toMatch(/<NotionImportPickFooter/);
+    expect(src).toMatch(/importCount=\{summary\.importCount\}/);
   });
 });
 
@@ -624,23 +627,15 @@ describe('NotionImportDialog tree cache and empty retry', () => {
 });
 
 describe('NotionImportDialog picker cap and a11y', () => {
-  it('disables Continue when more than 200 pages are selected', async () => {
-    givenHappyPath({
-      tree: {
-        nodes: Array.from({ length: 201 }, (_, i) => ({
-          id: `p${i}`,
-          title: `Cap page ${i}`,
-          type: 'page',
-          selectable: true,
-          children: [],
-        })),
-      },
-    });
-    renderDialog();
-    await connectWithDummyToken();
-    const boxes = screen.getAllByRole('checkbox');
-    expect(boxes).toHaveLength(201);
-    for (const box of boxes) fireEvent.click(box);
+  it('disables Continue when more than 200 pages are selected', () => {
+    render(
+      <NotionImportPickFooter
+        importCount={201}
+        importPending={false}
+        onCancel={() => {}}
+        onContinue={() => {}}
+      />,
+    );
     expect(screen.getByTestId('notion-import-page-cap')).toHaveTextContent(/200/);
     expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
   });

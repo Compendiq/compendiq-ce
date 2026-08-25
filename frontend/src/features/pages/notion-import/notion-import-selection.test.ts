@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { NOTION_UNSUPPORTED_LABEL, type NotionTreeNode } from '@compendiq/contracts';
 import {
+  canContinueNotionPick,
+  exceedsImportPageCap,
   formatConfirmCopy,
+  NOTION_IMPORT_MAX_PAGES,
   selectablePageIds,
+  shouldCommitImportResult,
   summarizeImport,
   toggleSelectedPage,
 } from './notion-import-selection';
@@ -124,5 +128,36 @@ describe('summarizeImport / formatConfirmCopy', () => {
     expect(copy).toContain('1 page will import');
     expect(copy).toMatch(/rows/i);
     expect(copy).toMatch(/appear as their own page/i);
+  });
+});
+
+describe('import page cap', () => {
+  function pages(count: number): NotionTreeNode[] {
+    return Array.from({ length: count }, (_, i) => page(`p${i}`, `Cap page ${i}`));
+  }
+
+  it('lets 200 selected pages continue and refuses 201 without walking a UI tree', () => {
+    const atCap = pages(NOTION_IMPORT_MAX_PAGES);
+    const overCap = pages(NOTION_IMPORT_MAX_PAGES + 1);
+    const atCapCount = summarizeImport(atCap, new Set(atCap.map((node) => node.id))).importCount;
+    const overCapCount = summarizeImport(overCap, new Set(overCap.map((node) => node.id))).importCount;
+
+    expect(atCapCount).toBe(NOTION_IMPORT_MAX_PAGES);
+    expect(exceedsImportPageCap(atCapCount)).toBe(false);
+    expect(canContinueNotionPick(atCapCount)).toBe(true);
+
+    expect(overCapCount).toBe(NOTION_IMPORT_MAX_PAGES + 1);
+    expect(exceedsImportPageCap(overCapCount)).toBe(true);
+    expect(canContinueNotionPick(overCapCount)).toBe(false);
+    expect(canContinueNotionPick(0)).toBe(false);
+  });
+});
+
+describe('shouldCommitImportResult', () => {
+  it('commits only while the wizard is still open on confirm', () => {
+    expect(shouldCommitImportResult('confirm', true)).toBe(true);
+    expect(shouldCommitImportResult('pick', true)).toBe(false);
+    expect(shouldCommitImportResult('result', true)).toBe(false);
+    expect(shouldCommitImportResult('confirm', false)).toBe(false);
   });
 });

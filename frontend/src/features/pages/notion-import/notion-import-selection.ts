@@ -3,6 +3,21 @@ import type { NotionTreeNode, NotionTreePageNode } from '@compendiq/contracts';
 /** Matches `NotionImportRequestSchema.pageIds.max(200)`. */
 export const NOTION_IMPORT_MAX_PAGES = 200;
 
+export type NotionImportStep = 'connect' | 'pick' | 'confirm' | 'result';
+
+/** Drop an in-flight import POST if the wizard left confirm before it resolved. */
+export function shouldCommitImportResult(step: NotionImportStep, open: boolean): boolean {
+  return open && step === 'confirm';
+}
+
+export function exceedsImportPageCap(importCount: number): boolean {
+  return importCount > NOTION_IMPORT_MAX_PAGES;
+}
+
+export function canContinueNotionPick(importCount: number): boolean {
+  return importCount > 0 && !exceedsImportPageCap(importCount);
+}
+
 export type ImportSummary = {
   importCount: number;
   importIds: string[];
