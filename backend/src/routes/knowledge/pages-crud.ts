@@ -22,6 +22,7 @@ import {
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
+import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
@@ -1620,6 +1621,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // Soft delete — move to trash
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
       }
+      await tombstoneCollabRoomAfterCommit(existingPage.id);
 
       // A shared standalone page is visible to every user (#893), so its
       // removal must clear all users' cached lists/trees. Private stays per-user.
@@ -1777,6 +1779,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // it after its OWN committed DELETE, so nothing leaks permanently.
     if (rowDestroyed) {
       await discardPageIconForDeletedPage(existingPage.id);
+      await tombstoneCollabRoomAfterCommit(existingPage.id);
     }
 
     // Confluence pages are visible to every user with space access (#893), and
@@ -2120,6 +2123,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ]);
       // Bulk delete is a soft-delete (move to trash) for standalone pages.
       for (const pageId of standaloneNumericIds) {
+        await tombstoneCollabRoomAfterCommit(pageId);
         emitWebhookEvent({
           eventType: 'page.deleted',
           payload: { pageId, isHardDelete: false },
@@ -2246,6 +2250,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             destroyedNumericIds.map((pageId) =>
               bulkLimit(() => discardPageIconForDeletedPage(pageId)),
             ),
+          );
+          await Promise.allSettled(
+            destroyedNumericIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
           );
           // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
           for (const pageId of deletedConfluenceNumericIds) {

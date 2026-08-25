@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import compress from '@fastify/compress';
+import websocket from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
@@ -53,6 +54,7 @@ import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
 import { pagesIconRoutes } from './routes/knowledge/pages-icon.js';
 import { pagesRelocateRoutes } from './routes/knowledge/pages-relocate.js';
 import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
+import { pagesCollabRoutes } from './routes/knowledge/pages-collab.js';
 import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
@@ -84,6 +86,8 @@ import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-servi
 import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
+import { initCollabBus } from './core/services/collab-room-service.js';
+import { initCollabFlag } from './core/services/collab-flag.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
@@ -99,7 +103,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
-import type { OidcConfig } from '@compendiq/contracts';
+import { COLLAB_WS_PROTOCOL, type OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -174,6 +178,15 @@ export async function buildApp() {
   // floor is a low-cost protective measure even after a fresh image rebuild
   // hypothetically restores the upstream behaviour.
   await app.register(compress, { threshold: 4096 });
+  await app.register(websocket, {
+    options: {
+      maxPayload: 10 * 1024 * 1024,
+      handleProtocols: (protocols: Set<string> | string[]) => {
+        const set = protocols instanceof Set ? protocols : new Set(protocols);
+        return set.has(COLLAB_WS_PROTOCOL) ? COLLAB_WS_PROTOCOL : false;
+      },
+    },
+  });
   await app.register(multipart, {
     limits: {
       fileSize: 20 * 1024 * 1024, // 20 MB
@@ -255,6 +268,11 @@ export async function buildApp() {
     await teardownPresenceBus();
   });
 
+  const teardownCollabBus = await initCollabBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownCollabBus();
+  });
+
   // ── Generic cache-bus (v0.4 epic §3.1) ───────────────────────────
   // Cluster-wide invalidation channel used by cached admin_settings
   // (see makeCachedSetting) and future hot-reload consumers. Fails soft
@@ -263,6 +281,8 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  await initCollabFlag();
 
   // ── User security cache bus (#737) ───────────────────────────────
   // Subscribes the per-user liveness/role cache (checked by `authenticate`
@@ -487,6 +507,7 @@ export async function buildApp() {
   await app.register(pagesIconRoutes, { prefix: '/api' });
   await app.register(pagesRelocateRoutes, { prefix: '/api' });
   await app.register(pagesPresenceRoutes, { prefix: '/api' });
+  await app.register(pagesCollabRoutes, { prefix: '/api' });
   await app.register(pagesBulkProgressRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });

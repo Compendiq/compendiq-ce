@@ -417,6 +417,45 @@ export async function userCanAccessPage(
 }
 
 /**
+ * Write ACL for a page — PUT /api/pages/:id predicates verbatim.
+ *
+ * Standalone: owner or `visibility = 'shared'`. **No `isSystemAdmin`
+ * short-circuit** — an admin who is not the owner cannot edit another user's
+ * private standalone page today, and collab must not start allowing it.
+ * Confluence: `space_key` ∈ `getUserAccessibleSpaces` (admins already union
+ * every known space). Missing `space_key` is allowed, matching PUT.
+ */
+export async function userCanEditPage(
+  userId: string,
+  pageId: number,
+): Promise<boolean> {
+  const pageResult = await query<{
+    source: string;
+    created_by_user_id: string | null;
+    visibility: string | null;
+    space_key: string | null;
+    deleted_at: Date | null;
+  }>(
+    `SELECT source, created_by_user_id, visibility, space_key, deleted_at
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  if (pageResult.rows.length === 0) return false;
+  const page = pageResult.rows[0]!;
+  if (page.deleted_at) return false;
+
+  if (page.source === 'standalone') {
+    return page.created_by_user_id === userId || page.visibility === 'shared';
+  }
+
+  if (page.space_key) {
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    return accessibleSpaces.includes(page.space_key);
+  }
+  return true;
+}
+
+/**
  * Batched {@link userCanAccessPage} (#1104): the RAG ACL post-filter walks a
  * candidate pool that scaled from ~15 to up to 100 pages (the rerank
  * candidate pool), and N sequential per-page checks at 1-3 queries each were

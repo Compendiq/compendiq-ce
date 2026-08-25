@@ -1,4 +1,5 @@
 export * from './schemas/auth.js';
+export * from './schemas/collab.js';
 export * from './schemas/oidc.js';
 export * from './schemas/settings.js';
 export * from './schemas/pages.js';
