@@ -8,7 +8,7 @@ Flag off ≡ today's TipTap draft + #301 SSE presence.
 Design of record: [`docs/superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md`](../superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md)
 (epic [#1411](https://github.com/Compendiq/compendiq-ce/issues/1411), architecture PR [#1443](https://github.com/Compendiq/compendiq-ce/issues/1443)).
 This diagram is the topology later PRs implement. The table exists from
-migration 102; the gateway, nginx location, and editor wiring do **not**.
+migration 104; the gateway, nginx location, and editor wiring do **not**.
 
 ## Topology
 
@@ -253,7 +253,7 @@ cancels the timer.
 ## Feature flag
 
 `admin_settings.collab_editing_enabled`, `'0'` / `'1'`, default `'0'`
-(migration 102, `ON CONFLICT DO NOTHING`). Soft-fail default is **false**.
+(migration 104, `ON CONFLICT DO NOTHING`). Soft-fail default is **false**.
 
 - Flag off: gateway completes 101 then closes **4403** before SyncStep1;
   frontend mounts today's editor; SSE presence only.

@@ -15,11 +15,12 @@ const architectureDir = path.resolve(migrationsDir, '../../../../../docs/archite
  * The gateway does not exist yet; this migration is the schema the later
  * PRs persist into. `version` is a BYTEA write generation, not pages.version.
  */
-describe('Migration 102 filename (#1443)', () => {
+describe('Migration 104 filename (#1443)', () => {
   const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql'));
 
-  it('is 102_page_collaborative_docs.sql — the epic 099 name is stale', () => {
-    expect(files).toContain('102_page_collaborative_docs.sql');
+  it('is 104_page_collaborative_docs.sql — 102 is Notion on origin/dev', () => {
+    expect(files).toContain('104_page_collaborative_docs.sql');
+    expect(files.filter((f) => /^102_.*collab/.test(f))).toEqual([]);
     expect(files.filter((f) => /^099_.*collab/.test(f))).toEqual([]);
   });
 });
@@ -80,17 +81,17 @@ describe('collab design locks (#1443 / #1450 review)', () => {
 
 function collabFlagSeedSql(): string {
   const migrationSql = fs.readFileSync(
-    path.join(migrationsDir, '102_page_collaborative_docs.sql'),
+    path.join(migrationsDir, '104_page_collaborative_docs.sql'),
     'utf8',
   );
   const seedSql = migrationSql.match(
     /INSERT INTO admin_settings[\s\S]*?ON CONFLICT \(setting_key\) DO NOTHING/,
   )?.[0];
-  if (!seedSql) throw new Error('migration 102 must seed collab_editing_enabled');
+  if (!seedSql) throw new Error('migration 104 must seed collab_editing_enabled');
   return seedSql;
 }
 
-describe.skipIf(!dbAvailable)('Migration 102 — page_collaborative_docs (#1443)', () => {
+describe.skipIf(!dbAvailable)('Migration 104 — page_collaborative_docs (#1443)', () => {
   beforeAll(async () => { await setupTestDb(); });
   afterAll(async () => { await teardownTestDb(); });
   beforeEach(async () => { await truncateAllTables(); });
@@ -109,11 +110,11 @@ describe.skipIf(!dbAvailable)('Migration 102 — page_collaborative_docs (#1443)
 
   it('is recorded in _migrations and seeds collab_editing_enabled to 0', async () => {
     const applied = await query<{ name: string }>(
-      `SELECT name FROM _migrations WHERE name = '102_page_collaborative_docs.sql'`,
+      `SELECT name FROM _migrations WHERE name = '104_page_collaborative_docs.sql'`,
     );
     expect(applied.rows).toHaveLength(1);
 
-    const src = fs.readFileSync(path.join(migrationsDir, '102_page_collaborative_docs.sql'), 'utf8');
+    const src = fs.readFileSync(path.join(migrationsDir, '104_page_collaborative_docs.sql'), 'utf8');
     expect(src).toMatch(/VALUES\s*\(\s*'collab_editing_enabled',\s*'0'/);
 
     await query(collabFlagSeedSql());

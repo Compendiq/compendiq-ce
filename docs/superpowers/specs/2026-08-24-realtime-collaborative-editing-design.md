@@ -11,7 +11,7 @@
 
 This document is the design of record for GitHub #1411. It settles the mechanism under the epic’s objective, locks the decisions the issue draft left open (notably Hocuspocus), and is precise enough that seven independently reviewable PRs can be written from it without reopening the architecture.
 
-Verified against the working tree of `compendiq-ce` on 2026-08-24 (parent checkout `fix/embedding-run-progress`; files cited below match `origin/dev` for these surfaces). Latest migration on **`origin/dev` is `101_embedding_compare_judgements.sql`**. The collab table is **`102_page_collaborative_docs.sql`**, never 099 (the epic’s filename is stale).
+Verified against the working tree of `compendiq-ce` on 2026-08-24 (parent checkout `fix/embedding-run-progress`; files cited below match `origin/dev` for these surfaces). Latest migration on **`origin/dev` is `103_pages_notion_page_id.sql`** (102 is the Notion token). The collab table is **`104_page_collaborative_docs.sql`**, never 099 (the epic’s filename is stale) and never 102 (taken on `dev`).
 
 ---
 
@@ -272,7 +272,7 @@ CSP `connect-src 'self'` in `frontend/nginx-security-headers.conf` already allow
 
 ### H. Feature flag
 
-`admin_settings.collab_editing_enabled`, value `'0'` / `'1'`, **default `'0'`**, seeded in migration 102.
+`admin_settings.collab_editing_enabled`, value `'0'` / `'1'`, **default `'0'`**, seeded in migration 104.
 
 Read through `makeCachedSetting` (`cached-setting.ts`) on channel `collab:enabled:changed` (extend the `CacheBusChannel` union in `redis-cache-bus.ts` in the same PR that publishes). Soft-fail default is **false**.
 
@@ -912,7 +912,7 @@ Error codes:
 
 ## Data Model Changes
 
-Migration **`102_page_collaborative_docs.sql`** (PR 1; table unused until PR 2/3 is OK):
+Migration **`104_page_collaborative_docs.sql`** (PR 1; table unused until PR 2/3 is OK):
 
 ```sql
 CREATE TABLE page_collaborative_docs (
@@ -1143,7 +1143,7 @@ Seven independently reviewable PRs. Default DAG is linear for review even though
 
 ```mermaid
 flowchart LR
-    P1[PR 1 docs plus migration 102] --> P2[PR 2 gateway]
+    P1[PR 1 docs plus migration 104] --> P2[PR 2 gateway]
     P2 --> P3[PR 3 persistence plus standalone commit]
     P3 --> P4[PR 4 ingress]
     P4 --> P5[PR 5 TipTap plus presence UI]
@@ -1157,7 +1157,7 @@ Each child issue later maps 1:1 onto these nodes.
 
 ---
 
-### PR 1 — Architecture, ERD, migration 102, design spec
+### PR 1 — Architecture, ERD, migration 104, design spec
 
 - **Title:** `docs: realtime collaboration architecture and page_collaborative_docs (#1411)`
 - **Files / components:**
@@ -1165,8 +1165,8 @@ Each child issue later maps 1:1 onto these nodes.
   - `docs/architecture/README.md` (index row 12 + maintenance trigger)
   - `docs/architecture/06-data-model.md` (`pages ||--o| page_collaborative_docs`)
   - `docs/superpowers/specs/2026-08-24-realtime-collaborative-editing-design.md` (this document, persisted)
-  - `backend/src/core/db/migrations/102_page_collaborative_docs.sql`
-  - `backend/src/core/db/migrations/__tests__/102_page_collaborative_docs.test.ts` (table shape, FK cascade, index, flag seed `'0'`; real Postgres via `test-db-helper.ts`)
+  - `backend/src/core/db/migrations/104_page_collaborative_docs.sql`
+  - `backend/src/core/db/migrations/__tests__/104_page_collaborative_docs.test.ts` (table shape, FK cascade, index, flag seed `'0'`; real Postgres via `test-db-helper.ts`)
   - `backend/src/core/db/migrations/__tests__/migration-filenames.test.ts` stays green (102 is the next free prefix after origin/dev’s 101)
 - **Dependencies:** none (branches from `dev`)
 - **Description:** Docs and an unused table. No runtime behaviour. Confirms we do not ship `099_`. The seeded flag is off, so production is unchanged even after migrate.
