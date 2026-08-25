@@ -61,8 +61,6 @@ async function resolveAdmin(browser: Browser): Promise<E2eUser | null> {
   try {
     const session = await registerUser(context.request, uniqueUsername('c7flag'), PASS);
     return session.user.role === 'admin' ? session : null;
-  } catch {
-    return null;
   } finally {
     await context.close();
   }

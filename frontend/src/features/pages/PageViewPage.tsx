@@ -48,7 +48,7 @@ import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
 import { useCollabProvider } from './use-collab-provider';
 import { mergePresence } from './merge-presence';
-import { caretColorForUserId } from './collab-colors';
+import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
@@ -169,15 +169,22 @@ export function PageViewPage() {
       return { enabled: raw?.enabled === true };
     },
     staleTime: 30_000,
-    initialData: { enabled: false },
-    initialDataUpdatedAt: 0,
   });
-  const collabEnabled = collabConfig.enabled;
+  const [collabSession, setCollabSession] = useState(false);
+  const [collabHasSynced, setCollabHasSynced] = useState(false);
   const collab = useCollabProvider({
     pageId: id,
-    enabled: collabEnabled && editing,
+    enabled: collabSession,
   });
-  const collabLive = collabEnabled && editing;
+  const collabLive = collabSession;
+  useEffect(() => {
+    if (!collabSession) {
+      setCollabHasSynced(false);
+      return;
+    }
+    if (collab.synced) setCollabHasSynced(true);
+    if (collab.error) setCollabHasSynced(false);
+  }, [collabSession, collab.synced, collab.error]);
   const mergedViewers = useMemo(
     () => (collabLive
       ? mergePresence(presenceViewers, collab.awarenessUsers)
@@ -243,6 +250,8 @@ export function PageViewPage() {
       setConfirmDiscardOpen(false);
       setConfirmTrashOpen(false);
       setConfluenceModified(null);
+      setCollabSession(false);
+      setCollabHasSynced(false);
     }
   }, [id, setStoreHeadings]);
 
@@ -317,7 +326,9 @@ export function PageViewPage() {
     if (!page || !id) return;
     setEditTitle(page.title);
     setDraftLabels(page.labels ?? []);
-    if (collabEnabled) {
+    const startCollab = collabConfig?.enabled === true;
+    setCollabSession(startCollab);
+    if (startCollab) {
       // Collab has no private localStorage draft to restore.
       setEditHtml(page.bodyHtml);
       setIsDirty(false);
@@ -335,7 +346,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabEnabled]);
+  }, [id, page, collabConfig?.enabled]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -370,20 +381,33 @@ export function PageViewPage() {
 
   const discardAndExit = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
+    setCollabSession(false);
+    setCollabHasSynced(false);
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
   }, [draftKey]);
 
+  const titleOrLabelsDiverged = useCallback(() => {
+    if (!page) return false;
+    const currentLabels = page.labels ?? [];
+    const labelsDiverged =
+      draftLabels.length !== currentLabels.length ||
+      draftLabels.some((l) => !currentLabels.includes(l));
+    return editTitle !== page.title || labelsDiverged;
+  }, [page, editTitle, draftLabels]);
+
   // Cancel guards against silently throwing away unsaved work: when dirty it
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
-    if (collabEnabled) {
-      // A collab session has no private draft to discard.
-      setIsDirty(false);
-      setDraftLabels([]);
-      setEditing(false);
+    if (collabSession) {
+      // Body lives on the Y.Doc; still confirm title/label divergence.
+      if (titleOrLabelsDiverged()) {
+        setConfirmDiscardOpen(true);
+        return;
+      }
+      discardAndExit();
       return;
     }
     if (isEditorDirty()) {
@@ -391,7 +415,7 @@ export function PageViewPage() {
       return;
     }
     discardAndExit();
-  }, [collabEnabled, isEditorDirty, discardAndExit]);
+  }, [collabSession, titleOrLabelsDiverged, isEditorDirty, discardAndExit]);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscardOpen(false);
@@ -406,19 +430,14 @@ export function PageViewPage() {
       // the edited PNG ships as a huge base64 data URI inside body_html;
       // with it, the PNG is uploaded to the attachment store and the
       // body_html references the small server URL instead.
-      const drain = await drainPendingDrawioDiagrams(editorInstance, {
-        attachmentPageId: page.confluenceId ?? id,
-        pageSource: page.confluenceId ? 'confluence' : 'standalone',
-      });
-      for (const msg of drain.errors) {
-        toast.warning(msg);
-      }
-      if (!editorInstance) {
-        toast.error('Editor instance is not ready. Please try again.');
-        return;
-      }
-
       if (collabLive) {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
         setCollabSaving(true);
         try {
           await apiFetch(`/pages/${id}/collab/commit`, {
@@ -431,6 +450,17 @@ export function PageViewPage() {
           setCollabSaving(false);
         }
       } else {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
+        if (!editorInstance) {
+          toast.error('Editor instance is not ready. Please try again.');
+          return;
+        }
         // Read the live HTML straight off the editor instance (#954) — it's the
         // single source of truth for body content, and also reflects the
         // newly-committed draw.io node attributes from the drain above.
@@ -452,6 +482,8 @@ export function PageViewPage() {
         }
       }
       if (draftKey) clearDraft(draftKey);
+      setCollabSession(false);
+      setCollabHasSynced(false);
       setIsDirty(false);
       setDraftLabels([]);
       setEditing(false);
@@ -758,7 +790,7 @@ export function PageViewPage() {
   const sessionActions = (
     <>
       <PresenceAvatarStack viewers={mergedViewers} />
-      {collabEnabled ? (
+      {collabSession ? (
         <Button
           onClick={handleCancelEditing}
           title="Done editing (Esc)"
@@ -943,7 +975,7 @@ export function PageViewPage() {
                         ? 'This page is no longer available for collaborative editing.'
                         : 'Your session expired. Sign in again to keep editing together.'}
                   </p>
-                ) : collabLive && !collab.synced ? (
+                ) : collabLive && !collabHasSynced ? (
                   <p
                     role="status"
                     className="py-8 text-sm leading-6 text-muted-foreground"

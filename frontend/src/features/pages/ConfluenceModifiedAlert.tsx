@@ -1,8 +1,6 @@
 /**
  * Honest refusal when Confluence moved while a collab session is live (#1448).
- *
- * ADR-010: a correct 409 is a verdict, not a fault — neutral, not amber,
- * and not a second presence system. The session stays open.
+ * `role="status"` (not alert) so AT is not interrupted; the session stays open.
  */
 import { cn } from '../../shared/lib/cn';
 

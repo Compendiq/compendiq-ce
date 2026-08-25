@@ -36,16 +36,36 @@ describe('collab Playwright project isolation (#1449)', () => {
 
   it('runs collab-editing only in a workers:1 project the default suite ignores', () => {
     expect(config).toMatch(/name:\s*'chromium'/);
-    expect(config).toMatch(/testIgnore:\s*\/collab-editing\//);
     expect(config).toMatch(/name:\s*'collab'/);
     expect(config).toMatch(/testMatch:\s*\/collab-editing\//);
     expect(config).toMatch(/fullyParallel:\s*false/);
     expect(config).toMatch(/workers:\s*1/);
   });
 
+  it('chromium testIgnore still covers helpers, not only collab-editing', () => {
+    const marker = "name: 'chromium'";
+    const start = config.indexOf(marker);
+    expect(start).toBeGreaterThan(-1);
+    const brace = config.lastIndexOf('{', start);
+    let depth = 0;
+    let block = '';
+    for (let i = brace; i < config.length; i++) {
+      if (config[i] === '{') depth += 1;
+      else if (config[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          block = config.slice(brace, i + 1);
+          break;
+        }
+      }
+    }
+    expect(block).toMatch(/helpers/);
+    expect(block).toMatch(/collab-editing/);
+  });
+
   it('names the admin env vars the skip copy tells an operator to set', () => {
     expect(COLLAB_E2E_SKIP_NO_ADMIN).toMatch(/COLLAB_E2E_ADMIN/);
     expect(COLLAB_E2E_SKIP_NO_ADMIN).toMatch(/COLLAB_E2E_PASSWORD/);
-    expect(COLLAB_E2E_SKIP_NO_ADMIN).toMatch(/empty DB/);
+    expect(COLLAB_E2E_SKIP_NO_ADMIN).toMatch(/empty-DB|--no-deps/);
   });
 });

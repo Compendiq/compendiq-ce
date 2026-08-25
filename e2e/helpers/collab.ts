@@ -16,7 +16,7 @@ export async function getCollabEnabled(
 }
 
 export const COLLAB_E2E_SKIP_NO_ADMIN =
-  'Collab e2e needs an admin to PUT collabEditingEnabled. Use an empty DB (first register is admin) or set COLLAB_E2E_ADMIN and COLLAB_E2E_PASSWORD.';
+  'Full `npx playwright test` needs COLLAB_E2E_ADMIN and COLLAB_E2E_PASSWORD; empty-DB first-register admin is only for `--project=collab --no-deps`.';
 
 /** PUT the flag. Caller must be admin. A failed PUT throws — never swallow. */
 export async function setCollabEditingEnabled(

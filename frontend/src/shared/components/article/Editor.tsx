@@ -78,7 +78,7 @@ import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import type { Doc as YDoc } from 'yjs';
 import type { WebsocketProvider } from 'y-websocket';
-import { renderCollabCaret, selectionRenderCollab } from '../../../features/pages/collab-colors';
+import { renderCollabCaret, selectionRenderCollab } from '../../lib/collab-colors';
 
 export function EditorContextToolbars({
   editor,

@@ -16,7 +16,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: /collab-editing/,
+      testIgnore: ['**/helpers/**', /collab-editing/],
       use: { ...devices['Desktop Chrome'] },
     },
     {

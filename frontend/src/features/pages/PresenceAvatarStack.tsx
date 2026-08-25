@@ -60,7 +60,7 @@ export function PresenceAvatarStack({
             key={viewer.userId}
             {...animation}
             transition={reduce ? { duration: 0 } : { delay: idx * 0.05, duration: 0.18 }}
-            title={`${viewer.name} (${viewer.role})${viewer.isEditing ? ' — editing' : ''}`}
+            title={`${viewer.name}${viewer.role ? ` (${viewer.role})` : ''}${viewer.isEditing ? ' — editing' : ''}`}
             data-testid="presence-avatar"
             data-user-id={viewer.userId}
             data-is-editing={viewer.isEditing ? 'true' : 'false'}
