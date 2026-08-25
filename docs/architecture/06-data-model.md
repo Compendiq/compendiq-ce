@@ -63,6 +63,7 @@ erDiagram
         text inline_completion_mode "word | full (personal default)"
         bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
         jsonb onboarding_state "checklist flags, merge-not-overwrite on write (#1402)"
+        text notion_integration_token "AES-256-GCM Notion internal integration token (#1462)"
     }
 
     pages {
@@ -623,13 +624,16 @@ together, which matters most for #1114's query-side prefix.
   top-K nearest-neighbour edges from this index scoped to the changed pages,
   instead of AVG-ing the whole `page_embeddings` table and doing an index-less
   pairwise scan on every embedding run.
-- **Encryption at rest.** `user_settings.confluence_pat` is stored as a
-  ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
-  log or expose it to the frontend. The AES key is derived via HKDF-SHA256
+- **Encryption at rest.** `user_settings.confluence_pat` and
+  `user_settings.notion_integration_token` (#1462) are stored as
+  ciphertext blobs (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
+  log or expose them to the frontend (`hasConfluencePat` / `hasToken`
+  only). The AES key is derived via HKDF-SHA256
   over the full passphrase (#738); pre-HKDF ciphertexts (`v{N}:` /
   unversioned) remain decryptable. The `smtp_pass` row in `admin_settings`
   uses the same versioned helpers — legacy plaintext rows are detected on
-  startup and re-encrypted in place.
+  startup and re-encrypted in place. Key rotation
+  (`POST /admin/rotate-encryption-key`) sweeps the Notion token with the PAT.
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
   `license_key` (populated by the EE plugin) and the `embedding_dimensions`

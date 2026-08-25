@@ -72,6 +72,7 @@ import { setupRoutes } from './routes/foundation/setup.js';
 import { searchRoutes } from './routes/knowledge/search.js';
 import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
 import { localAttachmentsRoutes } from './routes/knowledge/local-attachments.js';
+import { notionRoutes } from './routes/knowledge/notion.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -505,6 +506,7 @@ export async function buildApp() {
   await app.register(searchRoutes, { prefix: '/api' });
   await app.register(localSpacesRoutes, { prefix: '/api' });
   await app.register(localAttachmentsRoutes, { prefix: '/api' });
+  await app.register(notionRoutes, { prefix: '/api' });
 
   return app;
 }
