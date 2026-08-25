@@ -5,7 +5,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { useAuthStore } from '../../../stores/auth-store';
-import { NotionImportDialog } from './NotionImportDialog';
+import { NotionImportDialog, shouldCommitImportResult } from './NotionImportDialog';
 
 const TOKEN = 'ntn_dummy_secret_do_not_echo';
 
@@ -29,7 +29,7 @@ interface StubResponse {
 let routes: Array<{
   match: RegExp;
   method?: string;
-  respond: (url: string, init?: RequestInit) => StubResponse;
+  respond: (url: string, init?: RequestInit) => StubResponse | Promise<StubResponse>;
 }>;
 let calls: Array<{ url: string; method: string; body: string | null }>;
 
@@ -42,9 +42,10 @@ function stubFetch() {
       const method = (init?.method ?? 'GET').toUpperCase();
       calls.push({ url, method, body: typeof init?.body === 'string' ? init.body : null });
       const route = routes.find((r) => r.match.test(url) && (r.method ?? 'GET') === method);
-      const { status = 200, body = {} } = route
-        ? route.respond(url, init)
+      const resolved = route
+        ? await route.respond(url, init)
         : { status: 404, body: { message: `no stub for ${method} ${url}` } };
+      const { status = 200, body = {} } = resolved;
       return {
         ok: status >= 200 && status < 300,
         status,
@@ -54,6 +55,17 @@ function stubFetch() {
       } as unknown as Response;
     }),
   );
+}
+
+function deferResponse(): {
+  promise: Promise<StubResponse>;
+  resolve: (value: StubResponse) => void;
+} {
+  let resolve!: (value: StubResponse) => void;
+  const promise = new Promise<StubResponse>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 const MIXED_TREE = {
@@ -165,13 +177,16 @@ function givenHappyPath(opts: { tree?: unknown; importItems?: unknown[] } = {}) 
   ];
 }
 
-function renderDialog() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+function renderDialog(opts: { open?: boolean; onClose?: () => void; queryClient?: QueryClient } = {}) {
+  const queryClient =
+    opts.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const onClose = opts.onClose ?? vi.fn();
+  const view = render(
     <QueryClientProvider client={queryClient}>
-      <NotionImportDialog open onClose={vi.fn()} />
+      <NotionImportDialog open={opts.open ?? true} onClose={onClose} />
     </QueryClientProvider>,
   );
+  return { ...view, queryClient, onClose };
 }
 
 async function connectWithDummyToken() {
@@ -258,7 +273,7 @@ describe('NotionImportDialog confirm copy', () => {
 
     await screen.findByTestId('notion-import-confirm-copy');
     fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
-    fireEvent.click(screen.getByRole('button', { name: /shared/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /shared/i }));
     fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
 
     await waitFor(() => {
@@ -328,5 +343,199 @@ describe('NotionImportDialog empty and error', () => {
     renderDialog();
     expect(await screen.findByTestId('notion-import-tree-error')).toHaveTextContent(/unreachable/i);
     expect(screen.queryByTestId('notion-import-tree-empty')).toBeNull();
+  });
+
+  it('keeps Retry mounted and focusable while a no-cache refetch is in flight', async () => {
+    connected = true;
+    const held = deferResponse();
+    let treeGets = 0;
+    routes = [
+      { match: /\/notion\/connection$/, method: 'GET', respond: () => ({ body: { hasToken: true } }) },
+      {
+        match: /\/notion\/tree$/,
+        method: 'GET',
+        respond: () => {
+          treeGets += 1;
+          if (treeGets === 1) return { status: 502, body: { message: 'Notion is unreachable' } };
+          return held.promise;
+        },
+      },
+      { match: /\/spaces\/local/, method: 'GET', respond: () => ({ body: LOCAL_SPACES }) },
+    ];
+    renderDialog();
+    const retry = await screen.findByRole('button', { name: /^retry$/i });
+    retry.focus();
+    fireEvent.click(retry);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /retrying/i })).toBeInTheDocument();
+    });
+    const retrying = screen.getByRole('button', { name: /retrying/i });
+    expect(retrying).not.toBeDisabled();
+    expect(retrying).toHaveAttribute('aria-disabled', 'true');
+    expect(retrying).toHaveFocus();
+    expect(screen.getByTestId('notion-import-tree-error')).toBeInTheDocument();
+
+    held.resolve({ status: 502, body: { message: 'Notion is unreachable' } });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^retry$/i })).toBeInTheDocument();
+    });
+  });
+
+  it('keeps a cached tree under a degraded strip when refetch fails', async () => {
+    connected = true;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['notion', 'tree'], MIXED_TREE);
+    routes = [
+      { match: /\/notion\/connection$/, method: 'GET', respond: () => ({ body: { hasToken: true } }) },
+      {
+        match: /\/notion\/tree$/,
+        method: 'GET',
+        respond: () => ({ status: 502, body: { message: 'Notion is unreachable' } }),
+      },
+      { match: /\/spaces\/local/, method: 'GET', respond: () => ({ body: LOCAL_SPACES }) },
+    ];
+    renderDialog({ queryClient });
+
+    expect(await screen.findByTestId('notion-import-tree-degraded')).toHaveAttribute('role', 'status');
+    expect(screen.getByTestId('notion-import-tree')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(screen.queryByTestId('notion-import-tree-error')).toBeNull();
+  });
+});
+
+describe('NotionImportDialog destination and lock', () => {
+  async function reachConfirm() {
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+  }
+
+  it('says a local space is required when the list is empty', async () => {
+    routes = routes.map((route) =>
+      route.match.test('/spaces/local') ? { ...route, respond: () => ({ body: [] }) } : route,
+    );
+    await reachConfirm();
+    expect(screen.getByTestId('notion-import-spaces-empty')).toHaveTextContent(/local space/i);
+    expect(screen.getByRole('button', { name: /^import$/i })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('says local spaces could not be read when the list request fails', async () => {
+    connected = true;
+    routes = [
+      { match: /\/notion\/connection$/, method: 'GET', respond: () => ({ body: { hasToken: true } }) },
+      { match: /\/notion\/tree$/, method: 'GET', respond: () => ({ body: MIXED_TREE }) },
+      {
+        match: /\/spaces\/local/,
+        method: 'GET',
+        respond: () => ({ status: 502, body: { message: 'spaces failed' } }),
+      },
+      { match: /\/spaces(?:\?|$)/, method: 'GET', respond: () => ({ body: [] }) },
+      { match: /\/pages\/tree/, method: 'GET', respond: () => ({ body: { items: [], total: 0 } }) },
+    ];
+    renderDialog();
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    expect(await screen.findByTestId('notion-import-spaces-error')).toHaveTextContent(/could not/i);
+    expect(screen.getByRole('button', { name: /^import$/i })).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('does not fetch local spaces while the wizard is closed', () => {
+    renderDialog({ open: false });
+    expect(calls.some((c) => /\/spaces\/local/.test(c.url))).toBe(false);
+  });
+
+  it('locks Back and selection while import is in flight, then shows titles', async () => {
+    const held = deferResponse();
+    givenHappyPath();
+    routes = routes.map((route) =>
+      (route.method ?? 'GET') === 'POST' && route.match.test('/notion/import')
+        ? { ...route, respond: () => held.promise }
+        : route,
+    );
+    const { onClose } = renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /importing/i })).toBeInTheDocument();
+    });
+    const back = screen.getByRole('button', { name: /^back$/i });
+    expect(back).toBeDisabled();
+    expect(screen.queryByRole('checkbox', { name: 'Nested notes' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /close/i }));
+    expect(onClose).not.toHaveBeenCalled();
+
+    held.resolve({
+      body: {
+        items: [
+          { notionPageId: 'handbook', status: 'success', localPageId: 11 },
+          { notionPageId: 'nested', status: 'skip', reason: NOTION_UNSUPPORTED_LABEL },
+        ],
+      },
+    });
+
+    const result = await screen.findByTestId('notion-import-result');
+    expect(result).toHaveTextContent('Handbook');
+    expect(result).not.toHaveTextContent('handbook');
+    expect(within(result).getByRole('link', { name: 'Handbook' })).toHaveAttribute('href', '/pages/11');
+  });
+
+  it('does not commit an in-flight POST after the wizard leaves confirm', () => {
+    expect(shouldCommitImportResult('confirm', true)).toBe(true);
+    expect(shouldCommitImportResult('pick', true)).toBe(false);
+    expect(shouldCommitImportResult('result', true)).toBe(false);
+    expect(shouldCommitImportResult('confirm', false)).toBe(false);
+  });
+
+  it('keeps parent-page search focused inside the location picker', async () => {
+    await reachConfirm();
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /select page location/i }));
+    const search = await screen.findByPlaceholderText(/search pages/i);
+    search.focus();
+    fireEvent.change(search, { target: { value: 'Root' } });
+    expect(search).toHaveValue('Root');
+    expect(search).toHaveFocus();
+    expect(screen.getByTestId('notion-import-dialog')).toBeInTheDocument();
+  });
+
+  it('strips a leaked token key from GET connection/tree before caching', async () => {
+    connected = true;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    routes = [
+      {
+        match: /\/notion\/connection$/,
+        method: 'GET',
+        respond: () => ({ body: { hasToken: true, token: TOKEN } }),
+      },
+      {
+        match: /\/notion\/tree$/,
+        method: 'GET',
+        respond: () => ({ body: { ...MIXED_TREE, token: TOKEN } }),
+      },
+      { match: /\/spaces\/local/, method: 'GET', respond: () => ({ body: LOCAL_SPACES }) },
+    ];
+    renderDialog({ queryClient });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('notion-import-dialog').textContent).not.toContain(TOKEN);
+    });
+    expect(JSON.stringify(queryClient.getQueryData(['notion', 'connection']) ?? {})).not.toContain(TOKEN);
+    expect(JSON.stringify(queryClient.getQueryData(['notion', 'tree']) ?? {})).not.toContain(TOKEN);
+  });
+
+  it('renders the unsupported label from node.skipReason', () => {
+    const src = readFileSync(
+      path.join(process.cwd(), 'src/features/pages/notion-import/NotionImportDialog.tsx'),
+      'utf8',
+    );
+    expect(src).toMatch(/node\.skipReason/);
   });
 });

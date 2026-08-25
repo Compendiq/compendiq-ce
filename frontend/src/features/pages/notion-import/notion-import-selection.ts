@@ -39,19 +39,27 @@ export function selectablePageIds(nodes: NotionTreeNode[], selected: ReadonlySet
 
 export function summarizeImport(nodes: NotionTreeNode[], selected: ReadonlySet<string>): ImportSummary {
   const importIds = selectablePageIds(nodes, selected);
-  let skippedDatabaseCount = 0;
+  const skippedDatabases = new Set<string>();
   let skippedUnsupportedCount = 0;
   walk(nodes, (node) => {
     if (isSelectablePage(node)) return;
-    if (node.type === 'database') skippedDatabaseCount += 1;
+    if (node.type === 'database') skippedDatabases.add(node.linkedFromId ?? node.id);
     else skippedUnsupportedCount += 1;
   });
   return {
     importCount: importIds.length,
     importIds,
-    skippedDatabaseCount,
+    skippedDatabaseCount: skippedDatabases.size,
     skippedUnsupportedCount,
   };
+}
+
+export function notionTitleById(nodes: NotionTreeNode[]): Map<string, string> {
+  const titles = new Map<string, string>();
+  walk(nodes, (node) => {
+    titles.set(node.id, node.title);
+  });
+  return titles;
 }
 
 export function formatConfirmCopy(summary: Pick<ImportSummary, 'importCount' | 'skippedDatabaseCount'>): string {

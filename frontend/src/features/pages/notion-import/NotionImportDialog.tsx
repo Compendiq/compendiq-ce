@@ -6,12 +6,11 @@
  * of databases including their rows, and creates standalone pages via D.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Loader2, X } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { NotionImportItem, NotionTreeNode } from '@compendiq/contracts';
-import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { ApiError } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
 import { LocationPicker, type LocationSelection } from '../../../shared/components/LocationPicker';
@@ -19,6 +18,7 @@ import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import {
   formatConfirmCopy,
   isSelectablePage,
+  notionTitleById,
   summarizeImport,
   toggleSelectedPage,
 } from './notion-import-selection';
@@ -38,10 +38,24 @@ export interface NotionImportDialogProps {
 type Step = 'connect' | 'pick' | 'confirm' | 'result';
 type Visibility = 'private' | 'shared';
 
+export function shouldCommitImportResult(step: Step, open: boolean): boolean {
+  return open && step === 'confirm';
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return err.message;
   if (err instanceof Error) return err.message;
   return 'Something went wrong';
+}
+
+function isLocationPickerTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest('[data-location-picker-content]'));
+}
+
+function resultStatusLabel(status: NotionImportItem['status']): string {
+  if (status === 'already_imported') return 'already imported';
+  if (status === 'success') return 'imported';
+  return status;
 }
 
 function TreeNodeRow({
@@ -49,19 +63,22 @@ function TreeNodeRow({
   selected,
   onToggle,
   depth,
+  locked,
 }: {
   node: NotionTreeNode;
   selected: ReadonlySet<string>;
   onToggle: (node: NotionTreeNode) => void;
   depth: number;
+  locked: boolean;
 }) {
   const selectable = isSelectablePage(node);
   return (
-    <div>
+    <li>
       <div
         data-testid={`notion-node-${node.id}`}
         className="flex min-h-7 items-start gap-2 py-1 text-[13px]"
         style={{ paddingLeft: depth * 12 }}
+        aria-level={depth + 1}
       >
         {selectable ? (
           <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
@@ -69,6 +86,7 @@ function TreeNodeRow({
               type="checkbox"
               className="mt-0.5 h-4 w-4 rounded border-border-interactive accent-primary"
               checked={selected.has(node.id)}
+              disabled={locked}
               onChange={() => onToggle(node)}
               aria-label={node.title}
             />
@@ -77,20 +95,25 @@ function TreeNodeRow({
         ) : (
           <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span className="text-muted-foreground">{node.title}</span>
-            <span className="text-xs text-muted-foreground">{NOTION_UNSUPPORTED_LABEL}</span>
+            <span className="text-xs text-muted-foreground">{node.skipReason}</span>
           </div>
         )}
       </div>
-      {node.children.map((child) => (
-        <TreeNodeRow
-          key={child.id}
-          node={child}
-          selected={selected}
-          onToggle={onToggle}
-          depth={depth + 1}
-        />
-      ))}
-    </div>
+      {node.children.length > 0 ? (
+        <ul className="list-none p-0">
+          {node.children.map((child) => (
+            <TreeNodeRow
+              key={child.id}
+              node={child}
+              selected={selected}
+              onToggle={onToggle}
+              depth={depth + 1}
+              locked={locked}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }
 
@@ -101,20 +124,38 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const hasToken = connection.data?.hasToken === true;
   const tree = useNotionTree(open && hasToken);
   const runImport = useRunNotionImport();
-  const { data: localSpaces } = useLocalSpaces();
+  const {
+    data: localSpaces,
+    isError: localSpacesError,
+    isPending: localSpacesPending,
+  } = useLocalSpaces(open);
 
-  const [step, setStep] = useState<Step>('connect');
+  const [step, setStepState] = useState<Step>('connect');
   const [token, setToken] = useState('');
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | undefined>();
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [resultItems, setResultItems] = useState<NotionImportItem[] | null>(null);
+  const [treeRetryInFlight, setTreeRetryInFlight] = useState(false);
+
+  const stepRef = useRef(step);
+  const setStep = useCallback((next: Step) => {
+    stepRef.current = next;
+    setStepState(next);
+  }, []);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const importPending = runImport.isPending;
 
   useEffect(() => {
     if (!open) return;
-    setStep(hasToken ? 'pick' : 'connect');
-  }, [open, hasToken]);
+    if (!hasToken) {
+      setStep('connect');
+      return;
+    }
+    if (stepRef.current === 'connect') setStep('pick');
+  }, [open, hasToken, setStep]);
 
   useEffect(() => {
     if (open) return;
@@ -125,15 +166,21 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     setVisibility('private');
     setResultItems(null);
     setStep('connect');
+    setTreeRetryInFlight(false);
   }, [open]);
 
   const nodes = useMemo(() => tree.data?.nodes ?? [], [tree.data?.nodes]);
+  const titlesById = useMemo(() => notionTitleById(nodes), [nodes]);
   const summary = useMemo(() => summarizeImport(nodes, selected), [nodes, selected]);
   const confirmCopy = formatConfirmCopy(summary);
 
-  const handleToggle = useCallback((node: NotionTreeNode) => {
-    setSelected((prev) => toggleSelectedPage(prev, node));
-  }, []);
+  const handleToggle = useCallback(
+    (node: NotionTreeNode) => {
+      if (runImport.isPending) return;
+      setSelected((prev) => toggleSelectedPage(prev, node));
+    },
+    [runImport.isPending],
+  );
 
   const handleConnect = async () => {
     const pasted = token.trim();
@@ -158,7 +205,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   };
 
   const handleImport = async () => {
-    if (!spaceKey || summary.importIds.length === 0) return;
+    if (importPending || !spaceKey || summary.importIds.length === 0) return;
     try {
       const response = await runImport.mutateAsync({
         pageIds: summary.importIds,
@@ -166,6 +213,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
         parentId,
         visibility,
       });
+      if (!shouldCommitImportResult(stepRef.current, openRef.current)) return;
       setResultItems(response.items);
       setStep('result');
     } catch (err) {
@@ -177,8 +225,23 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     setParentId(selection.parentId);
   }, []);
 
+  const requestClose = useCallback(() => {
+    if (runImport.isPending) return;
+    onClose();
+  }, [onClose, runImport.isPending]);
+
+  const retryTree = () => {
+    if (treeRetryInFlight) return;
+    setTreeRetryInFlight(true);
+    void tree.refetch().finally(() => setTreeRetryInFlight(false));
+  };
+
   const canContinuePick = summary.importCount > 0;
-  const canImport = Boolean(spaceKey) && summary.importCount > 0 && !runImport.isPending;
+  const canImport = Boolean(spaceKey) && summary.importCount > 0;
+  const importDisabled = !canImport || importPending;
+  const treeFailed = tree.isError || treeRetryInFlight;
+  const treeHasCache = Boolean(tree.data);
+  const spacesEmpty = !localSpacesPending && !localSpacesError && (localSpaces ?? []).length === 0;
 
   const title =
     step === 'connect'
@@ -189,13 +252,28 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           ? 'Confirm import'
           : 'Import finished';
 
+  const dismissUnlessPickerOrImport = (event: { preventDefault: () => void; target: EventTarget | null }) => {
+    if (importPending || isLocationPickerTarget(event.target)) event.preventDefault();
+  };
+
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => !next && onClose()}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) requestClose();
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" />
         <Dialog.Content
           className="nm-card-elevated fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden outline-none"
           data-testid="notion-import-dialog"
+          onPointerDownOutside={dismissUnlessPickerOrImport}
+          onFocusOutside={dismissUnlessPickerOrImport}
+          onInteractOutside={dismissUnlessPickerOrImport}
+          onEscapeKeyDown={(event) => {
+            if (importPending) event.preventDefault();
+          }}
         >
           <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
             <div className="min-w-0">
@@ -204,11 +282,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 One-shot migrate into a local space. Databases stay in Notion.
               </Dialog.Description>
             </div>
-            <Dialog.Close asChild>
-              <button type="button" className="nm-icon-button shrink-0" aria-label="Close" onClick={onClose}>
-                <X size={15} aria-hidden />
-              </button>
-            </Dialog.Close>
+            <button
+              type="button"
+              className="nm-icon-button shrink-0"
+              aria-label="Close"
+              aria-disabled={importPending || undefined}
+              onClick={requestClose}
+            >
+              <X size={15} aria-hidden />
+            </button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -231,8 +313,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                   onChange={(e) => setToken(e.target.value)}
                   className="nm-input"
                   placeholder="Paste the token"
+                  aria-describedby="notion-token-never-echo"
                 />
-                <p className="text-xs text-muted-foreground">
+                <p id="notion-token-never-echo" className="text-xs text-muted-foreground">
                   Stored encrypted. It is never shown again and is not a live sync.
                 </p>
                 <button
@@ -254,14 +337,14 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       type="button"
                       className="nm-button-ghost h-8 px-2 text-xs"
                       onClick={() => void handleDisconnect()}
-                      disabled={disconnect.isPending}
+                      disabled={disconnect.isPending || importPending}
                     >
                       Disconnect
                     </button>
                   </div>
                 )}
 
-                {tree.isError && !tree.data ? (
+                {treeFailed && !treeHasCache ? (
                   <div
                     role="alert"
                     data-testid="notion-import-tree-error"
@@ -272,14 +355,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       <p>{errorMessage(tree.error)}</p>
                       <button
                         type="button"
-                        className="nm-button-ghost mt-2 h-8 px-2 text-xs"
-                        onClick={() => void tree.refetch()}
+                        className="nm-button-ghost mt-2 h-8 px-2 text-xs aria-disabled:opacity-70"
+                        aria-disabled={treeRetryInFlight || undefined}
+                        onClick={retryTree}
                       >
-                        Retry
+                        {treeRetryInFlight ? 'Retrying…' : 'Retry'}
                       </button>
                     </div>
                   </div>
-                ) : tree.isPending ? (
+                ) : tree.isPending && !treeHasCache ? (
                   <p className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 size={14} className="animate-spin" aria-hidden />
                     Loading workspace…
@@ -289,16 +373,42 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     No pages are visible to this integration. Share pages with it in Notion, then retry.
                   </p>
                 ) : (
-                  <div data-testid="notion-import-tree" className="rounded-md border border-border bg-card px-2 py-1">
-                    {nodes.map((node) => (
-                      <TreeNodeRow
-                        key={node.id}
-                        node={node}
-                        selected={selected}
-                        onToggle={handleToggle}
-                        depth={0}
-                      />
-                    ))}
+                  <div className="space-y-2">
+                    {treeFailed && treeHasCache ? (
+                      <div
+                        role="status"
+                        data-testid="notion-import-tree-degraded"
+                        className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-foreground"
+                      >
+                        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden />
+                        <div className="min-w-0">
+                          <p>Could not refresh the Notion tree. Showing the last loaded pages.</p>
+                          <button
+                            type="button"
+                            className="nm-button-ghost mt-2 h-8 px-2 text-xs aria-disabled:opacity-70"
+                            aria-disabled={treeRetryInFlight || undefined}
+                            onClick={retryTree}
+                          >
+                            {treeRetryInFlight ? 'Retrying…' : 'Retry'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    <ul
+                      data-testid="notion-import-tree"
+                      className="list-none rounded-md border border-border bg-card px-2 py-1"
+                    >
+                      {nodes.map((node) => (
+                        <TreeNodeRow
+                          key={node.id}
+                          node={node}
+                          selected={selected}
+                          onToggle={handleToggle}
+                          depth={0}
+                          locked={importPending}
+                        />
+                      ))}
+                    </ul>
                   </div>
                 )}
               </div>
@@ -326,11 +436,19 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       id="notion-import-space"
                       className="nm-input"
                       value={spaceKey}
+                      disabled={importPending}
                       onChange={(e) => {
                         setSpaceKey(e.target.value);
                         setParentId(undefined);
                       }}
                       aria-label="Space"
+                      aria-describedby={
+                        localSpacesError
+                          ? 'notion-import-spaces-error'
+                          : spacesEmpty
+                            ? 'notion-import-spaces-empty'
+                            : undefined
+                      }
                     >
                       <option value="">Select a local space…</option>
                       {(localSpaces ?? []).map((space) => (
@@ -339,35 +457,72 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                         </option>
                       ))}
                     </select>
+                    {localSpacesError ? (
+                      <p
+                        id="notion-import-spaces-error"
+                        data-testid="notion-import-spaces-error"
+                        className="mt-1.5 text-xs text-muted-foreground"
+                      >
+                        Local spaces could not be read. Import needs a local destination, not Confluence.
+                      </p>
+                    ) : spacesEmpty ? (
+                      <p
+                        id="notion-import-spaces-empty"
+                        data-testid="notion-import-spaces-empty"
+                        className="mt-1.5 text-xs text-muted-foreground"
+                      >
+                        No local space yet. Create one first — import cannot use Confluence.
+                      </p>
+                    ) : null}
                   </div>
 
                   <div>
-                    <span className="mb-1.5 block text-sm font-medium">Visibility</span>
+                    <span className="mb-1.5 block text-sm font-medium" id="notion-import-visibility-label">
+                      Visibility
+                    </span>
                     <div
                       className="inline-flex items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
-                      role="group"
-                      aria-label="Visibility"
+                      role="radiogroup"
+                      aria-labelledby="notion-import-visibility-label"
                     >
                       <button
                         type="button"
-                        aria-pressed={visibility === 'private'}
+                        role="radio"
+                        aria-checked={visibility === 'private'}
                         className={cn(
-                          'rounded-sm px-2.5 py-1 text-xs font-medium',
+                          'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium',
                           visibility === 'private' ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
                         )}
-                        onClick={() => setVisibility('private')}
+                        onClick={() => {
+                          if (importPending) return;
+                          setVisibility('private');
+                        }}
                       >
+                        <Check
+                          size={12}
+                          aria-hidden
+                          className={visibility === 'private' ? undefined : 'invisible'}
+                        />
                         Private
                       </button>
                       <button
                         type="button"
-                        aria-pressed={visibility === 'shared'}
+                        role="radio"
+                        aria-checked={visibility === 'shared'}
                         className={cn(
-                          'rounded-sm px-2.5 py-1 text-xs font-medium',
+                          'inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-xs font-medium',
                           visibility === 'shared' ? 'nm-pill-active' : 'text-muted-foreground hover:text-foreground',
                         )}
-                        onClick={() => setVisibility('shared')}
+                        onClick={() => {
+                          if (importPending) return;
+                          setVisibility('shared');
+                        }}
                       >
+                        <Check
+                          size={12}
+                          aria-hidden
+                          className={visibility === 'shared' ? undefined : 'invisible'}
+                        />
                         Shared
                       </button>
                     </div>
@@ -380,6 +535,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                         spaceKey={spaceKey}
                         parentId={parentId}
                         onSelect={handleLocationSelect}
+                        disabled={importPending}
+                        modal
                       />
                     </div>
                   ) : null}
@@ -389,17 +546,28 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
             {step === 'result' && resultItems && (
               <ul className="space-y-2 text-sm" data-testid="notion-import-result">
-                {resultItems.map((item) => (
-                  <li key={item.notionPageId} className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="font-medium text-foreground">{item.notionPageId}</span>
-                    <span className="text-muted-foreground">
-                      {item.status === 'already_imported'
-                        ? 'already imported'
-                        : item.status}
-                      {item.reason ? ` — ${item.reason}` : ''}
-                    </span>
-                  </li>
-                ))}
+                {resultItems.map((item) => {
+                  const pageTitle = titlesById.get(item.notionPageId) ?? item.notionPageId;
+                  const href =
+                    item.localPageId != null && (item.status === 'success' || item.status === 'already_imported')
+                      ? `/pages/${item.localPageId}`
+                      : undefined;
+                  return (
+                    <li key={item.notionPageId} className="flex flex-wrap items-baseline gap-x-2">
+                      {href ? (
+                        <a href={href} className="font-medium text-foreground underline-offset-2 hover:underline">
+                          {pageTitle}
+                        </a>
+                      ) : (
+                        <span className="font-medium text-foreground">{pageTitle}</span>
+                      )}
+                      <span className="text-muted-foreground">
+                        {resultStatusLabel(item.status)}
+                        {item.reason ? ` — ${item.reason}` : ''}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -407,13 +575,13 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-3">
             {step === 'pick' && (
               <>
-                <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={onClose}>
+                <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={requestClose}>
                   Cancel
                 </button>
                 <button
                   type="button"
                   className="nm-button-primary h-8 px-3 text-xs"
-                  disabled={!canContinuePick}
+                  disabled={!canContinuePick || importPending}
                   onClick={() => setStep('confirm')}
                 >
                   Continue
@@ -425,22 +593,26 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 <button
                   type="button"
                   className="nm-button-ghost h-8 px-3 text-xs"
+                  disabled={importPending}
                   onClick={() => setStep('pick')}
                 >
                   Back
                 </button>
                 <button
                   type="button"
-                  className="nm-button-primary h-8 px-3 text-xs"
-                  disabled={!canImport}
-                  onClick={() => void handleImport()}
+                  className="nm-button-primary h-8 px-3 text-xs aria-disabled:opacity-70"
+                  aria-disabled={importDisabled || undefined}
+                  onClick={() => {
+                    if (importDisabled) return;
+                    void handleImport();
+                  }}
                 >
-                  {runImport.isPending ? 'Importing…' : 'Import'}
+                  {importPending ? 'Importing…' : 'Import'}
                 </button>
               </>
             )}
             {step === 'result' && (
-              <button type="button" className="nm-button-primary h-8 px-3 text-xs" onClick={onClose}>
+              <button type="button" className="nm-button-primary h-8 px-3 text-xs" onClick={requestClose}>
                 Done
               </button>
             )}

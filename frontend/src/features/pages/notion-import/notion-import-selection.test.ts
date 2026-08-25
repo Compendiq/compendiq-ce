@@ -90,15 +90,20 @@ describe('summarizeImport / formatConfirmCopy', () => {
     const summary = summarizeImport(MIXED, new Set(['handbook', 'nested']));
     expect(summary.importCount).toBe(2);
     expect(summary.importIds).toEqual(['handbook', 'nested']);
-    expect(summary.skippedDatabaseCount).toBe(2);
+    expect(summary.skippedDatabaseCount).toBe(1);
     expect(summary.skippedUnsupportedCount).toBe(1);
 
     const copy = formatConfirmCopy(summary);
     expect(copy).toContain('2 pages will import');
-    expect(copy).toContain('2 databases skipped');
-    expect(copy).toMatch(/including their rows/);
+    expect(copy).toContain('1 database skipped (including its rows)');
     expect(copy).toMatch(/stay in Notion/i);
     expect(copy).not.toMatch(/token|secret_|ntn_/i);
+  });
+
+  it('does not count a linked-view clone as a second database', () => {
+    const summary = summarizeImport(MIXED, new Set(['handbook']));
+    expect(summary.skippedDatabaseCount).toBe(1);
+    expect(formatConfirmCopy(summary)).toContain('1 database skipped (including its rows)');
   });
 
   it('uses singular copy for one page and one database', () => {
