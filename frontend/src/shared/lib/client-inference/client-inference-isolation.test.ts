@@ -1,0 +1,34 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { ClientModelIdSchema } from '@compendiq/contracts';
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+function read(rel: string): string {
+  return readFileSync(resolve(here, rel), 'utf8');
+}
+
+describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
+  it('does not mention huggingface or onnxruntime from the editor graph', () => {
+    const editor = read('../../../shared/components/article/Editor.tsx');
+    const extension = read('../../../shared/components/article/InlineCompletionExtension.ts');
+    expect(editor).not.toMatch(/huggingface|onnxruntime/i);
+    expect(extension).not.toMatch(/huggingface|onnxruntime/i);
+  });
+
+  it('does not set COEP', () => {
+    const nginx = read('../../../../nginx-security-headers.conf');
+    expect(nginx).not.toMatch(/Cross-Origin-Embedder-Policy/i);
+  });
+
+  it('pins ClientModelIdSchema to the one instruct checkpoint', () => {
+    expect(ClientModelIdSchema.options).toEqual(['qwen2.5-0.5b-instruct-q4']);
+  });
+
+  it('keeps transformers.js inside the inference worker only', () => {
+    expect(read('./client-inference.worker.ts')).toMatch(/@huggingface\/transformers/);
+    expect(read('./client-inference-manager.ts')).not.toMatch(/@huggingface\/transformers/);
+  });
+});

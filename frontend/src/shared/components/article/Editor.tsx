@@ -72,7 +72,13 @@ import {
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
 import { InlineCompletionExtension } from './InlineCompletionExtension';
+import { SpellcheckExtension } from './SpellcheckExtension';
+import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
 import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
+import {
+  getClientInferenceManager,
+  requestInlineCompletionWithClient,
+} from '../../lib/client-inference/client-inference-manager';
 import { isMac } from '../../lib/platform';
 import Collaboration from '@tiptap/extension-collaboration';
 import CollaborationCaret from '@tiptap/extension-collaboration-caret';
@@ -347,9 +353,16 @@ interface EditorProps {
     delay: InlineCompletionDelay;
     mode: InlineCompletionMode;
     codeOnly: boolean;
+    clientInferenceEnabled?: boolean;
+    clientInferenceWithoutServer?: boolean;
+    clientInferenceAdminEnabled?: boolean;
     title?: string;
     spaceKey?: string;
     language?: string;
+  };
+  spellcheck?: {
+    enabled: boolean;
+    languages: SpellLang[];
   };
   /**
    * Live Y.Doc for collaborative editing (#1447). When set, StarterKit history
@@ -704,7 +717,7 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
   );
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, ydoc, collabProvider, caretUser }: EditorProps) {
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
@@ -724,7 +737,21 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // the editor and losing the current selection or unsaved document.
   const inlineCompletionRef = useRef(inlineCompletion);
   inlineCompletionRef.current = inlineCompletion;
+  const spellcheckRef = useRef(spellcheck);
+  spellcheckRef.current = spellcheck;
   const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
+
+  useEffect(() => {
+    const mgr = getClientInferenceManager();
+    mgr.setFlags({
+      adminEnabled: !!inlineCompletion?.clientInferenceAdminEnabled,
+      userEnabled: !!inlineCompletion?.clientInferenceEnabled,
+    });
+    void mgr.ensureProbed();
+  }, [
+    inlineCompletion?.clientInferenceAdminEnabled,
+    inlineCompletion?.clientInferenceEnabled,
+  ]);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -875,7 +902,26 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       InlineCompletionExtension.configure({
         enabled: () => {
           const config = inlineCompletionRef.current;
-          return editable && !!config?.available && config.enabled;
+          if (!editable || !config?.enabled) return false;
+          return getClientInferenceManager().decideGhostAvailability(
+            !!config.available,
+            config.clientInferenceWithoutServer ?? true,
+          );
+        },
+        requestCompletion: (input, signal) => {
+          const config = inlineCompletionRef.current;
+          return requestInlineCompletionWithClient({
+            input,
+            signal,
+            assigned: !!config?.available,
+            withoutServer: config?.clientInferenceWithoutServer ?? true,
+            wordMode: (config?.mode ?? 'full') === 'word',
+            serverRequest: (body, sig) => apiFetch('/llm/inline-completion', {
+              method: 'POST',
+              body: JSON.stringify(body),
+              signal: sig,
+            }),
+          });
         },
         delayMs: () => {
           const config = inlineCompletionRef.current;
@@ -893,6 +939,10 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           language: inlineCompletionRef.current?.language,
         }),
         onSuggestionStateChange: setInlineSuggestionActive,
+      }),
+      SpellcheckExtension.configure({
+        enabled: () => editable && !!spellcheckRef.current?.enabled,
+        languages: () => spellcheckRef.current?.languages ?? ['en_US', 'de_DE'],
       }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
@@ -1017,6 +1067,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     onEditorReady?.(editor);
     return () => onEditorReady?.(null);
   }, [editor, onEditorReady]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dom.setAttribute('spellcheck', spellcheck?.enabled ? 'false' : 'true');
+  }, [editor, spellcheck?.enabled]);
 
   return (
     <div

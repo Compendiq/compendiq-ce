@@ -7,6 +7,7 @@ const LlmTab = lazy(() => import('../panels/LlmTab').then((m) => ({ default: m.L
 const EmbeddingTab = lazy(() => import('../panels/EmbeddingTab').then((m) => ({ default: m.EmbeddingTab })));
 const WorkersTab = lazy(() => import('../WorkersTab').then((m) => ({ default: m.WorkersTab })));
 const RetrievalTab = lazy(() => import('../panels/RetrievalTab').then((m) => ({ default: m.RetrievalTab })));
+const ClientInferenceTab = lazy(() => import('../panels/ClientInferenceTab').then((m) => ({ default: m.ClientInferenceTab })));
 
 /**
  * "AI Models" wrapper — folds LLM provider config, embedding-model config,
@@ -44,6 +45,15 @@ export function AiModelsWrapper() {
       render: () => (
         <Suspense fallback={<SkeletonFormFields />}>
           <RetrievalTab />
+        </Suspense>
+      ),
+    },
+    {
+      id: 'client-inference',
+      label: 'Client inference',
+      render: () => (
+        <Suspense fallback={<SkeletonFormFields />}>
+          <ClientInferenceTab />
         </Suspense>
       ),
     },

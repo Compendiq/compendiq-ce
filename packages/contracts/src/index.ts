@@ -7,6 +7,7 @@ export * from './schemas/page-icon.js';
 export * from './schemas/page-versions.js';
 export * from './schemas/spaces.js';
 export * from './schemas/llm.js';
+export * from './schemas/client-assets.js';
 export * from './schemas/admin.js';
 export * from './schemas/admin-users.js';
 export * from './schemas/notifications.js';

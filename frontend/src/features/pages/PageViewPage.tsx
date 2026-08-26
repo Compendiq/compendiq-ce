@@ -1002,8 +1002,15 @@ export function PageViewPage() {
                       delay: settings?.inlineCompletionDelay ?? 'balanced',
                       mode: settings?.inlineCompletionMode ?? 'full',
                       codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                      clientInferenceEnabled: settings?.clientInferenceEnabled ?? false,
+                      clientInferenceWithoutServer: settings?.clientInferenceWithoutServer ?? true,
+                      clientInferenceAdminEnabled: settings?.clientInferenceAdminEnabled ?? false,
                       title: editTitle,
                       spaceKey: page.spaceKey ?? undefined,
+                    }}
+                    spellcheck={{
+                      enabled: settings?.clientSpellcheckEnabled ?? false,
+                      languages: settings?.clientSpellcheckLanguages ?? ['en_US', 'de_DE'],
                     }}
                   />
                 )}

@@ -140,6 +140,14 @@ curl http://localhost:8081/api/health
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
+### Client inference (on-device editor model)
+
+Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
+lint. Weights are operator-copied onto `/app/data/client-models` — see
+`docs/runbooks/client-inference.md`. Dual opt-in, default off. The browser
+never fetches Hugging Face. Settings → AI Models → Client inference is the
+admin flag and manifest; Pre-download is per-browser on Personal → Editor.
+
 ### LLM providers (primary)
 
 Providers live in the `llm_providers` table and are configured in the admin UI

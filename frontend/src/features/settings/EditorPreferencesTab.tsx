@@ -1,11 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import type {
+  ClientAssetManifest,
   ClientSpellcheckLanguage,
   InlineCompletionDelay,
   InlineCompletionMode,
   SettingsResponse,
 } from '@compendiq/contracts';
+import { apiFetch } from '../../shared/lib/api';
+import { getClientInferenceManager } from '../../shared/lib/client-inference/client-inference-manager';
 import { Check } from 'lucide-react';
 import { PanelHeader } from './PanelHeader';
 import { cn } from '../../shared/lib/cn';
@@ -102,6 +105,23 @@ export function EditorPreferencesTab({
     settings.clientSpellcheckLanguages,
   );
   const adminOn = settings.clientInferenceAdminEnabled;
+  const [manifestBytes, setManifestBytes] = useState<number | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch<ClientAssetManifest>('/models/client-assets')
+      .then((manifest) => {
+        if (cancelled) return;
+        const onnx = manifest.models.find((m) => m.kind === 'onnx');
+        setManifestBytes(onnx?.bytes && onnx.bytes > 0 ? onnx.bytes : null);
+      })
+      .catch(() => {
+        if (!cancelled) setManifestBytes(null);
+      });
+    return () => { cancelled = true; };
+  }, []);
   const changed = enabled !== settings.inlineCompletionEnabled
     || delay !== settings.inlineCompletionDelay
     || mode !== settings.inlineCompletionMode
@@ -265,14 +285,44 @@ export function EditorPreferencesTab({
             <button
               type="button"
               className="nm-button-ghost h-8"
-              disabled
+              disabled={!adminOn || downloadProgress !== null}
               aria-describedby="client-inference-predownload-help"
+              onClick={() => {
+                if (!adminOn || downloadProgress) return;
+                setDownloadError(null);
+                getClientInferenceManager().setFlags({
+                  adminEnabled: adminOn,
+                  userEnabled: clientEnabled,
+                });
+                void getClientInferenceManager()
+                  .predownload((loaded, total) => setDownloadProgress({ loaded, total }))
+                  .catch((err: unknown) => {
+                    setDownloadError(err instanceof Error ? err.message : 'Download failed');
+                  })
+                  .finally(() => setDownloadProgress(null));
+              }}
             >
               Pre-download on-device model
             </button>
             <p id="client-inference-predownload-help" className="mt-2 text-xs leading-5 text-muted-foreground">
-              Downloads only in this browser. Size is shown once the model manifest is available.
+              Downloads only in this browser
+              {manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB).` : '.'}
+              {' '}The on-device model is not shared with other browsers.
             </p>
+            {downloadProgress && (
+              <div
+                className="mt-2 h-1 overflow-hidden rounded bg-muted"
+                aria-hidden="true"
+              >
+                <div
+                  className="h-full bg-[var(--color-status-embedding)]"
+                  style={{ width: `${Math.min(100, (downloadProgress.loaded / downloadProgress.total) * 100)}%` }}
+                />
+              </div>
+            )}
+            {downloadError && (
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">{downloadError}</p>
+            )}
           </div>
         </div>
       </section>
