@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, NotionError, setNotionApiBaseUrlForTests } from './notion-client.js';
-import { fetchNotionWorkspaceTree } from './notion-tree.js';
+import { fetchNotionWorkspaceTree, NOTION_TREE_MAX_CHILD_LISTS } from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
 
@@ -250,6 +250,9 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(src).not.toMatch(/databases\/.*query/);
     expect(src).not.toContain('queryDatabase');
     expect(src).not.toContain('api.notion.com');
+    expect(src).toContain('NOTION_TREE_MAX_CHILD_LISTS');
+    expect(src).not.toContain("'bulleted_list_item'");
+    expect(src).not.toContain("'numbered_list_item'");
   });
 
   it('nests child_database and child_page found under a toggle; block_id parents are not roots', async () => {
@@ -513,6 +516,125 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(findById(nodes as TreeNode[], 'should-not-fetch')).toBeUndefined();
     expect(server!.requests.some((r) => r.url.includes('/blocks/row-listed/children'))).toBe(false);
     expect(server!.requests.some((r) => r.url.includes('/blocks/handbook/children'))).toBe(true);
+  });
+
+  it('does not fetch children of nested list items — Search already listed the pages', async () => {
+    const listItems = Array.from({ length: 25 }, (_, i) => ({
+      object: 'block',
+      id: `li-${i}`,
+      type: 'bulleted_list_item',
+      has_children: true,
+      bulleted_list_item: { rich_text: [] },
+    }));
+    const blockChildren: Record<string, Array<Record<string, unknown>>> = {
+      handbook: listItems,
+    };
+    for (const item of listItems) {
+      blockChildren[item.id] = [
+        {
+          object: 'block',
+          id: `${item.id}-para`,
+          type: 'paragraph',
+          has_children: false,
+          paragraph: { rich_text: [] },
+        },
+      ];
+    }
+
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        {
+          object: 'page',
+          id: 'onboarding',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          properties: titleProp('Onboarding'),
+        },
+      ],
+      blockChildren,
+    });
+
+    expect(findById(nodes as TreeNode[], 'onboarding')).toMatchObject({
+      type: 'page',
+      selectable: true,
+      title: 'Onboarding',
+    });
+    const childUrls = server!.requests.filter((r) => r.url.includes('/children')).map((r) => r.url);
+    expect(childUrls.some((url) => /\/blocks\/li-\d+\/children/.test(url))).toBe(false);
+    expect(childUrls.filter((url) => url.includes('/blocks/handbook/children'))).toHaveLength(1);
+  });
+
+  it('does not loop forever when synced blocks point at each other', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+      ],
+      blockChildren: {
+        handbook: [
+          {
+            object: 'block',
+            id: 'sync-a',
+            type: 'synced_block',
+            has_children: true,
+            synced_block: {},
+          },
+        ],
+        'sync-a': [
+          {
+            object: 'block',
+            id: 'sync-b',
+            type: 'synced_block',
+            has_children: true,
+            synced_block: {},
+          },
+        ],
+        'sync-b': [
+          {
+            object: 'block',
+            id: 'sync-a',
+            type: 'synced_block',
+            has_children: true,
+            synced_block: {},
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'handbook')).toMatchObject({ type: 'page', selectable: true });
+    const childFetches = server!.requests.filter((r) => r.url.includes('/children'));
+    expect(childFetches.length).toBeLessThan(10);
+  });
+
+  it('returns every Search page after the block-walk budget is spent', async () => {
+    const pageCount = NOTION_TREE_MAX_CHILD_LISTS + 15;
+    const searchResults = Array.from({ length: pageCount }, (_, i) => ({
+      object: 'page',
+      id: `page-${i}`,
+      parent: { type: 'workspace', workspace: true },
+      properties: titleProp(`Page ${i}`),
+    }));
+
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults,
+    });
+
+    expect(nodes).toHaveLength(pageCount);
+    expect(nodes.map((n) => n.id)).toEqual(searchResults.map((p) => p.id));
+    const childFetches = server!.requests.filter((r) => /\/v1\/blocks\/[^/]+\/children/.test(r.url));
+    expect(childFetches.length).toBeLessThanOrEqual(NOTION_TREE_MAX_CHILD_LISTS);
   });
 
   it('fails the tree when block children return 5xx rather than 200ing a partial forest', async () => {

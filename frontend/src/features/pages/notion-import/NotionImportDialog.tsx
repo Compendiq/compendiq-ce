@@ -460,7 +460,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                       <TreeRetryButton inFlight={treeRetryInFlight} onRetry={retryTree} />
                     </div>
                   </div>
-                ) : tree.isPending && !treeHasCache ? (
+                ) : !hasToken || (tree.isLoading && !treeHasCache) ? (
                   <p className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 size={14} className="animate-spin" aria-hidden />
                     Loading workspace…
