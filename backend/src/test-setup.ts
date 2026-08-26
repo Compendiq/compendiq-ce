@@ -1,4 +1,4 @@
-import { afterAll } from 'vitest';
+import { afterAll, beforeAll } from 'vitest';
 import { closePool } from './core/db/postgres.js';
 import { setupTestDb } from './test-db-helper.js';
 import {
@@ -28,12 +28,16 @@ process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://:changeme-redis@localh
 applyWorkerIsolation();
 
 const workerId = workerIdFromEnv();
-if (workerId > 0) {
+
+async function bootWorkerDb(): Promise<void> {
+  if (workerId <= 0) return;
   try {
     await ensureWorkerDatabase(process.env.POSTGRES_URL!);
     // Files that never call setupTestDb still query Postgres (collab
     // persistence, etc.). Sequential mode hid that because an earlier
-    // file had already migrated the shared database.
+    // file had already migrated the shared database. Re-running this
+    // before every file also restores probe-time image-index DDL, which
+    // truncateAllTables cannot undo.
     await setupTestDb();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -43,6 +47,12 @@ if (workerId > 0) {
     }
   }
 }
+
+await bootWorkerDb();
+
+beforeAll(async () => {
+  await bootWorkerDb();
+});
 
 afterAll(async () => {
   await closePool();

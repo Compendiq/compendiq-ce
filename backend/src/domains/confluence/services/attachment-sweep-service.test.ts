@@ -1,15 +1,23 @@
 /**
  * #1349 — pure halves of the orphan sweep: the raw-string URL reference
- * collector that feeds the keep-set, and the image-like candidate predicate.
- * No DB, no filesystem. The walk itself is covered against real Postgres and
- * a temp tree in attachment-sweep-service.integration.test.ts.
+ * collector that feeds the keep-set, the image-like candidate predicate,
+ * and the keep-set event-loop yield. No DB, no filesystem. The walk itself
+ * is covered against real Postgres and a temp tree in
+ * attachment-sweep-service.integration.test.ts.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   collectAttachmentUrlReferences,
   isImageLikeCandidate,
+  KEEP_SET_YIELD_EVERY,
+  forEachRowYielding,
   type AttachmentKeepSets,
 } from './attachment-sweep-service.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 function emptySets(): AttachmentKeepSets {
   return { confluence: new Set<string>(), local: new Set<string>() };
@@ -272,5 +280,33 @@ describe('isImageLikeCandidate (#1349 — the only per-file candidate class)', (
     for (const name of ['manual.pdf', 'diagram.drawio', 'notes.docx', 'archive.zip', 'x.xml', 'README']) {
       expect(isImageLikeCandidate(name)).toBe(false);
     }
+  });
+});
+
+describe('keep-set event-loop yield', () => {
+  /**
+   * `forEachRowYielding` returns at its first `await`, so the first
+   * KEEP_SET_YIELD_EVERY rows run before the caller gets a Promise.
+   * Without that await the whole batch drains synchronously — the
+   * regression the wall-clock ticker in the integration file used to
+   * catch, before fileParallelism made those gaps unusable.
+   */
+  it('yields to the event loop inside a batch instead of blocking it for the whole batch', async () => {
+    expect(KEEP_SET_YIELD_EVERY).toBe(10);
+    const rows = Array.from({ length: KEEP_SET_YIELD_EVERY * 2 + 1 }, (_, i) => i);
+    let seen = 0;
+    const pending = forEachRowYielding(rows, () => {
+      seen += 1;
+    });
+    expect(seen).toBe(KEEP_SET_YIELD_EVERY);
+    await pending;
+    expect(seen).toBe(rows.length);
+  });
+
+  it('runs the JSDOM body_storage walk through forEachRowYielding', () => {
+    const src = readFileSync(join(here, 'attachment-sweep-service.ts'), 'utf8');
+    expect(src).toMatch(
+      /forEachRowYielding\(rows, \(row\) => \{[\s\S]*?getExpectedAttachmentFilenames\(row\.body_storage/,
+    );
   });
 });
