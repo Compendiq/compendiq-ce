@@ -16,6 +16,7 @@
 
 import { lookup } from 'node:dns/promises';
 import { logger } from './logger.js';
+import { prefixedRedisChannel } from './prefixed-redis-channel.js';
 
 // ---------------------------------------------------------------------------
 // Allowlist of trusted origins (populated from user_settings.confluence_url
@@ -29,7 +30,7 @@ const allowedOrigins = new Set<string>();
  * Broader than just Confluence — also covers LLM provider URLs, hence the
  * neutral `ssrf:` namespace.
  */
-export const SSRF_ALLOWLIST_CHANNEL = 'ssrf:allowlist:changed';
+export const SSRF_ALLOWLIST_CHANNEL = prefixedRedisChannel('ssrf:allowlist:changed');
 
 /** Wire-format for a pub/sub event broadcasting an allowlist mutation. */
 export interface SsrfAllowlistEvent {

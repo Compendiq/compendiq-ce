@@ -20,6 +20,7 @@
  */
 import type { RedisClientType } from 'redis';
 import { randomUUID } from 'node:crypto';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 import { getRedisClient } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
 
@@ -36,7 +37,7 @@ const PROGRESS_TTL_SEC = 60 * 30; // 30 minutes
  * can wake without polling. The list is the durable record (so a slow SSE
  * subscriber catches up); the pub/sub is the kick.
  */
-const PROGRESS_CHANNEL_PREFIX = 'bulk-page-progress:channel:';
+const PROGRESS_CHANNEL_PREFIX = prefixedRedisChannel('bulk-page-progress:channel:');
 const PROGRESS_LIST_PREFIX = 'bulk-page-progress:list:';
 const PROGRESS_CANCEL_PREFIX = 'bulk-page-progress:cancel:';
 const PROGRESS_META_PREFIX = 'bulk-page-progress:meta:';

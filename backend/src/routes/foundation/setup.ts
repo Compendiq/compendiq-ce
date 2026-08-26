@@ -21,6 +21,7 @@ function isCookieSecure(request: FastifyRequest): boolean {
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { LLM_HEALTH_TIMEOUT_MS } from './health.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -110,7 +111,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
         const health = await Promise.race([
           providerCheckHealth(cfg),
           new Promise<{ connected: false }>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 5000),
+            setTimeout(() => reject(new Error('timeout')), LLM_HEALTH_TIMEOUT_MS),
           ),
         ]);
         llmConnected = health.connected;

@@ -18,3 +18,13 @@ export function safeIntOr(
   const n = parseInt(raw ?? '', 10);
   return Number.isFinite(n) && n >= min ? n : fallback;
 }
+
+/**
+ * Read a positive int from env, but only when running under Vitest.
+ * Production always gets `fallback` so a leftover env var cannot retune
+ * live TTLs, ping intervals, or health-probe timeouts.
+ */
+export function vitestIntOr(name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number {
+  if (env.VITEST !== 'true') return fallback;
+  return safeIntOr(env[name], fallback);
+}

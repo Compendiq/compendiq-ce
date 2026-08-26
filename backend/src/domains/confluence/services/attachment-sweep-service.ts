@@ -416,7 +416,7 @@ const UUID_CURSOR_START = '00000000-0000-0000-0000-000000000000';
  * `setImmediate` per ten rows, which is nothing beside a JSDOM parse. It is
  * applied by the shared helper, so the four regex-only sources get it free.
  */
-const KEEP_SET_YIELD_EVERY = 10;
+export const KEEP_SET_YIELD_EVERY = 10;
 
 /**
  * Keyset-paginated read so concurrent inserts/deletes cannot shift a window.
@@ -446,7 +446,7 @@ async function forEachBatch<T extends { __cursor: string | number }>(
  * `KEEP_SET_YIELD_EVERY` rows. The one place the rule is spelled, so a new
  * keep-set source cannot forget it.
  */
-async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void): Promise<void> {
+export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void): Promise<void> {
   for (let i = 0; i < rows.length; i += 1) {
     perRow(rows[i]!);
     if ((i + 1) % KEEP_SET_YIELD_EVERY === 0) await yieldToLoop();

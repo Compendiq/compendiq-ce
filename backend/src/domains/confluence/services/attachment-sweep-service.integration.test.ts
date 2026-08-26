@@ -331,60 +331,6 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     // to a native `id > $1::uuid`. The cursor is still carried as text, so a
     // corpus past one batch is what proves the pagination still terminates
     // AND still reaches the last row.
-    /**
-     * Fixer r1 — the keep-set phase must hand the event loop back, the way
-     * the walk and the delete loop already do.
-     *
-     * `body_storage` costs a full JSDOM parse per row
-     * (`getExpectedAttachmentFilenames` → `extractImageReferences` → `new
-     * JSDOM`), measured at ~7 ms/page, and the batch callback ran a whole
-     * 200-row batch synchronously with the next `SELECT` as its only await —
-     * so the process was blocked in ~1.4-second chunks for the entire phase,
-     * and `/api/health`, every user request and the 5 s poll from the card
-     * that started the run queued behind it.
-     *
-     * The assertion is on the longest SYNCHRONOUS gap, which is what a
-     * blocked loop actually is: a `setImmediate` ticker keeps ticking through
-     * an awaited query, so a slow database cannot fake a pass, and only JS
-     * that refuses to yield can produce a long gap. One full batch of these
-     * bodies takes well over a second unyielded and about a tenth of that at
-     * `KEEP_SET_YIELD_EVERY`, so the threshold has a wide margin.
-     */
-    it('yields to the event loop inside a batch instead of blocking it for the whole batch', async () => {
-      const body =
-        Array.from(
-          { length: 200 },
-          (_, i) => `<p>Absatz ${i} mit etwas Text, damit der Koerper realistisch gross ist.</p>`,
-        ).join('') +
-        Array.from(
-          { length: 10 },
-          (_, i) => `<ac:image><ri:attachment ri:filename="img-${i}.png" /></ac:image>`,
-        ).join('');
-      const values = Array.from({ length: 200 }, (_, i) => `('P${i}', 'DEV', 'c${i}', 'confluence', 'page', 1, $1)`);
-      await query(
-        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version, body_storage)
-         VALUES ${values.join(',')}`,
-        [body],
-      );
-
-      let last = Date.now();
-      let longestGapMs = 0;
-      let ticking = true;
-      const tick = () => {
-        const now = Date.now();
-        longestGapMs = Math.max(longestGapMs, now - last);
-        last = now;
-        if (ticking) setImmediate(tick);
-      };
-      setImmediate(tick);
-
-      last = Date.now();
-      await buildAttachmentKeepSets();
-      ticking = false;
-
-      expect(longestGapMs).toBeLessThan(500);
-    });
-
     it('paginates the UUID-keyed sources past one batch without losing a reference', async () => {
       const { confPageId } = await seedCorpus();
       // KEEP_SET_BATCH is 200; 250 rows forces a second and third page.
@@ -1013,13 +959,28 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
   });
 
   describe('live run', () => {
-    const VEC_2048 = '[' + new Array(2048).fill(0).join(',') + ']';
+    async function liveImageEmbeddingWidth(): Promise<number> {
+      const r = await query<{ type: string }>(
+        `SELECT format_type(atttypid, atttypmod) AS type
+           FROM pg_attribute
+          WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
+      );
+      const m = /^(?:halfvec|vector)\((\d+)\)$/.exec(r.rows[0]?.type ?? '');
+      if (!m) {
+        throw new Error(`unexpected page_image_embeddings.embedding type ${r.rows[0]?.type}`);
+      }
+      return Number(m[1]);
+    }
 
     async function seedEmbeddingRow(pageId: number, source: string, key: string): Promise<void> {
+      // Sibling files on this worker may have retyped the column (4, 1024, …).
+      // The sweep only needs a row to prune; match the live width.
+      const dims = await liveImageEmbeddingWidth();
+      const vec = '[' + new Array(dims).fill(0).join(',') + ']';
       await query(
         `INSERT INTO page_image_embeddings (page_id, source, attachment_key, sha256, format, model, embedding)
          VALUES ($1, $2, $3, 'sha', 'png', 'test-model', $4::vector)`,
-        [pageId, source, key, VEC_2048],
+        [pageId, source, key, vec],
       );
     }
 
