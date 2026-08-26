@@ -129,7 +129,12 @@ export async function apiFetch<T = unknown>(
     );
   }
 
-  if (res.headers.get('content-type')?.includes('application/json') && !isBodyless(res.status)) {
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/octet-stream') && !isBodyless(res.status)) {
+    return (await res.blob()) as T;
+  }
+
+  if (contentType.includes('application/json') && !isBodyless(res.status)) {
     try {
       return (await res.json()) as T;
     } catch {
@@ -144,6 +149,13 @@ export async function apiFetch<T = unknown>(
     }
   }
   return undefined as T;
+}
+
+/** Authenticated binary GET for same-origin client-model assets (#1418). */
+export async function apiFetchBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const blob = await apiFetch<Blob | undefined>(path, options);
+  if (blob instanceof Blob) return blob;
+  throw new ApiError(500, 'Expected binary asset');
 }
 
 /** Statuses that carry no body at all, so there is nothing to parse. */

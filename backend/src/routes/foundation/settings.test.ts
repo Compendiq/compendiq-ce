@@ -446,6 +446,11 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       inlineCompletionDelay: 'deliberate',
       inlineCompletionMode: 'word',
       inlineCompletionCodeOnly: true,
+      clientInferenceEnabled: false,
+      clientInferenceWithoutServer: true,
+      clientInferenceAdminEnabled: false,
+      clientSpellcheckEnabled: false,
+      clientSpellcheckLanguages: ['en_US', 'de_DE'],
     });
   });
 
@@ -514,6 +519,11 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
       inlineCompletionDelay: 'balanced',
       inlineCompletionMode: 'full',
       inlineCompletionCodeOnly: false,
+      clientInferenceEnabled: false,
+      clientInferenceWithoutServer: true,
+      clientInferenceAdminEnabled: false,
+      clientSpellcheckEnabled: false,
+      clientSpellcheckLanguages: ['en_US', 'de_DE'],
     });
   });
 
@@ -544,6 +554,90 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(update?.[0]).toContain('inline_completion_mode = $3');
     expect(update?.[0]).toContain('inline_completion_code_only = $4');
     expect(update?.[1]).toEqual([false, 'manual', 'word', true, 'test-user-id']);
+  });
+
+  it('PUT /settings 422s when enabling on-device suggestions while the admin flag is off (#1418)', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { clientInferenceEnabled: true },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
+  it('PUT /settings does not 422 a previously opted-in user after the admin flag is turned off (#1418)', async () => {
+    mockQuery.mockImplementation(async (sql: unknown) => {
+      const text = typeof sql === 'string' ? sql : '';
+      if (text.includes("setting_key = 'client_inference_enabled'")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.includes('SELECT client_inference_enabled FROM user_settings')) {
+        return { rows: [{ client_inference_enabled: true }], rowCount: 1 };
+      }
+      if (text.includes('client_spellcheck_enabled')) {
+        return {
+          rows: [{
+            client_spellcheck_enabled: false,
+            client_spellcheck_languages: ['en_US', 'de_DE'],
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: {
+        clientInferenceEnabled: true,
+        inlineCompletionDelay: 'manual',
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const update = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(update?.[0]).toContain('inline_completion_delay = $1');
+    expect(update?.[0]).toContain('client_inference_enabled = $2');
+    expect(update?.[1]).toEqual(['manual', false, 'test-user-id']);
+  });
+
+  it('PUT /settings 422s when spellcheck is on and languages would be empty (#1418)', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { clientSpellcheckEnabled: true, clientSpellcheckLanguages: [] },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+
+  it('PUT /settings persists client inference prefs without wiping siblings (#1418)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [{ setting_value: 'true' }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          client_spellcheck_enabled: false,
+          client_spellcheck_languages: ['en_US', 'de_DE'],
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { clientInferenceEnabled: true },
+    });
+    expect(response.statusCode).toBe(200);
+    const update = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(update?.[0]).toContain('client_inference_enabled = $1');
+    expect(update?.[0]).not.toContain('inline_completion_enabled');
   });
 
   it('PUT /settings does not mark pages dirty when only unrelated user settings change', async () => {

@@ -2972,3 +2972,23 @@ nobody reads the numbers above as if they were ours:
 | 023 | Per-page ACL enforcement for RAG retrieval (Enterprise) | Mirror Confluence per-page view restrictions; resolve ancestor inheritance at sync time | Keeps query path O(topK); regulated-buyer RAG never leaks restricted-page chunks |
 | 024 | Multi-instance readiness | Generic Redis pub/sub cache-bus + BullMQ `upsertJobScheduler` + p-limit in-place hot-swap + bounded graceful shutdown + soft-fail per-pod fallbacks | Multi-replica `backend` without an extra coordinator service; advisory-only pub/sub keeps the operator footprint small |
 | 025 | Multimodal image retrieval | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape |
+| 026 | Client-side WebGPU editor inference | Optional same-origin SLM + Hunspell EN/DE; fall through to #1417/#708; no new ADR-021 use case | Keystroke traffic should not consume the shared LLM queue; Hub CDN is forbidden by `connect-src 'self'` |
+
+---
+
+## ADR-026: Client-side WebGPU inference for editor micro-tasks
+
+**Date:** 2026-08-26
+**Status:** Accepted
+**GitHub:** #1418
+
+### Decision
+
+Ghost text and ImprovePanel rewrite may run on an optional browser WebGPU
+instruct SLM (`qwen2.5-0.5b-instruct-q4`). Hunspell EN/DE spell lint is a
+separate MIT worker. Both fetch assets only from `GET /api/models/client-assets`.
+Missing WebGPU, a cold cache, or a failed load falls through to the existing
+server paths. Dual opt-in (admin + user) defaults off. No Hugging Face Hub,
+no new ADR-021 use case, no COEP.
+
+See `docs/runbooks/client-inference.md`.

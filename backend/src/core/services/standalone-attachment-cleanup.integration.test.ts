@@ -145,16 +145,20 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
     it('removeCachedAttachmentDirectory refuses the reserved store names', async () => {
       await writeFileAt('local', '77', 'diagram.png');
       await writeFileAt('page-icons', 'brand', 'mark.png');
+      await writeFileAt('client-models', 'qwen', 'model.onnx');
 
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('local')).toBe(true);
       expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('page-icons')).toBe(true);
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
 
       await expect(removeCachedAttachmentDirectory('local')).rejects.toThrow(/reserved/i);
       await expect(removeCachedAttachmentDirectory('page-icons')).rejects.toThrow(/reserved/i);
+      await expect(removeCachedAttachmentDirectory('client-models')).rejects.toThrow(/reserved/i);
 
       // …and the refusal really is what kept the bytes: both stores intact.
       expect(await exists(path.join(tempBase, 'local', '77', 'diagram.png'))).toBe(true);
       expect(await exists(path.join(tempBase, 'page-icons', 'brand', 'mark.png'))).toBe(true);
+      expect(await exists(path.join(tempBase, 'client-models', 'qwen', 'model.onnx'))).toBe(true);
     });
 
     it('removeCachedAttachmentFile removes exactly one file and refuses traversal', async () => {

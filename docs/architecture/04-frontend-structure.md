@@ -225,6 +225,12 @@ as `Decoration.widget` ghost text (`aria-hidden`) rather than document content,
 so a response cannot alter the article until the user accepts it. Accepting is
 one undoable transaction; dismissing or receiving stale text changes nothing.
 
+When admin and user on-device flags are on, a dedicated WebGPU worker
+(`frontend/src/shared/lib/client-inference/`) may answer a warm ghost-text
+request without hitting Fastify. The plugin seam is still
+`requestCompletion`. Cold cache, no GPU, or flags off equals #1417.
+Hunspell EN/DE lint is a second worker (`shared/lib/spellcheck/`), not GPU.
+
 The extension sends roughly 800 tokens before and 200 after the cursor after a
 personal debounce. Its persisted default mode either requests and displays one
 word (8 output tokens) or a full one-line suggestion (48 output tokens). Tab

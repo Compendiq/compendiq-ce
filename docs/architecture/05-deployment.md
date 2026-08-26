@@ -157,7 +157,7 @@ same value; the installer auto-generates it into `.env` on first install and
 | Volume          | Mount                                  | Contents |
 |-----------------|----------------------------------------|----------|
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
-| `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR` |
+| `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
 
 ## Additional compose files
 

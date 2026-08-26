@@ -404,9 +404,13 @@ change.
 **#1349 moved the DELETERS into `core` too, and the split runs by CALLER, not
 by verb.** `attachment-store.ts` now also exports `attachmentsRootNow`,
 `removeCachedAttachmentDirectory` / `removeCachedAttachmentFile` and
-`ATTACHMENT_ROOT_RESERVED_DIRNAMES` (beside `local-attachment-service.ts`'s
+`ATTACHMENT_ROOT_RESERVED_DIRNAMES` (`local/`, `page-icons/`, and
+`client-models/` for #1418 operator-supplied ONNX/Hunspell on the attachments
+volume). `GET /api/models/client-assets` (`routes/llm/llm-client-assets.ts`,
+authenticated `llm:query`) streams those files; there is no upload. Reserved
+dirnames sit beside `local-attachment-service.ts`'s
 `removeLocalAttachmentDirectory` / `removeLocalAttachmentFileForSweep` and
-`page-icon-store.ts`'s `discardPageIconForDeletedPage`), because
+`page-icon-store.ts`'s `discardPageIconForDeletedPage`, because
 `core/services/data-retention-service.ts` is one of the callers and `core` may
 not import a domain — the sentence above is therefore no longer true of
 *writes* in general: the sanctioned, path-validated removals for both stores

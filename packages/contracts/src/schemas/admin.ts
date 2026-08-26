@@ -531,6 +531,11 @@ export const AdminSettingsSchema = z.object({
    * default is false. PUT publishes `collab:enabled:changed`.
    */
   collabEditingEnabled: z.boolean(),
+  /**
+   * #1418 — server-wide on-device WebGPU inference. Seeded `'false'`.
+   * Dual opt-in with the per-user flag; default off.
+   */
+  clientInferenceEnabled: z.boolean(),
 });
 
 export const UpdateAdminSettingsSchema = z.object({
@@ -615,6 +620,8 @@ export const UpdateAdminSettingsSchema = z.object({
   ragEfSearch: RagEfSearchSchema.optional(),
   /** #1444 — opt-in collab gateway. Omitted → leave unchanged. */
   collabEditingEnabled: z.boolean().optional(),
+  /** #1418 — on-device WebGPU inference. Omitted → leave unchanged. */
+  clientInferenceEnabled: z.boolean().optional(),
 });
 
 export type AdminSettings = z.infer<typeof AdminSettingsSchema>;

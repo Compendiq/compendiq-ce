@@ -1203,6 +1203,46 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.stores!.confluence.nestedDirectories).toBe(0);
     });
 
+    it('never judges client-models — a live run leaves operator-supplied weights standing (#1418 SPEC-009)', async () => {
+      const { ATTACHMENT_ROOT_RESERVED_DIRNAMES } = await import(
+        '../../../core/services/attachment-store.js'
+      );
+      expect(ATTACHMENT_ROOT_RESERVED_DIRNAMES.has('client-models')).toBe(true);
+
+      await seedCorpus();
+      const weight = await writeAged(
+        'client-models',
+        'qwen2.5-0.5b-instruct-q4',
+        'model.onnx',
+      );
+      await ageDirs(
+        'client-models',
+        path.join('client-models', 'qwen2.5-0.5b-instruct-q4'),
+      );
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(await exists(weight), 'operator-supplied weights must survive a live sweep').toBe(true);
+      expect(await exists(path.join(tempBase, 'client-models'))).toBe(true);
+      expect(run!.candidateSample.some((c) => c.key === 'client-models')).toBe(false);
+      const dry = await runAttachmentSweep({ dryRun: true });
+      expect(dry!.candidateSample.some((c) => c.key === 'client-models')).toBe(false);
+      expect(dry!.stores!.confluence.orphanDirectories).toBe(0);
+    });
+
+    it('never judges a FLAT client-models store either — the name filter, not the nested-tree guard (#1418)', async () => {
+      await seedCorpus();
+      const weight = await writeAged('client-models', 'model.onnx');
+      await ageDirs('client-models');
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      expect(await exists(weight), 'a flat client-models store must survive a live sweep').toBe(true);
+      expect(run!.candidateSample.some((c) => c.key === 'client-models')).toBe(false);
+    });
+
     // Fixer, external round: the record the card polls must describe the tree
     // as it is NOW. Persisting the pre-delete walk showed the orphans the run
     // had just destroyed as current candidates, dated "Measured just now",

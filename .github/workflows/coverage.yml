@@ -13,6 +13,9 @@ concurrency:
   group: coverage-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   backend-coverage:
     name: Backend coverage

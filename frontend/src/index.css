@@ -38,6 +38,20 @@
   }
 }
 
+/* #1418 Hunspell miss — measurement underline, not a status colour. */
+.spellcheck-miss {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--color-border-interactive);
+}
+
+@media (forced-colors: active) {
+  .spellcheck-miss {
+    text-decoration-color: Highlight;
+  }
+}
+
 /* Remote collab carets (#1447). Dedicated palette, not Steel/status.
    Chip text is the pane (`--surface-card`) so the label stays 3:1 on the
    caret colour. Flat: 1px hairline, no shadow, no lift, no glass. */

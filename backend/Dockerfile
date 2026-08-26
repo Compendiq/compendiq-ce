@@ -12,6 +12,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts
 COPY packages/contracts/ ./packages/contracts/
 RUN npm run build -w @compendiq/contracts
@@ -29,6 +30,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev \
     && mkdir -p backend/node_modules
 
