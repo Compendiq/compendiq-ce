@@ -52,6 +52,7 @@ describe('ClientInferenceTab', () => {
     });
     const client = renderTab();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
+    expect(await screen.findByText(/Settings → Editor/)).toBeInTheDocument();
     await screen.findByText('qwen2.5-0.5b-instruct-q4');
     fireEvent.click(screen.getByRole('switch', { name: 'Enable on-device suggestions' }));
     await waitFor(() => {

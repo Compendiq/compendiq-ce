@@ -33,7 +33,7 @@ under `ATTACHMENTS_DIR`.
 
 1. Copy files onto the volume (this runbook). There is no upload UI.
 2. Settings → AI Models → Client inference → enable the admin flag.
-3. Each author: Settings → Personal → Editor → On-device suggestions, then
+3. Each author: Settings → Editor → On-device suggestions, then
    **Pre-download on-device model** in *that* browser (OPFS is per-browser).
 4. Spellcheck is independent of WebGPU. Enable it on the same Editor card
    once the dictionaries are on the volume.

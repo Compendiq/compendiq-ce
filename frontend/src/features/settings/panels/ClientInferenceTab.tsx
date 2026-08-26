@@ -3,6 +3,7 @@ import * as Switch from '@radix-ui/react-switch';
 import type { AdminSettings, ClientAssetManifest } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { getClientInferenceManager } from '../../../shared/lib/client-inference/client-inference-manager';
+import { SETTINGS_PANELS } from '../settings-nav';
 
 export function ClientInferenceTab() {
   const queryClient = useQueryClient();
@@ -36,7 +37,7 @@ export function ClientInferenceTab() {
           On-device model
         </h3>
         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          Authors also opt in under Settings → Personal → Editor. Weights stay
+          Authors also opt in under Settings → {SETTINGS_PANELS.editor.label}. Weights stay
           on this origin; the browser never fetches Hugging Face.
         </p>
         <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-4">

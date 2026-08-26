@@ -146,7 +146,7 @@ Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
 lint. Weights are operator-copied onto `/app/data/client-models` — see
 `docs/runbooks/client-inference.md`. Dual opt-in, default off. The browser
 never fetches Hugging Face. Settings → AI Models → Client inference is the
-admin flag and manifest; Pre-download is per-browser on Personal → Editor.
+admin flag and manifest; Pre-download is per-browser on Settings → Editor.
 
 ### LLM providers (primary)
 
