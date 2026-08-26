@@ -1,7 +1,10 @@
 # Client inference (WebGPU + Hunspell)
 
 On-device editor micro-tasks for #1418 / ADR-026. The browser never talks to
-`huggingface.co`.
+`huggingface.co`. CI and the frontend image set `ONNXRUNTIME_NODE_INSTALL=skip`
+so `onnxruntime-node`'s linux postinstall does not fetch CUDA EP binaries from
+nuget.org — weights are operator-copied onto the volume, not fetched at
+install time. On a Linux host, export the same variable before `npm ci`.
 
 ## Layout
 

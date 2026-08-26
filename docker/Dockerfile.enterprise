@@ -43,7 +43,7 @@ COPY packages/contracts/package.json ./packages/contracts/
 RUN --mount=type=secret,id=github_token --mount=type=cache,target=/root/.npm \
     sh -c 'echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
-    npm ci -w backend -w @compendiq/contracts && \
+    ONNXRUNTIME_NODE_INSTALL=skip npm ci -w backend -w @compendiq/contracts && \
     rm -f .npmrc'
 
 # Build contracts
@@ -94,7 +94,7 @@ COPY packages/contracts/package.json ./packages/contracts/
 RUN --mount=type=secret,id=github_token --mount=type=cache,target=/root/.npm \
     sh -c 'echo "@compendiq:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=$(cat /run/secrets/github_token)" >> .npmrc && \
-    npm ci -w backend -w @compendiq/contracts --omit=dev && \
+    ONNXRUNTIME_NODE_INSTALL=skip npm ci -w backend -w @compendiq/contracts --omit=dev && \
     mkdir -p backend/node_modules && \
     rm -f .npmrc'
 

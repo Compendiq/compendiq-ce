@@ -32,6 +32,15 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(read('./client-inference-manager.ts')).not.toMatch(/@huggingface\/transformers/);
   });
 
+  it('skips the onnxruntime-node CUDA nuget download on npm ci', () => {
+    // linux/x64 postinstall otherwise fetches Microsoft.ML.OnnxRuntime.Gpu.Linux
+    // from nuget.org; CI/Docker must stay green without that (#1418).
+    const workflow = read('../../../../../.github/workflows/pr-check.yml');
+    const dockerfile = read('../../../../../frontend/Dockerfile');
+    expect(workflow).toMatch(/ONNXRUNTIME_NODE_INSTALL:\s*skip/);
+    expect(dockerfile).toMatch(/ENV ONNXRUNTIME_NODE_INSTALL=skip/);
+  });
+
   it('serializes complete/rewrite instead of overlapping generator() calls', () => {
     const worker = read('./client-inference.worker.ts');
     expect(worker).toMatch(/chain = chain\.then/);

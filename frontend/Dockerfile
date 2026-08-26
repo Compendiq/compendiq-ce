@@ -22,6 +22,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY frontend/package.json ./frontend/
 COPY packages/contracts/package.json ./packages/contracts/
+# transformers.js pulls onnxruntime-node, whose linux/x64 postinstall
+# downloads CUDA EP binaries from nuget.org. Client inference is browser
+# WebGPU only — skip that fetch (#1418).
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 RUN --mount=type=cache,target=/root/.npm npm ci -w frontend -w @compendiq/contracts
 # Build @compendiq/contracts so frontend can resolve its type declarations
 COPY packages/contracts/ ./packages/contracts/

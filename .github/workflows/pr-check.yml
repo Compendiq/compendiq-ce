@@ -10,6 +10,13 @@ concurrency:
   group: pr-check-${{ github.head_ref }}
   cancel-in-progress: true
 
+# @huggingface/transformers depends on onnxruntime-node, whose linux/x64
+# postinstall downloads CUDA EP binaries from nuget.org. Client inference
+# is browser WebGPU only — skip that fetch or Ubuntu `npm ci` needs nuget
+# and fails when it times out (#1418).
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   typecheck-lint:
     name: Typecheck & Lint
