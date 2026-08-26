@@ -7,7 +7,8 @@ import {
 } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 
-function applyConnection(queryClient: QueryClient, status: { hasToken: boolean }) {
+async function applyConnection(queryClient: QueryClient, status: { hasToken: boolean }) {
+  await queryClient.cancelQueries({ queryKey: ['notion'] });
   queryClient.setQueryData(['notion', 'connection'], status);
   queryClient.removeQueries({ queryKey: ['notion', 'tree'] });
 }
@@ -30,8 +31,8 @@ export function useConnectNotion() {
           body: JSON.stringify({ token }),
         }),
       ),
-    onSuccess: (status) => {
-      applyConnection(queryClient, status);
+    onSuccess: async (status) => {
+      await applyConnection(queryClient, status);
     },
   });
 }
@@ -43,8 +44,8 @@ export function useDisconnectNotion() {
       NotionConnectionResponseSchema.parse(
         await apiFetch('/notion/connection', { method: 'DELETE' }),
       ),
-    onSuccess: (status) => {
-      applyConnection(queryClient, status);
+    onSuccess: async (status) => {
+      await applyConnection(queryClient, status);
     },
   });
 }

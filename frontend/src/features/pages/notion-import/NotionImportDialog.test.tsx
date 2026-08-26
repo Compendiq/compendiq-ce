@@ -348,6 +348,7 @@ describe('NotionImportDialog connection never-echo', () => {
     );
     expect(src).toContain("'/notion/connection'");
     expect(src).toContain("'/notion/tree'");
+    expect(src).toContain("cancelQueries({ queryKey: ['notion'] })");
     expect(src).toContain("setQueryData(['notion', 'connection']");
     expect(src).toContain("removeQueries({ queryKey: ['notion', 'tree'] })");
     expect(src).not.toMatch(/notion\/(?:connection|tree)\?.*token/);
@@ -358,28 +359,37 @@ describe('NotionImportDialog connection never-echo', () => {
 describe('NotionImportDialog connect then tree', () => {
   it('loads the tree after Connect even while GET connection has not refetched', async () => {
     const held = deferResponse();
-    let connectionGets = 0;
+    let connectionGetSettled = 0;
     givenHappyPath();
     routes = [
       {
         match: /\/notion\/connection$/,
         method: 'GET',
-        respond: () => {
-          connectionGets += 1;
-          if (connectionGets === 1) return { body: { hasToken: false } };
-          return held.promise;
+        respond: async () => {
+          const body = await held.promise;
+          connectionGetSettled += 1;
+          return body;
         },
       },
       ...routes.filter((route) => !((route.method ?? 'GET') === 'GET' && route.match.test('/api/notion/connection'))),
     ];
-    renderDialog();
+    const { queryClient } = renderDialog();
     const input = await screen.findByLabelText(/internal integration token/i);
     fireEvent.change(input, { target: { value: TOKEN } });
     fireEvent.click(screen.getByRole('button', { name: /connect/i }));
 
     expect(await screen.findByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
     expect(screen.queryByText(/loading workspace/i)).toBeNull();
-    held.resolve({ body: { hasToken: true } });
+
+    held.resolve({ body: { hasToken: false } });
+    await waitFor(() => {
+      expect(connectionGetSettled).toBeGreaterThanOrEqual(1);
+      expect(queryClient.getQueryState(['notion', 'connection'])?.fetchStatus).toBe('idle');
+    });
+    expect(queryClient.getQueryData(['notion', 'connection'])).toEqual({ hasToken: true });
+    expect(screen.getByRole('heading', { name: 'Choose pages' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/internal integration token/i)).toBeNull();
   });
 });
 
