@@ -149,6 +149,13 @@ jobs:
       - name: Frontend tests
         run: npm test -w frontend
 
+      # Vitest + tsc never bundle workers. #1418's `?url` import of
+      # onnxruntime-web WASM passed typecheck and the frontend suite, then
+      # `vite build` in the frontend Docker image failed on the package
+      # exports map. This is that production build, on the same install.
+      - name: Frontend production build
+        run: npm run build -w frontend
+
   # #1102 — retrieval quality gate. Deliberately its OWN job: it runs a real
   # embedding model, which the fast PR path must not wait on. Scoped by paths
   # so it only fires for changes that can actually move retrieval.
