@@ -77,6 +77,32 @@ describe.skipIf(!dbAvailable)('GET /api/models/client-assets (#1418)', () => {
     expect(hunspell.every((m: { available: boolean }) => m.available)).toBe(true);
   });
 
+  it('404s ONNX while the admin flag is off and still serves Hunspell', async () => {
+    await writeAsset('qwen2.5-0.5b-instruct-q4', 'onnx/model_q4.onnx', 'ONNXBYTES');
+    await writeAsset('hunspell-en_US', 'en_US.dic', 'DICBYTES');
+    const onnxOff = await app.inject({
+      method: 'GET',
+      url: '/api/models/client-assets/qwen2.5-0.5b-instruct-q4/onnx/model_q4.onnx',
+    });
+    expect(onnxOff.statusCode).toBe(404);
+    const hunspell = await app.inject({
+      method: 'GET',
+      url: '/api/models/client-assets/hunspell-en_US/en_US.dic',
+    });
+    expect(hunspell.statusCode).toBe(200);
+    expect(hunspell.body).toBe('DICBYTES');
+
+    await query(
+      `UPDATE admin_settings SET setting_value = 'true' WHERE setting_key = 'client_inference_enabled'`,
+    );
+    const onnxOn = await app.inject({
+      method: 'GET',
+      url: '/api/models/client-assets/qwen2.5-0.5b-instruct-q4/onnx/model_q4.onnx',
+    });
+    expect(onnxOn.statusCode).toBe(200);
+    expect(onnxOn.body).toBe('ONNXBYTES');
+  });
+
   it('streams an allow-listed file with a revalidatable ETag, not immutable', async () => {
     await writeAsset('hunspell-en_US', 'en_US.dic', 'DICBYTES');
     const response = await app.inject({

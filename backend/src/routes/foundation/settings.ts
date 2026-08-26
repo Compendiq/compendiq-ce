@@ -275,12 +275,20 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(body.inlineCompletionCodeOnly);
     }
 
-    if (body.clientInferenceEnabled === true) {
+    let clientInferenceEnabled = body.clientInferenceEnabled;
+    if (clientInferenceEnabled === true) {
       const adminOn = await readClientInferenceAdminEnabled();
       if (!adminOn) {
-        throw fastify.httpErrors.unprocessableEntity(
-          'On-device suggestions are disabled by an administrator',
+        const current = await query<{ client_inference_enabled: boolean }>(
+          `SELECT client_inference_enabled FROM user_settings WHERE user_id = $1`,
+          [request.userId],
         );
+        if (current.rows[0]?.client_inference_enabled !== true) {
+          throw fastify.httpErrors.unprocessableEntity(
+            'On-device suggestions are disabled by an administrator',
+          );
+        }
+        clientInferenceEnabled = false;
       }
     }
 
@@ -312,9 +320,9 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       }
     }
 
-    if (body.clientInferenceEnabled !== undefined) {
+    if (clientInferenceEnabled !== undefined) {
       updates.push(`client_inference_enabled = $${paramIdx++}`);
-      values.push(body.clientInferenceEnabled);
+      values.push(clientInferenceEnabled);
     }
 
     if (body.clientInferenceWithoutServer !== undefined) {

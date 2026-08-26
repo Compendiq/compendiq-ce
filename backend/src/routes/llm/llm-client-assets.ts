@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
-import { ClientAssetManifestSchema } from '@compendiq/contracts';
+import { CLIENT_ASSET_KIND, ClientAssetIdSchema, ClientAssetManifestSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import {
@@ -41,6 +41,10 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
     { preHandler: requireGlobalPermission('llm:query') },
     async (request, reply) => {
       const file = request.params['*'] ?? '';
+      const parsedId = ClientAssetIdSchema.safeParse(request.params.modelId);
+      if (parsedId.success && CLIENT_ASSET_KIND[parsedId.data] === 'onnx' && !(await slmEnabled())) {
+        return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
+      }
       const found = await statClientAsset(request.params.modelId, file);
       if (!found) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
 

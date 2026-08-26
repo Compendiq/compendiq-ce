@@ -32,6 +32,12 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(read('./client-inference-manager.ts')).not.toMatch(/@huggingface\/transformers/);
   });
 
+  it('serializes complete/rewrite instead of overlapping generator() calls', () => {
+    const worker = read('./client-inference.worker.ts');
+    expect(worker).toMatch(/chain = chain\.then/);
+    expect(worker).not.toMatch(/void onRequest\(event\.data\)/);
+  });
+
   it('sets ORT wasmPaths to same-origin Vite URLs and never names a CDN', () => {
     const worker = read('./client-inference.worker.ts');
     const env = read('./configure-client-inference-env.ts');

@@ -12,10 +12,32 @@ export type TransformersEnvLike = {
   backends: { onnx?: { wasm?: { wasmPaths?: unknown } } };
 };
 
-export function wrapAssetFetch(accessToken: string | undefined): typeof fetch {
+function requestHref(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+function isSameOriginClientAsset(input: RequestInfo | URL, origin: string): boolean {
+  if (!origin) return false;
+  try {
+    const parsed = new URL(requestHref(input), origin);
+    return parsed.origin === new URL(origin).origin
+      && parsed.pathname.startsWith('/api/models/client-assets/');
+  } catch {
+    return false;
+  }
+}
+
+export function wrapAssetFetch(
+  accessToken: string | undefined,
+  origin: string = (typeof self !== 'undefined' ? self.location?.origin : undefined) ?? '',
+): typeof fetch {
   return (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
-    if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+    if (accessToken && isSameOriginClientAsset(input, origin)) {
+      headers.set('Authorization', `Bearer ${accessToken}`);
+    }
     return fetch(input, { ...init, headers });
   };
 }

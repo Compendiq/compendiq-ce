@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   configureClientInferenceEnv,
   wrapAssetFetch,
@@ -43,13 +43,34 @@ describe('configureClientInferenceEnv', () => {
 });
 
 describe('wrapAssetFetch', () => {
+  const origin = 'https://kb.example';
+
+  afterEach(() => vi.unstubAllGlobals());
+
   it('attaches the Bearer token transformers.js would omit', async () => {
     const fetchFn = vi.fn(async () => new Response('ok'));
     vi.stubGlobal('fetch', fetchFn);
-    await wrapAssetFetch('tok-1')('/api/models/client-assets/qwen2.5-0.5b-instruct-q4/config.json');
+    await wrapAssetFetch('tok-1', origin)('/api/models/client-assets/qwen2.5-0.5b-instruct-q4/config.json');
     const init = fetchFn.mock.calls[0]?.[1] as RequestInit;
     const headers = new Headers(init.headers);
     expect(headers.get('Authorization')).toBe('Bearer tok-1');
-    vi.unstubAllGlobals();
+  });
+
+  it('does not attach the session JWT to a CDN or other-host fetch', async () => {
+    const fetchFn = vi.fn(async () => new Response('ok'));
+    vi.stubGlobal('fetch', fetchFn);
+    await wrapAssetFetch('tok-1', origin)('https://cdn.jsdelivr.net/npm/onnxruntime-web/ort.wasm');
+    const init = fetchFn.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init?.headers);
+    expect(headers.get('Authorization')).toBeNull();
+  });
+
+  it('does not attach the session JWT to same-origin paths outside client-assets', async () => {
+    const fetchFn = vi.fn(async () => new Response('ok'));
+    vi.stubGlobal('fetch', fetchFn);
+    await wrapAssetFetch('tok-1', origin)(`${origin}/assets/ort-wasm-simd-threaded.jsep.wasm`);
+    const init = fetchFn.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init?.headers);
+    expect(headers.get('Authorization')).toBeNull();
   });
 });

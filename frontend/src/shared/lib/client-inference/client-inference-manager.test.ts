@@ -13,7 +13,7 @@ const COMPACT: DeviceGpuProfile = {
 
 class FakeWorker {
   onmessage: ((event: MessageEvent<WorkerEvent>) => void) | null = null;
-  private autoReady = true;
+  autoReady = true;
   private autoResult: string | null = ' hello';
   messages: WorkerRequest[] = [];
 
@@ -180,6 +180,74 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     mgr.setFlags({ adminEnabled: false, userEnabled: true });
     await expect(pending).resolves.toEqual({ kind: 'server' });
+  });
+
+  it('does not retry a terminal GPU load on the next keystroke', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = compactManager(worker, true);
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = {
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    };
+    await mgr.decideComplete(args);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    const load = worker.messages.find((m) => m.type === 'load');
+    expect(load).toBeDefined();
+    worker.emit({ id: load!.id, type: 'error', code: 'webgpu', message: 'no adapter' });
+    await Promise.resolve();
+    const loadsBefore = worker.messages.filter((m) => m.type === 'load').length;
+    await mgr.decideComplete(args);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(worker.messages.filter((m) => m.type === 'load')).toHaveLength(loadsBefore);
+    expect(mgr.lastErrorCategory()).toBe('webgpu');
+  });
+
+  it('retries load after an explicit predownload following a terminal failure', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchManifest: async () => ({
+        enabled: true,
+        models: [{
+          id: 'qwen2.5-0.5b-instruct-q4',
+          kind: 'onnx',
+          bytes: 1,
+          installed: true,
+          available: true,
+          files: [{ name: 'config.json', bytes: 1 }],
+        }],
+      }),
+      downloadFile: async () => new Blob(['x']),
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.decideComplete({
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    const load = worker.messages.find((m) => m.type === 'load');
+    worker.emit({ id: load!.id, type: 'error', code: 'oom', message: 'out of memory' });
+    await Promise.resolve();
+    worker.autoReady = true;
+    await mgr.predownload();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(worker.messages.filter((m) => m.type === 'load').length).toBeGreaterThan(1);
   });
 
   it('coalesces concurrent load posts', async () => {

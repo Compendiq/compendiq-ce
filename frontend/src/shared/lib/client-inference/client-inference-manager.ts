@@ -62,6 +62,7 @@ export class ClientInferenceManager {
   private visibilityHandler: (() => void) | null = null;
   private loadWaiters: Array<() => void> = [];
   private loadInFlight: Promise<void> | null = null;
+  private loadFailed = false;
 
   constructor(private readonly opts: ClientInferenceManagerOptions = {}) {}
 
@@ -185,6 +186,7 @@ export class ClientInferenceManager {
       loaded += file.bytes;
       onProgress?.(loaded, total);
     }
+    this.loadFailed = false;
     await this.startLoad();
   }
 
@@ -197,11 +199,13 @@ export class ClientInferenceManager {
   }
 
   private async maybeStartLoad(): Promise<void> {
+    if (this.loadFailed) return;
     const hasCache = this.opts.hasCache ?? (() => hasOpfsModel());
     if (await hasCache()) await this.startLoad();
   }
 
   private async startLoad(): Promise<void> {
+    if (this.loadFailed) return;
     if (this.ready) return;
     if (this.loadInFlight) return this.loadInFlight;
     this.loadInFlight = this.runLoad();
@@ -264,6 +268,7 @@ export class ClientInferenceManager {
       this.lastError = { code: event.code, at: Date.now() };
       if (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom') {
         this.ready = false;
+        this.loadFailed = true;
         this.settleLoad();
       }
       const pending = this.pending.get(event.id);
@@ -319,6 +324,7 @@ export class ClientInferenceManager {
   }
 
   private teardownWorker(): void {
+    this.loadFailed = false;
     this.unload();
     const pending = [...this.pending.values()];
     this.pending.clear();

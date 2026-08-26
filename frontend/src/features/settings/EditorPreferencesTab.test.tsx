@@ -55,11 +55,11 @@ describe('EditorPreferencesTab (#1417)', () => {
       inlineCompletionDelay: 'deliberate',
       inlineCompletionMode: 'word',
       inlineCompletionCodeOnly: true,
-      clientInferenceEnabled: false,
       clientInferenceWithoutServer: true,
       clientSpellcheckEnabled: false,
       clientSpellcheckLanguages: ['en_US', 'de_DE'],
     });
+    expect(onSave.mock.calls[0]?.[0]).not.toHaveProperty('clientInferenceEnabled');
   });
 
   it('disables automatic delay choices when suggestions are off', () => {
@@ -124,6 +124,26 @@ describe('EditorPreferencesTab on-device shells (#1418)', () => {
     expect(child).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(screen.getByRole('switch', { name: 'On-device suggestions (WebGPU)' }));
     expect(child).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('omits clientInferenceEnabled on Save when the admin flag is off', () => {
+    const onSave = vi.fn();
+    render(
+      <EditorPreferencesTab
+        settings={{
+          ...settings,
+          clientInferenceEnabled: true,
+          clientInferenceAdminEnabled: false,
+        }}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('inline-delay-deliberate'));
+    fireEvent.click(screen.getByTestId('editor-preferences-save'));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const payload = onSave.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).not.toHaveProperty('clientInferenceEnabled');
+    expect(payload.inlineCompletionDelay).toBe('deliberate');
   });
 
   it('saves on-device and spellcheck prefs together with inline suggestions', () => {

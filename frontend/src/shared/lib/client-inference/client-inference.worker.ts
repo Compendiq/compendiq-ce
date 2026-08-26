@@ -12,6 +12,7 @@ let generator: ((input: unknown, gen?: Record<string, unknown>) => Promise<unkno
 let loadedModel: string | null = null;
 const aborted = new Set<string>();
 let configured = false;
+let chain: Promise<void> = Promise.resolve();
 
 function post(event: WorkerEvent): void {
   self.postMessage(event);
@@ -24,12 +25,12 @@ async function ensurePipeline(modelId: string, accessToken?: string): Promise<vo
     configureClientInferenceEnv(transformers.env, {
       origin: self.location.origin,
       wasmPaths: ortWasmPaths(),
-      fetch: wrapAssetFetch(accessToken),
+      fetch: wrapAssetFetch(accessToken, self.location.origin),
       customCache: opfsTransformersCache,
     });
     configured = true;
   } else if (accessToken) {
-    transformers.env.fetch = wrapAssetFetch(accessToken);
+    transformers.env.fetch = wrapAssetFetch(accessToken, self.location.origin);
   }
   generator = await transformers.pipeline('text-generation', modelId, {
     device: 'webgpu',
@@ -111,7 +112,12 @@ async function onRequest(msg: WorkerRequest): Promise<void> {
 }
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  void onRequest(event.data);
+  const msg = event.data;
+  if (msg.type === 'abort') {
+    aborted.add(msg.targetId);
+    return;
+  }
+  chain = chain.then(() => onRequest(msg)).catch(() => undefined);
 };
 
 void CLIENT_INFERENCE_MODEL_ID;

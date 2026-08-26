@@ -390,7 +390,7 @@ export function EditorPreferencesTab({
           inlineCompletionDelay: delay,
           inlineCompletionMode: mode,
           inlineCompletionCodeOnly: codeOnly,
-          clientInferenceEnabled: clientEnabled,
+          ...(adminOn ? { clientInferenceEnabled: clientEnabled } : {}),
           clientInferenceWithoutServer: withoutServer,
           clientSpellcheckEnabled: spellEnabled,
           clientSpellcheckLanguages: spellLangs,
