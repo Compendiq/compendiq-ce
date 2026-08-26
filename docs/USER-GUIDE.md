@@ -85,7 +85,7 @@ You can also start a page from a template (e.g. Meeting Notes, Incident Report, 
 
 This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
 
-1. Paste an **internal integration token**. Compendiq stores it encrypted and never shows it again.
+1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
 2. Pick pages in the workspace tree. Nested children are selected independently — a parent can import without its children.
 3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
 4. Run the import. Pages that already exist locally are reported as already imported rather than duplicated.

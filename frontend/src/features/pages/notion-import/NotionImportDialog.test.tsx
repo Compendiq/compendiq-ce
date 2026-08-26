@@ -290,6 +290,38 @@ describe('NotionImportDialog confirm copy', () => {
   });
 });
 
+describe('NotionImportDialog connect-step token guidance', () => {
+  it('names the Notion token type and how to share pages', async () => {
+    renderDialog();
+    const input = await screen.findByLabelText(/internal integration token/i);
+
+    expect(screen.getByText(/installation access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/not an oauth app/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a personal access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/share the pages you want to import/i)).toBeInTheDocument();
+    expect(screen.getByText(/never shown again/i)).toBeInTheDocument();
+
+    const describedBy = input.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    for (const id of (describedBy ?? '').split(/\s+/).filter(Boolean)) {
+      const region = document.getElementById(id);
+      expect(region, `missing described-by region #${id}`).not.toBeNull();
+      expect(region!.querySelector('a')).toBeNull();
+    }
+  });
+
+  it('links to Notion’s integrations portal outside the field description', async () => {
+    renderDialog();
+    await screen.findByLabelText(/internal integration token/i);
+
+    const link = screen.getByTestId('notion-token-link');
+    expect(link).toHaveAttribute('href', 'https://www.notion.so/my-integrations');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
+    expect(link).toHaveTextContent(/create a token in notion/i);
+  });
+});
+
 describe('NotionImportDialog connection never-echo', () => {
   it('never puts the token on GET URLs, GET bodies, or toasts', async () => {
     renderDialog();

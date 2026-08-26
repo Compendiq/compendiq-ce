@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Check, Loader2, X } from 'lucide-react';
+import { AlertTriangle, Check, ExternalLink, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { NotionImportItem, NotionTreeNode } from '@compendiq/contracts';
 import { ApiError } from '../../../shared/lib/api';
@@ -394,11 +394,34 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                   onChange={(e) => setToken(e.target.value)}
                   className="nm-input"
                   placeholder="Paste the token"
-                  aria-describedby="notion-token-never-echo"
+                  aria-describedby="notion-token-hint notion-token-share notion-token-never-echo"
                 />
-                <p id="notion-token-never-echo" className="text-xs text-muted-foreground">
-                  Stored encrypted. It is never shown again and is not a live sync.
-                </p>
+                <div className="space-y-1.5 text-xs text-muted-foreground">
+                  <p id="notion-token-hint">
+                    Create an internal connection in Notion (workspace owners only) and paste the
+                    Installation access token from its Configuration tab. Not an OAuth app, not a
+                    personal access token.
+                  </p>
+                  <p>
+                    <a
+                      href="https://www.notion.so/my-integrations"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-medium text-action underline underline-offset-2"
+                      data-testid="notion-token-link"
+                    >
+                      Create a token in Notion
+                      <ExternalLink size={12} aria-hidden="true" />
+                    </a>
+                  </p>
+                  <p id="notion-token-share">
+                    Then share the pages you want to import with that connection — a new connection
+                    can see nothing until you do.
+                  </p>
+                  <p id="notion-token-never-echo">
+                    Stored encrypted. It is never shown again and is not a live sync.
+                  </p>
+                </div>
                 <button
                   type="submit"
                   className="nm-button-primary h-8 px-3 text-xs"
