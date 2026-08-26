@@ -29,7 +29,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 COPY packages/contracts/package.json ./packages/contracts/
-RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev
+RUN --mount=type=cache,target=/root/.npm npm ci -w backend -w @compendiq/contracts --omit=dev \
+    && mkdir -p backend/node_modules
 
 # Utility stage — install runtime tools and prepare filesystem
 FROM node:24-alpine AS tools
@@ -52,8 +53,11 @@ COPY --from=tools --chown=node:node /opt/app/data /app/data
 
 WORKDIR /app
 COPY --chown=node:node --from=builder /app/backend/package.json ./
-# Copy production node_modules (hoisted to root by npm workspaces)
+# Copy production node_modules (hoisted to root by npm workspaces).
+# npm may also demote backend prod deps to backend/node_modules; merge
+# those onto the root tree so ESM from /app/dist can resolve them.
 COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=prod-deps /app/backend/node_modules/. ./node_modules/
 # Copy built contracts package so backend can resolve it at runtime
 COPY --chown=node:node --from=builder /app/packages/contracts/dist/ ./node_modules/@compendiq/contracts/dist/
 COPY --chown=node:node --from=builder /app/packages/contracts/package.json ./node_modules/@compendiq/contracts/package.json
