@@ -57,4 +57,31 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(urls).toMatch(/\?url/);
     expect(`${worker}\n${env}\n${urls}`).not.toMatch(/jsdelivr|huggingface\.co/i);
   });
+
+  it('imports ORT jsep wasm through the package exports map, not a deep /dist/ path', () => {
+    // Vite 8 / Rolldown honours exports. `onnxruntime-web/dist/...` is
+    // `./dist/...` in the map, which is not exported, so `vite build`
+    // (frontend Docker image) fails with "is not exported under the
+    // conditions [module, browser, production, import]".
+    const urls = read('./ort-wasm-urls.ts');
+    expect(urls).not.toMatch(/onnxruntime-web\/dist\//);
+    const specifiers = [...urls.matchAll(/from 'onnxruntime-web\/([^']+)\?url'/g)].map(
+      (match) => match[1],
+    );
+    expect(specifiers).toEqual([
+      'ort-wasm-simd-threaded.jsep.mjs',
+      'ort-wasm-simd-threaded.jsep.wasm',
+    ]);
+    const pkg = JSON.parse(
+      readFileSync(resolve(here, '../../../../../node_modules/onnxruntime-web/package.json'), 'utf8'),
+    ) as { exports: Record<string, unknown> };
+    for (const spec of specifiers) {
+      expect(pkg.exports[`./${spec}`], `${spec} must be a package export`).toBeTruthy();
+    }
+  });
+
+  it('runs a production frontend build in PR Check, not only in the Docker image', () => {
+    const workflow = read('../../../../../.github/workflows/pr-check.yml');
+    expect(workflow).toMatch(/npm run build -w frontend/);
+  });
 });
