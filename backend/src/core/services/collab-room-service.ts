@@ -14,17 +14,19 @@ import * as decoding from 'lib0/decoding';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { logger } from '../utils/logger.js';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
+import { vitestIntOr } from '../utils/safe-int.js';
 import { getRedisClient } from './redis-cache.js';
 import * as persist from './collab-persistence.js';
 
-export const COLLAB_ACTIVE_TTL_SEC = 45;
-export const COLLAB_PING_INTERVAL_MS = 15_000;
+export const COLLAB_ACTIVE_TTL_SEC = vitestIntOr('COLLAB_ACTIVE_TTL_SEC', 45);
+export const COLLAB_PING_INTERVAL_MS = vitestIntOr('COLLAB_PING_INTERVAL_MS', 15_000);
 export const COLLAB_READONLY_DROP_LIMIT = 8;
-export const COLLAB_EMPTY_ROOM_GRACE_MS = 10_000;
-export const COLLAB_COMMIT_DUMP_TIMEOUT_MS = 2_000;
+export const COLLAB_EMPTY_ROOM_GRACE_MS = vitestIntOr('COLLAB_EMPTY_ROOM_GRACE_MS', 10_000);
+export const COLLAB_COMMIT_DUMP_TIMEOUT_MS = vitestIntOr('COLLAB_COMMIT_DUMP_TIMEOUT_MS', 2_000);
 
-const CHANNEL_PREFIX = 'collab:doc:';
-const CHANNEL_PATTERN = 'collab:doc:*';
+const CHANNEL_PREFIX = prefixedRedisChannel('collab:doc:');
+const CHANNEL_PATTERN = `${CHANNEL_PREFIX}*`;
 const ACTIVE_PREFIX = 'collab:active:';
 
 const MESSAGE_SYNC = 0;
@@ -119,6 +121,11 @@ function activeKey(pageId: number): string {
 
 function docChannel(pageId: number): string {
   return `${CHANNEL_PREFIX}${pageId}`;
+}
+
+/** Pub/sub name for a page. Exported so tests publish on the same (possibly worker-prefixed) channel. */
+export function collabDocChannel(pageId: number): string {
+  return docChannel(pageId);
 }
 
 function parseChannel(channel: string): number | null {

@@ -30,6 +30,7 @@
 
 import type { RedisClientType } from 'redis';
 import { logger } from '../utils/logger.js';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 
 // Closed union of every channel the generic cache-bus carries. Lifted
 // verbatim from epic §3.1 (.plans/v0.4-epic-2026-04.md in the EE repo);
@@ -143,7 +144,7 @@ export function isCacheBusActive(): boolean {
 export async function publish(channel: CacheBusChannel, payload: unknown): Promise<void> {
   if (!state?.active) return;
   try {
-    await state.main.publish(channel, JSON.stringify(payload));
+    await state.main.publish(prefixedRedisChannel(channel), JSON.stringify(payload));
   } catch (err) {
     logger.warn({ err, channel }, 'redis-cache-bus: publish failed');
   }
@@ -173,7 +174,7 @@ export function subscribe<T = unknown>(
   if (!state.redisSubscribed.has(channel)) {
     state.redisSubscribed.add(channel);
     void state.subscriber
-      .subscribe(channel, (message: string) => dispatch(channel, message))
+      .subscribe(prefixedRedisChannel(channel), (message: string) => dispatch(channel, message))
       .catch((err: unknown) => {
         logger.warn({ err, channel }, 'redis-cache-bus: subscribe failed — handler inert for this channel');
         state?.redisSubscribed.delete(channel);

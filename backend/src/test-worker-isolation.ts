@@ -1,10 +1,10 @@
 /**
  * Per-worker Postgres + Redis isolation so vitest can run test files in
  * parallel. Every worker gets its own database (`kb_creator_test_wN`) and
- * Redis logical DB (`/N`). Shared state is why `fileParallelism` is still
- * forced off in vitest.config.ts — `truncateAllTables()` wiped `public`
- * for every file. This helper is the switch; do not wire it into
- * test-setup until `src/domains` finishes a parallel run without hanging.
+ * Redis logical DB (`/N`) and a `vitest:wN:` pub/sub prefix. Wired from
+ * `test-setup.ts` so `fileParallelism` can stay on. Redis pub/sub is not
+ * scoped to logical DBs — the prefix in `prefixed-redis-channel.ts` is what
+ * keeps collab/presence/cache-bus from cross-talking across workers.
  *
  * Redis ships 16 logical DBs (0–15). Isolation keys off
  * `VITEST_POOL_ID` (the reusable 1..maxWorkers slot), never

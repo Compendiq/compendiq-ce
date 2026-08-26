@@ -1013,13 +1013,28 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
   });
 
   describe('live run', () => {
-    const VEC_2048 = '[' + new Array(2048).fill(0).join(',') + ']';
+    async function liveImageEmbeddingWidth(): Promise<number> {
+      const r = await query<{ type: string }>(
+        `SELECT format_type(atttypid, atttypmod) AS type
+           FROM pg_attribute
+          WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
+      );
+      const m = /^(?:halfvec|vector)\((\d+)\)$/.exec(r.rows[0]?.type ?? '');
+      if (!m) {
+        throw new Error(`unexpected page_image_embeddings.embedding type ${r.rows[0]?.type}`);
+      }
+      return Number(m[1]);
+    }
 
     async function seedEmbeddingRow(pageId: number, source: string, key: string): Promise<void> {
+      // Sibling files on this worker may have retyped the column (4, 1024, …).
+      // The sweep only needs a row to prune; match the live width.
+      const dims = await liveImageEmbeddingWidth();
+      const vec = '[' + new Array(dims).fill(0).join(',') + ']';
       await query(
         `INSERT INTO page_image_embeddings (page_id, source, attachment_key, sha256, format, model, embedding)
          VALUES ($1, $2, $3, 'sha', 'png', 'test-model', $4::vector)`,
-        [pageId, source, key, VEC_2048],
+        [pageId, source, key, vec],
       );
     }
 

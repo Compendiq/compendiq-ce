@@ -35,6 +35,7 @@ import {
   type CacheBusChannel,
 } from './redis-cache-bus.js';
 import { logger } from '../utils/logger.js';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 
 function createMockRedis(opts?: {
   connectRejects?: Error;
@@ -73,7 +74,8 @@ function createMockRedis(opts?: {
     mainMock: main,
     subscriber,
     emit(channel: string, message: string) {
-      const handler = channelHandlers.get(channel);
+      const handler =
+        channelHandlers.get(prefixedRedisChannel(channel)) ?? channelHandlers.get(channel);
       if (!handler) throw new Error(`no subscriber for channel ${channel}`);
       handler(message);
     },
@@ -144,7 +146,7 @@ describe('redis-cache-bus', () => {
 
       expect(env.mainMock.publish).toHaveBeenCalledTimes(1);
       expect(env.mainMock.publish).toHaveBeenCalledWith(
-        'ip_allowlist:changed',
+        prefixedRedisChannel('ip_allowlist:changed'),
         JSON.stringify({ at: 1_700_000_000_000 }),
       );
     });
@@ -156,7 +158,7 @@ describe('redis-cache-bus', () => {
       subscribe('ip_allowlist:changed', () => {});
 
       expect(env.subscriber.subscribe).toHaveBeenCalledWith(
-        'ip_allowlist:changed',
+        prefixedRedisChannel('ip_allowlist:changed'),
         expect.any(Function),
       );
     });

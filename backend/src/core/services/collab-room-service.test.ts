@@ -17,6 +17,7 @@ import * as encoding from 'lib0/encoding';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import {
   createCollabRuntime,
+  collabDocChannel,
   COLLAB_ACTIVE_TTL_SEC,
   COLLAB_EMPTY_ROOM_GRACE_MS,
   type CollabRuntime,
@@ -68,7 +69,7 @@ function encodeAwarenessFrame(state: Record<string, unknown>): { frame: Uint8Arr
 async function cleanupKeys(): Promise<void> {
   if (!main) return;
   if (usedPageIds.length === 0) return;
-  await main.del(usedPageIds.flatMap((id) => [`collab:active:${id}`, `collab:doc:${id}`]));
+  await main.del(usedPageIds.flatMap((id) => [`collab:active:${id}`, collabDocChannel(id)]));
 }
 
 beforeAll(async () => {
@@ -165,7 +166,7 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     }, { timeout: 4_000 });
 
     const syncFromB = publishSpy.mock.calls.filter(([channel, payload]) => {
-      if (channel !== `collab:doc:${pageId}`) return false;
+      if (channel !== collabDocChannel(pageId)) return false;
       try {
         const msg = JSON.parse(String(payload)) as { origin?: string; kind?: string };
         return msg.origin === runtimeB!.podId && msg.kind === 'sync';
@@ -560,7 +561,7 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     dumpDoc.getText('t').insert(0, 'SHOULD_NOT_APPLY');
     const dump = Y.encodeStateAsUpdate(dumpDoc);
     dumpDoc.destroy();
-    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+    await main!.publish(collabDocChannel(pageId), JSON.stringify({
       origin: runtimeA!.podId,
       kind: 'state_dump',
       update: Buffer.from(dump).toString('base64'),
@@ -575,7 +576,7 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
     const pageId = nextPageId();
     await runtimeA!.getOrCreateRoom(pageId);
     const roomB = await runtimeB!.getOrCreateRoom(pageId);
-    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+    await main!.publish(collabDocChannel(pageId), JSON.stringify({
       origin: runtimeA!.podId,
       kind: 'sync',
       update: '!!!not-a-yjs-update!!!',
@@ -585,7 +586,7 @@ describe.skipIf(!redisAvailable)('collab-room-service Redis fan-out (#1444)', ()
       d.getText('t').insert(0, 'after-bad');
       return d;
     })());
-    await main!.publish(`collab:doc:${pageId}`, JSON.stringify({
+    await main!.publish(collabDocChannel(pageId), JSON.stringify({
       origin: runtimeA!.podId,
       kind: 'sync',
       update: Buffer.from(good).toString('base64'),

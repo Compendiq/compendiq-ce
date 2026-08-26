@@ -37,7 +37,13 @@ import { COLLAB_WS_PROTOCOL } from '@compendiq/contracts';
 import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 import { assertNoLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
-import { _resetCollabRoomsForTest, createCollabRuntime, getDefaultCollabRuntime } from '../../core/services/collab-room-service.js';
+import {
+  _resetCollabRoomsForTest,
+  createCollabRuntime,
+  getDefaultCollabRuntime,
+  COLLAB_ACTIVE_TTL_SEC,
+  COLLAB_PING_INTERVAL_MS,
+} from '../../core/services/collab-room-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
 import * as persist from '../../core/services/collab-persistence.js';
 import { yDocToHtml } from '../../core/services/collab-schema.js';
@@ -596,7 +602,7 @@ describe.skipIf(!canRun)('committed trash tombstone (#1444)', () => {
 });
 
 describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {
-  it('31 s idle still 409s assertNoLiveCollabRoom (ping 15s / TTL 45s)', async () => {
+  it('idle connection still 409s because pings renew collab:active TTL', async () => {
     const { token, userId } = await createUser('collab_idle');
     const pageId = await insertStandalone({ ownerId: userId, visibility: 'shared' });
     await enableCollabFlag();
@@ -604,16 +610,19 @@ describe.skipIf(!canRun)('collab:active TTL / idle 409 (#1444)', () => {
     const ws = openWhatwg(pageId, token);
     await waitOpen(ws);
 
-    await new Promise((r) => setTimeout(r, 31_000));
+    // Wait longer than half the TTL. Without ping renewal remaining TTL
+    // would drop to ≤ half; with pings it stays near the full TTL.
+    const waitMs = Math.max(COLLAB_PING_INTERVAL_MS * 3, COLLAB_ACTIVE_TTL_SEC * 500);
+    await new Promise((r) => setTimeout(r, waitMs));
 
     await expect(assertNoLiveCollabRoom(pageId)).rejects.toMatchObject({
       statusCode: 409,
       code: 'collab_session_active',
     });
     const ttl = await getRedisClient()!.ttl(`collab:active:${pageId}`);
-    expect(ttl).toBeGreaterThan(20);
+    expect(ttl).toBeGreaterThan(Math.floor(COLLAB_ACTIVE_TTL_SEC / 2));
     ws.close();
-  }, 45_000);
+  }, Math.max(15_000, COLLAB_ACTIVE_TTL_SEC * 1000 + 5_000));
 });
 
 describe('GET /api/collab/:pageId route options (#1444)', () => {
