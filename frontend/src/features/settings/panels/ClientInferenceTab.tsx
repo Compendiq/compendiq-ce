@@ -21,6 +21,7 @@ export function ClientInferenceTab() {
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
     },
   });
 
@@ -62,19 +63,36 @@ export function ClientInferenceTab() {
           <span className="font-mono text-xs">docs/runbooks/client-inference.md</span> runbook.
           Pre-download lives on each author&apos;s Editor card — this tab cannot fill another browser&apos;s cache.
         </p>
-        <ul className="mt-3 divide-y divide-border rounded-xl border border-border">
-          {(manifest.data?.models ?? []).map((model) => (
-            <li key={model.id} className="px-4 py-3 text-sm">
-              <span className="font-medium text-foreground">{model.id}</span>
-              <span className="ml-2 text-muted-foreground">
-                {model.kind}
-                {' · '}
-                {model.installed ? `${model.bytes} bytes` : 'missing'}
-                {model.kind === 'onnx' && !model.available ? ' · unavailable while the flag is off' : ''}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {manifest.isPending && !manifest.data && (
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">Looking up installed assets…</p>
+        )}
+        {manifest.isError && !manifest.data && (
+          <p role="status" className="mt-3 text-sm leading-6 text-muted-foreground">
+            Could not read installed assets.{' '}
+            <button
+              type="button"
+              className="nm-button-ghost h-8"
+              onClick={() => { void manifest.refetch(); }}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+        {manifest.data && (
+          <ul className="mt-3 divide-y divide-border rounded-xl border border-border">
+            {manifest.data.models.map((model) => (
+              <li key={model.id} className="px-4 py-3 text-sm">
+                <span className="font-medium text-foreground">{model.id}</span>
+                <span className="ml-2 text-muted-foreground">
+                  {model.kind}
+                  {' · '}
+                  {model.installed ? `${model.bytes} bytes` : 'missing'}
+                  {model.kind === 'onnx' && !model.available ? ' · unavailable while the flag is off' : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section aria-labelledby="client-inference-probe">

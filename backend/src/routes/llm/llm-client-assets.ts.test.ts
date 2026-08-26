@@ -77,7 +77,7 @@ describe.skipIf(!dbAvailable)('GET /api/models/client-assets (#1418)', () => {
     expect(hunspell.every((m: { available: boolean }) => m.available)).toBe(true);
   });
 
-  it('streams an allow-listed file with private immutable caching', async () => {
+  it('streams an allow-listed file with a revalidatable ETag, not immutable', async () => {
     await writeAsset('hunspell-en_US', 'en_US.dic', 'DICBYTES');
     const response = await app.inject({
       method: 'GET',
@@ -85,8 +85,17 @@ describe.skipIf(!dbAvailable)('GET /api/models/client-assets (#1418)', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/application\/octet-stream/);
-    expect(response.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+    expect(response.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+    expect(response.headers['etag']).toMatch(/^"[0-9a-f]+-[0-9a-f]+"$/);
+    expect(String(response.headers['cache-control'])).not.toMatch(/immutable/);
     expect(response.body).toBe('DICBYTES');
+
+    const again = await app.inject({
+      method: 'GET',
+      url: '/api/models/client-assets/hunspell-en_US/en_US.dic',
+      headers: { 'if-none-match': String(response.headers['etag']) },
+    });
+    expect(again.statusCode).toBe(304);
   });
 
   it('honours Range with 206', async () => {

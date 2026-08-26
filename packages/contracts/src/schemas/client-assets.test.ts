@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLIENT_ASSET_FILES,
+  ClientAssetFileSchema,
   ClientAssetIdSchema,
   ClientAssetManifestSchema,
   ClientModelIdSchema,
@@ -46,5 +47,12 @@ describe('ClientAssetIdSchema (#1418 SPEC-032)', () => {
         files: [],
       }],
     }).enabled).toBe(false);
+  });
+
+  it('lists a file without hashing it — sha256 is optional on the hot path', () => {
+    expect(ClientAssetFileSchema.parse({ name: 'config.json', bytes: 7 })).toEqual({
+      name: 'config.json',
+      bytes: 7,
+    });
   });
 });

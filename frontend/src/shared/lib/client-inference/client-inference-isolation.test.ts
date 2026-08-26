@@ -31,4 +31,15 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(read('./client-inference.worker.ts')).toMatch(/@huggingface\/transformers/);
     expect(read('./client-inference-manager.ts')).not.toMatch(/@huggingface\/transformers/);
   });
+
+  it('sets ORT wasmPaths to same-origin Vite URLs and never names a CDN', () => {
+    const worker = read('./client-inference.worker.ts');
+    const env = read('./configure-client-inference-env.ts');
+    const urls = read('./ort-wasm-urls.ts');
+    expect(worker).toMatch(/configureClientInferenceEnv/);
+    expect(env).toMatch(/wasmPaths/);
+    expect(urls).toMatch(/onnxruntime-web/);
+    expect(urls).toMatch(/\?url/);
+    expect(`${worker}\n${env}\n${urls}`).not.toMatch(/jsdelivr|huggingface\.co/i);
+  });
 });

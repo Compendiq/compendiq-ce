@@ -1,6 +1,9 @@
 import { Extension } from '@tiptap/core';
+import type { Node as PMNode } from '@tiptap/pm/model';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
+import type { EditorView } from '@tiptap/pm/view';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
+import { apiFetchBlob } from '../../lib/api';
 import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
 
 export const spellcheckPluginKey = new PluginKey<SpellcheckState>('spellcheck');
@@ -9,16 +12,49 @@ export interface SpellcheckState {
   decorations: DecorationSet;
 }
 
+export type SpellcheckDictionary = { lang: SpellLang; aff: string; dic: string };
+
 export interface SpellcheckOptions {
   enabled: boolean | (() => boolean);
   languages: SpellLang[] | (() => SpellLang[]);
   createWorker?: () => Worker;
+  fetchDictionaries?: (langs: SpellLang[]) => Promise<SpellcheckDictionary[]>;
+  onStatus?: (status: 'ready' | 'failed') => void;
 }
 
 type MissRange = { from: number; to: number; word: string };
 
 function valueOf<T>(value: T | (() => T)): T {
   return typeof value === 'function' ? (value as () => T)() : value;
+}
+
+export function collectSpellcheckChunks(doc: PMNode): Array<{ text: string; base: number }> {
+  const chunks: Array<{ text: string; base: number }> = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name === 'codeBlock') return false;
+    if (!node.isText || !node.text) return;
+    if (node.marks.some((mark) => mark.type.name === 'code')) return;
+    chunks.push({ text: node.text, base: pos });
+  });
+  return chunks;
+}
+
+async function defaultFetchDictionaries(langs: SpellLang[]): Promise<SpellcheckDictionary[]> {
+  const loaded: SpellcheckDictionary[] = [];
+  for (const lang of langs) {
+    const id = lang === 'en_US' ? 'hunspell-en_US' : 'hunspell-de_DE';
+    const prefix = lang === 'en_US' ? 'en_US' : 'de_DE';
+    try {
+      const [aff, dic] = await Promise.all([
+        apiFetchBlob(`/models/client-assets/${id}/${prefix}.aff`),
+        apiFetchBlob(`/models/client-assets/${id}/${prefix}.dic`),
+      ]);
+      loaded.push({ lang, aff: await aff.text(), dic: await dic.text() });
+    } catch {
+      // One missing pack must not block the other language.
+    }
+  }
+  return loaded;
 }
 
 export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
@@ -36,8 +72,9 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
     let worker: Worker | null = null;
     let debounce: ReturnType<typeof setTimeout> | null = null;
     let seq = 0;
+    let latestCheckId = '';
 
-    const startWorker = (): Worker | null => {
+    const startWorker = (view: EditorView): Worker | null => {
       if (worker) return worker;
       const create = options.createWorker ?? (() => new Worker(
         new URL('../../lib/spellcheck/spellcheck.worker.ts', import.meta.url),
@@ -45,16 +82,63 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
       ));
       try {
         worker = create();
-        worker.postMessage({
-          id: 'load',
-          type: 'load',
-          langs: valueOf(options.languages),
-          origin: window.location.origin,
-        });
+        worker.onmessage = (event: MessageEvent<{
+          type: string;
+          id?: string;
+          ranges?: MissRange[];
+        }>) => {
+          const data = event.data;
+          if (data.type === 'ready') {
+            options.onStatus?.('ready');
+            schedule(view, true);
+            return;
+          }
+          if (data.type === 'error') {
+            options.onStatus?.('failed');
+            return;
+          }
+          if (data.type === 'misses' && data.ranges && data.id === latestCheckId) {
+            view.dispatch(view.state.tr.setMeta(spellcheckPluginKey, data.ranges));
+          }
+        };
+        const fetchDicts = options.fetchDictionaries ?? defaultFetchDictionaries;
+        void fetchDicts(valueOf(options.languages))
+          .then((dictionaries) => {
+            if (!worker) return;
+            if (dictionaries.length === 0) {
+              options.onStatus?.('failed');
+              return;
+            }
+            worker.postMessage({
+              id: 'load',
+              type: 'load',
+              langs: dictionaries.map((d) => d.lang),
+              dictionaries,
+            });
+          })
+          .catch(() => options.onStatus?.('failed'));
         return worker;
       } catch {
         return null;
       }
+    };
+
+    const schedule = (view: EditorView, immediate = false) => {
+      if (!valueOf(options.enabled)) return;
+      if (debounce) clearTimeout(debounce);
+      const run = () => {
+        const w = startWorker(view);
+        if (!w) return;
+        const id = `chk-${seq++}`;
+        latestCheckId = id;
+        w.postMessage({
+          id,
+          type: 'check',
+          chunks: collectSpellcheckChunks(view.state.doc),
+        });
+      };
+      if (immediate) run();
+      else debounce = setTimeout(run, 200);
     };
 
     return [
@@ -76,39 +160,16 @@ export const SpellcheckExtension = Extension.create<SpellcheckOptions>({
           decorations(state) {
             return spellcheckPluginKey.getState(state)?.decorations ?? DecorationSet.empty;
           },
-          handleClick(view, pos) {
-            if (!valueOf(options.enabled)) return false;
-            const $pos = view.state.doc.resolve(pos);
-            if ($pos.parent.type.name === 'codeBlock') return false;
-            return false;
-          },
         },
         view(view) {
-          const schedule = () => {
-            if (!valueOf(options.enabled)) return;
-            if (debounce) clearTimeout(debounce);
-            debounce = setTimeout(() => {
-              const w = startWorker();
-              if (!w) return;
-              const id = `chk-${seq++}`;
-              w.onmessage = (event: MessageEvent<{ type: string; ranges?: MissRange[] }>) => {
-                if (event.data.type !== 'misses' || !event.data.ranges) return;
-                view.dispatch(view.state.tr.setMeta(spellcheckPluginKey, event.data.ranges));
-              };
-              w.postMessage({
-                id,
-                type: 'check',
-                text: view.state.doc.textBetween(0, view.state.doc.content.size, '\n', '\n'),
-                base: 0,
-              });
-            }, 200);
-          };
-          schedule();
+          if (valueOf(options.enabled)) startWorker(view);
+          schedule(view);
           return {
             update(v, prev) {
               if (!valueOf(options.enabled)) return;
+              startWorker(v);
               if (v.state.doc.eq(prev.doc)) return;
-              schedule();
+              schedule(v);
             },
             destroy() {
               if (debounce) clearTimeout(debounce);

@@ -156,4 +156,73 @@ describe('ClientInferenceManager (#1418)', () => {
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     expect(downloadFile).not.toHaveBeenCalled();
   });
+
+  it('resolves in-flight work when the worker is torn down', async () => {
+    const worker = new FakeWorker({ autoResult: null });
+    const mgr = compactManager(worker);
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.decideComplete({
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const pending = mgr.decideComplete({
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    mgr.setFlags({ adminEnabled: false, userEnabled: true });
+    await expect(pending).resolves.toEqual({ kind: 'server' });
+  });
+
+  it('coalesces concurrent load posts', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = compactManager(worker, true);
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = {
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    };
+    await mgr.decideComplete(args);
+    await mgr.decideComplete(args);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(worker.messages.filter((m) => m.type === 'load')).toHaveLength(1);
+  });
+
+  it('posts the access token on load so the worker can authorize asset GETs', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      accessToken: () => 'tok-9',
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.decideComplete({
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(worker.messages.find((m) => m.type === 'load')).toMatchObject({
+      type: 'load',
+      accessToken: 'tok-9',
+    });
+  });
 });

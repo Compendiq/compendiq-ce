@@ -739,15 +739,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   inlineCompletionRef.current = inlineCompletion;
   const spellcheckRef = useRef(spellcheck);
   spellcheckRef.current = spellcheck;
+  const [hunspellReady, setHunspellReady] = useState(false);
   const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
 
   useEffect(() => {
+    if (!spellcheck?.enabled) setHunspellReady(false);
+  }, [spellcheck?.enabled]);
+
+  useEffect(() => {
     const mgr = getClientInferenceManager();
-    mgr.setFlags({
-      adminEnabled: !!inlineCompletion?.clientInferenceAdminEnabled,
-      userEnabled: !!inlineCompletion?.clientInferenceEnabled,
-    });
-    void mgr.ensureProbed();
+    const adminEnabled = !!inlineCompletion?.clientInferenceAdminEnabled;
+    const userEnabled = !!inlineCompletion?.clientInferenceEnabled;
+    mgr.setFlags({ adminEnabled, userEnabled });
+    if (adminEnabled && userEnabled) void mgr.ensureProbed();
   }, [
     inlineCompletion?.clientInferenceAdminEnabled,
     inlineCompletion?.clientInferenceEnabled,
@@ -943,6 +947,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       SpellcheckExtension.configure({
         enabled: () => editable && !!spellcheckRef.current?.enabled,
         languages: () => spellcheckRef.current?.languages ?? ['en_US', 'de_DE'],
+        onStatus: (status) => setHunspellReady(status === 'ready'),
       }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
@@ -1070,8 +1075,11 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    editor.view.dom.setAttribute('spellcheck', spellcheck?.enabled ? 'false' : 'true');
-  }, [editor, spellcheck?.enabled]);
+    editor.view.dom.setAttribute(
+      'spellcheck',
+      spellcheck?.enabled && hunspellReady ? 'false' : 'true',
+    );
+  }, [editor, spellcheck?.enabled, hunspellReady]);
 
   return (
     <div

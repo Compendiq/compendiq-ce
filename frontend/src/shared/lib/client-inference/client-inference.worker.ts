@@ -3,24 +3,34 @@ import {
   normalizeInlineCompletion,
   rewriteMaxNewTokens,
 } from './instruct-format';
+import { configureClientInferenceEnv, wrapAssetFetch } from './configure-client-inference-env';
+import { opfsTransformersCache } from './opfs-model-cache';
+import { ortWasmPaths } from './ort-wasm-urls';
 import { CLIENT_INFERENCE_MODEL_ID, type WorkerEvent, type WorkerRequest } from './worker-protocol';
 
 let generator: ((input: unknown, gen?: Record<string, unknown>) => Promise<unknown>) | null = null;
 let loadedModel: string | null = null;
 const aborted = new Set<string>();
+let configured = false;
 
 function post(event: WorkerEvent): void {
   self.postMessage(event);
 }
 
-async function ensurePipeline(modelId: string): Promise<void> {
+async function ensurePipeline(modelId: string, accessToken?: string): Promise<void> {
   if (generator && loadedModel === modelId) return;
   const transformers = await import('@huggingface/transformers');
-  transformers.env.allowRemoteModels = true;
-  transformers.env.allowLocalModels = false;
-  transformers.env.remoteHost = `${self.location.origin}/api/models/client-assets/`;
-  transformers.env.remotePathTemplate = '{model}/';
-  transformers.env.useBrowserCache = true;
+  if (!configured) {
+    configureClientInferenceEnv(transformers.env, {
+      origin: self.location.origin,
+      wasmPaths: ortWasmPaths(),
+      fetch: wrapAssetFetch(accessToken),
+      customCache: opfsTransformersCache,
+    });
+    configured = true;
+  } else if (accessToken) {
+    transformers.env.fetch = wrapAssetFetch(accessToken);
+  }
   generator = await transformers.pipeline('text-generation', modelId, {
     device: 'webgpu',
     dtype: 'q4',
@@ -49,7 +59,7 @@ async function onRequest(msg: WorkerRequest): Promise<void> {
   }
   try {
     if (msg.type === 'load') {
-      await ensurePipeline(msg.modelId);
+      await ensurePipeline(msg.modelId, msg.accessToken);
       if (aborted.has(msg.id)) return;
       post({ id: msg.id, type: 'ready', modelId: msg.modelId });
       return;

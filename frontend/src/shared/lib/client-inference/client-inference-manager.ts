@@ -1,5 +1,6 @@
 import type { ClientAssetManifest, InlineCompletionRequest, InlineCompletionResponse } from '@compendiq/contracts';
 import { apiFetch, apiFetchBlob } from '../api';
+import { useAuthStore } from '../../../stores/auth-store';
 import { probeDeviceGpu, type DeviceGpuProfile } from './device-gpu-profile';
 import { capMaxTokens, normalizeInlineCompletion } from './instruct-format';
 import { hasOpfsModel, putOpfsFile } from './opfs-model-cache';
@@ -28,6 +29,7 @@ export interface ClientInferenceManagerOptions {
   hasCache?: () => Promise<boolean>;
   fetchManifest?: () => Promise<ClientAssetManifest>;
   downloadFile?: (modelId: string, file: string) => Promise<Blob>;
+  accessToken?: () => string | null;
   now?: () => number;
 }
 
@@ -59,6 +61,7 @@ export class ClientInferenceManager {
   private userEnabled = false;
   private visibilityHandler: (() => void) | null = null;
   private loadWaiters: Array<() => void> = [];
+  private loadInFlight: Promise<void> | null = null;
 
   constructor(private readonly opts: ClientInferenceManagerOptions = {}) {}
 
@@ -199,9 +202,38 @@ export class ClientInferenceManager {
   }
 
   private async startLoad(): Promise<void> {
-    if (!this.canUseGpu() || this.ready) return;
-    this.ensureWorker();
-    this.post({ id: this.nextId(), type: 'load', modelId: CLIENT_INFERENCE_MODEL_ID });
+    if (this.ready) return;
+    if (this.loadInFlight) return this.loadInFlight;
+    this.loadInFlight = this.runLoad();
+    return this.loadInFlight;
+  }
+
+  private async runLoad(): Promise<void> {
+    try {
+      await this.ensureProbed();
+      if (!this.canUseGpu() || this.ready) return;
+      this.ensureWorker();
+      const id = this.nextId();
+      const done = new Promise<void>((resolve) => {
+        this.loadWaiters.push(resolve);
+      });
+      const token = this.opts.accessToken?.() ?? useAuthStore.getState().accessToken;
+      this.post({
+        id,
+        type: 'load',
+        modelId: CLIENT_INFERENCE_MODEL_ID,
+        ...(token ? { accessToken: token } : {}),
+      });
+      await done;
+    } finally {
+      this.loadInFlight = null;
+    }
+  }
+
+  private settleLoad(): void {
+    const waiters = this.loadWaiters;
+    this.loadWaiters = [];
+    for (const waiter of waiters) waiter();
   }
 
   private ensureWorker(): Worker {
@@ -225,14 +257,14 @@ export class ClientInferenceManager {
   private onWorkerEvent(event: WorkerEvent): void {
     if (event.type === 'ready') {
       this.ready = true;
-      for (const waiter of this.loadWaiters) waiter();
-      this.loadWaiters = [];
+      this.settleLoad();
       return;
     }
     if (event.type === 'error') {
       this.lastError = { code: event.code, at: Date.now() };
       if (event.code === 'load' || event.code === 'webgpu' || event.code === 'oom') {
         this.ready = false;
+        this.settleLoad();
       }
       const pending = this.pending.get(event.id);
       if (pending) {
@@ -288,9 +320,12 @@ export class ClientInferenceManager {
 
   private teardownWorker(): void {
     this.unload();
+    const pending = [...this.pending.values()];
+    this.pending.clear();
+    for (const waiter of pending) waiter.reject(new Error('worker torn down'));
+    this.settleLoad();
     this.worker?.terminate();
     this.worker = null;
-    this.pending.clear();
   }
 
   private armIdleUnload(): void {

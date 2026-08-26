@@ -5,6 +5,10 @@ declare module '@huggingface/transformers' {
     remoteHost: string;
     remotePathTemplate: string;
     useBrowserCache: boolean;
+    useCustomCache: boolean;
+    customCache: unknown;
+    fetch: typeof fetch;
+    backends: { onnx?: { wasm?: { wasmPaths?: unknown } } };
   };
   export function pipeline(
     task: string,

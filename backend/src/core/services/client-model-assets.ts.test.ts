@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  clientAssetEtag,
   clientModelAssetsDir,
   listClientAssetManifest,
   parseBytesRange,
@@ -74,15 +74,21 @@ describe('listClientAssetManifest (#1418 SPEC-032)', () => {
     expect(onnx?.available).toBe(false);
   });
 
-  it('hashes present files', async () => {
+  it('lists size without hashing contents', async () => {
     const body = 'weights';
     await writeAsset('qwen2.5-0.5b-instruct-q4', 'config.json', body);
     const manifest = await listClientAssetManifest(true, tmp);
     const file = manifest.models
       .find((m) => m.id === 'qwen2.5-0.5b-instruct-q4')
       ?.files.find((f) => f.name === 'config.json');
-    expect(file?.sha256).toBe(createHash('sha256').update(body).digest('hex'));
     expect(file?.bytes).toBe(Buffer.byteLength(body));
+    expect(file?.sha256).toBeUndefined();
+  });
+});
+
+describe('clientAssetEtag', () => {
+  it('is a quoted mtime-size pair so a replaced file is a new cache entry', () => {
+    expect(clientAssetEtag(16, 255)).toBe('"10-ff"');
   });
 });
 
@@ -105,6 +111,7 @@ describe('statClientAsset', () => {
     await writeAsset('hunspell-de_DE', 'de_DE.dic', 'de');
     const found = await statClientAsset('hunspell-de_DE', 'de_DE.dic', tmp);
     expect(found?.size).toBe(2);
+    expect(found?.mtimeMs).toBeGreaterThan(0);
   });
 });
 

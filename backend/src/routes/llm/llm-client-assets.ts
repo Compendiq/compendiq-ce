@@ -4,6 +4,7 @@ import { ClientAssetManifestSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import {
+  clientAssetEtag,
   listClientAssetManifest,
   parseBytesRange,
   statClientAsset,
@@ -49,9 +50,15 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
         return reply.code(416).send({ error: 'Range Not Satisfiable', statusCode: 416 });
       }
 
+      const etag = clientAssetEtag(found.mtimeMs, found.size);
       reply.header('Content-Type', 'application/octet-stream');
-      reply.header('Cache-Control', 'private, max-age=31536000, immutable');
+      reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
+      reply.header('ETag', etag);
       reply.header('Accept-Ranges', 'bytes');
+
+      if (range === 'full' && request.headers['if-none-match'] === etag) {
+        return reply.code(304).send();
+      }
 
       if (range === 'full') {
         reply.header('Content-Length', found.size);

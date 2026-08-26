@@ -3,7 +3,7 @@ import type { ClientModelId } from '@compendiq/contracts';
 export type ClientInferenceErrorCode = 'webgpu' | 'oom' | 'timeout' | 'aborted' | 'load';
 
 export type WorkerRequest =
-  | { id: string; type: 'load'; modelId: ClientModelId }
+  | { id: string; type: 'load'; modelId: ClientModelId; accessToken?: string }
   | { id: string; type: 'complete'; prefix: string; suffix?: string; maxTokens: number }
   | { id: string; type: 'rewrite'; task: 'grammar' | 'clarity' | 'completeness'; instruction?: string; text: string }
   | { id: string; type: 'abort'; targetId: string }

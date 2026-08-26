@@ -58,3 +58,45 @@ export async function clearOpfsModel(modelId: string = CLIENT_INFERENCE_MODEL_ID
     // ignore
   }
 }
+
+const ASSET_PATH = /\/api\/models\/client-assets\/([^/]+)\/(.+)$/;
+
+export function parseClientAssetRequest(request: string): { modelId: string; file: string } | null {
+  try {
+    const path = request.includes('://') ? new URL(request).pathname : request;
+    const match = ASSET_PATH.exec(path);
+    if (!match?.[1] || !match[2]) return null;
+    return { modelId: decodeURIComponent(match[1]), file: decodeURIComponent(match[2]) };
+  } catch {
+    return null;
+  }
+}
+
+export async function matchOpfsAsset(request: string): Promise<Response | undefined> {
+  const parsed = parseClientAssetRequest(request);
+  if (!parsed) return undefined;
+  try {
+    const dir = await modelDir(parsed.modelId);
+    if (!dir) return undefined;
+    const handle = await dir.getFileHandle(parsed.file.replaceAll('/', '__'));
+    const file = await handle.getFile();
+    return new Response(file, {
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(file.size) },
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+export async function putOpfsAsset(request: string, response: Response): Promise<void> {
+  const parsed = parseClientAssetRequest(request);
+  if (!parsed) return;
+  const buffer = await response.clone().arrayBuffer();
+  await putOpfsFile(parsed.modelId, parsed.file, buffer);
+}
+
+export const opfsTransformersCache = {
+  match: matchOpfsAsset,
+  put: putOpfsAsset,
+};
+

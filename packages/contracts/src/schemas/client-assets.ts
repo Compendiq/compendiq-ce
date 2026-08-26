@@ -59,7 +59,7 @@ export const CLIENT_ASSET_REQUIRED_FILES: Record<ClientAssetId, readonly string[
 export const ClientAssetFileSchema = z.object({
   name: z.string(),
   bytes: z.number().int().nonnegative(),
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 
 export const ClientAssetManifestEntrySchema = z.object({

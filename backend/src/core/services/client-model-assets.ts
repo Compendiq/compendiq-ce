@@ -5,8 +5,6 @@
  * The browser never talks to huggingface.co. Path join is resolve + prefix
  * check; anything off the closed allow-list is a 404, not a 500.
  */
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -88,13 +86,6 @@ export function parseBytesRange(
   return { start, end: Math.min(end, size - 1) };
 }
 
-async function hashFile(abs: string): Promise<string> {
-  const hash = createHash('sha256');
-  const stream = createReadStream(abs);
-  for await (const chunk of stream) hash.update(chunk as Buffer);
-  return hash.digest('hex');
-}
-
 export async function listClientAssetManifest(
   slmEnabled: boolean,
   root = clientModelAssetsDir(),
@@ -113,7 +104,6 @@ export async function listClientAssetManifest(
         files.push({
           name,
           bytes: stat.size,
-          sha256: await hashFile(resolved.abs),
         });
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -136,17 +126,21 @@ export async function listClientAssetManifest(
   return { enabled: slmEnabled, models };
 }
 
+export function clientAssetEtag(mtimeMs: number, size: number): string {
+  return `"${mtimeMs.toString(16)}-${size.toString(16)}"`;
+}
+
 export async function statClientAsset(
   modelId: string,
   file: string,
   root = clientModelAssetsDir(),
-): Promise<{ abs: string; size: number } | null> {
+): Promise<{ abs: string; size: number; mtimeMs: number } | null> {
   const resolved = resolveClientAssetPath(modelId, file, root);
   if (!resolved.ok) return null;
   try {
     const stat = await fs.stat(resolved.abs);
     if (!stat.isFile()) return null;
-    return { abs: resolved.abs, size: stat.size };
+    return { abs: resolved.abs, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     return null;

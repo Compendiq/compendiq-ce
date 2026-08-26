@@ -11,4 +11,10 @@ describe('spell worker isolation (#1418 SPEC-027/039)', () => {
     expect(source).not.toMatch(/@huggingface\/transformers|onnxruntime/i);
     expect(source).toMatch(/nspell/);
   });
+
+  it('does not fetch dictionaries itself — the main thread sends authenticated bytes', () => {
+    const source = readFileSync(resolve(here, 'spellcheck.worker.ts'), 'utf8');
+    expect(source).not.toMatch(/\bfetch\s*\(/);
+    expect(source).toMatch(/dictionaries/);
+  });
 });

@@ -40,8 +40,8 @@ under `ATTACHMENTS_DIR`.
 
 ## Behaviour
 
-- Warm ghost text does not hit Fastify.
-- Cold / no GPU / flags off equals #1417 (`POST /llm/inline-completion`).
+- Warm ghost text reads OPFS in the worker (same-origin ORT WASM, no jsDelivr).
+- Cold cache, missing GPU, or flags off equals #1417 (`POST /llm/inline-completion`).
 - ImprovePanel uses the worker when ready, otherwise `POST /llm/improve`.
 - Unassigned `inline_completion` plus “Use on-device suggestions when no
   server model is assigned” (default on) allows local ghost text only when
