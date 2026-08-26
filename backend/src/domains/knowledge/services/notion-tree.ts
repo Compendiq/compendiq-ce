@@ -1,11 +1,13 @@
 /**
  * Workspace tree for selective Notion import (#1463 / #1459).
  *
- * Discovery is Search (pages + databases) plus `child_database` /
- * `child_page` blocks under ordinary pages (linked views that Search
- * omits as duplicates; pages nested under toggles/columns). There is no
- * database-query: a row is in the tree only when Search returned it as a
- * page object. Database row-pages are not walked for linked views.
+ * Discovery is Search (pages + databases) plus a bounded walk of
+ * `child_database` / `child_page` blocks under layout containers (linked
+ * views that Search omits as duplicates; pages nested under toggles/columns).
+ * There is no database-query: a row is in the tree only when Search
+ * returned it as a page object. Database row-pages are not walked for
+ * linked views. The walk must not recurse into list items or follow
+ * synced-block cycles — that is how a shared workspace hangs the picker.
  */
 import {
   NOTION_UNSUPPORTED_LABEL,
@@ -16,7 +18,19 @@ import { NotionClient, NotionError } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
 
-/** Blocks whose children can include `child_database` / `child_page`. */
+/**
+ * Block-children list calls during tree discovery. Search already returned
+ * every shared page; walking past this is how a real workspace hangs the
+ * picker on “Loading workspace…”. Linked views past the budget stay omitted.
+ */
+export const NOTION_TREE_MAX_CHILD_LISTS = 80;
+
+/**
+ * Layout containers that can host `child_page` / `child_database`.
+ * List items, quotes and to-dos also nest in Notion, but walking them
+ * is one HTTP call per bullet at 3 req/s — Search already listed those
+ * pages (and `block_id` parents are resolved without this walk).
+ */
 const LAYOUT_BLOCK_TYPES = new Set([
   'toggle',
   'column_list',
@@ -26,11 +40,6 @@ const LAYOUT_BLOCK_TYPES = new Set([
   'heading_1',
   'heading_2',
   'heading_3',
-  'quote',
-  'bulleted_list_item',
-  'numbered_list_item',
-  'to_do',
-  'template',
 ]);
 
 export function linkedViewNodeId(hostPageId: string, databaseId: string): string {
@@ -266,7 +275,15 @@ export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<No
     }
   }
 
+  const seenBlocks = new Set<string>();
+  let childLists = 0;
+
   async function walkHosted(blockId: string, hostPage: NotionTreeNode): Promise<void> {
+    const walkKey = normalizeId(blockId);
+    if (seenBlocks.has(walkKey)) return;
+    if (childLists >= NOTION_TREE_MAX_CHILD_LISTS) return;
+    seenBlocks.add(walkKey);
+    childLists += 1;
     const blocks = await listChildren(client, blockId);
     for (const block of blocks) {
       if (!block || typeof block !== 'object' || typeof block.id !== 'string') continue;
@@ -303,7 +320,7 @@ export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<No
       if (
         typeof block.type === 'string' &&
         LAYOUT_BLOCK_TYPES.has(block.type) &&
-        block.has_children !== false
+        block.has_children === true
       ) {
         await walkHosted(block.id, hostPage);
       }

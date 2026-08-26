@@ -290,6 +290,38 @@ describe('NotionImportDialog confirm copy', () => {
   });
 });
 
+describe('NotionImportDialog connect-step token guidance', () => {
+  it('names the Notion token type and how to share pages', async () => {
+    renderDialog();
+    const input = await screen.findByLabelText(/internal integration token/i);
+
+    expect(screen.getByText(/installation access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/not an oauth app/i)).toBeInTheDocument();
+    expect(screen.getByText(/not a personal access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/share the pages you want to import/i)).toBeInTheDocument();
+    expect(screen.getByText(/never shown again/i)).toBeInTheDocument();
+
+    const describedBy = input.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    for (const id of (describedBy ?? '').split(/\s+/).filter(Boolean)) {
+      const region = document.getElementById(id);
+      expect(region, `missing described-by region #${id}`).not.toBeNull();
+      expect(region!.querySelector('a')).toBeNull();
+    }
+  });
+
+  it('links to Notion’s integrations portal outside the field description', async () => {
+    renderDialog();
+    await screen.findByLabelText(/internal integration token/i);
+
+    const link = screen.getByTestId('notion-token-link');
+    expect(link).toHaveAttribute('href', 'https://www.notion.so/my-integrations');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
+    expect(link).toHaveTextContent(/create a token in notion/i);
+  });
+});
+
 describe('NotionImportDialog connection never-echo', () => {
   it('never puts the token on GET URLs, GET bodies, or toasts', async () => {
     renderDialog();
@@ -316,9 +348,48 @@ describe('NotionImportDialog connection never-echo', () => {
     );
     expect(src).toContain("'/notion/connection'");
     expect(src).toContain("'/notion/tree'");
+    expect(src).toContain("cancelQueries({ queryKey: ['notion'] })");
+    expect(src).toContain("setQueryData(['notion', 'connection']");
     expect(src).toContain("removeQueries({ queryKey: ['notion', 'tree'] })");
     expect(src).not.toMatch(/notion\/(?:connection|tree)\?.*token/);
     expect(src).not.toMatch(/api\.notion\.com/);
+  });
+});
+
+describe('NotionImportDialog connect then tree', () => {
+  it('loads the tree after Connect even while GET connection has not refetched', async () => {
+    const held = deferResponse();
+    let connectionGetSettled = 0;
+    givenHappyPath();
+    routes = [
+      {
+        match: /\/notion\/connection$/,
+        method: 'GET',
+        respond: async () => {
+          const body = await held.promise;
+          connectionGetSettled += 1;
+          return body;
+        },
+      },
+      ...routes.filter((route) => !((route.method ?? 'GET') === 'GET' && route.match.test('/api/notion/connection'))),
+    ];
+    const { queryClient } = renderDialog();
+    const input = await screen.findByLabelText(/internal integration token/i);
+    fireEvent.change(input, { target: { value: TOKEN } });
+    fireEvent.click(screen.getByRole('button', { name: /connect/i }));
+
+    expect(await screen.findByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(screen.queryByText(/loading workspace/i)).toBeNull();
+
+    held.resolve({ body: { hasToken: false } });
+    await waitFor(() => {
+      expect(connectionGetSettled).toBeGreaterThanOrEqual(1);
+      expect(queryClient.getQueryState(['notion', 'connection'])?.fetchStatus).toBe('idle');
+    });
+    expect(queryClient.getQueryData(['notion', 'connection'])).toEqual({ hasToken: true });
+    expect(screen.getByRole('heading', { name: 'Choose pages' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/internal integration token/i)).toBeNull();
   });
 });
 
