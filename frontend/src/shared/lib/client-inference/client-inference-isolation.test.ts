@@ -23,8 +23,12 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(nginx).not.toMatch(/Cross-Origin-Embedder-Policy/i);
   });
 
-  it('pins ClientModelIdSchema to the one instruct checkpoint', () => {
-    expect(ClientModelIdSchema.options).toEqual(['qwen2.5-0.5b-instruct-q4']);
+  it('admits the legacy slot and Hub local ids', () => {
+    expect(ClientModelIdSchema.parse('qwen2.5-0.5b-instruct-q4')).toBe('qwen2.5-0.5b-instruct-q4');
+    expect(ClientModelIdSchema.parse('onnx-community--Qwen2.5-0.5B-Instruct')).toBe(
+      'onnx-community--Qwen2.5-0.5B-Instruct',
+    );
+    expect(() => ClientModelIdSchema.parse('gpt2')).toThrow();
   });
 
   it('keeps transformers.js inside the inference worker only', () => {

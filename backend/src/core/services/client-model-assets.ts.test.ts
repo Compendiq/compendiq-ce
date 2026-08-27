@@ -9,6 +9,7 @@ import {
   parseBytesRange,
   resolveClientAssetPath,
   statClientAsset,
+  writeClientAssetChunk,
 } from './client-model-assets.js';
 
 let tmp: string;
@@ -37,6 +38,15 @@ describe('resolveClientAssetPath (#1418 SPEC-033)', () => {
     if (resolved.ok) {
       expect(resolved.abs).toBe(path.join(tmp, 'qwen2.5-0.5b-instruct-q4', 'onnx', 'model_q4.onnx'));
     }
+  });
+
+  it('accepts a Hub local id for the q4 weight', () => {
+    const resolved = resolveClientAssetPath(
+      'onnx-community--Qwen2.5-0.5B-Instruct',
+      'onnx/model_q4.onnx',
+      tmp,
+    );
+    expect(resolved.ok).toBe(true);
   });
 
   it.each([
@@ -84,6 +94,22 @@ describe('listClientAssetManifest (#1418 SPEC-032)', () => {
     expect(file?.bytes).toBe(Buffer.byteLength(body));
     expect(file?.sha256).toBeUndefined();
   });
+
+  it('lists a Hub install with repo and activeModelId', async () => {
+    await writeAsset('onnx-community--Qwen2.5-0.5B-Instruct', 'config.json', '{}');
+    await writeAsset('onnx-community--Qwen2.5-0.5B-Instruct', 'tokenizer.json', '{}');
+    await writeAsset('onnx-community--Qwen2.5-0.5B-Instruct', 'onnx/model_q4.onnx', 'ONNX');
+    const manifest = await listClientAssetManifest(true, tmp);
+    const onnx = manifest.models.find((m) => m.id === 'onnx-community--Qwen2.5-0.5B-Instruct');
+    expect(onnx).toMatchObject({
+      kind: 'onnx',
+      installed: true,
+      available: true,
+      repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
+      active: true,
+    });
+    expect(manifest.activeModelId).toBe('onnx-community--Qwen2.5-0.5B-Instruct');
+  });
 });
 
 describe('clientAssetEtag', () => {
@@ -118,5 +144,46 @@ describe('statClientAsset', () => {
 describe('clientModelAssetsDir', () => {
   it('uses CLIENT_MODEL_ASSETS_DIR when set', () => {
     expect(clientModelAssetsDir()).toBe(path.resolve(tmp));
+  });
+});
+
+describe('writeClientAssetChunk', () => {
+  it('writes a small Hunspell file in one shot', async () => {
+    const result = await writeClientAssetChunk({
+      modelId: 'hunspell-en_US',
+      file: 'en_US.dic',
+      body: Buffer.from('hello'),
+      root: tmp,
+    });
+    expect(result.complete).toBe(true);
+    expect(await fs.readFile(path.join(tmp, 'hunspell-en_US', 'en_US.dic'), 'utf8')).toBe('hello');
+  });
+
+  it('assembles q4 chunks then exposes the file on the manifest', async () => {
+    const id = 'onnx-community--Qwen2.5-0.5B-Instruct';
+    await writeClientAssetChunk({
+      modelId: id, file: 'config.json', body: Buffer.from('{}'), root: tmp,
+    });
+    await writeClientAssetChunk({
+      modelId: id, file: 'tokenizer.json', body: Buffer.from('{}'), root: tmp,
+    });
+    await writeClientAssetChunk({
+      modelId: id, file: 'onnx/model_q4.onnx', body: Buffer.from('AB'), start: 0, total: 4, root: tmp,
+    });
+    await writeClientAssetChunk({
+      modelId: id, file: 'onnx/model_q4.onnx', body: Buffer.from('CD'), start: 2, total: 4, root: tmp,
+    });
+    const manifest = await listClientAssetManifest(true, tmp);
+    expect(manifest.activeModelId).toBe(id);
+    expect(await fs.readFile(path.join(tmp, id, 'onnx', 'model_q4.onnx'), 'utf8')).toBe('ABCD');
+  });
+
+  it('rejects a traversal file name', async () => {
+    await expect(writeClientAssetChunk({
+      modelId: 'hunspell-en_US',
+      file: '../secret',
+      body: Buffer.from('x'),
+      root: tmp,
+    })).rejects.toThrow(/not allowed/i);
   });
 });

@@ -8,10 +8,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
-  CLIENT_ASSET_FILES,
-  CLIENT_ASSET_KIND,
-  CLIENT_ASSET_REQUIRED_FILES,
   ClientAssetIdSchema,
+  HUNSPELL_ASSET_IDS,
+  HubLocalAssetIdSchema,
+  LEGACY_CLIENT_MODEL_ID,
+  clientAssetFiles,
+  clientAssetKind,
+  clientAssetRequiredFiles,
+  localAssetIdToHfRepo,
   type ClientAssetId,
   type ClientAssetManifest,
 } from '@compendiq/contracts';
@@ -25,10 +29,6 @@ export function clientModelAssetsDir(): string {
   }
   const attachments = path.resolve(process.env.ATTACHMENTS_DIR ?? ATTACHMENTS_BASE);
   return path.join(path.dirname(attachments), CLIENT_MODEL_STORE_DIRNAME);
-}
-
-export function isAllowedClientAssetFile(modelId: ClientAssetId, file: string): boolean {
-  return (CLIENT_ASSET_FILES[modelId] as readonly string[]).includes(file);
 }
 
 function isUnsafeFileToken(file: string): boolean {
@@ -50,7 +50,7 @@ export function resolveClientAssetPath(
   const modelParsed = ClientAssetIdSchema.safeParse(modelIdRaw);
   if (!modelParsed.success) return { ok: false };
   const modelId = modelParsed.data;
-  if (isUnsafeFileToken(fileRaw) || !isAllowedClientAssetFile(modelId, fileRaw)) {
+  if (isUnsafeFileToken(fileRaw) || !clientAssetFiles(modelId).includes(fileRaw)) {
     return { ok: false };
   }
   const rootResolved = path.resolve(root);
@@ -90,30 +90,39 @@ export async function listClientAssetManifest(
   slmEnabled: boolean,
   root = clientModelAssetsDir(),
 ): Promise<ClientAssetManifest> {
+  const ids: ClientAssetId[] = [LEGACY_CLIENT_MODEL_ID, ...HUNSPELL_ASSET_IDS];
+  try {
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const parsed = HubLocalAssetIdSchema.safeParse(ent.name);
+      if (parsed.success && !ids.includes(parsed.data)) ids.push(parsed.data);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
   const models: ClientAssetManifest['models'] = [];
-  for (const id of ClientAssetIdSchema.options) {
-    const kind = CLIENT_ASSET_KIND[id];
+  for (const id of ids) {
+    const kind = clientAssetKind(id);
     const available = kind === 'hunspell' || slmEnabled;
     const files: ClientAssetManifest['models'][number]['files'] = [];
-    for (const name of CLIENT_ASSET_FILES[id]) {
+    for (const name of clientAssetFiles(id)) {
       const resolved = resolveClientAssetPath(id, name, root);
       if (!resolved.ok) continue;
       try {
         const stat = await fs.stat(resolved.abs);
         if (!stat.isFile()) continue;
-        files.push({
-          name,
-          bytes: stat.size,
-        });
+        files.push({ name, bytes: stat.size });
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-          // Unreadable is not a missing directory — skip this file, keep listing.
-          continue;
-        }
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') continue;
       }
     }
     const present = new Set(files.map((f) => f.name));
-    const installed = CLIENT_ASSET_REQUIRED_FILES[id].every((name) => present.has(name));
+    const installed = clientAssetRequiredFiles(id).every((name) => present.has(name));
+    const repo = HubLocalAssetIdSchema.safeParse(id).success
+      ? localAssetIdToHfRepo(id)
+      : undefined;
     models.push({
       id,
       kind,
@@ -121,9 +130,18 @@ export async function listClientAssetManifest(
       installed,
       available,
       files,
+      ...(repo ? { repo } : {}),
     });
   }
-  return { enabled: slmEnabled, models };
+
+  const installedOnnx = models.filter((m) => m.kind === 'onnx' && m.installed);
+  const hubInstalled = installedOnnx.filter((m) => m.id !== LEGACY_CLIENT_MODEL_ID);
+  const activeModelId = hubInstalled[0]?.id ?? installedOnnx[0]?.id ?? null;
+  if (activeModelId) {
+    const active = models.find((m) => m.id === activeModelId);
+    if (active) active.active = true;
+  }
+  return { enabled: slmEnabled, activeModelId, models };
 }
 
 export function clientAssetEtag(mtimeMs: number, size: number): string {
@@ -145,4 +163,42 @@ export async function statClientAsset(
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     return null;
   }
+}
+
+export const CLIENT_ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
+export async function writeClientAssetChunk(opts: {
+  modelId: string;
+  file: string;
+  body: Buffer;
+  start?: number;
+  total?: number;
+  root?: string;
+}): Promise<{ complete: boolean; bytes: number }> {
+  const resolved = resolveClientAssetPath(opts.modelId, opts.file, opts.root);
+  if (!resolved.ok) throw new Error('File is not allowed');
+  if (opts.body.length > CLIENT_ASSET_UPLOAD_CHUNK_BYTES) {
+    throw new Error('Chunk exceeds 8 MiB');
+  }
+  const start = opts.start ?? 0;
+  const total = opts.total ?? (start + opts.body.length);
+  if (!Number.isInteger(start) || start < 0 || start + opts.body.length > total) {
+    throw new Error('Invalid chunk range');
+  }
+  await fs.mkdir(path.dirname(resolved.abs), { recursive: true });
+  if (start === 0 && start + opts.body.length === total) {
+    await fs.writeFile(resolved.abs, opts.body);
+    return { complete: true, bytes: total };
+  }
+  const part = `${resolved.abs}.part`;
+  const handle = await fs.open(part, 'a+');
+  try {
+    await handle.truncate(total);
+    await handle.write(opts.body, 0, opts.body.length, start);
+  } finally {
+    await handle.close();
+  }
+  const complete = start + opts.body.length === total;
+  if (complete) await fs.rename(part, resolved.abs);
+  return { complete, bytes: start + opts.body.length };
 }

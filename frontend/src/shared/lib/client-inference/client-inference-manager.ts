@@ -1,4 +1,4 @@
-import type { ClientAssetManifest, InlineCompletionRequest, InlineCompletionResponse } from '@compendiq/contracts';
+import { ClientModelIdSchema, type ClientAssetManifest, type ClientModelId, type InlineCompletionRequest, type InlineCompletionResponse } from '@compendiq/contracts';
 import { apiFetch, apiFetchBlob } from '../api';
 import { useAuthStore } from '../../../stores/auth-store';
 import { probeDeviceGpu, type DeviceGpuProfile } from './device-gpu-profile';
@@ -35,8 +35,16 @@ export interface ClientInferenceManagerOptions {
 
 let singleton: ClientInferenceManager | null = null;
 
+function activeOnnxId(manifest: ClientAssetManifest): ClientModelId {
+  if (manifest.activeModelId) return manifest.activeModelId;
+  const onnx = manifest.models.find((m) => m.kind === 'onnx' && m.installed);
+  const parsed = onnx ? ClientModelIdSchema.safeParse(onnx.id) : null;
+  return parsed?.success ? parsed.data : CLIENT_INFERENCE_MODEL_ID;
+}
 export function getClientInferenceManager(): ClientInferenceManager {
-  singleton ??= new ClientInferenceManager();
+  singleton ??= new ClientInferenceManager({
+    fetchManifest: () => apiFetch<ClientAssetManifest>('/models/client-assets'),
+  });
   return singleton;
 }
 
@@ -173,7 +181,8 @@ export class ClientInferenceManager {
     const downloadFile = this.opts.downloadFile
       ?? ((modelId: string, file: string) => apiFetchBlob(`/models/client-assets/${modelId}/${file}`));
     const manifest = await fetchManifest();
-    const onnx = manifest.models.find((m) => m.id === CLIENT_INFERENCE_MODEL_ID);
+    const modelId = activeOnnxId(manifest);
+    const onnx = manifest.models.find((m) => m.id === modelId);
     if (!onnx || onnx.files.length === 0) {
       throw new Error('On-device model is not installed on the server');
     }
@@ -200,8 +209,14 @@ export class ClientInferenceManager {
 
   private async maybeStartLoad(): Promise<void> {
     if (this.loadFailed) return;
-    const hasCache = this.opts.hasCache ?? (() => hasOpfsModel());
-    if (await hasCache()) await this.startLoad();
+    if (this.opts.hasCache) {
+      if (await this.opts.hasCache()) await this.startLoad();
+      return;
+    }
+    const modelId = this.opts.fetchManifest
+      ? activeOnnxId(await this.opts.fetchManifest())
+      : CLIENT_INFERENCE_MODEL_ID;
+    if (await hasOpfsModel(modelId)) await this.startLoad();
   }
 
   private async startLoad(): Promise<void> {
@@ -222,10 +237,13 @@ export class ClientInferenceManager {
         this.loadWaiters.push(resolve);
       });
       const token = this.opts.accessToken?.() ?? useAuthStore.getState().accessToken;
+      const modelId = this.opts.fetchManifest
+        ? activeOnnxId(await this.opts.fetchManifest())
+        : CLIENT_INFERENCE_MODEL_ID;
       this.post({
         id,
         type: 'load',
-        modelId: CLIENT_INFERENCE_MODEL_ID,
+        modelId,
         ...(token ? { accessToken: token } : {}),
       });
       await done;
@@ -233,6 +251,7 @@ export class ClientInferenceManager {
       this.loadInFlight = null;
     }
   }
+
 
   private settleLoad(): void {
     const waiters = this.loadWaiters;

@@ -8,10 +8,12 @@ install time. On a Linux host, export the same variable before `npm ci`.
 
 ## Layout
 
-Copy the transformers.js ONNX tree to:
+Hub installs land at `org--name`, e.g.
+`/app/data/client-models/onnx-community--Qwen2.5-0.5B-Instruct/`. The original
+`qwen2.5-0.5b-instruct-q4/` layout is still served if present.
 
 ```
-/app/data/client-models/qwen2.5-0.5b-instruct-q4/
+/app/data/client-models/<local-id>/
   config.json
   tokenizer.json
   tokenizer_config.json
@@ -34,12 +36,16 @@ under `ATTACHMENTS_DIR`.
 
 ## Enable
 
-1. Copy files onto the volume (this runbook). There is no upload UI.
-2. Settings → AI Models → Client inference → enable the admin flag.
+1. Settings → AI Models → Client inference → pick a recommended (or searched)
+   transformers.js text-generation model → **Download model**. The **server**
+   fetches Hugging Face; the browser does not. Air-gapped: copy onto the volume
+   (this runbook) or upload allow-listed files (8 MiB chunks).
+2. Enable the admin flag (blocked until ONNX `installed`).
 3. Each author: Settings → Editor → On-device suggestions, then
    **Pre-download on-device model** in *that* browser (OPFS is per-browser).
 4. Spellcheck is independent of WebGPU. Enable it on the same Editor card
-   once the dictionaries are on the volume.
+   once the dictionaries are on the volume. Hunspell is upload-only (do not
+   auto-fetch igerman98).
 
 ## Behaviour
 
