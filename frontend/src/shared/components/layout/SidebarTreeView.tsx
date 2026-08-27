@@ -24,7 +24,7 @@ import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
-import { useUiStore } from '../../../stores/ui-store';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
 import { PageIcon } from '../page-icon/PageIcon';
@@ -148,7 +148,10 @@ const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
  * which is exactly the kind of theme-asymmetric failure that hides until
  * someone measures the specific composited value instead of the token.
  */
-const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
+// Exported since #1361: the conversations pane renders recency headings in the
+// same rail and must not copy the string — SettingsSidebar copied it once and
+// drifted to a /80 opacity that failed contrast on Paper.
+export const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
 
 export interface SidebarTreeNodeProps {
   node: TreeNode;
@@ -156,11 +159,11 @@ export interface SidebarTreeNodeProps {
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  // #960: derived once by the parent from location.pathname and passed down as
-  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
-  // every memoized row to every location/searchParams change, defeating the memo
-  // comparator and re-rendering the whole tree on each navigation.
-  isAiRoute: boolean;
+  // #960's per-row AI-route prop is gone (#1361): the conversations pane
+  // replaces this tree on AI routes, so a row has no route-dependent destination left.
+  // The rule it existed to enforce still stands — rows must NOT call
+  // useLocation() themselves, or every memoized row re-renders on every
+  // location/searchParams change and the comparator below never gets to bail.
   // True only in "All Spaces" scope, where sibling rows can come from
   // different spaces (and, in a real corpus, can share a title outright —
   // see the spaceKey suffix below). Scoped to one space, the tree already
@@ -181,7 +184,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
-  isAiRoute,
   showSpaceKey,
   rovingId,
   onRowFocus,
@@ -202,12 +204,8 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   // navigates, matching the other three expand/collapse paths.
   const handleNavigate = useCallback(() => {
     if (hasChildren && !isExpanded) toggleExpand(node.page.id);
-    if (isAiRoute) {
-      navigate(`/ai?pageId=${node.page.id}`, { replace: true });
-    } else {
-      navigate(`/pages/${node.page.id}`);
-    }
-  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand, isAiRoute]);
+    navigate(`/pages/${node.page.id}`);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -385,7 +383,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               showSpaceKey={showSpaceKey}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
@@ -402,7 +399,6 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
-    prev.isAiRoute === next.isAiRoute &&
     prev.showSpaceKey === next.showSpaceKey &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
@@ -450,16 +446,14 @@ export function SidebarTreeView({
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner
   // <Routes> that defines /pages/:id).
-  // On the AI route, also highlight the article selected via ?pageId query param.
+  // The AI-route query-param branch went with #1361: `/ai` carries no page
+  // scope, and `location.search` left the dependency array with it — a
+  // query-string change no longer re-derives the active row.
   const activePageId = useMemo(() => {
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
     if (match) return match[1];
-    if (location.pathname === '/ai') {
-      const params = new URLSearchParams(location.search);
-      return params.get('pageId') ?? undefined;
-    }
     return undefined;
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
@@ -517,9 +511,6 @@ export function SidebarTreeView({
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
-  // #960: derive the /ai signal once here and thread it into every row as a
-  // stable prop so the rows themselves don't subscribe to location.
-  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -743,8 +734,6 @@ export function SidebarTreeView({
     selectedSpaceOption?.source === 'local'
       ? getSpaceIcon(selectedSpaceOption.icon)
       : Globe;
-  const selectedSpaceLabel = selectedSpaceOption?.name ?? 'All Spaces';
-
   // Collapsed rail -- nav icons + expand toggle
   const collapsed = treeSidebarCollapsed || forceCollapsed;
 
@@ -762,67 +751,34 @@ export function SidebarTreeView({
           key="collapsed-rail"
           aria-label="Page tree"
           initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
+          animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
           className="app-sidebar flex flex-col items-center border-r overflow-hidden"
         >
-          {/* Expand toggle */}
-          <button
-            onClick={() => {
-              if (forceCollapsed && !treeSidebarCollapsed) {
-                onForceExpand?.();
-              } else {
-                toggleTreeSidebar();
-              }
-            }}
-            className="mt-2 flex items-center rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            {/* Shortcut in the tooltip, not glued to the icon — see the twin in
-                ArticleRightPane. A "," rendered as a bordered chip beside a
-                rail icon reads as stray punctuation, not a key. */}
-            <PanelLeft size={16} />
-          </button>
-
-          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
-
-          {/* Current scope. Collapsing used to drop every trace of it — not the
-              space, not the open page, not the count — so the one question the
-              rail could not answer was "which space am I looking at?", and the
-              only way to find out was to expand. It is the selector's own glyph,
-              and it expands the panel, so it reads as scope AND acts as a way
-              back to changing it.
-
-              The explanation used to live only in `title` — invisible to a
-              sighted keyboard user, who gets neither the mouse-hover tooltip
-              nor a screen reader's aria-label announcement. `group` +
-              `group-focus-visible` shows the same text as a flyout on Tab
-              focus too, no new dependency, matching the flat/no-glass surface
-              rules (nm-card-elevated, the one real shadow) rather than
-              inventing a second tooltip system. */}
-          <div className="group relative mt-2 flex w-full flex-col items-center border-t border-border pt-2">
+          {/* Keep the collapsed control in the same 48px chrome row as the
+              expanded main-nav toolbar, so the divider stays on one baseline. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center border-b">
             <button
               onClick={() => {
-                if (forceCollapsed && !treeSidebarCollapsed) onForceExpand?.();
-                else toggleTreeSidebar();
+                if (forceCollapsed && !treeSidebarCollapsed) {
+                  onForceExpand?.();
+                } else {
+                  toggleTreeSidebar();
+                }
               }}
-              data-testid="rail-space-scope"
-              className="flex size-7 items-center justify-center rounded-lg bg-primary/10 text-primary-ink transition-colors hover:bg-primary/20"
-              aria-label={`Scope: ${selectedSpaceLabel}. Expand sidebar to change.`}
-              title={selectedSpaceLabel}
+              className="flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
             >
-              <SelectedSpaceGlyph size={14} aria-hidden="true" />
+              {/* Shortcut in the tooltip, not glued to the icon — see the twin in
+                  ArticleRightPane. A "," rendered as a bordered chip beside a
+                  rail icon reads as stray punctuation, not a key. */}
+              <PanelLeft size={16} />
             </button>
-            <span
-              role="tooltip"
-              data-testid="rail-space-scope-flyout"
-              className="pointer-events-none absolute left-full top-0 z-50 ml-2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-            >
-              {selectedSpaceLabel} · Expand to change
-            </span>
           </div>
+
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
 
           <IconButton
             onClick={() => {
@@ -1123,11 +1079,7 @@ export function SidebarTreeView({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    if (isAiRoute) {
-                      navigate(`/ai?pageId=${item.id}`, { replace: true });
-                    } else {
-                      navigate(`/pages/${item.id}`);
-                    }
+                    navigate(`/pages/${item.id}`);
                     onNavigate?.();
                   }}
                   // Same geometry as a tree row (28px / 6px corner / 13px), not
@@ -1311,7 +1263,6 @@ export function SidebarTreeView({
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
               rovingId={rovingId}
               onRowFocus={handleRowFocus}
@@ -1331,7 +1282,6 @@ export function SidebarTreeView({
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
-                isAiRoute={isAiRoute}
                 showSpaceKey={!treeSidebarSpaceKey}
                 rovingId={rovingId}
                 onRowFocus={handleRowFocus}

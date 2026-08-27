@@ -7,7 +7,11 @@ import {
 } from '../../domains/llm/services/openai-compatible-client.js';
 import { decryptPat } from '../../core/utils/crypto.js';
 import { logger } from '../../core/utils/logger.js';
+import { vitestIntOr } from '../../core/utils/safe-int.js';
 import { APP_VERSION, APP_BUILD_INFO } from '../../core/utils/version.js';
+
+/** Bound on the setup-status / health LLM probe. Vitest shortens this. */
+export const LLM_HEALTH_TIMEOUT_MS = vitestIntOr('LLM_HEALTH_TIMEOUT_MS', 5_000);
 
 // Track whether startup checks have passed
 let startupComplete = false;
@@ -45,7 +49,7 @@ async function checkLlm(): Promise<{ connected: boolean; providerName: string | 
     const result = await Promise.race([
       providerCheckHealth(cfg),
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('LLM health check timed out')), 5000),
+        setTimeout(() => reject(new Error('LLM health check timed out')), LLM_HEALTH_TIMEOUT_MS),
       ),
     ]);
     return { connected: result.connected, providerName: p.name };

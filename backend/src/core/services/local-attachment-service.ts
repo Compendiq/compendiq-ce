@@ -366,9 +366,66 @@ export async function removeLocalAttachmentFilesForRelocate(
   );
 }
 
+/**
+ * Remove one local-store file for the orphan sweep (#1349, review r1).
+ *
+ * The sweep must COUNT what it deleted — the run record, the audit event and
+ * the admin card all report those totals — so unlike
+ * {@link removeLocalAttachmentFilesForRelocate} (an unwind path that swallows
+ * everything), this reports its outcome: `false` when the name is refused
+ * (skipped, nothing removed — the caller must not count it), and it THROWS on
+ * a real `fs.rm` failure so the run records `failed` instead of claiming a
+ * deletion that did not happen. A name that is not its own basename is
+ * refused outright, the `removeCachedAttachmentFile` discipline: a deleter
+ * must never `basename`-collapse its way onto a different file than the
+ * caller named. ENOENT stays a no-op via `force` — the stat-then-rm window is
+ * real and a vanished orphan is a success.
+ */
+export async function removeLocalAttachmentFileForSweep(
+  pageId: number,
+  filename: string,
+): Promise<boolean> {
+  if (path.basename(filename) !== filename || !canStoreLocalFilename(filename)) {
+    return false;
+  }
+  await fs.rm(localFilePath(pageId, filename), { force: true });
+  return true;
+}
+
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
 export function localAttachmentsDir(pageId: number): string {
   return localPageDir(pageId);
+}
+
+/**
+ * The local store's root, `<ATTACHMENTS_DIR>/local` (#1349).
+ *
+ * Exported for the orphan sweep, which walks the two stores SEPARATELY: the
+ * `local/` entry sits INSIDE the Confluence-style tree's root and its name
+ * matches that tree's key pattern, so a walker that derived this path itself
+ * would sooner or later list the whole local store as one orphan directory.
+ */
+export function localAttachmentsRoot(): string {
+  return path.join(attachmentsBase(), LOCAL_SUBDIR);
+}
+
+/** The reserved entry name the Confluence-tree walk must skip (#1349). */
+export const LOCAL_STORE_DIRNAME = LOCAL_SUBDIR;
+
+/**
+ * Remove a page's whole local-store directory (#1349).
+ *
+ * For the standalone hard-delete/purge cleanup and the orphan sweep — the
+ * `local/<page_id>/` key is the numeric PK and belongs to exactly one page,
+ * so unlike the Confluence-style tree there is no shared-keyspace question.
+ * Throws on a non-integer id (a `NaN` would resolve to a literal `local/NaN`
+ * directory); ENOENT is a no-op via `force`.
+ */
+export async function removeLocalAttachmentDirectory(pageId: number): Promise<void> {
+  if (!Number.isInteger(pageId) || pageId <= 0) {
+    throw new LocalAttachmentError('INVALID_FILENAME', 'Invalid page id');
+  }
+  await fs.rm(localPageDir(pageId), { recursive: true, force: true });
 }
 
 export { MAX_LOCAL_ATTACHMENT_BYTES };

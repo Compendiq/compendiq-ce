@@ -37,6 +37,7 @@ const read = (p: string) => readFileSync(resolve(__dirname, p), 'utf8');
 const SELF_BORDERED = [
   ['shared/components/layout/SidebarTreeView.tsx', "the pages rail's nav row"],
   ['shared/components/layout/SettingsSidebar.tsx', "the settings rail's nav row"],
+  ['features/ai/conversations/AiConversationsSidebar.tsx', "the conversations rail's nav row"],
   ['shared/components/article/ArticleRightPane.tsx', "the inspector's tab row"],
 ] as const;
 

@@ -32,7 +32,7 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
-import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
+import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import {
   searchImageLeg,
@@ -56,11 +56,14 @@ const STAGE_DURATION_OPTS = {
   description: 'Latency of retrieval pipeline stages (vector/keyword legs, rerank, page_merge, total)',
 };
 
-// The ef_search knob, its bounds and the 2x-headroom arithmetic live in
+// The ef_search resolver and its 2x-headroom arithmetic live in
 // hnsw-ef-search.ts, so the page_avg_embedding kNN in embedding-service.ts can
 // share ONE definition with retrieval instead of running at PostgreSQL's
 // default 40 (#1113's folded-in scope item). See that module for why it is not
-// declared here. Re-exported below, so this stays the import path for it.
+// declared here. Since #1285 the FLOOR is `admin_settings.rag_ef_search` rather
+// than a module-load env read, so there is no constant left to re-export from
+// here — `efSearchFor` is async and reads the same cached getter every other
+// Retrieval-panel knob reads.
 
 // The fetch-width knob itself (constants, clamp, 60s TTL cache, invalidation)
 // lives in core/services/admin-settings-service.ts so the admin surface
@@ -345,8 +348,13 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * standalone articles the user can access (shared, or private and owned by
  * the user).
  *
- * Tradeoff: higher ef_search = better recall but slower query.
- * Default PostgreSQL ef_search is 40; the floor here is 100.
+ * Tradeoff (review r1 of #1285 — this JSDoc was the third comment left
+ * carrying the inverted claim the rest of the PR retired): a higher ef_search
+ * costs SCAN TIME and is not measured to buy recall. On #1114's halfvec(2560)
+ * corpus the search is effectively exact from 40 — recall@10 was 0.9995 at
+ * 100 and unchanged to 1000, while the probe cost rose 0.39 ms -> 1.74 ms.
+ * PostgreSQL's own default is 40; the floor here is no longer a constant but
+ * `admin_settings.rag_ef_search` (default 100), resolved by `efSearchFor`.
  *
  * `opts.spaceKey` (#1351) narrows the scan to one Confluence space, applied
  * as an additional predicate ALONGSIDE `visiblePagesPredicate` — it can only
@@ -355,46 +363,96 @@ export function truncateAtDistinctPages<T extends { pageId: number }>(rows: T[],
  * filter `routes/knowledge/search.ts` has always applied. Optional and
  * defaults to undefined/no-op, so every unscoped caller (RAG chat, deep
  * search, the eval/benchmark harness) is byte-identical.
+ *
+ * `opts.column` (#1260) points the SAME probe at the shadow column a #1116
+ * migration backfills, so the comparison run measures the candidate model
+ * through the identical SQL, ACL predicate and ef_search discipline as the
+ * live one — a sibling function would be a fifth `efSearchFor` call site and
+ * a second copy of all of the above. The value is a CLOSED two-member union
+ * re-narrowed below before it touches the SQL string; request input never
+ * reaches it (routes validate a boolean-ish choice away from this layer).
+ * There is deliberately NO cast on the parameter: the candidate column may be
+ * `halfvec`, and `<=>` resolves the untyped parameter from the column's own
+ * type — a `::vector` cast would break exactly the halfvec case the shadow
+ * tiering exists for. Everything but the column identifier — the fan-out, the
+ * ef_search coverage, `visiblePagesPredicate` — is shared by construction.
  */
+export type VectorSearchColumn = 'embedding' | 'embedding_next';
+
 export async function vectorSearch(
   userId: string,
   questionEmbedding: number[],
   limit = RAG_FETCH_WIDTH_DEFAULT,
-  opts?: { spaceKey?: string },
+  opts?: { spaceKey?: string; column?: VectorSearchColumn },
 ): Promise<SearchResult[]> {
   return withSpan(
     'rag.vector_search',
     async (span) => {
       const started = performance.now();
       const spaceKey = opts?.spaceKey;
+      // Allow-listed identifier, re-narrowed at the boundary: anything but
+      // the literal 'embedding_next' — including a value smuggled through a
+      // type assertion — degrades to the live column rather than reaching
+      // the SQL string (#1260).
+      const column: VectorSearchColumn =
+        opts?.column === 'embedding_next' ? 'embedding_next' : 'embedding';
+      // `embedding_next` is ADD COLUMN with no NOT NULL, and the shadow
+      // dual-write deliberately leaves it NULL when the candidate provider
+      // fails on a page edited mid-migration. `NULL <=> $2` is NULL, which
+      // sorts NULLS LAST but is still RETURNED whenever the visible chunk set
+      // is smaller than the fan-out limit — and `1 - null` is 1 in JS, i.e. a
+      // perfect match. So an unfilled page would enter the candidate top-K as
+      // its best hit and inflate every #1260 agreement figure computed from
+      // it.
+      //
+      // The clause is a NARROWING, not the correctness guarantee, and the
+      // distinction is worth stating because it used to claim otherwise (r1).
+      // `ORDER BY <expr>` is ASC and therefore NULLS LAST, so a NULL-vector
+      // row can never displace a scored one under `LIMIT $3` — verified
+      // directly against pgvector — which means deleting this clause changes
+      // no result the `distance !== null` filter below does not already
+      // handle, and no test can make it fail. It earns its place by keeping
+      // those rows off the wire at all when the visible chunk set is narrower
+      // than the fan-out (a space-scoped query, a small instance) and by
+      // stating the intent where the query is. What the figures actually rest
+      // on is that filter, which `rag-service.integration.test.ts` falsifies
+      // by dropping the HNSW index. The live column is NOT NULL on every
+      // migrated instance, so its clause stays byte-identical.
+      const nullVectorGuard =
+        column === 'embedding_next' ? ' AND pe.embedding_next IS NOT NULL' : '';
       const vecSpaces = await getUserAccessibleSpaces(userId);
+      // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
+      // requested page count, capped so the ef arithmetic below stays
+      // inside pgvector's ceiling.
+      // Math.max(limit, …): above limit 500 the fan-out cap would make the
+      // raw fetch NARROWER than the requested page count, inverting the
+      // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
+      // unreachable at today's 200 stage-limit ceiling, but the JSDoc
+      // explicitly anticipates internal callers with a large topK; past
+      // 500 the ef headroom relaxes from 2x toward 1x under the 1000
+      // clamp, still covering the LIMIT).
+      const rawLimit = vectorRawLimit(limit);
+      // Resolved BEFORE the checkout (review r1): on a cache miss this reads
+      // `admin_settings` on the MAIN pool, and doing that while holding a
+      // vector-pool client would extend the hold on the scarcer pool
+      // (`PG_VECTOR_POOL_MAX`, default 5) by a foreign pool's latency.
+      const efSearch = await efSearchFor(rawLimit);
       // Use the dedicated vector pool so long-running similarity queries
       // do not starve the main pool used by CRUD routes.
       const client = await getVectorPool().connect();
       try {
         await client.query('BEGIN');
-        // The RAW fetch is chunk-denominated (#1106): PAGE_FANOUT x the
-        // requested page count, capped so the ef arithmetic below stays
-        // inside pgvector's ceiling.
-        // Math.max(limit, …): above limit 500 the fan-out cap would make the
-        // raw fetch NARROWER than the requested page count, inverting the
-        // "pre-#1106 yield is the floor" guarantee (#1269 review m16 —
-        // unreachable at today's 200 stage-limit ceiling, but the JSDoc
-        // explicitly anticipates internal callers with a large topK; past
-        // 500 the ef headroom relaxes from 2x toward 1x under the 1000
-        // clamp, still covering the LIMIT).
-        const rawLimit = vectorRawLimit(limit);
         // ef_search must cover the RAW LIMIT: HNSW returns at most
         // ef_search rows (verified against pgvector 0.8.5 — LIMIT 200 with
-        // ef_search 100 yields 100 rows), so a fetch above RAG_EF_SEARCH
-        // would silently plateau while the keyword leg kept widening. Since
-        // #1106 the covered quantity is the raw CHUNK fetch, not the page
+        // ef_search 100 yields 100 rows), so a fetch above the configured
+        // `rag_ef_search` floor would silently plateau while the keyword leg
+        // kept widening. Since #1106 the covered quantity is the raw CHUNK fetch, not the page
         // count — covering only `limit` would starve the truncation of the
         // very rows it needs. 2x, not 1x: ef_search == k is HNSW's worst
         // recall setting — the graph walk needs headroom beyond the return
         // size. Clamped to pgvector's [1, 1000] bound; the raw cap keeps
         // 2 x rawLimit <= 1000 at every reachable width.
-        await client.query(`SET LOCAL hnsw.ef_search = ${efSearchFor(rawLimit)}`);
+        await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
         const result = await client.query<{
           page_id: number;
@@ -407,12 +465,12 @@ export async function vectorSearch(
           distance: number;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
-                  pe.embedding <=> $2 AS distance
+                  pe.${column} <=> $2 AS distance
            FROM page_embeddings pe
            JOIN pages cp ON pe.page_id = cp.id
            WHERE ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
-           ORDER BY pe.embedding <=> $2
+           AND cp.deleted_at IS NULL${nullVectorGuard}${spaceKey ? ' AND cp.space_key = $5' : ''}
+           ORDER BY pe.${column} <=> $2
            LIMIT $3`,
           spaceKey
             ? [vecSpaces, pgvector.toSql(questionEmbedding), rawLimit, userId, spaceKey]
@@ -425,18 +483,27 @@ export async function vectorSearch(
         // unit tests pin. `limit` distinct pages, fan-out bounded to chunks
         // ranking above the last admitted page's entry.
         const mapped = truncateAtDistinctPages(
-          result.rows.map((row) => ({
-            pageId: row.page_id,
-            confluenceId: row.confluence_id,
-            chunkText: row.chunk_text,
-            chunkIndex: row.chunk_index,
-            pageTitle: row.metadata.page_title,
-            sectionTitle: row.metadata.section_title,
-            spaceKey: row.metadata.space_key,
-            score: 1 - row.distance, // Convert distance to similarity
-            vectorScore: 1 - row.distance,
-            keywordRank: null,
-          })),
+          result.rows
+            // Belt-and-braces behind the SQL guard above, and it reaches one
+            // case the guard deliberately does not: between a #1116 swap and
+            // its cleanup the LIVE column is nullable too (the swap drops the
+            // renamed column's NOT NULL), so a chunk the post-swap dual-write
+            // could not fill would otherwise score `1 - null` = 1 — a perfect
+            // match — on the ordinary chat path. A JS filter costs nothing and
+            // leaves every query plan untouched.
+            .filter((row) => row.distance !== null && row.distance !== undefined)
+            .map((row) => ({
+              pageId: row.page_id,
+              confluenceId: row.confluence_id,
+              chunkText: row.chunk_text,
+              chunkIndex: row.chunk_index,
+              pageTitle: row.metadata.page_title,
+              sectionTitle: row.metadata.section_title,
+              spaceKey: row.metadata.space_key,
+              score: 1 - row.distance, // Convert distance to similarity
+              vectorScore: 1 - row.distance,
+              keywordRank: null,
+            })),
           Number(limit),
         );
         // `rag.hits` counts kept CHUNK rows (post-truncation, up to ~fanout x
@@ -885,11 +952,29 @@ export type DegradedReason =
   | 'embedding_failed'
   | 'image_leg_unavailable';
 
-import { computeRetrievalConfidence, type RetrievalHealthCaveat } from './retrieval-confidence.js';
+import {
+  computeRetrievalConfidence,
+  type RetrievalConfidence,
+  type RetrievalHealthCaveat,
+} from './retrieval-confidence.js';
 import { assembleSiblingWindow } from './sibling-assembly.js';
 import { detectIdentifiers, type DetectedIdentifier } from './identifier-shortcircuit.js';
 import { selectDiverse } from './mmr.js';
 import { applyRankingPrior } from './ranking-prior.js';
+
+/**
+ * Which product surface produced a `search_analytics` row (#1284, migration
+ * 098). It is set by the CALLER because only the caller knows: `hybridSearch`
+ * is one function behind `/llm/ask`, `/api/search` and the benchmark harness
+ * alike.
+ *
+ * It exists because the confidence readout on Settings → AI Models → Retrieval must
+ * measure what the refuse gate actually sees. The gate runs on `/llm/ask`
+ * only, so a page search — which never consults a threshold — would otherwise
+ * dilute the distribution an operator tunes the gate against. Absent means
+ * unknown (every pre-#1284 row), never "ask".
+ */
+export type SearchSurface = 'ask' | 'search';
 
 /** Observability fields added by migration 088 (#1117 stage 2). */
 export interface SearchAnalyticsExtras {
@@ -903,6 +988,28 @@ export interface SearchAnalyticsExtras {
   degradedReason?: DegradedReason | null;
   /** Measured coverage at query time, [0,1] — recorded degraded or not. */
   embeddingCoverage?: number | null;
+  /**
+   * #1284 (migration 098) — the #1105 refuse gate's own verdict for this
+   * search, exactly as {@link computeRetrievalConfidence} returned it on the
+   * RETURNED set. `null` is a real value here: an unmeasurable set (basis
+   * `none`, or an outage) has no number, and recording 0 instead would drag
+   * every percentile the Retrieval panel shows toward the floor.
+   *
+   * Never derive it from `maxScore` or `rerankScore`: those are the RRF
+   * fusion value and the reranker's own scale, and a distribution published
+   * on the wrong scale is worse than none.
+   */
+  confidence?: number | null;
+  /**
+   * The basis that verdict was measured on — `'rerank' | 'similarity' |
+   * 'none'`. Its own column because the basis FLIPS per request (a rerank
+   * bypass measures that request on the cosine scale), so the two thresholds
+   * describe two distributions that must never be merged, and because a
+   * `null` score is not enough to tell `none` from "not recorded".
+   */
+  confidenceBasis?: RetrievalConfidence['basis'] | null;
+  /** #1284 — which surface asked. See {@link SearchSurface}. */
+  surface?: SearchSurface | null;
 }
 
 /**
@@ -1008,8 +1115,9 @@ export async function recordSearchAnalytics(
     await query(
       `INSERT INTO search_analytics
          (user_id, query, result_count, max_score, search_type,
-          rerank_score, degraded_reason, embedding_coverage)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          rerank_score, degraded_reason, embedding_coverage,
+          confidence, confidence_basis, surface)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         userId,
         queryText,
@@ -1019,6 +1127,9 @@ export async function recordSearchAnalytics(
         extras.rerankScore ?? null,
         extras.degradedReason ?? null,
         extras.embeddingCoverage ?? null,
+        extras.confidence ?? null,
+        extras.confidenceBasis ?? null,
+        extras.surface ?? null,
       ],
     );
   } catch (err) {
@@ -1167,6 +1278,15 @@ export interface HybridSearchOptions {
    * the merged set instead.
    */
   recordAnalytics?: boolean;
+  /**
+   * #1284 — which surface this search serves, stamped onto the
+   * `search_analytics` row. Undefined means unknown, and the confidence
+   * readout on Settings → AI Models → Retrieval reads `'ask'` rows only, so an internal
+   * caller that declares nothing (the benchmark harness, a future consumer)
+   * cannot silently join the distribution an operator tunes the refuse gate
+   * against. See {@link SearchSurface}.
+   */
+  surface?: SearchSurface;
   /**
    * #1351 — scope retrieval to one Confluence space: both fused legs
    * (vector + keyword, threaded straight through to
@@ -2281,24 +2401,14 @@ async function hybridSearchInner(
   // caveat since #1103: the fusion value's SCALE tracks the stage limit
   // (rrfWorstCase rises with the fetch width), so rows straddling a
   // `rag_fetch_width` change are only loosely comparable — the same caveat
-  // RAG_EF_SEARCH always carried.
+  // the ef_search floor always carried, and since #1285 that one is a knob on
+  // the same panel.
   // Pinned NEW rows carry score 0 (never a fused value); excluding them
   // keeps max_score's unit contract and stops a pinned-only head writing
   // 0 into the knowledge-gap predicate's range (#1273 review M8). Moved
   // pins keep their fused score and stay in the sample.
   const scoreRows = topResults.filter((r) => r.pinned === undefined || r.vectorScore !== null || r.keywordRank !== null);
   const maxScore = scoreRows.length > 0 ? Math.max(...scoreRows.map((r) => r.score)) : null;
-  // #1112: a deep-search leg suppresses this row — see
-  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
-  // merged set, so one user gesture stays one row and no model-invented
-  // paraphrase is ever filed as a user query.
-  if (opts?.recordAnalytics !== false) {
-    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
-      ...analyticsExtras,
-      rerankScore: rerankMax,
-    });
-  }
-
   // Retrieval confidence on the trace (#1268 review: the docs promised
   // "logs/traces" and only the log existed). Computed here with the same
   // health caveat the route's gate uses, so the two can never disagree.
@@ -2320,6 +2430,28 @@ async function hybridSearchInner(
     span?.setAttribute('rag.confidence', confidence.score);
   }
   span?.setAttribute('rag.confidence_basis', confidence.basis);
+
+  // #1112: a deep-search leg suppresses this row — see
+  // HybridSearchOptions.recordAnalytics. The wrapper records one row for the
+  // merged set, so one user gesture stays one row and no model-invented
+  // paraphrase is ever filed as a user query.
+  //
+  // #1284: the write sits BELOW the confidence computation on purpose. It
+  // used to run first, and the verdict was then only ever a span attribute —
+  // so the panel that tells operators to tune against their own
+  // `rag.confidence` values had no column to read. The row now carries the
+  // SAME object the trace does, computed once from the same `topResults` and
+  // the same health caveat the route's gate re-derives, so the recorded
+  // number cannot drift from the number the gate compared.
+  if (opts?.recordAnalytics !== false) {
+    trackSearchAnalytics(userId, question, topResults.length, maxScore, searchTypeFinal, {
+      ...analyticsExtras,
+      rerankScore: rerankMax,
+      confidence: confidence.score,
+      confidenceBasis: confidence.basis,
+      surface: opts?.surface ?? null,
+    });
+  }
 
   // Guarded: the callback is a caller-supplied observer running mid-request;
   // a throwing consumer must not turn a completed retrieval into a 500 with
@@ -2380,5 +2512,5 @@ export function buildRagContext(results: SearchResult[]): string {
     .join('\n\n---\n\n');
 }
 
-export { RAG_EF_SEARCH, reciprocalRankFusion, rrfWorstCase };
+export { reciprocalRankFusion, rrfWorstCase };
 export type { SearchResult };

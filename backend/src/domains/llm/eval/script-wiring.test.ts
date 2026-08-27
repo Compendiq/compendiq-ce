@@ -381,6 +381,34 @@ describe('benchmark-query-latency.ts wiring (#1114)', () => {
     expect(flat).toContain('vectorPoolMax: getVectorPool().options.max');
   });
 
+  // #1285 — the scan depth stopped being a `process.env` constant visible in
+  // the launching shell and became a row in the database under test, so two
+  // identically-labelled runs can now measure different depths over one corpus
+  // (0.39 ms per probe at 100 against 1.74 ms at 1000 — the very quantity this
+  // script publishes). Its wiring is the shape this file exists for: deleting
+  // both fields from the metadata literal leaves the measurement correct and
+  // the report silent about what it measured, and lint, typecheck and every
+  // other suite stay green (verified by mutation).
+  it('publishes the ef_search floor it ran at, and its provenance, from the resolver', () => {
+    // Through the product's own reader, so inheritance (row → deprecated
+    // variable → default) cannot drift from what the timed kNN really runs at.
+    expect(flat).toContain(
+      '({ value: ragEfSearch, source: ragEfSearchSource } = await resolveRagEfSearch())',
+    );
+    // Shorthand: the published fields ARE what the resolver returned. Any
+    // `ragEfSearch: <expr>` here is a label decoupled from the run — and the
+    // source half is not optional, because "100" reached by a saved row, by
+    // the deprecated variable and by the unconfigured default are three
+    // different claims about the instance.
+    expect(flat).toContain('ragEfSearch, ragEfSearchSource,');
+
+    // Resolved ahead of the first timed call, so the report cannot describe a
+    // depth read after the run it is supposed to characterise.
+    const resolve = raw.indexOf('await resolveRagEfSearch()');
+    expect(resolve).toBeGreaterThan(-1);
+    expect(raw.indexOf('timeConcurrently(')).toBeGreaterThan(resolve);
+  });
+
   // #1114 review r2 — the shared guard's default message describes the eval
   // rig's TRUNCATE/RETYPE, which this script never does. Told that, an
   // operator of a read-only timing run reaches for

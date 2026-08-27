@@ -68,6 +68,7 @@ export const SETTINGS_NAV = [
     items: [
       navItem('confluence', 'Confluence'),
       navItem('ai-prompts', 'AI Prompts'),
+      navItem('editor', 'Editor'),
       navItem('theme', 'Appearance'),
     ],
   },

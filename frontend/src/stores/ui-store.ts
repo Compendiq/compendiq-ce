@@ -10,7 +10,6 @@ export const ARTICLE_SIDEBAR_MIN_WIDTH = 400;
 export const ARTICLE_SIDEBAR_MAX_WIDTH = 1200;
 export const ARTICLE_SIDEBAR_DEFAULT_WIDTH = 400;
 
-
 interface UiState {
   sidebarCollapsed: boolean;
   treeSidebarCollapsed: boolean;
@@ -40,6 +39,9 @@ interface UiState {
   setArticleSidebarWidth: (width: number) => void;
   setVimModeEnabled: (enabled: boolean) => void;
 }
+
+export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
+
 
 export const useUiStore = create<UiState>()(
   persist(

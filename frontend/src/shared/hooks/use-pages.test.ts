@@ -10,6 +10,8 @@ import {
   useResyncPage,
   useReembedPage,
   useRequalityPage,
+  useCreatePage,
+  useUpdatePage,
   type PinnedPage,
 } from './use-pages';
 import type { PageFilters } from './use-pages';
@@ -517,5 +519,76 @@ describe('useReembedPage', () => {
     expect(urls).not.toContain('/pages/other-id');
     expect(urls).not.toContain('/pages/graph');
     expect(urls).not.toContain('/pages/v-id/versions');
+  });
+});
+
+/**
+ * #1402: "Create or edit a page" is the checklist's fifth milestone, and there
+ * is no other signal for it — the row exists whether the page came from the
+ * New Page form, a template, a Markdown import or an edit of a synced article.
+ * So the two page-writing mutations record it themselves, on their success
+ * paths only.
+ */
+describe('onboarding milestone: create or edit a page (#1402)', () => {
+  function settingsPuts() {
+    return apiFetchMock.mock.calls.filter(
+      ([path, init]) =>
+        path === '/settings' && (init as { method?: string } | undefined)?.method === 'PUT',
+    );
+  }
+
+  it('marks pageCreatedOrEdited after a successful create', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'new-1', title: 'Draft', version: 1 });
+    const { wrapper } = createQueryClientAndWrapper();
+    const { result } = renderHook(() => useCreatePage(), { wrapper });
+
+    act(() => {
+      result.current.mutate({ spaceKey: 'ENG', title: 'Draft', bodyHtml: '<p>x</p>' });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+    expect(JSON.parse((settingsPuts()[0]![1] as { body: string }).body)).toEqual({
+      onboardingState: { pageCreatedOrEdited: true },
+    });
+  });
+
+  it('does not mark it when the create fails', async () => {
+    apiFetchMock.mockRejectedValue(new Error('403'));
+    const { wrapper } = createQueryClientAndWrapper();
+    const { result } = renderHook(() => useCreatePage(), { wrapper });
+
+    act(() => {
+      result.current.mutate({ spaceKey: 'ENG', title: 'Draft', bodyHtml: '<p>x</p>' });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(settingsPuts()).toEqual([]);
+  });
+
+  it('marks pageCreatedOrEdited after a successful update', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'page-1', title: 'Edited', version: 2 });
+    const { wrapper } = createQueryClientAndWrapper();
+    const { result } = renderHook(() => useUpdatePage(), { wrapper });
+
+    act(() => {
+      result.current.mutate({ id: 'page-1', title: 'Edited', bodyHtml: '<p>y</p>' });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(settingsPuts()).toHaveLength(1));
+  });
+
+  it('does not mark it when the update fails — onSettled runs on both paths', async () => {
+    apiFetchMock.mockRejectedValue(new Error('409 conflict'));
+    const { wrapper } = createQueryClientAndWrapper();
+    const { result } = renderHook(() => useUpdatePage(), { wrapper });
+
+    act(() => {
+      result.current.mutate({ id: 'page-1', title: 'Edited', bodyHtml: '<p>y</p>' });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(settingsPuts()).toEqual([]);
   });
 });

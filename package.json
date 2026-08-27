@@ -13,18 +13,19 @@
     "build": "npm run build -w @compendiq/contracts && npm run build -w backend && npm run build -w frontend",
     "lint": "npm run lint -w backend && npm run lint -w frontend",
     "typecheck": "npm run build -w @compendiq/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
-    "test": "npm run build -w @compendiq/contracts && npm run test -w @compendiq/contracts && npm run test -w backend && npm run test -w frontend",
+    "test": "npm run build -w @compendiq/contracts && npm run test -w @compendiq/contracts && npm run test -w backend && npm run test -w frontend && vitest run --config e2e/vitest.config.ts",
     "test:e2e": "npx playwright test",
     "lighthouse": "lhci autorun",
     "knip": "knip",
     "prepare": "husky || true"
   },
-  "//deps-note": "These mirror backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting versions from root devDep chains push backend's copy down to backend/node_modules, where the runtime Docker stage \u2014 which copies only the root tree and flattens backend/dist to /app/dist \u2014 can't reach them. The OpenTelemetry runtime stack lives here for exactly that reason (#1117: the whole observability path silently no-ops in the shipped image when these nest). The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
+  "//deps-note": "These mirror backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting versions from root devDep chains push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The OpenTelemetry runtime stack lives here for exactly that reason (#1117: the whole observability path silently no-ops in the shipped image when these nest). The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.78.0",
     "@opentelemetry/sdk-metrics": "2.9.0",
-    "@opentelemetry/sdk-node": "^0.220.0"
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
@@ -36,6 +37,11 @@
   },
   "overrides": {
     "vite": "^8.0.16",
+    "@tiptap/core": "3.30.3",
+    "@tiptap/pm": "3.30.3",
+    "@tiptap/starter-kit": "3.30.3",
+    "@tiptap/extensions": "3.30.3",
+    "@tiptap/react": "3.30.3",
     "protobufjs": "^7.5.5",
     "@fastify/static": "^9.1.1",
     "fast-uri": "^3.1.5",

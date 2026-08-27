@@ -40,6 +40,8 @@ import {
   invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
+  resolveRagEfSearch,
+  invalidateRagEfSearchCache,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -49,6 +51,7 @@ import {
   type ConfidenceBasis,
 } from '../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from '../../domains/llm/services/llm-provider-resolver.js';
+import { listClientAssetManifest } from '../../core/services/client-model-assets.js';
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
@@ -65,6 +68,8 @@ import { getRateLimits, upsertRateLimits } from '../../core/services/rate-limit-
 import { getStreamCap, invalidateStreamCapCache } from '../../core/services/sse-stream-limiter.js';
 import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import { getSmtpConfig, updateSmtpConfig, sendTestEmail, stripMaskedSmtpPass } from '../../core/services/email-service.js';
+import { publish } from '../../core/services/redis-cache-bus.js';
+import { isCollabEditingEnabled, refreshCollabFlag } from '../../core/services/collab-flag.js';
 
 const AuditLogQuerySchema = z.object({
   userId: z.string().optional(),
@@ -150,6 +155,35 @@ export async function adminRoutes(fastify: FastifyInstance) {
       } catch (err) {
         errors++;
         logger.error({ err, userId: row.user_id }, 'Failed to re-encrypt PAT for user');
+      }
+    }
+
+    // #1462: the Notion integration token is the same encryptPat ciphertext
+    // as confluence_pat. Sweeping only the PAT would strand it after the
+    // operator removes the old key.
+    const notionRows = await query<{ user_id: string; notion_integration_token: string }>(
+      'SELECT user_id, notion_integration_token FROM user_settings WHERE notion_integration_token IS NOT NULL',
+    );
+    total += notionRows.rows.length;
+    for (const row of notionRows.rows) {
+      try {
+        const reEncrypted = reEncryptPat(row.notion_integration_token);
+        if (reEncrypted) {
+          const updated = await query(
+            'UPDATE user_settings SET notion_integration_token = $1 WHERE user_id = $2 AND notion_integration_token = $3',
+            [reEncrypted, row.user_id, row.notion_integration_token],
+          );
+          if ((updated.rowCount ?? 0) > 0) {
+            rotated++;
+          } else {
+            skipped++;
+          }
+        } else {
+          skipped++;
+        }
+      } catch (err) {
+        errors++;
+        logger.error({ err, userId: row.user_id }, 'Failed to re-encrypt Notion token for user');
       }
     }
 
@@ -365,6 +399,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragImageLegEnabled,
       ragAnswerMaxImages,
       imageEmbeddingTargetDimensions,
+      efSearch,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -417,10 +452,21 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
       getImageEmbeddingTargetDimensions(),
+      // #1285 — the `ef_search` floor, through its own cached reader for the
+      // #1118 reason plus one of its own: this is the only knob on the panel
+      // with a deprecated env var behind it, and the reader owns the
+      // row → `RAG_EF_SEARCH` → 100 cascade. Reading the row here would report
+      // 100 on every instance still running on the variable, i.e. a panel that
+      // contradicts what the kNN probes are doing. It answers the SOURCE too
+      // (review r1): the panel's Save is a pure value diff, so on an instance
+      // still running on the variable the field already holds what the server
+      // resolved and nothing can be saved — the panel needs to know that to
+      // offer the one-key write that retires it.
+      resolveRagEfSearch(),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
-       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention')`,
+       WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap', 'drawio_embed_url', 'reembed_history_retention', 'client_inference_enabled')`,
     );
 
     const map: Record<string, string> = {};
@@ -531,6 +577,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
       ragConfidenceCalibration,
+      // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel,
+      // and whether the deprecated environment variable is what produced it.
+      // A failed read reports `false`: the panel must not offer to pin a
+      // number the server did not resolve from the variable.
+      ragEfSearch: efSearch.value,
+      ragEfSearchFromEnv: efSearch.source === 'env',
+      collabEditingEnabled: isCollabEditingEnabled(),
+      clientInferenceEnabled: (() => {
+        const raw = map['client_inference_enabled'];
+        if (!raw) return false;
+        const v = raw.trim().toLowerCase();
+        return v === '1' || v === 'true' || v === 'on';
+      })(),
     };
   });
 
@@ -540,6 +599,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     if (Object.keys(body).length === 0) {
       return { message: 'No changes' };
+    }
+
+    if (body.clientInferenceEnabled === true) {
+      const manifest = await listClientAssetManifest(true);
+      if (!manifest.models.some((m) => m.kind === 'onnx' && m.installed)) {
+        throw fastify.httpErrors.unprocessableEntity('Install the on-device model first');
+      }
     }
 
     const hasChunkChanges =
@@ -664,6 +730,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.registrationMode !== undefined) {
       updates.push({ key: 'registration_mode', value: body.registrationMode });
     }
+    if (body.collabEditingEnabled !== undefined) {
+      updates.push({
+        key: 'collab_editing_enabled',
+        value: body.collabEditingEnabled ? '1' : '0',
+      });
+    }
+    if (body.clientInferenceEnabled !== undefined) {
+      updates.push({
+        key: 'client_inference_enabled',
+        value: body.clientInferenceEnabled ? 'true' : 'false',
+      });
+    }
 
     // ─── #1118 — epic #1100's retrieval knobs ─────────────────────────────
     //
@@ -760,6 +838,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
         invalidateRagAnswerMaxImagesCache,
         body.ragAnswerMaxImages !== undefined ? String(body.ragAnswerMaxImages) : undefined,
       ],
+      // #1285 — the `ef_search` floor. The moment this row lands, the
+      // deprecated `RAG_EF_SEARCH` variable stops being consulted: the reader
+      // falls back to it only for an ABSENT row, so the first save on an
+      // instance is also what retires the environment.
+      [
+        'rag_ef_search',
+        invalidateRagEfSearchCache,
+        body.ragEfSearch !== undefined ? String(body.ragEfSearch) : undefined,
+      ],
     ];
     const invalidateFor = new Map<string, () => void>();
     for (const [key, invalidate, value] of retrievalKnobs) {
@@ -787,6 +874,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // and no others. Other pods still converge on the TTL, as with the
       // stream cap.
       invalidateFor.get(key)?.();
+    }
+
+    if (body.collabEditingEnabled !== undefined) {
+      await publish('collab:enabled:changed', { enabled: body.collabEditingEnabled });
+      await refreshCollabFlag();
     }
 
     // ─── #1114 — record which model each written threshold was tuned on ───

@@ -661,6 +661,190 @@ export function invalidateRagAnswerMaxImagesCache(): void {
 }
 
 /**
+ * #1285 — `rag_ef_search`, the HNSW `ef_search` FLOOR every pgvector kNN probe
+ * in the app runs at. Default **100**, range **[1, 1000]** (pgvector's own
+ * bound). This is the knob, not the per-query value: `efSearchFor`
+ * (`domains/llm/services/hnsw-ef-search.ts`) raises it to `2 x` a probe's raw
+ * row count when that is larger, clamped at 1000.
+ *
+ * It moved here from `process.env.RAG_EF_SEARCH` because a deployment's recall
+ * floor belongs beside the retrieval knobs it is read with, not in a shell the
+ * panel cannot see: read at module load it could not change without a restart.
+ * It is **not** bounded-fetch coupling — `efSearchFor`'s `2 x` headroom covers
+ * every probe's own LIMIT at every reachable width, so a wider fetch outgrows
+ * this floor rather than being capped by it (review r1).
+ * ADR-021 forbids new env-driven retrieval config, so the variable survives
+ * only as a **bootstrap fallback** (below) and is reported at startup by
+ * {@link warnIfRagEfSearchEnvSet}.
+ *
+ * Raising it is very unlikely to buy recall. Measured on #1114's
+ * `halfvec(2560)` corpus the index is effectively exact from 40: recall@10 is
+ * 0.9995 at this default and unchanged all the way to the 1000 ceiling. The
+ * cost that DOES move with the setting is SCAN TIME — 0.39 ms per probe at
+ * 100 against 1.74 ms at 1000 on that corpus. Not footprint: `ef_search` is a
+ * query-time GUC, and the 18.6 MiB of HNSW that paragraph in CLAUDE.md tells
+ * you to watch is a build property of `m` / `ef_construction`, identical at
+ * every value of this setting. See `docs/runbooks/shadow-reembed.md`.
+ */
+export const RAG_EF_SEARCH_DEFAULT = 100;
+/** pgvector's own lower bound on `hnsw.ef_search`. */
+export const RAG_EF_SEARCH_MIN = 1;
+/** pgvector's own upper bound on `hnsw.ef_search`. */
+export const RAG_EF_SEARCH_MAX = 1000;
+
+const RAG_EF_SEARCH_TTL_MS = 60_000;
+
+/**
+ * Where the resolved floor came from. The panel needs this and not only the
+ * number: on an instance still running on `RAG_EF_SEARCH` the value the panel
+ * shows already equals what the server resolved, so Save — a pure value diff —
+ * has nothing to send and the row can never be written from the control that
+ * tells the operator to write it (review r1).
+ */
+export type RagEfSearchSource = 'row' | 'env' | 'default';
+
+let ragEfSearchCache: { value: number; source: RagEfSearchSource; expiresAt: number } | null = null;
+let ragEfSearchEnvBootstrapLogged = false;
+
+/** `RAG_EF_SEARCH` parsed and range-checked, or `null` if it is unusable. */
+function parseRagEfSearchEnv(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  if (n < RAG_EF_SEARCH_MIN || n > RAG_EF_SEARCH_MAX) return null;
+  return n;
+}
+
+/**
+ * The deprecated `RAG_EF_SEARCH` env var, validated the same way a row is, or
+ * `null` when it is unset or unusable.
+ *
+ * **Bootstrap only.** It is consulted exactly when no `rag_ef_search` row
+ * exists — which, unlike `fts_language`, is the state of every instance that
+ * has never saved the Retrieval panel, because nothing seeds this row. So the
+ * value stays live until an admin saves once, and that is what the startup
+ * notice says.
+ */
+function ragEfSearchEnvBootstrap(): number | null {
+  const n = parseRagEfSearchEnv((process.env.RAG_EF_SEARCH ?? '').trim());
+  if (n === null) return null;
+  if (!ragEfSearchEnvBootstrapLogged) {
+    ragEfSearchEnvBootstrapLogged = true;
+    logger.info(
+      { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: n },
+      'No rag_ef_search row — falling back to the deprecated RAG_EF_SEARCH environment variable. Save Settings → AI Models → Retrieval once to make the setting authoritative.',
+    );
+  }
+  return n;
+}
+
+/**
+ * Resolve the `ef_search` floor, TTL-cached like its Retrieval-panel siblings.
+ *
+ * Fallback order is **row → `RAG_EF_SEARCH` → 100**, and the shape check is
+ * strict for `rag_answer_max_images`' reason read the other way round:
+ * `parseInt('1e3')` is 1, and 1 is a *legal* `ef_search`, so a permissive parse
+ * would read a fat-fingered row as "walk one candidate" and gut recall rather
+ * than reading as the typo it is. `'0'` falls back too — pgvector's floor is 1,
+ * so a zero row means unset, not off.
+ *
+ * Soft-fails to the fallback: like `getRagFetchWidth`, this read failing must
+ * degrade the tuning and never the search.
+ *
+ * **A read that THREW is not evidence that no row exists** (review r1). The
+ * first cut left `fromRow` false in the catch, so a transient failure — pool
+ * pressure, a statement timeout — put a stale `RAG_EF_SEARCH` back in force
+ * for a full TTL on an instance that had saved the panel, which is the exact
+ * opposite of what the startup notice, `.env.example`, ADMIN-GUIDE and the
+ * panel's own line all promise. The bootstrap is consulted only when the read
+ * SUCCEEDED and returned nothing; a failure falls to the constant default.
+ */
+export async function resolveRagEfSearch(): Promise<{ value: number; source: RagEfSearchSource }> {
+  if (ragEfSearchCache && Date.now() < ragEfSearchCache.expiresAt) {
+    return { value: ragEfSearchCache.value, source: ragEfSearchCache.source };
+  }
+  let resolved = RAG_EF_SEARCH_DEFAULT;
+  let source: RagEfSearchSource = 'default';
+  let readFailed = false;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ef_search'`,
+    );
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n >= RAG_EF_SEARCH_MIN) {
+        resolved = Math.min(n, RAG_EF_SEARCH_MAX);
+        source = 'row';
+      }
+    }
+  } catch (err) {
+    readFailed = true;
+    logger.warn({ err }, 'Failed to resolve rag_ef_search — using the configured fallback');
+  }
+  if (source !== 'row' && !readFailed) {
+    const fromEnv = ragEfSearchEnvBootstrap();
+    if (fromEnv !== null) {
+      resolved = fromEnv;
+      source = 'env';
+    }
+  }
+
+  ragEfSearchCache = { value: resolved, source, expiresAt: Date.now() + RAG_EF_SEARCH_TTL_MS };
+  return { value: resolved, source };
+}
+
+/** The floor itself — what every kNN probe calls. */
+export async function getRagEfSearch(): Promise<number> {
+  return (await resolveRagEfSearch()).value;
+}
+
+export function invalidateRagEfSearchCache(): void {
+  ragEfSearchCache = null;
+}
+
+/**
+ * Startup notice for the deprecated `RAG_EF_SEARCH` environment variable
+ * (#1285).
+ *
+ * **LEGACY-LLM-VARS semantics, not `FTS_LANGUAGE`'s.** That one is *ignored*
+ * everywhere, because migration 049 seeds the row it lost to. Nothing seeds
+ * `rag_ef_search`, so this variable is still doing exactly what it always did
+ * on every instance that has not saved the Retrieval panel — and the message
+ * has to say so, or an operator reads "deprecated" as "already inert" and
+ * removes a value that was live.
+ *
+ * It **re-validates the value** (review r1) rather than gating on truthiness
+ * alone. `RAG_EF_SEARCH=2000` was legal under the module-load reader this
+ * knob replaced (it validated 1..10000), and is not under pgvector's own
+ * [1, 1000] bound: such an instance drops from a 1000 floor to 100 on
+ * upgrade. Saying "it is used" there would name the one case where it is not.
+ *
+ * **Both branches hedge on the row** (review r2). This function reads
+ * `process.env` and nothing else — it cannot know whether a `rag_ef_search`
+ * row exists, and a present row wins over the variable either way. The
+ * out-of-range branch used to state the fallback flatly ("the floor falls
+ * back to 100"), which is a claim about the *resolved* floor and is simply
+ * false on any instance that has saved the panel; it now scopes the sentence
+ * the same way the in-range branch does.
+ */
+export function warnIfRagEfSearchEnvSet(): void {
+  const present = process.env.RAG_EF_SEARCH;
+  if (!present) return;
+  const parsed = parseRagEfSearchEnv(present.trim());
+  if (parsed === null) {
+    logger.warn(
+      { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: present },
+      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — while no \`rag_ef_search\` row exists the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
+    );
+    return;
+  }
+  logger.warn(
+    { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: parsed },
+    'RAG_EF_SEARCH is deprecated — it is used only while no `rag_ef_search` row exists; set it on Settings → AI Models → Retrieval',
+  );
+}
+
+/**
  * Issue #257 — returns the configured re-embed-all job history retention
  * (how many completed/failed BullMQ job records are kept in Redis before
  * the oldest get swept). Default 150, clamped to [10, 10000].

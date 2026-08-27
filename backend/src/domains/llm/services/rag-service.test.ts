@@ -125,28 +125,18 @@ vi.mock('../../../core/services/fts-language.js', () => ({
   getFtsLanguage: vi.fn(async () => 'simple'),
 }));
 
-import { buildRagContext, hybridSearch, RAG_EF_SEARCH, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
+import { buildRagContext, hybridSearch, reciprocalRankFusion, fuseWithStableHead, rrfWorstCase, vectorSearch, keywordSearch, recordSearchAnalytics, resolveStageLimit, computeRetrievalConfidence, RAG_FETCH_WIDTH_DEFAULT, truncateAtDistinctPages, PAGE_FANOUT, VECTOR_RAW_LIMIT_CAP, vectorRawLimit, IDENTIFIER_LOOKUP_CANDIDATES } from './rag-service.js';
 import type { SearchResult } from './rag-service.js';
-import { invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, invalidateRagRankingPriorCache, RAG_CONTEXT_CHARS_DEFAULT, RAG_RERANK_CANDIDATES_MIN } from '../../../core/services/admin-settings-service.js';
+import { invalidateRagEfSearchCache, invalidateRagFetchWidthCache, invalidateRagRerankCandidatesCache, invalidateRagContextCharsCache, invalidateRagPinIdentifiersCache, invalidateRagMmrCache, invalidateRagRankingPriorCache, RAG_CONTEXT_CHARS_DEFAULT, RAG_RERANK_CANDIDATES_MIN } from '../../../core/services/admin-settings-service.js';
 import { CircuitBreakerOpenError } from '../../../core/services/circuit-breaker.js';
 
 describe('RAG Service', () => {
-  describe('RAG_EF_SEARCH config', () => {
-    it('should default to 100', () => {
-      // Since test-setup.ts does not set RAG_EF_SEARCH, it should default to 100
-      expect(RAG_EF_SEARCH).toBe(100);
-    });
-
-    it('should be a positive integer', () => {
-      expect(Number.isInteger(RAG_EF_SEARCH)).toBe(true);
-      expect(RAG_EF_SEARCH).toBeGreaterThan(0);
-    });
-
-    it('should produce a safe number for SQL interpolation', () => {
-      expect(Number(RAG_EF_SEARCH)).toBe(RAG_EF_SEARCH);
-      expect(Number.isFinite(Number(RAG_EF_SEARCH))).toBe(true);
-    });
-  });
+  // #1285 — the `RAG_EF_SEARCH` module constant is gone. The floor is
+  // `admin_settings.rag_ef_search`, so its parsing, bounds and env-bootstrap
+  // cascade are tested where the reader lives
+  // (`core/services/admin-settings-service.test.ts`), the 2x-headroom
+  // arithmetic in `hnsw-ef-search.test.ts`, and what the vector leg actually
+  // writes into `SET LOCAL` in the fetch-width describe below.
 
   describe('buildRagContext', () => {
     it('prefers the assembled contextText and drops the Section clause for multi-section windows (#1106 PR 2)', () => {
@@ -294,59 +284,13 @@ describe('RAG Service', () => {
     });
   });
 
-  describe('RAG_EF_SEARCH bounds check', () => {
-    it('should fall back to 100 for NaN input', async () => {
-      vi.resetModules();
-      vi.stubEnv('RAG_EF_SEARCH', 'garbage');
-
-      const mod = await import('./rag-service.js');
-      expect(mod.RAG_EF_SEARCH).toBe(100);
-      vi.unstubAllEnvs();
-    });
-
-    it('should fall back to 100 for negative input', async () => {
-      vi.resetModules();
-      vi.stubEnv('RAG_EF_SEARCH', '-5');
-
-      const mod = await import('./rag-service.js');
-      expect(mod.RAG_EF_SEARCH).toBe(100);
-      vi.unstubAllEnvs();
-    });
-
-    it('should fall back to 100 for zero', async () => {
-      vi.resetModules();
-      vi.stubEnv('RAG_EF_SEARCH', '0');
-
-      const mod = await import('./rag-service.js');
-      expect(mod.RAG_EF_SEARCH).toBe(100);
-      vi.unstubAllEnvs();
-    });
-
-    it('should fall back to 100 for values exceeding 10000', async () => {
-      vi.resetModules();
-      vi.stubEnv('RAG_EF_SEARCH', '99999');
-
-      const mod = await import('./rag-service.js');
-      expect(mod.RAG_EF_SEARCH).toBe(100);
-      vi.unstubAllEnvs();
-    });
-
-    it('should accept valid values within bounds', async () => {
-      vi.resetModules();
-      vi.stubEnv('RAG_EF_SEARCH', '200');
-
-      const mod = await import('./rag-service.js');
-      expect(mod.RAG_EF_SEARCH).toBe(200);
-      vi.unstubAllEnvs();
-    });
-  });
-
   describe('vectorSearch (via hybridSearch)', () => {
     beforeEach(() => {
       vi.resetAllMocks();
       // The fetch-width TTL cache (admin-settings-service) is module state —
       // clear it so no test reads a width another test resolved.
       invalidateRagFetchWidthCache();
+      invalidateRagEfSearchCache();
       // Restore pool mock after reset
       mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
       mocks.mockClient.release.mockResolvedValue(undefined);
@@ -782,6 +726,7 @@ describe('RAG Service', () => {
         // Module-level TTL cache in admin-settings-service — without this,
         // the first test's width would serve every later test.
         invalidateRagFetchWidthCache();
+        invalidateRagEfSearchCache();
         mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
         mocks.mockClient.release.mockResolvedValue(undefined);
         mocks.mockToSql.mockReturnValue('[0.1,0.2]');
@@ -802,13 +747,30 @@ describe('RAG Service', () => {
         });
       });
 
-      /** Route query() by SQL text; `adminRows` answers the rag_fetch_width read. */
-      function routeQueries(adminRows: Array<{ setting_value: string }>) {
+      /**
+       * Route query() by SQL text; `adminRows` answers the rag_fetch_width
+       * read and `efRows` (#1285) the rag_ef_search one. Both default to an
+       * absent row, so each getter resolves to its own default.
+       */
+      function routeQueries(
+        adminRows: Array<{ setting_value: string }>,
+        efRows: Array<{ setting_value: string }> = [],
+      ) {
         mocks.mockQuery.mockImplementation(async (sql: string) => {
           if (sql.includes('rag_fetch_width')) return { rows: adminRows };
+          if (sql.includes('rag_ef_search')) return { rows: efRows };
           if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
           return { rows: [] };
         });
+      }
+
+      /** The `SET LOCAL hnsw.ef_search = N` the vector leg's transaction ran. */
+      function efSearchStatement(): string {
+        const call = mocks.mockClientQuery.mock.calls.find(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SET LOCAL hnsw.ef_search'),
+        );
+        expect(call).toBeDefined();
+        return call![0] as string;
       }
 
       /** The LIMIT parameter handed to the vector leg's SELECT. */
@@ -871,6 +833,7 @@ describe('RAG Service', () => {
 
         vi.resetAllMocks();
         invalidateRagFetchWidthCache();
+        invalidateRagEfSearchCache();
         mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
         mocks.mockToSql.mockReturnValue('[0.1,0.2]');
         mocks.mockResolveUsecase.mockResolvedValue({
@@ -905,7 +868,7 @@ describe('RAG Service', () => {
         expect(vectorLimitParam()).toBe(PAGE_FANOUT * RAG_FETCH_WIDTH_DEFAULT);
       });
 
-      it('keeps hnsw.ef_search covering a width above RAG_EF_SEARCH', async () => {
+      it('keeps hnsw.ef_search covering a width above the configured floor', async () => {
         // HNSW returns at most ef_search rows regardless of LIMIT, so a raised
         // width must raise ef_search with it or the vector leg silently
         // plateaus at 100 while the keyword leg keeps widening. 2x the limit,
@@ -914,12 +877,71 @@ describe('RAG Service', () => {
         // raw min(4 x 150, 500) = 500 → ef exactly at the 1000 clamp.
         routeQueries([{ setting_value: '150' }]);
         await hybridSearch('user-1', 'test query');
-        const setLocal = mocks.mockClientQuery.mock.calls.find(
-          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('SET LOCAL hnsw.ef_search'),
-        );
-        expect(setLocal).toBeDefined();
-        expect(setLocal![0]).toContain('= 1000');
+        expect(efSearchStatement()).toContain('= 1000');
         expect(vectorLimitParam()).toBe(VECTOR_RAW_LIMIT_CAP);
+      });
+
+      it('takes the ef_search FLOOR from the rag_ef_search knob (#1285)', async () => {
+        // The knob's whole point: an admin who widened the fetch used to have
+        // the recall they expected bounded by an env var read at module load,
+        // which they may never have set and could not change without a
+        // restart. At the default width the floor IS the value written, so a
+        // raised row has to show up here verbatim.
+        routeQueries([], [{ setting_value: '400' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(efSearchStatement()).toContain('= 400');
+      });
+
+      it('keeps the 2x headroom over a LOWERED floor rather than under-covering the fetch', async () => {
+        // A floor below the raw fetch must not cap the scan below its own
+        // LIMIT: `efSearchFor` still hands the probe 2x its raw row count.
+        // width 12 → raw 4 x 12 = 48 → ef = max(40, 96) = 96.
+        routeQueries([{ setting_value: '12' }], [{ setting_value: '40' }]);
+        await hybridSearch('user-1', 'test query');
+        expect(efSearchStatement()).toContain('= 96');
+      });
+
+      it('soft-fails the floor to 100 when the rag_ef_search read errors', async () => {
+        // Same direction as the fetch width: a failed admin_settings read must
+        // degrade the tuning, never the search.
+        mocks.mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('rag_ef_search')) throw new Error('connection reset');
+          if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 1, total: 1 }] };
+          return { rows: [] };
+        });
+        const results = await hybridSearch('user-1', 'test query');
+        expect(results).toEqual([]);
+        expect(efSearchStatement()).toContain('= 100');
+      });
+
+      it('resolves the floor BEFORE it checks a vector-pool client out (#1285 r1)', async () => {
+        // Review r2 — r1's fix was unguarded: moving `await efSearchFor(…)`
+        // back below `getVectorPool().connect()` left this whole suite green,
+        // because the position-indexed mocks only ever look at statements
+        // INSIDE the transaction and cannot see an admin_settings SELECT
+        // issued on the main pool while a client is held.
+        //
+        // What that regression costs is invisible in a result: on a cache
+        // miss the read is a nested acquire, so under saturation the probe
+        // waits out `connectionTimeoutMillis`, soft-fails to the default
+        // floor, caches THAT for a TTL and holds its own scarce vector-pool
+        // client for the whole stall. Only the ORDER shows it, so assert the
+        // order. (#1260 adds a fifth probe against this callsite.)
+        routeQueries([], [{ setting_value: '400' }]);
+        await hybridSearch('user-1', 'test query');
+
+        const efReadIndex = mocks.mockQuery.mock.calls.findIndex(
+          (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('rag_ef_search'),
+        );
+        expect(efReadIndex, 'the floor read must have happened').toBeGreaterThanOrEqual(0);
+        expect(mocks.mockPool.connect.mock.invocationCallOrder.length).toBeGreaterThan(0);
+        expect(
+          mocks.mockQuery.mock.invocationCallOrder[efReadIndex],
+          'rag_ef_search must be read before the vector pool hands out a client',
+        ).toBeLessThan(mocks.mockPool.connect.mock.invocationCallOrder[0]);
+        // …and the value still reaches the transaction, so this is an
+        // ordering guard on a working probe rather than on a skipped one.
+        expect(efSearchStatement()).toContain('= 400');
       });
 
       it('builds the keyword SQL with the real FTS language, not a wiped mock', async () => {
@@ -1140,6 +1162,7 @@ describe('RAG Service', () => {
     beforeEach(() => {
       vi.resetAllMocks();
       invalidateRagFetchWidthCache();
+      invalidateRagEfSearchCache();
       invalidateRagRerankCandidatesCache();
       mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
       mocks.mockClient.release.mockResolvedValue(undefined);
@@ -1322,6 +1345,69 @@ describe('RAG Service', () => {
       await hybridSearch('user-1', 'question', 3, undefined, { rerank: true });
       expect(mocks.mockRerank).not.toHaveBeenCalled();
       expect(analyticsParams()[4]).toBe('keyword_fallback');
+    });
+
+    /**
+     * #1284 — the refuse gate's verdict is recorded per row, so the Retrieval
+     * panel can show the distribution an operator is asked to tune against.
+     * Params $9/$10/$11 are `confidence`, `confidence_basis`, `surface`.
+     */
+    describe('recorded confidence (#1284)', () => {
+      it('records the similarity verdict and the caller\'s surface', async () => {
+        const results = await hybridSearch('user-1', 'question', 3, undefined, { surface: 'ask' });
+        // The recorded number must BE the verdict on the returned set — the
+        // same call the route's gate makes, not a re-derivation.
+        const expected = computeRetrievalConfidence(results, null);
+        expect(expected.basis).toBe('similarity');
+        expect(analyticsParams()[8]).toBe(expected.score);
+        expect(analyticsParams()[9]).toBe('similarity');
+        expect(analyticsParams()[10]).toBe('ask');
+      });
+
+      it('records the rerank basis when the stage scored every returned row', async () => {
+        mocks.mockResolveRerank.mockResolvedValue(RERANK_CFG);
+        mocks.mockRerank.mockResolvedValue([
+          { index: 2, relevanceScore: 0.92 },
+          { index: 1, relevanceScore: 0.4 },
+          { index: 0, relevanceScore: 0.1 },
+        ]);
+        const results = await hybridSearch('user-1', 'question', 3, undefined, {
+          rerank: true,
+          surface: 'ask',
+        });
+        expect(computeRetrievalConfidence(results, null)).toEqual({ score: 0.92, basis: 'rerank' });
+        expect(analyticsParams()[8]).toBe(0.92);
+        expect(analyticsParams()[9]).toBe('rerank');
+      });
+
+      it('records basis none with a NULL score for a keyword-led set — never a 0', async () => {
+        // An unmeasurable set has no number, and writing 0 would drag every
+        // percentile the panel shows toward the floor.
+        mocks.mockGenerateEmbedding.mockRejectedValue(new Error('embedder down'));
+        mocks.mockQuery.mockImplementation(async (sql: string) => {
+          if (sql.includes('ts_rank')) {
+            return {
+              rows: [{
+                page_id: 7, confluence_id: 'p7', title: 'KW', space_key: 'DEV',
+                body_text: 'keyword only row', rank: 0.5,
+              }],
+            };
+          }
+          if (sql.includes('COUNT(*)')) return { rows: [{ embedded: 3, total: 3 }] };
+          return { rows: [] };
+        });
+        await hybridSearch('user-1', 'question', 3, undefined, { surface: 'ask' });
+        expect(analyticsParams()[6]).toBe('embedding_failed');
+        expect(analyticsParams()[8]).toBeNull();
+        expect(analyticsParams()[9]).toBe('none');
+      });
+
+      it('leaves the surface NULL when no caller declared one', async () => {
+        // NULL means "unknown", which is what every historical row is. The
+        // readout filters on 'ask' and must never adopt an unlabelled row.
+        await hybridSearch('user-1', 'question', 3);
+        expect(analyticsParams()[10]).toBeNull();
+      });
     });
   });
 
@@ -1901,7 +1987,8 @@ describe('RAG Service', () => {
           const out = await vectorSearch('user-1', new Array(1024).fill(0.1), 3);
 
           const setLocal = mocks.mockClientQuery.mock.calls[1]![0] as string;
-          // rawLimit = 4x3 = 12; ef = max(100, 2x12) = 100 (RAG_EF_SEARCH floor).
+          // rawLimit = 4x3 = 12; ef = max(100, 2x12) = 100 (the `rag_ef_search`
+          // floor, absent here so the reader's default stands).
           expect(setLocal).toContain('= 100');
           const selectParams = mocks.mockClientQuery.mock.calls[2]![1] as unknown[];
           expect(selectParams[2]).toBe(12);
@@ -2244,6 +2331,7 @@ describe('sibling-chunk context assembly stage (#1106 PR 2)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     invalidateRagFetchWidthCache();
+    invalidateRagEfSearchCache();
     invalidateRagRerankCandidatesCache();
     invalidateRagContextCharsCache();
     mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
@@ -2396,6 +2484,7 @@ describe('MMR diversity narrow (#1109)', () => {
     vi.resetAllMocks();
     invalidateRagMmrCache();
     invalidateRagFetchWidthCache();
+    invalidateRagEfSearchCache();
     invalidateRagRerankCandidatesCache();
     invalidateRagContextCharsCache();
     mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);
@@ -2516,6 +2605,7 @@ describe('quality/recency ranking prior (#1111)', () => {
     vi.resetAllMocks();
     invalidateRagRankingPriorCache();
     invalidateRagFetchWidthCache();
+    invalidateRagEfSearchCache();
     invalidateRagRerankCandidatesCache();
     invalidateRagContextCharsCache();
     invalidateRagMmrCache();
@@ -2646,6 +2736,7 @@ describe('exact-identifier pin stage (#1107)', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     invalidateRagFetchWidthCache();
+    invalidateRagEfSearchCache();
     invalidateRagRerankCandidatesCache();
     invalidateRagContextCharsCache();
     mocks.mockPool.connect.mockResolvedValue(mocks.mockClient);

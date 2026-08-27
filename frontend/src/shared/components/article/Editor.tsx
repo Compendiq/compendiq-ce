@@ -71,6 +71,20 @@ import {
   syncTableLayoutAttributes,
 } from './table-cell-selection';
 import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
+import { InlineCompletionExtension } from './InlineCompletionExtension';
+import { SpellcheckExtension } from './SpellcheckExtension';
+import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
+import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
+import {
+  getClientInferenceManager,
+  requestInlineCompletionWithClient,
+} from '../../lib/client-inference/client-inference-manager';
+import { isMac } from '../../lib/platform';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+import type { Doc as YDoc } from 'yjs';
+import type { WebsocketProvider } from 'y-websocket';
+import { renderCollabCaret, selectionRenderCollab } from '../../lib/collab-colors';
 
 export function EditorContextToolbars({
   editor,
@@ -332,6 +346,31 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
+  /** #1417: resolved availability, personal controls, and page prompt metadata. */
+  inlineCompletion?: {
+    available: boolean;
+    enabled: boolean;
+    delay: InlineCompletionDelay;
+    mode: InlineCompletionMode;
+    codeOnly: boolean;
+    clientInferenceEnabled?: boolean;
+    clientInferenceWithoutServer?: boolean;
+    clientInferenceAdminEnabled?: boolean;
+    title?: string;
+    spaceKey?: string;
+    language?: string;
+  };
+  spellcheck?: {
+    enabled: boolean;
+    languages: SpellLang[];
+  };
+  /**
+   * Live Y.Doc for collaborative editing (#1447). When set, StarterKit history
+   * is off, Collaboration owns the document, and `content` is ignored.
+   */
+  ydoc?: YDoc;
+  collabProvider?: WebsocketProvider | null;
+  caretUser?: { name: string; color: string };
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
@@ -635,7 +674,50 @@ function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave }: EditorProps) {
+const INLINE_COMPLETION_DELAYS: Record<InlineCompletionDelay, number | null> = {
+  fast: 300,
+  balanced: 500,
+  deliberate: 800,
+  manual: null,
+};
+
+function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
+  const mac = isMac();
+  const wordKeys = mac ? 'Option + ]' : 'Ctrl + ]';
+  const ariaLabel = mode === 'word'
+    ? 'AI word completion available. Press Tab to accept or Escape to dismiss.'
+    : `AI inline suggestion available. Press Tab to accept, ${wordKeys} to accept one word, or Escape to dismiss.`;
+
+  const action = (keys: string, label: string) => (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[11px] font-semibold leading-none text-foreground">
+        {keys}
+      </kbd>
+      <span>{label}</span>
+    </span>
+  );
+
+  return (
+    <div
+      role="status"
+      aria-label={ariaLabel}
+      data-testid="inline-completion-hint"
+      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+    >
+      {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
+      {mode === 'full' && (
+        <>
+          <span className="h-3 w-px bg-border" aria-hidden="true" />
+          {action(wordKeys, 'Word')}
+        </>
+      )}
+      <span className="h-3 w-px bg-border" aria-hidden="true" />
+      {action('Esc', 'Dismiss')}
+    </div>
+  );
+}
+
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
   const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
@@ -650,6 +732,30 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Keep onSave in a ref so the VimExtension closure always sees the latest callback
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // Extension options are created with the TipTap instance. Read live props
+  // through a ref so settings/assignment queries can settle without remounting
+  // the editor and losing the current selection or unsaved document.
+  const inlineCompletionRef = useRef(inlineCompletion);
+  inlineCompletionRef.current = inlineCompletion;
+  const spellcheckRef = useRef(spellcheck);
+  spellcheckRef.current = spellcheck;
+  const [hunspellReady, setHunspellReady] = useState(false);
+  const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
+
+  useEffect(() => {
+    if (!spellcheck?.enabled) setHunspellReady(false);
+  }, [spellcheck?.enabled]);
+
+  useEffect(() => {
+    const mgr = getClientInferenceManager();
+    const adminEnabled = !!inlineCompletion?.clientInferenceAdminEnabled;
+    const userEnabled = !!inlineCompletion?.clientInferenceEnabled;
+    mgr.setFlags({ adminEnabled, userEnabled });
+    if (adminEnabled && userEnabled) void mgr.ensureProbed();
+  }, [
+    inlineCompletion?.clientInferenceAdminEnabled,
+    inlineCompletion?.clientInferenceEnabled,
+  ]);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -736,10 +842,12 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     return true;
   }, []);
 
+  const collab = Boolean(ydoc);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        ...(collab ? { undoRedo: false } : {}),
       }),
       TextAlign.configure({
         types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
@@ -795,6 +903,52 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       SearchAndReplaceExtension,
       BlockShortcutsExtension,
       SlashCommandExtension,
+      InlineCompletionExtension.configure({
+        enabled: () => {
+          const config = inlineCompletionRef.current;
+          if (!editable || !config?.enabled) return false;
+          return getClientInferenceManager().decideGhostAvailability(
+            !!config.available,
+            config.clientInferenceWithoutServer ?? true,
+          );
+        },
+        requestCompletion: (input, signal) => {
+          const config = inlineCompletionRef.current;
+          return requestInlineCompletionWithClient({
+            input,
+            signal,
+            assigned: !!config?.available,
+            withoutServer: config?.clientInferenceWithoutServer ?? true,
+            wordMode: (config?.mode ?? 'full') === 'word',
+            serverRequest: (body, sig) => apiFetch('/llm/inline-completion', {
+              method: 'POST',
+              body: JSON.stringify(body),
+              signal: sig,
+            }),
+          });
+        },
+        delayMs: () => {
+          const config = inlineCompletionRef.current;
+          return config ? INLINE_COMPLETION_DELAYS[config.delay] : null;
+        },
+        mode: () => inlineCompletionRef.current?.mode ?? 'full',
+        codeOnly: () => inlineCompletionRef.current?.codeOnly ?? false,
+        pageId: pageId && /^\d+$/.test(pageId) ? Number(pageId) : undefined,
+        getMetadata: () => ({
+          pageId: pageIdRef.current && /^\d+$/.test(pageIdRef.current)
+            ? Number(pageIdRef.current)
+            : undefined,
+          title: inlineCompletionRef.current?.title,
+          spaceKey: inlineCompletionRef.current?.spaceKey,
+          language: inlineCompletionRef.current?.language,
+        }),
+        onSuggestionStateChange: setInlineSuggestionActive,
+      }),
+      SpellcheckExtension.configure({
+        enabled: () => editable && !!spellcheckRef.current?.enabled,
+        languages: () => spellcheckRef.current?.languages ?? ['en_US', 'de_DE'],
+        onStatus: (status) => setHunspellReady(status === 'ready'),
+      }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -805,6 +959,21 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           onSaveRef.current?.();
         },
       })] : []),
+      ...(ydoc
+        ? [
+            Collaboration.configure({ document: ydoc, field: 'default' }),
+            ...(collabProvider
+              ? [
+                  CollaborationCaret.configure({
+                    provider: collabProvider,
+                    user: caretUser ?? { name: 'Anonymous', color: '#5C6B8A' },
+                    render: renderCollabCaret,
+                    selectionRender: selectionRenderCollab,
+                  }),
+                ]
+              : []),
+          ]
+        : []),
     ],
     editorProps: {
       handleDOMEvents: {
@@ -879,7 +1048,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         return handleImageFiles(files);
       },
     },
-    content,
+    content: ydoc ? undefined : content,
     editable,
     immediatelyRender: false,
     onUpdate: () => {
@@ -890,7 +1059,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       onChange?.(true);
       saveDraft();
     },
-  }, [vimEnabled]);
+  }, [vimEnabled, ydoc, collabProvider]);
 
   // Keep the editor ref in sync
   editorRef.current = editor;
@@ -904,8 +1073,27 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     return () => onEditorReady?.(null);
   }, [editor, onEditorReady]);
 
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dom.setAttribute(
+      'spellcheck',
+      spellcheck?.enabled && hunspellReady ? 'false' : 'true',
+    );
+  }, [editor, spellcheck?.enabled, hunspellReady]);
+
   return (
-    <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
+    <div
+      className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}
+      data-collab={collab ? 'on' : 'off'}
+    >
+      {collab && !editable && (
+        <p
+          className="px-3 py-2 text-xs leading-5 text-muted-foreground"
+          data-testid="collab-readonly-banner"
+        >
+          You&apos;re following this session as read-only.
+        </p>
+      )}
       {editable && editor && !hideToolbar && (
         <div className="sticky top-0 z-30 border-b border-border bg-card px-1 relative">
           <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
@@ -936,6 +1124,16 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />
+      {inlineSuggestionActive && (
+        <div
+          className={cn(
+            'absolute right-2 z-10',
+            vimEnabled ? 'bottom-9' : 'bottom-2',
+          )}
+        >
+          <InlineCompletionHint mode={inlineCompletion?.mode ?? 'full'} />
+        </div>
+      )}
       {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}
     </div>
   );

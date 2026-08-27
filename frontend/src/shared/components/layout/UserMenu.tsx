@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { BarChart3, Keyboard, LogOut, Settings, User } from 'lucide-react';
+import { BarChart3, Compass, Keyboard, LogOut, Settings, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../../stores/auth-store';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
+import { useOnboardingActions } from '../../hooks/use-onboarding';
 import { logoutApi } from '../../lib/api';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { ShortcutHint } from '../ShortcutHint';
@@ -12,6 +13,7 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
   const openShortcuts = useKeyboardShortcutsStore((s) => s.open);
+  const { reopen: reopenOnboarding } = useOnboardingActions();
   const [signOutOpen, setSignOutOpen] = useState(false);
 
   return (
@@ -74,6 +76,20 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
               <Keyboard size={14} />
               Keyboard Shortcuts
               <ShortcutHint shortcutId="shortcuts-help" className="ml-auto" />
+            </DropdownMenu.Item>
+            {/* #1402: the way back to a dismissed Getting Started checklist.
+                It lives on the Pages overview, so this both un-dismisses it
+                and goes there — landing on `/` with nothing new on screen
+                would read as a dead menu item. */}
+            <DropdownMenu.Item
+              onSelect={() => {
+                reopenOnboarding();
+                navigate('/');
+              }}
+              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+            >
+              <Compass size={14} />
+              Getting Started Guide
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
             <DropdownMenu.Item

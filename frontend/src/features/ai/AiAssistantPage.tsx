@@ -1,9 +1,7 @@
 import { memo } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, Brain, AlertTriangle,
-  Network, FileText, X,
+  Bot, User, Brain, AlertTriangle, RefreshCw, SquarePen,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -26,6 +24,7 @@ import {
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { AssistantAttachmentsScope } from './AssistantAttachments';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -215,17 +214,28 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
 export function AiAssistantPage() {
   const ctx = useAiContext();
   const {
-    mode, page, pageHasChildren,
+    mode, page,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent,
-    model, models, setModel, modelsError, refetchModels, isLight,
-    includeSubPages, setIncludeSubPages,
+    streamingContent, streamingThreadId, activeThreadId,
+    isLight,
     thinkingMode, setThinkingMode,
     embeddingStatus,
+    startNewConversation, threadLoadState, threadLoadError, retryThreadLoad,
   } = ctx;
 
+  // #1361: `isStreaming` / `isThinking` / `streamingContent` are one
+  // provider-wide value each, and this renderer decides "the last bubble is the
+  // in-flight answer" from `isStreaming && isLast`. A question asked on another
+  // thread — the dock on an article, or a conversation left running — would
+  // therefore repaint THIS thread's last answer with that thread's partial
+  // text. `streamingThreadId` is the identity of the thread that asked.
+  //
+  // Only the message bubbles are gated. The announcer, the composer's disabled
+  // state and the Stop control stay provider-wide: a stream really is running.
+  const streamingHere = isStreaming && streamingThreadId === activeThreadId;
+  const thinkingHere = isThinking && streamingThreadId === activeThreadId;
+
   const shouldReduceMotion = useReducedMotion();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   return (
     <m.div
@@ -250,6 +260,45 @@ export function AiAssistantPage() {
       // nothing. Guarded by name in `src/ai-scroll-chain.test.ts`.
       className="flex min-h-0 flex-1 flex-col gap-3"
     >
+      {/* The route's heading, and the home of New chat (#1361, amendment item 2
+          — owner decision 12, re-decided 2026-08-22 after #1377/#1378 deleted
+          the header slot the 08-18 amendment had named). `HeaderHost` renders
+          in the document now: there is no #app-header-slot producer left, no
+          AppHeaderMain to suppress a fallback title, and no data-header-kpis to
+          avoid. It still renders at every width and still survives a collapsed
+          conversations rail, and it stays on screen as the log grows because
+          the MESSAGE PANE owns the scroller (#1218), not this column.
+
+          The Library heading row is the recipe (PagesPage.tsx:1037-1058).
+          HeaderHost renders a plain <div className={fallbackClassName}>, so the
+          row supplies its own layout — justify-between, and no ml-auto, because
+          there is no flex-1 slot to sit at the far end of any more.
+
+          FIRST CHILD INSIDE the root <m.div>, never a fragment sibling above
+          it, and the root's className must stay a STATIC string literal:
+          `ai-scroll-chain.test.ts:110-126` finds this page's root with
+          /return \(\s*<m\.div([\s\S]*?)>/ and then requires className="…" on
+          it, throwing on either failure — which takes two of its cases down and
+          leaves `scroll-padding-mask.test.ts` describing a strategy nothing
+          enforces. */}
+      <HeaderHost fallbackClassName="mb-1">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
+          <button
+            type="button"
+            onClick={() => startNewConversation()}
+            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
+            aria-label="New chat"
+            data-testid="ai-new-chat"
+          >
+            <SquarePen size={15} />
+            {/* The label yields the row's width below `sm`; the aria-label
+                above is what keeps the accessible name when it does. */}
+            <span className="hidden sm:inline">New chat</span>
+          </button>
+        </div>
+      </HeaderHost>
+
       {/* Sticky sub-header: mode selector | context + options.
           Sits at top-0 of the column so it stays visible as messages grow.
 
@@ -295,94 +344,14 @@ export function AiAssistantPage() {
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
-        <div className="flex-1" />
-
-        {/* Group B — context + options. Each chip is 28 px tall (h-7),
-            border-border at rest, tinted on active. The divider between
-            the model dropdown and the toggles separates "infrastructure" the
-            user sets once from "context flags" they flip per question. */}
+        {/* Durable options, and only those (#1361). The model `<select>` went
+            with page scope: the model is an admin assignment (ADR-021), not a
+            per-question choice, and `modelsError` / `refetchModels` stay on the
+            context for the dock's own retry chip. The `flex-1` spacer and the
+            divider went with the controls they separated — Think sits left
+            rather than being pushed right by a spacer with nothing on its
+            left. */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {modelsError ? (
-            // Models fetch failed (LLM provider down / unreachable): surface
-            // the failure with a retry affordance instead of spinning forever.
-            <button
-              type="button"
-              onClick={() => refetchModels()}
-              title="Failed to load models from the LLM provider — click to retry"
-              className="flex h-7 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            >
-              <AlertTriangle size={12} /> Models unavailable — retry
-            </button>
-          ) : models.length === 0 ? (
-            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-muted-foreground">
-              <Loader2 size={12} className="animate-spin" /> Loading models...
-            </span>
-          ) : (
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              aria-label="LLM model"
-              title="LLM model"
-              className="nm-select"
-            >
-              {models
-                .filter((m) => !m.name.includes('embed'))
-                .map((m) => (
-                  <option key={m.name} value={m.name}>{m.name}</option>
-                ))}
-            </select>
-          )}
-
-          {/* Context chip (#1126). The original was a static <span> naming a
-              page you could not click, clear, or change — the literal "context
-              is invisible and unswitchable" defect. Deleting it outright was
-              wrong: SidebarTreeView still navigates `/ai?pageId=…` and Ask
-              still sends that id, so answers stayed scoped to a page the UI no
-              longer mentioned. It is back as a real control — it names the
-              scope and clears it. */}
-          {page && (
-            <button
-              type="button"
-              onClick={() => {
-                const next = new URLSearchParams(searchParams);
-                next.delete('pageId');
-                setSearchParams(next, { replace: true });
-              }}
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border-interactive bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              title={`Answers are scoped to "${page.title}" — click to clear`}
-              data-testid="ai-context-chip"
-            >
-              <FileText size={12} aria-hidden />
-              <span className="max-w-[180px] truncate">{page.title}</span>
-              <X size={12} aria-hidden />
-            </button>
-          )}
-
-          {page && pageHasChildren && (
-            <label
-              className={cn(
-                'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
-                includeSubPages
-                  ? 'border-primary/45 bg-primary/12 text-primary-ink'
-                  : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-              title="Include sub-pages in the AI context"
-            >
-              <input
-                type="checkbox"
-                checked={includeSubPages}
-                onChange={(e) => setIncludeSubPages(e.target.checked)}
-                className="sr-only"
-                aria-label="Include sub-pages"
-              />
-              <Network size={12} />
-              <span>+ Sub-pages</span>
-            </label>
-          )}
-
-          {/* Divider between "what model + what context" and "what options". */}
-          <span aria-hidden className="mx-0.5 h-5 w-px bg-border/50" />
-
           {/* Thinking mode toggle (#20). Always render the resting surface so
               the affordance reads as a toggle rather than collapsing into a
               label-with-icon when off. */}
@@ -494,7 +463,44 @@ export function AiAssistantPage() {
               </span>
             </div>
           )}
-          {messages.length === 0 && (
+          {/* #1361: a `conv:` thread is fetched, so this pane has two states
+              the draft never had. Neither may fall through to the empty state
+              below — "Ask questions about your knowledge base" over a
+              conversation that is still loading, or that failed to load, says
+              the conversation is empty. */}
+          {threadLoadState === 'loading' && (
+            <div
+              role="status"
+              data-testid="ai-thread-loading"
+              className="flex min-h-[300px] items-center justify-center text-sm text-muted-foreground"
+            >
+              Loading conversation…
+            </div>
+          )}
+          {threadLoadState === 'error' && (
+            // The tree's destructive block, verbatim in intent (ADR-010: red is
+            // failure, amber is degraded — this request FAILED). `threadLoadError`
+            // is ApiError's curated prose, which is the only place the reader
+            // learns why.
+            <div className="flex flex-col items-center px-3 py-8 text-center" role="alert" data-testid="ai-thread-error">
+              <div className="mb-3 rounded-full bg-muted p-2.5">
+                <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+              </div>
+              <p className="text-xs font-medium text-foreground/70">Couldn&rsquo;t load conversation</p>
+              <p className="mt-1 break-words line-clamp-3 text-[11px] text-muted-foreground">
+                {threadLoadError ?? 'The request did not complete.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => retryThreadLoad()}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground"
+              >
+                <RefreshCw size={12} aria-hidden="true" />
+                Retry
+              </button>
+            </div>
+          )}
+          {threadLoadState === 'ready' && messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
               {/* Robot wrapped in a violet aura so the empty state reads as
                   "ready to help", not "page failed to load" (a complaint in
@@ -522,15 +528,17 @@ export function AiAssistantPage() {
               msg={msg}
               index={i}
               isLast={i === messages.length - 1}
-              isStreaming={isStreaming}
-              isThinking={isThinking}
+              isStreaming={streamingHere}
+              isThinking={thinkingHere}
               thinkingElapsed={thinkingElapsed}
               isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
               // #747: only the last bubble receives the batched in-flight
               // content; earlier (committed) bubbles keep a stable prop so
               // the memo comparator skips re-rendering them per flush.
-              streamingContent={i === messages.length - 1 ? streamingContent : undefined}
+              streamingContent={
+                streamingHere && i === messages.length - 1 ? streamingContent : undefined
+              }
             />
           ))}
           <div ref={messagesEndRef} />

@@ -34,6 +34,10 @@ describe('typography preference wiring', () => {
     expect(indexHtml).toContain('data-font="inter"');
     expect(indexHtml).toContain("localStorage.getItem('compendiq-theme')");
     expect(indexHtml).toContain("'data-dyslexia-spacing'");
-    expect(csp).toContain("script-src 'self' 'sha256-");
+    // script-src may insert other tokens (e.g. 'wasm-unsafe-eval' for ONNX
+    // Runtime Web) between 'self' and the inline FOUC-prevention hash. Pin
+    // both grants, not adjacency — nginx-security-headers.test.ts owns the
+    // wasm token.
+    expect(csp).toMatch(/script-src 'self'(?: '[^']+')* 'sha256-/);
   });
 });

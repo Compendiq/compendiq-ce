@@ -391,10 +391,23 @@ const WORKER_RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] the
  * ownership so a stale holder cannot delete a lock re-acquired by another pod.
  * Falls back to a generated token when Redis is not available (single-node
  * fallback — callers still proceed on truthiness).
+ *
+ * **`failClosed` inverts that fallback for the Redis ERROR path only** (#1349
+ * review). A configured-but-erroring Redis is not a single-node deployment: a
+ * blip during two concurrent triggers hands BOTH of them a token, and for an
+ * idempotent worker (quality, summary, the image index) that is a wasted pass,
+ * while for a DESTRUCTIVE one it is two concurrent delete loops over the same
+ * tree with no mutual exclusion left anywhere — the refresh guard cannot
+ * notice either, because its own `refreshWorkerLock` keeps erroring too. So a
+ * destructive caller passes `failClosed: true` and gets `null`: "press again"
+ * is strictly safer than unlocked execution. The NO-CLIENT branch is
+ * unaffected in both modes — a deployment with no Redis at all must still be
+ * able to run its workers.
  */
 export async function acquireWorkerLock(
   name: string,
   ttlSeconds = 300,
+  opts: { failClosed?: boolean } = {},
 ): Promise<string | null> {
   const token = randomUUID();
   if (!_redisClient) return token; // single-node fallback
@@ -405,8 +418,8 @@ export async function acquireWorkerLock(
     });
     return result !== null ? token : null;
   } catch (err) {
-    logger.error({ err, name }, 'Failed to acquire worker lock');
-    return token; // degrade to local execution
+    logger.error({ err, name, failClosed: opts.failClosed === true }, 'Failed to acquire worker lock');
+    return opts.failClosed === true ? null : token; // degrade to local execution
   }
 }
 

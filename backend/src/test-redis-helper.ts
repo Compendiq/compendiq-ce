@@ -20,9 +20,9 @@ let _redisAvailable: boolean | null = null;
  * settles within ~1s on dead targets.
  *
  * The no-argument form probes `REDIS_URL` (default `redis://localhost:6379`)
- * and caches the result for the lifetime of the process — vitest runs test
- * files sequentially in one process (`fileParallelism: false`), so one probe
- * serves every suite. Passing an explicit `url` always probes fresh.
+ * and caches the result for the lifetime of the worker process. Each Vitest
+ * worker has its own module graph, so one probe still serves every file on
+ * that worker. Passing an explicit `url` always probes fresh.
  */
 export async function isRedisAvailable(url?: string): Promise<boolean> {
   if (url === undefined && _redisAvailable !== null) return _redisAvailable;

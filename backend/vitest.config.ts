@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { MAX_TEST_WORKERS } from './src/test-worker-isolation.js';
 
 export default defineConfig({
   test: {
@@ -7,11 +8,12 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     setupFiles: ['src/test-setup.ts'],
     testTimeout: 30_000,
-    // Run test files sequentially to avoid DB conflicts
-    // (multiple test files share the same PostgreSQL database).
-    // Per-worker DBs live in test-worker-isolation.ts; do not flip this
-    // on until src/domains finishes under fileParallelism without hanging.
-    fileParallelism: false,
+    // Per-worker Postgres (kb_creator_test_wN) + Redis logical DB (/N) +
+    // prefixed pub/sub channels. Redis pub/sub is not scoped to logical DBs,
+    // which is why the prefix exists. Cap workers at MAX_TEST_WORKERS so a
+    // 16-core laptop cannot walk off Redis's 16-DB budget.
+    fileParallelism: true,
+    maxWorkers: MAX_TEST_WORKERS,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary', 'lcov', 'json-summary'],

@@ -188,3 +188,74 @@ export function composite(fg: string, alpha: number, bg: string): string {
   };
   return `#${channel(1)}${channel(3)}${channel(5)}`;
 }
+
+/**
+ * A drivable `IntersectionObserver` for jsdom.
+ *
+ * `test-setup.ts` installs a global stub whose constructor DROPS the callback,
+ * so nothing can ever intersect — which is right for the outline's scroll-spy
+ * (it must not fire) and useless for anything that only does work once it is on
+ * screen. This one keeps every callback and every observed target, and
+ * `intersectAll()` reports them all as intersecting.
+ *
+ * `vitest.config.ts` sets `unstubGlobals: true`, so the stub is removed after
+ * each test without the caller restoring anything.
+ */
+export function installIntersectionObserverStub(): {
+  intersectAll: () => void;
+  observedCount: () => number;
+} {
+  const instances: Array<{
+    callback: IntersectionObserverCallback;
+    observer: IntersectionObserver;
+    targets: Element[];
+  }> = [];
+
+  class DrivableIntersectionObserver {
+    readonly root: Element | null = null;
+    readonly rootMargin: string = '';
+    readonly thresholds: ReadonlyArray<number> = [];
+    private readonly targets: Element[] = [];
+
+    constructor(callback: IntersectionObserverCallback) {
+      instances.push({
+        callback,
+        observer: this as unknown as IntersectionObserver,
+        targets: this.targets,
+      });
+    }
+
+    observe(target: Element) {
+      this.targets.push(target);
+    }
+
+    unobserve(target: Element) {
+      const at = this.targets.indexOf(target);
+      if (at >= 0) this.targets.splice(at, 1);
+    }
+
+    disconnect() {
+      this.targets.length = 0;
+    }
+
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+
+  vi.stubGlobal('IntersectionObserver', DrivableIntersectionObserver);
+
+  return {
+    observedCount: () => instances.reduce((n, i) => n + i.targets.length, 0),
+    intersectAll: () => {
+      for (const instance of instances) {
+        const targets = [...instance.targets];
+        if (targets.length === 0) continue;
+        instance.callback(
+          targets.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
+          instance.observer,
+        );
+      }
+    },
+  };
+}

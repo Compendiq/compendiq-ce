@@ -1,6 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { request as undiciRequest } from 'undici';
-import { UpdateSettingsSchema, TestConfluenceSchema } from '@compendiq/contracts';
+import {
+  UpdateSettingsSchema,
+  TestConfluenceSchema,
+  OnboardingStateSchema,
+} from '@compendiq/contracts';
+import type { ClientSpellcheckLanguage } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { encryptPat, decryptPat } from '../../core/utils/crypto.js';
@@ -12,6 +17,39 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
+
+function isTruthyAdminFlag(raw: string | undefined | null): boolean {
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'on';
+}
+
+const CLIENT_SPELLCHECK_DEFAULT: ClientSpellcheckLanguage[] = ['en_US', 'de_DE'];
+
+async function readClientInferenceAdminEnabled(): Promise<boolean> {
+  const result = await query<{ setting_value: string }>(
+    `SELECT setting_value FROM admin_settings WHERE setting_key = 'client_inference_enabled'`,
+  );
+  return isTruthyAdminFlag(result.rows[0]?.setting_value);
+}
+
+// #1402 (review, external round): shared by GET and PUT's row-ensure INSERTs.
+// auth.ts caches liveness for USER_SECURITY_CACHE_TTL_MS (30s; #737), so a
+// request for a user hard-deleted moments earlier can still reach either
+// handler here. Swallow only the FK-violation error code (the user is gone,
+// so the row-ensure legitimately cannot proceed); any other error (a real DB
+// outage, a different constraint) still throws.
+async function ensureUserSettingsRow(userId: string): Promise<void> {
+  try {
+    await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId]);
+  } catch (err) {
+    if ((err as { code?: string }).code !== '23503') throw err;
+    logger.warn(
+      { userId },
+      'user_settings row-ensure hit a foreign-key violation (user likely deleted mid-request); treating as a no-op',
+    );
+  }
+}
 
 export async function settingsRoutes(fastify: FastifyInstance) {
   // All settings routes require auth
@@ -27,10 +65,28 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       show_space_home_content: boolean;
       custom_prompts: Record<string, string>;
       confluence_pat_prompt_dismissed_at: Date | null;
+      inline_completion_enabled: boolean;
+      inline_completion_delay: 'fast' | 'balanced' | 'deliberate' | 'manual';
+      inline_completion_mode: 'word' | 'full';
+      inline_completion_code_only: boolean;
+      client_inference_enabled: boolean;
+      client_inference_without_server: boolean;
+      client_spellcheck_enabled: boolean;
+      client_spellcheck_languages: ClientSpellcheckLanguage[] | null;
+      onboarding_state: Record<string, unknown> | null;
     }>(
-      'SELECT confluence_url, confluence_pat, theme, sync_interval_min, show_space_home_content, custom_prompts, confluence_pat_prompt_dismissed_at FROM user_settings WHERE user_id = $1',
+      `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
+              show_space_home_content, custom_prompts,
+              confluence_pat_prompt_dismissed_at,
+              inline_completion_enabled, inline_completion_delay,
+              inline_completion_mode, inline_completion_code_only,
+              client_inference_enabled, client_inference_without_server,
+              client_spellcheck_enabled, client_spellcheck_languages,
+              onboarding_state
+         FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
+    const clientInferenceAdminEnabled = await readClientInferenceAdminEnabled();
     // #721: Use explicit editor assignments rather than getUserAccessibleSpaces
     // so that admins see only the spaces they've chosen to sync — not every
     // space in the DB (which getUserAccessibleSpaces returns for admins).
@@ -39,7 +95,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
 
     if (result.rows.length === 0) {
       // Create default settings if missing
-      await query('INSERT INTO user_settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [request.userId]);
+      await ensureUserSettingsRow(request.userId);
       return {
         confluenceUrl: null,
         hasConfluencePat: false,
@@ -50,6 +106,18 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         showSpaceHomeContent: true,
         customPrompts: {},
         confluencePatPromptDismissed: false,
+        inlineCompletionEnabled: true,
+        inlineCompletionDelay: 'balanced',
+        inlineCompletionMode: 'full',
+        inlineCompletionCodeOnly: false,
+        clientInferenceEnabled: false,
+        clientInferenceWithoutServer: true,
+        clientInferenceAdminEnabled,
+        clientSpellcheckEnabled: false,
+        clientSpellcheckLanguages: CLIENT_SPELLCHECK_DEFAULT,
+        // #1402: same empty-object-in, fully-defaulted-out pattern as below —
+        // a brand new row has never had any onboarding activity recorded.
+        onboardingState: OnboardingStateSchema.parse({}),
       };
     }
 
@@ -65,6 +133,34 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       customPrompts: row.custom_prompts ?? {},
       // #771: boolean only — the dismissal timestamp stays server-side.
       confluencePatPromptDismissed: !!row.confluence_pat_prompt_dismissed_at,
+      inlineCompletionEnabled: row.inline_completion_enabled,
+      inlineCompletionDelay: row.inline_completion_delay,
+      inlineCompletionMode: row.inline_completion_mode,
+      inlineCompletionCodeOnly: row.inline_completion_code_only,
+      clientInferenceEnabled: row.client_inference_enabled ?? false,
+      clientInferenceWithoutServer: row.client_inference_without_server ?? true,
+      clientInferenceAdminEnabled,
+      clientSpellcheckEnabled: row.client_spellcheck_enabled ?? false,
+      clientSpellcheckLanguages: row.client_spellcheck_languages?.length
+        ? row.client_spellcheck_languages
+        : CLIENT_SPELLCHECK_DEFAULT,
+      // #1402: always fully defaulted — a row that predates this migration (or
+      // predates a given flag being added) still returns every key. Uses
+      // safeParse (not .parse) so an unreadable stored value — a bad out-of-band
+      // SQL write, or a future phase changing a field's type — degrades this one
+      // field to "nothing recorded yet" instead of 400ing the entire GET
+      // /settings response (review r1, #1402).
+      onboardingState: (() => {
+        const parsed = OnboardingStateSchema.safeParse(row.onboarding_state ?? {});
+        if (!parsed.success) {
+          logger.warn(
+            { userId: request.userId, issues: parsed.error.issues },
+            'Stored onboarding_state failed validation; returning defaults',
+          );
+          return OnboardingStateSchema.parse({});
+        }
+        return parsed.data;
+      })(),
     };
   });
 
@@ -159,6 +255,102 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       values.push(JSON.stringify(body.customPrompts));
     }
 
+    if (body.inlineCompletionEnabled !== undefined) {
+      updates.push(`inline_completion_enabled = $${paramIdx++}`);
+      values.push(body.inlineCompletionEnabled);
+    }
+
+    if (body.inlineCompletionDelay !== undefined) {
+      updates.push(`inline_completion_delay = $${paramIdx++}`);
+      values.push(body.inlineCompletionDelay);
+    }
+
+    if (body.inlineCompletionMode !== undefined) {
+      updates.push(`inline_completion_mode = $${paramIdx++}`);
+      values.push(body.inlineCompletionMode);
+    }
+
+    if (body.inlineCompletionCodeOnly !== undefined) {
+      updates.push(`inline_completion_code_only = $${paramIdx++}`);
+      values.push(body.inlineCompletionCodeOnly);
+    }
+
+    let clientInferenceEnabled = body.clientInferenceEnabled;
+    if (clientInferenceEnabled === true) {
+      const adminOn = await readClientInferenceAdminEnabled();
+      if (!adminOn) {
+        const current = await query<{ client_inference_enabled: boolean }>(
+          `SELECT client_inference_enabled FROM user_settings WHERE user_id = $1`,
+          [request.userId],
+        );
+        if (current.rows[0]?.client_inference_enabled !== true) {
+          throw fastify.httpErrors.unprocessableEntity(
+            'On-device suggestions are disabled by an administrator',
+          );
+        }
+        clientInferenceEnabled = false;
+      }
+    }
+
+    if (
+      body.clientInferenceEnabled !== undefined
+      || body.clientInferenceWithoutServer !== undefined
+      || body.clientSpellcheckEnabled !== undefined
+      || body.clientSpellcheckLanguages !== undefined
+    ) {
+      const current = await query<{
+        client_spellcheck_enabled: boolean;
+        client_spellcheck_languages: ClientSpellcheckLanguage[] | null;
+      }>(
+        `SELECT client_spellcheck_enabled, client_spellcheck_languages
+           FROM user_settings WHERE user_id = $1`,
+        [request.userId],
+      );
+      const currentRow = current.rows[0];
+      const nextSpellOn = body.clientSpellcheckEnabled
+        ?? currentRow?.client_spellcheck_enabled
+        ?? false;
+      const nextLangs = body.clientSpellcheckLanguages
+        ?? currentRow?.client_spellcheck_languages
+        ?? CLIENT_SPELLCHECK_DEFAULT;
+      if (nextSpellOn && nextLangs.length === 0) {
+        throw fastify.httpErrors.unprocessableEntity(
+          'Select at least one spellcheck language while spellcheck is on',
+        );
+      }
+    }
+
+    if (clientInferenceEnabled !== undefined) {
+      updates.push(`client_inference_enabled = $${paramIdx++}`);
+      values.push(clientInferenceEnabled);
+    }
+
+    if (body.clientInferenceWithoutServer !== undefined) {
+      updates.push(`client_inference_without_server = $${paramIdx++}`);
+      values.push(body.clientInferenceWithoutServer);
+    }
+
+    if (body.clientSpellcheckEnabled !== undefined) {
+      updates.push(`client_spellcheck_enabled = $${paramIdx++}`);
+      values.push(body.clientSpellcheckEnabled);
+    }
+
+    if (body.clientSpellcheckLanguages !== undefined) {
+      updates.push(`client_spellcheck_languages = $${paramIdx++}::jsonb`);
+      values.push(JSON.stringify(body.clientSpellcheckLanguages));
+    }
+
+    // #1402: PARTIAL, top-level MERGE — never a bare assignment. A client sends
+    // one key (e.g. { firstAiQueryMade: true }) to flip exactly that flag;
+    // `onboarding_state || $n::jsonb` (Postgres JSONB merge) means sibling keys
+    // set by an earlier PUT survive. Do NOT copy custom_prompts' full-replace
+    // pattern here — that would silently clear every other onboarding flag on
+    // the next unrelated PATCH.
+    if (body.onboardingState !== undefined) {
+      updates.push(`onboarding_state = onboarding_state || $${paramIdx++}::jsonb`);
+      values.push(JSON.stringify(body.onboardingState));
+    }
+
     // #771: dismissal of the Confluence-PAT onboarding banner. The client
     // sends a boolean; the server owns the timestamp (NOW() on dismiss,
     // NULL to clear). Static SQL fragments only — no user input involved.
@@ -233,6 +425,20 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     }
 
     if (updates.length > 0) {
+      // #1402 (review, external round): ensure the row exists before the
+      // UPDATE. Phase 2 fires onboardingState PUTs from background events
+      // (first AI question, shortcuts modal opened, page created/edited)
+      // that can arrive before the user's first GET /settings — the only
+      // place that previously created this row — has ever run. Without this,
+      // the UPDATE below silently affects 0 rows while the route still
+      // returns 200 "Settings updated", and the patch is lost.
+      //
+      // #1402 (review r1): tolerate the FK race instead of 500ing — see
+      // ensureUserSettingsRow's comment. The UPDATE below then affects 0 rows
+      // against a row that still doesn't exist, restoring the original 200
+      // no-op the pre-#1402 route (no row-ensure) returned.
+      await ensureUserSettingsRow(request.userId);
+
       updates.push(`updated_at = NOW()`);
       values.push(request.userId);
 

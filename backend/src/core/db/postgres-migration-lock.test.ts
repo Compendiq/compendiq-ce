@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { isDbAvailable } from '../../test-db-helper.js';
-import { runMigrations, closePool, query } from './postgres.js';
+import { runMigrations, closePool, getPool, query } from './postgres.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +35,8 @@ async function withAdminClient<T>(fn: (client: pg.Client) => Promise<T>): Promis
 }
 
 describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)', () => {
+  let teardownBlocker: pg.PoolClient | undefined;
+
   beforeAll(async () => {
     await withAdminClient(async (client) => {
       await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
@@ -47,11 +49,18 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
   }, 60_000);
 
   afterAll(async () => {
-    await closePool();
     process.env.POSTGRES_URL = baseUrl;
-    await withAdminClient(async (client) => {
-      await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
-    });
+    try {
+      // Force the throwaway database down before draining the pool. pool.end()
+      // waits for checked-out clients forever; under a loaded shard that made
+      // this hook time out before it could reach the force-drop operation.
+      await withAdminClient(async (client) => {
+        await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
+      });
+    } finally {
+      teardownBlocker?.release(true);
+      await closePool();
+    }
   }, 60_000);
 
   // Must mirror MIGRATIONS_ADVISORY_LOCK_ID in postgres.ts — used to simulate
@@ -150,5 +159,12 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
       },
       30_000,
     );
+  });
+
+  it('teardown force-closes checked-out connections to the throwaway database', async () => {
+    teardownBlocker = await getPool().connect();
+    teardownBlocker.on('error', () => {
+      // DROP DATABASE ... WITH (FORCE) intentionally terminates this client.
+    });
   });
 });

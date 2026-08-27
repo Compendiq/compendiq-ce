@@ -289,7 +289,8 @@ export function ArticleRightPane({
   const toggleSidebar = useUiStore((s) => s.toggleArticleSidebar);
   const laptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
   const setLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
-  const width = useUiStore((s) => s.articleSidebarWidth);
+  const storedWidth = useUiStore((s) => s.articleSidebarWidth);
+  const width = Math.max(ARTICLE_SIDEBAR_MIN_WIDTH, storedWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
 
@@ -927,12 +928,6 @@ export function ArticleRightPane({
       'rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
     const railMenuItem =
       'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50';
-    const inspectorViewLabel =
-      activeInspectorView === 'assistant'
-        ? 'Assistant'
-        : activeInspectorView === 'outline'
-          ? 'Outline'
-          : 'Details';
     const assistantHint = formatKeysForPlatform(getShortcutHint('ai-assistant') ?? '', detectMac());
     const pinHint = formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac());
     const closeOutlineUnlessMovingInside = (next: Node | null) => {
@@ -1000,7 +995,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center border-b border-border">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -1051,7 +1046,7 @@ export function ArticleRightPane({
               in edit mode: collapsing to write must not hide the map. */}
           {headings.length > 0 && (
             <>
-              <div className="group relative flex w-full justify-center">
+              <div className="group relative mt-1 flex w-full justify-center">
                 <button
                   ref={outlineTriggerRef}
                   onMouseEnter={() => {
@@ -1112,7 +1107,7 @@ export function ArticleRightPane({
                 >
                   <MessageSquare size={16} />
                   {openNotesCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-action px-1 text-[11px] font-semibold text-action-foreground">
+                    <span className="absolute top-0 right-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-action px-0.5 text-[11px] font-semibold text-action-foreground">
                       {openNotesCount}
                     </span>
                   )}
@@ -1193,12 +1188,6 @@ export function ArticleRightPane({
                 </span>
               </div>
             )}
-            <span
-              data-testid="inspector-rail-current-view"
-              className="mt-auto px-0.5 pb-1 text-center text-[11px] font-medium leading-tight text-foreground"
-            >
-              {inspectorViewLabel}
-            </span>
           </div>
         </m.aside>
       </AnimatePresence>
@@ -1379,9 +1368,6 @@ export function ArticleRightPane({
                   <ListTree size={13} className="text-muted-foreground" />
                   Outline
                 </span>
-                <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {headings.length} section{headings.length === 1 ? '' : 's'}
-                </span>
               </div>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
                 Same as the Outline tab
@@ -1529,9 +1515,6 @@ export function ArticleRightPane({
         >
           <ListTree size={13} />
           Outline
-          {headings.length > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{headings.length}</span>
-          )}
         </button>
         <button
           type="button"
@@ -1993,9 +1976,7 @@ export function ArticleRightPane({
           <div className="px-3 pb-2 pt-3">
             <div className="flex items-center justify-between">
               <div className="text-xs font-semibold text-foreground/85">On this page</div>
-              <span className="text-[11px] tabular-nums text-muted-foreground">
-                {headings.length} section{headings.length === 1 ? '' : 's'} · {Math.round(readingProgress)}%
-              </span>
+              <span className="text-[11px] tabular-nums text-muted-foreground">{Math.round(readingProgress)}%</span>
             </div>
             <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-foreground/8">
               <m.div

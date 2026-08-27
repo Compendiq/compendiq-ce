@@ -43,6 +43,10 @@ import { JSDOM } from 'jsdom';
 import type { PoolClient } from 'pg';
 import { query, getPool } from '../../../core/db/postgres.js';
 import { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+import {
+  invalidateCollabDocAfterBodyWrite,
+  rejectIfLiveCollabRoom,
+} from '../../../core/services/collab-guard.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
   htmlToConfluence,
@@ -584,6 +588,7 @@ async function relocateToConfluence(opts: {
          WHERE id = $1`,
         [page.id, newConfluenceId, spaceKey, finalHtml, finalStorage, finalText, created.version.number],
       );
+      await invalidateCollabDocAfterBodyWrite(page.id, txClient);
 
       // Every direct child stored the numeric id; they must now store the
       // confluence_id or the tree CTE stops resolving them. Soft-deleted
@@ -768,6 +773,7 @@ async function relocateToLocal(opts: {
        WHERE id = $1`,
       [page.id, spaceKey, visibility, userId, rewrittenHtml],
     );
+    await invalidateCollabDocAfterBodyWrite(page.id, txClient);
 
     // Drop the mirrored Confluence restrictions themselves, so a later
     // inherit_perms flip cannot resurrect them.
@@ -929,6 +935,7 @@ async function restorePreMoveState(
         snapshot.embedded_at,
       ],
     );
+    await invalidateCollabDocAfterBodyWrite(snapshot.id, txClient);
 
     // Put the mirrored Confluence restrictions back. Without this the page
     // returns to `source='confluence'` wide open until the next restrictions
@@ -999,6 +1006,10 @@ export async function relocatePage(opts: {
   client: ConfluenceClient;
 }): Promise<RelocatePageResponse> {
   const { page, userId, input, client } = opts;
+  await rejectIfLiveCollabRoom(
+    page.id,
+    (message) => new RelocateError(409, message, { code: 'collab_session_active' }),
+  );
 
   if (input.target === 'confluence') {
     if (page.source !== 'standalone') {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Send, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -16,6 +17,7 @@ import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
+import { useOnboardingActions } from '../../../shared/hooks/use-onboarding';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 interface McpDocsSettings {
@@ -38,7 +40,8 @@ function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
     includeSubPages, thinkingMode, setMessages, runStream,
-    chatVision, chatVisionModel,
+    chatVision, chatVisionModel, historyTruncated,
+    activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
 
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
@@ -65,19 +68,27 @@ function AskModeInputContent() {
     void pickFiles(files);
   }, [pickFiles]);
 
-  // The one boundary a remount does not cover. Switching threads from the
-  // conversation sidebar — or starting a new one — swaps the conversation under
-  // a composer that stays mounted, so an unconsumed toggle would carry a choice
-  // made about one conversation into the first question of another. That is the
-  // per-conversation stickiness this state's placement exists to prevent,
-  // arrived at from the other side; the dock clears its own slots at its pageId
-  // boundary for the same reason.
+  // #1402: "Ask your first AI question", recorded silently on the answer.
+  const { markComplete } = useOnboardingActions();
+
+  // The one boundary a remount does not cover. Opening another conversation —
+  // or starting a new one — swaps the thread under a composer that stays
+  // mounted, so an unconsumed toggle would carry a choice made about one
+  // conversation into the first question of another.
   //
-  // Harmless on the id the server assigns mid-answer: `handleAsk` has already
-  // cleared the flag by then, and the toggle is disabled while streaming.
+  // Keyed on `activeThreadId` (#1361), NOT on `conversationId`: a promotion
+  // writes the id onto the SAME thread, which is a re-key and not a switch, so
+  // the id both fires when it must not (mid-answer) and stays put when it must
+  // fire (New chat on an already-empty draft — both drafts carry `null`).
+  //
+  // `externalUrls` is the same per-send state and goes with it, along with the
+  // row that adds them: a URL bar left open over a conversation the user has
+  // just switched to is the same carried-over choice.
   useEffect(() => {
     setDeepSearch(false);
-  }, [conversationId]);
+    setExternalUrls((prev) => (prev.length === 0 ? prev : []));
+    setShowUrlInput(false);
+  }, [activeThreadId]);
 
   // Check if MCP docs is enabled via public status endpoint (cache for 5 min)
   const { data: mcpSettings } = useQuery<McpDocsSettings>({
@@ -118,9 +129,15 @@ function AskModeInputContent() {
   // #350: focus input on mount so the user can type immediately. Use a ref +
   // useEffect rather than autoFocus so it survives StrictMode double-mount and
   // route transitions reliably.
+  //
+  // #1361: the same effect answers `composerFocusRequest`, which
+  // `startNewConversation` bumps — New chat lands the caret where the next
+  // question goes (the #1176 dock convention). Opening a row deliberately does
+  // NOT bump it: a keyboard user is mid-list and `aria-current` tells them
+  // where they are.
   useEffect(() => {
     inputRef.current?.focus();
-  }, [inputRef]);
+  }, [inputRef, composerFocusRequest]);
 
   // The composer is deliberately NOT gated on embedding status, unlike the
   // example chips below (#1257 post-review, decided on backend evidence):
@@ -138,7 +155,14 @@ function AskModeInputContent() {
   // stay inert until it verifiably exists. The amber banner above the thread
   // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || isStreaming || isBusy) return;
+    // `threadLoadState` is checked here as well as on Send: the textarea is not
+    // disabled while a conversation loads, so Enter reaches this handler and
+    // would post a question against a thread whose history has not arrived.
+    // `!== 'ready'` (not `=== 'loading'`): the `error` state is live too —
+    // the composer is not disabled there either, and `conversationId` is
+    // still null on a failed load, so a send would silently fork a brand
+    // new conversation instead of surfacing the failure.
+    if (!input.trim() || isStreaming || isBusy || threadLoadState !== 'ready') return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -185,7 +209,13 @@ function AskModeInputContent() {
         return true;
       },
       onComplete: () => {
-        // Sources are attached by runStream automatically
+        // Sources are attached by runStream automatically.
+        //
+        // #1402, milestone 3. `onComplete` fires on runStream's normal path
+        // only — an abort, a thrown request error and an in-band SSE error
+        // frame all return before it — so this is the success signal. The dock
+        // has its own `/llm/ask` call and marks the same milestone itself.
+        markComplete('firstAiQueryMade');
       },
     });
 
@@ -195,6 +225,7 @@ function AskModeInputContent() {
   }, [
     input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
     deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
+    threadLoadState, markComplete,
   ]);
 
   const handleSubmit = () => handleAsk();
@@ -283,6 +314,23 @@ function AskModeInputContent() {
         variant="inline"
       />
 
+      {/* #1361, decision 10 made visible. The backend replays whole exchanges
+          only while they fit the model's budget, so a long conversation quietly
+          stops carrying its own beginning; the reader is told rather than left
+          to infer it from an answer that has forgotten something.
+
+          Muted 11px prose and deliberately NOT a live region: it is a standing
+          fact about the thread, not an event, and a live region would announce
+          it again on every re-render this composer does while the user types.
+          `DockPanel` renders the same line — both surfaces post /llm/ask, and
+          the same mechanism on one of two is the divergence CLAUDE.md's refusal
+          note warns about. */}
+      {historyTruncated && (
+        <p className="mb-2 text-[11px] text-muted-foreground" data-testid="ask-history-truncated">
+          Older messages in this conversation are no longer sent to the model.
+        </p>
+      )}
+
       {/* Main input row */}
       <div className="nm-composer flex-wrap">
         <DocumentUploadZone
@@ -322,7 +370,7 @@ function AskModeInputContent() {
             icon={<Link2 size={16} />}
           />
         )}
-        <AssistantActionSelect includeGenerate disabled={isStreaming} className="self-end" />
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
           value={input}
@@ -345,7 +393,7 @@ function AskModeInputContent() {
           variant="primary"
           size="sm"
           onClick={handleSubmit}
-          disabled={isStreaming || isBusy || !input.trim() || !model}
+          disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState !== 'ready'}
           isLoading={isStreaming}
           aria-label={isStreaming ? 'Sending...' : 'Send message'}
           className="shrink-0 self-end h-8 px-3"

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const mockQuery = vi.fn();
 
@@ -44,7 +45,13 @@ import {
   invalidateRagAnswerMaxImagesCache,
   RAG_ANSWER_MAX_IMAGES_DEFAULT,
   RAG_IMAGES_PER_PAGE_MAX_DEFAULT,
+  getRagEfSearch,
+  resolveRagEfSearch,
+  invalidateRagEfSearchCache,
+  warnIfRagEfSearchEnvSet,
+  RAG_EF_SEARCH_DEFAULT,
 } from './admin-settings-service.js';
+import { logger } from '../utils/logger.js';
 
 describe('getAdminAccessDeniedRetentionDays (#264)', () => {
   beforeEach(() => {
@@ -571,5 +578,212 @@ describe('rag_answer_max_images (#1115 P4)', () => {
     expect(await getRagAnswerMaxImages()).toBe(4);
     expect(await getRagAnswerMaxImages()).toBe(4);
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('rag_ef_search (#1285)', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    invalidateRagEfSearchCache();
+    delete process.env.RAG_EF_SEARCH;
+  });
+
+  afterEach(() => {
+    delete process.env.RAG_EF_SEARCH;
+    invalidateRagEfSearchCache();
+  });
+
+  it('defaults to 100 when the row is absent, and on DB failure', async () => {
+    // Soft-fail direction: a failed admin_settings read must degrade the
+    // TUNING, never the search. 100 is the floor every deployment ran at
+    // before this knob existed.
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+    expect(RAG_EF_SEARCH_DEFAULT).toBe(100);
+    invalidateRagEfSearchCache();
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+  });
+
+  it('accepts pgvector’s whole [1, 1000] range and clamps above it', async () => {
+    for (const [raw, expected] of [
+      ['1', 1], ['40', 40], ['250', 250], ['1000', 1000], ['1001', 1000], ['99999', 1000],
+    ] as Array<[string, number]>) {
+      invalidateRagEfSearchCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagEfSearch(), raw).toBe(expected);
+    }
+  });
+
+  it('falls back on a shape the operator cannot have meant, 0 included', async () => {
+    // Strict digit shape for `rag_answer_max_images`' reason: `parseInt('1e3')`
+    // is 1, and 1 is a LEGAL ef_search — a permissive parse would read a
+    // fat-fingered row as "walk one candidate" and quietly gut recall rather
+    // than reading as the typo it is. `'0'` is not a value either: pgvector's
+    // floor is 1, so a zero row means "unset", not "off".
+    for (const raw of ['', '0', '-1', '2.5', '1e3', 'wide', ' ']) {
+      invalidateRagEfSearchCache();
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: raw }] });
+      expect(await getRagEfSearch(), raw).toBe(RAG_EF_SEARCH_DEFAULT);
+    }
+  });
+
+  it('reads RAG_EF_SEARCH only while no row exists — a present row always wins', async () => {
+    // ADR-021's rule: the env var is a BOOTSTRAP fallback, never a hot-path
+    // read over a present row. A deployment that saves the panel once leaves
+    // the variable inert for good.
+    process.env.RAG_EF_SEARCH = '250';
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(250);
+
+    invalidateRagEfSearchCache();
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '150' }] });
+    expect(await getRagEfSearch()).toBe(150);
+  });
+
+  it('ignores an out-of-range or malformed RAG_EF_SEARCH', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    for (const raw of ['0', '-5', '1001', 'garbage', '1e3']) {
+      invalidateRagEfSearchCache();
+      process.env.RAG_EF_SEARCH = raw;
+      expect(await getRagEfSearch(), raw).toBe(RAG_EF_SEARCH_DEFAULT);
+    }
+  });
+
+  it('never reinstates RAG_EF_SEARCH when the row read THREW', async () => {
+    // Review r1. A failed read is not evidence that no row exists, and the
+    // difference matters on exactly the instance the deprecation story is
+    // written for: one that saved the panel and still carries a stale
+    // variable. Falling through to the env there would put a value four
+    // documents call retired back in force — and cache it for a full TTL.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockRejectedValue(new Error('connection reset'));
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+
+    // …and the bootstrap is still reached when the read SUCCEEDS and the row
+    // is genuinely absent, which is the case it exists for.
+    invalidateRagEfSearchCache();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(900);
+  });
+
+  it('reports where the floor came from, for the panel that has to offer a remedy', async () => {
+    // Review r1 — the panel's Save is a pure value diff, so on an instance
+    // running on the env var the number on screen already equals the server's
+    // and nothing can be saved. It needs the SOURCE, not just the value.
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '250' }] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'row' });
+
+    invalidateRagEfSearchCache();
+    process.env.RAG_EF_SEARCH = '250';
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'env' });
+
+    invalidateRagEfSearchCache();
+    delete process.env.RAG_EF_SEARCH;
+    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+
+    // A failed read is 'default', never 'env': the panel must not offer to pin
+    // a value the server did not resolve from the variable.
+    invalidateRagEfSearchCache();
+    process.env.RAG_EF_SEARCH = '250';
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+  });
+
+  it('is cached, so four kNN callsites cost no round-trip inside the TTL', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '200' }] });
+    expect(await getRagEfSearch()).toBe(200);
+    expect(await getRagEfSearch()).toBe(200);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // The admin PUT invalidates, so a saved value takes effect on the writing
+    // pod immediately rather than up to a minute later.
+    invalidateRagEfSearchCache();
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '300' }] });
+    expect(await getRagEfSearch()).toBe(300);
+  });
+});
+
+describe('warnIfRagEfSearchEnvSet (#1285)', () => {
+  beforeEach(() => {
+    delete process.env.RAG_EF_SEARCH;
+    vi.mocked(logger.warn).mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.RAG_EF_SEARCH;
+  });
+
+  it('says nothing when the variable is unset', () => {
+    warnIfRagEfSearchEnvSet();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('names the row that supersedes it and the panel that writes it', () => {
+    // LEGACY-LLM-VARS semantics, not FTS_LANGUAGE's: there is no seed row, so
+    // the value stays LIVE on every instance until an admin saves the panel
+    // once. The notice has to say exactly that, or an operator reads
+    // "deprecated" as "already ignored".
+    process.env.RAG_EF_SEARCH = '250';
+    warnIfRagEfSearchEnvSet();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [, message] = vi.mocked(logger.warn).mock.calls[0] as [unknown, string];
+    expect(message).toContain('RAG_EF_SEARCH is deprecated');
+    expect(message).toContain('rag_ef_search');
+    expect(message).toContain('Settings → AI Models → Retrieval');
+  });
+
+  it('says the value is IGNORED when it is outside pgvector’s bound', async () => {
+    // Review r1 — the reader silently drops a value the old module-load
+    // reader accepted (it validated 1..10000 against pgvector's 1..1000), so
+    // an instance running `RAG_EF_SEARCH=2000` drops from a 1000 floor to 100
+    // on upgrade. "It is used" is the one thing that must not be said there.
+    process.env.RAG_EF_SEARCH = '2000';
+    warnIfRagEfSearchEnvSet();
+    const [, message] = vi.mocked(logger.warn).mock.calls[0] as [unknown, string];
+    expect(message).toContain('2000');
+    expect(message).toContain('is ignored');
+    expect(message).toContain('100');
+    expect(message).not.toContain('it is used only while');
+    // Review r2 — and the fallback has to be scoped to the no-row case, the
+    // way the in-range branch already scopes "it is used". This function
+    // reads `process.env` and never the row, so "the floor falls back to 100"
+    // stated flatly is false on every instance that HAS saved the panel: with
+    // `RAG_EF_SEARCH=2000` and a saved row of 300 every probe runs at 300
+    // while boot claims 100.
+    expect(message).toContain('while no `rag_ef_search` row exists');
+    // …and it is still resolved that way, which is what the notice claims.
+    invalidateRagEfSearchCache();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+    invalidateRagEfSearchCache();
+  });
+
+  /**
+   * The tests above prove the function warns. They cannot prove anything CALLS
+   * it: `index.ts` boots a server and no suite imports it, so deleting the call
+   * site leaves every backend test green — and with it the only thing telling
+   * an upgrading operator that their `RAG_EF_SEARCH=250` is now one save away
+   * from being ignored. Read the source, the way `fts-language.test.ts` does
+   * for its own notice.
+   */
+  describe('the startup call site', () => {
+    const source = readFileSync(new URL('../../index.ts', import.meta.url), 'utf8');
+
+    it('is wired into index.ts', () => {
+      expect(
+        source,
+        'backend/src/index.ts must call warnIfRagEfSearchEnvSet() at startup',
+      ).toContain('warnIfRagEfSearchEnvSet();');
+    });
+
+    it('runs after migrations, so the table the message points at exists', () => {
+      const migrations = source.indexOf('await runMigrations()');
+      const warn = source.indexOf('warnIfRagEfSearchEnvSet();');
+      expect(migrations).toBeGreaterThanOrEqual(0);
+      expect(warn).toBeGreaterThan(migrations);
+    });
   });
 });

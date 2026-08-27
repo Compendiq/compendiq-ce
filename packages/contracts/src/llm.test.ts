@@ -15,6 +15,8 @@ import {
   SummarizeRequestSchema,
   GenerateDiagramRequestSchema,
   AnalyzeQualityRequestSchema,
+  InlineCompletionRequestSchema,
+  InlineCompletionResponseSchema,
 } from './schemas/llm.js';
 
 describe('LlmUsecaseSchema', () => {
@@ -28,6 +30,13 @@ describe('LlmUsecaseSchema', () => {
   // the enum is what makes the assignment row reachable from the API.
   it('accepts image_embedding (#1115)', () => {
     expect(() => LlmUsecaseSchema.parse('image_embedding')).not.toThrow();
+  });
+  it('accepts inline_completion (#1417)', () => {
+    expect(() => LlmUsecaseSchema.parse('inline_completion')).not.toThrow();
+  });
+  it('rejects client_inference — the browser model is not an ADR-021 use case (#1418 SPEC-010)', () => {
+    expect(LlmUsecaseSchema.options).not.toContain('client_inference');
+    expect(() => LlmUsecaseSchema.parse('client_inference')).toThrow();
   });
 });
 
@@ -114,9 +123,48 @@ describe('UsecaseAssignmentsSchema', () => {
       embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       rerank: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       image_embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
+      inline_completion: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
     expect(parsed.image_embedding).toBeDefined();
+    expect(parsed.inline_completion).toBeDefined();
+  });
+});
+
+describe('inline completion contracts (#1417)', () => {
+  it('defaults maxTokens to 48 and accepts bounded context metadata', () => {
+    expect(InlineCompletionRequestSchema.parse({
+      pageId: 42,
+      spaceKey: 'ENG',
+      title: 'Runbook',
+      prefix: 'Rotate the ',
+      suffix: ' before expiry.',
+      language: 'en',
+    })).toEqual({
+      pageId: 42,
+      spaceKey: 'ENG',
+      title: 'Runbook',
+      prefix: 'Rotate the ',
+      suffix: ' before expiry.',
+      language: 'en',
+      maxTokens: 48,
+    });
+  });
+
+  it('enforces context and token ceilings', () => {
+    expect(InlineCompletionRequestSchema.safeParse({ prefix: 'x'.repeat(8_001) }).success).toBe(false);
+    expect(InlineCompletionRequestSchema.safeParse({ prefix: '', suffix: 'x'.repeat(2_001) }).success).toBe(false);
+    expect(InlineCompletionRequestSchema.safeParse({ prefix: '', maxTokens: 65 }).success).toBe(false);
+  });
+
+  it('parses the provider response and optional usage', () => {
+    const parsed = InlineCompletionResponseSchema.parse({
+      completion: 'access token before expiry.',
+      model: 'qwen2.5-coder:7b',
+      provider: 'Local GPU',
+      usage: { promptTokens: 32, completionTokens: 5 },
+    });
+    expect(parsed.usage?.completionTokens).toBe(5);
   });
 });
 

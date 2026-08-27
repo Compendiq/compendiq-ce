@@ -66,11 +66,33 @@ function assignedImageEmbedding() {
   };
 }
 
+/**
+ * #1284 — `GET /analytics/confidence-distribution`, the observed
+ * `rag.confidence` distribution the Retrieval panel shows beside each
+ * threshold. Default: a healthy sample on both bases, so no other test in
+ * this file renders the small-sample or empty copy by accident.
+ */
+const defaultConfidenceDistribution = {
+  windowDays: 7,
+  surface: 'ask',
+  similarity: { p50: 0.41, p90: 0.63, count: 2184 },
+  rerank: { p50: 0.22, p90: 0.58, count: 1190 },
+};
+
 interface MockOptions {
   settings?: Record<string, unknown>;
   rerank?: ReturnType<typeof unassignedRerank>;
   /** #1115 P3 — the `image_embedding` assignment row; unassigned by default. */
   imageEmbedding?: ReturnType<typeof unassignedRerank>;
+  /**
+   * #1284 review r1 — a gate the `/admin/llm-usecases` response awaits, so a
+   * test can observe the panel WHILE the assignment query is still in flight.
+   * `rerankActive` is false for a query that has not answered exactly as it is
+   * for one that answered "unassigned", and only the `assignments` half of the
+   * readout's guard separates the two. Without a way to hold the response, no
+   * test could reach the in-flight branch at all.
+   */
+  holdUsecases?: Promise<unknown>;
   /**
    * #1114 — lets a test model the half of the server the panel's remedy
    * depends on: saving a threshold RE-RECORDS its calibration, so the next
@@ -85,6 +107,27 @@ interface MockOptions {
    * silent, which is what a server predating the field looks like.
    */
   putResult?: (body: Record<string, unknown>) => Record<string, unknown>;
+  /**
+   * #1285 verification round — holds every PUT open so a test can inspect the
+   * panel WHILE a one-key remedy is in flight. That window is the only place
+   * the pending treatment is observable, and it is where the `disabled`
+   * attribute used to blur the pressed button to `<body>`.
+  */
+  holdPut?: Promise<unknown>;
+  /**
+   * #1284 — the distribution payload, or `'error'` to fail the request. A
+   * failed read must render as a failure sentence, never as an empty
+   * distribution: "no questions measured" and "we could not look" are
+   * different facts and lead an operator to different actions.
+   */
+  confidenceDistribution?:
+    | Record<string, unknown>
+    | 'error'
+    // A function is re-read per request, which is how a test can fail the
+    // first read and answer the retry (review r2). It may answer a PROMISE,
+    // which is how a test holds one read open long enough to observe the
+    // in-flight state the section notice reports (review r1).
+    | (() => Record<string, unknown> | 'error' | Promise<Record<string, unknown> | 'error'>);
 }
 
 /** Captures every PUT body so a test can assert what was actually sent. */
@@ -94,6 +137,9 @@ function mockApi({
   imageEmbedding = unassignedRerank(),
   afterPut,
   putResult,
+  holdPut,
+  confidenceDistribution = defaultConfidenceDistribution,
+  holdUsecases,
 }: MockOptions = {}) {
   const puts: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -102,13 +148,22 @@ function mockApi({
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+    if (url.includes('/analytics/confidence-distribution')) {
+      const answer = await (typeof confidenceDistribution === 'function'
+        ? confidenceDistribution()
+        : confidenceDistribution);
+      if (answer === 'error') return new Response('boom', { status: 500 });
+      return json(answer);
+    }
     if (url.includes('/admin/llm-usecases')) {
+      if (holdUsecases) await holdUsecases;
       const row = { providerId: null, model: null, resolved: { providerId: NIL_UUID, providerName: '', model: '' } };
       return json({
         chat: row, summary: row, quality: row, auto_tag: row, embedding: row, rerank,
         // #1115 P3 — unassigned by default, the ordinary state for a
         // non-inheriting use case with no VL model behind it.
         image_embedding: imageEmbedding,
+        inline_completion: row,
       });
     }
     if (url.includes('/admin/retrieval-benchmark')) {
@@ -132,6 +187,7 @@ function mockApi({
       if (method === 'PUT') {
         const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
         puts.push(body);
+        if (holdPut) await holdPut;
         afterPut?.(body, settings);
         return json({ message: 'Admin settings updated', ...(putResult?.(body) ?? {}) });
       }
@@ -171,10 +227,40 @@ function type(key: string, value: string) {
   fireEvent.blur(el);
 }
 
+/**
+ * Every element on the panel that carries an `aria-describedby`.
+ *
+ * Review r3 — deliberately NOT `input[aria-describedby], select[...]`. The
+ * rule is about the region, not about what points at it, and the narrow
+ * selector certified the layer #1285 had just fixed while staying silent on
+ * the one live offender: the calibration strip's `Keep` BUTTON.
+ */
+const describedRegions = () =>
+  Array.from(document.querySelectorAll<HTMLElement>('[aria-describedby]'));
+
+/** `"<describer> -> #<region>: <the controls it wrongly contains>"`, one per violation. */
+function describedRegionOffenders(): string[] {
+  const offenders: string[] = [];
+  for (const el of describedRegions()) {
+    for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+      const region = document.getElementById(id);
+      if (!region) continue;
+      const interactive = region.querySelectorAll('button, a[href], input, select, textarea');
+      if (interactive.length === 0) continue;
+      offenders.push(
+        `${el.getAttribute('data-testid') ?? el.id} -> #${id}: ` +
+          Array.from(interactive)
+            .map((n) => `<${n.tagName.toLowerCase()}>${(n.textContent ?? '').trim()}`)
+            .join(', '),
+      );
+    }
+  }
+  return offenders;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
-
 describe('RetrievalTab — the nine knobs', () => {
   it('seeds every input from the server document', async () => {
     mockApi({
@@ -1753,7 +1839,19 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     );
     expect(toastSuccess).not.toHaveBeenCalled();
     // And the strip is still standing, because nothing was recorded.
-    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+    const survivingStrip = await screen.findByTestId(stripId);
+    expect(survivingStrip).toBeInTheDocument();
+    // The other direction of the in-flight state (review r1 of #1285): this is
+    // the outcome the button OUTLIVES, so a spinner or a gerund left behind
+    // here would tell the operator a write is still running on the one path
+    // where they have to press it again.
+    const survivingKeep = within(survivingStrip).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    await waitFor(() => expect(survivingKeep).toHaveTextContent(/Keep 0\.35/));
+    expect(survivingKeep).not.toHaveTextContent(/Keeping/);
+    expect(survivingKeep.querySelector('.animate-spin')).toBeNull();
+    expect(survivingKeep).not.toHaveAttribute('aria-busy');
   });
 
   it('says the live model could not be RESOLVED, never that none is assigned', async () => {
@@ -1860,6 +1958,293 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
 
     await waitFor(() => expect(puts).toHaveLength(1));
     expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.35 });
+  });
+
+  /**
+   * #1285 review r1 — the panel's focus-handoff rule covers all THREE of its
+   * self-unmounting remedies, and only the `RAG_EF_SEARCH` pin was pinned by a
+   * test. Verified as a gap by mutation: disabling the whole branch in
+   * `keepMutation.onSuccess` left the 102-case suite green, so CLAUDE.md
+   * stated as a contract something nothing could falsify.
+   *
+   * Two cells, because the branch has two sides and both are load-bearing:
+   * the notice-clearing outcomes must move focus, and the outcomes that leave
+   * the notice standing must NOT — yanking the caret off a button the
+   * operator still needs to press again is its own 2.4.3 failure.
+   */
+  it('hands focus to the threshold field when Keep clears the strip (WCAG 2.4.3)', async () => {
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: recorded('Qwen3-Embedding-4B'),
+      // The server the remedy depends on: recording the pair makes the next
+      // GET report it fresh, which is what unmounts the strip.
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+    expect(document.activeElement).toBe(keep);
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+    expect(
+      document.activeElement,
+      'Keep unmounts itself with the strip — land on the knob it was about, never on <body>',
+    ).toBe(input('ragConfidenceThreshold'));
+  });
+
+  it('leaves focus on Keep when the server abstains and the amber strip stays', async () => {
+    // Named for the button it actually presses (review r1 of the verification
+    // round): it said "Record", which is the MUTED note's button and a
+    // different branch — the misnomer is how that branch's own gap stayed
+    // invisible for two rounds. Its `Record` counterpart is at the end of this
+    // describe.
+    //
+    // The other side of the same condition. `unresolved` is not reliably
+    // transient (an undecryptable provider key, an EE policy naming a deleted
+    // provider), so the note — and its button — deliberately survive the
+    // press. Moving focus away from a control the operator has to press again
+    // is not a handoff, it is a second displacement.
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+
+    fireEvent.click(keep);
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(await screen.findByTestId(stripId)).toBeInTheDocument();
+    expect(
+      document.activeElement,
+      'the strip is still standing, so the caret stays on the control that is still the remedy',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+  });
+
+  /**
+   * #1285 verification round — the assertion above was only half true, and the
+   * half it missed is the one jsdom cannot see.
+   *
+   * `Keep` inerted itself with the `disabled` ATTRIBUTE while its write was in
+   * flight. Setting `disabled` on the focused element runs the HTML unfocusing
+   * steps: every real browser blurs it to `<body>` the moment the press lands
+   * and drops it from the tab order — so on `unresolved`, on `failed` and on
+   * both `onError` paths, where the strip and its button deliberately survive,
+   * the operator who has to press it again was already back at the top of the
+   * document. jsdom implements none of that (probed: `activeElement` stays on
+   * a button that has just been disabled), which is exactly why the test above
+   * passed against the broken source.
+   *
+   * So the pending state is asserted on the ATTRIBUTES, which jsdom does model
+   * faithfully and which a revert falsifies immediately. It is the recipe
+   * `AuthPanel`'s SSO re-check and `AskMode`'s example chips already use, and
+   * it costs a handler guard, because `aria-disabled` blocks no events.
+   */
+  it('reports a Keep in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration({ similarity: staleSimilarity }),
+      },
+      putResult: recorded('Qwen3-Embedding-4B'),
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    keep.focus();
+    fireEvent.click(keep);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(keep).toHaveAttribute('aria-disabled', 'true');
+    // `aria-busy` rides beside it, but it is NOT the in-flight signal (review
+    // r1 of #1285, correcting the previous round's inverted premise):
+    // `aria-disabled` is the half that is mapped to a state and announced,
+    // while ARIA 1.2 scopes `aria-busy` to a changing subtree, so on a
+    // <button> it reaches no assistive tech.
+    expect(keep).toHaveAttribute('aria-busy', 'true');
+    // The half a human can perceive, which the attribute swap dropped: 45%
+    // opacity reads as "disabled", not as "working", and the write is an
+    // unbounded network PUT. `AuthPanel`'s recipe is four parts — the spinner
+    // and the gerund are the other two. The NUMBER survives the swap, because
+    // it is the only thing distinguishing two simultaneous notices.
+    expect(keep).toHaveTextContent(/Keeping 0\.35…/);
+    expect(
+      keep.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
+    expect(
+      keep,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    // Focusable is the point of the whole treatment: an operator who has to
+    // press this again after an abstain is still standing on it.
+    expect(document.activeElement).toBe(keep);
+
+    // `aria-disabled` blocks no events, so inertness has to be the handler's
+    // job — without that guard this second press queues a second PUT.
+    await act(async () => {
+      fireEvent.click(keep);
+      // The mock records the body before it blocks, so a queued second write
+      // is visible after one turn of the event loop — asserting synchronously
+      // would pass against a missing guard.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() => expect(screen.queryByTestId(stripId)).not.toBeInTheDocument());
+  });
+
+  /**
+   * The THIRD remedy, and the one the two guards above did not reach (review
+   * r1 of the verification round). Verified as a gap by mutation on the shipped
+   * head: reverting `Record`'s `aria-disabled` to `disabled` — leaving the
+   * amber strip's `Keep` and the ef-search pin untouched — left the whole
+   * 106-case suite green, so CLAUDE.md's "a `disabled` attribute is what must
+   * never come back to these three" was enforced for two of three.
+   *
+   * The muted note is the branch that most needs it: it is the one every
+   * upgraded instance with a live threshold renders, and it is reachable in
+   * the pending window twice over — `keepPending` is true while its own write
+   * is in flight AND while the panel-wide Save is, with the note mounted
+   * throughout both.
+   */
+  it('reports a Record in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+      afterPut: (body, current) => {
+        if (body.ragConfidenceThreshold === undefined) return;
+        current.ragConfidenceCalibration = calibration({ similarity: freshSimilarity });
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+
+    const record = within(await screen.findByTestId(unknownId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-record',
+    );
+    record.focus();
+    fireEvent.click(record);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(record).toHaveAttribute('aria-disabled', 'true');
+    expect(record).toHaveAttribute('aria-busy', 'true');
+    // See the Keep case above: the attributes are not the in-flight signal.
+    expect(record).toHaveTextContent(/Recording 0\.35…/);
+    expect(
+      record.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
+    expect(
+      record,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    expect(document.activeElement).toBe(record);
+
+    // The other half of the same treatment: `aria-disabled` blocks no events,
+    // so a second press has to be refused by the handler or it queues a second
+    // PUT. One turn of the event loop, because the mock records the body
+    // before it blocks.
+    await act(async () => {
+      fireEvent.click(record);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() => expect(screen.queryByTestId(unknownId)).not.toBeInTheDocument());
+  });
+
+  it('leaves focus on Record when the server abstains and the muted note stays', async () => {
+    // The `Record` half of the pair the amber strip already has: the note is
+    // the remedy's only standing surface, so an abstain must leave both it and
+    // the caret exactly where the operator put them. This is the cell the
+    // mis-titled case above claimed to be and was not.
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: calibration(),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: { outcome: 'unresolved', model: null },
+          rerank: null,
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const record = within(await screen.findByTestId(unknownId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-record',
+    );
+    record.focus();
+    fireEvent.click(record);
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(await screen.findByTestId(unknownId)).toBeInTheDocument();
+    expect(
+      document.activeElement,
+      'the note is still standing, so the caret stays on the control that is still the remedy',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-record'));
   });
 });
 
@@ -2069,7 +2454,1428 @@ describe('RetrievalTab — images shown to the model (#1115 P4)', () => {
     expect(screen.queryByTestId('retrieval-image-unassigned')).not.toBeInTheDocument();
 
     const helper = screen.getByText(/Text-only chat models never receive images/i);
-    const link = within(helper).getByRole('link', { name: /LLM providers/i });
+    // Review r2 of #1285 — the pointer is now the paragraph immediately AFTER
+    // the description rather than its last sentence: this row's help text is
+    // the input's `aria-describedby` region, which flattens to a text string,
+    // so a link inside it announces as wayfinding the reader cannot follow
+    // from the announcement. It still has to sit with the sentence it
+    // answers, which is what the sibling assertion below pins.
+    const help = helper.closest('[id$="-help"]');
+    expect(help, 'the sentence stays the input’s own description').not.toBeNull();
+    const pointer = help!.nextElementSibling as HTMLElement | null;
+    expect(pointer, 'the destination sits directly under it').not.toBeNull();
+    const link = within(pointer!).getByRole('link', { name: /LLM providers/i });
     expect(link.getAttribute('href')).toContain('?sub=llm');
+  });
+});
+
+describe('RetrievalTab — the ef_search floor (#1285)', () => {
+  it('seeds the input from the server document and sends only what changed', async () => {
+    const puts = mockApi({ settings: { ...defaultSettings, ragEfSearch: 250 } });
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    type('ragEfSearch', '400');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragEfSearch: 400 });
+  });
+
+  it('renders the reader default when the server has no row', async () => {
+    // The panel must never invent its own default: 100 is what the reader
+    // resolves, so DEFAULTS has to mirror it or the control reports a number
+    // the kNN probes are not running at.
+    mockApi();
+    renderTab();
+    await ready();
+
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+  });
+
+  it("clamps to pgvector's own [1, 1000] bound on commit", async () => {
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    type('ragEfSearch', '0');
+    expect(input('ragEfSearch').value).toBe('1');
+    type('ragEfSearch', '5000');
+    expect(input('ragEfSearch').value).toBe('1000');
+  });
+
+  it('is covered by Reset all to defaults', async () => {
+    // `DEFAULTS` is what that button spreads, so a field missing from it is
+    // silently skipped by a control labelled "all".
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 400 } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('400'));
+
+    fireEvent.click(screen.getByTestId('retrieval-reset-all-btn'));
+    expect(input('ragEfSearch').value).toBe('100');
+  });
+
+  it('states that it is a FLOOR, and quotes the measurement, on screen and to the control', async () => {
+    // The two things an operator cannot work out from the number: raising it
+    // does not raise the per-query value on its own (each probe already takes
+    // 2x its own row count), and raising it is not measured to buy recall. A
+    // caveat that lives only in a `title` is unreachable by touch, keyboard
+    // and screen readers — ADR-010's `DeepSearchToggle` precedent — so it is
+    // wired to the input with `aria-describedby`.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const describedBy = input('ragEfSearch').getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const help = document.getElementById(describedBy!);
+    expect(help).toBeTruthy();
+    expect(help!.textContent).toMatch(/floor/i);
+    expect(help!.textContent).toMatch(/twice/i);
+    expect(help!.textContent).toMatch(/1,?000/);
+    // The measured no-gain, so nobody raises this hoping for recall.
+    expect(help!.textContent).toMatch(/0\.9995/);
+    // Review r1 — the cost named must be one this control can move.
+    // `hnsw.ef_search` is a QUERY-time setting; index footprint is fixed by
+    // how the index was built, so quoting it here both named a cost that does
+    // not exist and inverted the measurement, which says to leave this alone
+    // and watch footprint INSTEAD.
+    expect(help!.textContent).toMatch(/query time/i);
+    expect(help!.textContent).toMatch(/1\.74 ms/);
+    expect(help!.textContent).not.toMatch(/footprint/i);
+  });
+
+  it('wires the TOGGLE rows to their caveats too, not only the number rows', async () => {
+    // Review r1 (verification round) \u2014 the generalisation stopped at
+    // `NumberRow`, so inside ONE group a screen-reader user heard the caveat
+    // for `Images per page` and not the one for `Image leg` directly above it.
+    // The toggles carry the sharpest caveats on this panel: `Image leg`'s
+    // "one extra embedding call per question" is the cost sentence that
+    // control exists to disclose, and `MMR diversity narrow` names a measured
+    // NO-gain. Reachable by eye only, none of that is carried by the control.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const expected: ReadonlyArray<readonly [string, RegExp]> = [
+      ['rag-pin-identifiers', /pinned to the top/i],
+      ['rag-image-leg-enabled', /one extra embedding call/i],
+      ['rag-image-index-external', /external URL/i],
+      ['rag-mmr-enabled', /No Recall@1 gain measured/i],
+    ];
+    for (const [id, sentence] of expected) {
+      const box = screen.getByTestId(id);
+      const describedBy = box.getAttribute('aria-describedby');
+      expect(describedBy, `${id} must describe itself with its own help text`).toBeTruthy();
+      const help = document.getElementById(describedBy!);
+      expect(help, `${id}: #${describedBy} must exist`).toBeTruthy();
+      expect(help!.textContent).toMatch(sentence);
+    }
+  });
+
+  it('keeps every described region prose \u2014 no control folded into a field\u2019s description', async () => {
+    // Review r2 \u2014 the wiring above is on EVERY NumberRow, and three rows
+    // carried interactive children: the rerank-stage link, the vision
+    // wayfinding link, and `Use measured value`. `aria-describedby` flattens
+    // its region to a text string, so a button in there announces as prose
+    // with nothing saying it can be pressed, and a link announces as
+    // wayfinding the reader cannot follow from the announcement. It is the
+    // same rule the RAG_EF_SEARCH note is placed outside its row to obey, so
+    // it is enforced across the panel rather than stated once in a comment.
+    //
+    // Rendered with rerank UNASSIGNED and the prior at its 0 default, which
+    // is what makes the link and the button render at all.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    expect(describedRegions().length).toBeGreaterThan(0);
+    expect(
+      describedRegionOffenders(),
+      'a description is read as one flat string \u2014 put operable controls and wayfinding links in `aside`, beside it',
+    ).toEqual([]);
+
+    // \u2026and the three that moved are still on screen, so this is a relocation
+    // rather than a deletion.
+    expect(screen.getByTestId('retrieval-rerank-stage-status')).toBeInTheDocument();
+    expect(screen.getByTestId('retrieval-prior-use-measured')).toBeInTheDocument();
+  });
+
+  it('holds the rule for a described BUTTON too, not only a described field', async () => {
+    // Review r3 \u2014 the sweep above read `input[aria-describedby],
+    // select[aria-describedby]`, so it certified the layer that was never at
+    // risk and stayed silent about the one live counterexample on the panel:
+    // the #1114 calibration strip's `Keep` button is described by the strip's
+    // sentence, and that sentence's unresolved branch carried a `<Link>` to
+    // LLM providers \u2014 the exact "a link announces as wayfinding the reader
+    // cannot act on from the announcement" case. The selector now reads every
+    // `[aria-describedby]`, and this renders the branch that produced it.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: '11111111-2222-3333-4444-555555555555',
+            model: 'bge-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: null,
+            liveModel: null,
+            liveResolved: false,
+            stale: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const keep = await screen.findByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep.getAttribute('aria-describedby')).toBeTruthy();
+    expect(
+      describedRegionOffenders(),
+      'a description is read as one flat string \u2014 put operable controls and wayfinding links in `aside`, beside it',
+    ).toEqual([]);
+
+    // Relocation, not deletion: the strip still points at the row that can
+    // actually be wrong, on its own line beside the sentence.
+    const strip = screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-stale');
+    expect(within(strip).getByRole('link', { name: /LLM providers/i })).toBeInTheDocument();
+  });
+
+  it('pairs min with a step the field\u2019s own values satisfy', async () => {
+    // Review r1 — for `type=number` the step BASE is `min`, so `min: 1` with
+    // `step: 10` made 100 (this field's default), 1000 (its max) and every
+    // number the help text names a `stepMismatch`: the control renders
+    // `:invalid` at rest and the spinner walks 101 / 111.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('100'));
+
+    const el = input('ragEfSearch');
+    expect(el.min).toBe('1');
+    expect(el.max).toBe('1000');
+    expect(el.validity.stepMismatch).toBe(false);
+    for (const v of ['250', '400', '1000']) {
+      type('ragEfSearch', v);
+      expect(input('ragEfSearch').validity.stepMismatch, v).toBe(false);
+    }
+  });
+
+  it('names the environment variable it supersedes, in muted copy and never amber', async () => {
+    // Nothing seeds `rag_ef_search`, so `RAG_EF_SEARCH` stays live until this
+    // panel is saved once. An operator upgrading has to be able to find that
+    // out here rather than from a log line that has scrolled away — and it is
+    // a fact at rest, not an attention state, so ADR-010 keeps it muted.
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const note = screen.getByTestId('retrieval-ef-search-env-note');
+    expect(note.textContent).toMatch(/RAG_EF_SEARCH/);
+    expect(note.className).toContain('text-muted-foreground');
+    expect(note.className).not.toMatch(/warning|amber|destructive/);
+
+    // Review r3 — the note's own sentence says "the setting below", and its
+    // `Keep` button writes THAT field's saved value, so drifting away from
+    // the row makes the copy false and the button unattributable. This is the
+    // #1114 strip's adjacency guard, which exists because ORDER alone passes
+    // for a notice parked four sections away.
+    const row = input('ragEfSearch').closest('div.space-y-1\\.5');
+    expect(row).not.toBeNull();
+    expect(row!.previousElementSibling).toBe(note);
+  });
+
+  it('renders that note ONLY while the variable is what produced the value', async () => {
+    // Review r1 — it used to render on every instance, including the ones
+    // holding a saved row where the variable is already inert. A standing
+    // notice that is false for most readers is how the panel's
+    // no-notice-at-rest rule gets hollowed out.
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: false } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument();
+  });
+
+  it('offers a remedy the panel can perform: Save is dead, so the note carries the write', async () => {
+    // Review r1 — the dead end this fixes. GET resolves the env value, the
+    // field is seeded with it, `changed` is empty and Save is disabled: the
+    // note said "set it here" while nothing here could write the row. Reset
+    // to default writes 100, a DIFFERENT depth, and on an instance whose
+    // variable already reads 100 there was no reachable value at all.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    expect(
+      (screen.getByTestId('retrieval-save-btn') as HTMLButtonElement).disabled,
+      'Save is a pure value diff, so it cannot be the remedy here',
+    ).toBe(true);
+
+    // An unsaved edit elsewhere on the panel must survive it — this is its own
+    // mutation precisely so it does not release `hydrated` (#949, #1114).
+    type('ragFetchWidth', '30');
+
+    fireEvent.click(screen.getByTestId('retrieval-ef-search-env-pin'));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    // Exactly the resolved number, exactly one key.
+    expect(puts[0]).toEqual({ ragEfSearch: 250 });
+    expect(input('ragFetchWidth').value).toBe('30');
+  });
+
+  it('pins the number the SERVER resolved, never the draft in the field', async () => {
+    // Review r2 — the #1114 discipline this control copies verbatim
+    // ("`saved`, never the draft in the field") had nothing enforcing it here:
+    // the test above types into a DIFFERENT field, so swapping
+    // `pinEfSearchMutation.mutate(saved.ragEfSearch)` for
+    // `values.ragEfSearch` left the whole panel suite green.
+    //
+    // The failure it admits is a button that lies about what it does: on an
+    // env-sourced instance the field is editable, so an operator who types
+    // 400 into Index search depth and then presses the button labelled
+    // `Keep 250` would PUT 400 — and the note beside it would disappear,
+    // certifying a depth nobody chose.
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    type('ragEfSearch', '400');
+    expect(input('ragEfSearch').value).toBe('400');
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    // The visible label still promises the server's number…
+    expect(pin.textContent).toContain('250');
+    fireEvent.click(pin);
+
+    // …and that is what it writes.
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragEfSearch: 250 });
+    // The draft is untouched — this mutation submits one row, not the form.
+    expect(input('ragEfSearch').value).toBe('400');
+  });
+
+  it('describes that button with the sentence above it (WCAG 2.5.3 / 4.1.2)', async () => {
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const button = screen.getByTestId('retrieval-ef-search-env-pin');
+    // The visible label IS the name — no `aria-label` overriding it.
+    expect(button.getAttribute('aria-label')).toBeNull();
+    expect(button.textContent).toContain('250');
+    const describedBy = button.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)!.textContent).toMatch(/RAG_EF_SEARCH/);
+  });
+
+  it('hands focus to the depth field rather than dropping it when the note clears (WCAG 2.4.3)', async () => {
+    // Review r1 (verification round) — every `Keep` / `Record` on this panel
+    // sits INSIDE the notice it satisfies, so a successful press removes the
+    // pressed element from the document and the browser drops focus to
+    // `<body>`: a keyboard or screen-reader operator loses their place
+    // fourteen controls down the panel and the next Tab restarts from the top
+    // of the page. Verified against the pre-fix source, where
+    // `document.activeElement` really did come back as `<body>`.
+    //
+    // The field is the landing spot because it is what the note was about —
+    // and its `aria-describedby` help ("this is a floor…") is then announced,
+    // which is the sentence an operator who has just taken ownership of the
+    // value needs.
+    mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+      // The server the remedy depends on: once the row exists the next GET
+      // stops reporting the variable, which is what unmounts the note.
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const button = screen.getByTestId('retrieval-ef-search-env-pin');
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
+    expect(
+      document.activeElement,
+      'the button unmounts itself — move focus to the knob it was about, never leave it on <body>',
+    ).toBe(input('ragEfSearch'));
+  });
+
+  it('reports a pin in flight with aria-disabled, never the focus-dropping attribute', async () => {
+    // The third of the panel's self-unmounting remedies, held to the same rule
+    // as the two calibration ones (see their guard for the mechanism): its
+    // `onError` path leaves the note and this button standing, and a `disabled`
+    // attribute would already have moved the operator to `<body>` by then.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    pin.focus();
+    fireEvent.click(pin);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    expect(pin).toHaveAttribute('aria-disabled', 'true');
+    expect(pin).toHaveAttribute('aria-busy', 'true');
+    // See the Keep case above: the attributes are not the in-flight signal.
+    expect(pin).toHaveTextContent(/Keeping 250…/);
+    expect(
+      pin.querySelector('.animate-spin'),
+      'the in-flight state must be visible, not merely announced',
+    ).not.toBeNull();
+    expect(
+      pin,
+      'the `disabled` attribute blurs the pressed button to <body> in a real browser',
+    ).not.toBeDisabled();
+    expect(document.activeElement).toBe(pin);
+
+    await act(async () => {
+      fireEvent.click(pin);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
+  });
+
+  it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {
+    // #1285's other half: 0.3 stays a source constant, and the panel that owns
+    // everything around it says so rather than staying silent.
+    mockApi();
+    renderTab();
+    await ready();
+
+    const note = screen.getByTestId('retrieval-trgm-fixed');
+    expect(note.textContent).toMatch(/fuzzy title/i);
+    expect(note.textContent).toMatch(/0\.3/);
+    expect(note.className).toContain('text-muted-foreground');
+  });
+
+  it('keeps the env note prose too — its own pin is beside the sentence, not inside it', async () => {
+    // Review r2 of the verification round — the panel-wide walker is seeded
+    // twice above, and NEITHER seeding renders `ragEfSearchFromEnv`, so the
+    // one branch the rule is stated for (the source comment beside this note
+    // says the note sits outside the row precisely to obey it) was the one
+    // branch nothing walked. Verified as a gap by mutation: moving the
+    // `</span>` below the `</button>`, i.e. folding this operable control into
+    // the field-description region, left the whole suite green.
+    //
+    // A third cell rather than a re-seeding of the two above: each of those
+    // renders the state that makes ITS counterexample appear (rerank
+    // unassigned with the prior at 0; a stale similarity record), and this
+    // branch needs a third state they cannot carry at the same time without
+    // becoming a test of everything at once.
+    mockApi({ settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true } });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    // The branch really is mounted, or the assertion below is vacuous.
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    expect(pin.getAttribute('aria-describedby')).toBeTruthy();
+    expect(screen.getByTestId('retrieval-ef-search-env-note')).toBeInTheDocument();
+
+    expect(
+      describedRegionOffenders(),
+      'a description is read as one flat string — the pin goes beside the sentence, never inside it',
+    ).toEqual([]);
+  });
+
+  it('hands focus off, never grabs it back from a control the operator moved to', async () => {
+    // Review r2 of the verification round — the handoff fired unconditionally,
+    // so a pin resolving after the operator had moved on YANKED the caret to
+    // the depth field: the same 2.4.3 failure the handoff exists to prevent,
+    // arriving from the other direction. Reachable because a write is in
+    // flight for as long as the server takes and this panel can render two
+    // notices at once.
+    //
+    // It also pins the ruling behind that: the three one-key remedies are
+    // deliberately NOT locked against each other (only against Save, which
+    // re-hydrates the form). They PUT three different single keys, so the
+    // calibration `Keep` stays live while the pin is in flight — and a lock
+    // would not have fixed this anyway, since `aria-disabled` leaves a button
+    // focusable by design.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragEfSearch: 250,
+        ragEfSearchFromEnv: true,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: '11111111-2222-3333-4444-555555555555',
+            model: 'bge-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '11111111-2222-3333-4444-555555555555',
+            liveModel: 'Qwen3-Embedding-4B',
+            liveResolved: true,
+            stale: true,
+          },
+          rerank: null,
+        },
+      },
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+      holdPut: held,
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    pin.focus();
+    fireEvent.click(pin);
+    await waitFor(() => expect(puts).toHaveLength(1));
+
+    // The other remedy is not collateral damage: it writes a different key.
+    const keep = screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(
+      keep,
+      'a pin in flight says nothing about the calibration record beside it',
+    ).not.toHaveAttribute('aria-disabled');
+
+    // The operator moves on while the pin is still writing.
+    keep.focus();
+    expect(document.activeElement).toBe(keep);
+
+    await act(async () => {
+      release();
+      await held;
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
+    );
+
+    expect(
+      document.activeElement,
+      'the pin unmounted itself, but the caret was somewhere else — leave it there',
+    ).toBe(screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep'));
+  });
+});
+
+/**
+ * #1284 — the observed confidence distribution, beside each threshold.
+ *
+ * The panel used to tell operators there is no universal value and then send
+ * them to their own log files to find one. This is that number, on screen,
+ * per basis, with the sample size — because a p90 computed over eleven
+ * questions is not worth tuning against and a readout without a count hides
+ * that.
+ */
+describe('RetrievalTab — observed confidence distribution (#1284)', () => {
+  const similarityId = 'retrieval-ragConfidenceThreshold-distribution';
+  const rerankId = 'retrieval-ragConfidenceThresholdRerank-distribution';
+
+  it('shows p50, p90 and the sample size for each basis', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/last 7 days/i);
+    expect(similarity.textContent).toContain('0.41');
+    expect(similarity.textContent).toContain('0.63');
+    // Grouped, because four digits unseparated read as a version number.
+    expect(similarity.textContent).toMatch(/2,184/);
+
+    const rerank = await screen.findByTestId(rerankId);
+    expect(rerank.textContent).toContain('0.22');
+    expect(rerank.textContent).toContain('0.58');
+    expect(rerank.textContent).toMatch(/1,190/);
+  });
+
+  it('names the surface it measured — assistant questions, not page searches', async () => {
+    mockApi();
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/assistant question/i);
+  });
+
+  it('caveats a sample too small to tune against', async () => {
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/11/);
+    expect(similarity.textContent).toMatch(/too few/i);
+    // The other basis has a real sample and must not inherit the caveat.
+    expect((await screen.findByTestId(rerankId)).textContent).not.toMatch(/too few/i);
+  });
+
+  it('keeps each caveat out of the measurement sentence', async () => {
+    // Review, external round. Every caveat used to be appended to the
+    // measurement's own sentence, so the worst reachable case — a small
+    // sample with #1114's verdict stale, plus a failed re-read — rendered as
+    // one undifferentiated ~290-character run of 12px muted text with the two
+    // numbers the operator came for buried at its head. Siblings are still
+    // prose and a description flattens across children identically, so the
+    // wiring above is unaffected and only the scanning changes.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    await waitFor(() => expect(similarity.textContent).toMatch(/span both scales/i));
+
+    const paragraphs = Array.from(similarity.querySelectorAll('p'));
+    expect(paragraphs.length).toBeGreaterThanOrEqual(3);
+    const measurement = paragraphs.find((p) => /p50/.test(p.textContent ?? ''));
+    expect(measurement, 'no paragraph carries the measurement').toBeDefined();
+    // The numbers stand alone; each caveat is its own line to scan past.
+    expect(measurement!.textContent).not.toMatch(/too few/i);
+    expect(measurement!.textContent).not.toMatch(/span both scales/i);
+  });
+
+  it('says nothing was measured rather than showing an empty distribution', async () => {
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        similarity: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/no assistant questions/i);
+    expect(similarity.textContent).not.toMatch(/p50/);
+  });
+
+  it('names why the rerank basis is empty when the stage is off, and not when it is on', async () => {
+    // ADR-021: unassigned means the stage never runs, so this sample is
+    // empty forever. Left unexplained it reads as a defect.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(rerankId)).textContent).toMatch(/rerank stage is disabled/i),
+    );
+    // …and it must not overstate. With the stage off, the similarity basis is
+    // reached only for a VECTOR-LED set: a keyword-led, image-only or pinned
+    // result set scores basis `none` and is excluded from BOTH readouts. "so
+    // every question is measured on the similarity basis above" left an
+    // operator with a similarity count well below their question volume and
+    // nothing on the panel accounting for the gap.
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(/neither readout/i);
+    // Review, external round — and the list must not read as exhaustive while
+    // omitting the largest residue on a thin corpus. `computeRetrievalConfidence`
+    // has FOUR `none` outcomes: the three named plus an EMPTY result set,
+    // which scores 0 on basis `none` when retrieval was healthy (the ordinary
+    // `no_context` path) and null under a health caveat. Naming three of four
+    // accounts for less of the gap than the sentence appears to.
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(
+      /knowledge base had nothing for/i,
+    );
+
+    vi.restoreAllMocks();
+    mockApi({
+      rerank: assignedRerank(),
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    const second = renderTab();
+    await waitFor(() =>
+      expect(within(second.container).getByTestId(rerankId).textContent).not.toMatch(
+        /rerank stage is disabled/i,
+      ),
+    );
+  });
+
+  it('withholds that explanation while the assignment query has not answered', async () => {
+    // Review r1. The note's guard is `assignments && !rerankActive`, and only
+    // the first half is about evidence: `rerankActive` is false for a query
+    // still IN FLIGHT exactly as it is for one that answered "unassigned", so
+    // without it the panel states "the rerank stage is disabled on this
+    // deployment" before it has been told anything — the `usePageTree`
+    // three-state rule, one surface over, and the same rule the image-leg
+    // notice twenty lines up already follows. Deleting the half left all 111
+    // tests in this file green, which is why this case exists.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mockApi({
+      holdUsecases: gate,
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    // The measurement itself has arrived — this is the empty rerank sample,
+    // rendered with nothing yet known about WHY it is empty.
+    const rerank = await screen.findByTestId(rerankId);
+    await waitFor(() => expect(rerank.textContent).toMatch(/no assistant questions/i));
+    expect(rerank.textContent).not.toMatch(/rerank stage is disabled/i);
+
+    // …and once the assignments really do answer, the panel says it.
+    release();
+    await waitFor(() =>
+      expect(screen.getByTestId(rerankId).textContent).toMatch(/rerank stage is disabled/i),
+    );
+  });
+
+  it('reports a failed read as a failure, never as an empty distribution', async () => {
+    // The #1119 / usePageTree rule on a settings surface: a request that did
+    // not answer is not evidence that nothing was measured, and the two send
+    // an operator in opposite directions.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toMatch(/could not be read/i);
+    expect(similarity.textContent).not.toMatch(/no assistant questions/i);
+    expect(similarity.textContent).not.toMatch(/p50/);
+  });
+
+  it('never tells the operator to reload — that would discard every unsaved knob edit', async () => {
+    // Review r2. `values` is local draft state and Save is a pure value diff
+    // against `saved`, so a reload drops every edit not yet sent — the loss
+    // #949's one-shot `hydrated` flag and the separate Keep mutation both
+    // exist to prevent. The distribution query fails independently of the
+    // settings query, so "the readout failed while I have unsaved edits" is
+    // an ordinary state, not a corner.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    type('ragFetchWidth', '17');
+    for (const testId of [similarityId, rerankId, 'retrieval-distribution-error']) {
+      expect((await screen.findByTestId(testId)).textContent).not.toMatch(/reload/i);
+    }
+    // And the edit really is still there, which is the thing the old copy
+    // would have thrown away.
+    expect(input('ragFetchWidth').value).toBe('17');
+  });
+
+  it('offers a Retry that re-reads the distribution, outside the description region', async () => {
+    // The recovery is a control, and a control can never live inside a
+    // threshold row's readout: that paragraph is the input's
+    // `aria-describedby` region and must stay prose. One query serves both
+    // bases, so one Retry serves both rows.
+    let fail = true;
+    mockApi({
+      confidenceDistribution: () => (fail ? 'error' : defaultConfidenceDistribution),
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    expect(retry.tagName).toBe('BUTTON');
+    // Visible label is the name (WCAG 2.5.3), disambiguated by its sentence.
+    expect(retry.getAttribute('aria-label')).toBeNull();
+    expect(
+      document.getElementById(retry.getAttribute('aria-describedby') ?? ''),
+    ).not.toBeNull();
+    // Outside every description region on the panel — the sweep below bans
+    // it, but this states the placement rule where the control is added.
+    for (const el of Array.from(document.querySelectorAll('[aria-describedby]'))) {
+      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+        if (id === retry.getAttribute('aria-describedby')) continue;
+        expect(document.getElementById(id)?.contains(retry)).not.toBe(true);
+      }
+    }
+
+    fail = false;
+    fireEvent.click(retry);
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(screen.queryByTestId('retrieval-distribution-retry')).toBeNull();
+  });
+
+  it('keeps the measured figures when a REFETCH fails over a cached distribution', async () => {
+    // Review r1 — the THIRD state of CLAUDE.md's `usePageTree` rule, which the
+    // first cut of this readout skipped. react-query settles a failed refetch
+    // as `status: 'error'` while KEEPING `data`, and this panel's client sets
+    // `staleTime: 30_000` with the default `refetchOnWindowFocus`, so
+    // alt-tabbing back during a backend blip lands here routinely. Branching
+    // on `isError` alone replaced a real 2,184-question measurement with "there
+    // is nothing measured to check this threshold against" — a sentence that is
+    // FALSE in this state, and that points at the opposite remedy.
+    let fail = false;
+    mockApi({ confidenceDistribution: () => (fail ? 'error' : defaultConfidenceDistribution) });
+    const { queryClient } = renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+
+    fail = true;
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    });
+
+    for (const [testId, p50] of [[similarityId, '0.41'], [rerankId, '0.22']] as const) {
+      const line = await screen.findByTestId(testId);
+      // The figures survive — they were measured, and only the re-read failed.
+      expect(line.textContent).toContain(p50);
+      expect(line.textContent).not.toMatch(/there is nothing measured/i);
+      // And they are marked as not current, so nobody reads them as live.
+      expect(line.textContent).toMatch(/latest read failed/i);
+    }
+    // The section notice says which of the two failures this is.
+    const strip = await screen.findByTestId('retrieval-distribution-error');
+    expect(strip.textContent).toMatch(/could not be re-read/i);
+    expect(strip.textContent).not.toMatch(/neither threshold below has a measurement/i);
+  });
+
+  it('announces the failed read, and says when a retry is in flight', async () => {
+    // Review r1 — the panel's two other failure strips are `role="status"`.
+    // Without it this one appeared silently: it renders on a query that fails
+    // in the background, and its Retry could fail again with nothing on the
+    // page announcing either event (WCAG 4.1.3).
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: () => {
+        attempts += 1;
+        return 'error';
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-distribution-error');
+    expect(strip).toHaveAttribute('role', 'status');
+    // Review r2 — and it must NEVER carry one. `aria-busy="true"` on a live
+    // region withholds updates to that region until it clears, so pairing it
+    // with the `Retry` → `Retrying…` swap silenced the very announcement the
+    // swap exists to produce. The busy state lives on the button instead.
+    expect(strip).not.toHaveAttribute('aria-busy');
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    expect(retry.textContent).toMatch(/^Retry$/);
+
+    const before = attempts;
+    fireEvent.click(retry);
+    // The region NEVER leaves the DOM (review r2), so the press and the
+    // repeated failure both land as content changes inside one live region —
+    // `Retry` → `Retrying…` → `Retry`. The r1 cut let the strip unmount here
+    // and called the RETURN the announcement, which meant a screen-reader
+    // user got nothing at all until the request settled, and a sighted
+    // keyboard user lost focus to `<body>` in between.
+    await waitFor(() => expect(attempts).toBeGreaterThan(before));
+    expect(screen.getByTestId('retrieval-distribution-error')).toBe(strip);
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-error')).toHaveAttribute('role', 'status'),
+    );
+    expect((await screen.findByTestId(similarityId)).textContent).toMatch(/could not be read/i);
+  });
+
+  it('reports a retry in flight over a cached distribution', async () => {
+    // The other half of the announcement (review r1), and the state where it
+    // is reachable: with `data` cached react-query keeps `status: 'error'`
+    // through the refetch, so the strip stays mounted and NOTHING would change
+    // while the request is out or when it fails again. The busy label is
+    // content inside the live region, which is what gets announced —
+    // `aria-busy` alone is a property beside it.
+    let releaseRetry: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        if (attempts === 1) return defaultConfidenceDistribution;
+        if (attempts > 2) await held;
+        return 'error';
+      },
+    });
+    const { queryClient } = renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+
+    // Read 2 fails over the cached figures — the stale state.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    });
+    const strip = await screen.findByTestId('retrieval-distribution-error');
+    expect(strip).not.toHaveAttribute('aria-busy');
+    expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/);
+
+    // Read 3 is held open, so the in-flight state is observable rather than raced.
+    fireEvent.click(screen.getByTestId('retrieval-distribution-retry'));
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
+    );
+    expect(screen.getByTestId('retrieval-distribution-error')).not.toHaveAttribute('aria-busy');
+    // The figures are still on screen while it is out — the retry is not a
+    // reason to hide a measurement the panel already has.
+    expect(screen.getByTestId(similarityId).textContent).toContain('0.41');
+
+    await act(async () => {
+      releaseRetry!();
+      await held;
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/),
+    );
+  });
+
+  it('keeps the Retry mounted, focused and busy through a retry with NOTHING cached', async () => {
+    // Review r2 — the branch where the busy affordance was unreachable, and
+    // the default failure state (a first load against a backend that has not
+    // run migration 098, or an erroring endpoint).
+    //
+    // react-query's `fetchState` spreads `...data === undefined && { error:
+    // null, status: 'pending' }`, so a refetch of an errored query with NO
+    // cached data drops back to `pending`: `isError` goes false and the whole
+    // `{distributionError && (…)}` strip unmounted UNDER THE USER'S FOCUS the
+    // instant they pressed it. Focus fell to `<body>` in a panel with ~30 tab
+    // stops, the `Retrying…`/`disabled` state added in r1 could never render
+    // here, and nothing in a live region reported the press. Production holds
+    // that window open for seconds — `query-client.ts` retries a 500 twice
+    // more with exponential backoff.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        // Read 2 (the user's Retry) is held open, so the in-flight state is
+        // observable rather than raced.
+        if (attempts > 1) await held;
+        return 'error';
+      },
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+    // Nothing is cached — this is the `distributionLost` branch, not `stale`.
+    expect((await screen.findByTestId(similarityId)).textContent).toMatch(/could not be read/i);
+
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
+    );
+    // The same element, still in the tree, still holding focus.
+    expect(screen.getByTestId('retrieval-distribution-retry')).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    // Review r3 — `aria-disabled`, and the assertion above is only meaningful
+    // WITH it. A native `disabled` is blurred by the browser under the HTML
+    // focus fixup rule (and `nm-button-ghost`'s `:disabled` adds
+    // `pointer-events: none`), so `activeElement` would be `<body>` in Chrome,
+    // Firefox and Safari for the whole multi-second window — the exact defect
+    // this test's own r2 comment says the strip exists to prevent. jsdom
+    // implements none of that: it leaves focus on a disabled button, so the
+    // r2 cut asserted focus retention and `toBeDisabled()` in this same block,
+    // a pair that cannot both hold in a browser.
+    expect(retry).not.toBeDisabled();
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    // `aria-disabled` blocks no events, so pressing it again while the read is
+    // out must be inert. (Honest note: react-query dedupes an in-flight
+    // refetch, so this assertion also holds without the handler's own guard —
+    // the guard is there so the contract does not depend on that, and the
+    // mutation-checked half of this test is the attribute above.)
+    const during = attempts;
+    fireEvent.click(retry);
+    expect(attempts).toBe(during);
+    expect(screen.getByTestId('retrieval-distribution-retry')).toBe(retry);
+    expect(screen.getByTestId('retrieval-distribution-error')).toBeInTheDocument();
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+    // It fails again: the control comes back to rest without ever having moved.
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/),
+    );
+    expect(retry).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(retry);
+  });
+
+  it('keeps the in-flight label readable — the only channel the busy state has', async () => {
+    // Review r1. `aria-busy` is refused on this button AND on its region (the
+    // two comments above say why), so `Retrying…` is the whole busy state. At
+    // `opacity-45` it composited to 3.93:1 in Graphite and 2.88:1 in Paper
+    // (`--color-foreground` over `--color-background`, computed from the
+    // tokens), under the 4.5:1 floor its 12px text is held to; 70% clears it
+    // at 8.00 / 6.36. WCAG's inactive-component exemption does not apply —
+    // this control is deliberately NOT inactive: it keeps focus and its
+    // handler is what refuses. `AuthPanel`'s SSO re-check, the shape this was
+    // modelled on, already uses 70. Asserted as a FLOOR rather than a literal
+    // so a retune upward is free and only a regression fails.
+    mockApi({ confidenceDistribution: 'error' });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    const disabledOpacity = /aria-disabled:opacity-(\d+)/.exec(retry.className);
+    expect(disabledOpacity, 'the Retry declares no aria-disabled opacity').not.toBeNull();
+    expect(Number(disabledOpacity![1])).toBeGreaterThanOrEqual(70);
+  });
+
+  it('hands focus to the measurement when the Retry SUCCEEDS and the strip goes away', async () => {
+    // Review r3 — the ordinary outcome of pressing Retry, and the half the r2
+    // fix left standing. On success `distributionError` and `retryInFlight`
+    // both clear in the same settle, so the strip — and the button the user
+    // activated — is removed with focus on it, and focus falls to `<body>` in
+    // the ~30-tab-stop panel the r2 comment calls unacceptable one branch
+    // over. Success is the MORE common instance of that case.
+    let fail = true;
+    mockApi({
+      confidenceDistribution: () => (fail ? 'error' : defaultConfidenceDistribution),
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    expect(document.activeElement).toBe(retry);
+
+    fail = false;
+    fireEvent.click(retry);
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(screen.queryByTestId('retrieval-distribution-retry')).toBeNull();
+
+    // Focus lands on the measurement the press produced, not on `<body>`.
+    const readout = screen.getByTestId(similarityId);
+    await waitFor(() => expect(document.activeElement).toBe(readout));
+    // And it is still prose: `tabIndex={-1}` is programmatically focusable
+    // without adding a tab stop, so the description region it sits inside
+    // gains nothing operable. (The element is the readout REGION rather than
+    // a single `<p>` since the caveats were split into siblings — the claim
+    // was never the tag name, it was that nothing here is operable.)
+    expect(readout.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
+    expect(readout.getAttribute('tabindex')).toBe('-1');
+    // Review, external round — and it shows that focus in the project's own
+    // colour. Measured in Chromium, the focused readout painted the UA
+    // default 1px `rgb(0, 95, 204)` outline across its full width;
+    // `nm-focus-ring` is index.css's standalone `:focus-visible` mechanic for
+    // a surface that wants the Steel ring without a button recipe.
+    expect(readout.className).toMatch(/(^|\s)nm-focus-ring(\s|$)/);
+  });
+
+  it('does NOT steal focus when the user moved on during the retry', async () => {
+    // The other half of the rule above. `query-client.ts` retries a non-4xx
+    // twice with backoff, so the window is seconds long and the operator can
+    // legitimately be typing in a knob at the far end of the panel by the time
+    // it settles. Focus is rehomed only when the unmount really dropped it.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        if (attempts === 1) return 'error';
+        await held;
+        return defaultConfidenceDistribution;
+      },
+    });
+    renderTab();
+    await ready();
+
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/retrying/i),
+    );
+
+    // The operator goes back to work while the read is out.
+    const elsewhere = input('ragFetchWidth');
+    elsewhere.focus();
+    expect(document.activeElement).toBe(elsewhere);
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it('never reports a BACKGROUND re-read as a retry the user started', async () => {
+    // Review r3 — this client leaves `refetchOnWindowFocus` at its v5 default
+    // with `staleTime: 30_000`, so alt-tabbing back into the stale strip
+    // starts a read nobody pressed anything for. Folding `isFetching` into the
+    // busy state relabelled the button `Retrying…` and stood it down for that
+    // read — a system event announced as the user's own action inside a
+    // `role="status"` region, and (with a native `disabled`) a focus drop for
+    // a request they never made.
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    mockApi({
+      confidenceDistribution: async () => {
+        attempts += 1;
+        if (attempts === 1) return defaultConfidenceDistribution;
+        if (attempts > 2) await held;
+        return 'error';
+      },
+    });
+    const { queryClient } = renderTab();
+    await ready();
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toContain('0.41'),
+    );
+
+    // Read 2 fails over the cached figures — the stale strip appears.
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    });
+    const retry = await screen.findByTestId('retrieval-distribution-retry');
+    retry.focus();
+
+    // Read 3 is a BACKGROUND refetch — no click — and is held open.
+    void queryClient.refetchQueries({ queryKey: ['confidence-distribution'] });
+    await waitFor(() => expect(attempts).toBeGreaterThan(2));
+
+    expect(screen.getByTestId('retrieval-distribution-retry').textContent).toMatch(/^Retry$/);
+    expect(retry).not.toHaveAttribute('aria-disabled');
+    expect(retry).not.toBeDisabled();
+    expect(document.activeElement).toBe(retry);
+
+    await act(async () => {
+      release!();
+      await held;
+    });
+  });
+
+  it('states the window the SERVER measured, not the one the panel assumes', async () => {
+    // Review r3 — every fixture carried the same 7 as the fallback constant,
+    // so the whole suite stayed green with the wire value ignored and the
+    // constant hardcoded at both call sites. The window is a server fact (the
+    // endpoint's `windowDays`), and the follow-up this PR proposes is a
+    // bounded `days` parameter — at which point a panel printing "last 7
+    // days" beside a 30-day sample would be a lie nothing could fail on.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        windowDays: 14,
+        rerank: { p50: null, p90: null, count: 0 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    // The figures branch and the empty branch both print the server's window.
+    await waitFor(async () =>
+      expect((await screen.findByTestId(similarityId)).textContent).toMatch(/last 14 days/i),
+    );
+    expect((await screen.findByTestId(similarityId)).textContent).not.toMatch(/last 7 days/i);
+    expect((await screen.findByTestId(rerankId)).textContent).toMatch(/last 14 days/i);
+  });
+
+  it('places the percentile AT the threshold, and calls it a ceiling on refusals', async () => {
+    // Review r1 — the gate refuses when `score < threshold` (llm-ask.ts), so a
+    // threshold set at p50 puts about half the sample below the bar and one at
+    // p90 about nine in ten. The first cut said "a threshold above p50 refuses
+    // about half", which is off by a whole percentile: an operator setting the
+    // p90 figure this readout prints would expect 50% and get roughly 90%.
+    //
+    // Review r2 — and "below the bar" is not "refused". `llm-ask.ts` computes
+    // `otherGrounding` and short-circuits `refusalReason` to null BEFORE the
+    // threshold comparison, so a turn with a sub-page tree, an attached
+    // document, web results or a substantive prior turn is answered at any
+    // threshold — while its analytics row, written during retrieval, is in
+    // the sample regardless. `hasSubstantiveHistory` makes that every
+    // follow-up turn in a conversation, so the copy must not sell the
+    // percentile as the refusal rate.
+    //
+    // Review r1 — the rule now lives beside the first distribution rather
+    // than in the section description, which had grown to 111 words against
+    // an 11–40-word house style and restated the row help and the readout
+    // within about 200px of them. So this asserts it where an operator reads
+    // it, and asserts it is stated ONCE: duplicating it per row would put it
+    // back into both inputs' accessible descriptions, which is the length
+    // problem one layer down.
+    mockApi();
+    renderTab();
+    await ready();
+
+    const rule = screen.getByText(/is a ceiling on how often the gate refuses/i);
+    expect(rule.textContent).toMatch(/set at p50 puts about half/i);
+    expect(rule.textContent).toMatch(/below the\s+bar/i);
+    expect(rule.textContent).toMatch(/p90.{0,30}nine in ten/i);
+    expect(rule.textContent).not.toMatch(/above p50/i);
+    // At least one of the ways a turn earns the qualification.
+    expect(rule.textContent).toMatch(/sub-page tree|attached document|earlier answer/i);
+    // It must never state the percentile AS the rate.
+    expect(rule.textContent).not.toMatch(/p50 refuses about half/i);
+    // Stated once on the panel, and not by the section description, which
+    // keeps the one-line orienting job its siblings have.
+    expect(screen.getAllByText(/nine in ten/i)).toHaveLength(1);
+    const sectionDescription = screen.getByText(/Under each knob is the distribution/i);
+    expect(sectionDescription.textContent).not.toMatch(/nine in ten/i);
+    expect(sectionDescription.textContent!.trim().split(/\s+/).length).toBeLessThan(60);
+  });
+
+  it('says the window can span two scales while the basis model has changed', async () => {
+    // Review r2 — #1114's strip says "re-tune it below", and "below" is this
+    // readout, which carries NO model provenance: migration 098 adds
+    // `confidence`, `confidence_basis` and `surface` and no provider or model,
+    // so the endpoint cannot filter the window to one model. Without this the
+    // panel's own remedy points at a 7-day sample that may be mostly the
+    // previous model's numbers, with nothing on screen saying so.
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const similarity = await screen.findByTestId(similarityId);
+    await waitFor(() => expect(similarity.textContent).toMatch(/span both scales/i));
+    // It hedges rather than asserting how much of the window predates the
+    // change — the panel has no swap timestamp, and the r3 rule is that a
+    // notice states what it knows.
+    expect(similarity.textContent).not.toMatch(/were measured on bge-m3/i);
+    // The basis whose calibration is NOT stale must not inherit it.
+    expect((await screen.findByTestId(rerankId)).textContent).not.toMatch(/span both scales/i);
+  });
+
+  it('carries no provenance caveat while the recorded model still matches', async () => {
+    // Mutation guard for the test above: an unconditional sentence would pass
+    // it and put a permanent caveat on every deployment that never swapped.
+    mockApi();
+    renderTab();
+    await ready();
+
+    for (const testId of [similarityId, rerankId]) {
+      expect((await screen.findByTestId(testId)).textContent).not.toMatch(/span both scales/i);
+    }
+  });
+
+  it('is wired to the input it is about, and is prose the description can carry', async () => {
+    // Review r2 — BOTH thresholds, not just the similarity one. `NumberRow`'s
+    // wiring is per-row and opt-in, so deleting `describedBy` from the
+    // rerank row alone left the whole suite green while its readout stopped
+    // reaching the input's accessible description; the sweep below cannot see
+    // that, because it only inspects regions that ARE still wired.
+    //
+    // Review r1 — the description is the READOUT PARAGRAPH, not the row's
+    // whole help block. A description flattens to one unskippable string
+    // re-read on every focus, and the block form measured 159 words / 975
+    // characters on the rerank row (two scale-caveat paragraphs plus the
+    // readout plus its empty note), of which the measurement this feature
+    // exists to surface was about thirty. The caveats are visible prose and
+    // are read in ordinary reading order either way.
+    mockApi();
+    renderTab();
+    await ready();
+
+    for (const [fieldKey, expected] of [
+      ['ragConfidenceThreshold', '0.41'],
+      ['ragConfidenceThresholdRerank', '0.22'],
+    ] as const) {
+      const control = input(fieldKey);
+      const describedBy = control.getAttribute('aria-describedby');
+      expect(describedBy, `${fieldKey} has no description`).toBeTruthy();
+      const region = document.getElementById(describedBy!);
+      expect(region, `${fieldKey} description resolves to nothing`).not.toBeNull();
+      // Its OWN readout, and ONLY its readout — the described element IS the
+      // measurement paragraph, so the description cannot silently regrow into
+      // the surrounding prose.
+      expect(region!.getAttribute('data-testid')).toBe(`retrieval-${fieldKey}-distribution`);
+      await waitFor(() => expect(region!.textContent).toContain(expected));
+      expect(region!.textContent).not.toMatch(/Basis: max/i);
+      // A description flattens to one string, so nothing operable may live in
+      // it (the rule #1285 states for this panel's rows).
+      expect(region!.querySelectorAll('button, a, input, select, textarea')).toHaveLength(0);
+    }
+  });
+
+  it('leaves no description on the panel carrying an operable control', async () => {
+    // Review r1 — the assertion above certifies the ONE row that complies.
+    // The rule is about `aria-describedby` itself, not about this feature, so
+    // it is swept over every wired control the panel renders: the first cut
+    // pointed all eleven `NumberRow`s at their help block, three of which
+    // carry a wayfinding `<Link>` or the `Use measured value` button, and a
+    // flattened description announces those as prose with no way to act.
+    mockApi();
+    renderTab();
+    await ready();
+
+    const offenders: string[] = [];
+    for (const el of Array.from(document.querySelectorAll('[aria-describedby]'))) {
+      for (const id of (el.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+        const region = document.getElementById(id);
+        for (const operable of Array.from(
+          region?.querySelectorAll('button, a, input, select, textarea') ?? [],
+        )) {
+          offenders.push(`${id} -> ${operable.tagName}:${operable.textContent?.trim()}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('is neutral and muted — a measurement never borrows a status hue', async () => {
+    // Review r1 — ADR-010 reserves amber for attention and Steel for action,
+    // and this is neither: it is the `QualityScoreBadge` de-colouring
+    // argument on a settings surface. The CLAUDE.md paragraph #1284 wrote
+    // says so; without this the rule is prose nothing can fail on, the gap
+    // `workspace-themes.test.ts` closes for the quality badge by parsing its
+    // classes.
+    mockApi({
+      confidenceDistribution: {
+        ...defaultConfidenceDistribution,
+        // The small-sample branch is the one most likely to reach for amber.
+        similarity: { p50: 0.4, p90: 0.8, count: 11 },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const banned = /\b(text-warning|text-primary|text-destructive|text-info|bg-warning|border-warning|status-)/;
+    for (const testId of [similarityId, rerankId]) {
+      const line = await screen.findByTestId(testId);
+      for (const el of [line, ...Array.from(line.querySelectorAll('*'))]) {
+        expect(el.className, `${testId}: ${el.className}`).not.toMatch(banned);
+      }
+      // Muted body text, inherited from the row's help block.
+      expect(line.closest('.text-muted-foreground')).not.toBeNull();
+    }
+  });
+
+  it('does not displace the calibration strip from directly above its control', async () => {
+    // The readout lives INSIDE the row, under the help text. Placed between
+    // the strip and the row it would break the adjacency the #1114 strip
+    // depends on — the assertion that a strip parked elsewhere in the panel
+    // is not "above the control it is about".
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: 'p1', model: 'bge-m3', setAt: '2026-01-01T00:00:00.000Z',
+            stale: true, liveModel: 'Qwen3-Embedding-4B', liveResolved: true,
+          },
+          rerank: null,
+        },
+      },
+    });
+    renderTab();
+    await ready();
+
+    const strip = await screen.findByTestId('retrieval-ragConfidenceThreshold-calibration-stale');
+    const row = input('ragConfidenceThreshold').closest('div.space-y-1\\.5');
+    expect(row!.previousElementSibling).toBe(strip);
+    expect(within(row as HTMLElement).getByTestId(similarityId)).toBeInTheDocument();
+  });
+
+  it('reads the measurement, never the draft in the field', async () => {
+    // The distribution describes what the deployment DID; typing a new
+    // threshold cannot change it, and a readout that moved with the field
+    // would be a mirror rather than evidence.
+    mockApi();
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragConfidenceThreshold').value).toBe('0'));
+
+    type('ragConfidenceThreshold', '0.9');
+    const similarity = await screen.findByTestId(similarityId);
+    expect(similarity.textContent).toContain('0.41');
+    expect(similarity.textContent).toContain('2,184');
   });
 });

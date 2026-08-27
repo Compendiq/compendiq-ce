@@ -6,6 +6,9 @@ export class ApiError extends Error {
   constructor(
     public statusCode: number,
     message: string,
+    public code?: string,
+    public remoteVersion?: number,
+    public localVersion?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -110,10 +113,28 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
-    throw new ApiError(res.status, await failureMessage(res));
+    const raw = (await res.json().catch(() => null)) as {
+      message?: unknown;
+      error?: unknown;
+      code?: unknown;
+      remoteVersion?: unknown;
+      localVersion?: unknown;
+    } | null;
+    throw new ApiError(
+      res.status,
+      messageFromErrorBody(raw, res),
+      typeof raw?.code === 'string' ? raw.code : undefined,
+      typeof raw?.remoteVersion === 'number' ? raw.remoteVersion : undefined,
+      typeof raw?.localVersion === 'number' ? raw.localVersion : undefined,
+    );
   }
 
-  if (res.headers.get('content-type')?.includes('application/json') && !isBodyless(res.status)) {
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/octet-stream') && !isBodyless(res.status)) {
+    return (await res.blob()) as T;
+  }
+
+  if (contentType.includes('application/json') && !isBodyless(res.status)) {
     try {
       return (await res.json()) as T;
     } catch {
@@ -128,6 +149,13 @@ export async function apiFetch<T = unknown>(
     }
   }
   return undefined as T;
+}
+
+/** Authenticated binary GET for same-origin client-model assets (#1418). */
+export async function apiFetchBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const blob = await apiFetch<Blob | undefined>(path, options);
+  if (blob instanceof Blob) return blob;
+  throw new ApiError(500, 'Expected binary asset');
 }
 
 /** Statuses that carry no body at all, so there is nothing to parse. */
@@ -147,8 +175,10 @@ function isBodyless(status: number): boolean {
  * — or to a bare `'Request failed'` that took a full code audit to trace to a
  * branch. Both now carry the status code (#1178).
  */
-async function failureMessage(res: Response): Promise<string> {
-  const body = (await res.json().catch(() => null)) as { message?: unknown; error?: unknown } | null;
+function messageFromErrorBody(
+  body: { message?: unknown; error?: unknown } | null,
+  res: Response,
+): string {
   if (typeof body?.message === 'string' && body.message.trim()) return body.message;
   // Several admin routes answer `{error: <human text>}` (the shadow-migration
   // refusals, provider guards, probe 404s). Surface that text rather than a

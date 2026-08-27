@@ -20,6 +20,7 @@ natively on GitHub and diff cleanly in PRs. Do not add binary diagram exports
 | 9 | RAG Chat Flow | [`09-flow-rag-chat.md`](./09-flow-rag-chat.md) | Ask pipeline: retrieve → prompt → stream |
 | 10 | Enterprise License Flow | [`10-flow-enterprise-license.md`](./10-flow-enterprise-license.md) | Open-core plugin loading + license persistence |
 | 11 | Content Format Pipeline | [`11-content-pipeline.md`](./11-content-pipeline.md) | Confluence XHTML ↔ HTML ↔ Markdown ↔ Editor |
+| 12 | Real-time Collaboration | [`12-realtime-collaboration.md`](./12-realtime-collaboration.md) | Yjs CRDT gateway, dual-run presence, BYTEA persist |
 
 ## Runbooks
 
@@ -47,6 +48,7 @@ Quick reference for what to update when:
 | A new backend domain, service in `backend/src/domains/*`, or route group | `03-backend-domains.md` |
 | `backend/eslint.config.js` `boundaries` rules | `03-backend-domains.md` |
 | A new top-level `frontend/src/features/*` folder or provider | `04-frontend-structure.md` |
+| A new **route** inside an existing `frontend/src/features/*` folder, or a provider's data model changing | `04-frontend-structure.md` |
 | A migration that adds/drops/renames a core table or FK | `06-data-model.md` |
 | Auth routes, JWT/refresh logic, or OIDC wiring | `07-flow-auth.md` |
 | `sync-service.ts`, sync scheduler, attachment handler | `08-flow-sync.md` |
@@ -59,8 +61,10 @@ Quick reference for what to update when:
 | The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
-| `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, XHTML/HTML/Markdown conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
+| `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |
 | `image-references.ts` (the `<img src>` enumerator or `buildPageImageUrl`), or anything that changes how an attachment URL is spelled into `body_html` | `11-content-pipeline.md`, `03-backend-domains.md`, `06-data-model.md` |
+| Collab gateway (`pages-collab.ts`, `@fastify/websocket`, Redis `collab:*`), `page_collaborative_docs`, or `collab_editing_enabled` | `12-realtime-collaboration.md` (and `06-data-model.md` if the table or FK changes) |
+| Collab editor (`use-collab-provider.ts`, Editor Collaboration + Caret, PresenceAvatarStack merge, `collabEditingEnabled` toggle) | `04-frontend-structure.md`, `12-realtime-collaboration.md` |
 
 If a change spans multiple areas, update every affected diagram. If a diagram
 becomes stale and you are not sure how to update it, flag it in the PR

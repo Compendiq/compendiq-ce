@@ -137,6 +137,15 @@ sequenceDiagram
   `NODE_EXTRA_CA_CERTS` for self-signed internal CAs.
 - **Idempotency** — upsert by `(user_id, confluence_id)`. `version` column
   is written from Confluence's own version counter; no double-writes.
+- **Live collab rooms (#1448)** — while `collab:active:{pageId}` is non-empty,
+  inbound sync must not treat snapshot HTML drift as `htmlChanged` and
+  confluence-wins overwrite the CRDT session. `applyConflictPolicyForExistingPage`
+  skips that overwrite unless the remote `version.number` **increased**. On
+  increase: apply the inbound HTML, rebuild BYTEA, send control `doc_reset`,
+  close sockets **1001**. Collab **commit** for Confluence pages GETs the
+  remote version first; a moved version is 409 `{ code: 'confluence_modified' }`
+  with the room left live, and `client.updatePage` runs **before** the local
+  `pages.version` write (same order as PUT).
 - **Timezone-safe incremental window (#858)** — `getModifiedPages` builds the
   `lastmodified >=` lower bound as a **minute-granular CQL datetime literal**
   (`yyyy/MM/dd HH:mm`, from the UTC wall-clock) widened by a **24h overlap
@@ -225,7 +234,12 @@ surface within a normal sync cycle rather than lingering until a rare full run.
   first. A `200 current` answer skips the purge (the page exists upstream — left
   for reconciliation); an inconclusive answer (403/5xx/network) defers to a later
   cycle. Confirmations are capped at `MAX_DELETION_CONFIRMATIONS` per run, oldest
-  first; a larger backlog converges over subsequent cycles.
+  first; a larger backlog converges over subsequent cycles. A purge that goes
+  through returns `id, confluence_id` and, per row, drops the attachment cache
+  (`cleanPageAttachments`, by `confluence_id`) **and** the uploaded page icon
+  (`page-icons/<pages.id>/`, #1349) — the two stores are keyed differently, and
+  the icon store is one nothing else ever collects from. See the unsync section
+  below for why the icon delete always follows a committed `DELETE`.
 
 The same 404-tolerance applies to **user-initiated delete** (`DELETE /api/pages/:id`
 and the bulk path): if Confluence answers 404 the remote page is already gone, so
@@ -247,8 +261,14 @@ visibly:
    the page upstream).
 3. **On upstream success or 404** — finish the hard local cleanup
    (`pinned_pages` + `pages`; embeddings/versions cascade via FK) inside **one**
-   `BEGIN…COMMIT` on a dedicated pool client. Attachment files are cleaned
-   best-effort after commit (filesystem can't join the transaction).
+   `BEGIN…COMMIT` on a dedicated pool client, deleting `RETURNING id`.
+   Filesystem work follows, best-effort (it can't join the transaction), and
+   the two stores follow **different** rules there: the attachment **cache** is
+   cleaned either way (re-fetchable from Confluence, so orphaned files are the
+   acceptable cost of a rollback), while the uploaded page **icon** is
+   discarded only for the ids the COMMIT actually returned — see the unsync
+   section below for why. That branch matters because step 3's `catch`
+   deliberately does not re-throw.
 4. **On upstream failure (non-404)** — clear the soft-delete (only if this
    request set it) and surface the error: **neither side changed**.
 
@@ -488,6 +508,7 @@ sequenceDiagram
     participant R as DELETE /api/spaces/:key
     participant SV as sync-service.unsyncSpace
     participant AH as attachment-handler
+    participant PI as core/page-icon-store
     participant DB as Postgres
 
     A->>R: DELETE /api/spaces/:key (admin JWT)
@@ -504,12 +525,15 @@ sequenceDiagram
             SV->>AH: cleanPageAttachments(pageId) — purge local files
         end
         SV->>DB: BEGIN
-        SV->>DB: DELETE FROM pages WHERE space_key = ? (cascades → page_embeddings, page_versions)
+        SV->>DB: DELETE FROM pages WHERE space_key = ? RETURNING id<br/>(cascades → page_embeddings, page_versions)
         SV->>DB: DELETE FROM space_role_assignments WHERE space_key = ?
         SV->>DB: DELETE FROM oidc_group_role_mappings WHERE space_key = ?
         SV->>DB: UPDATE templates SET space_key = NULL WHERE space_key = ?
         SV->>DB: DELETE FROM spaces WHERE space_key = ?
         SV->>DB: COMMIT (ROLLBACK + re-throw on any error)
+        loop per DELETED id (best-effort, AFTER the commit — #35;1349)
+            SV->>PI: discardPageIconForDeletedPage(id) — rm page-icons/{id}/
+        end
         SV-->>R: { pagesDeleted }
         R->>R: invalidateRbacCache + cache.invalidate(userId, 'spaces'/'pages')
         R->>R: logAuditEvent(SPACE_UNSYNCED)
@@ -525,6 +549,29 @@ Key properties:
   pooled client (same pattern as `postgres.ts`). On any error we `ROLLBACK` and
   re-throw, so a crash mid-purge can never leave a space half-removed.
 - **Cascade** — `DELETE FROM pages` cascades to `page_embeddings` and `page_versions` via FK `ON DELETE CASCADE` (migration 030).
+- **Uploaded page icons go too — but only after the COMMIT (#1349).** The icon
+  store is a third tree under the same attachments root, keyed by `pages.id`
+  whatever the page's source, and `cleanPageAttachments` never touches it; the
+  #1349 orphan sweep is forbidden to walk it by name
+  (`ATTACHMENT_ROOT_RESERVED_DIRNAMES`), so an event-driven delete is the only
+  thing that ever collects a mark. It runs over the ids the `DELETE … RETURNING
+  id` actually destroyed, **after** the commit rather than beside
+  `cleanPageAttachments` before it: the attachment cache is re-fetchable from
+  Confluence (so orphaned files are the acceptable cost of a rollback), while
+  migration 095 persists only `icon_kind`/`icon_value` and the bytes have no
+  second copy — deleting them ahead of the transaction would leave a ROLLBACK
+  restoring every page row with `icon_kind = 'image'` pointing at nothing. Best
+  effort and never fatal, like the cache cleanup. **All four call sites obey
+  that one rule**: `purgeDeletedPages` removes the same directory for each
+  expired soft-deleted page after its own committed `DELETE … RETURNING id,
+  confluence_id`, and so do the user-initiated delete routes — single and bulk
+  — over the ids their cleanup transaction returned. Those two are where the
+  rule earns its keep: their `catch` logs and does **not** re-throw (the
+  upstream delete already happened, so the request still succeeds), so a
+  rolled-back cleanup leaves every row alive and soft-deleted with
+  `icon_kind = 'image'` intact, and a discard on that branch would destroy the
+  only copy of a live page's mark. Left alone it converges — the 30-day purge
+  collects it after a delete that did commit.
 - **Shadow dual-write (#1116)** — while a zero-downtime embedding-model change
   is backfilling, `embedPage` embeds each page's chunks with **both** models and
   writes `embedding` + `embedding_next` in the same insert (a shadow-provider
@@ -701,6 +748,16 @@ reconcile's keep-set is the BODY's references and deleting cached files never
 touches `body_html` — so every image comes back as a `missing` skip whose row is
 deliberately kept.
 
+**#1349's orphan sweep is the fourth caller of that module, and the only one
+that also DELETES index rows.** A live `attachment-sweep-service` run removes
+the `page_image_embeddings` rows of the files it deleted — a safety net that
+normally finds none, since a `missing` row's file is still referenced by a body
+and is therefore in the sweep's global keep-set — and marks the affected pages
+`image_embedding_dirty` through `markPageImagesDirty`, which now answers
+`Promise<boolean>` (did the row move) so the run can report `pagesMarkedDirty`
+rather than guess at it. Same reasoning as `cleanPageAttachments` above: the
+flag re-queues a page for a re-read and never shrinks the index.
+
 **Page-body writes raise it too, and not through that module.** Each sets the
 column inline in an UPDATE (or INSERT) it already owns, in two flavours. The
 sync upsert, both relocate directions and both `pages-crud.ts` create arms raise
@@ -725,6 +782,10 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/domains/confluence/services/sync-service.ts` — `syncSpace`, `unsyncSpace`, `purgeDeletedPages`
 - `backend/src/domains/confluence/services/confluence-client.ts`
 - `backend/src/domains/confluence/services/attachment-handler.ts`
+- `backend/src/domains/confluence/services/attachment-sweep-service.ts` — the #1349 orphan sweep (keep-set, walk, live delete, index-row prune)
+- `backend/src/routes/confluence/attachments-sweep.ts` — stats + dry-run/live sweep + status (all `requireAdmin`)
+- `backend/src/core/services/standalone-attachment-cleanup.ts` — the event-driven half (hard delete / purge)
+- `backend/src/core/services/page-icon-store.ts` — `discardPageIconForDeletedPage`, called after `unsyncSpace`'s and `purgeDeletedPages`' committed deletes
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
 - `backend/src/domains/llm/services/image-embedding-service.ts` — `embedPageImages`, `processDirtyPageImages` (#1115 P2)

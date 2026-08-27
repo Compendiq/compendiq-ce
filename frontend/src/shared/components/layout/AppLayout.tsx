@@ -13,6 +13,7 @@ import { ServiceStatus } from '../badges/ServiceStatus';
 import { TrialBanner } from '../banners/TrialBanner';
 import { SidebarTreeView } from './SidebarTreeView';
 import { SettingsSidebar } from './SettingsSidebar';
+import { AiConversationsSidebar } from '../../../features/ai/conversations/AiConversationsSidebar';
 import {
   ArticleRightPane,
   type InspectorViewRequest,
@@ -26,6 +27,7 @@ import { PageTransition } from './PageTransition';
 import { useIsInspectorWideLayout, useIsMobileLayout } from '../../hooks/use-media-query';
 import { cn } from '../../lib/cn';
 import { isArticlePath } from '../../lib/article-route';
+import { isAiRoute as isAiRoutePath } from '../../lib/ai-routes';
 
 const overlayFocusableSelector =
   'a[href], button:not([disabled]), textarea:not([disabled]), ' +
@@ -114,6 +116,10 @@ export function AppLayout({ children }: { children: ReactNode }) {
   // in Settings with no in-rail path back to the rest of the app, since the
   // header breadcrumb was retired in the same change.
   const isSettingsRoute = /^\/settings(\/|$)/.test(location.pathname);
+  // #1361: /ai and /ai/c/:id get the conversations pane in the same slot. The
+  // Pages tree leaves those routes entirely — page navigation there is the
+  // command palette and MainNavStrip's Pages tab.
+  const isAiRoute = isAiRoutePath(location.pathname);
 
   const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
   const closeMobileContext = useCallback(() => setMobileContextOpen(false), []);
@@ -405,9 +411,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
               // horizontal scroll. The sidebar itself carries `max-w-full`.
               className="fixed inset-y-0 left-0 z-50 w-[85vw] max-w-[20rem] overflow-hidden md:hidden"
             >
-              {isSettingsRoute
-                ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
-                : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
+              {isAiRoute
+                ? <AiConversationsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                : isSettingsRoute
+                  ? <SettingsSidebar onNavigate={closeMobileSidebar} embedMainNav />
+                  : <SidebarTreeView onNavigate={closeMobileSidebar} embedMainNav />}
             </m.div>
           </>
         )}
@@ -519,15 +527,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
             On /settings* we swap to SettingsSidebar so the main nav strip
             stays visible alongside the Settings section nav. */}
         <div className="hidden md:flex">
-          {isSettingsRoute
-            ? <SettingsSidebar embedMainNav={false} />
-            : <SidebarTreeView embedMainNav={false} />}
+          {/* Third arm on AI routes (#1361). None of these three take a
+              collapse-forcing prop from a layout preset any more — those
+              presets were deleted, and app-shell-layout.test.ts guards
+              against either name reappearing here. The pane reads the
+              shared treeSidebarCollapsed itself, exactly as the two trees
+              do. */}
+          {isAiRoute
+            ? <AiConversationsSidebar embedMainNav={false} />
+            : isSettingsRoute
+              ? <SettingsSidebar embedMainNav={false} />
+              : <SidebarTreeView embedMainNav={false} />}
         </div>
 
-          {/* Navigation is quiet chrome; <main> is the brighter content pane.
-              They remain one clipped workspace composition, separated by a
-              single value step and hairline rather than nested cards or
-              elevation. */}
+          {/* Left navigation and <main> share --color-card. They remain one
+              clipped workspace composition, split by the sidebar hairline
+              rather than nested cards or a second value step. */}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and

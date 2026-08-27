@@ -51,6 +51,12 @@ function manualChunks(id: string): string | undefined {
   // Rolldown ids are normally posix, but normalize separators so a Windows dev
   // build matches `/node_modules/<pkg>/` the same way as linux CI.
   const normalized = id.replace(/\\/g, '/');
+  if (
+    normalized.includes('/node_modules/@huggingface/transformers/')
+    || normalized.includes('/node_modules/onnxruntime-web/')
+  ) {
+    return 'client-inference';
+  }
   if (!normalized.includes('/node_modules/')) return undefined;
   for (const [chunk, packages] of VENDOR_CHUNKS) {
     if (packages.some((pkg) => normalized.includes(`/node_modules/${pkg}/`))) return chunk;
@@ -89,6 +95,9 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3051',
         changeOrigin: true,
+        // Collaborative editing is GET /api/collab/:pageId (WebSocket).
+        // Without this, `npm run dev` cannot upgrade on the Vite port.
+        ws: true,
       },
     },
   },

@@ -64,10 +64,13 @@ jobs:
 
       # Smoke-load the runtime image's prod node_modules. Guards against the
       # class of bug where npm's hoister demotes a backend prod dep to
-      # `backend/node_modules/` — invisible to the runtime stage, which only
-      # copies the root tree. Builds succeed in that case; containers crash on
-      # boot. amd64-only steps suffice; arm64 (tags) shares the same module
-      # graph. Uses the first tag from metadata, which is always present.
+      # `backend/node_modules/` — invisible to the runtime stage unless that
+      # tree is merged onto `/app/node_modules`. Builds succeed in that case;
+      # containers crash on boot. The historically-hoisted four (`p-limit`,
+      # `ipaddr.js`, two OpenTelemetry packages) are not sufficient: collab
+      # TipTap packages demote and `collab-schema.js` imports them on boot.
+      # amd64-only steps suffice; arm64 (tags) shares the same module graph.
+      # Uses the first tag from metadata, which is always present.
       - name: Smoke-test runtime module resolution
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         env:
@@ -75,7 +78,7 @@ jobs:
         run: |
           docker pull "$IMAGE"
           docker run --rm --entrypoint node "$IMAGE" --input-type=module -e \
-            "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); console.log('runtime require smoke ok');"
+            "await import('p-limit'); await import('ipaddr.js'); await import('@opentelemetry/sdk-node'); await import('@opentelemetry/sdk-metrics'); await import('@tiptap/extension-code-block'); await import('@tiptap/extension-color'); await import('@tiptap/extension-text-style'); await import('@tiptap/y-tiptap'); await import('./dist/core/services/collab-schema.js'); console.log('runtime require smoke ok');"
 
   docker-frontend:
     name: Frontend Image

@@ -23,7 +23,7 @@ export function AssistantAttachmentsScope({ children }: { children: ReactNode })
 
 function AssistantAttachmentsOwner({ children }: { children: ReactNode }) {
   const {
-    mode, pageId, isStreaming, chatVision, chatVisionModel,
+    mode, activeThreadId, isStreaming, chatVision, chatVisionModel,
   } = useAiContext();
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const attachments = useAttachments({
@@ -37,10 +37,16 @@ function AssistantAttachmentsOwner({ children }: { children: ReactNode }) {
 
   const { clearAll } = attachments;
   useEffect(() => {
-    // Uploaded sources describe the page/request they were prepared beside.
-    // Do not let them silently cross into another page context.
+    // Uploaded sources describe the request they were prepared beside. Do not
+    // let them silently cross into another one.
+    //
+    // Keyed on `activeThreadId` (#1361), not `pageId`: on /ai every thread
+    // resolves to no document, so `pageId` was `null` for all of them and
+    // nothing cleared between conversations. It still covers the dock's
+    // boundary — a page change is a different `page:` key and therefore a
+    // different identity.
     clearAll();
-  }, [pageId, clearAll]);
+  }, [activeThreadId, clearAll]);
 
   return (
     <AssistantAttachmentsContext.Provider value={attachments}>

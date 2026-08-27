@@ -12,6 +12,31 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 2. **Register an account.** The first user automatically receives the admin role.
 3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
 
+### The Getting Started checklist
+
+The Pages overview carries a short **Getting started** checklist for as long as
+you have steps outstanding. It tracks five milestones and ticks each one off by
+itself as you do it — there is nothing to mark complete by hand:
+
+1. Connect your Confluence account
+2. Choose the spaces to sync
+3. Ask your first question
+4. Learn the keyboard shortcuts
+5. Create or edit a page
+
+Each outstanding step carries a button that takes you straight to it. The
+checklist never blocks the page list, and **Dismiss guide** hides it for good —
+once hidden it stays hidden, even when a later step completes behind it.
+
+When the last step lands, a short note appears above the five checked
+milestones, saying so and telling you where to find the guide afterwards. The
+note and completed checklist stay until you leave the overview or dismiss them.
+They appear when you return to the overview even if the final step was completed
+somewhere else — you do not have to be looking at the checklist at the time.
+
+To bring it back at any time — finished or dismissed — open the account menu in
+the top right and choose **Getting Started Guide**.
+
 ### Creating a Confluence PAT
 
 To connect Compendiq to your Confluence Data Center instance:
@@ -55,6 +80,22 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 5. Save with `Ctrl+S`.
 
 You can also start a page from a template (e.g. Meeting Notes, Incident Report, How-to Guide, ADR, Runbook) via the **Use Template** button on the New Page screen.
+
+### Importing from Notion
+
+This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
+
+1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
+2. Pick pages in the workspace tree. Nested children are selected independently — a parent can import without its children.
+3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
+4. Run the import. Pages that already exist locally are reported as already imported rather than duplicated.
+
+**Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
+
+- Databases (full, linked, every view) **including their rows**. A row is imported only if it appears as its own page in the tree and you selected it.
+- Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases, database properties / relations / rollups / formulas.
+
+Skipped and unselected Notion items keep their Notion URLs in imported page bodies. Markdown import on New Page is unchanged: it still loads one `.md` file into the editor and does not create pages until you press Create.
 
 ### Editing a Page
 
@@ -109,7 +150,22 @@ The AI assistant can answer questions, improve content, and help with writing:
 1. Open the **AI** panel from the sidebar (or press `G A`).
 2. Type your question or request.
 3. Responses stream in real-time via SSE.
-4. Conversations are saved and can be continued later.
+4. **Q&A conversations are saved.** Past conversations are listed in the left
+   pane on the AI page, grouped by when you last used them (Today, Yesterday,
+   Previous 7 days, and so on), with a filter box once you have more than
+   eight. Selecting one reopens it at its own address (`/ai/c/<id>`), so it can
+   be bookmarked and walked with the browser's Back and Forward buttons, and
+   your next question continues it. Each row's `⋯` menu **renames** it in place
+   (Enter commits, Escape cancels) or **deletes** it permanently. **New chat**
+   — in the top bar and at the top of the pane — starts an empty one. After the
+   first completed answer, Compendiq generates a concise title in the question's
+   language without delaying the response. If that background step fails, the
+   first question remains the title; a title you rename manually is never
+   replaced later.
+5. Only Q&A is saved. Generate, the rewrite skills and Diagram are not.
+   Questions you ask from the assistant beside an article are saved too and
+   appear in the list tagged with the page they started on; continuing one from
+   the AI page searches the whole knowledge base rather than that page.
 
 ### Improve an Article
 

@@ -16,6 +16,7 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { ImprovementsQuerySchema } from './_helpers.js';
 
@@ -159,7 +160,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
   });
 
   // PATCH /api/llm/conversations/:id — rename (#1361). Sets title_source =
-  // 'user', which the auto-title (PR 3) never overwrites. Deliberately does
+  // 'user', which the auto-title never overwrites. Deliberately does
   // NOT bump updated_at: that would re-bucket the row into "Today".
   fastify.patch('/llm/conversations/:id', async (request) => {
     const { id } = ConversationIdParamSchema.parse(request.params);
@@ -272,6 +273,12 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.notFound('Page not found');
     }
 
+    await rejectIfLiveCollabRoom(
+      existingPage.id,
+      (m) => fastify.httpErrors.conflict(m),
+      'Collaborative editing session is active. Use in-editor Improve instead of Apply.',
+    );
+
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
 
@@ -362,6 +369,7 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
          WHERE id = $1`,
         [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion, userId],
       );
+      await invalidateCollabDocAfterBodyWrite(existingPage.id);
     } else {
       // --- Confluence page: sync to Confluence ---
       if (!existingPage.confluence_id) {
@@ -403,6 +411,8 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
         [existingPage.id, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, updatedBodyText, newVersion],
       );
     }
+
+    await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
     // Mark the most recent improvement record for this page as applied
     await query(

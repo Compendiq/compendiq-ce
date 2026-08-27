@@ -338,6 +338,17 @@ describe('PagesPage', () => {
     expect(newPage.className).not.toContain('nm-button-ghost');
   });
 
+  it('opens the Notion import wizard from a ghost control beside New Page', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const importBtn = screen.getByTestId('import-notion-button');
+    expect(importBtn.className).toContain('nm-button-ghost');
+    expect(importBtn.className).not.toContain('nm-button-primary');
+    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
+    fireEvent.click(importBtn);
+    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect Notion' })).toBeInTheDocument();
+  });
+
   it('renders the advanced filters toggle button', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const btn = screen.getByTestId('advanced-filters-toggle');
@@ -2969,5 +2980,142 @@ describe('PagesPage filter persistence (#1124)', () => {
         expect(probe()).not.toContain('page=5');
       });
     });
+  });
+
+});
+
+/**
+ * #1402: the Getting Started checklist is additive chrome above the tree, a
+ * sibling block between the header and the discovery controls. It must never
+ * stand in front of the page list or replace any of its own states — phase 3
+ * owns the empty-state copy, not this card.
+ */
+describe('PagesPage — Getting Started checklist (#1402)', () => {
+  let restoreRects: () => void;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    restoreRects = installVirtualizerRectShim();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRects();
+  });
+
+  it('sits between the Library header and the search toolbar', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const card = await screen.findByTestId('onboarding-checklist');
+    const toolbar = screen.getByTestId('library-filter-panel');
+    expect(card.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByTestId('new-page-button').compareDocumentPosition(card) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('leaves the page list itself untouched', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('onboarding-checklist');
+    // The list still arrives, and the card is not inside it.
+    expect(await screen.findByText('Test Page')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('onboarding-checklist').contains(screen.getByText('Test Page')),
+    ).toBe(false);
+  });
+
+  /**
+   * Dismiss removes the card while the user's focus is on its button. Without
+   * a rehome that drops focus to `<body>` — the failure CLAUDE.md records for
+   * `RetrievalTab`'s Retry — and the keyboard user restarts from the top of
+   * the document with nothing announced.
+   */
+  it('hands focus to the Library heading when the checklist removes itself', async () => {
+    // The shared mock answers `{}` for `/settings` on every method, so a
+    // dismissal could never come back dismissed. This one persists it.
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    dismiss.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    const libraryHeading = screen.getByRole('heading', { name: 'Library' });
+    expect(document.activeElement).toBe(libraryHeading);
+    expect(libraryHeading).toHaveClass('nm-focus-ring');
+  });
+
+  /**
+   * The other half of the same rule (the `RetrievalTab` precedent): the rehome
+   * happens only when the removal really dropped focus to `<body>`. A mouse
+   * click does not move focus to a button on every platform, so the caret can
+   * still be in the search box when the card goes — and yanking it to a heading
+   * is a worse interruption than the one the rehome exists to fix.
+   */
+  it('leaves focus alone when the dismissal did not take it', async () => {
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    // The caret is in the search box, and the click never takes it.
+    const elsewhere = screen.getByPlaceholderText(/search/i);
+    elsewhere.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(elsewhere);
   });
 });

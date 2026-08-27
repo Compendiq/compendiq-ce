@@ -42,6 +42,8 @@ interface LocationPickerProps {
   excludePageId?: string;
   /** Disabled state */
   disabled?: boolean;
+  /** Trap focus in the popover (needed when nested in a modal Dialog). */
+  modal?: boolean;
 }
 
 // ── Tree builder ────────────────────────────────────────────────────
@@ -300,6 +302,7 @@ export function LocationPicker({
   onSelect,
   excludePageId,
   disabled = false,
+  modal = false,
 }: LocationPickerProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -351,7 +354,7 @@ export function LocationPicker({
   }, [parentId]);
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={setOpen} modal={modal}>
       <Popover.Trigger asChild disabled={disabled || !spaceKey}>
         <button
           type="button"
@@ -391,6 +394,9 @@ export function LocationPicker({
               align="start"
               sideOffset={4}
               className="z-50"
+              onCloseAutoFocus={(event) => {
+                if (modal) event.preventDefault();
+              }}
             >
               <m.div
                 initial={{ opacity: 0, y: -4, scale: 0.98 }}
@@ -398,6 +404,7 @@ export function LocationPicker({
                 exit={{ opacity: 0, y: -4, scale: 0.98 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
                 className="w-80 nm-card-elevated"
+                data-location-picker-content=""
               >
                 {/* Search bar */}
                 <div className="border-b border-border p-2">

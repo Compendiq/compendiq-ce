@@ -502,7 +502,7 @@ CREATE TABLE llm_conversations (
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   page_id    TEXT,                     -- never written; dropped by 094 (page_ref)
   model      TEXT NOT NULL,
-  title      TEXT,                     -- first question, trimmed; auto-title lands in #1361 PR 3
+  title      TEXT,                     -- question fallback; #1361 auto-title may replace it
   messages   JSONB NOT NULL DEFAULT '[]',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1349,7 +1349,8 @@ are proposals until the owner agrees them, and #1114 asks for that agreement
    which figures ride on which is set out in *On the chunk count* in
    `docs/runbooks/shadow-reembed.md`). `halfvec(2560)` HNSW is effectively
    exact from `ef_search` = 40:
-   recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and *identical* at
+   recall@10 = 0.9995 at the default floor of 100 (`RAG_EF_SEARCH` when this
+   was measured; `admin_settings.rag_ef_search` since #1285) and *identical* at
    200, 240, 400 and pgvector's 1000 ceiling, with the single non-matching row
    a 7×10⁻⁷ distance tie inside halfvec's own fp16 noise. Leave the default
    alone; the number that moved is **footprint** — 18.6 MiB of HNSW for 2,377
@@ -1811,6 +1812,10 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 
 **Per-use-case assignments**: The new `llm_usecase_assignments` table maps each of `chat | summary | quality | auto_tag | embedding` to a `(provider_id, model)` pair. Either field can be `NULL` to inherit from the provider's default or the globally-default provider. The resolver (`llm-provider-resolver.ts`) combines both inheritance paths in a single cached lookup.
 
+That five-item list records the original migration. Later amendments add
+`rerank`, `image_embedding`, and `inline_completion`; all three are explicitly
+assigned and never inherit the globally-default provider.
+
 **Unified client**: `openai-compatible-client.ts` replaces both `ollama-service.ts` and `openai-service.ts`. It queues requests (`LLM_CONCURRENCY`) and wraps calls in per-provider circuit breakers. Rate-limit and retry behavior is per-provider, not per-call-site.
 
 **Embedding dimension safety**: Changing the embedding model to one that returns a different vector length is a destructive operation gated by the `/admin/embedding/probe` + `/admin/embedding/reembed {newDimensions}` flow with a two-step confirmation banner in the UI. The reembed transaction picks a column type + index strategy from the requested dimension count (pgvector 0.8 caps: HNSW on `vector` ≤ 2000 dims; HNSW on `halfvec` ≤ 4000 dims):
@@ -1987,19 +1992,55 @@ the provider's body, which stays on
 probed: the leg simply goes off, and the index is left in place so re-assigning
 the same pair costs nothing.
 
+### #1417 — the `inline_completion` use case
+
+ADR-021 gains an **eighth** use case, `inline_completion`. It follows the
+non-inheriting rule established by `rerank` and `image_embedding`: an
+unassigned row means ghost text is off. High-frequency typing traffic must not
+silently land on an operator's default chat model, so neither the global
+default nor Enterprise chat-policy overrides apply. The admin assignment row
+warns operators to choose a dedicated small, fast model.
+
+**This path is latency-specialized, not a new provider protocol.**
+`POST /api/llm/inline-completion` authenticates the user, requires
+`llm:query`, rate-limits the route, validates bounded context, and sanitizes
+each prompt field. It then calls the assigned provider directly through
+undici, retaining the shared provider authentication, TLS policy, tracing, and
+circuit breaker but deliberately bypassing the general LLM queue. The browser
+disconnect signal reaches undici, so stale cursor requests do not keep using a
+provider slot. FIM-capable coder models receive
+`<PRE>prefix<SUF>suffix<MID>` on `/completions`; other models receive a short
+continuation instruction on `/chat/completions`. Output is capped at 64 tokens
+(48 by default), one line, with stop sequences for newline and code fences.
+
+**Content observability is deliberately absent.** Inline prompts and
+completions are not written to `llm_audit_log`; only fixed-field aggregate
+request/token counters are incremented in Redis, best-effort and off the
+response path. Personal settings in `user_settings` control enabled state,
+delay (`fast | balanced | deliberate | manual`), default output mode
+(`word | full`), and code-block-only mode. Word mode caps generation at 8
+tokens and clips the visible completion at its first word boundary; full mode
+retains the 48-token cap.
+The TipTap plugin owns the transient suggestion and abort controller; it
+suppresses requests during IME composition, in tables, and on coarse pointers,
+and accepts insertions as one undoable transaction.
+
 ### #1361 — conversation persistence adds no use case
 
 ADR-021 is NOT amended with a new use case by #1361. Conversation persistence
 (`page_ref`, per-turn `sources`, atomic append, the `title_source` column, the
 keyset-paged list, `PATCH` rename, the history replay budget) is storage and
 routing, not an outbound model call. The one model call #1361 adds — the
-auto-title (PR 3) — resolves `resolveUsecase('chat')` deliberately, the #1112
+auto-title — resolves `resolveUsecase('chat')` deliberately, the #1112
 argument: a one-line title is a rewrite any chat model can do, and an eighth
-assignment (after `rerank`, #1104, and `image_embedding`, #1115) would be a knob
+assignment (after `rerank`, #1104, `image_embedding`, #1115, and
+`inline_completion`, #1417) would be a ninth knob
 every operator must set before titles work at all.
 It runs after the answer's terminal frame, never in front of it, sanitises its
 inputs, constrains its output, and soft-fails to the word-boundary-trimmed
-question. Design of record: `docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
+question. Its write compares `title_source = 'question'`, so a manual rename
+that lands while the completion runs is never overwritten. Design of record:
+`docs/superpowers/specs/2026-08-17-ai-conversation-history-design.md`.
 
 ## ADR-022: RAG retrieval honours per-user space permissions
 
@@ -2931,3 +2972,23 @@ nobody reads the numbers above as if they were ours:
 | 023 | Per-page ACL enforcement for RAG retrieval (Enterprise) | Mirror Confluence per-page view restrictions; resolve ancestor inheritance at sync time | Keeps query path O(topK); regulated-buyer RAG never leaks restricted-page chunks |
 | 024 | Multi-instance readiness | Generic Redis pub/sub cache-bus + BullMQ `upsertJobScheduler` + p-limit in-place hot-swap + bounded graceful shutdown + soft-fail per-pod fallbacks | Multi-replica `backend` without an extra coordinator service; advisory-only pub/sub keeps the operator footprint small |
 | 025 | Multimodal image retrieval | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape |
+| 026 | Client-side WebGPU editor inference | Optional same-origin SLM + Hunspell EN/DE; fall through to #1417/#708; no new ADR-021 use case | Keystroke traffic should not consume the shared LLM queue; Hub CDN is forbidden by `connect-src 'self'` |
+
+---
+
+## ADR-026: Client-side WebGPU inference for editor micro-tasks
+
+**Date:** 2026-08-26
+**Status:** Accepted
+**GitHub:** #1418
+
+### Decision
+
+Ghost text and ImprovePanel rewrite may run on an optional browser WebGPU
+instruct SLM (`qwen2.5-0.5b-instruct-q4`). Hunspell EN/DE spell lint is a
+separate MIT worker. Both fetch assets only from `GET /api/models/client-assets`.
+Missing WebGPU, a cold cache, or a failed load falls through to the existing
+server paths. Dual opt-in (admin + user) defaults off. No Hugging Face Hub,
+no new ADR-021 use case, no COEP.
+
+See `docs/runbooks/client-inference.md`.

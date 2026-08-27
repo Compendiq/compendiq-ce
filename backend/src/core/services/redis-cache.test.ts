@@ -651,6 +651,26 @@ describe('redis-cache embedding lock', () => {
       expect(token).toBeTypeOf('string');
       expect(token).toBeTruthy();
     });
+
+    // #1349: the degrade above hands EVERY caller a token, so during a Redis
+    // blip two concurrent triggers both proceed. For an idempotent worker that
+    // is a wasted pass; for a destructive one (the attachment orphan sweep) it
+    // is two delete loops over the same tree with no mutual exclusion.
+    it('returns null instead when the caller asked to fail closed and Redis throws', async () => {
+      mockRedis.set.mockRejectedValue(new Error('Redis down'));
+
+      expect(await acquireWorkerLock('test-worker', 300, { failClosed: true })).toBeNull();
+    });
+
+    it('failClosed does not change the no-Redis branch — a single-node deployment still runs', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRedisClient(null as any);
+
+      const token = await acquireWorkerLock('test-worker', 300, { failClosed: true });
+
+      expect(token).toBeTypeOf('string');
+      expect(token).toBeTruthy();
+    });
   });
 
   describe('releaseWorkerLock', () => {

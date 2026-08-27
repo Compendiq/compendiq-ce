@@ -17,9 +17,10 @@ because text retrieval is unaffected and unchanged images are reused by sha256
 
 | Step | Action | Reversible? | Search impact |
 |---|---|---|---|
-| 1. Start | Settings → AI → AI Models → change the embedding assignment → **Start zero-downtime re-embed** (or `POST /api/admin/embedding/shadow-migration {providerId, model}`) | Yes (Abort) | none |
+| 1. Start | Settings → AI Models → LLM providers → change the **Embedding** row → **Start re-embed** on that row. Do **not** press Save use-case assignments first — that button is disabled for an embedding-only change, and saving other assignments omits the embedding row. (`POST /api/admin/embedding/shadow-migration {providerId, model}`) | Yes (Abort) | none |
 | 2. Backfill | background job embeds every existing chunk with the new model into `embedding_next`; edited pages dual-write both models | Yes (Abort) | none (background embedding load only) |
 | 3. Index build | HNSW indexes built on **both** shadow columns at the end of the backfill — unless the model's dimension exceeds 4000, which pgvector cannot index at all (the status card says so instead of claiming an index, and post-swap vector search scans sequentially) | Yes | none for reads; **writes to `page_embeddings` AND to `pages` queue for the build duration** (minutes) — the second index is on `pages`, so sync upserts, editor saves and embedding-status updates stall too |
+| 3b. Compare on real queries (#1260) | the shadow card's **Compare on real queries** (or `POST /api/admin/embedding/shadow-migration/compare {days, limit, topK}` → 202 + poll) — sample the most frequent recorded searches, embed each once per model, retrieve top-K from `embedding` and `embedding_next`, and read the disagreement list; optionally judge disagreements side-by-side (Mode 2) until the verdict quotes a McNemar p (N ≥ 20). **This is the go/no-go evidence between backfill and swap** — see *Comparing the candidate on real queries* below | Yes — reads only; never writes assignments or settings | N × 2 embed calls ride the shared LLM queue (like the backfill, may slow answers); one comparison at a time, shared with the Retrieval tab's production benchmark |
 | 4. Swap | **Swap to the new model** (`POST …/swap`) — one transaction of column/index renames under `lock_timeout 5s`, ≤5 attempts | Yes (Roll back) | sub-second on success. While a lock attempt waits behind a long reader, **new searches queue behind the pending exclusive lock** — each failed attempt can stall them up to 5s (≤5 attempts), so run the swap when long queries have drained |
 | 5. Validate | run real searches; the quality gate is #1102's eval rig. **Then settle the confidence thresholds (#1114)**: if either is non-zero it is still the number tuned on the old model — read your own logged `rag.confidence` values on the new model and either re-tune it or press **Keep &lt;value&gt;** on the notice to record the number you already have against the new model. Until then the swap's warning stands in the log and the Retrieval tab shows an amber notice on that control — **unless that threshold was set before #1114 shipped or written with SQL**, in which case there is no recorded model to compare against and you get a muted "calibration unknown" line instead, whose **Record &lt;value&gt;** button records the number you have against the model now serving; on that instance the log warning is the signal | — | new model serving |
 | — | *(automatic, in the background)* the swap and a post-swap rollback both rebuild `page_relationships.embedding_similarity` — the persisted derivative of `pages.page_avg_embedding` — and clear the graph cache. It runs **detached from the request**, because a whole-corpus recompute can outlast an edge proxy's read timeout and a failed-looking swap invites a rollback of a swap that worked | — | graph/related-pages serve the previous edges until it finishes; if it logs a failure (or the process restarted mid-run), run `POST /api/pages/graph/refresh` |
@@ -81,6 +82,120 @@ sub-second.
   long-running queries are hitting `page_embeddings` (every DDL step —
   start, swap, rollback, cleanup — runs under a bounded `lock_timeout` with
   retries; safe, but pointless until they drain).
+
+## Comparing the candidate on real queries (#1260, step 3b)
+
+The `ready` window — backfill complete, indexes built, swap not yet run — is
+the only time both models' vectors exist on the same chunk rows, and it is
+the one chance to answer *"is the candidate better on OUR content?"* before
+committing. The shadow card's **Compare on real queries** section (or
+`POST /api/admin/embedding/shadow-migration/compare`) runs it:
+
+- **What it does.** Samples the top `limit` distinct queries by FREQUENCY
+  from `search_analytics` over `days`, embeds each once per model — the
+  candidate through the migration's own provider/model pair, the live side
+  through the `embedding` assignment, with the #1114 instruction prefix
+  applied per model (Qwen3 prefixed, `bge-m3` bare) — and retrieves the top-K
+  pages from `embedding` and `embedding_next` through the same vector probe
+  and the same visibility predicate (scoped to the requesting admin).
+- **What it reports — Mode 1, agreement only.** Top-1 change rate, mean
+  Jaccard overlap@K, mean RBO (p = 0.9), and the per-query disagreement list
+  (live top-K titles vs candidate top-K titles). This is the **vector leg
+  only** — not what users see after keyword fusion and rerank — and it is an
+  agreement measure, never a quality verdict: it answers "how much would
+  this move?", which is often enough to decide. In the list, pages **only one
+  side returned** are marked as such and counted per side, so you read the
+  difference rather than diffing two columns of titles by eye; the list opens
+  at the first ten disagreements and expands on request (`limit` 100 × `topK`
+  20 is ~4000 lines of card otherwise).
+- **Mode 2 — judge the disagreements.** Each disagreement row offers
+  Live / Candidate / Neither / Both. Judgements persist in
+  `embedding_compare_judgements` keyed by (query, live provider+model,
+  candidate provider+model) — they survive the run, the migration, even the
+  provider row — so the fixture accumulates and the SECOND evaluation of a
+  pair starts warm. Re-hosting the same model behind a different provider is
+  a different pair on purpose: it is a different index, and its judgements
+  belong to their own verdict. The verdict quotes Recall/MRR per side and an
+  exact McNemar p **only once 20 LIVE-OR-CANDIDATE PICKS** exist for the pair;
+  `Neither` and `Both` are declared ties, count toward nothing, and do not
+  bring the p forward. Below the floor the line says how many picks are still
+  needed rather than dressing a handful of clicks as statistics. Judging is
+  the one flow here that writes in a burst, so the judgement POST carries its
+  own rate allowance (five times `rate_limit_admin_max`, so lowering that knob
+  still lowers this): on the shared admin bucket a brisk sitting past twenty
+  picks was refused, and a refused pick is DROPPED, not queued.
+- **Gates and failure modes.** The run 409s outside `ready` (no migration,
+  backfilling, swapped) — comparing a partially backfilled column measures
+  the backfill, not the model. One run at a time, **shared with the Retrieval
+  tab's production benchmark**: while either runs the other answers 409
+  "already running". A swap/abort/rollback landing mid-run fails the run
+  cleanly with a message naming the migration change; just start a new
+  comparison from the new state. **You are told, and not by the section** —
+  it lives inside the `ready` branch and your own Abort or Swap unmounts it
+  within a poll, so the card raises the notice instead — as a toast **and** as
+  an amber strip that stays on the card in whatever branch the action moved it
+  into, because a toast is gone in seconds and what it reports is that the
+  run's N × 2 embedding calls were spent for nothing. Dismiss it, or start
+  another comparison, and it goes. A migration moved
+  **from another tab, or by another admin**, is reported the same way and by
+  the same card: its own 5s status poll sees the migration **window** close
+  with a comparison still in flight and says so, because the server fails the
+  run only at its next per-query check — one or more polls after the section
+  that would have rendered the failure has already gone. The window, not the
+  phase: `phase` is recomputed from a live `embedding_next IS NULL` count, so
+  one page whose shadow embed failed mid-window drops `ready` → `backfilling`
+  with **the run untouched** — that case keeps the run, says so on the
+  backfilling card, and re-shows the section when the backfill catches up.
+  What the backfilling card says there comes from the SERVER, not from what
+  your browser tab happened to watch: it reads your latest comparison itself
+  while the section is unmounted, so a reload (or a Settings sub-tab switch
+  away and back) still tells you a comparison is holding the slot, and a run
+  that finishes behind that note stops being described as running.
+  A worker killed mid-run is recovered by the
+  same 30-minute heartbeat sweep the benchmark uses — and the sweep words the
+  failure as a comparison, so a row reading "start a new benchmark" is a
+  benchmark's, not yours. A one-off provider hiccup (a 429, an opened
+  breaker) costs only its own query: the run carries on and the report says
+  how many of the sampled queries were skipped — and states the share with
+  more weight once a fifth of the sample is gone, because the figures then
+  describe noticeably less than the sample you asked for. **A majority of
+  failures fails the run**: past half the sample the remainder is not a
+  comparison of the two models but a sample of whichever queries got through.
+  A missing shadow column while the migration still reports as active is a
+  schema fault, not a provider one: the run stops at the first query and says
+  so, rather than spending the whole sample on an error no retry can clear.
+  **The comparison is yours alone** — the card, the poll and
+  the judgement routes serve the admin who started the run, because the
+  report's page titles were retrieved under that admin's own visibility.
+  (Since review r2 the Retrieval tab's production benchmark reads back the
+  same way, for the same reason: `GET /admin/retrieval-benchmark/:id` was the
+  one caller of the shared run module that omitted the scope, so one admin
+  could read titles out of another's report.) A judgements read that FAILS is
+  reported as a failure, never as "nothing judged yet" — but in three states,
+  not two: nothing loaded hides the picks (so a row judged in an earlier
+  sitting can never be re-judged from a blank slate), while a failed REFRESH
+  of judgements already on screen keeps them and adds a quiet "these are the
+  last ones loaded" line, because blanking a sitting's work over one blip is
+  its own way of losing evidence. **A run that finds nothing to sample** —
+  the likeliest first outcome on a quiet or freshly deployed instance — fails
+  naming the window it asked for and the control that widens it
+  (`Look back (days)`, up to 90), rather than only saying that the period was
+  empty. If
+  you leave the tab and come back, the card re-attaches to your latest
+  comparison by itself; there is nothing to write down. That re-attachment is
+  scoped to the migration that is live NOW: a run recorded against another
+  candidate pair — an earlier, aborted attempt at the cutover — is never
+  adopted into this migration's card, so the numbers under the heading are
+  always the numbers for the model the heading names.
+- **Cost.** `limit × 2` embedding calls through the shared LLM queue
+  (`LLM_CONCURRENCY`, default 4) plus two kNN probes per query — same class
+  of load as a small backfill slice; answers may be slower while it runs.
+  Nothing is written except the run row and judgements; `enqueueReembedAll`
+  is never called and assignments/settings are never touched.
+
+Use it as the evidence for the Go / no-go above: a low disagreement rate
+means the swap changes little either way; a high one is exactly the case to
+spend twenty judgements on before deciding.
 
 ## Stragglers and stuck jobs
 
@@ -489,7 +604,7 @@ leaning on the table should say so.
 | Ingest cost | **~9.4–10× slower.** 4 m 21 s vs 40 m 55 s (275 pages, `german` re-run); 3 m 31 s vs 36 m 13 s over the earlier run's **2,198**-chunk count — see *On the chunk count* below, the same corpus was later counted at 2,377 | same, and *German result* |
 | Query latency | **~12× at concurrency 1** on the dev Mac (224 ms vs 18 ms p50 embedding) | same, latency table |
 | fp16 rounding | **Below the corpus's own rank gaps.** Largest fp16-induced \|Δdistance\| 2.67e-5 against a p01 adjacent-rank gap of 4.44e-5; 0/200 top-1 changes. **Caveat carried from the source: measured at 768 dims with `nomic-embed-text` on real corpus vectors, NOT at 2560 with Qwen3** — it is evidence that fp16 rounding is small relative to rank spacing, not a 2560-dim measurement | #1114 comment, *The fp16 gate*; ADR-012 `#1114` amendment |
-| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the `RAG_EF_SEARCH` default of 100 and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
+| `ef_search` at `halfvec(2560)` | **Effectively exact from ef = 40.** recall@10 = 0.9995 at the default floor of 100 (`rag_ef_search`, `RAG_EF_SEARCH` when this was measured) and unchanged at 200/240/400/1000 | #1114 comment, *`ef_search` at `halfvec(2560)`: effectively exact from 40, and the number to watch is footprint* (2,377 chunks in `kb_eval`, PostgreSQL 17.10 + pgvector 0.8.5, read-only) |
 
 **On the two German configurations.** The model gap is the sturdiest thing in
 this data and it does not depend on the stemmer: under `german`, Qwen3 is ahead
@@ -530,7 +645,9 @@ one. The *ratio* is unaffected either way — a *rate* recomputed by mixing the
 two counts would not be, which is the same pages-versus-chunks trap pre-flight
 (ii) warns about, one level up.
 
-**On `ef_search`.** Leave `RAG_EF_SEARCH` at 100. On the 2,377-chunk German
+**On `ef_search`.** Leave **Index search depth** (`admin_settings.rag_ef_search`,
+Settings → AI Models → Retrieval, the setting the deprecated `RAG_EF_SEARCH`
+environment variable became in #1285) at 100. On the 2,377-chunk German
 corpus, recall@10 is 0.9995 at ef = 100 and *identical* at 200, 240, 400 and
 pgvector's 1000 ceiling; the single non-matching row across 2,000 comparisons
 is a 7×10⁻⁷ distance tie at rank 10, inside halfvec's own fp16 quantization

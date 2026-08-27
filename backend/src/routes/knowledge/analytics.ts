@@ -1,6 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { KNOWLEDGE_GAP_PREDICATE_SQL, GAP_AVG_MAX_SCORE_SQL } from './_gap-predicate.js';
 import { z } from 'zod';
+import { ConfidenceDistributionSchema } from '@compendiq/contracts';
+import type {
+  ConfidenceDistribution,
+  ConfidenceDistributionBucket,
+} from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 
 const KnowledgeGapsQuerySchema = z.object({
@@ -11,6 +16,15 @@ const KnowledgeGapsQuerySchema = z.object({
 const SearchTrendsQuerySchema = z.object({
   days: z.coerce.number().int().positive().max(365).default(30),
 });
+
+/**
+ * #1284 — the confidence readout's window, surface and bases. Fixed rather
+ * than query parameters: the readout is one line under a knob, not a report,
+ * and every one of these is a claim the panel's copy makes on screen.
+ */
+const CONFIDENCE_WINDOW_DAYS = 7;
+const CONFIDENCE_SURFACE = 'ask' as const;
+const CONFIDENCE_BASES = ['similarity', 'rerank'] as const;
 
 export async function analyticsRoutes(fastify: FastifyInstance) {
   // All analytics routes require admin role
@@ -111,5 +125,117 @@ export async function analyticsRoutes(fastify: FastifyInstance) {
       })),
       periodDays: daysNum,
     };
+  });
+
+  /**
+   * GET /api/analytics/confidence-distribution — #1284.
+   *
+   * What the #1105 refuse gate has actually been measuring on this
+   * deployment, per basis, over a fixed window. The Retrieval panel renders
+   * it beside each threshold input, because both scales are
+   * deployment-specific (the embedding model moves the cosine distribution,
+   * the reranker's normalisation the relevance one) and the panel's only
+   * previous advice was "go read your own logs".
+   *
+   * Four decisions are load-bearing.
+   *
+   * **`surface = 'ask'`.** The gate is evaluated on `/llm/ask` and nowhere
+   * else. Page searches file rows through the same writer, so without this
+   * filter a busy `/search` would decide the percentiles an operator tunes
+   * the ASSISTANT's refusal policy against. A row whose surface is NULL
+   * (everything before migration 098) is unknown, and unknown is not 'ask'.
+   *
+   * **Per basis, never merged.** The basis flips per request, and the two
+   * scales are unrelated — one distribution over both would be a number with
+   * no meaning on either knob.
+   *
+   * **The row is selected by its BASIS, never by its score** — the two are
+   * not interchangeable, in either direction.
+   * `computeRetrievalConfidence` answers `{ score: 0, basis: 'none' }` for a
+   * HEALTHY EMPTY set (the ordinary `no_context` path: "the knowledge base
+   * has nothing on this" is a measurement, not an absence), so those rows
+   * land on `search_analytics` with `confidence = 0`, not NULL: a predicate
+   * on "the score is present" would admit every one of them, drag both
+   * percentiles toward the floor and make every threshold look generous — an
+   * unmeasurable set is not a weak one, and an empty corpus is not a weak one
+   * either. And a predicate on "the score is non-zero" would drop a REAL
+   * measurement, because the similarity basis is clamped at 0 (cosine runs
+   * negative), so 0 on basis 'similarity' is precisely the worst-matching
+   * question this deployment answered. Only the basis separates them.
+   * `confidence IS NOT NULL` beside it guards `COUNT(*)`, which would
+   * otherwise count a row `percentile_cont` ignores; it is a backstop, never
+   * the exclusion.
+   *
+   * That rule is a rule about **this column**, addressed to the next reader
+   * who reports on it — it is not enforced by the SQL predicate alone here
+   * (review r1). `GROUP BY confidence_basis` puts 'none' rows in their own
+   * group and the bucket mapping below keeps only 'similarity'/'rerank', so
+   * this route would answer the same numbers with the predicate deleted; the
+   * predicate is what keeps the rows out of the scan, and the mapping is what
+   * keeps an unknown basis out of the body. The half that is genuinely
+   * falsifiable — that a legitimate 0 stays in the sample — is asserted in
+   * `analytics-confidence.integration.test.ts`, and the formula's own
+   * healthy-empty zero in `rag-service.test.ts`.
+   *
+   * **A fixed 7-day window**, comfortably inside the default 90-day
+   * `search_analytics` retention. A shorter configured retention simply
+   * shrinks the sample, which the `count` on the wire makes visible.
+   */
+  fastify.get('/analytics/confidence-distribution', async () => {
+    const result = await query<{
+      basis: string;
+      sample_count: string;
+      p50: string | number | null;
+      p90: string | number | null;
+    }>(
+      `SELECT
+         confidence_basis AS basis,
+         COUNT(*) AS sample_count,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY confidence) AS p50,
+         percentile_cont(0.9) WITHIN GROUP (ORDER BY confidence) AS p90
+       FROM search_analytics
+       WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+         AND surface = $2
+         AND confidence IS NOT NULL
+         AND confidence_basis = ANY($3::text[])
+       GROUP BY confidence_basis`,
+      [String(CONFIDENCE_WINDOW_DAYS), CONFIDENCE_SURFACE, [...CONFIDENCE_BASES]],
+    );
+
+    const empty = (): ConfidenceDistributionBucket => ({ p50: null, p90: null, count: 0 });
+    const buckets: Record<(typeof CONFIDENCE_BASES)[number], ConfidenceDistributionBucket> = {
+      similarity: empty(),
+      rerank: empty(),
+    };
+    for (const row of result.rows) {
+      if (row.basis !== 'similarity' && row.basis !== 'rerank') continue;
+      buckets[row.basis] = {
+        // `percentile_cont` over a REAL column answers double precision,
+        // which node-postgres hands back as a JS number — but a grouped row
+        // can only exist with at least one non-null value, so a null here
+        // would be a contradiction rather than an empty sample. Coalesced to
+        // null anyway: the contract says "null, never NaN", and `Number(null)`
+        // is 0, which is exactly the lie this route must not tell.
+        p50: row.p50 === null ? null : Number(row.p50),
+        p90: row.p90 === null ? null : Number(row.p90),
+        count: parseInt(row.sample_count, 10),
+      };
+    }
+
+    const body: ConfidenceDistribution = {
+      windowDays: CONFIDENCE_WINDOW_DAYS,
+      surface: CONFIDENCE_SURFACE,
+      similarity: buckets.similarity,
+      rerank: buckets.rerank,
+    };
+    // Parsed, not merely typed (review r1). The comments above and the schema
+    // itself promise "null, never NaN" and a non-negative integer count —
+    // claims a `ConfidenceDistribution` annotation cannot enforce, because
+    // `Number()` and `parseInt()` both answer NaN inside the `number` type and
+    // `JSON.stringify` then quietly ships it as `null`. That is the one lie
+    // this route must not tell: an operator reading `p50 null` concludes their
+    // assistant measured nothing. Parsing turns it into a 500 the logs show.
+    // Security §4 — a Zod schema on every API boundary, this one included.
+    return ConfidenceDistributionSchema.parse(body);
   });
 }

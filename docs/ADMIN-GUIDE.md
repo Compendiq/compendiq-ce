@@ -12,7 +12,9 @@ This guide covers installation, configuration, maintenance, and troubleshooting 
 | **Disk** | 10 GB | 20 GB+ (depends on attachment cache size) |
 | **CPU** | 2 cores | 4 cores |
 
-Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessible from the backend container. Ollama typically runs on the Docker host machine.
+Additionally, the backend needs at least one OpenAI-compatible `/v1` endpoint —
+local **Ollama** / LM Studio / vLLM, or a hosted API such as **OpenAI** or
+**DeepSeek**. Configure it under **Settings → AI Models** (see [LLM providers](#llm-providers-primary)); Ollama typically runs on the Docker host machine.
 
 ## Installation
 
@@ -73,12 +75,17 @@ Additionally, you need an **Ollama** server (or OpenAI-compatible API) accessibl
    - **mcp-docs** -- documentation-search MCP server (port 3100, internal)
    - **searxng** -- metasearch engine used by mcp-docs (port 8080, internal)
 
-5. **Pull Ollama models** on your host machine:
+5. **Provide an LLM endpoint.** Either pull local Ollama models on the host:
 
    ```bash
-   ollama pull bge-m3              # Required for embeddings
+   ollama pull bge-m3              # Common local embedding model
    ollama pull qwen3.5            # Or any chat model
    ```
+
+   Or, after first login, add a hosted OpenAI / DeepSeek (or other `/v1`)
+   provider under **Settings → AI → AI Models → LLM providers** — see
+   [LLM providers](#llm-providers-primary). Keep a real embeddings endpoint
+   for the Embedding use case; a chat-only host is not enough for retrieval.
 
 6. **Access Compendiq** at `http://localhost:8081`. Register the first user -- they automatically receive the admin role.
 
@@ -133,37 +140,130 @@ curl http://localhost:8081/api/health
 | `LOG_LEVEL` | `info` | Pino log level: `fatal`, `error`, `warn`, `info`, `debug`, `trace` |
 | `ACCESS_TOKEN_EXPIRY` | `1h` | JWT access token lifetime (jose duration format: `30m`, `1h`, `2h`). Maximum `24h` — a longer value is clamped to `24h` at startup and a warning is logged, since the token lifetime is the worst-case window a deactivated or demoted account could retain API access. An invalid format (e.g. `banana`) still fails startup. Deactivation and role changes normally take effect within seconds (≤ 30s) via the per-user security check. |
 
-### LLM Provider
+### Client inference (on-device editor model)
+
+Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
+lint. Admins download a transformers.js q4 checkpoint from Hugging Face on
+Settings → AI Models → Client inference (the **server** fetches Hub; the
+browser never does), or copy/upload onto `/app/data/client-models` — see
+`docs/runbooks/client-inference.md`. Dual opt-in, default off. The enable
+flag is blocked until ONNX is installed. Pre-download is per-browser on
+Settings → Editor.
+
+### LLM providers (primary)
+
+Providers live in the `llm_providers` table and are configured in the admin UI
+(**Settings → AI → AI Models → LLM providers**), not by flipping an env
+toggle. Every row is a generic OpenAI-compatible `/v1` endpoint (ADR-021):
+hosted OpenAI, DeepSeek, Groq, Mistral, OpenRouter, Together, Fireworks,
+Azure OpenAI, local Ollama / LM Studio / vLLM, or any other `/v1` shim. There
+is no separate OpenAI SDK path and no DeepSeek-specific protocol.
+
+#### Add a provider
+
+1. Open **Settings → AI → AI Models → LLM providers** and click **+ Add**.
+2. Pick a **preset** (OpenAI, DeepSeek, …) to fill the base URL, bearer auth,
+   and a suggested default model — or leave **Custom** blank for a local
+   server (`http://host.docker.internal:1234/v1` for LM Studio / vLLM in
+   Docker). Typed values are not overwritten silently when you change preset.
+3. Paste the API key into the password field (bearer). Keys are AES-256-GCM
+   at rest; the UI only ever shows `hasApiKey` / `keyPreview`.
+4. Set or edit the default model id, then **Save**.
+5. On the provider row, press **Test**. That calls the existing admin health /
+   `listModels` path (`POST /admin/llm-providers/:id/test`) and toasts
+   connected + sample model count, or a sanitized failure (401 = bad key,
+   unreachable / open breaker = cannot reach the host). Never paste a live
+   key into docs or screenshots.
+
+#### Recipe — hosted OpenAI
+
+| Field | Value |
+|-------|-------|
+| Preset | **OpenAI** |
+| Base URL | `https://api.openai.com/v1` |
+| Auth | Bearer + your OpenAI API key |
+| Suggested model | `gpt-4.1-mini` (editable; type any id the account can call) |
+
+Save, press **Test** on the row, then under use-case assignments pin **Chat**
+(and optionally Summary / Quality / Auto-tag) to this provider. OpenAI also
+serves embeddings — assign **Embedding** only when you intend to index with
+an OpenAI embedding model, then press **Start re-embed** on that row
+(assigning alone does not rebuild the index; keep a local embedder if you
+are not cutting over).
+
+#### Recipe — hosted DeepSeek
+
+| Field | Value |
+|-------|-------|
+| Preset | **DeepSeek** |
+| Base URL | `https://api.deepseek.com/v1` |
+| Auth | Bearer + your DeepSeek API key |
+| Suggested model | `deepseek-chat` (editable; `deepseek-reasoner` works on the same `/v1`) |
+
+Save, **Test**, assign **Chat** (and other chat-shaped use cases as needed).
+
+Hosted DeepSeek is a **strict thinking host**: Think never sends `think` or
+`chat_template_kwargs` to `api.deepseek.com` (those fields 400 there).
+Reasoning models that stream `reasoning_content` still return the visible
+answer on `content`; with Think off the reasoning channel is dropped.
+
+#### Chat-only hosts must not cover embedding / rerank / image embedding
+
+A hosted **chat** provider must **not** be assigned to:
+
+- **Embedding** — DeepSeek's hosted chat endpoint is not an embeddings index
+  for Compendiq; pointing the use case at it fills the vector column with
+  failures or garbage and stalls retrieval.
+- **Rerank** — never inherits (ADR-021). Unassigned means the rerank stage is
+  off. It needs a Cohere/Jina-style `/v1/rerank` endpoint the chat host does
+  not serve.
+- **Image embedding** — never inherits. Unassigned means the image leg is
+  off. A text chat model answering the plain embeddings shape would write
+  plausible but wrong vectors.
+
+Chat / Summary / Quality / Auto-tag may inherit the default provider. Keep a
+separate local (or dedicated hosted) embedder for **Embedding**, and leave
+**Rerank** / **Image embedding** disabled unless you have a real endpoint for
+each.
+
+#### Runtime knobs that stay as env vars
+
+These are still read every request (or on a short cache) and are **not**
+provider rows:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_PROVIDER` | `ollama` | LLM provider: `ollama` or `openai` (server-wide default, can be overridden per-user) |
-| `DEFAULT_LLM_MODEL` | *(none)* | Fallback model for background workers when their specific model var is not set |
-
-### Ollama
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `LLM_BEARER_TOKEN` | *(none)* | Bearer token for authenticated Ollama/LLM proxies |
-| `LLM_AUTH_TYPE` | `bearer` | Auth type for LLM connections: `bearer` or `none` |
-| `LLM_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for LLM connections |
+| `LLM_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for LLM connections (prefer `NODE_EXTRA_CA_CERTS` in production) |
 | `LLM_STREAM_TIMEOUT_MS` | `300000` | Streaming request timeout in ms (5 min). Increase for very large articles. |
 | `LLM_CACHE_TTL` | `3600` | Redis TTL in seconds for LLM response cache (1 hour) |
 
-### OpenAI-Compatible API
+### Deprecated LLM env vars (bootstrap-only)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. Works with OpenAI, Azure OpenAI, LM Studio, vLLM, llama.cpp, LocalAI. |
-| `OPENAI_API_KEY` | *(none)* | API key (required when using `openai` provider) |
+> **Bootstrap-only.** The tables below are **not** the live configuration path.
+> After migration 054 / ADR-021, providers and per-use-case models are rows in
+> `llm_providers` / `llm_usecase_assignments`, edited under **Settings → AI
+> Models**. Most of these vars seed a first row **only on a fresh install when
+> `llm_providers` is empty**. Setting them on a migrated instance logs a
+> deprecation notice and does not change runtime routing — with one named
+> exception for `OLLAMA_BASE_URL` below. Do **not** revive `LLM_PROVIDER=ollama|openai` — that two-slot
+> toggle is gone.
+
+| Variable | Seed / bootstrap role |
+|----------|----------------------|
+| `OLLAMA_BASE_URL` | Seeds an **Ollama** provider row on an empty table (`…` → `/v1` shim). On an existing install it also rewrites the default sentinel `http://localhost:11434/v1` when the env value differs — that sentinel rewrite is the only post-seed write. |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | Seeds an **OpenAI** provider row (`https://api.openai.com/v1` + encrypted key) when the table is empty |
+| `LLM_BEARER_TOKEN` | Deprecated notice only — **not** read as an Ollama auth seed (the Ollama bootstrap row is always `auth_type='none'`). Put a bearer key on the provider row in Settings. |
+| `DEFAULT_LLM_MODEL` | Suggested `default_model` on the seeded row / worker fallbacks when no assignment exists |
+| `QUALITY_MODEL` / `SUMMARY_MODEL` | Historical worker model seeds; prefer use-case assignments |
+| `EMBEDDING_MODEL` | **Fully inert** since migration 054 — setting it only logs a notice. Assign **Embedding** in Settings. |
+| `LLM_PROVIDER` | **Removed** — was the legacy `ollama` / `openai` toggle. Ignored if present. |
 
 ### Embedding
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EMBEDDING_MODEL` | `bge-m3` | Server-wide embedding model (1024 dimensions by default) |
-| `RAG_EF_SEARCH` | `100` | HNSW ef_search parameter for pgvector similarity queries |
+| `EMBEDDING_MODEL` | `bge-m3` | **Bootstrap-only / inert** — see the deprecated table above. Assign the Embedding use case under Settings → AI Models. |
+| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently. Setting it logs a startup notice. |
 
 ### Background Workers
 
@@ -171,10 +271,10 @@ curl http://localhost:8081/api/health
 |----------|---------|-------------|
 | `QUALITY_CHECK_INTERVAL_MINUTES` | `60` | How often the quality analysis worker runs |
 | `QUALITY_BATCH_SIZE` | `5` | Pages analyzed per quality worker cycle |
-| `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | LLM model for quality analysis |
+| `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | **Bootstrap-only** — prefer the Quality use-case assignment under Settings → AI Models |
 | `SUMMARY_CHECK_INTERVAL_MINUTES` | `60` | How often the summary worker scans for pages |
 | `SUMMARY_BATCH_SIZE` | `5` | Max pages to summarize per worker cycle |
-| `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | LLM model for summaries. Empty = disabled. |
+| `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | **Bootstrap-only** — prefer the Summary use-case assignment. Empty = disabled when no assignment exists. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
 ### Background Job Queue (BullMQ)
@@ -242,6 +342,15 @@ A Redis counter (`llm:streams:<userId>`) tracks currently-open SSE streams per u
 |----------|---------|-------------|
 | `CONFLUENCE_VERIFY_SSL` | `true` | Set to `false` to disable TLS verification for Confluence connections |
 | `ATTACHMENTS_DIR` | `data/attachments` | Attachment cache directory. Set to an absolute path in production. |
+
+### Notion import (#1459)
+
+Users import selected Notion **pages** from Library or New Page. This is not Confluence Sync and is not configured in Settings-only.
+
+- **Auth:** each user pastes an internal integration token. It is encrypted at rest with the same AES-256-GCM helpers as the Confluence PAT (`user_settings.notion_integration_token`). `GET /api/notion/connection` returns only `{ hasToken }`. The token never appears on GET bodies, logs, or toasts.
+- **Tree:** `GET /api/notion/tree` lists pages and databases. Databases and other unsupported types are labelled **Not supported — stays in Notion** and are not selectable. Database **rows** are skipped with the database unless Notion listed the row as its own page object.
+- **Run:** `POST /api/notion/import` creates standalone pages (`source = standalone`) under the chosen local space / parent / visibility. One page failing does not abort the run. Re-running the same Notion page id reports `already_imported`.
+- **Out of scope:** live two-way sync, OAuth, export ZIP, writing to Confluence, treating databases as pages.
 
 ### Confluence API Rate Limiting
 
@@ -383,6 +492,7 @@ panel writes the same `admin_settings` rows.
 | --- | --- | --- | --- |
 | Keyword index language | `fts_language` | `simple` | see allow-list below |
 | Fetch width | `rag_fetch_width` | 10 | 10–200 |
+| Index search depth (#1285) | `rag_ef_search` | 100 | 1–1000 |
 | Rerank candidate pool | `rag_rerank_candidates` | 30 | 10–100 |
 | Confidence gate, similarity basis | `rag_confidence_threshold` | 0 (off) | 0 – <1 |
 | Confidence gate, rerank basis | `rag_confidence_threshold_rerank` | 0 (off) | 0 – <1 |
@@ -418,6 +528,44 @@ vision-capable never receives images whatever this says**; the answer is then
 text-only with nothing on it saying so, which is why the panel states that
 beside the control. Fix a wrong verdict with **Re-check** on the chat row in
 Settings → AI Models, not with this number.
+
+**Index search depth (`rag_ef_search`) is a FLOOR, and one worth leaving
+alone.** It is pgvector's `hnsw.ef_search`: how many candidates the HNSW graph
+walk visits before returning. Every probe runs at this value or at twice the
+rows it asks for, whichever is larger, capped at pgvector's own limit of 1000,
+and all four kNN probes in the product (retrieval's vector leg, the image leg,
+page relationships and duplicate detection) read the same number. That second
+half is why it sits beside Fetch width **as context, not as a companion knob**:
+each probe already raises its own depth to twice the rows it fetches, so this
+floor only ever binds the probes that are narrower than half of it, and
+**widening the fetch makes this setting matter less, not more** — do not raise
+it because you raised the width, which costs scan time (below) and buys
+nothing. Raising it is **not measured to buy recall**: on the 2,560-dimension
+`halfvec` corpus the search is effectively exact from 40, recall@10 was 0.9995
+at 100 and unchanged to 1000. What does move with it is **scan time** — 0.39 ms
+per probe at 100 against 1.74 ms at 1000 on that corpus — and nothing else:
+`hnsw.ef_search` is a query-time setting, so the index footprint the re-embed
+runbook tells you to watch is fixed by how the index was built and is identical
+at every value here. It was `RAG_EF_SEARCH` before #1285 — env-only, read once
+at startup — and that variable is now a bootstrap fallback consulted only while
+no `rag_ef_search` row exists. On an instance that is still running on it the
+panel says so above the control and offers a **Keep <value>** button, because
+Save only sends values you changed and the number shown already matches what
+the server resolved — pressing it writes the row and the variable is never read
+again. A value outside pgvector's `[1, 1000]` is ignored rather than clamped
+(the pre-#1285 reader accepted up to 10000), and the startup log says so by
+name.
+
+**Fuzzy title matching is fixed at similarity 0.3 and is deliberately not a
+setting (#1285).** The typo-tolerant title lookup in search uses `pg_trgm`'s
+`%` operator, which is what lets PostgreSQL use the `idx_pages_title_trgm` GIN
+index instead of scanning every title — and `%` compares against PostgreSQL's
+own `pg_trgm.similarity_threshold` GUC, whose default is 0.3. The constant in
+the code is pinned to it so the retained `similarity() > 0.3` check stays
+exact. A deployment that genuinely needs a different threshold changes the
+database setting (`ALTER DATABASE … SET pg_trgm.similarity_threshold`) and the
+constant together; changing only one of them either loses the index or changes
+which rows match without saying so.
 
 Three things worth knowing before you use it.
 
@@ -467,6 +615,18 @@ ground-truth labels by default, the production report does not claim Recall or
 MRR. An explicitly labelled custom suite can be submitted to
 POST /api/admin/retrieval-benchmark when the team has expected page IDs; only
 those labels produce Recall/MRR.
+
+**The single run slot is shared.** Only one run of this kind exists at a time,
+and the other holder is the shadow model comparison — **Settings → AI Models →
+LLM providers → "Compare on real queries"**, which appears inside the shadow
+migration card once a #1116 candidate column is fully backfilled and scores
+that candidate against the live embedding model on the same real queries
+(agreement first, and a judged Recall/MRR/McNemar verdict once 20 side-by-side
+picks exist). Both spend the same LLM queue, so while either runs the other
+answers 409 "already running" — **and the message names the run that is
+actually holding the slot**, so a benchmark refused by a comparison says so
+rather than reporting a benchmark nobody started. The comparison's own
+lifecycle step is 3b in `docs/runbooks/shadow-reembed.md`.
 
 ### Keyword index language (`fts_language`)
 
@@ -608,13 +768,53 @@ cosine):
   normalisation makes scores only loosely comparable across requests (the
   backend logs `Rerank scores were raw logits` whenever that regime
   applied). Prefer a calibrated reranker if you intend to gate on this
-  basis; tune conservatively from your own logs either way.
+  basis; tune conservatively from your own observed distribution either way.
 
-**An empty result set belongs to no basis and refuses when EITHER knob is
-raised** — "no grounding at all" is below any positive bar. On a rerank
-deployment, note the corollary: with only the similarity knob raised,
-steady-state (fully reranked) requests are gated by the rerank knob, which
-is still 0 — raise **both** knobs for full coverage.
+**Pick each number from the line under the control, not from another
+deployment (#1284).** Both bases are recorded per request on
+`search_analytics` (`confidence`, `confidence_basis`, `surface` — migration
+098), and Settings → AI Models → Retrieval shows the observed distribution
+under each threshold: `p50`, `p90` and the number of assistant questions the
+two were computed over, for the last 7 days. The gate refuses when the score
+is **below** the threshold, so a threshold set **at** `p50` puts about half
+the questions measured on that basis below the bar and one set at `p90` about
+nine in ten — the consequence a bare number never states. Read that as a
+**ceiling on refusals, not the rate**: the gate stands down entirely for a
+turn that is grounded some other way — an assembled sub-page tree, an
+attached document, web results, or an earlier answer in the same conversation
+— and those turns are recorded in the sample all the same, because the
+analytics row is written during retrieval, before the refusal decision. On a
+multi-turn assistant the observed refusal rate at `p50` is well under half.
+The sample counts
+**assistant questions only** —
+`/llm/ask`, deep search included — because the gate is never consulted on a
+page search; and below 30 questions the line says outright that the figures
+are too few to tune against. Do not expect the two counts to add up to the
+number of questions asked: a question that belongs to **neither basis** —
+keyword-led results, image-only results, a pinned exact-identifier hit, or a
+search that returned nothing at all — is recorded on basis `none` and appears
+in **neither** distribution. On a thin corpus that last case is the largest
+part of the gap. Nothing is hidden from you: neither threshold can act on
+those questions, because neither scale carries a number for them (the honest
+refusals that consult no threshold at all — an empty knowledge base, an
+embedding outage, an image-only match — are unaffected by these knobs; the
+four refusal reasons are enumerated in
+`docs/architecture/09-flow-rag-chat.md`). If the readout says the
+distribution could not be read, that is a failed request, not an empty
+corpus — press **Retry** at
+the top of the section (never reload the page: that discards every unsaved
+change on the panel). If it says the distribution could not be *re*-read, the
+figures beside it are real and merely not current — they are the last ones the
+panel could fetch, and the same Retry refreshes them. Per-request verdicts
+are still logged and traced (`rag.confidence` / `rag.confidence_basis`) for
+inspecting one answer.
+
+**An empty result set belongs to no basis, and neither knob decides it** — it
+is refused *ungated*, ahead of any threshold comparison (`no_context`,
+#1105), so raising or lowering either number changes nothing for it. What the
+knobs can leave uncovered is a whole *basis*: on a rerank deployment with only
+the similarity knob raised, steady-state (fully reranked) requests are gated
+by the rerank knob, which is still 0 — raise **both** knobs for full coverage.
 
 Each is a plain decimal in [0, 1) — `0.35`, not `1`, `0,35` or `35%`
 (rejected loudly in the logs, gate stays off); 0, an absent row, or an
@@ -639,7 +839,13 @@ once they diverge, naming the old model, the live one and which scale moved.
 **Nothing rewrites the threshold** — a shadow swap, its rollback and a direct
 use-case re-assignment all log a warning naming both models and leave the
 number exactly as you set it. Clear the notice by re-tuning the threshold
-from your own logged `rag.confidence` values on the new model, or by pressing
+against the observed distribution shown under the control (#1284 — the old
+advice was to grep your own logs). **That distribution is not filtered to the
+new model**: `search_analytics` records the score and its basis but no
+provider or model, so for up to seven days after a model change the window
+still contains questions scored on the previous scale, and the readout says so
+while the notice above it stands. Re-tune once the window has turned over, or
+tune conservatively and revisit. You can also clear the notice by pressing
 **Keep &lt;value&gt;** on the notice itself, which records the number you
 already have against the live model. That button is the only way an untouched
 threshold gets re-recorded: the panel's Save sends only knobs you actually
@@ -699,6 +905,41 @@ retrieval confidence` log line carries `healthCaveat`
 standing down and why. **The right values are deployment-specific** —
 start from your logged confidence values, not from a number someone else
 used.
+
+### AI inline completion (`Settings → AI Models` and `Personal → Editor`)
+
+Inline completion displays a short, one-line continuation as ghost text in the
+article editor. It is opt-in at the deployment level: under **Settings → AI
+Models → LLM providers**, assign the **Inline completion** row to a dedicated
+provider and model. Leaving the row at **Disabled (no inline suggestions)** is
+the server-wide off switch; it never inherits the default provider.
+
+Choose a small, fast model. Editor requests are frequent, bypass the general
+LLM queue, and are limited to 48 output tokens in full-suggestion mode or 8 in
+word mode. FIM-capable coder
+models (for example Qwen Coder, DeepSeek Coder, StarCoder, Codestral, or
+CodeGemma families) use their fill-in-the-middle path; other OpenAI-compatible
+models use chat completion. A provider shared with other use cases also shares
+its circuit breaker, so a separate provider row gives stronger failure
+isolation.
+
+Each user controls the feature under **Settings → Personal → Editor**:
+
+- **Show inline suggestions** enables or disables ghost text for that user.
+- **Suggestion delay** chooses 300 ms, 500 ms, 800 ms, or manual-only requests.
+- **Default mode** chooses a focused one-word completion or a full one-line
+  suggestion. Existing users keep the full-suggestion default.
+- **Code blocks only** suppresses suggestions in prose.
+
+In the editor, Tab accepts the visible suggestion, Option+] on macOS or Ctrl+]
+on other platforms accepts one word from a full suggestion, Escape dismisses
+it, and Option+\ or Command+Shift+Space on macOS (Alt+\ elsewhere) requests one
+manually. Automatic suggestions are also
+suppressed during IME composition, in tables, and on coarse-pointer devices.
+
+No prompt or completion content is written to the LLM audit log. Monitoring is
+limited to aggregate request and token counters in Redis under
+`metrics:llm:inline_completion`.
 
 ### Image retrieval (`Settings → AI Models`)
 
@@ -1132,6 +1373,139 @@ Pick one of the following when upgrading an existing install:
 
 2. Restart the services. Migrations run automatically.
 
+## Attachment Storage & Orphan Sweep
+
+`ATTACHMENTS_DIR` (default `data/attachments`) holds two stores that grow with
+use: the Confluence cache `<confluence_id | page id>/<file>` (synced
+attachments, pasted images — standalone pages key by numeric id, so the
+keyspace is shared with Confluence ids) and the local store
+`local/<page id>/<file>` (draw.io saves and relocated pages, with metadata
+rows in `local_attachments`). Sync and page deletes clean their own pages;
+everything else is covered by the observability card and the sweep shipped in
+#1349. A third entry, `page-icons/<page id>/<sha>.<ext>`, is a **separate
+store** for uploaded page marks: it is reserved by name, never walked and never
+swept. Those files *are* reconcilable — for `icon_kind = 'image'` the page row's
+`icon_value` is the sha that names the file — but they are deliberately out of
+scope for #1349, because they are the only copy of an uploaded mark and a wrong
+verdict there is unrecoverable rather than a re-fetch. Removal is therefore
+event-driven, and since #1349 **every** permanent delete performs it: unsetting
+or replacing an icon deletes the old file, a standalone hard delete or trash
+purge removes the icon directory beside that page's attachment directories —
+the icon *unconditionally*, because `page-icons/<pk>/` is keyed by `pages.id`
+alone and no other page can own it, while the attachment directories follow the
+per-store rules stated further down — and a Confluence page that is
+hard-deleted (singly or in bulk), purged from the trash after its 30-day
+window, or removed with its space by **Unsync** does the same.
+"Unconditionally" is about *ownership*, not timing: each of those removals runs
+only once the row-deleting transaction has committed. If that local cleanup
+fails after the page is already gone in Confluence — the row survives, hidden
+and soft-deleted, for the 30-day trash purge to collect — the mark stays on
+disk with it and goes when the purge removes the row.
+A *soft* delete deliberately does not: a trashed page is restorable and its
+mark is its own content, not a re-fetchable cache.
+
+**Where:** Settings → Knowledge → Spaces & Sync → **Sync schedule**, in the
+**Attachment storage** card (admin only; the wrapper opens on its Spaces tab,
+so the sub-tab hop is part of the path). The card shows per-store bytes / file / directory counts and the
+last sweep summary, read from a persisted record — the figures are as fresh as
+the last **completed** walk (they carry a "Measured … ago" date; a refused or
+failed run leaves them standing rather than clobbering them with its own
+partial view), and **Dry run** is how you refresh them.
+
+**How to run a sweep:**
+
+1. Press **Dry run**. It walks both stores, measures them, and lists orphan
+   candidates without touching a single file. On a large corpus this takes
+   minutes; the card polls until it finishes.
+2. Review the candidates. The card's **Show the N candidates** disclosure
+   lists them — store, key, filename, whole-directory vs single-file, and
+   bytes — up to a bounded sample (the heading says so when the run found more
+   than the sample holds). `GET /api/admin/attachments/sweep` returns the same
+   sample if you would rather script the review.
+3. Press **Delete orphans** and confirm. The live run re-walks and re-checks
+   every candidate at delete time — it never trusts a stale dry-run list. When
+   it finishes, the card's figures are the tree as it stands **after** the
+   delete, so what it just removed no longer shows as a candidate.
+
+**What is deleted:** only files that (a) sit in a directory whose key matches
+no page row at all — including soft-deleted/trashed pages and folders, which
+all count as owners — or (b) are image-like files referenced by **no body
+text anywhere**: every page's `body_html`, draft and storage format (live and
+trashed), every retained version, every pending sync version, every template,
+every comment and every saved AI conversation (#1361 persists a matched
+image's URL per assistant turn) feed one global keep-set per store, because
+attachment URLs are copied verbatim between bodies. The keep-set outranks the directory
+verdict too: a pageless directory that still holds even one referenced
+filename is skipped whole and reported as *keep-protected* rather than
+deleted, so a referenced file is never removed at either level. A pageless
+directory that holds **sub-folders or links** is likewise never judged:
+attachment directories are flat by construction, so anything under a key-shaped
+name that is not a plain file — a nested tree, a symlink — is something the walk
+cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
+a candidate (paste and sync both write files before the referencing row
+exists); the card says how many candidates are waiting out that window, so a
+freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)
+are never touched.
+
+**An image attached to a live Confluence page but embedded in no body is
+treated as cache** and may be removed — the attachments macro and the article
+view fetch attachments lazily through `GET /api/attachments/:pageId/:filename`,
+which caches whatever filename it was asked for, and nothing in the corpus
+references those files. Removing one costs a re-fetch from Confluence the next
+time it is viewed, not the file: Confluence remains the copy of record.
+(Non-image attachments on the same path are excluded by the rule above, so a
+cached PDF is left alone either way.) Locally uploaded images are a different
+matter and are protected by their `local_attachments` row.
+
+`local_attachments` rows whose file is missing on disk are
+**counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the
+metadata. Files the sweep deletes take their `page_image_embeddings` rows with
+them and the owning pages are re-queued for image indexing.
+
+A directory whose name is not a usable attachment key — `tmp.12345/`,
+`12345 (copy)/`, anything a person or another tool left under
+`ATTACHMENTS_DIR` — is never opened, never judged and never removed. It is
+also not *measured*, so its bytes are missing from the per-store figures; the
+card says how many such directories the walk stepped over, so a store carrying
+a large one does not silently under-report its size.
+
+**The keep-set rule belongs to the sweep, not to the delete routes.** A
+permanent page delete removes that page's directories directly (that is the
+leak the sweep does not have to converge), and that removal consults no
+keep-set: `local/<pk>/` and `page-icons/<pk>/` go unconditionally, and
+`<pk>/` in the shared Confluence-style tree goes only when no page claims
+that `confluence_id` and the directory has aged past a 5-minute grace. So if
+you copy editor HTML containing an image out of one standalone page into
+another and then permanently delete the *source* page, the copy loses its
+picture. Nothing in the product duplicates pages, so this needs a deliberate
+copy/paste between two pages to reach; if you rely on that pattern, re-upload
+the image into the page that keeps it rather than pasting its URL.
+
+**Refusals:** any run refuses when the attachments root is missing or
+unreadable, and a live run stands a store down when it has zero files on disk
+while the database still references it — the signature of an unmounted volume.
+That verdict is **per store**: with both stores anomalous the run refuses
+outright, and with only one the run completes, sweeps the sound store and
+names the skipped one in an amber note on the card (otherwise an instance
+whose re-fetchable Confluence cache is legitimately empty could never clear
+its local orphans, which are not re-fetchable). Nothing is ever deleted on the
+strength of a missing directory alone.
+
+**Bookkeeping:** the sweep is single-flight (worker lock
+`attachment-sweep`), manual-only (no schedule), admin-rate-limited, and every
+run — dry runs included — emits a `RETENTION_PRUNED` audit event on
+`attachments_orphan_sweep` with counts by reason class, so the Data Retention
+Attestation report (Report 7) covers it. That report's *table* and *rows
+pruned* columns read the event's `table` / `rows_pruned` keys, which name the
+one **table** this sweep prunes rows from — `page_image_embeddings` — and the
+row count it removed there. Files are not rows: what was deleted on disk is in
+the same event's `files_pruned` / `directories_pruned` / `bytes_pruned`, beside
+`dry_run`, which is what tells a heartbeat from a real prune. No retention
+window is reported because there is no retention policy here (Phase 3 was left
+out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
+`GET /api/admin/attachments/stats`, `GET|POST /api/admin/attachments/sweep`
+(body `{ "dryRun": true|false }`).
+
 ## Backup Strategy
 
 ### PostgreSQL
@@ -1422,11 +1796,23 @@ Check that the `POSTGRES_URL` and `REDIS_URL` in your `.env` match the container
 
 ### LLM requests fail or time out
 
-1. Verify Ollama is running: `curl http://localhost:11434/api/tags`
-2. Check the `OLLAMA_BASE_URL` in `.env`. Inside Docker, use `http://host.docker.internal:11434`.
-3. If using a proxy, set `LLM_BEARER_TOKEN` and `LLM_AUTH_TYPE=bearer`.
+1. Open **Settings → AI → AI Models → LLM providers**. Confirm the provider row
+   you assigned to Chat (or the failing use case) has the expected base URL,
+   and press **Test** on that row.
+2. For a local Ollama / LM Studio host: verify it is reachable from the backend
+   container (`curl` the `/v1/models` URL; inside Docker use
+   `http://host.docker.internal:…`). Env `OLLAMA_BASE_URL` seeds an empty
+   table and, on an existing install, rewrites only the default sentinel
+   `http://localhost:11434/v1` when the env value differs — a non-sentinel
+   saved URL is not overridden.
+3. For hosted OpenAI / DeepSeek / similar: confirm the API key on the provider
+   row (Edit → paste a new key) and that the model id is one the account can
+   call. A 401 from **Test** is almost always a bad key.
 4. For timeout issues with large articles, increase `LLM_STREAM_TIMEOUT_MS`.
-5. Check circuit breaker status via `GET /api/llm/circuit-breaker-status` (authenticated, per-provider detail) -- if a provider shows `open`, the circuit breaker has tripped due to repeated failures. It will reset automatically.
+5. Check circuit breaker status via `GET /api/llm/circuit-breaker-status`
+   (authenticated, per-provider detail) — if a provider shows `open`, the
+   circuit breaker has tripped due to repeated failures. It will reset
+   automatically.
 
 ### TLS certificate errors
 
@@ -1438,9 +1824,21 @@ For self-signed certificates on Confluence or LLM servers:
 
 ### Embeddings are not being generated
 
-1. Ensure the embedding model is pulled: `ollama pull bge-m3`
-2. Check that `EMBEDDING_MODEL` is set correctly in `.env`.
-3. The embedding model can be changed via admin settings, which triggers automatic re-embedding of all content.
+1. Under **Settings → AI Models → LLM providers**, confirm the **Embedding**
+   use case points at a provider that actually serves `/v1/embeddings`
+   (local Ollama `bge-m3`, an OpenAI embedding model, etc.). Do **not** point
+   Embedding at a chat-only host such as hosted DeepSeek.
+   `EMBEDDING_MODEL` in `.env` is inert after migration 054.
+2. For a local Ollama embedder: `ollama pull bge-m3` (or the assigned model).
+3. Changing the **Embedding** row does **not** go live via **Save use-case
+   assignments**. Start the re-embed from that row (**Start re-embed**).
+   Saving first would switch the live model before the index can store its
+   vectors. **Wipe current index** rebuilds the *live* index only — it is not
+   a way to apply an unsaved model change.
+4. If the assigned model’s width does not match `page_embeddings.embedding`
+   (for example Qwen3-Embedding-4B at 2560 vs a 1024 column), every page fails
+   until that re-embed (or the assignment is pointed back at a matching model).
+   See `docs/runbooks/shadow-reembed.md`.
 
 ### Database migrations fail
 

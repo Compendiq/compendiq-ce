@@ -60,7 +60,7 @@ export function PresenceAvatarStack({
             key={viewer.userId}
             {...animation}
             transition={reduce ? { duration: 0 } : { delay: idx * 0.05, duration: 0.18 }}
-            title={`${viewer.name} (${viewer.role})${viewer.isEditing ? ' — editing' : ''}`}
+            title={`${viewer.name}${viewer.role ? ` (${viewer.role})` : ''}${viewer.isEditing ? ' — editing' : ''}`}
             data-testid="presence-avatar"
             data-user-id={viewer.userId}
             data-is-editing={viewer.isEditing ? 'true' : 'false'}
@@ -72,7 +72,12 @@ export function PresenceAvatarStack({
               'bg-primary/20',
               idx > 0 && '-ml-2',
             )}
-            style={{ zIndex: visible.length - idx }}
+            style={{
+              zIndex: visible.length - idx,
+              ...(viewer.caretColor
+                ? { outline: `1px solid ${viewer.caretColor}`, outlineOffset: '1px' }
+                : {}),
+            }}
           >
             {viewer.avatarUrl ? (
               <img

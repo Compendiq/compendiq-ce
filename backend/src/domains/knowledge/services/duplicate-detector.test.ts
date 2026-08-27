@@ -37,6 +37,7 @@ vi.mock('../../../core/utils/logger.js', () => ({
 }));
 
 import { tokenJaccardSimilarity, findDuplicates, scanAllDuplicates } from './duplicate-detector.js';
+import { invalidateRagEfSearchCache } from '../../../core/services/admin-settings-service.js';
 
 describe('DuplicateDetector', () => {
   describe('tokenJaccardSimilarity', () => {
@@ -317,7 +318,7 @@ describe('DuplicateDetector', () => {
       });
 
       it('stays inside pgvector ceiling of 1000, which the knob alone does not bound', async () => {
-        // RAG_EF_SEARCH validates to <= 10000 while pgvector refuses anything
+        // The retired `RAG_EF_SEARCH` validated to <= 10000 while pgvector refuses anything
         // over 1000, so interpolating the bare constant made an over-ceiling
         // config a SQL error here and nowhere else.
         for (const limit of [1, 10, 50]) {
@@ -330,6 +331,29 @@ describe('DuplicateDetector', () => {
           expect(ef).toBeGreaterThanOrEqual(100);
           expect(ef).toBeLessThanOrEqual(1000);
         }
+      });
+
+      it('takes its floor from the rag_ef_search knob, like the retrieval legs (#1285)', async () => {
+        // The fourth of the four kNN probes, and the one furthest from the
+        // Retrieval panel. All four must read the SAME floor — otherwise an
+        // admin who raises it gets three probes following the setting and one
+        // still on whatever the environment said at boot.
+        invalidateRagEfSearchCache();
+        mocks.mockQuery.mockImplementation(async (sql: string) =>
+          sql.includes('rag_ef_search')
+            ? { rows: [{ setting_value: '500' }] }
+            : { rows: [{ id: 42, title: 'Source Page', space_key: 'DEV' }] },
+        );
+        mocks.mockClientQuery.mockResolvedValue({ rows: [] });
+
+        await findDuplicates('user-1', 'conf-source', {});
+
+        const stmt = mocks.mockClientQuery.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string')
+          .find((sql) => sql.includes('hnsw.ef_search'));
+        expect(stmt).toBe('SET LOCAL hnsw.ef_search = 500');
+        invalidateRagEfSearchCache();
       });
     });
   });

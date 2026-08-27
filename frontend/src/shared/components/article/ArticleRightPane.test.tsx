@@ -683,12 +683,18 @@ describe('ArticleRightPane', () => {
       expect(rail).toHaveAttribute('aria-label', 'Page inspector');
     });
 
-    it('names the selected inspector tab in the collapsed rail', () => {
+    it('keeps the collapsed rail focused on its controls without a redundant view label', () => {
       renderRail();
-      expect(screen.getByTestId('inspector-rail-current-view')).toHaveTextContent('Details');
+      expect(screen.queryByTestId('inspector-rail-current-view')).not.toBeInTheDocument();
       expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
       expect(screen.getByTestId('article-details-rail-btn').className).toMatch(/nm-pill-active/);
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
+    });
+
+    it('aligns the collapsed rail divider with the expanded toolbar row', () => {
+      renderRail();
+      const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
+      expect(chrome).toHaveClass('h-12', 'border-b', 'border-border');
     });
 
     it('keeps Assistant above Outline and parks pin and maintenance behind More', () => {
@@ -891,7 +897,7 @@ describe('ArticleRightPane', () => {
 
       expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
       expect(screen.getByText('Introduction')).toBeInTheDocument();
-      expect(screen.getByText('2 sections')).toBeInTheDocument();
+      expect(screen.queryByText('2 sections')).not.toBeInTheDocument();
     });
 
     // WCAG 2.4.7: a hover-only reveal puts the outline out of reach of the
@@ -979,7 +985,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByText('Introduction')).toBeInTheDocument();
     expect(screen.getByText('Usage')).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveTextContent('2');
+    expect(screen.getByRole('tab', { name: 'Outline' })).not.toHaveTextContent('2');
   });
 
   it('shows empty message when there are no headings', () => {
@@ -1509,4 +1515,3 @@ describe('ArticleRightPane', () => {
     });
   });
 });
-

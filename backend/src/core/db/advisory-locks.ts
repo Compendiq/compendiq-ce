@@ -24,3 +24,10 @@
  * boundary forbids domain → routes).
  */
 export const PAGE_MOVE_ADVISORY_LOCK_ID = 891_001;
+
+/**
+ * Two-key `pg_advisory_xact_lock(COLLAB_INIT_LOCK_KEY, pageId)` taken when a
+ * collab room is first created for a page. Distinct from page-move (891_001)
+ * and migrations (745_001). BYTEA init in a later PR uses the same key.
+ */
+export const COLLAB_INIT_LOCK_KEY = 1_411_001;

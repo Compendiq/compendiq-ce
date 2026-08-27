@@ -220,6 +220,7 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     expect(listed).not.toBeNull();
     const expected = [...listed![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
     expect(expected).toContain('image_embedding');
+    expect(expected).toContain('inline_completion');
 
     // Revert to 054's inline five — exactly the end state the pre-054 cases
     // above produce by recreating the table from 054's own DDL.
@@ -233,7 +234,9 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
 
     for (const usecase of expected) {
       await query(
-        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ($1, NULL, 'm')`,
+        `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+         VALUES ($1, NULL, 'm')
+         ON CONFLICT (usecase) DO NOTHING`,
         [usecase],
       );
     }

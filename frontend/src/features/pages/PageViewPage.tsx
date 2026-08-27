@@ -18,9 +18,10 @@ import {
 } from '../../shared/hooks/use-pages';
 import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
 import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
-import type { SettablePageIcon } from '@compendiq/contracts';
+import type { CollabConfig, SettablePageIcon } from '@compendiq/contracts';
 import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
 import { useAiDockStore } from '../../stores/ai-dock-store';
@@ -44,6 +45,10 @@ import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
+import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
+import { useCollabProvider } from './use-collab-provider';
+import { mergePresence } from './merge-presence';
+import { caretColorForUserId } from '../../shared/lib/collab-colors';
 import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
@@ -71,6 +76,7 @@ export function PageViewPage() {
 
   const { data: page, isLoading, isError, error: pageError, refetch: refetchPage, isFetching: isRefetchingPage } = usePage(id);
   const { data: settings } = useSettings();
+  const { data: inlineCompletionAvailable = false } = useInlineCompletionAvailability();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
   const iconMutation = useUpdatePageIcon();
@@ -154,10 +160,51 @@ export function PageViewPage() {
 
   // Real-time co-presence (#301). Propagates our editing flag to other viewers
   // via a 10s heartbeat so the pencil badge toggles for them within one tick.
+  // When collab is live, awareness owns the pencil — stop sending SSE isEditing.
   const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
+  const { data: collabConfig } = useQuery<CollabConfig>({
+    queryKey: ['collab-config'],
+    queryFn: async () => {
+      const raw = await apiFetch<Partial<CollabConfig>>('/collab/config');
+      return { enabled: raw?.enabled === true };
+    },
+    staleTime: 30_000,
+  });
+  const [collabSession, setCollabSession] = useState(false);
+  const [collabHasSynced, setCollabHasSynced] = useState(false);
+  const collab = useCollabProvider({
+    pageId: id,
+    enabled: collabSession,
+  });
+  const collabLive = collabSession;
   useEffect(() => {
-    setPresenceEditing(editing);
-  }, [editing, setPresenceEditing]);
+    if (!collabSession) {
+      setCollabHasSynced(false);
+      return;
+    }
+    if (collab.synced) setCollabHasSynced(true);
+    if (collab.error) setCollabHasSynced(false);
+  }, [collabSession, collab.synced, collab.error]);
+  const mergedViewers = useMemo(
+    () => (collabLive
+      ? mergePresence(presenceViewers, collab.awarenessUsers)
+      : presenceViewers),
+    [presenceViewers, collabLive, collab.awarenessUsers],
+  );
+  const caretUser = useMemo(() => {
+    if (!currentUserId) return undefined;
+    const user = useAuthStore.getState().user;
+    if (!user) return undefined;
+    return { name: user.username, color: caretColorForUserId(user.id) };
+  }, [currentUserId]);
+  const [collabSaving, setCollabSaving] = useState(false);
+  const [confluenceModified, setConfluenceModified] = useState<{
+    remoteVersion?: number;
+    localVersion?: number;
+  } | null>(null);
+  useEffect(() => {
+    setPresenceEditing(collabLive ? false : editing);
+  }, [editing, collabLive, setPresenceEditing]);
 
   // Sync headings to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -202,6 +249,9 @@ export function PageViewPage() {
       setEditorInstance(null);
       setConfirmDiscardOpen(false);
       setConfirmTrashOpen(false);
+      setConfluenceModified(null);
+      setCollabSession(false);
+      setCollabHasSynced(false);
     }
   }, [id, setStoreHeadings]);
 
@@ -276,6 +326,15 @@ export function PageViewPage() {
     if (!page || !id) return;
     setEditTitle(page.title);
     setDraftLabels(page.labels ?? []);
+    const startCollab = collabConfig?.enabled === true;
+    setCollabSession(startCollab);
+    if (startCollab) {
+      // Collab has no private localStorage draft to restore.
+      setEditHtml(page.bodyHtml);
+      setIsDirty(false);
+      setEditing(true);
+      return;
+    }
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
       // Defer edit mode until the user decides in the ConfirmDialog below:
@@ -287,7 +346,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page]);
+  }, [id, page, collabConfig?.enabled]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -322,21 +381,41 @@ export function PageViewPage() {
 
   const discardAndExit = useCallback(() => {
     if (draftKey) clearDraft(draftKey);
+    setCollabSession(false);
+    setCollabHasSynced(false);
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
   }, [draftKey]);
 
+  const titleOrLabelsDiverged = useCallback(() => {
+    if (!page) return false;
+    const currentLabels = page.labels ?? [];
+    const labelsDiverged =
+      draftLabels.length !== currentLabels.length ||
+      draftLabels.some((l) => !currentLabels.includes(l));
+    return editTitle !== page.title || labelsDiverged;
+  }, [page, editTitle, draftLabels]);
+
   // Cancel guards against silently throwing away unsaved work: when dirty it
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
+    if (collabSession) {
+      // Body lives on the Y.Doc; still confirm title/label divergence.
+      if (titleOrLabelsDiverged()) {
+        setConfirmDiscardOpen(true);
+        return;
+      }
+      discardAndExit();
+      return;
+    }
     if (isEditorDirty()) {
       setConfirmDiscardOpen(true);
       return;
     }
     discardAndExit();
-  }, [isEditorDirty, discardAndExit]);
+  }, [collabSession, titleOrLabelsDiverged, isEditorDirty, discardAndExit]);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscardOpen(false);
@@ -351,28 +430,49 @@ export function PageViewPage() {
       // the edited PNG ships as a huge base64 data URI inside body_html;
       // with it, the PNG is uploaded to the attachment store and the
       // body_html references the small server URL instead.
-      const drain = await drainPendingDrawioDiagrams(editorInstance, {
-        attachmentPageId: page.confluenceId ?? id,
-        pageSource: page.confluenceId ? 'confluence' : 'standalone',
-      });
-      for (const msg of drain.errors) {
-        toast.warning(msg);
-      }
-      if (!editorInstance) {
-        toast.error('Editor instance is not ready. Please try again.');
-        return;
-      }
-      // Read the live HTML straight off the editor instance (#954) — it's the
-      // single source of truth for body content, and also reflects the
-      // newly-committed draw.io node attributes from the drain above.
-      const bodyToSave = editorInstance.getHTML();
+      if (collabLive) {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
+        setCollabSaving(true);
+        try {
+          await apiFetch(`/pages/${id}/collab/commit`, {
+            method: 'POST',
+            body: JSON.stringify({ title: editTitle }),
+          });
+          setConfluenceModified(null);
+          queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        } finally {
+          setCollabSaving(false);
+        }
+      } else {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
+        if (!editorInstance) {
+          toast.error('Editor instance is not ready. Please try again.');
+          return;
+        }
+        // Read the live HTML straight off the editor instance (#954) — it's the
+        // single source of truth for body content, and also reflects the
+        // newly-committed draw.io node attributes from the drain above.
+        const bodyToSave = editorInstance.getHTML();
 
-      await updateMutation.mutateAsync({
-        id,
-        title: editTitle,
-        bodyHtml: bodyToSave,
-        version: page.version,
-      });
+        await updateMutation.mutateAsync({
+          id,
+          title: editTitle,
+          bodyHtml: bodyToSave,
+          version: page.version,
+        });
+      }
       if (editing) {
         const currentLabels = page.labels ?? [];
         const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
@@ -382,12 +482,21 @@ export function PageViewPage() {
         }
       }
       if (draftKey) clearDraft(draftKey);
+      setCollabSession(false);
+      setCollabHasSynced(false);
       setIsDirty(false);
       setDraftLabels([]);
       setEditing(false);
       const isConfluence = page.source === 'confluence' || Boolean(page.confluenceId);
       toast.success(isConfluence ? 'Page saved & synced to Confluence DC.' : 'Page saved.');
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'confluence_modified') {
+        setConfluenceModified({
+          remoteVersion: error.remoteVersion,
+          localVersion: error.localVersion,
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
         toast.error('Version conflict detected.', {
@@ -404,7 +513,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
+  }, [collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -677,30 +786,45 @@ export function PageViewPage() {
       iconOnly={editing}
     />
   );
+  const saving = updateMutation.isPending || collabSaving;
   const sessionActions = (
     <>
-      <IconButton
-        onClick={handleCancelEditing}
-        title="Cancel editing (Esc)"
-        label="Cancel"
-        variant="destructive-ghost"
-        size="icon-sm"
-        className="nm-icon-button nm-action-destructive shrink-0"
-        testid="cancel-edit-btn"
-        icon={<X size={15} aria-hidden="true" />}
-      />
+      <PresenceAvatarStack viewers={mergedViewers} />
+      {collabSession ? (
+        <Button
+          onClick={handleCancelEditing}
+          title="Done editing (Esc)"
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 px-2.5 text-xs"
+          data-testid="cancel-edit-btn"
+        >
+          Done
+        </Button>
+      ) : (
+        <IconButton
+          onClick={handleCancelEditing}
+          title="Cancel editing (Esc)"
+          label="Cancel"
+          variant="destructive-ghost"
+          size="icon-sm"
+          className="nm-icon-button nm-action-destructive shrink-0"
+          testid="cancel-edit-btn"
+          icon={<X size={15} aria-hidden="true" />}
+        />
+      )}
       <Button
         onClick={handleSave}
-        disabled={updateMutation.isPending}
-        isLoading={updateMutation.isPending}
+        disabled={saving}
+        isLoading={saving}
         title="Save changes (Ctrl+S)"
         variant="primary"
         size="sm"
-        leftIcon={!updateMutation.isPending ? <Save size={15} aria-hidden="true" /> : undefined}
+        leftIcon={!saving ? <Save size={15} aria-hidden="true" /> : undefined}
         className="nm-button-primary shrink-0"
         data-testid="save-page-btn"
       >
-        {updateMutation.isPending ? 'Saving…' : 'Save'}
+        {saving ? 'Saving…' : 'Save'}
       </Button>
     </>
   );
@@ -722,6 +846,13 @@ export function PageViewPage() {
           keeps the bar: labels as pills on the left, Edit on the right.
           Operate verbs stay in the inspector. */}
       <div className="relative z-30 shrink-0">
+        {confluenceModified && (
+          <ConfluenceModifiedAlert
+            remoteVersion={confluenceModified.remoteVersion}
+            localVersion={confluenceModified.localVersion}
+            onDismiss={() => setConfluenceModified(null)}
+          />
+        )}
         <div className="relative w-full border-b border-border bg-card">
           {editing && editorInstance ? (
             <div className="px-2">
@@ -771,7 +902,7 @@ export function PageViewPage() {
                     </div>
                   )}
                   <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <PresenceAvatarStack viewers={presenceViewers} />
+                    <PresenceAvatarStack viewers={mergedViewers} />
                     <Button
                       type="button"
                       onClick={handleStartEditing}
@@ -832,7 +963,57 @@ export function PageViewPage() {
                 experience matches the reader's line length exactly. */}
             <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
-                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} />
+                {collabLive && collab.error ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-join-error"
+                  >
+                    {collab.error === 'forbidden'
+                      ? 'You cannot join this collaborative session.'
+                      : collab.error === 'not_found'
+                        ? 'This page is no longer available for collaborative editing.'
+                        : 'Your session expired. Sign in again to keep editing together.'}
+                  </p>
+                ) : collabLive && !collabHasSynced ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-connecting"
+                  >
+                    Connecting to the collaborative session…
+                  </p>
+                ) : (
+                  <Editor
+                    content={collabLive ? undefined : editHtml}
+                    onChange={() => setIsDirty(true)}
+                    draftKey={collabLive ? undefined : draftKey}
+                    naked
+                    onEditorReady={setEditorInstance}
+                    hideToolbar
+                    pageId={id}
+                    onSave={handleSave}
+                    ydoc={collabLive ? collab.ydoc ?? undefined : undefined}
+                    collabProvider={collabLive ? collab.provider : undefined}
+                    caretUser={collabLive ? caretUser : undefined}
+                    inlineCompletion={{
+                      available: inlineCompletionAvailable,
+                      enabled: settings?.inlineCompletionEnabled ?? true,
+                      delay: settings?.inlineCompletionDelay ?? 'balanced',
+                      mode: settings?.inlineCompletionMode ?? 'full',
+                      codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                      clientInferenceEnabled: settings?.clientInferenceEnabled ?? false,
+                      clientInferenceWithoutServer: settings?.clientInferenceWithoutServer ?? true,
+                      clientInferenceAdminEnabled: settings?.clientInferenceAdminEnabled ?? false,
+                      title: editTitle,
+                      spaceKey: page.spaceKey ?? undefined,
+                    }}
+                    spellcheck={{
+                      enabled: settings?.clientSpellcheckEnabled ?? false,
+                      languages: settings?.clientSpellcheckLanguages ?? ['en_US', 'de_DE'],
+                    }}
+                  />
+                )}
               </FeatureErrorBoundary>
             </div>
           </>
@@ -1049,5 +1230,3 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
     </div>
   );
 }
-
-

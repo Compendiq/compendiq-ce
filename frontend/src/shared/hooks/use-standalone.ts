@@ -230,10 +230,11 @@ export function useImportMarkdown() {
 
 // ======== Local Spaces ========
 
-export function useLocalSpaces() {
+export function useLocalSpaces(enabled = true) {
   return useQuery({
     queryKey: ['local-spaces'],
     queryFn: () => apiFetch<LocalSpace[]>('/spaces/local'),
+    enabled,
   });
 }
 

@@ -512,3 +512,32 @@ describe('App – route-based code splitting (#186)', () => {
     });
   });
 });
+
+describe('App routes — the AI family (#1361)', () => {
+  // A source guard rather than a render: this file mounts the real lazy tree
+  // behind Suspense, so a behavioural assertion for /ai/c/:id would have to
+  // wait out AiAssistantPage's whole query fan-out to be non-vacuous — and
+  // would pass on the fallback either way. The route's BEHAVIOUR is covered
+  // where the provider reads it (AiContext.threads.test.tsx) and where the
+  // conversation is fetched (the hydration tests). What this pins is that the
+  // path exists at all, i.e. that a pasted /ai/c/<id> is not a 404.
+  // Precedent: PageTransition.test.tsx:86-108, src/ai-scroll-chain.test.ts.
+  it('registers /ai/c/:conversationId beside /ai, on the same component', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'App.tsx'), 'utf-8');
+    // Negative lookahead so the wildcard route literal `path="/*"` (#1054's
+    // ProtectedRoute catch-all, App.tsx:193) is not mistaken for the start of
+    // a block comment — a real comment never opens with `/*"`, but a naive
+    // strip here swallows everything up to the next genuine `*/`, which would
+    // silently eat every route between the two, this one included.
+    const code = src.replace(/\/\*(?!")[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    expect(code).toMatch(/path="\/ai"\s+element=\{<AiAssistantPage \/>\}/);
+    expect(code).toMatch(
+      /path="\/ai\/c\/:conversationId"[\s\S]{0,80}element=\{<AiAssistantPage \/>\}/,
+    );
+  });
+});

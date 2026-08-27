@@ -136,6 +136,30 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       expect((await flags(folder)).image).toBe(false);
       expect((await flags(deleted)).image).toBe(false);
     });
+
+    // The whole reason the signature became `Promise<boolean>` (#1349 review)
+    // is this branch, and nothing pinned it: flipping the catch's `return
+    // false` to `return true` left both this suite and the sweep's green, so
+    // "the flag IS the queue, so a counter that over-reports it hides exactly
+    // the backlog an operator would go looking for" stood on prose alone.
+    //
+    // A real error from real Postgres, no mocking: `pages.id` is INTEGER, so a
+    // parameter above its range raises 22003 rather than missing — the same
+    // overflow `markPageImagesDirtyByAttachmentKey` parses in JS to avoid.
+    it('answers false when the statement threw, and still does not throw', async () => {
+      const pageId = await seed({ title: 'Present' });
+      expect(await markPageImagesDirty(pageId)).toBe(true);
+
+      const overInt4 = 2_147_483_648;
+      await expect(markPageImagesDirty(overInt4)).resolves.toBe(false);
+    });
+
+    // A page the WHERE excludes is not a failure: the statement ran.
+    it('answers true for a page the statement legitimately did not match', async () => {
+      const folder = await seed({ title: 'F2', pageType: 'folder' });
+      expect(await markPageImagesDirty(folder)).toBe(true);
+      expect(await markPageImagesDirty(987_654_321)).toBe(true);
+    });
   });
 
   describe('markPageImagesDirtyByAttachmentKey (by directory key)', () => {

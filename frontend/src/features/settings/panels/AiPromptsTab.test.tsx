@@ -25,6 +25,22 @@ describe('AiPromptsTab', () => {
     showSpaceHomeContent: true,
     customPrompts: {},
     confluencePatPromptDismissed: false,
+    inlineCompletionEnabled: true,
+    inlineCompletionDelay: 'balanced',
+    inlineCompletionMode: 'full',
+    inlineCompletionCodeOnly: false,
+    clientInferenceEnabled: false,
+    clientInferenceWithoutServer: true,
+    clientInferenceAdminEnabled: false,
+    clientSpellcheckEnabled: false,
+    clientSpellcheckLanguages: ['en_US', 'de_DE'],
+    onboardingState: {
+      firstAiQueryMade: false,
+      shortcutsModalViewed: false,
+      pageCreatedOrEdited: false,
+      dismissed: false,
+      completedAt: null,
+    },
   };
 
   beforeEach(() => {

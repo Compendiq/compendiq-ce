@@ -51,14 +51,14 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses panel-header chrome in both themes', () => {
+  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
     for (const block of [darkBlock, lightBlock]) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--app-header-bg)');
+      expect(rail![1]!.trim()).toBe('var(--color-card)');
     }
   });
 
@@ -82,14 +82,13 @@ describe('Inset shell tokens', () => {
     );
   });
 
-  it('the context rail matches the left pane and stays off the chassis and document card', () => {
+  it('the context rail matches the central pane and stays off the chassis', () => {
     for (const [theme, block] of [
       ['graphite', darkBlock],
       ['paper', lightBlock],
     ] as const) {
-      const pane = tokenHex(block, '--color-background');
+      const pane = tokenHex(block, '--color-card');
       expect(pane, `${theme} rail vs chassis`).not.toBe(tokenHex(block, '--app-chassis'));
-      expect(pane, `${theme} rail vs card`).not.toBe(tokenHex(block, '--color-card'));
     }
   });
 
@@ -130,9 +129,9 @@ describe('Inset shell utilities', () => {
     expect(appLayout).not.toMatch(/md:w-auto/);
   });
 
-  it('the chassis destination column is 20px wider than the header is tall', () => {
+  it('the chassis destination column is 30px wider than the header is tall', () => {
     const nav = read('shared/components/layout/MainNavStrip.tsx');
-    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 20px\)/);
+    expect(css).toMatch(/--app-nav-rail-width:\s*calc\(var\(--app-header-height\) \+ 30px\)/);
     expect(nav).toContain('w-[var(--app-nav-rail-width)]');
   });
 
@@ -144,6 +143,16 @@ describe('Inset shell utilities', () => {
     expect(appHeader).toMatch(/background:\s*var\(--app-chassis\)/);
     expect(appHeader).not.toMatch(/background:\s*var\(--app-header-bg\)/);
     expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
+  });
+
+  it('left navigation, including title and footer chrome, paints the same surface as main', () => {
+    const sidebar = extractBlock(css, '@utility app-sidebar {');
+    const pane = extractBlock(css, '@utility app-content-pane {');
+    expect(sidebar).toMatch(/background:\s*var\(--color-card\)/);
+    expect(pane).toMatch(/background:\s*var\(--color-card\)/);
+    expect(css).toMatch(
+      /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
+    );
   });
 
   it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {

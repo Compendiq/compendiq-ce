@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -547,8 +547,8 @@ describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend an
 
   it('runs backend tests on the PR path without coverage instrumentation', () => {
     expect(testsJob).toMatch(/npm test -w backend/);
-    expect(testsJob).not.toMatch(/test:coverage/);
-    expect(prCheckWorkflow).not.toMatch(/test:coverage/);
+    expect(testsJob).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
+    expect(prCheckWorkflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
   });
 
   it('still builds contracts and runs the contracts suite on the backend Tests job', () => {
@@ -557,24 +557,15 @@ describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend an
   });
 });
 
-describe('.github/workflows/coverage.yml keeps the 70% backend floor on push to dev/main', () => {
-  const coverageWorkflow = readFileSync(
-    join(repoRoot, '.github', 'workflows', 'coverage.yml'),
-    'utf8',
+describe('.github/workflows keeps hosted CI off backend coverage instrumentation', () => {
+  const workflowsDir = join(repoRoot, '.github', 'workflows');
+  const workflowFiles = readdirSync(workflowsDir).filter(
+    (name) => name.endsWith('.yml') || name.endsWith('.yaml'),
   );
 
-  it('is push-only to the long-lived branches — not a PR-blocking job', () => {
-    expect(coverageWorkflow).toMatch(/^on:/m);
-    expect(coverageWorkflow).toMatch(/push:/);
-    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bdev\b/);
-    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bmain\b/);
-    expect(coverageWorkflow).not.toMatch(/pull_request:/);
-  });
-
-  it('runs backend vitest with coverage (the gate the PR path dropped)', () => {
-    expect(coverageWorkflow).toMatch(/test:coverage -w backend/);
-    expect(coverageWorkflow).toMatch(/postgres:/);
-    expect(coverageWorkflow).toMatch(/redis:/);
+  it.each(workflowFiles)('does not run test:coverage in %s', (file) => {
+    const workflow = readFileSync(join(workflowsDir, file), 'utf8');
+    expect(workflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
   });
 });
 
@@ -614,6 +605,24 @@ describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layer
     }
 
     expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
+  });
+});
+
+describe('.github/workflows/sync-ee-submodule.yml dispatches CE dev updates to EE', () => {
+  const workflowPath = join(repoRoot, '.github', 'workflows', 'sync-ee-submodule.yml');
+
+  it('sends the CE commit SHA through the authenticated repository dispatch contract', () => {
+    expect(existsSync(workflowPath), 'CE-to-EE dispatch workflow is missing').toBe(true);
+
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const onBlock = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
+
+    expect(onBlock).toMatch(/^\s*push:\s*\n\s+branches:\s*\[dev\]$/m);
+    expect(onBlock).not.toMatch(/\bmain\b/);
+    expect(workflow).toContain('GH_TOKEN: ${{ secrets.EE_REPOSITORY_DISPATCH_TOKEN }}');
+    expect(workflow).toContain('repos/Compendiq/compendiq-ee/dispatches');
+    expect(workflow).toContain('event_type=ce-dev-updated');
+    expect(workflow).toContain('client_payload[sha]=$GITHUB_SHA');
   });
 });
 

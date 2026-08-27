@@ -344,6 +344,17 @@ Two halves, selected with `--mode`:
   without them two boxes' numbers are not comparable. It also means the two
   halves of one row at `--concurrency 8` are **not** under the same in-flight
   load: the embedding half really runs 8 wide, the search half does not.
+  A third figure joins them since #1285: the HNSW **`ef_search` floor** the
+  vector leg ran at, recorded as `ragEfSearch` with its provenance
+  (`row` / `env` / `default`) and printed on the `search half:` line. It used
+  to be `process.env.RAG_EF_SEARCH`, a constant visible in the shell that
+  launched the script; it is now `admin_settings.rag_ef_search` in the database
+  under test, so two runs labelled identically can measure different scan
+  depths over one corpus — and the swing is 0.39 ms per probe at 100 against
+  1.74 ms at 1000, on exactly the quantity this script publishes. It is
+  **reported, not certified**: unlike `fts_language` there is no seeded
+  artefact to recompute it against, and a floor an operator chose deliberately
+  is a fact about the instance rather than an inconsistency to refuse over.
 
 The run is **non-destructive**: it never seeds, and every search runs with
 `recordAnalytics: false`, so no replayed fixture query is filed as a question

@@ -10,6 +10,7 @@ Your company fronts every internal service with a centrally-managed nginx instan
 - A vanity hostname like `compendiq.corp.example.com`
 - X-Forwarded-* headers preserved end-to-end (for rate-limit buckets + audit logs to show real client IPs)
 - Server-Sent Events working (the LLM streams via SSE — buffering breaks them)
+- Collaborative editing WebSockets reaching `/api/collab/` (HTTP/1.1 Upgrade — the server-scope `Connection ""` that keeps SSE alive is hostile to Upgrade unless a dedicated location overrides it)
 - Large diagrams and pasted images uploading without hitting a 413 at the proxy
 
 ## Architecture
@@ -75,8 +76,42 @@ server {
     proxy_set_header X-Forwarded-Host  $host;
 
     # HTTP/1.1 + keep-alive so SSE connections aren't force-closed.
+    # This empty Connection is **hostile to WebSocket Upgrade** — the
+    # dedicated `/api/collab/` location below must set Connection
+    # "Upgrade" itself. Leaving collab under this server-level header
+    # is a silent failure (the 101 never happens).
     proxy_http_version 1.1;
     proxy_set_header Connection "";
+
+    # Collaborative editing (Yjs). Must sit in this vhost — not only as
+    # a sibling snippet that still inherits Connection "". Any
+    # `proxy_set_header` inside a location discards the server-level
+    # set, so Host / X-Forwarded-* are restated here.
+    #
+    # HTTP/2: `listen 443 ssl http2` still accepts HTTP/1.1 on the same
+    # port. Browsers' `WebSocket()` uses HTTP/1.1 Upgrade (RFC 6455),
+    # **not** RFC 8441 Extended CONNECT. `/api/collab/` must be reachable
+    # as HTTP/1.1 to the next hop. Terminating HTTP/2 here and speaking
+    # HTTP/1.1 to Compendiq (`proxy_http_version 1.1`) is the intended
+    # shape. Do not attach HTTP/2 push or a buffering module to this
+    # location.
+    location /api/collab/ {
+        proxy_pass http://127.0.0.1:8081;
+
+        proxy_http_version      1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_read_timeout      3600s;
+        proxy_send_timeout      3600s;
+        proxy_buffering         off;
+        proxy_cache             off;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8081;
@@ -138,6 +173,9 @@ There are **two** nginx layers in this topology: yours, and the one inside the C
 **5. 502 Bad Gateway from nginx.**
 Compendiq isn't actually listening on `127.0.0.1:8081`. Run `ss -tlnp | grep 8081` on the proxy host; if the port isn't bound, fix the compose `ports:` line and restart.
 
+**6. Collaborative editing never connects (browser shows 1006; no `101 Switching Protocols`).**
+The `/api/collab/` location inherited `proxy_set_header Connection "";` from the server block. Confirm the location sets `Connection "Upgrade"` and `Upgrade $http_upgrade` itself — a sibling snippet that still sits under the empty Connection is the failure this header exists to prevent. If the 101 happens and then the socket dies at ~60s, raise `proxy_read_timeout` / `proxy_send_timeout` (the bundled edge uses 3600s). If the next hop is HTTP/2-only, that is RFC 8441 Extended CONNECT, which browsers' `WebSocket()` does not speak — terminate HTTP/2 at this nginx and `proxy_http_version 1.1` to Compendiq.
+
 ## Server-Sent Events (SSE) streaming routes
 
 The generic `server`-level `proxy_buffering off;` above is usually enough, but enterprises with a stricter base config often re-enable buffering globally — in which case the SSE routes need their own `location` block to be safe. Add this **above** the generic `location / { ... }` so nginx matches it first:
@@ -167,6 +205,41 @@ location ~ ^/api/(pages/[^/]+/presence|llm/) {
 ```
 
 Without this block, corporate nginx deployments with `proxy_buffering on;` in the base config will silently break both presence SSE (viewer avatars never update) and LLM streaming (chat responses arrive as one blob or time out). Adding the block is cheap insurance even if the server-level `proxy_buffering off;` is already present — the explicit location wins regardless of what other config snippets do elsewhere.
+
+## Collaborative editing (WebSocket) `/api/collab/`
+
+The step-2 vhost already contains this location. It is **not** optional the way the SSE snippet above is: the server-level `proxy_set_header Connection "";` that keeps SSE alive strips the `Upgrade` hop-by-hop header, so a collab socket that inherits it never 101s.
+
+Copy this block **above** `location /` if you did not take the vhost verbatim. It must set `Connection "Upgrade"` itself — putting a `/api/collab/` location that still inherits the empty Connection is a silent failure.
+
+```nginx
+# Yjs collab gateway: GET /api/collab/:pageId
+# Browsers use HTTP/1.1 Upgrade (RFC 6455), not RFC 8441 Extended CONNECT.
+# `listen … http2` is fine: nginx still accepts HTTP/1.1 on the same port,
+# and `proxy_http_version 1.1` is the hop to Compendiq. Do not force HTTP/2
+# to the next hop, and do not attach HTTP/2 push / buffering here.
+location /api/collab/ {
+    proxy_pass http://127.0.0.1:8081;
+
+    proxy_http_version      1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "Upgrade";
+    proxy_read_timeout      3600s;
+    proxy_send_timeout      3600s;
+    proxy_buffering         off;
+    proxy_cache             off;
+
+    # Restate forwarded headers: any proxy_set_header in a location
+    # discards the server-level set (including Connection "").
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+}
+```
+
+The bundled frontend nginx has the same sibling (`location ^~ /api/collab/` in `frontend/nginx.conf`). The **outer** proxy is the one that has to override `Connection ""`; the bundled edge never sets that header.
 
 ## Verification
 

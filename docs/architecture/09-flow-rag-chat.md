@@ -689,8 +689,14 @@ discard the choice and an abort or an error cannot leave the toggle lit. Two
 further boundaries clear it, both found in review: a **chip run** in the dock
 (Improve / Summarize / Diagram / Quality post to routes that do not take the
 flag, so leaving it lit would show a mode the request is not in), and a
-**conversation switch** on `/ai` (the sidebar swaps the thread under a composer
-that stays mounted, which no remount tidies up).
+**thread switch** on `/ai`. That second one keys on `AiContext`'s
+`activeThreadId`, not on the sidebar: since #1361 a thread is identified by
+where you are (`draft`, `conv:<id>`, `page:<id>`) and by an identity stamped at
+filing, so New chat, opening a saved conversation from the conversations pane
+and Back/Forward between two `/ai/c/:id` URLs all clear the toggle under a
+composer that stays mounted, which no remount tidies up — while typing, a `?q=`
+prefill and a first answer's promotion from `draft` to `conv:<id>` leave it
+alone, because none of those is a different conversation.
 
 The copy is the other half of the constraint, and it is deliberately
 unflattering. The caveat is **visible at rest and wired to the control via
@@ -1287,6 +1293,63 @@ backfilled (on pre-088 rows NULL means "not recorded", not "healthy"):
   recorded degraded or not, so the destructive re-embed window (#1116) is
   visible in analytics after the fact.
 
+Migration **098 (#1284)** added three more, on the same terms — nullable, no
+backfill, TEXT without a CHECK:
+
+- **`confidence`** — the #1105 gate's own verdict for this search, exactly as
+  `computeRetrievalConfidence` returned it over the RETURNED set. `NULL` is a
+  real value: a keyword-led set, an image-only set, a pinned exact-identifier
+  head and an empty set whose retrieval health could not be verified all carry
+  no number, and recording 0 for one would drag every percentile downstream
+  toward the floor. The one `none` verdict that DOES carry a number is the
+  **healthy empty set** — the ordinary `no_context` path — which scores `0`,
+  because "the knowledge base has nothing on this" is a measurement. So a
+  distribution over this column must be filtered by `confidence_basis`, never
+  by the score merely being present — and never by the score being non-zero
+  either: the similarity basis is clamped at 0 for a negative cosine, so `0`
+  on basis `similarity` is a real measurement of the worst-matching question
+  the deployment answered and must stay in the sample. Only the basis
+  separates the two. Never derive it from `max_score` (RRF
+  fusion) or `rerank_score` (the reranker's own scale) — a distribution
+  published on the wrong scale is worse than none.
+- **`confidence_basis`** — `rerank` | `similarity` | `none`. Its own column
+  because the basis flips per request and a `NULL` score alone cannot tell
+  `none` from "not recorded".
+- **`surface`** — `ask` | `search`. The gate is evaluated on `/llm/ask` only,
+  so page-search rows are labelled and excluded from the readout below rather
+  than diluting the sample an operator tunes the refusal policy against.
+  `NULL` (every pre-098 row) is unknown, and unknown is never read as `ask`.
+
+Both hybrid writers record the verdict: `hybridSearchInner` computes it once —
+above the analytics write, from the same `topResults` and the same health
+caveat the span attributes carry — and `multi-query-search.ts` computes it over
+the MERGED set with the original leg's caveat. `/llm/ask` passes
+`surface: 'ask'` and re-derives the same verdict for the gate from the same
+inputs, so the recorded number is the number the gate compared.
+`/api/search`'s hybrid branch passes `surface: 'search'`; its `semantic` /
+`keyword` rows and `POST /search/log`'s `faceted` rows carry
+`surface = 'search'` with no confidence at all, because no basis is computed
+on those paths.
+
+**`GET /api/analytics/confidence-distribution`** (`requireAdmin`, in
+`routes/knowledge/analytics.ts`) answers `{ windowDays: 7, surface: 'ask',
+similarity: {p50, p90, count}, rerank: {p50, p90, count} }` —
+`percentile_cont(0.5|0.9) WITHIN GROUP (ORDER BY confidence)` grouped by basis
+over `surface = 'ask'` and the two real bases (`confidence_basis = ANY
+('{similarity,rerank}')` keeps the unmeasurable rows out of the scan, the
+healthy-empty zeros included, and the bucket mapping in the route drops any
+group that is not `similarity`/`rerank`; the `confidence IS NOT NULL` beside
+them only guards `COUNT(*)`) inside a fixed 7-day window
+(inside the default 90-day retention; a shorter configured retention simply
+shrinks the sample, which `count` makes visible). An empty sample answers
+nulls, never NaN and never 0. Settings → AI Models → Retrieval renders it as
+one muted line under each threshold — a MEASUREMENT, so neutral per ADR-010 —
+with the count always visible, a small-sample caveat below 30 questions, an
+explicit "nothing measured" state, and a failure sentence when the read
+itself fails (a failed read is not evidence that nothing was measured). No new
+index: `idx_search_analytics_created` bounds the scan and nothing has measured
+a need for a partial one.
+
 **The coverage probe** (`getEmbeddingCoverage`) counts ground truth from
 `page_embeddings` — deliberately not `pages.embedding_status`, which a failed
 run can leave stale — over what `embedPage` will actually embed: non-deleted,
@@ -1389,7 +1452,8 @@ truncates at the requested page count, so the old chunks-vs-pages
 under-delivery is resolved at the source). Widening is order-preserving
 (cosine order is a stable prefix) while `ef_search` is constant — since
 #1106 ef covers the RAW fetch, so the constant range is stage limits
-≤ `RAG_EF_SEARCH/8` = 12, still true at the default width 10; beyond it a
+≤ `rag_ef_search/8` = 12 at the default floor of 100, still true at the
+default width 10; beyond it a
 raised `ef` explores more of the HNSW graph and can surface genuinely nearer
 neighbours above previous results.
 
@@ -1790,7 +1854,42 @@ test pins that.
   corrupts every query vector.
 - **Vector search** uses pgvector's `<=>` cosine distance against an HNSW
   index on `page_embeddings.embedding`. `ef_search` is set per request for
-  a recall/latency trade-off.
+  a recall/latency trade-off — `SET LOCAL` inside the probe's own transaction,
+  never a session-level `SET`, which would leak the value to the next borrower
+  of that pooled connection. The floor is RESOLVED before the probe checks its
+  client out, though: on a cache miss the reader queries the main pool, and a
+  probe that awaits it between `BEGIN` and the `SET LOCAL` is asking a pool for
+  a second connection while holding one — under saturation that waits out
+  `connectionTimeoutMillis`, soft-fails to the default floor and caches that
+  for a TTL, while holding its own client for the whole stall. The value is
+  `min(1000, max(floor, 2 × raw row count))`, one definition in
+  `domains/llm/services/hnsw-ef-search.ts` shared by all four kNN probes (the
+  vector leg, the image leg, `computePageRelationships` and the duplicate
+  detector). Since **#1285** the floor is `admin_settings.rag_ef_search`
+  (default 100, range 1–1000, 60-second cached reader), edited in
+  Settings → AI Models → Retrieval beside Fetch width. It sits there as
+  CONTEXT for the width, not as a knob to move with it: the `2 ×` headroom
+  above means a probe's depth already covers its own raw fetch at every
+  reachable width (both legs cap the raw fetch at 500, so `2 × raw` stays
+  inside the 1000 ceiling), and the floor therefore binds only the probes
+  narrower than half of it — widening the fetch makes this number matter
+  *less*. The one plateau that does exist is pgvector's own 1000 ceiling
+  against a raw fetch above 500, which is unreachable at today's 200 stage
+  limit and independent of this setting. It was `RAG_EF_SEARCH`, read at module
+  load, so the deployment's recall floor could not be changed without a restart
+  and was invisible on the panel that owns every other retrieval number; that
+  variable is now a bootstrap fallback consulted
+  only while no row exists, and reported as deprecated at startup — with the
+  panel offering a one-key `Keep <value>` write on exactly the instances where
+  the variable is still what produced the number (`ragEfSearchFromEnv` on the
+  settings payload), since Save sends only the values an admin changed and
+  would otherwise have no row to write. A row read that FAILS never falls
+  through to the variable: an unreadable row is not an absent one, and the
+  fall-through would reinstate a retired value for a full cache TTL. Raising
+  the floor is not measured to buy recall, and its measured cost is scan time
+  only — 0.39 ms per probe at 100 against 1.74 ms at 1000; index footprint is a
+  build-time property and does not move with this setting. See the `ef_search`
+  sizing item in ADR-025's neighbourhood (`docs/runbooks/shadow-reembed.md`).
 - **Keyword search** uses the PostgreSQL text-search configuration stored in
   `admin_settings.fts_language` (default `simple`; set `german`, `english`,
   etc. for language-aware stemming), edited in
@@ -1996,8 +2095,16 @@ in order:
 - **Initial title** — the first question, whitespace-collapsed, cut on a word
   boundary at ≤ 80 chars with an ellipsis (`initialTitleFromQuestion`);
   `title_source = 'question'`. `PATCH /llm/conversations/:id { title }` sets
-  `'user'` and does not bump `updated_at` (it would re-bucket the row). Auto-title
-  (PR 3 of #1361) writes only while `title_source = 'question'`.
+  `'user'` and does not bump `updated_at` (it would re-bucket the row).
+- **Auto-title after the terminal frame.** A newly inserted conversation starts
+  one fire-and-forget completion through the existing `chat` assignment after
+  its streamed, cached, or refused response has completed. The question and
+  non-refused answer are bounded and passed through `sanitizeLlmInput`; refused
+  answers title from the question alone. `normalizeGeneratedTitle` reduces the
+  reply to one unquoted, unformatted line of at most 80 characters. The update
+  is a compare-and-set on `title_source = 'question'`, so a concurrent manual
+  rename (`'user'`) wins. Provider, timeout, parse, and database failures leave
+  the question-derived fallback in place and never fail or delay the answer.
 - **Replay budget (decision 10).** `selectReplayableHistory` replays the newest
   whole exchanges within `HISTORY_REPLAY_TOKEN_BUDGET` (4,000 tokens by
   `estimateTokens`, a constant — not an env var). Pairing is by role: an

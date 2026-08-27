@@ -90,6 +90,12 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   invalidateRagImageLegCache: vi.fn(),
   getRagAnswerMaxImages: vi.fn().mockResolvedValue(2),
   invalidateRagAnswerMaxImagesCache: vi.fn(),
+  // #1285 — the ef_search floor, likewise at its reader default. Its own
+  // row → env-bootstrap → 100 cascade is exercised against the real service.
+  // Review r1: the GET reads the SOURCE too, so the panel can tell an
+  // instance running on the env var from one holding a saved row.
+  resolveRagEfSearch: vi.fn().mockResolvedValue({ value: 100, source: 'default' }),
+  invalidateRagEfSearchCache: vi.fn(),
   invalidateRagFetchWidthCache: vi.fn(),
   invalidateRagRerankCandidatesCache: vi.fn(),
   invalidateRagConfidenceThresholdCache: vi.fn(),

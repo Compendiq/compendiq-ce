@@ -10,6 +10,13 @@ concurrency:
   group: pr-check-${{ github.head_ref }}
   cancel-in-progress: true
 
+# @huggingface/transformers depends on onnxruntime-node, whose linux/x64
+# postinstall downloads CUDA EP binaries from nuget.org. Client inference
+# is browser WebGPU only — skip that fetch or Ubuntu `npm ci` needs nuget
+# and fails when it times out (#1418).
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   typecheck-lint:
     name: Typecheck & Lint
@@ -109,9 +116,8 @@ jobs:
       - name: Build contracts
         run: npm run build -w @compendiq/contracts
 
-      # Coverage stays on push to dev/main (coverage.yml). Instrumenting
-      # every PR added ~minutes to the critical path for a floor that
-      # barely moves on a typical change.
+      # No coverage instrumentation — the aggregate floors in
+      # backend/vitest.config.ts are for local `npm run test:coverage`.
       - name: Backend tests
         run: npm test -w backend
 
@@ -141,6 +147,13 @@ jobs:
 
       - name: Frontend tests
         run: npm test -w frontend
+
+      # Vitest + tsc never bundle workers. #1418's `?url` import of
+      # onnxruntime-web WASM passed typecheck and the frontend suite, then
+      # `vite build` in the frontend Docker image failed on the package
+      # exports map. This is that production build, on the same install.
+      - name: Frontend production build
+        run: npm run build -w frontend
 
   # #1102 — retrieval quality gate. Deliberately its OWN job: it runs a real
   # embedding model, which the fast PR path must not wait on. Scoped by paths

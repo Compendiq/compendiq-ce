@@ -46,6 +46,20 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #1349: the icon store is keyed by `pages.id`, so the bulk hard delete runs
+// a SECOND pass over the numeric ids beside the `confluence_id`-keyed
+// attachment cleanup above. Mocked here so the cell below can see it — the
+// real module writes to `ATTACHMENTS_DIR`.
+// Only the one function is replaced: `attachment-store.ts` imports
+// `PAGE_ICON_STORE_DIRNAME` from this module to build its reserved-name set,
+// and a whole-module stand-in leaves that `undefined`.
+vi.mock('../../core/services/page-icon-store.js', async () => {
+  const actual = await vi.importActual<typeof import('../../core/services/page-icon-store.js')>(
+    '../../core/services/page-icon-store.js',
+  );
+  return { ...actual, discardPageIconForDeletedPage: vi.fn().mockResolvedValue(undefined) };
+});
+
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -120,6 +134,7 @@ vi.mock('../../core/db/postgres.js', () => ({
 
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 describe('Bulk Pages Routes (Parallelized)', () => {
@@ -176,7 +191,16 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       ],
       rowCount: 2,
     });
-    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+    // `DELETE FROM pages … RETURNING id` answers with the rows it actually
+    // destroyed, and since #1349 fixer r1 the icon pass keys off exactly that
+    // — so the stub has to model the RETURNING, not hand back an empty set.
+    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
+        const ids = (params?.[0] as number[] | undefined) ?? [];
+        return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
   });
 
   describe('POST /api/pages/bulk/delete', () => {
@@ -320,6 +344,68 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(cleanPageAttachments).toHaveBeenCalledTimes(2);
       expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-1');
       expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+    });
+
+    /**
+     * Fixer r1 — the BULK arm of the four hard-delete call sites #1349
+     * enumerates was pinned by nothing: removing the pass left every bulk and
+     * delete suite green. The #1349 sweep is structurally forbidden to walk
+     * `page-icons/` (it is a reserved root name), so an event-driven delete is
+     * the ONLY thing that ever collects an uploaded mark — a regression here
+     * leaks files with no other collector.
+     *
+     * The NUMERIC ids: the icon store is keyed by `pages.id`, while the
+     * attachment cleanup beside it is keyed by `confluence_id`, which is why
+     * this is its own pass rather than a line inside that one.
+     */
+    it('takes each hard-deleted page icon too, keyed by pages.id', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
+        rowCount: 2,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledTimes(2);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(1);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(2);
+      // Never the `confluence_id` the attachment cache is keyed by.
+      expect(discardPageIconForDeletedPage).not.toHaveBeenCalledWith('page-1');
+    });
+
+    /**
+     * Fixer r1 — …and only for the ids the COMMIT actually destroyed. The
+     * cleanup transaction's catch does not rethrow (#766), so a rolled-back
+     * bulk cleanup used to fall through into the icon pass and `rm -rf` the
+     * marks of pages whose rows all survived (soft-deleted, restorable). Real
+     * Postgres + a real BEFORE DELETE trigger cover the same branch in
+     * `pages-crud-delete-atomicity.integration.test.ts`.
+     */
+    it('keeps every icon when the bulk cleanup transaction rolled back', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
+        rowCount: 2,
+      });
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
+          return Promise.reject(new Error('simulated post-upstream DB failure'));
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(discardPageIconForDeletedPage).not.toHaveBeenCalled();
     });
 
     it('should delete mixed standalone and Confluence pages in one request', async () => {

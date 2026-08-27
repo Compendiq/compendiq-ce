@@ -50,6 +50,10 @@ import {
   type RetrievalMeta,
   type SearchResult,
 } from './rag-service.js';
+// The formula's own dependency-free leaf module (#1268), not rag-service's
+// re-export: this file's suite stubs rag-service to a closed list, and the
+// recorded verdict must be the REAL one.
+import { computeRetrievalConfidence } from './retrieval-confidence.js';
 
 /** How many paraphrases the one reformulation call is asked for. */
 export const PARAPHRASE_COUNT = 2;
@@ -517,6 +521,14 @@ export async function multiQuerySearch(
     // contract; a benchmark must not make its synthetic replays look like
     // real user searches or pollute the query distribution it measures.
     if (opts?.recordAnalytics !== false) {
+      // #1284 — the verdict recorded here is the one the ROUTE's gate will
+      // compute: over the MERGED set (what the caller gets back and what the
+      // gate measures), with the ORIGINAL leg's health caveat (the same
+      // reason that leg alone reports health — three legs would hand the gate
+      // three answers to one question). Computing it from a leg, or from the
+      // legs' own suppressed rows, would publish a distribution the gate
+      // never used.
+      const confidence = computeRetrievalConfidence(merged, meta?.healthCaveat ?? null);
       trackSearchAnalytics(
         userId,
         question,
@@ -530,6 +542,9 @@ export async function multiQuerySearch(
           ),
           degradedReason: meta?.degradedReason ?? null,
           embeddingCoverage: meta?.embeddingCoverage ?? null,
+          confidence: confidence.score,
+          confidenceBasis: confidence.basis,
+          surface: opts?.surface ?? null,
         },
       );
     }

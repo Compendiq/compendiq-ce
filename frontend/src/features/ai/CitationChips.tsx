@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import { cn } from '../../shared/lib/cn';
 import type { Source } from './SourceCitations';
 import { imageSourceFileName, isImageSource } from './image-source';
-import { resolveSourceTarget } from './source-target';
+import { resolveSourceTarget, UNAVAILABLE_SOURCE_TITLE } from './source-target';
 import { SourceThumbnail } from './SourceThumbnail';
 
 interface CitationChipsProps {
@@ -107,11 +107,15 @@ export function CitationChips({ sources, className }: CitationChipsProps) {
         }
 
         // No usable target — keep the number (the answer text refers to it)
-        // but don't render a link that lands on the not-found page.
+        // but don't render a link that lands on the not-found page. Two ways to
+        // get here now, and they are different facts: the source never had a
+        // target, or (#1361) the page behind it is gone from this reader.
         return (
           <span
             key={i}
-            title={`${source.pageTitle} — no page to open`}
+            title={source.unavailable
+              ? UNAVAILABLE_SOURCE_TITLE
+              : `${source.pageTitle} — no page to open`}
             className={cn(CHIP_CLASS, 'opacity-60')}
             data-testid={testId}
           >

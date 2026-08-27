@@ -11,6 +11,9 @@ import {
   ForceReleaseLockResponseSchema,
   FTS_LANGUAGES,
   FtsLanguageEnum,
+  AttachmentSweepRunSchema,
+  AttachmentSweepTriggerSchema,
+  AttachmentStorageStatsSchema,
 } from './admin.js';
 
 const validReadPayload = {
@@ -49,10 +52,27 @@ const validReadPayload = {
   ragImageLegEnabled: true,
   // #1115 P4 — how many retrieved images the answer path may show the model.
   ragAnswerMaxImages: 2,
+  // #1285 — the HNSW ef_search floor, required on read like every knob above.
+  ragEfSearch: 100,
+  // #1285 review r1 — and where it came from, so the panel can tell an
+  // instance still running on RAG_EF_SEARCH from one holding a saved row.
+  ragEfSearchFromEnv: false,
   // #1114 — required on read; both bases null on an instance that has never
   // set a threshold (the 0/0 default).
   ragConfidenceCalibration: { similarity: null, rerank: null },
+  // #1444 — collab gateway flag, required on read (seeded '0').
+  collabEditingEnabled: false,
+  // #1418 — on-device WebGPU inference, required on read (seeded 'false').
+  clientInferenceEnabled: false,
 } as const;
+
+describe('client inference admin flag (#1418)', () => {
+  it('is required on read and optional on update with no default', () => {
+    expect(AdminSettingsSchema.parse(validReadPayload).clientInferenceEnabled).toBe(false);
+    expect(UpdateAdminSettingsSchema.parse({ clientInferenceEnabled: true }).clientInferenceEnabled).toBe(true);
+    expect(UpdateAdminSettingsSchema.parse({})).not.toHaveProperty('clientInferenceEnabled');
+  });
+});
 
 describe('AdminSettingsSchema (read)', () => {
   it('accepts explicit null for drawioEmbedUrl (backend returns null when unset)', () => {
@@ -485,6 +505,15 @@ describe('retrieval knobs (#1118)', () => {
       'ragImageLegEnabled',
       // #1115 P4 — and the answer-path cap.
       'ragAnswerMaxImages',
+      // #1285 — and the ef_search floor.
+      'ragEfSearch',
+      // #1285 review r1 — and its provenance. Required for the same reason
+      // the value is: the panel's remedy for an env-sourced floor is
+      // unreachable without it, so a payload that omits it is not one this
+      // panel can render honestly.
+      'ragEfSearchFromEnv',
+      'collabEditingEnabled',
+      'clientInferenceEnabled',
     ] as const) {
       const { [key]: _dropped, ...without } = validReadPayload;
       expect(() => AdminSettingsSchema.parse(without), `${key} must be required`).toThrow();
@@ -710,6 +739,35 @@ describe('retrieval knobs (#1118)', () => {
     });
     it.each(['ragPinIdentifiers', 'ragMmrEnabled'] as const)('%s rejects a string', (key) => {
       expect(() => UpdateAdminSettingsSchema.parse({ [key]: 'true' })).toThrow();
+    });
+  });
+
+  // #1285 — the ef_search floor. Its range mirrors pgvector's own bound rather
+  // than a reader-invented one, and the reader mirrors it back: [1, 1000].
+  describe('rag_ef_search — [1, 1000] integer', () => {
+    it('accepts the bounds', () => {
+      expect(UpdateAdminSettingsSchema.parse({ ragEfSearch: 1 }).ragEfSearch).toBe(1);
+      expect(UpdateAdminSettingsSchema.parse({ ragEfSearch: 1000 }).ragEfSearch).toBe(1000);
+    });
+    // 0 is not "off" for this knob — pgvector's floor is 1 and the reader
+    // treats a zero row as unset, so the schema must not let one be saved.
+    it('rejects 0, above 1000, and non-integers', () => {
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 0 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 1001 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ ragEfSearch: 100.5 })).toThrow();
+      expect(() => AdminSettingsSchema.parse({ ...validReadPayload, ragEfSearch: '100' })).toThrow();
+    });
+
+    it('carries the provenance flag on read only — it is a fact, not a setting', () => {
+      expect(
+        AdminSettingsSchema.parse({ ...validReadPayload, ragEfSearchFromEnv: true })
+          .ragEfSearchFromEnv,
+      ).toBe(true);
+      // No write counterpart: the operator cannot ask the server to pretend
+      // the value came from somewhere else.
+      expect(
+        'ragEfSearchFromEnv' in UpdateAdminSettingsSchema.parse({ ragEfSearchFromEnv: true } as never),
+      ).toBe(false);
     });
   });
 });
@@ -969,5 +1027,71 @@ describe('rag confidence calibration write outcome (#1114)', () => {
         ragConfidenceCalibrationWrite: { similarity: { outcome: 'unresolved', model: null }, rerank: null },
       }).ragConfidenceCalibrationWrite?.similarity?.outcome,
     ).toBe('unresolved');
+  });
+});
+
+// ─── #1349 — attachment storage + orphan sweep ──────────────────────────────
+
+describe('attachment sweep contracts (#1349)', () => {
+  const storeStats = {
+    bytes: 10,
+    files: 2,
+    directories: 1,
+    orphanDirectories: 0,
+    orphanDirectoryBytes: 0,
+    orphanFiles: 1,
+    orphanFileBytes: 5,
+    graceSkipped: 0,
+    unreadableDirectories: 0,
+  };
+
+  it('a completed dry run parses with candidates and no deleted block', () => {
+    const run = AttachmentSweepRunSchema.parse({
+      at: '2026-08-22T10:00:00.000Z',
+      dryRun: true,
+      status: 'completed',
+      note: null,
+      durationMs: 12,
+      stores: { confluence: storeStats, local: storeStats },
+      missingLocalFiles: 0,
+      candidateSample: [
+        { store: 'confluence', key: '55555', filename: null, bytes: 5, reason: 'orphan_directory' },
+      ],
+      candidatesTotal: 1,
+      deleted: null,
+    });
+    expect(run.candidateSample[0]!.reason).toBe('orphan_directory');
+  });
+
+  it('a refused run carries its note and null stores', () => {
+    const run = AttachmentSweepRunSchema.parse({
+      at: '2026-08-22T10:00:00.000Z',
+      dryRun: false,
+      status: 'refused',
+      note: 'attachments root missing or unreadable',
+      durationMs: 1,
+      stores: null,
+      missingLocalFiles: 0,
+      candidateSample: [],
+      candidatesTotal: 0,
+      deleted: null,
+    });
+    expect(run.status).toBe('refused');
+  });
+
+  it('the trigger requires an explicit dryRun boolean', () => {
+    expect(AttachmentSweepTriggerSchema.parse({ dryRun: false })).toEqual({ dryRun: false });
+    expect(() => AttachmentSweepTriggerSchema.parse({})).toThrow();
+    expect(() => AttachmentSweepTriggerSchema.parse({ dryRun: 'yes' })).toThrow();
+  });
+
+  it('the stats shape has an explicit no-run-yet state', () => {
+    const empty = AttachmentStorageStatsSchema.parse({
+      computedAt: null,
+      running: false,
+      stores: null,
+      missingLocalFiles: null,
+    });
+    expect(empty.stores).toBeNull();
   });
 });

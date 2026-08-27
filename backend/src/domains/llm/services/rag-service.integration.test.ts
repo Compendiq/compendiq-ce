@@ -312,6 +312,51 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
       expect(scoped[0]!.spaceKey).toBe('DEV');
     });
 
+    it('vectorSearch drops a chunk whose vector is NULL — `1 - null` is a perfect match in JS (#1260)', async () => {
+      // The LIVE column is nullable between a #1116 swap and its cleanup: the
+      // swap renames `embedding_next` (never NOT NULL) onto `embedding` and
+      // drops NOT NULL from the renamed-away column, so a chunk the post-swap
+      // dual-write could not fill returns `distance = NULL`, and `1 - null` is
+      // 1 in JS — a perfect similarity feeding `vectorScore` and
+      // `computeRetrievalConfidence` on the ordinary chat path. The shadow
+      // column has its own SQL guard; this is the case only the JS filter
+      // reaches, because the live column carries no such clause.
+      //
+      // The HNSW index is dropped for the duration because the PLAN decides
+      // whether the filter is reached at all: an index scan never returns a
+      // row the index does not contain, so with `idx_page_embeddings_hnsw` in
+      // place the NULL row is invisible to JS and this test would pass with
+      // the filter deleted. Without a usable index — an instance whose build
+      // failed, a candidate wider than the 4000-dim HNSW ceiling, or any plan
+      // the planner costs towards a scan — the row comes back with
+      // `distance = NULL`, and the filter is the only thing between it and a
+      // 1.0 similarity. Making the two plans agree is the point.
+      await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding DROP NOT NULL`);
+      await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      try {
+        const unfilled = await seedSpaceWithPage({
+          userId: user,
+          spaceKey: 'DEV',
+          pageTitle: 'Unfilled after the swap',
+          bodyText: 'postgres page whose vector never landed',
+          vec: fakeVec(21),
+        });
+        await query(`UPDATE page_embeddings SET embedding = NULL WHERE page_id = $1`, [unfilled]);
+
+        const hits = await vectorSearch(user, fakeVec(21), 10);
+        expect(hits.map((hit) => hit.pageId)).not.toContain(unfilled);
+        expect(hits.length).toBe(2);
+      } finally {
+        await query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
+        await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
+        await query(
+          `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw
+           ON page_embeddings USING hnsw (embedding vector_cosine_ops)
+           WITH (m = 16, ef_construction = 200)`,
+        );
+      }
+    });
+
     it('keywordSearch(spaceKey) returns only the scoped space', async () => {
       const unscoped = await keywordSearch(user, 'postgres', 10);
       expect(unscoped.length).toBe(2);
@@ -900,7 +945,13 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
       [prov.rows[0]!.id],
     );
 
-    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, {
+      rerank: true,
+      // #1284, review r1 — the surface travels on the same row, and the
+      // readout filters on it. Declared here so the SELECT below binds all
+      // three new columns to the params that fill them.
+      surface: 'ask',
+    });
     expect(mockRerankCall).toHaveBeenCalledTimes(1);
     const [cfg, model, , docs] = mockRerankCall.mock.calls[0]! as [
       { providerId: string; baseUrl: string },
@@ -916,11 +967,32 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     expect(results.every((r) => r.rerankScore != null)).toBe(true);
 
     await flushSearchAnalytics();
-    const row = await query<{ search_type: string; rerank_score: number | null }>(
-      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    // #1284, review r1 — this SELECT is what binds the writer's positional
+    // params to the COLUMNS they land in. The unit tests read
+    // `analyticsParams()[8..10]` by array index, so swapping two adjacent
+    // TEXT column names in the 11-placeholder INSERT ('confidence,
+    // confidence_basis, surface' → 'confidence, surface,
+    // confidence_basis') left the whole suite green while writing 'ask' into
+    // `confidence_basis` and 'rerank' into `surface` — which makes
+    // `GET /analytics/confidence-distribution`, whose predicate is
+    // `surface = 'ask'` grouped by `confidence_basis`, answer count 0 forever
+    // on every real deployment. The write is fire-and-forget behind a
+    // swallowing catch, so nothing surfaces it either.
+    const row = await query<{
+      search_type: string;
+      rerank_score: number | null;
+      confidence: number | null;
+      confidence_basis: string | null;
+      surface: string | null;
+    }>(
+      `SELECT search_type, rerank_score, confidence, confidence_basis, surface
+         FROM search_analytics ORDER BY id DESC LIMIT 1`,
     );
     expect(row.rows[0]!.search_type).toBe('hybrid_rerank');
     expect(row.rows[0]!.rerank_score).not.toBeNull();
+    expect(row.rows[0]!.surface).toBe('ask');
+    expect(row.rows[0]!.confidence_basis).toBe('rerank');
+    expect(row.rows[0]!.confidence).not.toBeNull();
   });
 
   it('rerank requested but unassigned: stage silently off, analytics stay hybrid (#1104)', async () => {

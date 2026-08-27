@@ -11,6 +11,8 @@ const mockClient = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
+  /** #1285 — what `getRagEfSearch` resolves to for the current test. */
+  ragEfSearch: 100,
   query: vi.fn(),
   getPool: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
@@ -129,6 +131,11 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
   // Issue #257 — retention read during enqueueReembedAll. We delegate to
   // mocks.query so existing `mockResolvedValueOnce({ rows: [...] })` seeding
   // in enqueueReembedAll retention tests keeps working.
+  // #1285 — the ef_search FLOOR is an `admin_settings` row now, read through
+  // this service by `efSearchFor`. Mocked here (the whole module is), and
+  // driven per test by `mocks.ragEfSearch` so the relationship kNN can be
+  // shown to follow the knob rather than a constant.
+  getRagEfSearch: vi.fn(async () => mocks.ragEfSearch),
   getReembedHistoryRetention: vi.fn(async () => {
     const r = await mocks.query(
       "SELECT setting_value FROM admin_settings WHERE setting_key='reembed_history_retention'",
@@ -159,7 +166,7 @@ import {
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
-import { RAG_EF_SEARCH, efSearchFor } from './hnsw-ef-search.js';
+import { clampEfSearch } from './hnsw-ef-search.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -452,13 +459,27 @@ describe('embedding-service', () => {
         expect(stmt).toMatch(/^SET LOCAL hnsw\.ef_search = \d+$/);
 
         const ef = Number(stmt!.match(/= (\d+)$/)![1]);
-        // Same floor as retrieval, and the same value efSearchFor derives for
-        // TOP_K — one definition, not a second knob that can drift.
-        expect(ef).toBe(RAG_EF_SEARCH);
-        expect(ef).toBe(efSearchFor(5)); // TOP_K
+        // Same floor as retrieval, and the same value `efSearchFor` derives
+        // for TOP_K — one definition, not a second knob that can drift.
+        expect(ef).toBe(mocks.ragEfSearch);
+        expect(ef).toBe(clampEfSearch(5, mocks.ragEfSearch)); // TOP_K
         // The bug this pins: PostgreSQL's default is 40.
         expect(ef).toBeGreaterThan(40);
         expect(ef).toBeLessThanOrEqual(1000); // pgvector's ceiling
+      });
+
+      it('follows the rag_ef_search knob rather than a compiled-in constant (#1285)', async () => {
+        // The floor used to be `process.env.RAG_EF_SEARCH`, read at module
+        // load: this path could not follow a change without a restart, and the
+        // panel that owns every knob around it did not mention it. Raising the
+        // row has to move this probe on the next run.
+        mocks.ragEfSearch = 400;
+        try {
+          await computePageRelationships();
+          expect(efSearchStatement()).toBe('SET LOCAL hnsw.ef_search = 400');
+        } finally {
+          mocks.ragEfSearch = 100;
+        }
       });
 
       it('sets it before the similarity kNN runs and inside the transaction', async () => {
@@ -735,6 +756,24 @@ describe('embedding-service', () => {
       expect(result).toEqual({ processed: 0, errors: 0 });
       // Should have called chunk settings + COUNT query only (2 total)
       expect(mocks.query).toHaveBeenCalledTimes(2);
+    });
+
+    it('emits a terminal completion event when no dirty pages exist', async () => {
+      mockChunkSettings();
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const onProgress = vi.fn();
+
+      await processDirtyPages('user-1', onProgress);
+
+      expect(onProgress).toHaveBeenCalledOnce();
+      expect(onProgress).toHaveBeenCalledWith({
+        type: 'complete',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        percentage: 100,
+        errors: [],
+      });
     });
 
     it('should process a small batch of pages (fewer than batch size)', async () => {

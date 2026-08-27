@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: ['**/helpers/**'],
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
@@ -15,6 +16,19 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: ['**/helpers/**', /collab-editing/],
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Isolated: this spec PUTs collabEditingEnabled. `dependencies` runs
+      // it after chromium so a full `npx playwright test` keeps the flag
+      // off during the default suite. workers:1 + not fullyParallel so
+      // collab cannot race itself.
+      name: 'collab',
+      testMatch: /collab-editing/,
+      dependencies: ['chromium'],
+      fullyParallel: false,
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

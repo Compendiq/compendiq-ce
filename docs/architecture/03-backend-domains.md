@@ -12,22 +12,22 @@ flowchart LR
         direction TB
         rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
-        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>embeddings, embedding-shadow, models,<br/>admin, pdf, prepare-image"]
-        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import"]
+        rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
+        rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import,<br/>pages-collab (WS gateway)"]
     end
 
     subgraph domains["domains/"]
         direction TB
-        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
-        dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service"]
+        dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
+        dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service<br/>notion-client<br/>notion-token-service<br/>notion-tree<br/>notion-block-converter<br/>notion-import-service (#1459)"]
     end
 
     subgraph core["core/ (infrastructure)"]
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>image-embedding-dirty"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -109,6 +109,12 @@ flowchart LR
   `getClientForUser`) — this allowance predates #1347.
 - `routes/knowledge` is the top-level aggregator and may import anything.
 
+**Realtime collab (#1444).** Yjs, `y-protocols`, and the collab room/flag/guard/tombstone
+helpers live in `core` plus the `GET /api/collab/:pageId` gateway in
+`routes/knowledge`. Do **not** put Yjs in `domains/llm`. `assertNoLiveCollabRoom`
+is in `core` so `routes/llm` can 409 Apply while a room is live (wired in a
+later PR).
+
 Adding a new import across these lines without updating the ESLint config is
 a build failure — update the config *and* this diagram together.
 
@@ -136,6 +142,46 @@ as an L-size change to route registration, out of scope for a lint fix).
 `boundaries/no-unknown` (which flags an unresolvable *dependency target*,
 not an unmapped source file) stays off — `@compendiq/contracts` resolves
 outside `src/` and would be pure noise.
+
+## Inline completion (#1417)
+
+`routes/llm/llm-inline-completion.ts` is the authenticated, permission-checked
+HTTP boundary for TipTap ghost text. It validates a small request contract,
+sanitizes prefix, suffix, title, space key, and language independently, and
+returns `204` when the `inline_completion` use case is unassigned. Unlike chat
+and background jobs, the route does not emit a content-bearing LLM audit row;
+it records only fixed-field aggregate counts in Redis.
+
+`domains/llm/services/inline-completion-client.ts` is intentionally separate
+from `openai-compatible-client.ts`. It keeps provider authentication, TLS,
+OpenTelemetry, and the per-provider circuit breaker, but its undici request
+bypasses the general LLM queue so a short editor completion cannot wait behind
+a long generation. The request's disconnect signal is passed directly to
+undici. Recognized coder models use a FIM prompt on `/completions`; other
+models use `/chat/completions`. Both paths share the bounded-token, one-line
+normalizer.
+
+```mermaid
+sequenceDiagram
+    participant E as TipTap editor
+    participant R as POST /api/llm/inline-completion
+    participant P as Explicit provider assignment
+    participant M as Model endpoint
+    E->>R: bounded prefix/suffix + AbortSignal lifetime
+    R->>P: resolveInlineCompletionUsecase()
+    alt unassigned
+        P-->>R: null
+        R-->>E: 204 (ghost text off)
+    else assigned
+        P-->>R: provider + model
+        R->>M: direct FIM or chat request
+        M-->>R: short continuation
+        R-->>E: sanitized one-line response
+    end
+```
+
+This introduces no domain-boundary edge: the route still composes
+`routes/llm → domains/llm + core`, and the client remains `llm → core`.
 
 ## Image input (#1154)
 
@@ -178,6 +224,42 @@ The guard it exports the other way round, `assertNoShadowMigration` /
 `routes/knowledge/pages-crud.ts` and `routes/foundation/admin.ts` as well as
 `routes/llm` — the same `routes/* → domains/llm` composition those files
 already do for `processDirtyPages`.
+
+`domains/llm/services/shadow-compare-service.ts` (#1260) runs during that
+migration's `ready` window — the only time both models' vectors exist on the
+same chunk rows. It samples the most frequent `search_analytics` queries
+(`eval/analytics-query-sampler.ts`, ONE sampler shared with the production
+benchmark so the two harnesses' normalisation cannot drift; only the ORDER
+differs), embeds each query once per model with the #1114 instruction prefix
+applied per model, and retrieves top-K pages from `embedding` and
+`embedding_next` through `vectorSearch`'s allow-listed `column` option — the
+same SQL, ACL predicate and `ef_search` discipline as the live probe, never a
+sibling function. An unfilled candidate row must never enter the top-K —
+`embedding_next` is nullable by construction, `NULL <=> $2` is NULL, and
+`1 - null` is 1 in JS, i.e. a perfect match that would inflate every figure
+computed from it. What guarantees that is the `distance !== null` filter in
+JS, which also covers the LIVE column between a swap and its cleanup; the
+shadow arm's `AND embedding_next IS NOT NULL` is a NARROWING beside it (ASC
+ordering puts NULLs last, so such a row cannot displace a scored one under
+the LIMIT), not the guarantee. A transient embedding or retrieval failure
+costs its own query, not the run: the query is skipped, counted on the report
+as `failedQueries`, and only a majority of failures fails the whole
+comparison.
+
+Run records reuse `retrieval_benchmark_runs` with
+`config.kind = 'shadow-compare'`, through the SHARED
+`eval/benchmark-run-lifecycle.ts` — insert, claim, progress + heartbeat,
+complete, fail, the kind-aware stale sweep and the kind-guarded fetch, one
+copy for both kinds. A comparison and a production benchmark exclude each
+other on the 091 one-active index. Mode 2 judgements persist in
+`embedding_compare_judgements` (migration 101), keyed by provider AND model on
+each side, and the verdict is computed from `eval/metrics.ts`
+(`pairedSignificance`, `recallAtK`, `meanReciprocalRank`) — never re-derived;
+the p-value floor counts the live/candidate PICKS, not ties. The admin surface
+is five more routes on `routes/llm/llm-embedding-shadow.ts`
+(`POST …/compare`, `GET …/compare` for the latest run, `GET …/compare/:id`,
+`POST/GET …/compare/:id/judgements`), all `requireAdmin`, all scoped to the
+admin who started the run, results carrying page ids and titles only.
 
 ## The image-embedding leg (#1115 P1–P4)
 
@@ -318,6 +400,33 @@ Confluence or writes to disk — `cacheAttachment`, the draw.io and cross-page
 image sync, `writeAttachmentCache`, the relocate writers — stayed in the
 confluence domain, which re-exports the moved names so its six importers did not
 change.
+
+**#1349 moved the DELETERS into `core` too, and the split runs by CALLER, not
+by verb.** `attachment-store.ts` now also exports `attachmentsRootNow`,
+`removeCachedAttachmentDirectory` / `removeCachedAttachmentFile` and
+`ATTACHMENT_ROOT_RESERVED_DIRNAMES` (`local/`, `page-icons/`, and
+`client-models/` for #1418 operator-supplied ONNX/Hunspell on the attachments
+volume). `GET /api/models/client-assets` (`routes/llm/llm-client-assets.ts`,
+authenticated `llm:query`) streams those files; there is no upload. Reserved
+dirnames sit beside `local-attachment-service.ts`'s
+`removeLocalAttachmentDirectory` / `removeLocalAttachmentFileForSweep` and
+`page-icon-store.ts`'s `discardPageIconForDeletedPage`, because
+`core/services/data-retention-service.ts` is one of the callers and `core` may
+not import a domain — the sentence above is therefore no longer true of
+*writes* in general: the sanctioned, path-validated removals for both stores
+live in `core`, and so does `core/services/standalone-attachment-cleanup.ts`,
+which is the event-driven half (a standalone hard delete or purge drops
+`local/<pk>/` and `page-icons/<pk>/` unconditionally, and the shared-keyspace
+`<pk>/` only when no page claims that `confluence_id` and the directory has
+aged past a 5-minute grace, consulting no keep-set). What stayed in
+`domains/confluence` is the *sweep*: `attachment-sweep-service.ts` needs
+`getExpectedAttachmentFilenames` for the `body_storage` half of its global
+keep-set, which is a Confluence-format parser, so composing it in the domain is
+the only legal direction. `routes/confluence/attachments-sweep.ts` is the
+operator surface (`requireAdmin`, dry-run first); the card is Settings →
+Knowledge → Spaces & Sync. Its rules are stated once in that module's header,
+with the operator view in `docs/ADMIN-GUIDE.md` and the stores in
+[`06-data-model.md`](./06-data-model.md).
 
 **Why the split runs there.** `llm` may import `core` and nothing else, and
 Phase 2's image-embedding worker (`domains/llm`) needs attachment bytes off
