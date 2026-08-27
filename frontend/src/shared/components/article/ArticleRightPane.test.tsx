@@ -1077,13 +1077,17 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText(/ENG/)).toBeInTheDocument();
   });
 
-  it('has a resize handle', () => {
+  it('places a visible resize grip in the gutter beside the pane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
+    const pane = screen.getByTestId('article-right-pane');
     const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
     expect(handle).toHaveAttribute('aria-valuenow', '280');
     expect(handle).toHaveAttribute('aria-valuemax', '1200');
     expect(handle).toHaveAttribute('tabindex', '0');
+    expect(handle).toHaveStyle({ width: 'var(--app-rail-gap)' });
+    expect(pane).not.toContainElement(handle);
+    expect(screen.getByTestId('article-right-pane-resize-grip')).toBeVisible();
   });
 
   it('supports keyboard resizing and double-click reset', () => {
@@ -1105,6 +1109,16 @@ describe('ArticleRightPane', () => {
 
     fireEvent.doubleClick(handle);
     expect(useUiStore.getState().articleSidebarWidth).toBe(360);
+  });
+
+  it('resizes when the gutter handle is dragged', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+
+    fireEvent.mouseDown(handle, { clientX: 500 });
+    fireEvent.mouseMove(document, { clientX: 460 });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(320);
+    fireEvent.mouseUp(document);
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {

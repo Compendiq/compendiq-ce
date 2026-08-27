@@ -2003,7 +2003,8 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {!isSheet && (
+    </m.aside>
+    {!isSheet && (
       <div
         role="separator"
         aria-label="Resize page sidebar"
@@ -2016,21 +2017,28 @@ export function ArticleRightPane({
         onDoubleClick={() => setWidth(360)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
-          'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
+          'group absolute inset-y-0 left-0 z-10 cursor-col-resize outline-none',
           'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
+        style={{ width: 'var(--app-rail-gap)' }}
         title="Drag to resize · Double-click to reset"
       >
         <span
+          data-testid="article-right-pane-resize-grip"
           className={cn(
-            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-            isResizing && 'bg-action/70',
+            'pointer-events-none absolute top-1/2 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
+            'group-hover:opacity-100 group-focus-visible:opacity-100',
+            isResizing && 'opacity-100',
           )}
+          style={{ left: 'calc((var(--app-rail-gap) - 2px) / 2)' }}
           aria-hidden="true"
-        />
+        >
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+        </span>
       </div>
-      )}
-    </m.aside>
+    )}
     {confirmTrashDialog}
     {relocateDialog}
     </>
