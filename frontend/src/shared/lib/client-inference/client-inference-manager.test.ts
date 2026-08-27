@@ -293,4 +293,42 @@ describe('ClientInferenceManager (#1418)', () => {
       accessToken: 'tok-9',
     });
   });
+
+  it('loads the active Hub model id from the manifest', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchManifest: async () => ({
+        enabled: true,
+        activeModelId: 'HuggingFaceTB--SmolLM2-135M-Instruct',
+        models: [{
+          id: 'HuggingFaceTB--SmolLM2-135M-Instruct',
+          kind: 'onnx',
+          bytes: 1,
+          installed: true,
+          available: true,
+          files: [{ name: 'config.json', bytes: 1 }],
+        }],
+      }),
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.decideComplete({
+      input: { prefix: 'Rotate the', maxTokens: 48 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(worker.messages.find((m) => m.type === 'load')).toMatchObject({
+      type: 'load',
+      modelId: 'HuggingFaceTB--SmolLM2-135M-Instruct',
+    });
+  });
 });

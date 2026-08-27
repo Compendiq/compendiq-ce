@@ -143,10 +143,12 @@ curl http://localhost:8081/api/health
 ### Client inference (on-device editor model)
 
 Optional WebGPU SLM for ghost text and Improve, plus Hunspell EN/DE spell
-lint. Weights are operator-copied onto `/app/data/client-models` — see
-`docs/runbooks/client-inference.md`. Dual opt-in, default off. The browser
-never fetches Hugging Face. Settings → AI Models → Client inference is the
-admin flag and manifest; Pre-download is per-browser on Settings → Editor.
+lint. Admins download a transformers.js q4 checkpoint from Hugging Face on
+Settings → AI Models → Client inference (the **server** fetches Hub; the
+browser never does), or copy/upload onto `/app/data/client-models` — see
+`docs/runbooks/client-inference.md`. Dual opt-in, default off. The enable
+flag is blocked until ONNX is installed. Pre-download is per-browser on
+Settings → Editor.
 
 ### LLM providers (primary)
 

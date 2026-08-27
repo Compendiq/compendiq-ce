@@ -51,6 +51,7 @@ import {
   type ConfidenceBasis,
 } from '../../core/services/confidence-calibration.js';
 import { resolveConfidenceBasisPair } from '../../domains/llm/services/llm-provider-resolver.js';
+import { listClientAssetManifest } from '../../core/services/client-model-assets.js';
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
@@ -598,6 +599,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
     if (Object.keys(body).length === 0) {
       return { message: 'No changes' };
+    }
+
+    if (body.clientInferenceEnabled === true) {
+      const manifest = await listClientAssetManifest(true);
+      if (!manifest.models.some((m) => m.kind === 'onnx' && m.installed)) {
+        throw fastify.httpErrors.unprocessableEntity('Install the on-device model first');
+      }
     }
 
     const hasChunkChanges =
