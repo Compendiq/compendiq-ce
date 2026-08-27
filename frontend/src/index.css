@@ -862,12 +862,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
-   app header continues the Canvas around the workspace on all four sides;
-   internal panel headers use Chrome and sidebars use Workspace, creating
-   stable wayfinding without glass or a heavy shadow. Content is the Pane: it
-   sits one value step up and is separated by a hairline, never by a shadow.
-   That ladder is why the document you are reading is the brightest thing on
-   screen and navigation recedes without needing to be dimmed. */
+   app header continues the Canvas around the workspace on all four sides.
+   The left navigation pane — title, tree, and footer — paints the same
+   surface as main so the workspace reads as one card split by a hairline,
+   not a chrome band beside a reading pane. The detached context rail keeps
+   Chrome on its header. */
 @utility app-header {
   background: var(--app-chassis);
   border-color: var(--color-border);
@@ -878,18 +877,21 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: var(--color-background);
+  background: var(--color-card);
   border-color: var(--color-border);
 }
 
-/* Route content is the page users are working on, not another piece of
-   chassis. Give it one deliberate value step above navigation so pages remain
-   visible in both themes without introducing cards, shadows, or route-local
-   backgrounds. The workspace clips the pane to the shared outer radius. */
+/* Title and footer bands inherit the pane; they must not reintroduce Chrome. */
+.app-sidebar .panel-toolbar {
+  background: transparent;
+}
+
+/* Route content is the page users are working on. It shares --color-card with
+   the left pane so the workspace is one surface; the hairline on the sidebar
+   is the only split. The workspace clips both to the shared outer radius. */
 @utility app-content-pane {
   background: var(--color-card);
 }
-
 /* Panel composition primitives. Sidebars share the same chassis, but their
    internal hierarchy comes from quiet chrome, a single context control, and
    section rhythm rather than a stack of card-like containers. */
