@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -614,6 +614,24 @@ describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layer
     }
 
     expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
+  });
+});
+
+describe('.github/workflows/sync-ee-submodule.yml dispatches CE dev updates to EE', () => {
+  const workflowPath = join(repoRoot, '.github', 'workflows', 'sync-ee-submodule.yml');
+
+  it('sends the CE commit SHA through the authenticated repository dispatch contract', () => {
+    expect(existsSync(workflowPath), 'CE-to-EE dispatch workflow is missing').toBe(true);
+
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const onBlock = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
+
+    expect(onBlock).toMatch(/^\s*push:\s*\n\s+branches:\s*\[dev\]$/m);
+    expect(onBlock).not.toMatch(/\bmain\b/);
+    expect(workflow).toContain('GH_TOKEN: ${{ secrets.EE_REPOSITORY_DISPATCH_TOKEN }}');
+    expect(workflow).toContain('repos/Compendiq/compendiq-ee/dispatches');
+    expect(workflow).toContain('event_type=ce-dev-updated');
+    expect(workflow).toContain('client_payload[sha]=$GITHUB_SHA');
   });
 });
 
