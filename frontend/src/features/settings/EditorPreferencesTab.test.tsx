@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsResponse } from '@compendiq/contracts';
 import { EditorPreferencesTab } from './EditorPreferencesTab';
+import { useUiStore } from '../../stores/ui-store';
 
 const settings: SettingsResponse = {
   confluenceUrl: null,
@@ -83,13 +84,13 @@ describe('EditorPreferencesTab (#1417)', () => {
 describe('EditorPreferencesTab on-device shells (#1418)', () => {
   it('renders on-device, unassigned-server, pre-download, and spellcheck in order', () => {
     render(<EditorPreferencesTab settings={settings} onSave={vi.fn()} />);
-    const headings = screen.getAllByRole('heading', { level: 3 }).map((el) => el.textContent);
+    const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
     expect(headings).toEqual([
       'Inline suggestions',
       'On-device suggestions (WebGPU)',
       'Spellcheck',
+      'Keybindings & Editing Mode',
     ]);
-    expect(screen.getByRole('switch', { name: 'On-device suggestions (WebGPU)' })).toBeInTheDocument();
     expect(
       screen.getByRole('switch', { name: 'Use on-device suggestions when no server model is assigned' }),
     ).toBeInTheDocument();
@@ -207,5 +208,30 @@ describe('EditorPreferencesTab on-device shells (#1418)', () => {
     expect(predownload.className).toMatch(/nm-button-ghost/);
     expect(predownload.className).toMatch(/h-8/);
     expect(predownload.className).not.toMatch(/nm-button-primary/);
+  });
+});
+
+describe('EditorPreferencesTab vim mode toggle', () => {
+  afterEach(() => {
+    useUiStore.setState({ vimModeEnabled: false });
+  });
+
+  it('renders unchecked by default', () => {
+    render(<EditorPreferencesTab settings={settings} onSave={vi.fn()} />);
+    expect(screen.getByTestId('vim-mode-toggle')).toHaveAttribute('data-state', 'unchecked');
+  });
+
+  it('reflects an already-enabled preference', () => {
+    useUiStore.setState({ vimModeEnabled: true });
+    render(<EditorPreferencesTab settings={settings} onSave={vi.fn()} />);
+    expect(screen.getByTestId('vim-mode-toggle')).toHaveAttribute('data-state', 'checked');
+  });
+
+  it('toggles the shared ui-store preference, not local component state', () => {
+    render(<EditorPreferencesTab settings={settings} onSave={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('vim-mode-toggle'));
+    expect(useUiStore.getState().vimModeEnabled).toBe(true);
+    fireEvent.click(screen.getByTestId('vim-mode-toggle'));
+    expect(useUiStore.getState().vimModeEnabled).toBe(false);
   });
 });

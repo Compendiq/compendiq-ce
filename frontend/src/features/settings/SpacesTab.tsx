@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import * as Switch from '@radix-ui/react-switch';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, CheckSquare, Square, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
@@ -142,28 +143,23 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
       {/* Show space home content toggle */}
       <div className="flex items-center justify-between rounded-lg border border-border bg-foreground/5 px-4 py-3">
         <div>
-          <p className="text-sm font-medium">Show space home content</p>
+          <label htmlFor="toggle-space-home-content" className="cursor-pointer text-sm font-medium">
+            Show space home content
+          </label>
           <p className="text-xs text-muted-foreground">
             When selecting a space, display its home page content instead of the page list.
           </p>
         </div>
-        <button
-          role="switch"
-          aria-checked={showSpaceHomeContent}
-          onClick={() => onSave({ showSpaceHomeContent: !showSpaceHomeContent })}
-          className={cn(
-            'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-            showSpaceHomeContent ? 'bg-action' : 'bg-foreground/20',
-          )}
+        <Switch.Root
+          id="toggle-space-home-content"
+          checked={showSpaceHomeContent}
+          onCheckedChange={(checked) => onSave({ showSpaceHomeContent: checked })}
+          aria-label="Show space home content"
           data-testid="toggle-space-home-content"
+          className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action"
         >
-          <span
-            className={cn(
-              'pointer-events-none inline-block h-5 w-5 rounded-full bg-white transition-transform',
-              showSpaceHomeContent ? 'translate-x-5' : 'translate-x-0',
-            )}
-          />
-        </button>
+          <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
+        </Switch.Root>
       </div>
 
       {/* Space list. Each row mixes a selection toggle (the whole row) with

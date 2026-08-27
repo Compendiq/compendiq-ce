@@ -137,9 +137,10 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
         </h3>
         {IMPROVE_PROMPT_TYPES.map((pt) => (
           <div key={pt.key}>
-            <label className="mb-1 block text-sm font-medium">{pt.label}</label>
+            <label htmlFor={`prompt-input-${pt.key}`} className="mb-1 block text-sm font-medium">{pt.label}</label>
             <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
             <textarea
+              id={`prompt-input-${pt.key}`}
               value={prompts[pt.key] ?? ''}
               onChange={(e) => handleChange(pt.key, e.target.value)}
               placeholder={pt.placeholder}
@@ -166,9 +167,10 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
         </h3>
         {CREATE_PROMPT_TYPES.map((pt) => (
           <div key={pt.key}>
-            <label className="mb-1 block text-sm font-medium">{pt.label}</label>
+            <label htmlFor={`prompt-input-${pt.key}`} className="mb-1 block text-sm font-medium">{pt.label}</label>
             <p className="mb-1.5 text-xs text-muted-foreground">{pt.description}</p>
             <textarea
+              id={`prompt-input-${pt.key}`}
               value={prompts[pt.key] ?? ''}
               onChange={(e) => handleChange(pt.key, e.target.value)}
               placeholder={pt.placeholder}

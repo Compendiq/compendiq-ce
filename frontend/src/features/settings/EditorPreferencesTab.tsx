@@ -9,6 +9,8 @@ import type {
 } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { getClientInferenceManager } from '../../shared/lib/client-inference/client-inference-manager';
+import { useUiStore } from '../../stores/ui-store';
+import { CollabEditingCard } from './CollabEditingCard';
 import { Check } from 'lucide-react';
 import { PanelHeader } from './PanelHeader';
 import { cn } from '../../shared/lib/cn';
@@ -72,6 +74,7 @@ function PreferenceSwitch({
       </div>
       <Switch.Root
         id={id}
+        data-testid={id}
         checked={checked}
         onCheckedChange={(next) => {
           if (ariaDisabled) return;
@@ -90,9 +93,11 @@ function PreferenceSwitch({
 export function EditorPreferencesTab({
   settings,
   onSave,
+  isAdmin = false,
 }: {
   settings: SettingsResponse;
   onSave: (value: Record<string, unknown>) => void;
+  isAdmin?: boolean;
 }) {
   const [enabled, setEnabled] = useState(settings.inlineCompletionEnabled);
   const [delay, setDelay] = useState(settings.inlineCompletionDelay);
@@ -104,6 +109,8 @@ export function EditorPreferencesTab({
   const [spellLangs, setSpellLangs] = useState<ClientSpellcheckLanguage[]>(
     settings.clientSpellcheckLanguages,
   );
+  const vimModeEnabled = useUiStore((s) => s.vimModeEnabled);
+  const setVimModeEnabled = useUiStore((s) => s.setVimModeEnabled);
   const adminOn = settings.clientInferenceAdminEnabled;
   const [manifestBytes, setManifestBytes] = useState<number | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<{ loaded: number; total: number } | null>(null);
@@ -380,6 +387,32 @@ export function EditorPreferencesTab({
           </fieldset>
         </div>
       </section>
+      <section aria-labelledby="editor-keybindings-heading">
+        <div className="mb-3">
+          <h3 id="editor-keybindings-heading" className="text-sm font-semibold text-foreground">
+            Keybindings & Editing Mode
+          </h3>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            Configure navigation and keyboard editing behaviors for the article editor.
+          </p>
+        </div>
+
+        <div className="divide-y divide-border rounded-xl border border-border">
+          <PreferenceSwitch
+            id="vim-mode-toggle"
+            checked={vimModeEnabled}
+            onCheckedChange={setVimModeEnabled}
+            label="Vim mode"
+            help="Navigate and edit pages using Vim keybindings."
+          />
+        </div>
+      </section>
+
+      {isAdmin && (
+        <div className="border-t border-border pt-6">
+          <CollabEditingCard />
+        </div>
+      )}
 
       <button
         type="button"

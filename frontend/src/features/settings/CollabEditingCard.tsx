@@ -45,9 +45,7 @@ export function CollabEditingCard() {
 
   if (isLoading) {
     return (
-      <div className="text-sm text-muted-foreground" data-testid="collab-editing-loading">
-        Loading…
-      </div>
+      <div className="h-32 animate-pulse rounded-lg bg-muted/60" data-testid="collab-editing-loading" />
     );
   }
 
