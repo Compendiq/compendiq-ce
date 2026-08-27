@@ -13,7 +13,7 @@ Source-of-truth docs:
 
 ## Mandatory Rules
 
-1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); `coverage.yml` on push to `dev`/`main` holds the floors. Never use `--no-verify`.
+1. **Tests required** for every change. Vitest everywhere; frontend uses jsdom + `@testing-library/react`. Backend DB tests hit real Postgres (port 5433 via `test-db-helper.ts`) — never mock the DB. PR Check runs backend tests without coverage (frontend is its own job); the aggregate floors in `backend/vitest.config.ts` are for local `npm run test:coverage`. Never use `--no-verify`.
 2. **Branch model.** Branch from `dev` as `feature/<desc>`. PRs target `dev`. Only `dev → main` may target `main`. If a PR accidentally targets `main`, retarget before merging.
 3. **No secrets in commits.** No `.env`, PATs, API keys, JWT secrets, license keys.
 4. **Ask when ambiguous** — don't guess at intent.

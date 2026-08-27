@@ -116,9 +116,8 @@ jobs:
       - name: Build contracts
         run: npm run build -w @compendiq/contracts
 
-      # Coverage stays on push to dev/main (coverage.yml). Instrumenting
-      # every PR added ~minutes to the critical path for a floor that
-      # barely moves on a typical change.
+      # No coverage instrumentation — the aggregate floors in
+      # backend/vitest.config.ts are for local `npm run test:coverage`.
       - name: Backend tests
         run: npm test -w backend
 

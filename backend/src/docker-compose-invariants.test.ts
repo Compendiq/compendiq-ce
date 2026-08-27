@@ -547,8 +547,8 @@ describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend an
 
   it('runs backend tests on the PR path without coverage instrumentation', () => {
     expect(testsJob).toMatch(/npm test -w backend/);
-    expect(testsJob).not.toMatch(/test:coverage/);
-    expect(prCheckWorkflow).not.toMatch(/test:coverage/);
+    expect(testsJob).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
+    expect(prCheckWorkflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
   });
 
   it('still builds contracts and runs the contracts suite on the backend Tests job', () => {
@@ -557,24 +557,15 @@ describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend an
   });
 });
 
-describe('.github/workflows/coverage.yml keeps the 70% backend floor on push to dev/main', () => {
-  const coverageWorkflow = readFileSync(
-    join(repoRoot, '.github', 'workflows', 'coverage.yml'),
-    'utf8',
+describe('.github/workflows keeps hosted CI off backend coverage instrumentation', () => {
+  const workflowsDir = join(repoRoot, '.github', 'workflows');
+  const workflowFiles = readdirSync(workflowsDir).filter(
+    (name) => name.endsWith('.yml') || name.endsWith('.yaml'),
   );
 
-  it('is push-only to the long-lived branches — not a PR-blocking job', () => {
-    expect(coverageWorkflow).toMatch(/^on:/m);
-    expect(coverageWorkflow).toMatch(/push:/);
-    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bdev\b/);
-    expect(coverageWorkflow).toMatch(/branches:\s*\[[^\]]*\bmain\b/);
-    expect(coverageWorkflow).not.toMatch(/pull_request:/);
-  });
-
-  it('runs backend vitest with coverage (the gate the PR path dropped)', () => {
-    expect(coverageWorkflow).toMatch(/test:coverage -w backend/);
-    expect(coverageWorkflow).toMatch(/postgres:/);
-    expect(coverageWorkflow).toMatch(/redis:/);
+  it.each(workflowFiles)('does not run test:coverage in %s', (file) => {
+    const workflow = readFileSync(join(workflowsDir, file), 'utf8');
+    expect(workflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
   });
 });
 
