@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Switch from '@radix-ui/react-switch';
 import type {
   AdminSettings,
   ClientAssetInspect,
+  ClientAssetInstallStatus,
   ClientAssetManifest,
   ClientAssetSearchResponse,
 } from '@compendiq/contracts';
@@ -11,10 +12,18 @@ import { apiFetch } from '../../../shared/lib/api';
 import { getClientInferenceManager } from '../../../shared/lib/client-inference/client-inference-manager';
 import { SETTINGS_PANELS } from '../settings-nav';
 
+const SEARCH_DEBOUNCE_MS = 300;
+
 export function ClientInferenceTab() {
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   const settings = useQuery({
     queryKey: ['admin-settings'],
@@ -25,9 +34,9 @@ export function ClientInferenceTab() {
     queryFn: () => apiFetch<ClientAssetManifest>('/models/client-assets'),
   });
   const search = useQuery({
-    queryKey: ['client-assets-search', query],
+    queryKey: ['client-assets-search', debouncedQuery],
     queryFn: () => apiFetch<ClientAssetSearchResponse>(
-      `/admin/client-assets/search?q=${encodeURIComponent(query)}`,
+      `/admin/client-assets/search?q=${encodeURIComponent(debouncedQuery)}`,
     ),
   });
 
@@ -47,15 +56,27 @@ export function ClientInferenceTab() {
         `/admin/client-assets/inspect?repo=${encodeURIComponent(repo)}`,
       );
       if (!info.ok) throw new Error(info.reason ?? 'Model cannot be installed');
-      return apiFetch('/admin/client-assets/install', {
+      return apiFetch<ClientAssetInstallStatus>('/admin/client-assets/install', {
         method: 'POST',
         body: JSON.stringify({ repo }),
       });
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-install'] });
     },
   });
+  const installStatus = useQuery({
+    queryKey: ['client-assets-install'],
+    queryFn: () => apiFetch<ClientAssetInstallStatus>('/admin/client-assets/install'),
+    enabled: install.isSuccess,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1000 : false),
+  });
+
+  useEffect(() => {
+    if (installStatus.data?.status === 'complete') {
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+    }
+  }, [installStatus.data?.status, queryClient]);
 
   const enabled = settings.data?.clientInferenceEnabled ?? false;
   const onnxInstalled = manifest.data?.models.some((m) => m.kind === 'onnx' && m.installed) ?? false;
@@ -141,6 +162,21 @@ export function ClientInferenceTab() {
         >
           Download model
         </button>
+        {installStatus.data?.status === 'running' && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            Downloading… {installStatus.data.loaded} / {installStatus.data.total}
+          </p>
+        )}
+        {installStatus.data?.status === 'failed' && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            {installStatus.data.error ?? 'Install failed'}
+          </p>
+        )}
+        {install.isError && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            {install.error instanceof Error ? install.error.message : 'Install failed'}
+          </p>
+        )}
       </section>
 
       <section aria-labelledby="client-inference-manifest">
@@ -214,33 +250,44 @@ function assetFileName(name: string): string {
 }
 
 function AssetUpload({ modelId, onDone }: { modelId: string; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(null);
   return (
-    <label className="mt-2 block text-xs text-muted-foreground">
-      Upload
-      <input
-        type="file"
-        className="ml-2 text-xs"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (!file) return;
-          const dest = assetFileName(file.name);
-          void (async () => {
-            for (let start = 0; start < file.size; start += UPLOAD_CHUNK) {
-              const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK, file.size));
-              const end = start + slice.size - 1;
-              await apiFetch(`/admin/client-assets/${encodeURIComponent(modelId)}/files/${dest}`, {
-                method: 'PUT',
-                headers: {
-                  'Content-Type': 'application/octet-stream',
-                  'Content-Range': `bytes ${start}-${end}/${file.size}`,
-                },
-                body: slice,
-              });
-            }
-            onDone();
-          })();
-        }}
-      />
-    </label>
+    <div className="mt-2">
+      <label className="block text-xs text-muted-foreground">
+        Upload
+        <input
+          type="file"
+          className="ml-2 text-xs"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const dest = assetFileName(file.name);
+            setError(null);
+            void (async () => {
+              try {
+                for (let start = 0; start < file.size; start += UPLOAD_CHUNK) {
+                  const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK, file.size));
+                  const end = start + slice.size - 1;
+                  await apiFetch(`/admin/client-assets/${encodeURIComponent(modelId)}/files/${dest}`, {
+                    method: 'PUT',
+                    headers: {
+                      'Content-Type': 'application/octet-stream',
+                      'Content-Range': `bytes ${start}-${end}/${file.size}`,
+                    },
+                    body: slice,
+                  });
+                }
+                onDone();
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Upload failed');
+              }
+            })();
+          }}
+        />
+      </label>
+      {error ? (
+        <p role="status" className="mt-1 text-xs leading-5 text-muted-foreground">{error}</p>
+      ) : null}
+    </div>
   );
 }

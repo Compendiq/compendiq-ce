@@ -12,6 +12,7 @@ import {
   HUNSPELL_ASSET_IDS,
   HubLocalAssetIdSchema,
   LEGACY_CLIENT_MODEL_ID,
+  MAX_CLIENT_ONNX_Q4_BYTES,
   clientAssetFiles,
   clientAssetKind,
   clientAssetRequiredFiles,
@@ -166,6 +167,13 @@ export async function statClientAsset(
 }
 
 export const CLIENT_ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+export const MAX_HUNSPELL_ASSET_BYTES = 32 * 1024 * 1024;
+
+function maxUploadBytes(modelId: string): number {
+  return clientAssetKind(modelId) === 'hunspell'
+    ? MAX_HUNSPELL_ASSET_BYTES
+    : MAX_CLIENT_ONNX_Q4_BYTES;
+}
 
 export async function writeClientAssetChunk(opts: {
   modelId: string;
@@ -185,13 +193,26 @@ export async function writeClientAssetChunk(opts: {
   if (!Number.isInteger(start) || start < 0 || start + opts.body.length > total) {
     throw new Error('Invalid chunk range');
   }
+  if (total > maxUploadBytes(resolved.modelId)) {
+    throw new Error(
+      clientAssetKind(resolved.modelId) === 'hunspell'
+        ? 'Upload exceeds 32 MiB'
+        : 'Upload exceeds 1 GiB',
+    );
+  }
   await fs.mkdir(path.dirname(resolved.abs), { recursive: true });
   if (start === 0 && start + opts.body.length === total) {
     await fs.writeFile(resolved.abs, opts.body);
     return { complete: true, bytes: total };
   }
   const part = `${resolved.abs}.part`;
-  const handle = await fs.open(part, 'a+');
+  let handle: fs.FileHandle;
+  try {
+    handle = await fs.open(part, 'r+');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    handle = await fs.open(part, 'w+');
+  }
   try {
     await handle.truncate(total);
     await handle.write(opts.body, 0, opts.body.length, start);

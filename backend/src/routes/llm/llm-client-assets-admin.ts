@@ -17,8 +17,13 @@ import {
   installClientModel,
   searchClientModels,
 } from '../../core/services/client-model-hub.js';
+import { getRateLimits } from '../../core/services/rate-limit-service.js';
 
-const RANGE = /^bytes=(\d+)-(\d+)\/(\d+)$/;
+const ADMIN_RATE_LIMIT = {
+  config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
+};
+
+const RANGE = /^bytes[ =](\d+)-(\d+)\/(\d+)$/;
 const SearchQuerySchema = z.object({ q: z.string().optional() });
 const InspectQuerySchema = z.object({ repo: HfRepoIdSchema });
 
@@ -33,21 +38,21 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
     },
   );
 
-  fastify.get('/admin/client-assets/search', async (request) => {
+  fastify.get('/admin/client-assets/search', ADMIN_RATE_LIMIT, async (request) => {
     const { q } = SearchQuerySchema.parse(request.query);
     return ClientAssetSearchResponseSchema.parse(await searchClientModels(q ?? ''));
   });
 
-  fastify.get('/admin/client-assets/inspect', async (request) => {
+  fastify.get('/admin/client-assets/inspect', ADMIN_RATE_LIMIT, async (request) => {
     const { repo } = InspectQuerySchema.parse(request.query);
     return ClientAssetInspectSchema.parse(await inspectClientModel(repo));
   });
 
-  fastify.get('/admin/client-assets/install', async () => {
+  fastify.get('/admin/client-assets/install', ADMIN_RATE_LIMIT, async () => {
     return ClientAssetInstallStatusSchema.parse(getClientModelInstallStatus());
   });
 
-  fastify.post('/admin/client-assets/install', async (request, reply) => {
+  fastify.post('/admin/client-assets/install', ADMIN_RATE_LIMIT, async (request, reply) => {
     const body = ClientAssetInstallRequestSchema.parse(request.body);
     if (getClientModelInstallStatus().status === 'running') {
       return reply.code(409).send({ error: 'An install is already running', statusCode: 409 });
@@ -58,7 +63,7 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
 
   fastify.put<{ Params: { modelId: string; '*': string } }>(
     '/admin/client-assets/:modelId/files/*',
-    { bodyLimit: CLIENT_ASSET_UPLOAD_CHUNK_BYTES },
+    { ...ADMIN_RATE_LIMIT, bodyLimit: CLIENT_ASSET_UPLOAD_CHUNK_BYTES },
     async (request, reply) => {
       const file = request.params['*'] ?? '';
       const body = request.body;

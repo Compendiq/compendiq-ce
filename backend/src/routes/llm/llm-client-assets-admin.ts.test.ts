@@ -94,6 +94,21 @@ describe('admin client-asset routes', () => {
     expect(res.statusCode).toBe(200);
     expect(await fs.readFile(path.join(tmp, 'hunspell-en_US', 'en_US.dic'), 'utf8')).toBe('DIC');
   });
+
+  it('accepts RFC Content-Range from the upload UI', async () => {
+    const body = Buffer.from('DIC');
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/admin/client-assets/hunspell-en_US/files/en_US.dic',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-range': `bytes 0-${body.length - 1}/${body.length}`,
+      },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await fs.readFile(path.join(tmp, 'hunspell-en_US', 'en_US.dic'), 'utf8')).toBe('DIC');
+  });
 });
 
 describe('admin client-asset routes require admin', () => {

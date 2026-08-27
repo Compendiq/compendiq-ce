@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientInferenceTab } from './ClientInferenceTab';
 
 const apiFetch = vi.fn();
@@ -57,6 +57,9 @@ const installedOnnx = {
 describe('ClientInferenceTab', () => {
   beforeEach(() => {
     apiFetch.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('disables the enable switch until an ONNX model is installed', async () => {
@@ -115,6 +118,9 @@ describe('ClientInferenceTab', () => {
         return { repo: 'HuggingFaceTB/SmolLM2-135M-Instruct', hasQ4: true, bytes: 50, ok: true };
       }
       if (path === '/admin/client-assets/install' && init?.method === 'POST') return {};
+      if (path === '/admin/client-assets/install') {
+        return { status: 'complete', loaded: 50, total: 50, error: null };
+      }
       throw new Error(`unexpected ${path} ${init?.method ?? ''}`);
     });
     renderTab();
@@ -142,4 +148,75 @@ describe('ClientInferenceTab', () => {
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
     expect(screen.queryByRole('list', { name: /installed assets/i })).not.toBeInTheDocument();
   });
+
+  it('polls install status until complete then refreshes the manifest', async () => {
+    let installGets = 0;
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return missingOnnx;
+      if (path.startsWith('/admin/client-assets/search')) {
+        return { models: [{ repo: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 0, likes: 0, recommended: true }] };
+      }
+      if (path.startsWith('/admin/client-assets/inspect')) {
+        return { repo: 'onnx-community/Qwen2.5-0.5B-Instruct', hasQ4: true, bytes: 50, ok: true };
+      }
+      if (path === '/admin/client-assets/install' && init?.method === 'POST') {
+        return { status: 'running', loaded: 0, total: 50, error: null };
+      }
+      if (path === '/admin/client-assets/install') {
+        installGets += 1;
+        if (installGets < 2) {
+          return { status: 'running', loaded: 10, total: 50, error: null };
+        }
+        return { status: 'complete', loaded: 50, total: 50, error: null };
+      }
+      throw new Error(`unexpected ${path} ${init?.method ?? ''}`);
+    });
+    renderTab();
+    fireEvent.click(await screen.findByRole('option', { name: /Qwen2.5-0.5B-Instruct/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download model' }));
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/admin/client-assets/install', expect.objectContaining({
+        method: 'POST',
+      }));
+    });
+    await waitFor(() => {
+      expect(installGets).toBeGreaterThan(0);
+    });
+  });
+
+  it('debounces Hub search until typing settles', async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return missingOnnx;
+      if (path.startsWith('/admin/client-assets/search')) {
+        return { models: [{ repo: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 0, likes: 0, recommended: true }] };
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    renderTab();
+    const input = await screen.findByLabelText('On-device model');
+    fireEvent.change(input, { target: { value: 'smol' } });
+    expect(apiFetch.mock.calls.filter(([p]) => String(p).includes('search?q=smol'))).toHaveLength(0);
+    await waitFor(() => {
+      expect(apiFetch.mock.calls.some(([p]) => String(p).includes('search?q=smol'))).toBe(true);
+    });
+  });
+
+  it('says when an upload fails', async () => {
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return missingOnnx;
+      if (path.startsWith('/admin/client-assets/search')) return { models: [] };
+      if (typeof path === 'string' && path.includes('/files/') && init?.method === 'PUT') {
+        throw new Error('disk full');
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    renderTab();
+    const input = await screen.findByLabelText('Upload');
+    fireEvent.change(input, { target: { files: [new File(['x'], 'config.json')] } });
+    expect(await screen.findByText(/disk full/i)).toBeInTheDocument();
+  });
 });
+

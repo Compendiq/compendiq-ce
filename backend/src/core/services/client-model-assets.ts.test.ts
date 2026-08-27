@@ -186,4 +186,15 @@ describe('writeClientAssetChunk', () => {
       root: tmp,
     })).rejects.toThrow(/not allowed/i);
   });
+
+  it('rejects a q4 total above 1 GiB before truncating', async () => {
+    await expect(writeClientAssetChunk({
+      modelId: 'onnx-community--Qwen2.5-0.5B-Instruct',
+      file: 'onnx/model_q4.onnx',
+      body: Buffer.from('AB'),
+      start: 0,
+      total: 1024 * 1024 * 1024 + 1,
+      root: tmp,
+    })).rejects.toThrow(/1 GiB/i);
+  });
 });

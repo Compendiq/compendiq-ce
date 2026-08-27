@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
   CLIENT_ONNX_INSTALL_FILES,
@@ -186,16 +186,29 @@ export async function installClientModel(
       if (!res.ok || !res.body) throw new Error(`Download failed for ${file} (${res.status})`);
       const abs = path.join(partial, file);
       await fs.mkdir(path.dirname(abs), { recursive: true });
-      await pipeline(Readable.fromWeb(res.body as never), createWriteStream(abs));
       if (file === 'onnx/model_q4.onnx') {
-        const buf = await fs.readFile(abs);
-        installStatus = { ...installStatus, loaded: buf.length };
+        const hash = createHash('sha256');
+        let loaded = 0;
+        const hasher = new Transform({
+          transform(chunk, _enc, cb) {
+            loaded += chunk.length;
+            if (loaded > MAX_CLIENT_ONNX_Q4_BYTES) {
+              cb(new Error('q4 weights exceed 1 GiB'));
+              return;
+            }
+            hash.update(chunk);
+            installStatus = { ...installStatus, loaded };
+            cb(null, chunk);
+          },
+        });
+        await pipeline(Readable.fromWeb(res.body as never), hasher, createWriteStream(abs));
         if (expectedSha && expectedSha.length === 64) {
-          const actual = createHash('sha256').update(buf).digest('hex');
-          if (actual !== expectedSha) {
+          if (hash.digest('hex') !== expectedSha) {
             throw new Error(`sha256 mismatch for onnx/model_q4.onnx`);
           }
         }
+      } else {
+        await pipeline(Readable.fromWeb(res.body as never), createWriteStream(abs));
       }
     }
 
