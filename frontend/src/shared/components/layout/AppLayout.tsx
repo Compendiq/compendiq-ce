@@ -540,10 +540,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
               : <SidebarTreeView embedMainNav={false} />}
         </div>
 
-          {/* Navigation is quiet chrome; <main> is the brighter content pane.
-              They remain one clipped workspace composition, separated by a
-              single value step and hairline rather than nested cards or
-              elevation. */}
+          {/* Left navigation and <main> share --color-card. They remain one
+              clipped workspace composition, split by the sidebar hairline
+              rather than nested cards or a second value step. */}
           <main
             id="main-content"
             // Not natively focusable — the skip link above targets this id and

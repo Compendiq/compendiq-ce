@@ -146,6 +146,16 @@ describe('Inset shell utilities', () => {
     expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
   });
 
+  it('left navigation, including title and footer chrome, paints the same surface as main', () => {
+    const sidebar = extractBlock(css, '@utility app-sidebar {');
+    const pane = extractBlock(css, '@utility app-content-pane {');
+    expect(sidebar).toMatch(/background:\s*var\(--color-card\)/);
+    expect(pane).toMatch(/background:\s*var\(--color-card\)/);
+    expect(css).toMatch(
+      /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,
+    );
+  });
+
   it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
