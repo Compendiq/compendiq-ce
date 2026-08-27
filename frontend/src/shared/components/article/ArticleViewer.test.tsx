@@ -62,6 +62,17 @@ describe('ArticleViewer', () => {
     capturedEditorOptions.length = 0;
   });
 
+  it('preserves semantic insertion and deletion marks in formatted version diffs', async () => {
+    const { container } = render(
+      <ArticleViewer content="<p>Use the <del>old</del><ins>new</ins> service.</p>" />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('del')).toHaveTextContent('old');
+      expect(container.querySelector('ins')).toHaveTextContent('new');
+    });
+  });
+
   it('rewrites protected attachment images to authenticated blob URLs', async () => {
     mockFetchAuthenticatedBlob.mockResolvedValueOnce('blob:dashboard');
 

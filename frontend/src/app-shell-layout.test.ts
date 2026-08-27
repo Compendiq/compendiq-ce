@@ -51,14 +51,14 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell and rail backgrounds alias the left-pane chrome in both themes', () => {
+  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
     for (const block of [darkBlock, lightBlock]) {
       const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
       const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
       expect(shell, '--app-shell-bg must be declared').not.toBeNull();
       expect(rail, '--app-rail-bg must be declared').not.toBeNull();
       expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-background)');
+      expect(rail![1]!.trim()).toBe('var(--color-card)');
     }
   });
 
@@ -82,14 +82,13 @@ describe('Inset shell tokens', () => {
     );
   });
 
-  it('the context rail matches the left pane and stays off the chassis and document card', () => {
+  it('the context rail matches the central pane and stays off the chassis', () => {
     for (const [theme, block] of [
       ['graphite', darkBlock],
       ['paper', lightBlock],
     ] as const) {
-      const pane = tokenHex(block, '--color-background');
+      const pane = tokenHex(block, '--color-card');
       expect(pane, `${theme} rail vs chassis`).not.toBe(tokenHex(block, '--app-chassis'));
-      expect(pane, `${theme} rail vs card`).not.toBe(tokenHex(block, '--color-card'));
     }
   });
 
@@ -188,19 +187,20 @@ describe('Inset shell utilities', () => {
     expect(block).not.toMatch(/gradient\(/);
   });
 
-  it('body-with-rail uses the shared gap token rather than a magic padding class', () => {
-    const block = extractBlock(css, '@utility app-body-with-rail {');
-    expect(block).toMatch(/gap:\s*var\(--app-rail-gap\)/);
-    expect(block).not.toMatch(/padding-right:/);
-    expect(block).not.toMatch(/padding-bottom:/);
+  it('the rail wrapper owns an explicit grabbable gutter', () => {
+    const bodyBlock = extractBlock(css, '@utility app-body-with-rail {');
+    const railBlock = extractBlock(css, '@utility app-rail-beside {');
+    expect(bodyBlock).toMatch(/gap:\s*0/);
+    expect(railBlock).toMatch(/padding-left:\s*var\(--app-rail-gap\)/);
+    expect(railBlock).toMatch(/position:\s*relative/);
   });
 
-  it('mobile is edge-to-edge; md and xl step the inset, radius and rail gap', () => {
+  it('mobile is edge-to-edge; md and xl step the inset, radius and rail gutter', () => {
     expect(css).toMatch(/--app-inset:\s*0px/);
     expect(css).toMatch(/--app-shell-radius:\s*0px/);
     expect(css).toMatch(/--app-rail-gap:\s*0px/);
-    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px/);
-    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px/);
+    expect(css).toMatch(/@media \(min-width:\s*768px\)[\s\S]*?--app-inset:\s*12px[\s\S]*?--app-rail-gap:\s*4px/);
+    expect(css).toMatch(/@media \(min-width:\s*1280px\)[\s\S]*?--app-inset:\s*16px[\s\S]*?--app-rail-gap:\s*6px/);
   });
 
   it('rail radius matches the workspace card so the two siblings share a bottom curve', () => {
@@ -329,14 +329,13 @@ describe('AppLayout structure', () => {
 
 describe('Context rail vs left navigation', () => {
   it('the inspector uses the context-rail surface, not the sidebar chassis utility', () => {
-    const collapsed = rightPane.slice(
-      rightPane.indexOf('data-testid="article-right-pane-rail"') - 400,
-      rightPane.indexOf('data-testid="article-right-pane-rail"') + 80,
-    );
-    const expanded = rightPane.slice(
-      rightPane.indexOf('data-testid="article-right-pane"') - 400,
-      rightPane.indexOf('data-testid="article-right-pane"') + 80,
-    );
+    const openingAsideFor = (testId: string) => {
+      const marker = rightPane.lastIndexOf(`data-testid="${testId}"`);
+      const start = rightPane.lastIndexOf('<m.aside', marker);
+      return rightPane.slice(start, marker + testId.length + 32);
+    };
+    const collapsed = openingAsideFor('article-right-pane-rail');
+    const expanded = openingAsideFor('article-right-pane');
     expect(collapsed).toMatch(/app-context-rail/);
     expect(expanded).toMatch(/app-context-rail/);
     expect(collapsed).not.toMatch(/app-sidebar/);

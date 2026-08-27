@@ -796,6 +796,80 @@ describe('VersionHistory', () => {
     expect(await screen.findByRole('heading', { level: 3, name: /database schema/i })).toBeInTheDocument();
   });
 
+  it('marks changes from the previous version in Formatted and Raw Text previews', async () => {
+    const detail = (versionNumber: number, bodyHtml: string | null, bodyText: string) => new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber,
+        title: `Page v${versionNumber}`,
+        bodyHtml,
+        bodyText,
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/2')) {
+        return Promise.resolve(detail(
+          2,
+          '<h3>Deployment</h3><p>Use the <strong>new</strong> service.</p>',
+          'Deployment\nUse the new service.',
+        ));
+      }
+      if (url.includes('/versions/1')) {
+        return Promise.resolve(detail(
+          1,
+          null,
+          'Deployment\nUse the old service.',
+        ));
+      }
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(<VersionHistory pageId="page-1" />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v2')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByTitle('Preview version')[1]!);
+
+    const formatted = await screen.findByTestId('version-formatted-diff');
+    expect([...formatted.querySelectorAll('ins')].some((node) => node.textContent?.includes('new'))).toBe(true);
+    expect([...formatted.querySelectorAll('del')].some((node) => node.textContent?.includes('old'))).toBe(true);
+    expect(formatted.querySelector('strong')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /raw text/i }));
+    const raw = await screen.findByTestId('version-raw-diff');
+    expect(raw.querySelector('ins')).toHaveTextContent('new');
+    expect(raw.querySelector('del')).toHaveTextContent('old');
+  });
+
+  it('explains when the oldest version has no predecessor to compare', async () => {
+    const detailV1 = new Response(
+      JSON.stringify({
+        confluenceId: null,
+        versionNumber: 1,
+        title: 'Page v1',
+        bodyHtml: '<p>First version.</p>',
+        bodyText: 'First version.',
+        isCurrent: false,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/versions/1')) return Promise.resolve(detailV1);
+      return Promise.resolve(mockVersionsResponse());
+    });
+
+    render(<VersionHistory pageId="page-1" />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('History'));
+    await waitFor(() => expect(screen.getByText('v1')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByTitle('Preview version')[2]!);
+
+    expect(await screen.findByText('No previous version to compare.')).toBeInTheDocument();
+  });
+
   it('falls back gracefully to plain text when bodyHtml is null (#1404)', async () => {
     const detailV1 = new Response(
       JSON.stringify({

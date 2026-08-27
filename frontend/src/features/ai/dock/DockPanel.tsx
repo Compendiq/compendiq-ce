@@ -505,6 +505,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             showTrigger={false}
             testIdPrefix="ai-dock-image"
           />
+
           <textarea
             ref={composerRef}
             value={input}
@@ -546,7 +547,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
                 onPickFiles={handlePickFiles}
                 disabled={isStreaming || selectedAction === 'diagram' || isBusy}
               />
-              <AssistantActionSelect actions={DOCK_ACTIONS} disabled={isStreaming || modelsError} />
+              <AssistantActionSelect actions={DOCK_ACTIONS} showLabel disabled={isStreaming || modelsError} />
               {selectedAction === 'ask' && (
                 <DeepSearchToggle
                   checked={deepSearch}

@@ -39,7 +39,12 @@ import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { getShortcutHint, formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac as detectMac } from '../../lib/platform';
 import { toast } from 'sonner';
-import { MIN_ARTICLE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
+import {
+  ARTICLE_SIDEBAR_DEFAULT_WIDTH,
+  ARTICLE_SIDEBAR_MAX_WIDTH,
+  ARTICLE_SIDEBAR_MIN_WIDTH,
+  useUiStore,
+} from '../../../stores/ui-store';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
 import { useIsDockWideLayout, useIsInspectorWideLayout } from '../../hooks/use-media-query';
@@ -285,7 +290,7 @@ export function ArticleRightPane({
   const laptopExpanded = useUiStore((s) => s.articleSidebarLaptopExpanded);
   const setLaptopExpanded = useUiStore((s) => s.setArticleSidebarLaptopExpanded);
   const storedWidth = useUiStore((s) => s.articleSidebarWidth);
-  const width = Math.max(MIN_ARTICLE_SIDEBAR_WIDTH, storedWidth);
+  const width = Math.max(ARTICLE_SIDEBAR_MIN_WIDTH, storedWidth);
   const setWidth = useUiStore((s) => s.setArticleSidebarWidth);
   const reduceEffects = useReducedMotion();
 
@@ -408,12 +413,42 @@ export function ArticleRightPane({
   const sidebarRef = useRef<HTMLElement>(null);
   const outlineTriggerRef = useRef<HTMLButtonElement>(null);
   const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const railOverflowRef = useRef<HTMLDivElement>(null);
   const railClusterRef = useRef<HTMLDivElement>(null);
   // Escape dismisses the flyout and returns focus to its trigger — which would
   // land on the trigger's focus-to-open handler and reopen what was just
   // dismissed. Set across that one handoff and cleared as soon as focus or the
   // pointer moves on.
   const suppressFlyoutReopenRef = useRef(false);
+
+  useEffect(() => {
+    if (!railOverflowOpen) return;
+
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const targetElement = target instanceof Element ? target : target.parentElement;
+      if (targetElement?.closest('[role="dialog"]')) return;
+      if (railOverflowRef.current?.contains(target) || overflowTriggerRef.current?.contains(target)) return;
+      setRailOverflowOpen(false);
+    };
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('[role="dialog"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setRailOverflowOpen(false);
+      overflowTriggerRef.current?.focus();
+    };
+
+    document.addEventListener('pointerdown', dismissOnOutsidePointer, true);
+    document.addEventListener('keydown', dismissOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', dismissOnOutsidePointer, true);
+      document.removeEventListener('keydown', dismissOnEscape, true);
+    };
+  }, [railOverflowOpen]);
 
   const tree = useMemo(() => buildOutlineTree(headings), [headings]);
 
@@ -730,7 +765,7 @@ export function ArticleRightPane({
         setWidth(width - 16);
       } else if (e.key === 'Home') {
         e.preventDefault();
-        setWidth(360);
+        setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH);
       }
     },
     [width, setWidth],
@@ -910,6 +945,14 @@ export function ArticleRightPane({
       <div
         ref={railClusterRef}
         className="relative flex h-full shrink-0"
+        onPointerMove={(event) => {
+          const target = event.target;
+          if (!(target instanceof Node)) return;
+          const rail = railClusterRef.current?.querySelector('[data-testid="article-right-pane-rail"]');
+          if (!rail?.contains(target) || outlineTriggerRef.current?.contains(target)) return;
+          suppressFlyoutReopenRef.current = false;
+          setOutlineFlyoutOpen(false);
+        }}
         onMouseLeave={() => {
           suppressFlyoutReopenRef.current = false;
           setOutlineFlyoutOpen(false);
@@ -966,6 +1009,35 @@ export function ArticleRightPane({
               className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               Expand inspector · .
+            </span>
+          </div>
+
+          <div className="my-1 h-px w-6 bg-border" />
+          <div className="group relative flex w-full justify-center">
+            <button
+              type="button"
+              onClick={() => {
+                inspectorViewTouchedRef.current = true;
+                setOutlineFlyoutOpen(false);
+                setActiveInspectorView('assistant');
+                handleExpandSidebar();
+              }}
+              className={cn(
+                railIconBtn,
+                activeInspectorView === 'assistant' && 'nm-pill-active',
+              )}
+              aria-label="AI Assistant"
+              title={`AI Assistant (${assistantHint})`}
+              data-testid="article-assistant-rail-btn"
+              data-ai-assistant-trigger
+            >
+              <Sparkles size={16} className="text-status-ai" />
+            </button>
+            <span
+              role="tooltip"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              AI Assistant · {assistantHint}
             </span>
           </div>
 
@@ -1058,37 +1130,24 @@ export function ArticleRightPane({
                 type="button"
                 onClick={() => {
                   inspectorViewTouchedRef.current = true;
-                  const next = activeInspectorView === 'assistant' ? 'assistant' : 'details';
-                  setActiveInspectorView(next);
+                  setActiveInspectorView('details');
                   handleExpandSidebar();
                 }}
-                className={cn(railIconBtn, 'nm-pill-active')}
-                aria-label={activeInspectorView === 'assistant' ? 'AI Assistant' : 'Page details'}
-                title={
-                  activeInspectorView === 'assistant'
-                    ? `AI Assistant (${assistantHint})`
-                    : 'Page details'
-                }
-                data-testid={
-                  activeInspectorView === 'assistant'
-                    ? 'article-assistant-rail-btn'
-                    : 'article-details-rail-btn'
-                }
-                data-ai-assistant-trigger={activeInspectorView === 'assistant' ? true : undefined}
-              >
-                {activeInspectorView === 'assistant' ? (
-                  <Sparkles size={16} className="text-status-ai" />
-                ) : (
-                  <FileText size={16} />
+                className={cn(
+                  railIconBtn,
+                  activeInspectorView === 'details' && 'nm-pill-active',
                 )}
+                aria-label="Page details"
+                title="Page details"
+                data-testid="article-details-rail-btn"
+              >
+                <FileText size={16} />
               </button>
               <span
                 role="tooltip"
                 className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
-                {activeInspectorView === 'assistant'
-                  ? `AI Assistant · ${assistantHint}`
-                  : 'Page details'}
+                Page details
               </span>
             </div>
             )}
@@ -1135,6 +1194,7 @@ export function ArticleRightPane({
 
       {!editing && page && railOverflowOpen && (
         <div
+          ref={railOverflowRef}
           id="article-rail-overflow"
           aria-label="More page actions"
           data-testid="article-rail-overflow"
@@ -1144,24 +1204,6 @@ export function ArticleRightPane({
                     <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
                       Inspector
                     </div>
-                    {activeInspectorView !== 'assistant' && (
-                      <button
-                        type="button"
-                        className={railMenuItem}
-                        aria-label="AI Assistant"
-                        data-testid="article-assistant-rail-btn"
-                        data-ai-assistant-trigger
-                        onClick={() => {
-                          inspectorViewTouchedRef.current = true;
-                          setActiveInspectorView('assistant');
-                          setRailOverflowOpen(false);
-                          handleExpandSidebar();
-                        }}
-                      >
-                        <Sparkles size={15} className="shrink-0 text-status-ai" />
-                        <span className="truncate">Assistant</span>
-                      </button>
-                    )}
                     {activeInspectorView !== 'details' && (
                       <button
                         type="button"
@@ -1983,34 +2025,42 @@ export function ArticleRightPane({
       </div>
       )}
 
-      {!isSheet && (
+    </m.aside>
+    {!isSheet && (
       <div
         role="separator"
         aria-label="Resize page sidebar"
         aria-orientation="vertical"
-        aria-valuemin={MIN_ARTICLE_SIDEBAR_WIDTH}
-        aria-valuemax={1200}
+        aria-valuemin={ARTICLE_SIDEBAR_MIN_WIDTH}
+        aria-valuemax={ARTICLE_SIDEBAR_MAX_WIDTH}
         aria-valuenow={width}
         tabIndex={0}
         onMouseDown={handleResizeStart}
-        onDoubleClick={() => setWidth(360)}
+        onDoubleClick={() => setWidth(ARTICLE_SIDEBAR_DEFAULT_WIDTH)}
         onKeyDown={handleResizeKeyDown}
         className={cn(
-          'group absolute bottom-0 left-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-start outline-none',
+          'group absolute inset-y-0 left-0 z-10 cursor-col-resize outline-none',
           'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
+        style={{ width: 'var(--app-rail-gap)' }}
         title="Drag to resize · Double-click to reset"
       >
         <span
+          data-testid="article-right-pane-resize-grip"
           className={cn(
-            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
-            isResizing && 'bg-action/70',
+            'pointer-events-none absolute top-1/2 -mt-[5px] flex flex-col gap-0.5 opacity-70 transition-opacity',
+            'group-hover:opacity-100 group-focus-visible:opacity-100',
+            isResizing && 'opacity-100',
           )}
+          style={{ left: 'calc((var(--app-rail-gap) - 2px) / 2)' }}
           aria-hidden="true"
-        />
+        >
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+          <span className="size-0.5 rounded-full bg-muted-foreground" />
+        </span>
       </div>
-      )}
-    </m.aside>
+    )}
     {confirmTrashDialog}
     {relocateDialog}
     </>

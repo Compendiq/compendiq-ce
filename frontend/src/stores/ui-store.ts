@@ -6,6 +6,10 @@ import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 migrateStorageKey('kb-ui', 'compendiq-ui');
 migrateStorageKey('atlasmind-ui', 'compendiq-ui');
 
+export const ARTICLE_SIDEBAR_MIN_WIDTH = 400;
+export const ARTICLE_SIDEBAR_MAX_WIDTH = 1200;
+export const ARTICLE_SIDEBAR_DEFAULT_WIDTH = 400;
+
 interface UiState {
   sidebarCollapsed: boolean;
   treeSidebarCollapsed: boolean;
@@ -38,7 +42,6 @@ interface UiState {
 
 export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
 
-export const MIN_ARTICLE_SIDEBAR_WIDTH = 300;
 
 export const useUiStore = create<UiState>()(
   persist(
@@ -55,13 +58,11 @@ export const useUiStore = create<UiState>()(
       treeSidebarWidth: 282,
       articleSidebarCollapsed: false,
       articleSidebarLaptopExpanded: false,
-      // 360, not 280: at the old default the Assistant tab's prose column
-      // measured ~233px after the pane's own chrome — a third of the app's
-      // enforced 640px/~80-char article reading measure, for the one surface
-      // meant to answer questions about that same article. 360 leaves >900px
-      // of article at a 1440px viewport (still comfortably above the 640px
-      // measure) while giving generated prose room to read as prose.
-      articleSidebarWidth: 360,
+      // 400 is both the default and minimum: the Assistant's labelled skill
+      // control and four-view tab strip need this width to remain legible,
+      // while the article still retains its enforced 640px reading measure on
+      // the wide layouts where the expanded inspector is available.
+      articleSidebarWidth: ARTICLE_SIDEBAR_DEFAULT_WIDTH,
       // Carries over anyone's existing preference from the old standalone
       // localStorage key the toolbar toggle used to write directly. Safe as a
       // one-time plain read (not a full migrateStorageKey, which expects a
@@ -79,9 +80,30 @@ export const useUiStore = create<UiState>()(
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
       setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
-      setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(MIN_ARTICLE_SIDEBAR_WIDTH, Math.min(1200, width)) }),
+      setArticleSidebarWidth: (width) => set({
+        articleSidebarWidth: Math.max(
+          ARTICLE_SIDEBAR_MIN_WIDTH,
+          Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, width),
+        ),
+      }),
       setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
-    { name: 'compendiq-ui' },
+    {
+      name: 'compendiq-ui',
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<UiState>;
+        const persistedWidth = typeof persisted.articleSidebarWidth === 'number'
+          ? persisted.articleSidebarWidth
+          : currentState.articleSidebarWidth;
+        return {
+          ...currentState,
+          ...persisted,
+          articleSidebarWidth: Math.max(
+            ARTICLE_SIDEBAR_MIN_WIDTH,
+            Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, persistedWidth),
+          ),
+        };
+      },
+    },
   ),
 );

@@ -1,9 +1,10 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
 import { History, Eye, FileText, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
+import { diffWordsWithSpace, type Change } from 'diff';
 import type {
   PageVersionsResponse,
   PageVersionDetail,
@@ -17,6 +18,7 @@ import { cn } from '../../shared/lib/cn';
 import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { markFormattedVersionDiff, versionContentAsHtml } from './version-formatted-diff';
 
 // Response/type shapes are the single source of truth in @compendiq/contracts
 // (PageVersionsResponseSchema / PageVersionDetailSchema). Don't re-declare them.
@@ -110,6 +112,37 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
   const versions = versionsData?.versions ?? [];
   const currentVersionNumber = versions.find((v) => v.isCurrent)?.versionNumber;
+  const selectedVersionIndex = selectedVersion === null
+    ? -1
+    : versions.findIndex((version) => version.versionNumber === selectedVersion);
+  const previousVersionNumber = selectedVersionIndex >= 0 && selectedVersionIndex < versions.length - 1
+    ? versions[selectedVersionIndex + 1]!.versionNumber
+    : null;
+  const {
+    data: previousVersionData,
+    isLoading: isPreviousVersionLoading,
+  } = useVersionDetail(pageId, previousVersionNumber);
+  const formattedDiffHtml = useMemo(() => {
+    if (!selectedVersionData) return null;
+    const currentHtml = versionContentAsHtml(
+      selectedVersionData.bodyHtml,
+      selectedVersionData.bodyText,
+    );
+    if (!previousVersionData) return currentHtml;
+    return markFormattedVersionDiff(
+      versionContentAsHtml(previousVersionData.bodyHtml, previousVersionData.bodyText),
+      currentHtml,
+    );
+  }, [previousVersionData, selectedVersionData]);
+  const rawVersionDiff = useMemo(
+    () => previousVersionData
+      ? diffWordsWithSpace(
+        previousVersionData.bodyText ?? '',
+        selectedVersionData?.bodyText ?? '',
+      ) as Change[]
+      : null,
+    [previousVersionData, selectedVersionData?.bodyText],
+  );
   // #763: non-ok backfill means the historical Confluence import never ran or
   // failed — the list still renders, but with a hint that it may be incomplete.
   const backfillStatus = versionsData?.backfillStatus;
@@ -393,7 +426,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   exit={{ opacity: 0, height: 0 }}
                   className="overflow-hidden border-t border-border"
                 >
-                  {isVersionDetailLoading || !selectedVersionData ? (
+                  {isVersionDetailLoading
+                    || (previousVersionNumber !== null && isPreviousVersionLoading)
+                    || !selectedVersionData ? (
                     <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
                       <Loader2 size={14} className="animate-spin" />
                       <span className="text-sm">Loading version preview...</span>
@@ -470,6 +505,11 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                           &ldquo;{selectedVersionData.message}&rdquo;
                         </p>
                       )}
+                      {previousVersionNumber === null && (
+                        <p className="mb-2 text-xs text-muted-foreground" role="status">
+                          No previous version to compare.
+                        </p>
+                      )}
                       {previewMode === 'formatted' ? (
                         <FeatureErrorBoundary
                           featureName="Version Preview"
@@ -481,20 +521,40 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                             </div>
                           }
                         >
-                          <div className="max-h-[55vh] overflow-y-auto px-5 py-4">
-                            <ArticleViewer
-                              content={selectedVersionData.bodyHtml || selectedVersionData.bodyText || ''}
-                              confluenceUrl={settings?.confluenceUrl}
-                              confluencePageId={selectedVersionData.confluenceId}
-                              pageId={pageId}
-                            />
+                          <div
+                            className={cn(
+                              'version-inline-diff max-h-[55vh] overflow-y-auto px-5 py-4',
+                              '[&_ins]:rounded-sm [&_ins]:bg-success/15 [&_ins]:text-success [&_ins]:no-underline',
+                              '[&_del]:rounded-sm [&_del]:bg-destructive/15 [&_del]:text-destructive [&_del]:line-through',
+                            )}
+                            data-testid={previousVersionData ? 'version-formatted-diff' : undefined}
+                          >
+                            {formattedDiffHtml ? (
+                              <ArticleViewer
+                                content={formattedDiffHtml}
+                                confluenceUrl={settings?.confluenceUrl}
+                                confluencePageId={selectedVersionData.confluenceId}
+                                pageId={pageId}
+                              />
+                            ) : rawVersionDiff ? (
+                              <InlineVersionDiff
+                                changes={rawVersionDiff}
+                                content={selectedVersionData.bodyText ?? ''}
+                              />
+                            ) : (
+                              <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                                {selectedVersionData.bodyText ?? 'No content available'}
+                              </pre>
+                            )}
                           </div>
                         </FeatureErrorBoundary>
                       ) : (
                         <div className={cn('prose max-h-[55vh] overflow-y-auto px-5 py-4 text-xs', !isLight && 'prose-invert')}>
-                          <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
-                            {selectedVersionData.bodyText ?? 'No content available'}
-                          </pre>
+                          <InlineVersionDiff
+                            changes={rawVersionDiff}
+                            content={selectedVersionData.bodyText ?? 'No content available'}
+                            testId="version-raw-diff"
+                          />
                         </div>
                       )}
                     </div>
@@ -564,6 +624,35 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
         onCancel={() => setPendingRestore(null)}
       />
     </Dialog.Root>
+  );
+}
+
+function InlineVersionDiff({
+  changes,
+  content,
+  testId,
+}: {
+  changes: Change[] | null;
+  content: string;
+  testId?: string;
+}) {
+  return (
+    <pre
+      className={cn(
+        'whitespace-pre-wrap text-xs text-muted-foreground',
+        '[&_ins]:rounded-sm [&_ins]:bg-success/15 [&_ins]:text-success [&_ins]:no-underline',
+        '[&_del]:rounded-sm [&_del]:bg-destructive/15 [&_del]:text-destructive [&_del]:line-through',
+      )}
+      data-testid={testId}
+    >
+      {changes
+        ? changes.map((change, index) => {
+          if (change.added) return <ins key={index}>{change.value}</ins>;
+          if (change.removed) return <del key={index}>{change.value}</del>;
+          return change.value;
+        })
+        : content}
+    </pre>
   );
 }
 

@@ -71,6 +71,15 @@ describe('docked Assistant action selector', () => {
     streamSSEMock.mockImplementation(() => sse({ content: 'ok' }, { final: true, done: true }));
   });
 
+
+  it('renders a labelled, visually distinct Skill control in the right panel', async () => {
+    renderDock();
+
+    const control = await screen.findByTestId('assistant-action-select');
+    expect(control).toHaveTextContent('Skill');
+    expect(control).toHaveTextContent('Q&A');
+    expect(control.className).toContain('bg-status-ai/10');
+  });
   it('offers all five rewrite skills as standalone choices', async () => {
     renderDock();
     fireEvent.pointerDown(await screen.findByTestId('assistant-action-select'), { button: 0 });
