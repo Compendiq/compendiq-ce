@@ -50,6 +50,7 @@ e2e/.auth/
 tmp/
 temp/
 
+.worktrees/
 # Research
 research/
 
