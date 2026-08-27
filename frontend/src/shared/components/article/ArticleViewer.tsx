@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TextAlign from '@tiptap/extension-text-align';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -68,6 +69,20 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
 });
 
 const lowlight = createLowlight(common);
+
+const VersionInsert = Mark.create({
+  name: 'versionInsert',
+  priority: 1000,
+  parseHTML: () => [{ tag: 'ins' }],
+  renderHTML: ({ HTMLAttributes }) => ['ins', HTMLAttributes, 0],
+});
+
+const VersionDelete = Mark.create({
+  name: 'versionDelete',
+  priority: 1000,
+  parseHTML: () => [{ tag: 'del' }],
+  renderHTML: ({ HTMLAttributes }) => ['del', HTMLAttributes, 0],
+});
 
 interface ArticleViewerProps {
   /** HTML content to render (typically page.bodyHtml) */
@@ -144,6 +159,8 @@ export function ArticleViewer({
           HTMLAttributes: { target: '_blank', rel: 'noreferrer' },
         },
       }),
+      VersionInsert,
+      VersionDelete,
       TextAlign.configure({
         types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
         alignments: ['left', 'center', 'right', 'justify'],

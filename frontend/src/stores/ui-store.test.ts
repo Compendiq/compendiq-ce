@@ -28,7 +28,7 @@ describe('ui-store', () => {
     expect(useUiStore.getState().vimModeEnabled).toBe(false);
   });
 
-  it('clamps setArticleSidebarWidth between 200 and 1200', () => {
+  it('clamps setArticleSidebarWidth between 400 and 1200', () => {
     useUiStore.getState().setArticleSidebarWidth(800);
     expect(useUiStore.getState().articleSidebarWidth).toBe(800);
 
@@ -39,6 +39,17 @@ describe('ui-store', () => {
     expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
 
     useUiStore.getState().setArticleSidebarWidth(100);
-    expect(useUiStore.getState().articleSidebarWidth).toBe(200);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
+  });
+
+  it('clamps a persisted inspector width to the new minimum during hydration', async () => {
+    localStorage.setItem('compendiq-ui', JSON.stringify({
+      state: { articleSidebarWidth: 260 },
+      version: 0,
+    }));
+
+    await useUiStore.persist.rehydrate();
+
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
   });
 });

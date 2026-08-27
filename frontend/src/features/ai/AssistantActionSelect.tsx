@@ -3,6 +3,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   BookOpen,
   Check,
+  ChevronDown,
   ClipboardList,
   FileCode2,
   FilePlus2,
@@ -152,23 +153,27 @@ function ActionItem({ action, selected, onSelect }: {
 
 export function AssistantActionSelect({
   includeGenerate = false,
+  includeCreateSkills = true,
+  showLabel = false,
   disabled = false,
   className,
 }: {
   includeGenerate?: boolean;
+  includeCreateSkills?: boolean;
+  showLabel?: boolean;
   disabled?: boolean;
   className?: string;
 }) {
   const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
   const selected = resolveAssistantAction(mode, improvementType, createSkill);
-  const definitions = [
+  const allDefinitions = [
     CHAT_ACTION,
     ...IMPROVEMENT_ACTIONS,
     ...CREATE_SKILL_ACTIONS,
     DIAGRAM_ACTION,
-    ...(includeGenerate ? [GENERATE_ACTION] : []),
+    GENERATE_ACTION,
   ];
-  const current = definitions.find((action) => action.id === selected) ?? CHAT_ACTION;
+  const current = allDefinitions.find((action) => action.id === selected) ?? CHAT_ACTION;
   const { Icon } = current;
 
   const selectAction = (action: AssistantAction) => {
@@ -179,19 +184,29 @@ export function AssistantActionSelect({
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <Button
-          variant="secondary"
-          size="icon"
+          variant={showLabel ? 'ai' : 'secondary'}
+          size={showLabel ? 'md' : 'icon'}
           disabled={disabled}
           aria-label={`Selected action: ${current.label}`}
           title={`Selected action: ${current.label}`}
           className={cn(
-            'h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground',
+            'max-w-full shrink-0',
+            !showLabel && 'text-muted-foreground hover:text-foreground',
             className,
           )}
           data-testid="assistant-action-select"
         >
-          <Icon size={16} aria-hidden />
-          <span className="sr-only">{current.label}</span>
+          <Icon size={16} className="shrink-0" aria-hidden />
+          {showLabel ? (
+            <>
+              <span className="shrink-0">Skill</span>
+              <span aria-hidden="true">·</span>
+              <span className="truncate">{current.label}</span>
+              <ChevronDown size={13} className="shrink-0" aria-hidden />
+            </>
+          ) : (
+            <span className="sr-only">{current.label}</span>
+          )}
         </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -214,13 +229,17 @@ export function AssistantActionSelect({
             <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
           ))}
 
-          <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
-          <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-            Create skills
-          </DropdownMenu.Label>
-          {CREATE_SKILL_ACTIONS.map((action) => (
-            <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
-          ))}
+          {includeCreateSkills && (
+            <>
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
+                Create skills
+              </DropdownMenu.Label>
+              {CREATE_SKILL_ACTIONS.map((action) => (
+                <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
+              ))}
+            </>
+          )}
           <ActionItem action={DIAGRAM_ACTION} selected={selected === 'diagram'} onSelect={selectAction} />
           {includeGenerate && (
             <ActionItem action={GENERATE_ACTION} selected={selected === 'generate'} onSelect={selectAction} />

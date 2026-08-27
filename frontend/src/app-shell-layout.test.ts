@@ -320,14 +320,13 @@ describe('AppLayout structure', () => {
 
 describe('Context rail vs left navigation', () => {
   it('the inspector uses the context-rail surface, not the sidebar chassis utility', () => {
-    const collapsed = rightPane.slice(
-      rightPane.indexOf('data-testid="article-right-pane-rail"') - 400,
-      rightPane.indexOf('data-testid="article-right-pane-rail"') + 80,
-    );
-    const expanded = rightPane.slice(
-      rightPane.indexOf('data-testid="article-right-pane"') - 400,
-      rightPane.indexOf('data-testid="article-right-pane"') + 80,
-    );
+    const openingAsideFor = (testId: string) => {
+      const marker = rightPane.lastIndexOf(`data-testid="${testId}"`);
+      const start = rightPane.lastIndexOf('<m.aside', marker);
+      return rightPane.slice(start, marker + testId.length + 32);
+    };
+    const collapsed = openingAsideFor('article-right-pane-rail');
+    const expanded = openingAsideFor('article-right-pane');
     expect(collapsed).toMatch(/app-context-rail/);
     expect(expanded).toMatch(/app-context-rail/);
     expect(collapsed).not.toMatch(/app-sidebar/);

@@ -468,7 +468,12 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             onPickFiles={handlePickFiles}
             disabled={isStreaming || selectedAction === 'diagram' || isBusy}
           />
-          <AssistantActionSelect disabled={isStreaming || modelsError} className="self-end" />
+          <AssistantActionSelect
+            includeCreateSkills={false}
+            showLabel
+            disabled={isStreaming || modelsError}
+            className="self-end"
+          />
           <textarea
             ref={composerRef}
             value={input}

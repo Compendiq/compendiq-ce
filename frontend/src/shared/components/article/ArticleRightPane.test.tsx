@@ -225,7 +225,7 @@ describe('ArticleRightPane', () => {
     useUiStore.setState({
       articleSidebarCollapsed: false,
       articleSidebarLaptopExpanded: false,
-      articleSidebarWidth: 280,
+      articleSidebarWidth: 400,
     });
     useArticleViewStore.setState({ headings: [], editing: false });
     // The dock forces this pane into its rail while open (#1126), so a test
@@ -666,7 +666,7 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
     expect(screen.getByTestId('article-outline-rail-btn')).toBeInTheDocument();
-    expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
   });
 
@@ -691,14 +691,17 @@ describe('ArticleRightPane', () => {
       expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
     });
 
-    it('keeps Expand and the current view first-class and parks pin and maintenance behind More', () => {
+    it('keeps Assistant above Outline and parks pin and maintenance behind More', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
       renderRail();
 
+      const assistant = screen.getByTestId('article-assistant-rail-btn');
+      const outline = screen.getByTestId('article-outline-rail-btn');
       expect(screen.getByLabelText('Expand inspector')).toBeInTheDocument();
-      expect(screen.getByTestId('article-details-rail-btn')).toBeInTheDocument();
-      expect(screen.queryByTestId('article-assistant-rail-btn')).not.toBeInTheDocument();
+      expect(assistant.compareDocumentPosition(outline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.queryByLabelText('Pin page')).not.toBeInTheDocument();
-
       expect(screen.queryByTestId('article-requality-rail-btn')).not.toBeInTheDocument();
       expect(screen.queryByTestId('article-reembed-rail-btn')).not.toBeInTheDocument();
       expect(screen.queryByTestId('article-history-rail-btn')).not.toBeInTheDocument();
@@ -706,7 +709,7 @@ describe('ArticleRightPane', () => {
 
       fireEvent.click(screen.getByTestId('article-actions-rail'));
 
-      expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
+      expect(screen.getAllByTestId('article-assistant-rail-btn')).toHaveLength(1);
       expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
       expect(screen.getByTestId('article-requality-rail-btn')).toBeInTheDocument();
       expect(screen.getByTestId('article-reembed-rail-btn')).toBeInTheDocument();
@@ -733,9 +736,8 @@ describe('ArticleRightPane', () => {
       expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
     });
 
-    it('expands onto the Assistant tab from More', () => {
+    it('expands directly onto the Assistant tab from its rail button', () => {
       renderRail();
-      fireEvent.click(screen.getByTestId('article-actions-rail'));
       fireEvent.click(screen.getByTestId('article-assistant-rail-btn'));
 
       expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
@@ -753,9 +755,8 @@ describe('ArticleRightPane', () => {
       expect(pin.className).toMatch(/focus-visible:ring-2/);
     });
 
-    it('paints the rail Assistant mark violet', () => {
+    it('paints the first-class rail Assistant mark violet', () => {
       renderRail();
-      fireEvent.click(screen.getByTestId('article-actions-rail'));
       const trigger = screen.getByTestId('article-assistant-rail-btn');
       const mark = trigger.querySelector('svg');
       expect(mark).not.toBeNull();
@@ -780,6 +781,42 @@ describe('ArticleRightPane', () => {
       await waitFor(() => {
         expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
       });
+    });
+
+    it('closes More actions on Escape and restores focus to its trigger', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-actions-rail');
+      fireEvent.click(trigger);
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    it('closes More actions when the pointer presses outside it', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.pointerDown(document.body);
+
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+    });
+
+    it('keeps a portalled Version History dialog alive above More actions', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      fireEvent.click(screen.getByTestId('article-history-rail-btn'));
+      const dialog = await screen.findByRole('dialog');
+
+      fireEvent.pointerDown(dialog);
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
     });
   });
 
@@ -896,6 +933,19 @@ describe('ArticleRightPane', () => {
       expect(trigger).toHaveAttribute('aria-expanded', 'true');
       expect(screen.getByTestId('article-outline-flyout')).toHaveAttribute('id', 'article-outline-flyout');
       expect(screen.getByTestId('article-outline-flyout')).toHaveTextContent('Same as the Outline tab');
+    });
+
+    it('closes after a click-open when the pointer moves down inside the rail', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+      fireEvent.click(trigger);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.pointerMove(screen.getByTestId('article-actions-rail'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
     });
 
     it('navigates to a heading from inside the flyout', () => {
@@ -1082,7 +1132,8 @@ describe('ArticleRightPane', () => {
 
     const pane = screen.getByTestId('article-right-pane');
     const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
-    expect(handle).toHaveAttribute('aria-valuenow', '280');
+    expect(handle).toHaveAttribute('aria-valuenow', '400');
+    expect(handle).toHaveAttribute('aria-valuemin', '400');
     expect(handle).toHaveAttribute('aria-valuemax', '1200');
     expect(handle).toHaveAttribute('tabindex', '0');
     expect(handle).toHaveStyle({ width: 'var(--app-rail-gap)' });
@@ -1091,15 +1142,15 @@ describe('ArticleRightPane', () => {
   });
 
   it('supports keyboard resizing and double-click reset', () => {
-    useUiStore.setState({ articleSidebarWidth: 320 });
+    useUiStore.setState({ articleSidebarWidth: 400 });
     render(<ArticleRightPane />, { wrapper: createWrapper() });
     const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
 
     fireEvent.keyDown(handle, { key: 'ArrowLeft' });
-    expect(useUiStore.getState().articleSidebarWidth).toBe(336);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(416);
 
     fireEvent.keyDown(handle, { key: 'ArrowRight' });
-    expect(useUiStore.getState().articleSidebarWidth).toBe(320);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
 
     act(() => {
       useUiStore.setState({ articleSidebarWidth: 1195 });
@@ -1108,7 +1159,7 @@ describe('ArticleRightPane', () => {
     expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
 
     fireEvent.doubleClick(handle);
-    expect(useUiStore.getState().articleSidebarWidth).toBe(360);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
   });
 
   it('resizes when the gutter handle is dragged', () => {
@@ -1117,7 +1168,7 @@ describe('ArticleRightPane', () => {
 
     fireEvent.mouseDown(handle, { clientX: 500 });
     fireEvent.mouseMove(document, { clientX: 460 });
-    expect(useUiStore.getState().articleSidebarWidth).toBe(320);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(440);
     fireEvent.mouseUp(document);
   });
 
