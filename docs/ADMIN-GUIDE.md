@@ -348,7 +348,7 @@ A Redis counter (`llm:streams:<userId>`) tracks currently-open SSE streams per u
 Users import selected Notion **pages** from Library or New Page. This is not Confluence Sync and is not configured in Settings-only.
 
 - **Auth:** each user pastes an internal integration token. It is encrypted at rest with the same AES-256-GCM helpers as the Confluence PAT (`user_settings.notion_integration_token`). `GET /api/notion/connection` returns only `{ hasToken }`. The token never appears on GET bodies, logs, or toasts.
-- **Tree:** `GET /api/notion/tree` lists pages and databases. Databases and other unsupported types are labelled **Not supported — stays in Notion** and are not selectable. Database **rows** are skipped with the database unless Notion listed the row as its own page object.
+- **Tree:** `GET /api/notion/tree` builds the hierarchy from Notion Search results and resolves Search-listed block-parent pages without listing every page body. This keeps large workspaces responsive instead of spending up to 80 extra requests before the picker renders. The picker collapses descendants and progressively renders large root collections. Databases and other unsupported types are labelled **Not supported — stays in Notion** and are not selectable. Database **rows** are skipped with the database unless Notion listed the row as its own page object.
 - **Run:** `POST /api/notion/import` creates standalone pages (`source = standalone`) under the chosen local space / parent / visibility. One page failing does not abort the run. Re-running the same Notion page id reports `already_imported`.
 - **Out of scope:** live two-way sync, OAuth, export ZIP, writing to Confluence, treating databases as pages.
 

@@ -29,15 +29,46 @@ export function isSelectablePage(node: NotionTreeNode): node is NotionTreePageNo
   return node.type === 'page' && node.selectable === true;
 }
 
-export function toggleSelectedPage(
+export type GroupSelectionState = 'none' | 'some' | 'all';
+
+function selectableIdsInGroup(node: NotionTreeNode): string[] {
+  const ids: string[] = [];
+  walk([node], (candidate) => {
+    if (isSelectablePage(candidate)) ids.push(candidate.id);
+  });
+  return ids;
+}
+
+export function groupSelectionState(
+  node: NotionTreeNode,
+  selected: ReadonlySet<string>,
+): GroupSelectionState {
+  const ids = selectableIdsInGroup(node);
+  if (ids.length === 0) return 'none';
+  const selectedCount = ids.reduce((count, id) => count + Number(selected.has(id)), 0);
+  if (selectedCount === 0) return 'none';
+  return selectedCount === ids.length ? 'all' : 'some';
+}
+
+export function toggleSelectedPageGroup(
   selected: ReadonlySet<string>,
   node: NotionTreeNode,
-): Set<string> {
+): { selected: Set<string>; limitExceeded: boolean } {
   const next = new Set(selected);
-  if (!isSelectablePage(node)) return next;
-  if (next.has(node.id)) next.delete(node.id);
-  else next.add(node.id);
-  return next;
+  if (!isSelectablePage(node)) return { selected: next, limitExceeded: false };
+
+  const groupIds = selectableIdsInGroup(node);
+  const allSelected = groupIds.every((id) => next.has(id));
+  if (allSelected) {
+    groupIds.forEach((id) => next.delete(id));
+    return { selected: next, limitExceeded: false };
+  }
+
+  groupIds.forEach((id) => next.add(id));
+  if (next.size > NOTION_IMPORT_MAX_PAGES) {
+    return { selected: new Set(selected), limitExceeded: true };
+  }
+  return { selected: next, limitExceeded: false };
 }
 
 function walk(nodes: NotionTreeNode[], visit: (node: NotionTreeNode) => void): void {

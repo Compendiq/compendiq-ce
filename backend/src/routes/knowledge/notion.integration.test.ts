@@ -318,16 +318,19 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', 
     setNotionApiBaseUrlForTests(null);
   });
 
-  it('returns 503 when Notion children are unavailable and never echoes the token', async () => {
+  it('returns the Search tree when Notion page bodies are unavailable and never echoes the token', async () => {
     const instance = await buildKnowledgeTestApp(() => userId, async (fastify) => {
       await fastify.register(notionRoutes, { prefix: '/api' });
     });
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
       const res = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
-      expect(res.statusCode).toBe(503);
+      expect(res.statusCode).toBe(200);
       expect(res.body).not.toContain(TOKEN);
-      expect(res.json()).toMatchObject({ statusCode: 503 });
+      expect(res.json()).toMatchObject({
+        nodes: [{ id: 'handbook', title: 'Handbook', type: 'page', selectable: true }],
+      });
+      expect(server.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
     } finally {
       await instance.close();
     }

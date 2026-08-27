@@ -4,11 +4,12 @@ import {
   canContinueNotionPick,
   exceedsImportPageCap,
   formatConfirmCopy,
+  groupSelectionState,
   NOTION_IMPORT_MAX_PAGES,
   selectablePageIds,
   shouldCommitImportResult,
   summarizeImport,
-  toggleSelectedPage,
+  toggleSelectedPageGroup,
 } from './notion-import-selection';
 
 const SKIP = NOTION_UNSUPPORTED_LABEL;
@@ -58,26 +59,57 @@ const MIXED: NotionTreeNode[] = [
   page('row-listed', 'Customer Acme (row listed independently)'),
 ];
 
-describe('toggleSelectedPage', () => {
+describe('toggleSelectedPageGroup', () => {
   it('refuses to select a database or other unsupported node', () => {
     const empty = new Set<string>();
-    expect(toggleSelectedPage(empty, database('crm', 'CRM'))).toEqual(empty);
-    expect(toggleSelectedPage(empty, unsupported('board', 'Whiteboard'))).toEqual(empty);
+    expect(toggleSelectedPageGroup(empty, database('crm', 'CRM'))).toEqual({
+      selected: empty,
+      limitExceeded: false,
+    });
+    expect(toggleSelectedPageGroup(empty, unsupported('board', 'Whiteboard'))).toEqual({
+      selected: empty,
+      limitExceeded: false,
+    });
   });
 
-  it('selects a parent without its children', () => {
-    const selected = toggleSelectedPage(new Set(), page('handbook', 'Handbook', [
-      page('onboarding', 'Onboarding'),
+  it('selects and deselects every supported page in a parent group', () => {
+    const handbook = page('handbook', 'Handbook', [
+      page('onboarding', 'Onboarding', [page('nested', 'Nested notes')]),
       database('crm', 'CRM'),
-    ]));
-    expect([...selected]).toEqual(['handbook']);
+    ]);
+
+    const selected = toggleSelectedPageGroup(new Set(), handbook);
+    expect(selected).toEqual({
+      selected: new Set(['handbook', 'onboarding', 'nested']),
+      limitExceeded: false,
+    });
+    expect(toggleSelectedPageGroup(selected.selected, handbook)).toEqual({
+      selected: new Set(),
+      limitExceeded: false,
+    });
   });
 
-  it('lets nested children be selected independently of the parent', () => {
-    let selected = toggleSelectedPage(new Set(), page('nested', 'Nested notes'));
-    selected = toggleSelectedPage(selected, page('onboarding', 'Onboarding', [page('nested', 'Nested notes')]));
-    expect(selected).toEqual(new Set(['nested', 'onboarding']));
-    expect(selected.has('handbook')).toBe(false);
+  it('reports partially selected groups independently from leaf selection', () => {
+    const handbook = page('handbook', 'Handbook', [
+      page('onboarding', 'Onboarding'),
+      page('security', 'Security'),
+    ]);
+
+    expect(groupSelectionState(handbook, new Set())).toBe('none');
+    expect(groupSelectionState(handbook, new Set(['onboarding']))).toBe('some');
+    expect(groupSelectionState(handbook, new Set(['handbook', 'onboarding', 'security']))).toBe('all');
+  });
+
+  it('refuses a group atomically when it exceeds the remaining page cap', () => {
+    const selected = new Set(Array.from({ length: NOTION_IMPORT_MAX_PAGES - 1 }, (_, i) => `existing-${i}`));
+    const group = page('parent', 'Parent', [page('child', 'Child')]);
+
+    const result = toggleSelectedPageGroup(selected, group);
+
+    expect(result.limitExceeded).toBe(true);
+    expect(result.selected).toEqual(selected);
+    expect(result.selected.has('parent')).toBe(false);
+    expect(result.selected.has('child')).toBe(false);
   });
 });
 

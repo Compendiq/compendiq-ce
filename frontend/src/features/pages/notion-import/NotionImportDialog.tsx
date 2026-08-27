@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { AlertTriangle, Check, ExternalLink, Loader2, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, ExternalLink, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import type { NotionImportItem, NotionTreeNode } from '@compendiq/contracts';
 import { ApiError } from '../../../shared/lib/api';
@@ -19,12 +19,14 @@ import {
   canContinueNotionPick,
   exceedsImportPageCap,
   formatConfirmCopy,
+  groupSelectionState,
   isSelectablePage,
   NOTION_IMPORT_MAX_PAGES,
+  selectablePageIds,
   notionTitleById,
   shouldCommitImportResult,
   summarizeImport,
-  toggleSelectedPage,
+  toggleSelectedPageGroup,
   type NotionImportStep,
 } from './notion-import-selection';
 import {
@@ -41,6 +43,8 @@ export interface NotionImportDialogProps {
 }
 
 type Visibility = 'private' | 'shared';
+
+const NOTION_ROOT_BATCH_SIZE = 50;
 
 export function NotionImportPickFooter({
   importCount,
@@ -111,30 +115,66 @@ function TreeNodeRow({
   onToggle,
   depth,
   locked,
+  expandedIds,
+  onToggleExpanded,
 }: {
   node: NotionTreeNode;
   selected: ReadonlySet<string>;
   onToggle: (node: NotionTreeNode) => void;
   depth: number;
   locked: boolean;
+  expandedIds: ReadonlySet<string>;
+  onToggleExpanded: (id: string) => void;
 }) {
   const selectable = isSelectablePage(node);
+  const hasChildren = node.children.length > 0;
+  const isExpanded = hasChildren && expandedIds.has(node.id);
+  const selectionState = groupSelectionState(node, selected);
+  const checkboxRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (checkboxRef.current) checkboxRef.current.indeterminate = selectionState === 'some';
+  }, [selectionState]);
+
+  const handleTreeKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!hasChildren) return;
+    if (event.key === 'ArrowRight' && !isExpanded) {
+      event.preventDefault();
+      onToggleExpanded(node.id);
+    } else if (event.key === 'ArrowLeft' && isExpanded) {
+      event.preventDefault();
+      onToggleExpanded(node.id);
+    }
+  };
+
   return (
-    <li>
+    <li data-testid={`notion-node-${node.id}`}>
       <div
-        data-testid={`notion-node-${node.id}`}
-        className="flex min-h-7 items-start gap-2 py-1 text-[13px]"
-        style={{ paddingLeft: depth * 12 }}
-        aria-level={depth + 1}
+        className="relative flex min-h-7 items-start gap-2 rounded-md py-1 pr-2 text-[13px] hover:bg-accent"
+        style={{ paddingLeft: depth * 12 + 28 }}
       >
+        {hasChildren ? (
+          <button
+            type="button"
+            className="absolute top-0.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            style={{ left: depth * 12 }}
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${node.title}`}
+            onClick={() => onToggleExpanded(node.id)}
+            aria-expanded={isExpanded}
+          >
+            {isExpanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+          </button>
+        ) : null}
         {selectable ? (
           <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
             <input
+              ref={checkboxRef}
               type="checkbox"
               className="mt-0.5 h-4 w-4 rounded border-border-interactive accent-primary"
-              checked={selected.has(node.id)}
+              checked={selectionState === 'all'}
               disabled={locked}
               onChange={() => onToggle(node)}
+              onKeyDown={handleTreeKeyDown}
               aria-label={node.title}
             />
             <span className="min-w-0 break-words text-foreground">{node.title}</span>
@@ -146,7 +186,7 @@ function TreeNodeRow({
           </div>
         )}
       </div>
-      {node.children.length > 0 ? (
+      {hasChildren && isExpanded ? (
         <ul className="list-none p-0">
           {node.children.map((child) => (
             <TreeNodeRow
@@ -156,6 +196,8 @@ function TreeNodeRow({
               onToggle={onToggle}
               depth={depth + 1}
               locked={locked}
+              expandedIds={expandedIds}
+              onToggleExpanded={onToggleExpanded}
             />
           ))}
         </ul>
@@ -185,6 +227,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [visibility, setVisibility] = useState<Visibility>('private');
   const [resultItems, setResultItems] = useState<NotionImportItem[] | null>(null);
   const [treeRetryInFlight, setTreeRetryInFlight] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [visibleRootCount, setVisibleRootCount] = useState(NOTION_ROOT_BATCH_SIZE);
+  const [selectionLimitMessage, setSelectionLimitMessage] = useState<string | null>(null);
 
   const stepRef = useRef(step);
   const setStep = useCallback((next: NotionImportStep) => {
@@ -202,6 +247,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const visibilityGroupRef = useRef<HTMLDivElement | null>(null);
   const restoreFocusAfterImport = useRef(false);
   const restoreFocusAfterTreeRetry = useRef(false);
+  const loadMoreRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -216,6 +262,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     if (open) return;
     setToken('');
     setSelected(new Set());
+    setExpandedIds(new Set());
+    setVisibleRootCount(NOTION_ROOT_BATCH_SIZE);
+    setSelectionLimitMessage(null);
     setSpaceKey('');
     setParentId(undefined);
     setVisibility('private');
@@ -228,16 +277,58 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
   const nodes = useMemo(() => tree.data?.nodes ?? [], [tree.data?.nodes]);
   const titlesById = useMemo(() => notionTitleById(nodes), [nodes]);
+  useEffect(() => {
+    setSelected((current) => {
+      const validSelection = selectablePageIds(nodes, current);
+      return validSelection.length === current.size ? current : new Set(validSelection);
+    });
+    setSelectionLimitMessage(null);
+  }, [nodes]);
   const summary = useMemo(() => summarizeImport(nodes, selected), [nodes, selected]);
   const confirmCopy = formatConfirmCopy(summary);
+  const visibleNodes = nodes.slice(0, visibleRootCount);
+  const remainingRootCount = Math.max(0, nodes.length - visibleRootCount);
+
+  useEffect(() => {
+    setVisibleRootCount(NOTION_ROOT_BATCH_SIZE);
+  }, [nodes]);
+
+  const showMoreRoots = useCallback(() => {
+    setVisibleRootCount((count) => Math.min(nodes.length, count + NOTION_ROOT_BATCH_SIZE));
+  }, [nodes.length]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || remainingRootCount === 0 || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) showMoreRoots();
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [remainingRootCount, showMoreRoots]);
 
   const handleToggle = useCallback(
     (node: NotionTreeNode) => {
       if (runImport.isPending) return;
-      setSelected((prev) => toggleSelectedPage(prev, node));
+      const result = toggleSelectedPageGroup(selected, node);
+      setSelected(result.selected);
+      setSelectionLimitMessage(
+        result.limitExceeded
+          ? `That group exceeds the ${NOTION_IMPORT_MAX_PAGES}-page import limit. Expand it and choose a smaller group.`
+          : null,
+      );
     },
-    [runImport.isPending],
+    [runImport.isPending, selected],
   );
+
+  const handleToggleExpanded = useCallback((id: string) => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const handleConnect = async () => {
     const pasted = token.trim();
@@ -246,6 +337,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
       await connect.mutateAsync(pasted);
       setToken('');
       setSelected(new Set());
+      setExpandedIds(new Set());
+      setSelectionLimitMessage(null);
       setStep('pick');
     } catch (err) {
       toast.error(errorMessage(err));
@@ -256,6 +349,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     try {
       await disconnect.mutateAsync();
       setSelected(new Set());
+      setExpandedIds(new Set());
+      setSelectionLimitMessage(null);
       setStep('connect');
     } catch (err) {
       toast.error(errorMessage(err));
@@ -490,13 +585,18 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                         </div>
                       </div>
                     ) : null}
+                    {selectionLimitMessage ? (
+                      <p role="status" className="text-xs text-warning">
+                        {selectionLimitMessage}
+                      </p>
+                    ) : null}
                     <ul
                       ref={setTreeRegionRef}
                       tabIndex={-1}
                       data-testid="notion-import-tree"
                       className="list-none rounded-md border border-border bg-card px-2 py-1 outline-none"
                     >
-                      {nodes.map((node) => (
+                      {visibleNodes.map((node) => (
                         <TreeNodeRow
                           key={node.id}
                           node={node}
@@ -504,9 +604,22 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                           onToggle={handleToggle}
                           depth={0}
                           locked={importPending}
+                          expandedIds={expandedIds}
+                          onToggleExpanded={handleToggleExpanded}
                         />
                       ))}
                     </ul>
+                    {remainingRootCount > 0 ? (
+                      <button
+                        ref={loadMoreRef}
+                        type="button"
+                        className="nm-button-ghost h-8 w-full px-3 text-xs"
+                        onClick={showMoreRoots}
+                      >
+                        Show {Math.min(NOTION_ROOT_BATCH_SIZE, remainingRootCount)} more{' '}
+                        {Math.min(NOTION_ROOT_BATCH_SIZE, remainingRootCount) === 1 ? 'page' : 'pages'}
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </div>
