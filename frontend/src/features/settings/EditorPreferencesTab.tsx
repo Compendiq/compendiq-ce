@@ -141,7 +141,6 @@ export function EditorPreferencesTab({
   return (
     <div className="space-y-6">
       <PanelHeader
-        title="Editor"
         subtitle="Control when AI offers a short continuation ahead of your cursor. Suggestions stay hidden until an administrator assigns a dedicated inline-completion model."
       />
 

@@ -46,7 +46,6 @@ export function ThemeTab({ onSave }: ThemeTabProps) {
   return (
     <div className="space-y-8">
       <PanelHeader
-        title="Appearance"
         subtitle="Pick a theme. Changes apply immediately and are saved to your profile."
       />
 

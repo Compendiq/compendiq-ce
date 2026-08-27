@@ -127,7 +127,6 @@ export function LicenseStatusCard() {
   return (
     <div className="space-y-6" data-testid="license-status">
       <PanelHeader
-        title="License"
         subtitle="License tier and the enterprise features each tier unlocks."
       />
 

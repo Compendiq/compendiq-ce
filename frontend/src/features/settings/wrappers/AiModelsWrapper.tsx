@@ -71,7 +71,6 @@ export function AiModelsWrapper() {
   return (
     <>
       <PanelHeader
-        title="AI Models"
         subtitle="Configure LLM providers, embedding model, retrieval tuning, and worker concurrency."
       />
       <SubTabs ariaLabel="AI Models sub-sections" tabs={tabs} testIdRoot="ai-models" />

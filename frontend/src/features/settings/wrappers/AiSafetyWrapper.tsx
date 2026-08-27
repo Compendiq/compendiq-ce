@@ -90,7 +90,6 @@ export function AiSafetyWrapper() {
   return (
     <>
       <PanelHeader
-        title="AI Safety"
         subtitle="Guardrails, output rules, and (with EE) review policy, audit log, and PII detection."
       />
       <SubTabs ariaLabel="AI Safety sub-sections" tabs={tabs} testIdRoot="ai-safety" />

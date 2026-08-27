@@ -35,11 +35,6 @@ export function SettingsLayout() {
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
-      // Settings is a reading-and-editing column, not a dashboard: capped at
-      // 896px it stays a coherent shape instead of a pane stretched to whatever
-      // the monitor happens to be, with its content stranded on the left.
-      // Wide enough that the tabs carrying tables (audit, users) still breathe.
-      className=""
     >
       <HeaderHost
         fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6 [&>h1]:mx-auto [&>h1]:flex [&>h1]:min-h-[calc(3rem-1px)] [&>h1]:max-w-[928px] [&>h1]:items-center [&>h1]:px-4 [&>h1]:py-2 sm:[&>h1]:max-w-[944px] sm:[&>h1]:px-6"

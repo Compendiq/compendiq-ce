@@ -43,7 +43,6 @@ export function ConfluenceTab({ settings, onSave }: { settings: SettingsResponse
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <PanelHeader
-        title="Confluence"
         subtitle="Connect Compendiq to your Confluence Data Center so your spaces can sync. Nothing is mirrored until this connection tests green."
       />
 

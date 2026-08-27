@@ -46,7 +46,6 @@ export function IntegrationsWrapper() {
   return (
     <>
       <PanelHeader
-        title="Integrations"
         subtitle="External services Compendiq talks to: SMTP, SearXNG, MCP documentation."
       />
       <SubTabs ariaLabel="Integrations sub-sections" tabs={tabs} testIdRoot="integrations" />

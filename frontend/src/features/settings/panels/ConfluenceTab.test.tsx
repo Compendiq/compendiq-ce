@@ -170,8 +170,10 @@ describe('ConfluenceTab — trust and guidance at PAT entry', () => {
     expect(screen.queryByTestId('confluence-token-link')).not.toBeInTheDocument();
   });
 
-  it('renders the panel title so the surface matches the other settings panels', () => {
+  it('explains that sync waits until the connection tests green', () => {
     render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
-    expect(screen.getByRole('heading', { name: 'Confluence' })).toBeInTheDocument();
+    expect(
+      screen.getByText(/Nothing is mirrored until this connection tests green/),
+    ).toBeInTheDocument();
   });
 });
