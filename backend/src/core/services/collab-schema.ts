@@ -126,6 +126,18 @@ const Panel = Node.create({
         },
         renderHTML: () => ({}),
       },
+      macroName: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes: { macroName?: string | null }) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes: { macroParams?: string | null }) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
   parseHTML() {

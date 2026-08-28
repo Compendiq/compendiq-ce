@@ -3748,3 +3748,170 @@ describe('content-converter: #1220 self-nested placeholders on write-back', () =
     );
   });
 });
+
+// ==========================================================================
+// #1438 — forward conversion reaches a macro-free fixed point
+// ==========================================================================
+
+describe('content-converter: #1438 nested macro fallback', () => {
+  it('converts nested unknown macros without raw XML and round-trips their bodies and parameters', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor">' +
+      '<ac:parameter ac:name="outer-option">outer value</ac:parameter>' +
+      '<ac:rich-text-body><p>Outer body</p>' +
+      '<ac:structured-macro ac:name="inner-vendor">' +
+      '<ac:parameter ac:name="inner-option">inner value</ac:parameter>' +
+      '<ac:rich-text-body><p><strong>Inner body</strong></p></ac:rich-text-body>' +
+      '</ac:structured-macro></ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html.match(/class="confluence-macro-unknown"/g)).toHaveLength(2);
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:outer-vendor|inner-vendor)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="outer-option">outer value');
+    expect(roundTrip).toContain('ac:name="inner-option">inner value');
+    expect(roundTrip).toContain('<strong>Inner body</strong>');
+  });
+
+  it('converts a supported macro nested in an unknown macro without raw XML', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Supported body</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip).toContain('ac:name="outer-vendor"');
+    expect(roundTrip).toContain('ac:name="info"');
+    expect(roundTrip).toContain('Supported body');
+  });
+
+  it('converts an unknown macro cloned by a layout handler without a false no-progress failure', () => {
+    const storage =
+      '<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell>' +
+      '<ac:structured-macro ac:name="layout-vendor"><ac:rich-text-body>' +
+      '<p>Nested in layout</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:layout-cell></ac:layout-section></ac:layout>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('data-macro-name="layout-vendor"');
+    expect(html).toContain('Nested in layout');
+  });
+
+  it('renders native panel losslessly while converting its nested supported macro', () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel body</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Nested info</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+    expect(html).toContain('data-macro-name="panel"');
+    expect(html).toContain('data-macro-params=');
+    expect(html).not.toContain('confluence-macro-unknown');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:panel|info)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Nested info');
+  });
+  it.each(['constructor', 'toString', '__proto__'])(
+    'keeps prototype-key macro name %s in the lossless unknown fallback',
+    (macroName) => {
+      const storage =
+        `<ac:structured-macro ac:name="${macroName}">` +
+        `<ac:parameter ac:name="mode">${macroName} mode</ac:parameter>` +
+        `<ac:rich-text-body><p>${macroName} body</p></ac:rich-text-body>` +
+        '</ac:structured-macro>';
+
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('class="confluence-macro-unknown"');
+      expect(html).toContain(`data-macro-name="${macroName}"`);
+
+      const roundTrip = htmlToConfluence(html);
+      expect(roundTrip).toContain(`ac:name="${macroName}"`);
+      expect(roundTrip).toContain(`ac:name="mode">${macroName} mode`);
+      expect(roundTrip).toContain(`<p>${macroName} body</p>`);
+    },
+  );
+
+  it('ignores macro-looking markup inside comments when checking conversion progress', () => {
+    const storage =
+      '<p>Before comment</p>' +
+      '<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->' +
+      '<p>After comment</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->');
+    expect(html).toContain('<p>After comment</p>');
+  });
+
+  it('ignores macro-looking markup inside raw-text elements when checking conversion progress', () => {
+    const storage =
+      '<script type="application/json">' +
+      '{"example":"<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>"}' +
+      '</script><p>After script</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>');
+    expect(html).toContain('<p>After script</p>');
+  });
+
+  it('throws instead of returning a raw macro hidden inside template content', () => {
+    const storage =
+      '<template><p>Before</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Template body must not leak</p></ac:rich-text-body></ac:structured-macro>' +
+      '<p>After</p></template>';
+
+    expect(() => confluenceToHtml(storage)).toThrow(
+      'Confluence macro conversion made no progress (1 raw macros remain)',
+    );
+  });
+
+  it('freezes a native panel and its nested media through the full AI Improve round-trip', async () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel identity must survive</p>' +
+      '<img src="/api/attachments/42/runbook.png" alt="Runbook">' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const bodyHtml = confluenceToHtml(storage);
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toContain('data-macro-name="panel"');
+    expect(media[0]!.html).toContain('<img');
+
+    const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+    expect(markdown).toContain('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+    const rebuilt = restoreMedia(
+      await markdownToHtml(markdown, {
+        layoutSkeleton: extractLayoutSkeleton(protectedHtml),
+      }),
+      media,
+    );
+    const roundTrip = htmlToConfluence(rebuilt);
+
+    expect(roundTrip).toContain('ac:name="panel"');
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Panel identity must survive');
+  });
+});

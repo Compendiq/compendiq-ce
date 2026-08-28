@@ -82,7 +82,8 @@ Custom turndown rules handle Confluence-specific macros:
 |--------------------------------------|--------------------------------------------------------------|-------------------------------|
 | `ac:structured-macro[code]`          | `<pre><code class="language-x">`                             | ` ```x … ``` ` fenced block   |
 | `ac:task-list`                       | `<ul data-task-list>`                                        | `- [ ]` / `- [x]`             |
-| `ac:panel` (info/note/warn)          | `<div class="panel panel-…">`                                | `> **INFO:** …` block-quote   |
+| `ac:structured-macro[info\|warning\|note\|tip]` | `<div class="panel-…">` | `> **INFO:** …` block-quote |
+| native `ac:structured-macro[panel]` | `<div class="panel-info" data-macro-name="panel" data-macro-params="{…}">` — uses the existing panel node for display while retaining its original name and arbitrary direct text parameters (#1438) | `> **INFO:** …` block-quote |
 | `ac:structured-macro[expand]` and `[ui-expand]` (Refined) | `<details data-macro-name="expand\|ui-expand" data-macro-params="{…}">` + an always-present `<summary>` holding the `title` param — **empty when the macro had none, and it writes back with none** (#1227) (#1211: the identity stamp lets the reverse pass write back the producing macro's `ac:name` — absent defaults to `expand`, an unrecognised value passes through, never coerced — so both macros survive editor saves). `ui-expand`'s `expanded` param maps to the `open` attribute and lives there only (#1129) | flattened content by default; on Improve (#1221) the section round-trips as `[[[EXPAND …]]]` boundary tokens so its **body prose stays improvable**, except when it sits in a markdown-constrained container (`td`/`th`/`li`/`blockquote`/panel) where it is opaque-protected instead. The `<summary>` is never improvable either way — it rides percent-encoded in the token |
 | `ri:user`                            | `<span class="confluence-user-mention" data-username="…">@user</span>` | `@user` (inline) |
 | `ri:page`                            | `<a data-page-link>`                                         | `[title](compendiq://page/ID)` |
@@ -116,6 +117,14 @@ Custom turndown rules handle Confluence-specific macros:
   anonymous `<ac:parameter><ri:page/></ac:parameter>` inside `include` /
   `excerpt-include` is emitted without an `ac:name=""` attribute to
   match the source format byte-for-byte.
+- `confluenceToHtml` terminates only when `body_html` contains no raw
+  `ac:structured-macro` (#1438). Each pass uses static DOM snapshots, so
+  replacing an outer macro can clone a nested macro after that nested macro's
+  handler snapshot has gone stale. The converter therefore repeats to a fixed
+  point while requiring the raw macro count to decrease strictly on every
+  pass. A cloned macro with a dedicated handler remains raw until the next pass
+  rather than being downgraded to the catch-all. No progress throws instead of
+  returning partial HTML or deleting the malformed macro.
 - Every macro with no dedicated handler falls through to the catch-all
   `div.confluence-macro-unknown` placeholder (#865). It also round-trips:
   `data-macro-name` restores `ac:name`, and text-valued `ac:parameter`s are
@@ -592,6 +601,11 @@ Exception: a legacy section/column nested inside a `td`, `th`, `li`,
 `blockquote`, or panel div **stays opaque-frozen** — a boundary token line
 inside such a construct would be ripped out of it by the token
 normalization, e.g. splitting a GFM table row.)
+Native `panel` nodes are also opaque-frozen: they reuse the visual
+`div.panel-info` shape, while `data-macro-name="panel"` and
+`data-macro-params` are the only lossless record of their identity and
+arbitrary parameters. Nested media travels inside that single capture rather
+than receiving a second token.
 
 `assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
 caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).
