@@ -21,6 +21,7 @@ import {
   formatWikiMetadataCallout,
   type NotionBlock,
 } from './notion-block-converter.js';
+import { extractParentRelationId } from './notion-tree.js';
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
 
 export class NotionImportError extends Error {
@@ -113,11 +114,11 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   ]);
   applyChildPageHosts(toPersist, alreadyImported);
   await resolveRemainingBlockParents(input.client, toPersist, alreadyImported, selectedKeys);
+
   const ordered = topoBySelectedParent(
     toPersist,
     new Set(toPersist.map((j) => normalizeNotionId(j.id))),
   );
-
   for (const job of ordered) {
     let localPageId: number | undefined = job.reuseId;
     try {
@@ -467,11 +468,15 @@ function topoBySelectedParent<T extends { id: string; parentNotionId: string | n
 }
 
 function parentPageIdOf(page: Record<string, unknown>): string | null {
+  const relationParent = extractParentRelationId(page);
+  if (relationParent) return relationParent;
+
   const parent = isRecord(page.parent) ? page.parent : null;
   if (!parent || typeof parent.type !== 'string') return null;
   if (parent.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
   return null;
 }
+
 
 export interface ExtractedWikiProperties {
   author: string | null;

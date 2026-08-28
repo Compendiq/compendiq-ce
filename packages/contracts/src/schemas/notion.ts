@@ -26,6 +26,9 @@ export type NotionTreePageNode = {
   title: string;
   type: 'page';
   selectable: true;
+  alreadyImported?: boolean;
+  localPageId?: number;
+  isDatabaseRow?: boolean;
   url?: string;
   children: NotionTreeNode[];
 };
@@ -53,6 +56,9 @@ export const NotionTreeNodeSchema: z.ZodType<NotionTreeNode> = z.lazy(() =>
         title: z.string(),
         type: z.literal('page'),
         selectable: z.literal(true),
+        alreadyImported: z.boolean().optional(),
+        localPageId: z.number().int().positive().optional(),
+        isDatabaseRow: z.boolean().optional(),
         url: z.string().optional(),
         children: z.array(NotionTreeNodeSchema),
       })

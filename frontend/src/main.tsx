@@ -11,6 +11,12 @@ import { createQueryClient } from './shared/lib/query-client';
 import { installPointerEventBridge } from './shared/lib/pointer-event-bridge';
 import './index.css';
 
+// Auto-recover from stale chunks when a new deployment updates asset hashes.
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault();
+  window.location.reload();
+});
+
 // Restore pointer-based interactions (Radix menus, drag) for input environments
 // that emit only legacy mouse events and no Pointer Events. Tears itself down the
 // moment any real pointer event is seen, so normal input is entirely unaffected.

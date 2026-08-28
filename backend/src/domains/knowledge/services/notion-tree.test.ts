@@ -540,4 +540,69 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(nodes[0]).toMatchObject({ id: 'handbook', selectable: true });
     expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
+
+  it('attaches wiki sub-items to their parent page via relation property', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'linux-wiki',
+          title: richTitle('Linux'),
+          parent: { type: 'workspace', workspace: true },
+        },
+        {
+          object: 'page',
+          id: 'ansible',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: titleProp('Ansible Playbooks'),
+        },
+        {
+          object: 'page',
+          id: 'modules',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: {
+            ...titleProp('Modules'),
+            'Parent item': {
+              type: 'relation',
+              relation: [{ id: 'ansible' }],
+            },
+          },
+        },
+      ],
+    });
+
+    const linux = findById(nodes as TreeNode[], 'linux-wiki');
+    expect(linux).toBeDefined();
+    expect(linux?.children.map((c) => c.id)).toContain('ansible');
+    const ansible = findById(linux?.children ?? [], 'ansible');
+    expect(ansible).toBeDefined();
+    expect(ansible?.children.map((c) => c.id)).toContain('modules');
+  });
+
+  it('fetches a missing parent database on-demand and attaches children to it', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      databases: {
+        'linux-wiki': {
+          object: 'database',
+          id: 'linux-wiki',
+          title: richTitle('Linux'),
+          parent: { type: 'workspace', workspace: true },
+        },
+      },
+      searchResults: [
+        {
+          object: 'page',
+          id: 'tmux',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: titleProp('TMUX'),
+        },
+      ],
+    });
+
+    const linux = findById(nodes as TreeNode[], 'linux-wiki');
+    expect(linux).toBeDefined();
+    expect(linux?.children.map((c) => c.id)).toContain('tmux');
+  });
 });

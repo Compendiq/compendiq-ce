@@ -290,6 +290,58 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(nested.rows[0]!.parent_id).toBe(String(host.rows[0]!.id));
     expect(nested.rows[0]!.parent_id).not.toBe(String(destId));
   });
+  it('nests a wiki sub-item under its parent page via relation property', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ansible: {
+          object: 'page',
+          id: 'ansible',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: titleProp('Ansible Playbooks'),
+        },
+        modules: {
+          object: 'page',
+          id: 'modules',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: {
+            ...titleProp('Modules'),
+            'Parent item': {
+              type: 'relation',
+              relation: [{ id: 'ansible' }],
+            },
+          },
+        },
+      },
+      blockChildren: {
+        ansible: [paragraph('a1', 'ansible body')],
+        modules: [paragraph('m1', 'modules body')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['ansible', 'modules'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    expect(items.every((i) => i.status === 'success')).toBe(true);
+    const ansible = await query<{ id: number }>('SELECT id FROM pages WHERE notion_page_id = $1', ['ansible']);
+    const modules = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE notion_page_id = $1',
+      ['modules'],
+    );
+    expect(modules.rows[0]!.parent_id).toBe(String(ansible.rows[0]!.id));
+  });
+
 
   it('skips databases in the payload without stubbing a page and continues the run', async () => {
     const client = await start({

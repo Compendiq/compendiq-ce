@@ -16,17 +16,24 @@ import { cn } from '../../../shared/lib/cn';
 import { LocationPicker, type LocationSelection } from '../../../shared/components/LocationPicker';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import {
+  calculateBatchCount,
   canContinueNotionPick,
+  chunkPageIds,
+  documentPageIds,
   exceedsImportPageCap,
+  filterTreeNodes,
   formatConfirmCopy,
+  formatNodeBadge,
   groupSelectionState,
   isSelectablePage,
   NOTION_IMPORT_MAX_PAGES,
+  selectableIdsInGroup,
   selectablePageIds,
   notionTitleById,
   shouldCommitImportResult,
   summarizeImport,
   toggleSelectedPageGroup,
+  unimportedPageIds,
   type NotionImportStep,
 } from './notion-import-selection';
 import {
@@ -58,11 +65,17 @@ export function NotionImportPickFooter({
   onContinue: () => void;
 }) {
   const overPageCap = exceedsImportPageCap(importCount);
+  const batchCount = calculateBatchCount(importCount);
   return (
     <>
       {overPageCap ? (
         <p data-testid="notion-import-page-cap" className="mr-auto text-xs text-muted-foreground">
           Select at most {NOTION_IMPORT_MAX_PAGES} pages.
+        </p>
+      ) : importCount > 0 ? (
+        <p className="mr-auto text-xs text-muted-foreground">
+          {importCount} page{importCount === 1 ? '' : 's'} selected
+          {batchCount > 1 ? ` · ${batchCount} batches` : ''}
         </p>
       ) : null}
       <button type="button" className="nm-button-ghost h-8 px-3 text-xs" onClick={onCancel}>
@@ -74,7 +87,7 @@ export function NotionImportPickFooter({
         disabled={!canContinueNotionPick(importCount) || importPending}
         onClick={onContinue}
       >
-        Continue
+        {batchCount > 1 ? `Continue (${batchCount} batches)` : 'Continue'}
       </button>
     </>
   );
@@ -127,10 +140,13 @@ function TreeNodeRow({
   onToggleExpanded: (id: string) => void;
 }) {
   const selectable = isSelectablePage(node);
+  const groupIds = selectableIdsInGroup(node);
+  const selectableCount = groupIds.length;
   const hasChildren = node.children.length > 0;
   const isExpanded = hasChildren && expandedIds.has(node.id);
   const selectionState = groupSelectionState(node, selected);
   const checkboxRef = useRef<HTMLInputElement | null>(null);
+  const badgeLabel = formatNodeBadge(node);
 
   useEffect(() => {
     if (checkboxRef.current) checkboxRef.current.indeterminate = selectionState === 'some';
@@ -178,10 +194,56 @@ function TreeNodeRow({
               aria-label={node.title}
             />
             <span className="min-w-0 break-words text-foreground">{node.title}</span>
+            {node.isDatabaseRow ? (
+              <span
+                className="inline-flex items-center rounded border border-border/40 bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                title="Row in a Notion database"
+              >
+                Row
+              </span>
+            ) : null}
+            {node.alreadyImported ? (
+              <span
+                data-testid={`notion-imported-badge-${node.id}`}
+                className="inline-flex items-center gap-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+              >
+                <Check size={11} aria-hidden />
+                Imported
+              </span>
+            ) : null}
+          </label>
+        ) : selectableCount > 0 ? (
+          <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
+            <input
+              ref={checkboxRef}
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-border-interactive accent-primary"
+              checked={selectionState === 'all'}
+              disabled={locked}
+              onChange={() => onToggle(node)}
+              onKeyDown={handleTreeKeyDown}
+              aria-label={`Select all ${selectableCount} pages in ${node.title}`}
+            />
+            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+              <span className="min-w-0 break-words font-medium text-foreground">{node.title}</span>
+              {badgeLabel ? (
+                <span className="inline-flex items-center rounded border border-border/70 bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  {badgeLabel}
+                </span>
+              ) : null}
+              <span className="text-xs text-muted-foreground">
+                Database stays in Notion · {selectableCount} page{selectableCount === 1 ? '' : 's'} can be imported
+              </span>
+            </div>
           </label>
         ) : (
           <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span className="text-muted-foreground">{node.title}</span>
+            {badgeLabel ? (
+              <span className="inline-flex items-center rounded border border-border/50 bg-muted/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                {badgeLabel}
+              </span>
+            ) : null}
             <span className="text-xs text-muted-foreground">{node.skipReason}</span>
           </div>
         )}
@@ -230,7 +292,14 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [visibleRootCount, setVisibleRootCount] = useState(NOTION_ROOT_BATCH_SIZE);
   const [selectionLimitMessage, setSelectionLimitMessage] = useState<string | null>(null);
-
+  const [hideImported, setHideImported] = useState(false);
+  const [hideDatabaseRows, setHideDatabaseRows] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+    processed: number;
+    totalPages: number;
+  } | null>(null);
   const stepRef = useRef(step);
   const setStep = useCallback((next: NotionImportStep) => {
     stepRef.current = next;
@@ -286,13 +355,16 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   }, [nodes]);
   const summary = useMemo(() => summarizeImport(nodes, selected), [nodes, selected]);
   const confirmCopy = formatConfirmCopy(summary);
-  const visibleNodes = nodes.slice(0, visibleRootCount);
-  const remainingRootCount = Math.max(0, nodes.length - visibleRootCount);
+  const filteredNodes = useMemo(
+    () => filterTreeNodes(nodes, { hideImported, hideDatabaseRows }),
+    [nodes, hideImported, hideDatabaseRows],
+  );
+  const visibleNodes = filteredNodes.slice(0, visibleRootCount);
+  const remainingRootCount = Math.max(0, filteredNodes.length - visibleRootCount);
 
   useEffect(() => {
     setVisibleRootCount(NOTION_ROOT_BATCH_SIZE);
   }, [nodes]);
-
   const showMoreRoots = useCallback(() => {
     setVisibleRootCount((count) => Math.min(nodes.length, count + NOTION_ROOT_BATCH_SIZE));
   }, [nodes.length]);
@@ -359,21 +431,78 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
   const handleImport = async () => {
     if (importPending || !spaceKey || summary.importIds.length === 0) return;
+    const batches = chunkPageIds(summary.importIds);
+    const allItems: NotionImportItem[] = [];
+    let processed = 0;
+
+    setBatchProgress({
+      current: 1,
+      total: batches.length,
+      processed: 0,
+      totalPages: summary.importIds.length,
+    });
+
     try {
-      const response = await runImport.mutateAsync({
-        pageIds: summary.importIds,
-        spaceKey,
-        parentId,
-        visibility,
-      });
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i]!;
+        setBatchProgress({
+          current: i + 1,
+          total: batches.length,
+          processed,
+          totalPages: summary.importIds.length,
+        });
+
+        const response = await runImport.mutateAsync({
+          pageIds: batch,
+          spaceKey,
+          parentId,
+          visibility,
+        });
+
+        allItems.push(...response.items);
+        processed += batch.length;
+      }
+
       if (!shouldCommitImportResult(stepRef.current, openRef.current)) return;
       restoreFocusAfterImport.current = true;
-      setResultItems(response.items);
+      setResultItems(allItems);
       setStep('result');
     } catch (err) {
+      if (allItems.length > 0) {
+        setResultItems(allItems);
+        setStep('result');
+      }
       toast.error(errorMessage(err));
+    } finally {
+      setBatchProgress(null);
     }
   };
+  const handleSelectPagesOnly = useCallback(() => {
+    if (runImport.isPending) return;
+    const docIds = documentPageIds(nodes, hideImported);
+    setSelected(new Set(docIds));
+  }, [nodes, hideImported, runImport.isPending]);
+
+  const handleSelectAll = useCallback(() => {
+    if (runImport.isPending) return;
+    const allIds = hideDatabaseRows
+      ? documentPageIds(nodes, hideImported)
+      : hideImported
+        ? unimportedPageIds(nodes)
+        : selectablePageIds(nodes, new Set(nodes.map((n) => n.id)));
+    setSelected(new Set(allIds));
+  }, [nodes, hideImported, hideDatabaseRows, runImport.isPending]);
+
+  const handleSelectUnimported = useCallback(() => {
+    if (runImport.isPending) return;
+    const unimported = unimportedPageIds(nodes);
+    setSelected(new Set(unimported));
+  }, [nodes, runImport.isPending]);
+
+  const handleClearSelection = useCallback(() => {
+    if (runImport.isPending) return;
+    setSelected(new Set());
+  }, [runImport.isPending]);
 
   const handleLocationSelect = useCallback((selection: LocationSelection) => {
     setParentId(selection.parentId);
@@ -572,6 +701,65 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="nm-button-ghost h-7 px-2 text-xs font-medium"
+                          onClick={handleSelectPagesOnly}
+                          disabled={importPending}
+                          title="Select all standard document pages, excluding database rows"
+                        >
+                          Pages only (no DB rows)
+                        </button>
+                        <button
+                          type="button"
+                          className="nm-button-ghost h-7 px-2 text-xs"
+                          onClick={handleSelectUnimported}
+                          disabled={importPending}
+                        >
+                          Select unimported
+                        </button>
+                        <button
+                          type="button"
+                          className="nm-button-ghost h-7 px-2 text-xs"
+                          onClick={handleSelectAll}
+                          disabled={importPending}
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          className="nm-button-ghost h-7 px-2 text-xs text-muted-foreground"
+                          onClick={handleClearSelection}
+                          disabled={importPending || selected.size === 0}
+                        >
+                          Deselect all
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground select-none">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-border-interactive accent-primary"
+                            checked={hideDatabaseRows}
+                            onChange={(e) => setHideDatabaseRows(e.target.checked)}
+                            disabled={importPending}
+                          />
+                          <span>Exclude database rows</span>
+                        </label>
+                        <label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground select-none">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-border-interactive accent-primary"
+                            checked={hideImported}
+                            onChange={(e) => setHideImported(e.target.checked)}
+                            disabled={importPending}
+                          />
+                          <span>Hide imported</span>
+                        </label>
+                      </div>
+                    </div>
                     {treeFailed && treeHasCache ? (
                       <div
                         role="status"
@@ -627,6 +815,27 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
 
             {step === 'confirm' && (
               <div className="space-y-4">
+                {batchProgress && (
+                  <div className="space-y-1.5 rounded-md border border-primary/30 bg-primary/5 p-3" role="status">
+                    <div className="flex items-center justify-between text-xs text-foreground">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        <Loader2 size={12} className="animate-spin text-primary" aria-hidden />
+                        Importing batch {batchProgress.current} of {batchProgress.total}…
+                      </span>
+                      <span className="font-mono text-muted-foreground">
+                        {batchProgress.processed} / {batchProgress.totalPages} pages
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-primary transition-all duration-300"
+                        style={{
+                          width: `${Math.round((batchProgress.processed / batchProgress.totalPages) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
                 <p data-testid="notion-import-confirm-copy" className="text-sm text-foreground">
                   {confirmCopy}
                 </p>
