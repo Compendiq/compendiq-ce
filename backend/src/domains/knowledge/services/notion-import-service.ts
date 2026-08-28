@@ -426,7 +426,30 @@ async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<N
   for (const item of raw) {
     if (!isRecord(item) || typeof item.type !== 'string') continue;
     const block = item as NotionBlock;
-    if (block.has_children === true && typeof block.id === 'string' && !NO_RECURSE_TYPES.has(block.type)) {
+    if (block.type === 'child_database' && typeof block.id === 'string') {
+      try {
+        const searchRes = await client.search({
+          filter: { property: 'object', value: 'page' },
+        });
+        const rows = searchRes.results.filter(
+          (it) =>
+            it.parent &&
+            typeof it.parent === 'object' &&
+            (it.parent as { database_id?: string }).database_id === block.id,
+        );
+        try {
+          const dbDef = await client.getDatabase(block.id);
+          if (dbDef && isRecord(dbDef.properties)) {
+            block.databaseColumns = Object.keys(dbDef.properties);
+          }
+        } catch {
+          // ignore
+        }
+        block.databaseRows = rows;
+      } catch {
+        // ignore
+      }
+    } else if (block.has_children === true && typeof block.id === 'string' && !NO_RECURSE_TYPES.has(block.type)) {
       block.children = await fetchBlocksDeep(client, block.id);
     }
     out.push(block);

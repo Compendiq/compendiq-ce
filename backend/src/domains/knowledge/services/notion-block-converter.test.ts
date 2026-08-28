@@ -244,6 +244,40 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyHtml).toContain('<a href="/pages/7">Nested notes</a>');
   });
 
+  it('renders child_database with attached rows into an HTML table on the host page', () => {
+    const result = convert([
+      {
+        id: 'db-1',
+        type: 'child_database',
+        child_database: { title: 'Ports' },
+        databaseColumns: ['Port', 'Service'],
+        databaseRows: [
+          {
+            properties: {
+              Port: { type: 'number', number: 22 },
+              Service: { type: 'title', title: [{ plain_text: 'SSH' }] },
+            },
+          },
+          {
+            properties: {
+              Port: { type: 'number', number: 80 },
+              Service: { type: 'title', title: [{ plain_text: 'HTTP' }] },
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(result.bodyHtml).toContain('<h3>Ports</h3>');
+    expect(result.bodyHtml).toContain('<table>');
+    expect(result.bodyHtml).toContain('<th>Port</th>');
+    expect(result.bodyHtml).toContain('<th>Service</th>');
+    expect(result.bodyHtml).toContain('<td>22</td>');
+    expect(result.bodyHtml).toContain('<td>SSH</td>');
+    expect(result.bodyHtml).toContain('<td>80</td>');
+    expect(result.bodyHtml).toContain('<td>HTTP</td>');
+  });
+
   it('skips unsupported blocks without flattening or stubbing them, and lists them in the report', () => {
     const result = convert([
       block('p', 'paragraph', { rich_text: [rich('Keep')] }),
