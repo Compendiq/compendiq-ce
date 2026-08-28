@@ -1511,9 +1511,13 @@ out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
 ### In-app encrypted backup (#1420)
 
 Settings → **Backup & Recovery** (admin) streams a gzip+AES-256-GCM archive of
-`pg_dump -Fc` plus `ATTACHMENTS_DIR`. Backup generation remains constant-memory:
-the backend does not buffer a complete dump, attachment, or archive, and it
-does not report success until `pg_dump` closes with exit code `0`.
+`pg_dump -Fc` plus `ATTACHMENTS_DIR`. Before it enumerates attachment files,
+the exporter opens a read-only repeatable-read PostgreSQL transaction, exports
+its snapshot, and passes that snapshot to `pg_dump`. It keeps the exporting
+transaction open until `pg_dump` has exited, then closes and returns the pooled
+connection. Backup generation remains constant-memory: the backend does not
+buffer a complete dump, attachment, or archive, and it does not report success
+until `pg_dump` closes with exit code `0`.
 
 - **Download:** the authenticated admin request creates a 256-bit Redis ticket
   with a 30-second TTL, then the browser performs native navigation to the
@@ -1582,10 +1586,13 @@ PostgreSQL and live attachments unchanged and remove staging.
 
 Commit renames the previous attachment tree aside, installs the staged tree,
 and runs `pg_restore --clean --if-exists --no-owner --no-acl
---single-transaction`, followed by the shipped database migrations. If
-`pg_restore` fails, the replacement attachment tree is removed and the
-previous tree is restored; the secure staging directory remains beside
-`ATTACHMENTS_DIR` for diagnosis and must be removed after recovery.
+--single-transaction`, followed by the shipped database migrations. Before
+reporting success, it changes any `backup_runs` row restored with status
+`running` to `failed`, sets its finish time, and records `Backup interrupted by
+restore`; the live source row is never changed before restore. If `pg_restore`
+fails, the replacement attachment tree is removed and the previous tree is
+restored; the secure staging directory remains beside `ATTACHMENTS_DIR` for
+diagnosis and must be removed after recovery.
 
 **Migration-failure boundary:** `pg_restore` has already committed its single
 transaction and the restored attachments remain live before migrations run.

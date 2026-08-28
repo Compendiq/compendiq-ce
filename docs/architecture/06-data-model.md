@@ -365,7 +365,10 @@ drives the admin history/status view. Its destination constraint also admits
 `audit_log`. The row stores lifecycle status, byte count, S3 object key, error,
 and trigger attribution. `triggered_by` is deliberately nullable text rather
 than a user foreign key so scheduled runs and historical actor identifiers
-remain representable.
+remain representable. Because an in-flight S3 archive necessarily snapshots
+its own row as `running`, offline restore reconciles every restored `running`
+row to `failed` with a finish time and the error `Backup interrupted by restore`
+after migrations and before reporting restore success.
 
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).

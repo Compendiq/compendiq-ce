@@ -35,6 +35,7 @@ export interface FakeNotionState {
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
   /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
   files?: Record<string, { contentType: string; body: Buffer | string }>;
+  beforeFileResponse?: (path: string) => Promise<void>;
 }
 
 export interface FakeNotionServer {
@@ -218,6 +219,7 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const file = state.files?.[path] ?? state.files?.[url.split('?')[0] ?? path];
     if (method === 'GET' && file) {
+      await state.beforeFileResponse?.(path);
       const bytes = typeof file.body === 'string' ? Buffer.from(file.body) : file.body;
       res.statusCode = 200;
       res.setHeader('Content-Type', file.contentType);

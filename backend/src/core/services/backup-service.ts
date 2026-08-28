@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import {
   acquireWorkerLock,
@@ -83,6 +83,52 @@ interface AttachmentFile {
   size: number;
 }
 
+export interface SnapshotClient {
+  query(sql: string): Promise<{ rows: Array<{ snapshot?: string }> }>;
+  release(): void;
+}
+
+export interface SnapshotPool {
+  connect(): Promise<SnapshotClient>;
+}
+
+export interface ExportedPostgresSnapshot {
+  id: string;
+  close(): Promise<void>;
+}
+
+export async function exportPostgresSnapshot(
+  pool: SnapshotPool = getPool(),
+): Promise<ExportedPostgresSnapshot> {
+  const client = await pool.connect();
+  let began = false;
+  try {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    began = true;
+    const result = await client.query('SELECT pg_export_snapshot() AS snapshot');
+    const id = result.rows[0]?.snapshot;
+    if (!id) throw new BackupDumpError('PostgreSQL did not return an exported snapshot');
+
+    let closed = false;
+    return {
+      id,
+      async close() {
+        if (closed) return;
+        closed = true;
+        try {
+          await client.query('COMMIT');
+        } finally {
+          client.release();
+        }
+      },
+    };
+  } catch (error) {
+    if (began) await client.query('ROLLBACK').catch(() => undefined);
+    client.release();
+    throw error;
+  }
+}
+
 async function listAttachmentFiles(root: string): Promise<AttachmentFile[]> {
   try {
     const entries = await readdir(root, { recursive: true, withFileTypes: true });
@@ -107,16 +153,71 @@ async function listAttachmentFiles(root: string): Promise<AttachmentFile[]> {
 export function spawnPgDump(
   postgresUrl: string,
   spawnFn: typeof spawn = spawn,
+  snapshot?: string,
 ): ChildProcess {
+  const snapshotArgs = snapshot ? [`--snapshot=${snapshot}`] : [];
   return spawnFn(
     'pg_dump',
-    ['--format=custom', '--no-owner', '--no-acl', `--dbname=${postgresUrl}`],
+    ['--format=custom', '--no-owner', '--no-acl', ...snapshotArgs, `--dbname=${postgresUrl}`],
     { stdio: ['ignore', 'pipe', 'pipe'] },
   );
 }
 
+interface PgDumpLifecycle {
+  closed: boolean;
+  closePromise: Promise<void>;
+  termination?: Promise<void>;
+}
+
+const pgDumpLifecycles = new WeakMap<ChildProcess, PgDumpLifecycle>();
+
+function pgDumpLifecycle(child: ChildProcess): PgDumpLifecycle {
+  const existing = pgDumpLifecycles.get(child);
+  if (existing) return existing;
+  let markClosed: (() => void) | undefined;
+  const closePromise = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+  const lifecycle: PgDumpLifecycle = {
+    closed: false,
+    closePromise,
+  };
+  child.once('close', () => {
+    lifecycle.closed = true;
+    markClosed?.();
+  });
+  pgDumpLifecycles.set(child, lifecycle);
+  return lifecycle;
+}
+
+function gracePeriod(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref();
+  });
+}
+
+export function terminatePgDumpAndWait(
+  child: ChildProcess,
+  graceMs = 5_000,
+): Promise<void> {
+  const lifecycle = pgDumpLifecycle(child);
+  if (lifecycle.closed) return Promise.resolve();
+  if (lifecycle.termination) return lifecycle.termination;
+  lifecycle.termination = (async () => {
+    child.kill('SIGTERM');
+    await Promise.race([lifecycle.closePromise, gracePeriod(graceMs)]);
+    if (!lifecycle.closed) {
+      child.kill('SIGKILL');
+      await lifecycle.closePromise;
+    }
+  })();
+  return lifecycle.termination;
+}
+
 export function dumpStreamFromProcess(child: ChildProcess): Readable {
   if (!child.stdout) throw new BackupDumpError('pg_dump stdout is not piped');
+  const lifecycle = pgDumpLifecycle(child);
 
   const stderrChunks: Buffer[] = [];
   let stderrBytes = 0;
@@ -124,7 +225,7 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   let childClosed = false;
   let exitCode: number | null = null;
   let completed = false;
-  let terminated = false;
+  let cancellationStarted = false;
   let exitError: BackupDumpError | undefined;
 
   const updateExitError = () => {
@@ -175,7 +276,7 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
   child.on('close', (code) => {
     childClosed = true;
     exitCode = code;
-    if (code !== 0) {
+    if (code !== 0 && !cancellationStarted && !lifecycle.termination) {
       exitError = new BackupDumpError('');
       updateExitError();
       out.destroy(exitError);
@@ -184,10 +285,10 @@ export function dumpStreamFromProcess(child: ChildProcess): Readable {
     maybeComplete();
   });
   out.on('close', () => {
-    if (completed || terminated) return;
-    terminated = true;
+    if (completed || cancellationStarted || lifecycle.closed) return;
+    cancellationStarted = true;
     child.stdout?.destroy();
-    child.kill('SIGTERM');
+    void terminatePgDumpAndWait(child);
   });
 
   return out;
@@ -240,13 +341,21 @@ export async function isBackupLockHeld(): Promise<boolean> {
   return isWorkerLocked(BACKUP_LOCK_NAME);
 }
 
+
+export interface CreateEncryptedBackupOptions {
+  spawnFn?: typeof spawn;
+  attachmentsRoot?: string;
+  snapshotPool?: SnapshotPool;
+}
 export async function createEncryptedBackupStream(
   secret: BackupSecret,
+  options: CreateEncryptedBackupOptions = {},
 ): Promise<EncryptedBackupStream> {
   const token = await acquireWorkerLock(BACKUP_LOCK_NAME, LOCK_TTL_SECONDS, { failClosed: true });
   if (!token) throw new BackupLockError();
 
   let child: ChildProcess | undefined;
+  let snapshot: ExportedPostgresSnapshot | undefined;
   const timer = setInterval(() => {
     refreshWorkerLock(BACKUP_LOCK_NAME, token, LOCK_TTL_SECONDS).catch((err: unknown) => {
       logger.warn({ err }, 'Failed to refresh backup lock');
@@ -254,13 +363,16 @@ export async function createEncryptedBackupStream(
   }, LOCK_REFRESH_MS);
   timer.unref();
 
-  let released = false;
+  let releasePromise: Promise<void> | undefined;
   const release = () => {
-    if (released) return;
-    released = true;
+    if (releasePromise) return releasePromise;
     clearInterval(timer);
-    child?.kill('SIGTERM');
-    void releaseWorkerLock(BACKUP_LOCK_NAME, token);
+    releasePromise = (async () => {
+      if (child) await terminatePgDumpAndWait(child);
+      await snapshot?.close();
+      await releaseWorkerLock(BACKUP_LOCK_NAME, token);
+    })();
+    return releasePromise;
   };
 
   try {
@@ -271,16 +383,21 @@ export async function createEncryptedBackupStream(
     const createdAt = new Date().toISOString();
     const schemaMigration = await latestSchemaMigration();
     const patFingerprint = fingerprintPatEncryptionKey(process.env.PAT_ENCRYPTION_KEY ?? '');
-    const files = await listAttachmentFiles(attachmentsRoot());
-    child = spawnPgDump(postgresUrl);
+    snapshot = await exportPostgresSnapshot(options.snapshotPool);
+    const files = await listAttachmentFiles(options.attachmentsRoot ?? attachmentsRoot());
+    child = spawnPgDump(postgresUrl, options.spawnFn ?? spawn, snapshot.id);
     const dump = dumpStreamFromProcess(child);
     const packed = packArchive(backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }));
     const encrypted = encryptBackupStream(packed, secret);
-    encrypted.once('close', release);
-    encrypted.once('error', release);
+    encrypted.once('close', () => {
+      void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
+    });
+    encrypted.once('error', () => {
+      void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
+    });
     return { stream: encrypted, filename };
   } catch (err) {
-    release();
+    await release();
     throw err;
   }
 }

@@ -302,8 +302,8 @@ describe('BackupTab (#1420)', () => {
       }
       if (url.endsWith('/admin/backup') && method === 'GET') {
         statusGets += 1;
-        if (statusGets === 1) return jsonResponse(READY_STATUS);
-        const running = statusGets === 2;
+        if (statusGets <= 2) return jsonResponse(READY_STATUS);
+        const running = statusGets === 3;
         return jsonResponse({
           ...READY_STATUS,
           history: [
@@ -327,7 +327,11 @@ describe('BackupTab (#1420)', () => {
     render(<BackupTab />, { wrapper: wrapper() });
     fireEvent.click(await screen.findByTestId('backup-run-now-btn'));
     await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(2));
-    expect(screen.getByTestId('backup-history')).toHaveTextContent('running');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_100);
+    });
+    await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(screen.getByTestId('backup-history')).toHaveTextContent('running'));
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_100);
@@ -339,6 +343,41 @@ describe('BackupTab (#1420)', () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(statusGets).toBe(settledGets);
+  });
+
+  it('bounds polling for a queued job that never creates a run to 60 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let statusGets = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = requestUrl(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/admin/backup/run') && method === 'POST') {
+        return jsonResponse({ jobId: 'job-never-starts' });
+      }
+      if (url.endsWith('/admin/backup') && method === 'GET') {
+        statusGets += 1;
+        return jsonResponse(READY_STATUS);
+      }
+      return new Response('Not found', { status: 404 });
+    });
+
+    render(<BackupTab />, { wrapper: wrapper() });
+    fireEvent.click(await screen.findByTestId('backup-run-now-btn'));
+    await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(2));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_000);
+    });
+    expect(statusGets).toBeGreaterThan(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    const boundedGets = statusGets;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(statusGets).toBe(boundedGets);
   });
 
   it('saves S3 endpoint via PUT', async () => {

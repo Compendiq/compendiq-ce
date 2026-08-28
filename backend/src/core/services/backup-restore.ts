@@ -7,7 +7,7 @@ import path from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { runMigrations } from '../db/postgres.js';
+import { query, runMigrations } from '../db/postgres.js';
 import { parseBackupManifest, type BackupManifest } from './backup-manifest.js';
 import {
   decryptBackupStream,
@@ -21,6 +21,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_RESTORE_STDERR_BYTES = 4096;
+export const RESTORED_RUNNING_BACKUP_ERROR = 'Backup interrupted by restore';
 
 export class BackupRestoreError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -42,6 +43,7 @@ export interface CommitBackupOptions {
   postgresUrl: string;
   spawnFn?: typeof spawn;
   runMigrationsFn?: () => Promise<void>;
+  queryFn?: (sql: string, params?: unknown[]) => Promise<unknown>;
 }
 
 export interface ValidatedBackupStage {
@@ -293,6 +295,19 @@ async function restoreAttachmentsAfterFailure(
   if (hasRollback) await rename(rollbackPath, attachmentsRoot);
 }
 
+export async function reconcileInterruptedBackupRuns(
+  queryFn: (sql: string, params?: unknown[]) => Promise<unknown> = query,
+): Promise<void> {
+  await queryFn(
+    `UPDATE backup_runs
+        SET status = 'failed',
+            finished_at = NOW(),
+            error = $1
+      WHERE status = 'running'`,
+    [RESTORED_RUNNING_BACKUP_ERROR],
+  );
+}
+
 export async function commitValidatedBackup(
   stage: ValidatedBackupStage,
   opts: CommitBackupOptions,
@@ -335,6 +350,16 @@ export async function commitValidatedBackup(
     const message = error instanceof Error ? error.message : String(error);
     throw new BackupRestoreError(
       `Database restore succeeded but migrations failed: ${message}. Attachment rollback retained at ${rollbackPath}; restore staging retained at ${stage.root}`,
+      { cause: error },
+    );
+  }
+
+  try {
+    await reconcileInterruptedBackupRuns(opts.queryFn);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new BackupRestoreError(
+      `Database restore succeeded but backup history reconciliation failed: ${message}. Attachment rollback retained at ${rollbackPath}; restore staging retained at ${stage.root}`,
       { cause: error },
     );
   }

@@ -1,15 +1,52 @@
-import { type ChildProcess } from 'node:child_process';
+import { type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough, type Readable } from 'node:stream';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockQuery = vi.fn();
+const {
+  mockQuery,
+  mockGetPool,
+  mockAcquireWorkerLock,
+  mockRefreshWorkerLock,
+  mockReleaseWorkerLock,
+} = vi.hoisted(() => ({
+  mockQuery: vi.fn(),
+  mockGetPool: vi.fn(),
+  mockAcquireWorkerLock: vi.fn(),
+  mockRefreshWorkerLock: vi.fn(),
+  mockReleaseWorkerLock: vi.fn(),
+}));
 vi.mock('../db/postgres.js', () => ({
+  getPool: () => mockGetPool(),
   query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
 }));
+vi.mock('./redis-cache.js', () => ({
+  acquireWorkerLock: mockAcquireWorkerLock,
+  isWorkerLocked: vi.fn(),
+  refreshWorkerLock: mockRefreshWorkerLock,
+  releaseWorkerLock: mockReleaseWorkerLock,
+}));
+vi.mock('./backup-settings.js', () => ({
+  getBackupRuntimeConfig: vi.fn(),
+  hasMasterBackupKey: vi.fn(() => true),
+  markBackupLastRun: vi.fn(),
+  requireMasterBackupKey: vi.fn(() => 'master-key-at-least-32-characters'),
+}));
+vi.mock('./backup-s3.js', () => ({
+  objectKeyFor: vi.fn(),
+  pruneBackupObjects: vi.fn(),
+  uploadBackupObject: vi.fn(),
+}));
 
-import { dumpStreamFromProcess, latestSchemaMigration } from './backup-service.js';
+import {
+  createEncryptedBackupStream,
+  dumpStreamFromProcess,
+  exportPostgresSnapshot,
+  latestSchemaMigration,
+  spawnPgDump,
+  terminatePgDumpAndWait,
+} from './backup-service.js';
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -31,6 +68,36 @@ function fakeChild() {
   return { process, stdout, stderr, kill };
 }
 
+function fakeSnapshotClient(snapshotId = '00000003-0000001B-1') {
+  const calls: string[] = [];
+  const release = vi.fn();
+  const client = {
+    query: vi.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('pg_export_snapshot')) return { rows: [{ snapshot: snapshotId }] };
+      return { rows: [] };
+    }),
+    release,
+  };
+  return { client, calls, release };
+}
+
+beforeEach(() => {
+  mockQuery.mockReset();
+  mockGetPool.mockReset();
+  mockAcquireWorkerLock.mockReset();
+  mockAcquireWorkerLock.mockResolvedValue('lock-token');
+  mockRefreshWorkerLock.mockReset();
+  mockRefreshWorkerLock.mockResolvedValue(undefined);
+  mockReleaseWorkerLock.mockReset();
+  mockReleaseWorkerLock.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  delete process.env.POSTGRES_URL;
+});
+
 describe('latestSchemaMigration', () => {
   it('reads the migration name recorded by the production migration runner', async () => {
     mockQuery.mockResolvedValueOnce({
@@ -42,6 +109,104 @@ describe('latestSchemaMigration', () => {
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringMatching(/SELECT name FROM _migrations ORDER BY name DESC/),
       undefined,
+    );
+  });
+});
+
+describe('exported PostgreSQL capture snapshot', () => {
+  it('exports repeatable-read state and closes the transaction and client exactly once', async () => {
+    const harness = fakeSnapshotClient();
+    const pool = { connect: vi.fn(async () => harness.client) };
+
+    const snapshot = await exportPostgresSnapshot(pool);
+    expect(snapshot.id).toBe('00000003-0000001B-1');
+    expect(harness.calls).toEqual([
+      'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      'SELECT pg_export_snapshot() AS snapshot',
+    ]);
+
+    await snapshot.close();
+    await snapshot.close();
+    expect(harness.calls).toEqual([
+      'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
+      'SELECT pg_export_snapshot() AS snapshot',
+      'COMMIT',
+    ]);
+    expect(harness.release).toHaveBeenCalledOnce();
+  });
+
+  it('passes the exported snapshot to pg_dump without changing existing callers', () => {
+    const spawnFn = vi.fn();
+    spawnPgDump('postgres://db', spawnFn, '00000003-0000001B-1');
+
+    expect(spawnFn).toHaveBeenCalledWith(
+      'pg_dump',
+      [
+        '--format=custom',
+        '--no-owner',
+        '--no-acl',
+        '--snapshot=00000003-0000001B-1',
+        '--dbname=postgres://db',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  });
+});
+
+describe('pg_dump cancellation lifecycle', () => {
+  it('escalates to SIGKILL after the bounded grace period and waits for close', async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    let settled = false;
+    const terminated = terminatePgDumpAndWait(child.process).finally(() => {
+      settled = true;
+    });
+
+    await nextEventLoopTurn();
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(settled).toBe(false);
+
+    child.process.emit('close', null, 'SIGKILL');
+    await terminated;
+    expect(settled).toBe(true);
+  });
+
+  it('keeps the backup lock and snapshot until cancelled pg_dump has exited', async () => {
+    vi.useFakeTimers();
+    process.env.POSTGRES_URL = 'postgres://db';
+    mockQuery.mockResolvedValue({ rows: [{ name: '107_backup_settings.sql' }] });
+    const snapshotHarness = fakeSnapshotClient();
+    const pool = { connect: vi.fn(async () => snapshotHarness.client) };
+    mockGetPool.mockReturnValue(pool);
+    const child = fakeChild();
+    const spawnFn = vi.fn(
+      (_command: string, _args: readonly string[], _options: SpawnOptions) => child.process,
+    );
+
+    const backup = await createEncryptedBackupStream(
+      { kind: 'master', keyMaterial: 'master-key-at-least-32-characters' },
+      { spawnFn, attachmentsRoot: '/definitely/missing', snapshotPool: pool },
+    );
+    backup.stream.destroy();
+    await nextEventLoopTurn();
+
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(mockReleaseWorkerLock).not.toHaveBeenCalled();
+    expect(snapshotHarness.calls).not.toContain('COMMIT');
+
+    child.process.emit('close', null, 'SIGTERM');
+    await nextEventLoopTurn();
+    await nextEventLoopTurn();
+
+    expect(snapshotHarness.calls).toContain('COMMIT');
+    expect(snapshotHarness.release).toHaveBeenCalledOnce();
+    expect(mockReleaseWorkerLock).toHaveBeenCalledOnce();
+    expect(snapshotHarness.release.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockReleaseWorkerLock.mock.invocationCallOrder[0]!,
     );
   });
 });

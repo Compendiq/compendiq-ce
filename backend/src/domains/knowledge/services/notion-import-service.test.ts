@@ -821,6 +821,63 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(count.rows[0]!.n).toBe('1');
   });
 
+  it('does not publish attachment references in PostgreSQL before their files exist', async () => {
+    const fileRequested = Promise.withResolvers<void>();
+    const releaseFile = Promise.withResolvers<void>();
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ordered: {
+          object: 'page',
+          id: 'ordered',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Ordered'),
+        },
+      },
+      files: {
+        '/files/ordered.png': { contentType: 'image/png', body: PNG },
+      },
+      blockChildren: { ordered: [] },
+      beforeFileResponse: async () => {
+        fileRequested.resolve();
+        await releaseFile.promise;
+      },
+    });
+    const imageUrl = `${server.baseUrl}/files/ordered.png`;
+    server.state.blockChildren = {
+      ordered: [{
+        object: 'block',
+        id: 'img-ordered',
+        type: 'image',
+        image: {
+          type: 'file',
+          file: { url: imageUrl },
+          caption: [],
+        },
+      }],
+    };
+
+    const importing = runNotionImport({
+      userId,
+      client,
+      pageIds: ['ordered'],
+      visibility: 'shared',
+    });
+    await fileRequested.promise;
+    const inFlight = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['ordered'],
+    );
+    releaseFile.resolve();
+    await importing;
+    expect(inFlight.rows[0]!.body_html).not.toContain('/api/local-attachments/');
+    const complete = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['ordered'],
+    );
+    expect(complete.rows[0]!.body_html).toContain('/api/local-attachments/');
+  });
+
   it('stores image bytes through the local attachment store', async () => {
     const client = await start({
       validToken: TOKEN,

@@ -43,6 +43,7 @@ interface RestoreHarness {
   existingAttachment: string;
   spawnFn: Mock;
   runMigrationsFn: Mock;
+  queryFn: Mock;
 }
 
 const workRoots = new Set<string>();
@@ -130,7 +131,8 @@ async function createHarness(exitCode = 0): Promise<RestoreHarness> {
   await writeFile(existingAttachment, ORIGINAL);
   const spawnFn = vi.fn(() => fakePgRestore(exitCode));
   const runMigrationsFn = vi.fn(async () => undefined);
-  return { workRoot, attachmentsRoot, existingAttachment, spawnFn, runMigrationsFn };
+  const queryFn = vi.fn(async () => ({ rows: [], rowCount: 1 }));
+  return { workRoot, attachmentsRoot, existingAttachment, spawnFn, runMigrationsFn, queryFn };
 }
 
 async function restore(
@@ -145,6 +147,7 @@ async function restore(
     postgresUrl: 'postgres://restore-test',
     spawnFn: harness.spawnFn as unknown as typeof spawn,
     runMigrationsFn: harness.runMigrationsFn,
+    queryFn: harness.queryFn,
     newestMigration: NEWEST_MIGRATION,
     ...overrides,
   });
@@ -399,6 +402,13 @@ describe('restoreBackup commit', () => {
       expect.anything(),
     );
     expect(harness.runMigrationsFn).toHaveBeenCalledOnce();
+    expect(harness.queryFn).toHaveBeenCalledWith(
+      expect.stringMatching(/UPDATE backup_runs[\s\S]*status = 'failed'[\s\S]*WHERE status = 'running'/),
+      ['Backup interrupted by restore'],
+    );
+    expect(harness.runMigrationsFn.mock.invocationCallOrder[0]!).toBeLessThan(
+      harness.queryFn.mock.invocationCallOrder[0]!,
+    );
     expect(await readFile(path.join(harness.attachmentsRoot, 'local/1/file.txt'), 'utf8')).toBe(
       'replacement',
     );

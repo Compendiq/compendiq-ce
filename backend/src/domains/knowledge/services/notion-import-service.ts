@@ -126,6 +126,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
         localPageId,
         importedPages,
       });
+      const hasAttachments = converted.attachments.length > 0;
       await persistStandalonePage({
         id: localPageId,
         reuse: Boolean(job.reuseId),
@@ -135,10 +136,16 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
         parentId: parentLocal,
         visibility: destination.visibility,
         notionPageId: job.id,
-        bodyHtml: converted.bodyHtml,
+        bodyHtml: hasAttachments ? '' : converted.bodyHtml,
         bodyText: converted.bodyText,
       });
       await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
+      if (hasAttachments) {
+        await query(
+          'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
+          [localPageId, converted.bodyHtml, converted.bodyText],
+        );
+      }
       importedPages.set(normalizeNotionId(job.id), localPageId);
       items.set(job.id, { notionPageId: job.id, status: 'success', localPageId });
     } catch (err) {

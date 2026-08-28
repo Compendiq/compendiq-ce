@@ -197,12 +197,15 @@ flowchart LR
     class pg,attachments,stage data
 ```
 
-The backend runtime image installs `postgresql17-client` so the online
-exporter can spawn `pg_dump`; no database or attachment payload is staged on
-the backend root filesystem. Restore is not an API and does not run inside the
-serving Fastify process. The operator launches the standalone source-tree CLI
-where `POSTGRES_URL` can reach PostgreSQL, `pg_restore` is installed, and the
-real `ATTACHMENTS_DIR` is mounted.
+The backend runtime image installs `postgresql17-client` in both CE and
+Enterprise runtimes so the online exporter can spawn `pg_dump`. The exporter
+creates a read-only repeatable-read PostgreSQL transaction, exports its
+snapshot, passes `--snapshot` to `pg_dump`, and only then enumerates attachment
+files; the transaction and pooled connection are closed after the child exits.
+No database or attachment payload is staged on the backend root filesystem.
+Restore is not an API and does not run inside the serving Fastify process. The
+operator launches the standalone source-tree CLI where `POSTGRES_URL` can reach
+PostgreSQL, `pg_restore` is installed, and the real `ATTACHMENTS_DIR` is mounted.
 
 The restore stage is a temporary directory under the parent of
 `ATTACHMENTS_DIR`, with mode `0700`. It must be on the same filesystem as the

@@ -57,6 +57,10 @@ export function BackupTab() {
   const [passphrase, setPassphrase] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [form, setForm] = useState<Partial<UpdateBackupSettingsInput>>({});
+  const [queuedRun, setQueuedRun] = useState<{
+    queuedAt: number;
+    existingRunIds: string[];
+  } | null>(null);
 
   function updateCredential(
     key: 's3AccessKey' | 's3SecretKey',
@@ -73,9 +77,20 @@ export function BackupTab() {
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery<BackupStatusResponse>({
     queryKey: ['admin', 'backup'],
     queryFn: () => apiFetch('/admin/backup'),
-    refetchInterval: (query) =>
-      query.state.data?.history.some((run) => run.status === 'running') ? 3_000 : false,
+    refetchInterval: (query) => {
+      if (query.state.data?.history.some((run) => run.status === 'running')) return 3_000;
+      if (queuedRun && Date.now() - queuedRun.queuedAt < 60_000) return 3_000;
+      return false;
+    },
   });
+
+  useEffect(() => {
+    if (!queuedRun || !data) return;
+    const existing = new Set(queuedRun.existingRunIds);
+    if (data.history.some((run) => !existing.has(run.id))) {
+      setQueuedRun(null);
+    }
+  }, [data, queuedRun]);
 
   const saveMutation = useMutation({
     mutationFn: (body: UpdateBackupSettingsInput) =>
@@ -97,13 +112,23 @@ export function BackupTab() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const runMutation = useMutation({
+  const runMutation = useMutation<
+    { jobId: string },
+    Error,
+    void,
+    { existingRunIds: string[] }
+  >({
     mutationFn: () => apiFetch<{ jobId: string }>('/admin/backup/run', { method: 'POST' }),
-    onSuccess: () => {
+    onMutate: () => ({ existingRunIds: data?.history.map((run) => run.id) ?? [] }),
+    onSuccess: (_response, _variables, context) => {
+      setQueuedRun({
+        queuedAt: Date.now(),
+        existingRunIds: context.existingRunIds,
+      });
       queryClient.invalidateQueries({ queryKey: ['admin', 'backup'] });
       toast.success('S3 backup queued');
     },
-    onError: (err: Error) => toast.error(err.message),
+    onError: (err) => toast.error(err.message),
   });
 
   const panelRef = useRef<HTMLDivElement | null>(null);
