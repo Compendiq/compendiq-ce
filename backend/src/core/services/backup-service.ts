@@ -111,12 +111,15 @@ export async function exportPostgresSnapshot(
 
   const closeClient = async (transactionCommand?: 'COMMIT' | 'ROLLBACK'): Promise<void> => {
     let discardClient: Error | undefined;
+    let transactionFailed = false;
     let transactionError: unknown;
+    let cleanupFailed = false;
     let cleanupError: unknown;
 
     try {
       if (transactionCommand) await client.query(transactionCommand);
     } catch (error) {
+      transactionFailed = true;
       transactionError = error;
     }
     try {
@@ -125,19 +128,23 @@ export async function exportPostgresSnapshot(
         lockAcquired = false;
       }
     } catch (error) {
+      cleanupFailed = true;
       cleanupError = error;
       discardClient = error instanceof Error ? error : new Error(String(error));
     }
     try {
       await client.query('RESET statement_timeout');
     } catch (error) {
-      cleanupError ??= error;
+      if (!cleanupFailed) {
+        cleanupFailed = true;
+        cleanupError = error;
+      }
       discardClient ??= error instanceof Error ? error : new Error(String(error));
     }
     client.release(discardClient);
 
-    if (transactionError) throw transactionError;
-    if (cleanupError) throw cleanupError;
+    if (transactionFailed) throw transactionError;
+    if (cleanupFailed) throw cleanupError;
   };
 
   try {
@@ -533,7 +540,9 @@ export async function runS3Backup(
   const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
   try {
     const backup = await createEncryptedBackupStream(secret);
-    let uploaded: UploadedObject;
+    let outcome:
+      | { uploaded: UploadedObject; error?: never }
+      | { uploaded?: never; error: unknown };
     try {
       const target: S3Target = {
         endpoint: cfg.s3.endpoint,
@@ -545,17 +554,25 @@ export async function runS3Backup(
         forcePathStyle: cfg.s3.forcePathStyle,
       };
       const key = objectKeyFor(cfg.s3.prefix);
-      uploaded = await uploadBackupObject(target, key, backup.stream);
+      const uploaded = await uploadBackupObject(target, key, backup.stream);
       const pruned = await pruneBackupObjects(
         target,
         cfg.schedule.retentionCount,
         cfg.schedule.retentionDays,
       );
       if (pruned.length) logger.info({ pruned }, 'Pruned expired S3 backups');
-    } finally {
-      backup.stream.destroy();
-      await backup.release();
+      outcome = { uploaded };
+    } catch (error) {
+      outcome = { error };
     }
+    backup.stream.destroy();
+    try {
+      await backup.release();
+    } catch (cleanupError) {
+      if (!('error' in outcome)) throw cleanupError;
+    }
+    if ('error' in outcome) throw outcome.error;
+    const { uploaded } = outcome;
     await finishBackupRun(runId, {
       status: 'success',
       bytes: uploaded.bytes,

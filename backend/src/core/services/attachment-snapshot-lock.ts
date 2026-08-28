@@ -19,7 +19,9 @@ export async function withLocalAttachmentMutationLock<T>(
   const client = await getPool().connect();
   let lockAcquired = false;
   let discardClient: Error | undefined;
+  let operationFailed = false;
   let operationError: unknown;
+  let cleanupFailed = false;
   let cleanupError: unknown;
   let result: T | undefined;
 
@@ -29,6 +31,7 @@ export async function withLocalAttachmentMutationLock<T>(
     lockAcquired = true;
     result = await operation(client);
   } catch (error) {
+    operationFailed = true;
     operationError = error;
   }
 
@@ -37,18 +40,22 @@ export async function withLocalAttachmentMutationLock<T>(
       await client.query('SELECT pg_advisory_unlock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
     }
   } catch (error) {
+    cleanupFailed = true;
     cleanupError = error;
     discardClient = error instanceof Error ? error : new Error(String(error));
   }
   try {
     await client.query('RESET statement_timeout');
   } catch (error) {
-    cleanupError ??= error;
+    if (!cleanupFailed) {
+      cleanupFailed = true;
+      cleanupError = error;
+    }
     discardClient ??= error instanceof Error ? error : new Error(String(error));
   }
   client.release(discardClient);
 
-  if (operationError) throw operationError;
-  if (cleanupError) throw cleanupError;
+  if (operationFailed) throw operationError;
+  if (cleanupFailed) throw cleanupError;
   return result as T;
 }

@@ -44,7 +44,9 @@ export async function withNotionImportLocks<T>(
   const client = await getPool().connect();
   const acquired: NotionImportLock[] = [];
   let discardClient: Error | undefined;
+  let operationFailed = false;
   let operationError: unknown;
+  let cleanupFailed = false;
   let cleanupError: unknown;
   let result: T | undefined;
 
@@ -59,6 +61,7 @@ export async function withNotionImportLocks<T>(
     }
     result = await operation();
   } catch (error) {
+    operationFailed = true;
     operationError = error;
   }
 
@@ -69,20 +72,26 @@ export async function withNotionImportLocks<T>(
         lock.lockId,
       ]);
     } catch (error) {
-      cleanupError ??= error;
+      if (!cleanupFailed) {
+        cleanupFailed = true;
+        cleanupError = error;
+      }
       discardClient ??= error instanceof Error ? error : new Error(String(error));
     }
   }
   try {
     await client.query('RESET statement_timeout; RESET lock_timeout');
   } catch (error) {
-    cleanupError ??= error;
+    if (!cleanupFailed) {
+      cleanupFailed = true;
+      cleanupError = error;
+    }
     discardClient ??= error instanceof Error ? error : new Error(String(error));
   }
   client.release(discardClient);
 
-  if (operationError) throw operationError;
-  if (cleanupError) throw cleanupError;
+  if (operationFailed) throw operationError;
+  if (cleanupFailed) throw cleanupError;
   return result as T;
 }
 

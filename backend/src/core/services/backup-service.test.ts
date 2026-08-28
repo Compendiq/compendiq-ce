@@ -17,6 +17,7 @@ const {
   mockPruneBackupObjects,
   mockUploadBackupObject,
   mockSpawn,
+  mockLogger,
 } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockGetPool: vi.fn(),
@@ -29,6 +30,11 @@ const {
   mockPruneBackupObjects: vi.fn(),
   mockUploadBackupObject: vi.fn(),
   mockSpawn: vi.fn(),
+  mockLogger: {
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+  },
 }));
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal();
@@ -37,6 +43,9 @@ vi.mock('node:child_process', async (importOriginal) => {
 vi.mock('../db/postgres.js', () => ({
   getPool: () => mockGetPool(),
   query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
+}));
+vi.mock('../utils/logger.js', () => ({
+  logger: mockLogger,
 }));
 vi.mock('./redis-cache.js', () => ({
   acquireWorkerLock: mockAcquireWorkerLock,
@@ -67,12 +76,23 @@ import {
   terminatePgDumpAndWait,
 } from './backup-service.js';
 
+const falsyRejections = [undefined, null, false, 0, ''] as const;
+
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
+}
+
+async function rejectedValue(promise: Promise<unknown>): Promise<unknown> {
+  const outcome = await promise.then(
+    () => ({ rejected: false as const, value: undefined }),
+    (value: unknown) => ({ rejected: true as const, value }),
+  );
+  expect(outcome.rejected).toBe(true);
+  return outcome.value;
 }
 
 function fakeChild() {
@@ -89,14 +109,17 @@ function fakeChild() {
 
 function fakeSnapshotClient(
   snapshotId = '00000003-0000001B-1',
-  options: { commitError?: Error } = {},
+  options: { commitError?: unknown; unlockError?: unknown } = {},
 ) {
   const calls: string[] = [];
   const release = vi.fn();
   const client = {
     query: vi.fn(async (sql: string) => {
       calls.push(sql);
-      if (sql === 'COMMIT' && options.commitError) throw options.commitError;
+      if (sql === 'COMMIT' && 'commitError' in options) throw options.commitError;
+      if (sql.includes('pg_advisory_unlock') && 'unlockError' in options) {
+        throw options.unlockError;
+      }
       if (sql.includes('pg_export_snapshot')) return { rows: [{ snapshot: snapshotId }] };
       return { rows: [] };
     }),
@@ -121,6 +144,9 @@ beforeEach(() => {
   mockPruneBackupObjects.mockReset();
   mockPruneBackupObjects.mockResolvedValue([]);
   mockUploadBackupObject.mockReset();
+  mockLogger.error.mockReset();
+  mockLogger.info.mockReset();
+  mockLogger.warn.mockReset();
   mockSpawn.mockReset();
 });
 
@@ -171,6 +197,42 @@ describe('exported PostgreSQL capture snapshot', () => {
       'RESET statement_timeout',
     ]);
     expect(harness.release).toHaveBeenCalledOnce();
+  });
+
+  it.each(falsyRejections)('preserves falsy COMMIT rejection %#', async (failure) => {
+    const harness = fakeSnapshotClient('00000003-0000001B-1', { commitError: failure });
+    const snapshot = await exportPostgresSnapshot({
+      connect: vi.fn(async () => harness.client),
+    });
+
+    const actual = await rejectedValue(snapshot.close());
+
+    expect(Object.is(actual, failure)).toBe(true);
+  });
+
+  it.each(falsyRejections)('surfaces falsy snapshot unlock rejection %#', async (failure) => {
+    const harness = fakeSnapshotClient('00000003-0000001B-1', { unlockError: failure });
+    const snapshot = await exportPostgresSnapshot({
+      connect: vi.fn(async () => harness.client),
+    });
+
+    const actual = await rejectedValue(snapshot.close());
+
+    expect(Object.is(actual, failure)).toBe(true);
+  });
+
+  it('preserves a falsy COMMIT rejection when snapshot cleanup also fails', async () => {
+    const harness = fakeSnapshotClient('00000003-0000001B-1', {
+      commitError: false,
+      unlockError: new Error('snapshot unlock failed'),
+    });
+    const snapshot = await exportPostgresSnapshot({
+      connect: vi.fn(async () => harness.client),
+    });
+
+    const actual = await rejectedValue(snapshot.close());
+
+    expect(actual).toBe(false);
   });
 
   it('passes the exported snapshot to pg_dump without changing existing callers', () => {
@@ -344,6 +406,59 @@ describe('backup run job correlation', () => {
       mockQuery.mock.invocationCallOrder[finishFailureCall]!,
     );
   });
+
+  it.each(['upload', 'prune'] as const)(
+    'preserves the primary S3 %s failure when snapshot release also rejects',
+    async (failureStage) => {
+      process.env.POSTGRES_URL = 'postgres://db';
+      mockGetBackupRuntimeConfig.mockResolvedValue({
+        s3: {
+          enabled: true,
+          endpoint: 'https://s3.example.com',
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'access',
+          secretKey: 'secret',
+          prefix: 'compendiq-backups/',
+          forcePathStyle: true,
+        },
+        schedule: { retentionCount: 7, retentionDays: 30 },
+      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'run-1' }] })
+        .mockResolvedValueOnce({ rows: [{ name: '108_backup_run_job_id.sql' }] })
+        .mockResolvedValue({ rows: [], rowCount: 1 });
+      const cleanupFailure = new Error('snapshot commit failed during cleanup');
+      const snapshotHarness = fakeSnapshotClient('00000003-0000001B-1', {
+        commitError: cleanupFailure,
+      });
+      mockGetPool.mockReturnValue({ connect: vi.fn(async () => snapshotHarness.client) });
+      const child = fakeChild();
+      child.kill.mockImplementation(() => {
+        queueMicrotask(() => child.process.emit('close', null, 'SIGTERM'));
+        return true;
+      });
+      mockSpawn.mockReturnValue(child.process);
+      const primaryFailure = new Error(`primary S3 ${failureStage} failed`);
+      if (failureStage === 'upload') {
+        mockUploadBackupObject.mockRejectedValue(primaryFailure);
+      } else {
+        mockUploadBackupObject.mockResolvedValue({
+          key: 'compendiq-backups/backup.enc',
+          bytes: 123,
+        });
+        mockPruneBackupObjects.mockRejectedValue(primaryFailure);
+      }
+
+      const actual = await rejectedValue(runS3Backup('admin-1', 'backup-job-44'));
+
+      expect(actual).toBe(primaryFailure);
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE backup_runs'),
+        ['run-1', 'failed', null, null, primaryFailure.message],
+      );
+    },
+  );
 
   it('returns persisted queue job IDs in backup history', async () => {
     mockQuery.mockResolvedValueOnce({
