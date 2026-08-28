@@ -261,7 +261,9 @@ describe('AppLayout', () => {
     }
     const shell = screen.getByTestId('app-shell');
     expect(shell.className).not.toMatch(/\bgap-/);
-    expect(screen.getByTestId('header-chassis-slot')).toBeInTheDocument();
+    const logo = screen.getByTestId('header-chassis-slot');
+    expect(logo).toBeInTheDocument();
+    expect(logo.className).toContain('md:ml-3');
     expect(screen.getByLabelText('Compendiq home')).toBeInTheDocument();
   });
 

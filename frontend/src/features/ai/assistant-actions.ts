@@ -37,17 +37,13 @@ export const CREATE_SKILL_ACTIONS: readonly CreateSkillAction[] = CREATE_SKILLS.
 export const AI_HOME_ACTIONS: readonly AssistantAction[] = ['ask', 'generate', ...CREATE_SKILL_ACTIONS];
 
 /**
- * The article-side dock: everything.
- *
- * #1401 gave the dock a `runCreateSkill` path to `POST /llm/generate` with an
- * Apply-to-Page draft card, and `sendSelectedAction` already routes a plain
- * `generate` through it as the `custom` skill — so the dock's old "no Generate"
- * rule described a hidden menu item, not a missing capability. Owner ruling 2
- * (2026-08-22) confirms that behaviour as intended; ruling 3 makes the item
- * visible.
+ * The article-side dock acts on the open page. It keeps Q&A, rewrite,
+ * Diagram, and plain Generate, but deliberately omits the five create-* menu
+ * entries: those named templates remain available from `/ai` and the dock's
+ * new-page empty state rather than crowding the in-page Skill menu.
  */
 export const DOCK_ACTIONS: readonly AssistantAction[] = [
-  'ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS,
+  'ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate',
 ];
 
 /**

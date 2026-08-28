@@ -78,7 +78,6 @@ export function SpacesSyncWrapper({ settings, isLoading, onSaveSettingsAsync }: 
   return (
     <>
       <PanelHeader
-        title="Spaces & Sync"
         subtitle="Pick which Confluence spaces to mirror and how often Compendiq pulls updates."
       />
       <SubTabs ariaLabel="Spaces & Sync sub-sections" tabs={tabs} testIdRoot="spaces-sync" />

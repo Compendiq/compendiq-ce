@@ -104,17 +104,18 @@ describe('AiDock Create Skills', () => {
     expect(composer()).toHaveValue('Draft a technical specification and RFC for a distributed real-time notification service with WebSocket connection management and Redis pub/sub.');
   });
 
-  it('offers all create skills in the action select dropdown', async () => {
+  it('keeps create skills out of the right-panel Skill menu', async () => {
     renderDock('/pages/new');
     await openAndSettle();
 
     fireEvent.pointerDown(screen.getByTestId('assistant-action-select'), { button: 0 });
 
-    expect(await screen.findByTestId('assistant-action-create-spec')).toBeInTheDocument();
-    expect(screen.getByTestId('assistant-action-create-guide')).toBeInTheDocument();
-    expect(screen.getByTestId('assistant-action-create-notes')).toBeInTheDocument();
-    expect(screen.getByTestId('assistant-action-create-postmortem')).toBeInTheDocument();
-    expect(screen.getByTestId('assistant-action-create-custom')).toBeInTheDocument();
+    expect(screen.queryByText('Create skills')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-create-spec')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-create-guide')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-create-notes')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-create-postmortem')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('assistant-action-create-custom')).not.toBeInTheDocument();
   });
 
   it('runs create skill via POST /llm/generate and renders DockDraftCard', async () => {

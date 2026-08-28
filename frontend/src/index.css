@@ -449,9 +449,9 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      a Tailwind `bg-*` utility composes with them normally again — the old
      "gradients are background-images, so hover:bg-* silently does nothing"
      trap is designed out rather than documented around. */
-  /* Inset application shell. Chassis is the viewport ground; the rounded
-     workspace and the context rail reuse --color-background so left nav
-     and the AI / Outline / Details pane share one chrome surface. */
+  /* Inset application shell. Chassis is the viewport ground; the workspace
+     frame uses --color-background, while left navigation, central content,
+     and the detached context rail share --color-card. */
   /* Darkest step on the ladder — the viewport gutter around the workspace.
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
@@ -462,7 +462,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      to complete the continuous outer frame. */
   --app-header-bg: #0c0c0d;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-background);
+  --app-rail-bg: var(--color-card);
 
   --surface-backdrop: var(--app-chassis);
   --surface-card: var(--color-card);
@@ -730,7 +730,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      frame has one colour on all four sides. */
   --app-header-bg: #f5f5f6;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--color-background);
+  --app-rail-bg: var(--color-card);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -794,7 +794,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     --app-inset: 12px;
     --app-shell-radius: 12px;
     --app-shell-border-width: 1px;
-    --app-rail-gap: 6px;
+    --app-rail-gap: 4px;
     --app-rail-radius: 12px;
   }
 }
@@ -804,7 +804,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     --app-inset: 16px;
     --app-shell-radius: 14px;
     --app-shell-border-width: 1px;
-    --app-rail-gap: 8px;
+    --app-rail-gap: 6px;
     --app-rail-radius: 14px;
   }
 }
@@ -832,7 +832,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-body-with-rail {
-  gap: var(--app-rail-gap);
+  gap: 0;
 }
 
 @utility app-context-rail {
@@ -841,14 +841,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border-radius: var(--app-rail-radius);
 }
 
-/* Sibling of the workspace card: same height, matching radius, chassis
-   gutter from --app-rail-gap. Do not stretch through the bottom inset —
-   that squared the rail to the viewport and made a short island when
-   height did not fill. */
+/* Sibling of the workspace card: same height, matching radius, and an explicit
+   gutter from --app-rail-gap. The gutter belongs to this positioning context
+   so ArticleRightPane's resize separator can fill it rather than borrowing
+   hit area from the panel. Do not stretch through the bottom inset — that
+   squared the rail to the viewport and made a short island when height did
+   not fill. */
 @utility app-rail-beside {
   align-self: stretch;
   min-height: 0;
   height: 100%;
+  padding-left: var(--app-rail-gap);
+  position: relative;
 }
 
 .app-rail-beside .app-context-rail {

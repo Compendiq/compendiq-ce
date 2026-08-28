@@ -3,6 +3,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import {
   BookOpen,
   Check,
+  ChevronDown,
   ClipboardList,
   FileCode2,
   FilePlus2,
@@ -158,32 +159,33 @@ function ActionItem({ action, selected, onSelect }: {
 
 export function AssistantActionSelect({
   actions,
+  showLabel = false,
   disabled = false,
   className,
 }: {
-  /**
-   * The allow-list this surface offers — `AI_HOME_ACTIONS` on `/ai`,
-   * `DOCK_ACTIONS` in the article dock (#1361). It replaced a boolean
-   * `includeGenerate`, which could only ever describe one of the several
-   * differences between the surfaces, and which said nothing at all about the
-   * five create skills #1401 added to both.
-   */
+  /** Actions offered by this surface; full-page AI and the dock differ. */
   actions: readonly AssistantAction[];
+  showLabel?: boolean;
   disabled?: boolean;
   className?: string;
 }) {
   const { mode, setMode, improvementType, setImprovementType, createSkill, setCreateSkill } = useAiContext();
   const selected = resolveAssistantAction(mode, improvementType, createSkill);
-  // A selection this surface does not offer reads as Q&A rather than as a
-  // trigger naming an action Send cannot run — the same fallback the old
-  // `includeGenerate` form applied to Generate, generalised.
-  const available = actions.includes(selected) ? selected : 'ask';
   const chatActions = actions.includes('ask') ? [CHAT_ACTION] : [];
   const rewriteActions = IMPROVEMENT_ACTIONS.filter((action) => actions.includes(action.id));
   const createActions = [...CREATE_SKILL_DEFINITIONS, DIAGRAM_ACTION, GENERATE_ACTION]
     .filter((action) => actions.includes(action.id));
-  const definitions = [...chatActions, ...rewriteActions, ...createActions];
-  const current = definitions.find((action) => action.id === available) ?? CHAT_ACTION;
+  const allDefinitions = [
+    CHAT_ACTION,
+    ...IMPROVEMENT_ACTIONS,
+    ...CREATE_SKILL_DEFINITIONS,
+    DIAGRAM_ACTION,
+    GENERATE_ACTION,
+  ];
+  // A create template selected from the dock's new-page empty state remains
+  // the active action even though templates are intentionally absent from its
+  // dropdown. The menu filters choices; it must not rename the pending action.
+  const current = allDefinitions.find((action) => action.id === selected) ?? CHAT_ACTION;
   const { Icon } = current;
 
   const selectAction = (action: AssistantAction) => {
@@ -194,19 +196,29 @@ export function AssistantActionSelect({
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <Button
-          variant="secondary"
-          size="icon"
+          variant={showLabel ? 'ai' : 'secondary'}
+          size={showLabel ? 'md' : 'icon'}
           disabled={disabled}
           aria-label={`Selected action: ${current.label}`}
           title={`Selected action: ${current.label}`}
           className={cn(
-            'h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground',
+            'max-w-full shrink-0',
+            !showLabel && 'text-muted-foreground hover:text-foreground',
             className,
           )}
           data-testid="assistant-action-select"
         >
-          <Icon size={16} aria-hidden />
-          <span className="sr-only">{current.label}</span>
+          <Icon size={16} className="shrink-0" aria-hidden />
+          {showLabel ? (
+            <>
+              <span className="shrink-0">Skill</span>
+              <span aria-hidden="true">·</span>
+              <span className="truncate">{current.label}</span>
+              <ChevronDown size={13} className="shrink-0" aria-hidden />
+            </>
+          ) : (
+            <span className="sr-only">{current.label}</span>
+          )}
         </Button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -222,7 +234,7 @@ export function AssistantActionSelect({
                 Assistant chat
               </DropdownMenu.Label>
               {chatActions.map((action) => (
-                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+                <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
               ))}
             </>
           )}
@@ -237,7 +249,7 @@ export function AssistantActionSelect({
                 Rewrite skills
               </DropdownMenu.Label>
               {rewriteActions.map((action) => (
-                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+                <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
               ))}
             </>
           )}
@@ -245,15 +257,14 @@ export function AssistantActionSelect({
           {createActions.length > 0 && (
             <>
               <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
-              {/* Both shipped surfaces carry the create skills, so this reads
-                  "Create skills" exactly as dev does today; the fallback is for
-                  a surface that offers only Diagram and/or Generate, where that
-                  label would name items it does not contain. */}
+              {/* Name the section for the actions this surface actually
+                  allows: docked article work omits create-* skills, while
+                  full-page AI includes them. */}
               <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
                 {createActions.some((action) => action.id.startsWith('create-')) ? 'Create skills' : 'Create'}
               </DropdownMenu.Label>
               {createActions.map((action) => (
-                <ActionItem key={action.id} action={action} selected={available === action.id} onSelect={selectAction} />
+                <ActionItem key={action.id} action={action} selected={selected === action.id} onSelect={selectAction} />
               ))}
             </>
           )}

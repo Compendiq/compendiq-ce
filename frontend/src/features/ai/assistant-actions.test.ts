@@ -14,17 +14,12 @@ describe('assistant action allow-lists (#1361)', () => {
     expect(AI_HOME_ACTIONS).not.toContain('diagram');
   });
 
-  it('offers everything in the dock', () => {
-    // Ruling 2: #1401's create skills on the dock are intended, and the dock
-    // already routes plain `generate` to runCreateSkill('custom'), so the item
-    // was hidden rather than unsupported.
-    expect(DOCK_ACTIONS).toEqual(['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate', ...CREATE_SKILL_ACTIONS]);
+  it('keeps create templates out of the dock menu', () => {
+    expect(DOCK_ACTIONS).toEqual(['ask', ...IMPROVEMENT_TYPES, 'diagram', 'generate']);
+    for (const action of CREATE_SKILL_ACTIONS) expect(DOCK_ACTIONS).not.toContain(action);
   });
 
   it('derives both lists from the contracts rather than restating them', () => {
-    // A sixth improvement pass added to the contract enum, or a sixth create
-    // skill added to create-skills.ts, has to reach both surfaces without this
-    // file being edited — the `improvement-types.ts` argument, twice.
     for (const type of IMPROVEMENT_TYPES) expect(DOCK_ACTIONS).toContain(type);
     expect(CREATE_SKILL_ACTIONS).toEqual(CREATE_SKILLS.map((skill) => `create-${skill.id}`));
     expect(CREATE_SKILL_ACTIONS).toHaveLength(5);

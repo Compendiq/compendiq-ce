@@ -100,7 +100,6 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
   return (
     <div className="space-y-6">
       <PanelHeader
-        title="AI Prompts"
         subtitle="Override the instructions Compendiq sends to the model for each task. Leave a field empty to use the built-in prompt."
       />
 
