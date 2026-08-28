@@ -18,6 +18,7 @@ export const BackupRunSchema = z.object({
   objectKey: z.string().nullable(),
   error: z.string().nullable(),
   triggeredBy: z.string().nullable(),
+  jobId: z.string().nullable(),
 });
 export type BackupRun = z.infer<typeof BackupRunSchema>;
 

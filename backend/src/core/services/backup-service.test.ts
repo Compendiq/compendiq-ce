@@ -11,11 +11,13 @@ const {
   mockAcquireWorkerLock,
   mockRefreshWorkerLock,
   mockReleaseWorkerLock,
+  mockGetBackupRuntimeConfig,
 } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockGetPool: vi.fn(),
   mockAcquireWorkerLock: vi.fn(),
   mockRefreshWorkerLock: vi.fn(),
+  mockGetBackupRuntimeConfig: vi.fn(),
   mockReleaseWorkerLock: vi.fn(),
 }));
 vi.mock('../db/postgres.js', () => ({
@@ -29,7 +31,7 @@ vi.mock('./redis-cache.js', () => ({
   releaseWorkerLock: mockReleaseWorkerLock,
 }));
 vi.mock('./backup-settings.js', () => ({
-  getBackupRuntimeConfig: vi.fn(),
+  getBackupRuntimeConfig: mockGetBackupRuntimeConfig,
   hasMasterBackupKey: vi.fn(() => true),
   markBackupLastRun: vi.fn(),
   requireMasterBackupKey: vi.fn(() => 'master-key-at-least-32-characters'),
@@ -45,6 +47,8 @@ import {
   dumpStreamFromProcess,
   exportPostgresSnapshot,
   latestSchemaMigration,
+  listBackupRuns,
+  runS3Backup,
   spawnPgDump,
   terminatePgDumpAndWait,
 } from './backup-service.js';
@@ -90,6 +94,7 @@ function fakeSnapshotClient(
 beforeEach(() => {
   mockQuery.mockReset();
   mockGetPool.mockReset();
+  mockGetBackupRuntimeConfig.mockReset();
   mockAcquireWorkerLock.mockReset();
   mockAcquireWorkerLock.mockResolvedValue('lock-token');
   mockRefreshWorkerLock.mockReset();
@@ -246,6 +251,59 @@ describe('pg_dump cancellation lifecycle', () => {
     expect(mockReleaseWorkerLock).toHaveBeenCalledOnce();
     expect(snapshotHarness.release.mock.invocationCallOrder[0]!).toBeLessThan(
       mockReleaseWorkerLock.mock.invocationCallOrder[0]!,
+    );
+  });
+});
+
+describe('backup run job correlation', () => {
+  it('stores the exact queue job ID when an S3 run starts', async () => {
+    mockGetBackupRuntimeConfig.mockResolvedValue({
+      s3: {
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        bucket: 'backups',
+      },
+    });
+    mockAcquireWorkerLock.mockResolvedValueOnce(null);
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+
+    await expect(runS3Backup('admin-1', 'backup-job-42')).rejects.toThrow(
+      'A backup is already running',
+    );
+
+    expect(mockQuery).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
+      ),
+      ['s3', 'admin-1', 'backup-job-42'],
+    );
+  });
+
+  it('returns persisted queue job IDs in backup history', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'run-1',
+          created_at: new Date('2026-08-28T10:00:00.000Z'),
+          finished_at: null,
+          destination: 's3',
+          status: 'running',
+          bytes: null,
+          object_key: null,
+          error: null,
+          triggered_by: 'admin-1',
+          job_id: 'backup-job-42',
+        },
+      ],
+    });
+
+    await expect(listBackupRuns()).resolves.toEqual([
+      expect.objectContaining({ id: 'run-1', jobId: 'backup-job-42' }),
+    ]);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringMatching(/SELECT .*job_id.*FROM backup_runs/s),
+      [20],
     );
   });
 });

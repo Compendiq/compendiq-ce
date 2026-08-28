@@ -438,12 +438,13 @@ export async function createEncryptedBackupStream(
 export async function insertBackupRun(row: {
   destination: 'download' | 's3';
   triggeredBy: string | null;
+  jobId: string | null;
 }): Promise<string> {
   const result = await query<{ id: string }>(
-    `INSERT INTO backup_runs (destination, status, triggered_by)
-     VALUES ($1, 'running', $2)
+    `INSERT INTO backup_runs (destination, status, triggered_by, job_id)
+     VALUES ($1, 'running', $2, $3)
      RETURNING id`,
-    [row.destination, row.triggeredBy],
+    [row.destination, row.triggeredBy, row.jobId],
   );
   return result.rows[0]!.id;
 }
@@ -474,6 +475,7 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
   objectKey: string | null;
   error: string | null;
   triggeredBy: string | null;
+  jobId: string | null;
 }>> {
   const result = await query<{
     id: string;
@@ -485,8 +487,9 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     object_key: string | null;
     error: string | null;
     triggered_by: string | null;
+    job_id: string | null;
   }>(
-    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by
+    `SELECT id, created_at, finished_at, destination, status, bytes, object_key, error, triggered_by, job_id
        FROM backup_runs
       ORDER BY created_at DESC
       LIMIT $1`,
@@ -502,16 +505,20 @@ export async function listBackupRuns(limit = 20): Promise<Array<{
     objectKey: r.object_key,
     error: r.error,
     triggeredBy: r.triggered_by,
+    jobId: r.job_id,
   }));
 }
 
-export async function runS3Backup(triggeredBy: string | null): Promise<string> {
+export async function runS3Backup(
+  triggeredBy: string | null,
+  jobId: string | null,
+): Promise<string> {
   const cfg = await getBackupRuntimeConfig();
   if (!cfg.s3.enabled || !cfg.s3.bucket || !cfg.s3.endpoint) {
     throw new Error('S3 backup is not configured');
   }
   const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
-  const runId = await insertBackupRun({ destination: 's3', triggeredBy });
+  const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
   try {
     const { stream, filename } = await createEncryptedBackupStream(secret);
     const target: S3Target = {

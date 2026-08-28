@@ -291,7 +291,7 @@ describe('BackupTab (#1420)', () => {
     expect(await screen.findByTestId('backup-run-now-btn')).toBeEnabled();
   });
 
-  it('polls after enqueue while history is running and stops after it reaches a terminal state', async () => {
+  it('ignores an unrelated terminal run and polls until the exact queued job settles', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let statusGets = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -303,21 +303,38 @@ describe('BackupTab (#1420)', () => {
       if (url.endsWith('/admin/backup') && method === 'GET') {
         statusGets += 1;
         if (statusGets <= 2) return jsonResponse(READY_STATUS);
-        const running = statusGets === 3;
+        const unrelatedRun = {
+          id: 'run-unrelated',
+          jobId: 'job-unrelated',
+          createdAt: '2026-08-28T09:59:00.000Z',
+          finishedAt: '2026-08-28T09:59:03.000Z',
+          destination: 's3' as const,
+          status: 'success' as const,
+          bytes: 512,
+          objectKey: 'compendiq-backups/unrelated.enc',
+          error: null,
+          triggeredBy: null,
+        };
+        if (statusGets === 3) {
+          return jsonResponse({ ...READY_STATUS, history: [unrelatedRun] });
+        }
+        const running = statusGets === 4;
         return jsonResponse({
           ...READY_STATUS,
           history: [
             {
-              id: 'run-1',
+              id: 'run-matching',
+              jobId: 'job-1',
               createdAt: '2026-08-28T10:00:00.000Z',
               finishedAt: running ? null : '2026-08-28T10:00:03.000Z',
               destination: 's3',
               status: running ? 'running' : 'success',
               bytes: running ? null : 1024,
-              objectKey: running ? null : 'compendiq-backups/run-1.enc',
+              objectKey: running ? null : 'compendiq-backups/run-matching.enc',
               error: null,
               triggeredBy: 'admin-1',
             },
+            unrelatedRun,
           ],
         });
       }
@@ -327,10 +344,16 @@ describe('BackupTab (#1420)', () => {
     render(<BackupTab />, { wrapper: wrapper() });
     fireEvent.click(await screen.findByTestId('backup-run-now-btn'));
     await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(2));
+
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_100);
     });
     await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(3));
+    expect(screen.getByTestId('backup-history')).toHaveTextContent('unrelated.enc');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_100);
+    });
     await waitFor(() => expect(screen.getByTestId('backup-history')).toHaveTextContent('running'));
 
     await act(async () => {
@@ -345,7 +368,7 @@ describe('BackupTab (#1420)', () => {
     expect(statusGets).toBe(settledGets);
   });
 
-  it('bounds polling for a queued job that never creates a run to 60 seconds', async () => {
+  it('stops polling after 60 seconds without the exact run and shows a focus-safe retry', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let statusGets = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -356,7 +379,23 @@ describe('BackupTab (#1420)', () => {
       }
       if (url.endsWith('/admin/backup') && method === 'GET') {
         statusGets += 1;
-        return jsonResponse(READY_STATUS);
+        return jsonResponse({
+          ...READY_STATUS,
+          history: [
+            {
+              id: 'run-unrelated',
+              jobId: 'job-unrelated',
+              createdAt: '2026-08-28T09:59:00.000Z',
+              finishedAt: '2026-08-28T09:59:03.000Z',
+              destination: 's3',
+              status: 'success',
+              bytes: 512,
+              objectKey: 'compendiq-backups/unrelated.enc',
+              error: null,
+              triggeredBy: null,
+            },
+          ],
+        });
       }
       return new Response('Not found', { status: 404 });
     });
@@ -366,18 +405,31 @@ describe('BackupTab (#1420)', () => {
     await waitFor(() => expect(statusGets).toBeGreaterThanOrEqual(2));
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(59_000);
+      await vi.advanceTimersByTimeAsync(63_000);
     });
-    expect(statusGets).toBeGreaterThan(2);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4_000);
+    const notice = await screen.findByRole('status', {
+      name: 'Queued backup status unavailable',
     });
+    expect(notice).toHaveTextContent(
+      'The queued backup did not appear in history within 60 seconds. Retry to check its status.',
+    );
     const boundedGets = statusGets;
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(statusGets).toBe(boundedGets);
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(statusGets).toBe(boundedGets + 1));
+    expect(retry).toHaveFocus();
+
+    const retriedGets = statusGets;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(statusGets).toBe(retriedGets);
   });
 
   it('saves S3 endpoint via PUT', async () => {

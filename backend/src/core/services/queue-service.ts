@@ -471,9 +471,9 @@ function registerAllWorkers(): void {
       const { processBackupJob, runForcedBackup } = await import('./backup-worker.js');
       const data = job.data as { force?: boolean; triggeredBy?: string | null };
       if (data.force === true) {
-        return runForcedBackup(data.triggeredBy ?? null);
+        return runForcedBackup(data.triggeredBy ?? null, job.id ?? null);
       }
-      return processBackupJob();
+      return processBackupJob(job.id ?? null);
     },
   });
 }

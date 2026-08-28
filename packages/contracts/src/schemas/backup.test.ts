@@ -4,6 +4,7 @@ import {
   BackupExportTicketResponseSchema,
   UpdateBackupSettingsSchema,
   BackupStatusResponseSchema,
+  BackupRunSchema,
 } from './backup.js';
 
 describe('BackupExportTicketRequestSchema', () => {
@@ -47,6 +48,28 @@ describe('UpdateBackupSettingsSchema', () => {
   it('rejects an interval outside 1–168 hours', () => {
     expect(() => UpdateBackupSettingsSchema.parse({ intervalHours: 0 })).toThrow();
     expect(() => UpdateBackupSettingsSchema.parse({ intervalHours: 169 })).toThrow();
+  });
+});
+
+describe('BackupRunSchema', () => {
+  const run = {
+    id: 'run-1',
+    createdAt: '2026-08-28T10:00:00.000Z',
+    finishedAt: null,
+    destination: 's3',
+    status: 'running',
+    bytes: null,
+    objectKey: null,
+    error: null,
+    triggeredBy: 'admin-1',
+  } as const;
+
+  it('requires a nullable queue job ID', () => {
+    expect(BackupRunSchema.parse({ ...run, jobId: 'backup-job-42' }).jobId).toBe(
+      'backup-job-42',
+    );
+    expect(BackupRunSchema.parse({ ...run, jobId: null }).jobId).toBeNull();
+    expect(() => BackupRunSchema.parse(run)).toThrow();
   });
 });
 

@@ -259,6 +259,7 @@ erDiagram
         text object_key
         text error
         text triggered_by "nullable user id text; null for schedule"
+        text job_id "nullable BullMQ job id"
     }
 
     roles {
@@ -363,9 +364,12 @@ commit.
 drives the admin history/status view. Its destination constraint also admits
 `download`, while current ticket-download outcomes are recorded in
 `audit_log`. The row stores lifecycle status, byte count, S3 object key, error,
-and trigger attribution. `triggered_by` is deliberately nullable text rather
-than a user foreign key so scheduled runs and historical actor identifiers
-remain representable. Because an in-flight S3 archive necessarily snapshots
+trigger attribution, and the exact BullMQ `job_id` used to correlate a queued
+request with its history row. Migration 108 adds the nullable `job_id` column
+and a partial lookup index; null remains valid for pre-migration history and
+legacy scheduled runs. `triggered_by` is deliberately nullable text rather than
+a user foreign key so scheduled runs and historical actor identifiers remain
+representable. Because an in-flight S3 archive necessarily snapshots
 its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
 after migrations and before reporting restore success.

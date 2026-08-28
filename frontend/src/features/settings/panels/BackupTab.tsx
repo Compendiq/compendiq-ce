@@ -58,8 +58,8 @@ export function BackupTab() {
   const [downloading, setDownloading] = useState(false);
   const [form, setForm] = useState<Partial<UpdateBackupSettingsInput>>({});
   const [queuedRun, setQueuedRun] = useState<{
-    queuedAt: number;
-    existingRunIds: string[];
+    jobId: string;
+    expiresAt: number;
   } | null>(null);
 
   function updateCredential(
@@ -78,19 +78,29 @@ export function BackupTab() {
     queryKey: ['admin', 'backup'],
     queryFn: () => apiFetch('/admin/backup'),
     refetchInterval: (query) => {
-      if (query.state.data?.history.some((run) => run.status === 'running')) return 3_000;
-      if (queuedRun && Date.now() - queuedRun.queuedAt < 60_000) return 3_000;
-      return false;
+      const history = query.state.data?.history ?? [];
+      if (queuedRun) {
+        const matchingRun = history.find((run) => run.jobId === queuedRun.jobId);
+        if (matchingRun?.status === 'running') return 3_000;
+        if (!matchingRun && Date.now() < queuedRun.expiresAt) return 3_000;
+        return false;
+      }
+      return history.some((run) => run.status === 'running') ? 3_000 : false;
     },
   });
 
+  const matchingQueuedRun = queuedRun
+    ? data?.history.find((run) => run.jobId === queuedRun.jobId)
+    : undefined;
+  const queuedRunExpired = Boolean(
+    queuedRun && !matchingQueuedRun && Date.now() >= queuedRun.expiresAt,
+  );
+
   useEffect(() => {
-    if (!queuedRun || !data) return;
-    const existing = new Set(queuedRun.existingRunIds);
-    if (data.history.some((run) => !existing.has(run.id))) {
+    if (matchingQueuedRun && matchingQueuedRun.status !== 'running') {
       setQueuedRun(null);
     }
-  }, [data, queuedRun]);
+  }, [matchingQueuedRun]);
 
   const saveMutation = useMutation({
     mutationFn: (body: UpdateBackupSettingsInput) =>
@@ -112,18 +122,12 @@ export function BackupTab() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const runMutation = useMutation<
-    { jobId: string },
-    Error,
-    void,
-    { existingRunIds: string[] }
-  >({
+  const runMutation = useMutation<{ jobId: string }, Error, void>({
     mutationFn: () => apiFetch<{ jobId: string }>('/admin/backup/run', { method: 'POST' }),
-    onMutate: () => ({ existingRunIds: data?.history.map((run) => run.id) ?? [] }),
-    onSuccess: (_response, _variables, context) => {
+    onSuccess: (response) => {
       setQueuedRun({
-        queuedAt: Date.now(),
-        existingRunIds: context.existingRunIds,
+        jobId: response.jobId,
+        expiresAt: Date.now() + 60_000,
       });
       queryClient.invalidateQueries({ queryKey: ['admin', 'backup'] });
       toast.success('S3 backup queued');
@@ -133,6 +137,7 @@ export function BackupTab() {
 
   const panelRef = useRef<HTMLDivElement | null>(null);
   const queryRetry = useNoticeRetry(refetch, isError, panelRef);
+  const queuedStatusRetry = useNoticeRetry(refetch, queuedRunExpired, panelRef);
 
   async function downloadBackup() {
     setDownloading(true);
@@ -252,6 +257,27 @@ export function BackupTab() {
               {queryRetry.retryInFlight ? 'Retrying…' : 'Retry'}
             </button>
             .
+          </p>
+        </div>
+      )}
+      {(queuedRunExpired || queuedStatusRetry.retryInFlight) && (
+        <div
+          role="status"
+          aria-label="Queued backup status unavailable"
+          className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm"
+        >
+          <p id="backup-queued-run-status-sentence" className="break-words">
+            <span>The queued backup did not appear in history within 60 seconds.</span>{' '}
+            <button
+              type="button"
+              className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={queuedStatusRetry.onRetry}
+              aria-disabled={queuedStatusRetry.retryInFlight || undefined}
+              aria-describedby="backup-queued-run-status-sentence"
+            >
+              {queuedStatusRetry.retryInFlight ? 'Retrying…' : 'Retry'}
+            </button>{' '}
+            to check its status.
           </p>
         </div>
       )}
