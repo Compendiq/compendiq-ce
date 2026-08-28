@@ -12,6 +12,11 @@ const {
   mockRefreshWorkerLock,
   mockReleaseWorkerLock,
   mockGetBackupRuntimeConfig,
+  mockMarkBackupLastRun,
+  mockObjectKeyFor,
+  mockPruneBackupObjects,
+  mockUploadBackupObject,
+  mockSpawn,
 } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockGetPool: vi.fn(),
@@ -19,7 +24,16 @@ const {
   mockRefreshWorkerLock: vi.fn(),
   mockGetBackupRuntimeConfig: vi.fn(),
   mockReleaseWorkerLock: vi.fn(),
+  mockMarkBackupLastRun: vi.fn(),
+  mockObjectKeyFor: vi.fn(),
+  mockPruneBackupObjects: vi.fn(),
+  mockUploadBackupObject: vi.fn(),
+  mockSpawn: vi.fn(),
 }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, spawn: mockSpawn };
+});
 vi.mock('../db/postgres.js', () => ({
   getPool: () => mockGetPool(),
   query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
@@ -33,13 +47,13 @@ vi.mock('./redis-cache.js', () => ({
 vi.mock('./backup-settings.js', () => ({
   getBackupRuntimeConfig: mockGetBackupRuntimeConfig,
   hasMasterBackupKey: vi.fn(() => true),
-  markBackupLastRun: vi.fn(),
+  markBackupLastRun: mockMarkBackupLastRun,
   requireMasterBackupKey: vi.fn(() => 'master-key-at-least-32-characters'),
 }));
 vi.mock('./backup-s3.js', () => ({
-  objectKeyFor: vi.fn(),
-  pruneBackupObjects: vi.fn(),
-  uploadBackupObject: vi.fn(),
+  objectKeyFor: mockObjectKeyFor,
+  pruneBackupObjects: mockPruneBackupObjects,
+  uploadBackupObject: mockUploadBackupObject,
 }));
 
 import {
@@ -101,6 +115,13 @@ beforeEach(() => {
   mockRefreshWorkerLock.mockResolvedValue(undefined);
   mockReleaseWorkerLock.mockReset();
   mockReleaseWorkerLock.mockResolvedValue(undefined);
+  mockMarkBackupLastRun.mockReset();
+  mockObjectKeyFor.mockReset();
+  mockObjectKeyFor.mockReturnValue('compendiq-backups/backup.enc');
+  mockPruneBackupObjects.mockReset();
+  mockPruneBackupObjects.mockResolvedValue([]);
+  mockUploadBackupObject.mockReset();
+  mockSpawn.mockReset();
 });
 
 afterEach(() => {
@@ -277,6 +298,50 @@ describe('backup run job correlation', () => {
         /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
       ),
       ['s3', 'admin-1', 'backup-job-42'],
+    );
+  });
+
+  it('releases backup resources before recording an immediate S3 upload failure', async () => {
+    process.env.POSTGRES_URL = 'postgres://db';
+    mockGetBackupRuntimeConfig.mockResolvedValue({
+      s3: {
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        bucket: 'backups',
+        region: 'us-east-1',
+        accessKey: 'access',
+        secretKey: 'secret',
+        prefix: 'compendiq-backups/',
+        forcePathStyle: true,
+      },
+      schedule: { retentionCount: 7, retentionDays: 30 },
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'run-1' }] })
+      .mockResolvedValueOnce({ rows: [{ name: '108_backup_run_job_id.sql' }] })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    const snapshotHarness = fakeSnapshotClient();
+    mockGetPool.mockReturnValue({ connect: vi.fn(async () => snapshotHarness.client) });
+    const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      queueMicrotask(() => child.process.emit('close', null, 'SIGTERM'));
+      return true;
+    });
+    mockSpawn.mockReturnValue(child.process);
+    mockUploadBackupObject.mockRejectedValue(new Error('CreateMultipartUpload failed'));
+
+    await expect(runS3Backup('admin-1', 'backup-job-43')).rejects.toThrow(
+      'CreateMultipartUpload failed',
+    );
+
+    expect(mockReleaseWorkerLock).toHaveBeenCalledOnce();
+    expect(snapshotHarness.calls).toContain('COMMIT');
+    const finishFailureCall = mockQuery.mock.calls.findIndex((call) =>
+      String(call[0]).includes('UPDATE backup_runs'),
+    );
+    expect(finishFailureCall).toBeGreaterThanOrEqual(0);
+    expect(mockReleaseWorkerLock.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockQuery.mock.invocationCallOrder[finishFailureCall]!,
     );
   });
 

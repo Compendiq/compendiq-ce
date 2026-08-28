@@ -28,7 +28,13 @@ import {
   markBackupLastRun,
   requireMasterBackupKey,
 } from './backup-settings.js';
-import { objectKeyFor, pruneBackupObjects, uploadBackupObject, type S3Target } from './backup-s3.js';
+import {
+  objectKeyFor,
+  pruneBackupObjects,
+  uploadBackupObject,
+  type S3Target,
+  type UploadedObject,
+} from './backup-s3.js';
 
 export const BACKUP_LOCK_NAME = 'backup';
 const LOCK_TTL_SECONDS = 3600;
@@ -51,6 +57,7 @@ export class BackupDumpError extends Error {
 export interface EncryptedBackupStream {
   stream: Readable;
   filename: string;
+  release(): Promise<void>;
 }
 
 export function attachmentsRoot(): string {
@@ -433,7 +440,7 @@ export async function createEncryptedBackupStream(
     encrypted.once('error', () => {
       void release().catch((err: unknown) => logger.error({ err }, 'Failed to release backup resources'));
     });
-    return { stream: encrypted, filename };
+    return { stream: encrypted, filename, release };
   } catch (err) {
     await release();
     throw err;
@@ -525,27 +532,37 @@ export async function runS3Backup(
   const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
   const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
   try {
-    const { stream, filename } = await createEncryptedBackupStream(secret);
-    const target: S3Target = {
-      endpoint: cfg.s3.endpoint,
-      bucket: cfg.s3.bucket,
-      region: cfg.s3.region,
-      accessKey: cfg.s3.accessKey,
-      secretKey: cfg.s3.secretKey,
-      prefix: cfg.s3.prefix,
-      forcePathStyle: cfg.s3.forcePathStyle,
-    };
-    const key = objectKeyFor(cfg.s3.prefix);
-    const uploaded = await uploadBackupObject(target, key, stream);
-    const pruned = await pruneBackupObjects(target, cfg.schedule.retentionCount, cfg.schedule.retentionDays);
-    if (pruned.length) logger.info({ pruned }, 'Pruned expired S3 backups');
+    const backup = await createEncryptedBackupStream(secret);
+    let uploaded: UploadedObject;
+    try {
+      const target: S3Target = {
+        endpoint: cfg.s3.endpoint,
+        bucket: cfg.s3.bucket,
+        region: cfg.s3.region,
+        accessKey: cfg.s3.accessKey,
+        secretKey: cfg.s3.secretKey,
+        prefix: cfg.s3.prefix,
+        forcePathStyle: cfg.s3.forcePathStyle,
+      };
+      const key = objectKeyFor(cfg.s3.prefix);
+      uploaded = await uploadBackupObject(target, key, backup.stream);
+      const pruned = await pruneBackupObjects(
+        target,
+        cfg.schedule.retentionCount,
+        cfg.schedule.retentionDays,
+      );
+      if (pruned.length) logger.info({ pruned }, 'Pruned expired S3 backups');
+    } finally {
+      backup.stream.destroy();
+      await backup.release();
+    }
     await finishBackupRun(runId, {
       status: 'success',
       bytes: uploaded.bytes,
       objectKey: uploaded.key,
     });
     await markBackupLastRun(new Date().toISOString());
-    return filename;
+    return backup.filename;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await finishBackupRun(runId, { status: 'failed', error: message });
