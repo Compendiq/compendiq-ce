@@ -31,3 +31,9 @@ export const PAGE_MOVE_ADVISORY_LOCK_ID = 891_001;
  * and migrations (745_001). BYTEA init in a later PR uses the same key.
  */
 export const COLLAB_INIT_LOCK_KEY = 1_411_001;
+
+/**
+ * Session advisory lock shared by authoritative local-attachment mutations
+ * and held exclusively while backup exports capture database and file state.
+ */
+export const ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;

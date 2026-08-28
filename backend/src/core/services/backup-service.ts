@@ -3,7 +3,9 @@ import { createReadStream } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
+import type { PoolClient } from 'pg';
 import { getPool, query } from '../db/postgres.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import { logger } from '../utils/logger.js';
 import {
   acquireWorkerLock,
@@ -83,48 +85,73 @@ interface AttachmentFile {
   size: number;
 }
 
-export interface SnapshotClient {
-  query(sql: string): Promise<{ rows: Array<{ snapshot?: string }> }>;
-  release(): void;
-}
-
 export interface SnapshotPool {
-  connect(): Promise<SnapshotClient>;
+  connect(): Promise<PoolClient>;
 }
 
-export interface ExportedPostgresSnapshot {
-  id: string;
+export interface ExportedBackupSnapshot {
+  client: PoolClient;
+  snapshotId: string;
   close(): Promise<void>;
 }
 
 export async function exportPostgresSnapshot(
   pool: SnapshotPool = getPool(),
-): Promise<ExportedPostgresSnapshot> {
+): Promise<ExportedBackupSnapshot> {
   const client = await pool.connect();
   let began = false;
+  let lockAcquired = false;
+
+  const closeClient = async (transactionCommand?: 'COMMIT' | 'ROLLBACK'): Promise<void> => {
+    let discardClient: Error | undefined;
+    try {
+      if (transactionCommand) await client.query(transactionCommand);
+    } finally {
+      try {
+        if (lockAcquired) {
+          await client.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+          lockAcquired = false;
+        }
+      } catch (error) {
+        discardClient = error instanceof Error ? error : new Error(String(error));
+        throw error;
+      } finally {
+        try {
+          await client.query('RESET statement_timeout');
+        } catch (error) {
+          discardClient ??= error instanceof Error ? error : new Error(String(error));
+          throw error;
+        } finally {
+          client.release(discardClient);
+        }
+      }
+    }
+  };
+
   try {
+    await client.query('SET statement_timeout = 0');
+    await client.query('SELECT pg_advisory_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    lockAcquired = true;
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     began = true;
-    const result = await client.query('SELECT pg_export_snapshot() AS snapshot');
-    const id = result.rows[0]?.snapshot;
-    if (!id) throw new BackupDumpError('PostgreSQL did not return an exported snapshot');
+    const result = await client.query<{ snapshot?: string }>(
+      'SELECT pg_export_snapshot() AS snapshot',
+    );
+    const snapshotId = result.rows[0]?.snapshot;
+    if (!snapshotId) throw new BackupDumpError('PostgreSQL did not return an exported snapshot');
 
     let closed = false;
     return {
-      id,
+      client,
+      snapshotId,
       async close() {
         if (closed) return;
         closed = true;
-        try {
-          await client.query('COMMIT');
-        } finally {
-          client.release();
-        }
+        await closeClient('COMMIT');
       },
     };
   } catch (error) {
-    if (began) await client.query('ROLLBACK').catch(() => undefined);
-    client.release();
+    await closeClient(began ? 'ROLLBACK' : undefined);
     throw error;
   }
 }
@@ -355,7 +382,7 @@ export async function createEncryptedBackupStream(
   if (!token) throw new BackupLockError();
 
   let child: ChildProcess | undefined;
-  let snapshot: ExportedPostgresSnapshot | undefined;
+  let snapshot: ExportedBackupSnapshot | undefined;
   const timer = setInterval(() => {
     refreshWorkerLock(BACKUP_LOCK_NAME, token, LOCK_TTL_SECONDS).catch((err: unknown) => {
       logger.warn({ err }, 'Failed to refresh backup lock');
@@ -368,9 +395,15 @@ export async function createEncryptedBackupStream(
     if (releasePromise) return releasePromise;
     clearInterval(timer);
     releasePromise = (async () => {
-      if (child) await terminatePgDumpAndWait(child);
-      await snapshot?.close();
-      await releaseWorkerLock(BACKUP_LOCK_NAME, token);
+      try {
+        if (child) await terminatePgDumpAndWait(child);
+      } finally {
+        try {
+          await snapshot?.close();
+        } finally {
+          await releaseWorkerLock(BACKUP_LOCK_NAME, token);
+        }
+      }
     })();
     return releasePromise;
   };
@@ -385,7 +418,7 @@ export async function createEncryptedBackupStream(
     const patFingerprint = fingerprintPatEncryptionKey(process.env.PAT_ENCRYPTION_KEY ?? '');
     snapshot = await exportPostgresSnapshot(options.snapshotPool);
     const files = await listAttachmentFiles(options.attachmentsRoot ?? attachmentsRoot());
-    child = spawnPgDump(postgresUrl, options.spawnFn ?? spawn, snapshot.id);
+    child = spawnPgDump(postgresUrl, options.spawnFn ?? spawn, snapshot.snapshotId);
     const dump = dumpStreamFromProcess(child);
     const packed = packArchive(backupMembers(dump, files, { schemaMigration, patFingerprint, createdAt }));
     const encrypted = encryptBackupStream(packed, secret);

@@ -16,9 +16,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { markPageImagesDirty } from './image-embedding-dirty.js';
+import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
 
 /** Sub-directory under ATTACHMENTS_DIR reserved for local-page files. */
 const LOCAL_SUBDIR = 'local';
@@ -125,24 +127,34 @@ function mapRow(r: {
  * or FORBIDDEN otherwise. Confluence-synced pages are explicitly rejected
  * so the two stores stay separate.
  */
-async function assertLocalPageAccess(pageId: number, userId: string): Promise<{
+async function assertLocalPageAccess(
+  pageId: number,
+  userId: string,
+  client?: PoolClient,
+): Promise<{
   id: number;
   source: string;
   visibility: string;
   created_by_user_id: string | null;
 }> {
-  const res = await query<{
-    id: number;
-    source: string;
-    visibility: string;
-    created_by_user_id: string | null;
-    deleted_at: Date | null;
-  }>(
-    `SELECT id, source, visibility, created_by_user_id, deleted_at
+  const statement = `SELECT id, source, visibility, created_by_user_id, deleted_at
        FROM pages
-      WHERE id = $1`,
-    [pageId],
-  );
+      WHERE id = $1`;
+  const res = client
+    ? await client.query<{
+        id: number;
+        source: string;
+        visibility: string;
+        created_by_user_id: string | null;
+        deleted_at: Date | null;
+      }>(statement, [pageId])
+    : await query<{
+        id: number;
+        source: string;
+        visibility: string;
+        created_by_user_id: string | null;
+        deleted_at: Date | null;
+      }>(statement, [pageId]);
   const row = res.rows[0];
   if (!row) throw new LocalAttachmentError('PAGE_NOT_FOUND', 'Page not found');
   if (row.deleted_at) throw new LocalAttachmentError('PAGE_NOT_FOUND', 'Page is trashed');
@@ -179,47 +191,50 @@ export async function putLocalAttachment(opts: {
       `Attachment exceeds maximum size of ${MAX_LOCAL_ATTACHMENT_BYTES / (1024 * 1024)} MB`,
     );
   }
-  await assertLocalPageAccess(opts.pageId, opts.userId);
 
-  const dir = localPageDir(opts.pageId);
-  const filePath = localFilePath(opts.pageId, opts.filename);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(filePath, opts.data);
+  return withLocalAttachmentMutationLock(async (client) => {
+    await assertLocalPageAccess(opts.pageId, opts.userId, client);
 
-  const sha = crypto.createHash('sha256').update(opts.data).digest('hex');
+    const dir = localPageDir(opts.pageId);
+    const filePath = localFilePath(opts.pageId, opts.filename);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(filePath, opts.data);
 
-  const res = await query<{
-    id: string;
-    page_id: number;
-    filename: string;
-    content_type: string;
-    size_bytes: string;
-    sha256: string;
-    created_by: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    `INSERT INTO local_attachments
-       (page_id, filename, content_type, size_bytes, sha256, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (page_id, filename) DO UPDATE SET
-       content_type = EXCLUDED.content_type,
-       size_bytes   = EXCLUDED.size_bytes,
-       sha256       = EXCLUDED.sha256,
-       updated_at   = NOW()
-     RETURNING id, page_id, filename, content_type, size_bytes, sha256,
-               created_by, created_at, updated_at`,
-    [opts.pageId, path.basename(opts.filename), opts.contentType, opts.data.length, sha, opts.userId],
-  );
-  // #1115 P2 — the local store is the other half of what `body_html` can point
-  // at (`/api/local-attachments/<page id>/<file>`), and this is its one writer:
-  // the draw.io save on a standalone page, and every relocated page's images.
-  await markPageImagesDirty(opts.pageId);
-  logger.info(
-    { pageId: opts.pageId, filename: opts.filename, size: opts.data.length, userId: opts.userId },
-    'local-attachment-service: wrote local attachment',
-  );
-  return mapRow(res.rows[0]!);
+    const sha = crypto.createHash('sha256').update(opts.data).digest('hex');
+
+    const res = await client.query<{
+      id: string;
+      page_id: number;
+      filename: string;
+      content_type: string;
+      size_bytes: string;
+      sha256: string;
+      created_by: string | null;
+      created_at: Date;
+      updated_at: Date;
+    }>(
+      `INSERT INTO local_attachments
+         (page_id, filename, content_type, size_bytes, sha256, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (page_id, filename) DO UPDATE SET
+         content_type = EXCLUDED.content_type,
+         size_bytes   = EXCLUDED.size_bytes,
+         sha256       = EXCLUDED.sha256,
+         updated_at   = NOW()
+       RETURNING id, page_id, filename, content_type, size_bytes, sha256,
+                 created_by, created_at, updated_at`,
+      [opts.pageId, path.basename(opts.filename), opts.contentType, opts.data.length, sha, opts.userId],
+    );
+    // #1115 P2 — the local store is the other half of what `body_html` can point
+    // at (`/api/local-attachments/<page id>/<file>`), and this is its one writer:
+    // the draw.io save on a standalone page, and every relocated page's images.
+    await markPageImagesDirty(opts.pageId, client);
+    logger.info(
+      { pageId: opts.pageId, filename: opts.filename, size: opts.data.length, userId: opts.userId },
+      'local-attachment-service: wrote local attachment',
+    );
+    return mapRow(res.rows[0]!);
+  });
 }
 
 /**
@@ -334,10 +349,12 @@ export async function writeLocalAttachmentFileForRelocate(
   filename: string,
   data: Buffer,
 ): Promise<void> {
-  const dir = localPageDir(pageId);
-  const filePath = localFilePath(pageId, filename);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(filePath, data);
+  await withLocalAttachmentMutationLock(async () => {
+    const dir = localPageDir(pageId);
+    const filePath = localFilePath(pageId, filename);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(filePath, data);
+  });
 }
 
 /**
@@ -358,12 +375,14 @@ export async function removeLocalAttachmentFilesForRelocate(
   pageId: number,
   filenames: string[],
 ): Promise<void> {
-  await Promise.all(
-    filenames.map(async (filename) => {
-      if (!canStoreLocalFilename(filename)) return;
-      await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
-    }),
-  );
+  await withLocalAttachmentMutationLock(async () => {
+    await Promise.all(
+      filenames.map(async (filename) => {
+        if (!canStoreLocalFilename(filename)) return;
+        await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
+      }),
+    );
+  });
 }
 
 /**
@@ -388,8 +407,10 @@ export async function removeLocalAttachmentFileForSweep(
   if (path.basename(filename) !== filename || !canStoreLocalFilename(filename)) {
     return false;
   }
-  await fs.rm(localFilePath(pageId, filename), { force: true });
-  return true;
+  return withLocalAttachmentMutationLock(async () => {
+    await fs.rm(localFilePath(pageId, filename), { force: true });
+    return true;
+  });
 }
 
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
@@ -425,7 +446,9 @@ export async function removeLocalAttachmentDirectory(pageId: number): Promise<vo
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new LocalAttachmentError('INVALID_FILENAME', 'Invalid page id');
   }
-  await fs.rm(localPageDir(pageId), { recursive: true, force: true });
+  await withLocalAttachmentMutationLock(async () => {
+    await fs.rm(localPageDir(pageId), { recursive: true, force: true });
+  });
 }
 
 export { MAX_LOCAL_ATTACHMENT_BYTES };

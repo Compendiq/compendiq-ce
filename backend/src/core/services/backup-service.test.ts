@@ -2,6 +2,7 @@ import { type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough, type Readable } from 'node:stream';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import type { PoolClient } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -68,17 +69,21 @@ function fakeChild() {
   return { process, stdout, stderr, kill };
 }
 
-function fakeSnapshotClient(snapshotId = '00000003-0000001B-1') {
+function fakeSnapshotClient(
+  snapshotId = '00000003-0000001B-1',
+  options: { commitError?: Error } = {},
+) {
   const calls: string[] = [];
   const release = vi.fn();
   const client = {
     query: vi.fn(async (sql: string) => {
       calls.push(sql);
+      if (sql === 'COMMIT' && options.commitError) throw options.commitError;
       if (sql.includes('pg_export_snapshot')) return { rows: [{ snapshot: snapshotId }] };
       return { rows: [] };
     }),
     release,
-  };
+  } as unknown as PoolClient;
   return { client, calls, release };
 }
 
@@ -114,13 +119,16 @@ describe('latestSchemaMigration', () => {
 });
 
 describe('exported PostgreSQL capture snapshot', () => {
-  it('exports repeatable-read state and closes the transaction and client exactly once', async () => {
+  it('takes the exclusive lock before repeatable-read state and closes every resource exactly once', async () => {
     const harness = fakeSnapshotClient();
     const pool = { connect: vi.fn(async () => harness.client) };
 
     const snapshot = await exportPostgresSnapshot(pool);
-    expect(snapshot.id).toBe('00000003-0000001B-1');
+    expect(snapshot.snapshotId).toBe('00000003-0000001B-1');
+    expect(snapshot.client).toBe(harness.client);
     expect(harness.calls).toEqual([
+      'SET statement_timeout = 0',
+      'SELECT pg_advisory_lock($1)',
       'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
       'SELECT pg_export_snapshot() AS snapshot',
     ]);
@@ -128,9 +136,13 @@ describe('exported PostgreSQL capture snapshot', () => {
     await snapshot.close();
     await snapshot.close();
     expect(harness.calls).toEqual([
+      'SET statement_timeout = 0',
+      'SELECT pg_advisory_lock($1)',
       'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',
       'SELECT pg_export_snapshot() AS snapshot',
       'COMMIT',
+      'SELECT pg_advisory_unlock($1)',
+      'RESET statement_timeout',
     ]);
     expect(harness.release).toHaveBeenCalledOnce();
   });
@@ -152,6 +164,33 @@ describe('exported PostgreSQL capture snapshot', () => {
     );
   });
 });
+
+  it('releases the Redis backup lock when snapshot close rejects', async () => {
+    process.env.POSTGRES_URL = 'postgres://backup-test';
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ name: '107_backup_settings.sql' }],
+      rowCount: 1,
+    });
+    const commitError = new Error('snapshot commit failed');
+    const harness = fakeSnapshotClient('00000003-0000001B-1', { commitError });
+    const pool = { connect: vi.fn(async () => harness.client) };
+
+    await expect(
+      createEncryptedBackupStream(
+        { kind: 'master', keyMaterial: 'master-key-at-least-32-characters' },
+        {
+          attachmentsRoot: new URL(import.meta.url).pathname,
+          snapshotPool: pool,
+        },
+      ),
+    ).rejects.toThrow('snapshot commit failed');
+
+    expect(mockReleaseWorkerLock).toHaveBeenCalledOnce();
+    expect(mockReleaseWorkerLock).toHaveBeenCalledWith('backup', 'lock-token');
+    expect(harness.calls).toContain('SELECT pg_advisory_unlock($1)');
+    expect(harness.calls).toContain('RESET statement_timeout');
+    expect(harness.release).toHaveBeenCalledOnce();
+  });
 
 describe('pg_dump cancellation lifecycle', () => {
   it('escalates to SIGKILL after the bounded grace period and waits for close', async () => {
