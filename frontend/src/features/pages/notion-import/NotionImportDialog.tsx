@@ -205,7 +205,7 @@ function TreeNodeRow({
             {node.alreadyImported ? (
               <span
                 data-testid={`notion-imported-badge-${node.id}`}
-                className="inline-flex items-center gap-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+                className="inline-flex items-center gap-0.5 rounded border border-success/30 bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
               >
                 <Check size={11} aria-hidden />
                 Imported
