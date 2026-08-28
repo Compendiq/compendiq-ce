@@ -17,6 +17,7 @@ vi.mock('../../core/services/client-model-hub.js', async (importOriginal) => {
       ok: true,
     })),
     installClientModel: vi.fn(async () => {}),
+    installHunspellModel: vi.fn(async () => {}),
     getClientModelInstallStatus: vi.fn(() => ({
       status: 'complete' as const,
       repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
@@ -26,7 +27,7 @@ vi.mock('../../core/services/client-model-hub.js', async (importOriginal) => {
     })),
   };
 });
-import { inspectClientModel, installClientModel } from '../../core/services/client-model-hub.js';
+import { inspectClientModel, installClientModel, installHunspellModel } from '../../core/services/client-model-hub.js';
 describe('admin client-asset routes', () => {
   const app = Fastify({ logger: false });
   let tmp: string;
@@ -51,6 +52,7 @@ describe('admin client-asset routes', () => {
 
   beforeEach(async () => {
     vi.mocked(installClientModel).mockClear();
+    vi.mocked(installHunspellModel).mockClear();
     vi.mocked(inspectClientModel).mockClear();
     for (const ent of await fs.readdir(tmp).catch(() => [])) {
       await fs.rm(path.join(tmp, ent), { recursive: true, force: true });
@@ -82,6 +84,17 @@ describe('admin client-asset routes', () => {
     });
     expect(res.statusCode).toBe(202);
     expect(installClientModel).toHaveBeenCalled();
+  });
+
+  it('downloads a Hunspell dictionary via install endpoint', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/client-assets/hunspell/install',
+      payload: { id: 'hunspell-en_US' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, id: 'hunspell-en_US' });
+    expect(installHunspellModel).toHaveBeenCalledWith('hunspell-en_US');
   });
 
   it('uploads a Hunspell dictionary', async () => {

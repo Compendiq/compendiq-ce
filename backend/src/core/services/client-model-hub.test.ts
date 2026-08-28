@@ -7,6 +7,7 @@ import { listClientAssetManifest } from './client-model-assets.js';
 import {
   inspectClientModel,
   installClientModel,
+  installHunspellModel,
   resetClientModelInstallForTests,
   searchClientModels,
 } from './client-model-hub.js';
@@ -153,5 +154,45 @@ describe('installClientModel', () => {
     })).rejects.toThrow(/sha256/i);
     const manifest = await listClientAssetManifest(true, tmp);
     expect(manifest.activeModelId).toBeNull();
+  });
+});
+
+describe('installHunspellModel', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'hunspell-install-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('downloads aff and dic files and marks the hunspell model installed', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('en-US/index.aff')) return new Response('SET UTF-8', { status: 200 });
+      if (url.includes('en-US/index.dic')) return new Response('1\nhello', { status: 200 });
+      return new Response(null, { status: 404 });
+    };
+
+    await installHunspellModel('hunspell-en_US', { fetch: fetchImpl, root: tmp });
+    const manifest = await listClientAssetManifest(true, tmp);
+    const hunspell = manifest.models.find((m) => m.id === 'hunspell-en_US');
+    expect(hunspell?.installed).toBe(true);
+    expect(hunspell?.files).toHaveLength(2);
+  });
+
+  it('cleans up partial files on network failure', async () => {
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.includes('index.aff')) return new Response('SET UTF-8', { status: 200 });
+      return new Response(null, { status: 500 });
+    };
+
+    await expect(installHunspellModel('hunspell-en_US', { fetch: fetchImpl, root: tmp })).rejects.toThrow();
+    const manifest = await listClientAssetManifest(true, tmp);
+    const hunspell = manifest.models.find((m) => m.id === 'hunspell-en_US');
+    expect(hunspell?.installed).toBe(false);
   });
 });

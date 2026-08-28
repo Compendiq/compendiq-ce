@@ -331,4 +331,17 @@ describe('ClientInferenceManager (#1418)', () => {
       modelId: 'HuggingFaceTB--SmolLM2-135M-Instruct',
     });
   });
+
+  it('reports whether the model is downloaded and clears it cleanly', async () => {
+    const worker = new FakeWorker();
+    let cached = true;
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => cached,
+    });
+    expect(await mgr.isModelDownloaded()).toBe(true);
+    cached = false;
+    expect(await mgr.isModelDownloaded()).toBe(false);
+  });
 });

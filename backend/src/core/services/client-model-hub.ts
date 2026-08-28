@@ -12,12 +12,14 @@ import {
   ClientAssetSearchResponseSchema,
   HfRepoIdSchema,
   HUNSPELL_ASSET_IDS,
+  HunspellAssetIdSchema,
   MAX_CLIENT_ONNX_Q4_BYTES,
   RECOMMENDED_CLIENT_MODELS,
   hfRepoToLocalAssetId,
   type ClientAssetInspect,
   type ClientAssetInstallStatus,
   type ClientAssetSearchResponse,
+  type HunspellAssetId,
 } from '@compendiq/contracts';
 import { clientModelAssetsDir } from './client-model-assets.js';
 
@@ -255,5 +257,68 @@ async function removeOtherOnnxDirs(root: string, keepId: string): Promise<void> 
     if (!parsed.success) continue;
     if (HUNSPELL_ASSET_IDS.includes(name as typeof HUNSPELL_ASSET_IDS[number])) continue;
     await fs.rm(path.join(root, name), { recursive: true, force: true });
+  }
+}
+
+export const HUNSPELL_SOURCES: Record<HunspellAssetId, {
+  label: string;
+  files: Array<{ name: string; url: string }>;
+}> = {
+  'hunspell-en_US': {
+    label: 'English (US)',
+    files: [
+      {
+        name: 'en_US.aff',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.aff',
+      },
+      {
+        name: 'en_US.dic',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.dic',
+      },
+    ],
+  },
+  'hunspell-de_DE': {
+    label: 'German (DE)',
+    files: [
+      {
+        name: 'de_DE.aff',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/de/index.aff',
+      },
+      {
+        name: 'de_DE.dic',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/de/index.dic',
+      },
+    ],
+  },
+};
+
+export async function installHunspellModel(
+  id: HunspellAssetId,
+  opts: { fetch?: HubFetch; root?: string } = {},
+): Promise<void> {
+  const parsedId = HunspellAssetIdSchema.parse(id);
+  const source = HUNSPELL_SOURCES[parsedId];
+  if (!source) throw new Error(`Unknown hunspell asset: ${id}`);
+  const fetchImpl = opts.fetch ?? fetch;
+  const root = opts.root ?? clientModelAssetsDir();
+  const partial = path.join(root, `.partial-${parsedId}`);
+  await fs.rm(partial, { recursive: true, force: true });
+  await fs.mkdir(partial, { recursive: true });
+
+  try {
+    for (const file of source.files) {
+      const res = await fetchImpl(file.url);
+      if (!res.ok || !res.body) {
+        throw new Error(`Download failed for ${file.name} (${res.status})`);
+      }
+      const abs = path.join(partial, file.name);
+      await pipeline(Readable.fromWeb(res.body as never), createWriteStream(abs));
+    }
+    const dest = path.join(root, parsedId);
+    await fs.rm(dest, { recursive: true, force: true });
+    await fs.rename(partial, dest);
+  } catch (err) {
+    await fs.rm(partial, { recursive: true, force: true });
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }

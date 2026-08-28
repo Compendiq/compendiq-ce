@@ -164,6 +164,9 @@ export const ClientAssetInstallRequestSchema = z.object({
   repo: HfRepoIdSchema,
 });
 
+export const HunspellInstallRequestSchema = z.object({
+  id: HunspellAssetIdSchema,
+});
 export const ClientAssetInstallStatusSchema = z.object({
   status: z.enum(['idle', 'running', 'complete', 'failed']),
   repo: z.string().optional(),
@@ -180,3 +183,4 @@ export type ClientAssetSearchResponse = z.infer<typeof ClientAssetSearchResponse
 export type ClientAssetInspect = z.infer<typeof ClientAssetInspectSchema>;
 export type ClientAssetInstallRequest = z.infer<typeof ClientAssetInstallRequestSchema>;
 export type ClientAssetInstallStatus = z.infer<typeof ClientAssetInstallStatusSchema>;
+export type HunspellInstallRequest = z.infer<typeof HunspellInstallRequestSchema>;

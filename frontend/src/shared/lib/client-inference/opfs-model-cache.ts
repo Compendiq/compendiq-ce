@@ -40,8 +40,11 @@ export async function hasOpfsModel(
   try {
     const dir = await modelDir(modelId);
     if (!dir) return false;
-    for (const name of required) {
-      await dir.getFileHandle(name);
+    const filesToCheck = required.length > 0
+      ? required
+      : ['config.json', 'tokenizer.json', 'onnx__model_q4.onnx'];
+    for (const name of filesToCheck) {
+      await dir.getFileHandle(name.replaceAll('/', '__'));
     }
     return true;
   } catch {

@@ -112,23 +112,87 @@ export function EditorPreferencesTab({
   const vimModeEnabled = useUiStore((s) => s.vimModeEnabled);
   const setVimModeEnabled = useUiStore((s) => s.setVimModeEnabled);
   const adminOn = settings.clientInferenceAdminEnabled;
+  const [manifest, setManifest] = useState<ClientAssetManifest | null>(null);
   const [manifestBytes, setManifestBytes] = useState<number | null>(null);
+  const [modelDownloaded, setModelDownloaded] = useState<boolean | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void apiFetch<ClientAssetManifest>('/models/client-assets')
-      .then((manifest) => {
+      .then(async (manifestData) => {
         if (cancelled) return;
-        const onnx = manifest.models.find((m) => m.kind === 'onnx');
-        setManifestBytes(onnx?.bytes && onnx.bytes > 0 ? onnx.bytes : null);
+        setManifest(manifestData);
+        const onnx = manifestData.models.find(
+          (m) => m.kind === 'onnx' && (m.id === manifestData.activeModelId || m.installed),
+        ) ?? manifestData.models.find((m) => m.kind === 'onnx');
+        const bytes = onnx?.bytes && onnx.bytes > 0 ? onnx.bytes : null;
+        setManifestBytes(bytes);
+        const modelId = onnx?.id;
+        const files = onnx?.files.map((f) => f.name);
+        try {
+          const downloaded = await getClientInferenceManager().isModelDownloaded(modelId, files);
+          if (!cancelled) setModelDownloaded(downloaded);
+        } catch {
+          if (!cancelled) setModelDownloaded(false);
+        }
       })
       .catch(() => {
-        if (!cancelled) setManifestBytes(null);
+        if (!cancelled) {
+          setManifest(null);
+          setManifestBytes(null);
+          void getClientInferenceManager().isModelDownloaded()
+            .then((downloaded) => {
+              if (!cancelled) setModelDownloaded(downloaded);
+            })
+            .catch(() => {
+              if (!cancelled) setModelDownloaded(false);
+            });
+        }
       });
     return () => { cancelled = true; };
   }, []);
+
+  const activeOnnx = manifest?.models.find(
+    (m) => m.kind === 'onnx' && (m.id === manifest.activeModelId || m.installed),
+  ) ?? manifest?.models.find((m) => m.kind === 'onnx');
+  const modelName = activeOnnx?.repo ?? activeOnnx?.id;
+
+  async function handlePreDownload() {
+    if (!adminOn || downloadProgress) return;
+    setDownloadError(null);
+    getClientInferenceManager().setFlags({
+      adminEnabled: adminOn,
+      userEnabled: clientEnabled,
+    });
+    try {
+      await getClientInferenceManager().predownload((loaded, total) => {
+        setDownloadProgress({ loaded, total });
+      });
+      setModelDownloaded(true);
+    } catch (err: unknown) {
+      setDownloadError(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloadProgress(null);
+    }
+  }
+
+  async function handleClearModel() {
+    if (downloadProgress || isClearing) return;
+    setIsClearing(true);
+    setDownloadError(null);
+    try {
+      const modelId = activeOnnx?.id;
+      await getClientInferenceManager().clearDownloadedModel(modelId);
+      setModelDownloaded(false);
+    } catch (err: unknown) {
+      setDownloadError(err instanceof Error ? err.message : 'Failed to remove model');
+    } finally {
+      setIsClearing(false);
+    }
+  }
   const changed = enabled !== settings.inlineCompletionEnabled
     || delay !== settings.inlineCompletionDelay
     || mode !== settings.inlineCompletionMode
@@ -287,47 +351,104 @@ export function EditorPreferencesTab({
             help="Air-gapped use when no inline-completion model is assigned. Off keeps ghost text off until a server model exists."
           />
 
-          <div className="px-4 py-4">
-            <button
-              type="button"
-              className="nm-button-ghost h-8"
-              disabled={!adminOn || downloadProgress !== null}
-              aria-describedby="client-inference-predownload-help"
-              onClick={() => {
-                if (!adminOn || downloadProgress) return;
-                setDownloadError(null);
-                getClientInferenceManager().setFlags({
-                  adminEnabled: adminOn,
-                  userEnabled: clientEnabled,
-                });
-                void getClientInferenceManager()
-                  .predownload((loaded, total) => setDownloadProgress({ loaded, total }))
-                  .catch((err: unknown) => {
-                    setDownloadError(err instanceof Error ? err.message : 'Download failed');
-                  })
-                  .finally(() => setDownloadProgress(null));
-              }}
-            >
-              Pre-download on-device model
-            </button>
-            <p id="client-inference-predownload-help" className="mt-2 text-xs leading-5 text-muted-foreground">
-              Downloads only in this browser
-              {manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB).` : '.'}
-              {' '}The on-device model is not shared with other browsers.
-            </p>
+          <div className="px-4 py-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <span className="text-sm font-medium text-foreground">
+                  Local model storage
+                </span>
+                <p id="client-inference-predownload-help" className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                  {modelDownloaded
+                    ? `The on-device model${modelName ? ` (${modelName})` : ''} is downloaded and ready in this browser${manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB)` : ''}.`
+                    : `Downloads only in this browser${manifestBytes != null ? ` (${Math.round(manifestBytes / (1024 * 1024))} MB)` : ''}. The on-device model is not shared with other browsers.`}
+                </p>
+              </div>
+
+              <div role="status" aria-live="polite" className="shrink-0">
+                {downloadProgress !== null ? (
+                  <span
+                    data-testid="client-inference-status-downloading"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-warning animate-pulse" aria-hidden="true" />
+                    Downloading ({Math.round((downloadProgress.loaded / Math.max(1, downloadProgress.total)) * 100)}%)
+                  </span>
+                ) : modelDownloaded === true ? (
+                  <span
+                    data-testid="client-inference-status-downloaded"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
+                  >
+                    <Check size={13} className="text-success" aria-hidden="true" />
+                    Downloaded &amp; ready
+                  </span>
+                ) : modelDownloaded === false ? (
+                  <span
+                    data-testid="client-inference-status-not-downloaded"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/60 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />
+                    Not downloaded
+                  </span>
+                ) : (
+                  <span
+                    data-testid="client-inference-status-checking"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                  >
+                    Checking…
+                  </span>
+                )}
+              </div>
+            </div>
+
             {downloadProgress && (
-              <div
-                className="mt-2 h-1 overflow-hidden rounded bg-muted"
-                aria-hidden="true"
-              >
+              <div className="space-y-1.5">
                 <div
-                  className="h-full bg-[var(--color-status-embedding)]"
-                  style={{ width: `${Math.min(100, (downloadProgress.loaded / downloadProgress.total) * 100)}%` }}
-                />
+                  className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                  role="progressbar"
+                  aria-valuenow={Math.round((downloadProgress.loaded / Math.max(1, downloadProgress.total)) * 100)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label="On-device model download progress"
+                >
+                  <div
+                    className="h-full bg-[var(--color-primary)] transition-all duration-150"
+                    style={{ width: `${Math.min(100, (downloadProgress.loaded / Math.max(1, downloadProgress.total)) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {Math.round(downloadProgress.loaded / (1024 * 1024))} MB of {Math.round(downloadProgress.total / (1024 * 1024))} MB downloaded
+                </p>
               </div>
             )}
+
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                className="nm-button-ghost h-8"
+                disabled={!adminOn || downloadProgress !== null}
+                aria-describedby="client-inference-predownload-help"
+                onClick={handlePreDownload}
+              >
+                {modelDownloaded ? 'Re-download on-device model' : 'Pre-download on-device model'}
+              </button>
+
+              {modelDownloaded && (
+                <button
+                  type="button"
+                  data-testid="client-inference-clear-model"
+                  className="nm-button-ghost h-8 text-destructive hover:bg-destructive/10"
+                  disabled={downloadProgress !== null || isClearing}
+                  onClick={handleClearModel}
+                >
+                  {isClearing ? 'Removing…' : 'Remove from browser'}
+                </button>
+              )}
+            </div>
+
             {downloadError && (
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">{downloadError}</p>
+              <p role="alert" className="text-xs leading-5 text-destructive">
+                {downloadError}
+              </p>
             )}
           </div>
         </div>

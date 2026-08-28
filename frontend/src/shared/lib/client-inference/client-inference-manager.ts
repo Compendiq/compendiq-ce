@@ -3,7 +3,7 @@ import { apiFetch, apiFetchBlob } from '../api';
 import { useAuthStore } from '../../../stores/auth-store';
 import { probeDeviceGpu, type DeviceGpuProfile } from './device-gpu-profile';
 import { capMaxTokens, normalizeInlineCompletion } from './instruct-format';
-import { hasOpfsModel, putOpfsFile } from './opfs-model-cache';
+import { clearOpfsModel, hasOpfsModel, putOpfsFile } from './opfs-model-cache';
 import {
   CLIENT_INFERENCE_MODEL_ID,
   IDLE_UNLOAD_MS,
@@ -198,6 +198,25 @@ export class ClientInferenceManager {
     this.loadFailed = false;
     await this.startLoad();
   }
+  async isModelDownloaded(modelId?: string, files?: string[]): Promise<boolean> {
+    if (this.opts.hasCache) {
+      return this.opts.hasCache();
+    }
+    const resolvedId = modelId ?? (this.opts.fetchManifest
+      ? activeOnnxId(await this.opts.fetchManifest())
+      : CLIENT_INFERENCE_MODEL_ID);
+    return hasOpfsModel(resolvedId, files);
+  }
+
+  async clearDownloadedModel(modelId?: string): Promise<void> {
+    const resolvedId = modelId ?? (this.opts.fetchManifest
+      ? activeOnnxId(await this.opts.fetchManifest())
+      : CLIENT_INFERENCE_MODEL_ID);
+    await clearOpfsModel(resolvedId);
+    this.ready = false;
+    this.teardownWorker();
+  }
+
 
   dispose(): void {
     this.teardownWorker();

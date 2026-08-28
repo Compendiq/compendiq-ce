@@ -214,9 +214,58 @@ describe('ClientInferenceTab', () => {
       throw new Error(`unexpected ${path}`);
     });
     renderTab();
-    const input = await screen.findByLabelText('Upload');
-    fireEvent.change(input, { target: { files: [new File(['x'], 'config.json')] } });
+    const inputs = await screen.findAllByLabelText(/upload/i);
+    fireEvent.change(inputs[0]!, { target: { files: [new File(['x'], 'config.json')] } });
     expect(await screen.findByText(/disk full/i)).toBeInTheDocument();
+  });
+
+  it('filters installed assets to only show installed models and shows empty state when none installed', async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return missingOnnx;
+      if (path.startsWith('/admin/client-assets/search')) return { models: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+    renderTab();
+    expect(await screen.findByText(/no assets currently installed on the server/i)).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Installed assets' })).not.toBeInTheDocument();
+  });
+
+  it('renders installed models in the Installed assets list', async () => {
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return installedOnnx;
+      if (path.startsWith('/admin/client-assets/search')) return { models: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+    renderTab();
+    const list = await screen.findByRole('list', { name: 'Installed assets' });
+    expect(list).toBeInTheDocument();
+    expect(screen.getByText('onnx-community/Qwen2.5-0.5B-Instruct')).toBeInTheDocument();
+  });
+
+  it('downloads a Hunspell dictionary when clicking download in Hunspell section', async () => {
+    apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+      if (path === '/admin/settings') return { clientInferenceEnabled: false };
+      if (path === '/models/client-assets') return missingOnnx;
+      if (path.startsWith('/admin/client-assets/search')) return { models: [] };
+      if (path === '/admin/client-assets/hunspell/install' && init?.method === 'POST') {
+        return { ok: true, id: 'hunspell-en_US' };
+      }
+      throw new Error(`unexpected ${path} ${init?.method ?? ''}`);
+    });
+    renderTab();
+    const hunspellList = await screen.findByRole('list', { name: 'Hunspell dictionaries' });
+    expect(hunspellList).toBeInTheDocument();
+    const downloadButtons = screen.getAllByRole('button', { name: 'Download dictionary' });
+    expect(downloadButtons.length).toBeGreaterThan(0);
+    fireEvent.click(downloadButtons[0]!);
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith('/admin/client-assets/hunspell/install', expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ id: 'hunspell-en_US' }),
+      }));
+    });
   });
 });
 

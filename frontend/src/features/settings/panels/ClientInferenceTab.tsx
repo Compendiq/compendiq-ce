@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Switch from '@radix-ui/react-switch';
+import { CheckCircle2 } from 'lucide-react';
 import type {
   AdminSettings,
   ClientAssetInspect,
@@ -13,6 +14,11 @@ import { getClientInferenceManager } from '../../../shared/lib/client-inference/
 import { SETTINGS_PANELS } from '../settings-nav';
 
 const SEARCH_DEBOUNCE_MS = 300;
+const HUNSPELL_MODELS = [
+  { id: 'hunspell-en_US' as const, label: 'English (US)', files: 'en_US.aff, en_US.dic' },
+  { id: 'hunspell-de_DE' as const, label: 'German (DE)', files: 'de_DE.aff, de_DE.dic' },
+];
+
 
 export function ClientInferenceTab() {
   const queryClient = useQueryClient();
@@ -65,6 +71,18 @@ export function ClientInferenceTab() {
       void queryClient.invalidateQueries({ queryKey: ['client-assets-install'] });
     },
   });
+  const installHunspell = useMutation({
+    mutationFn: async (id: 'hunspell-en_US' | 'hunspell-de_DE') => {
+      return apiFetch('/admin/client-assets/hunspell/install', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+    },
+  });
+
   const installStatus = useQuery({
     queryKey: ['client-assets-install'],
     queryFn: () => apiFetch<ClientAssetInstallStatus>('/admin/client-assets/install'),
@@ -83,6 +101,8 @@ export function ClientInferenceTab() {
   const probe = getClientInferenceManager().lastProbe();
   const error = getClientInferenceManager().lastErrorCategory();
   const hits = search.data?.models ?? [];
+
+  const installedModels = manifest.data?.models.filter((m) => m.installed) ?? [];
 
   return (
     <div className="space-y-6">
@@ -179,15 +199,73 @@ export function ClientInferenceTab() {
         )}
       </section>
 
+      <section aria-labelledby="client-inference-hunspell">
+        <h3 id="client-inference-hunspell" className="text-sm font-semibold text-foreground">
+          Spellcheck dictionaries (Hunspell)
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          Download or upload standard Hunspell dictionaries for English and German spell linting in the editor.
+        </p>
+        <ul aria-label="Hunspell dictionaries" className="mt-3 divide-y divide-border rounded-xl border border-border">
+          {HUNSPELL_MODELS.map((item) => {
+            const entry = manifest.data?.models.find((m) => m.id === item.id);
+            const isInstalled = entry?.installed ?? false;
+            const isDownloading = installHunspell.isPending && installHunspell.variables === item.id;
+            return (
+              <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">{item.label}</span>
+                    {isInstalled ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
+                        <CheckCircle2 size={12} />
+                        installed
+                        {entry?.bytes ? ` (${Math.round(entry.bytes / 1024)} KB)` : ''}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-foreground/10 px-2 py-0.5 text-xs text-muted-foreground">
+                        not installed
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {item.id} ({item.files})
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="nm-button-ghost h-8"
+                    disabled={isDownloading}
+                    onClick={() => installHunspell.mutate(item.id)}
+                  >
+                    {isDownloading ? 'Downloading…' : isInstalled ? 'Re-download' : 'Download dictionary'}
+                  </button>
+                  <AssetUpload
+                    modelId={item.id}
+                    onDone={() => {
+                      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+                    }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {installHunspell.isError && (
+          <p role="status" className="mt-2 text-xs leading-5 text-destructive">
+            {installHunspell.error instanceof Error ? installHunspell.error.message : 'Dictionary download failed'}
+          </p>
+        )}
+      </section>
+
       <section aria-labelledby="client-inference-manifest">
         <h3 id="client-inference-manifest" className="text-sm font-semibold text-foreground">
           Installed assets
         </h3>
         <p className="mt-1 text-sm leading-6 text-muted-foreground">
-          Copy operator-supplied files onto the volume as described in the{' '}
-          <span className="font-mono text-xs">docs/runbooks/client-inference.md</span> runbook,
-          or upload Hunspell dictionaries here. Pre-download lives on each author&apos;s
-          Editor card — this tab cannot fill another browser&apos;s cache.
+          Assets currently installed on the server volume and available to clients.
+          Pre-download lives on each author&apos;s Editor card — this tab manages server-side models and dictionaries.
         </p>
         {manifest.isPending && !manifest.data && (
           <p className="mt-3 text-sm leading-6 text-muted-foreground">Looking up installed assets…</p>
@@ -205,25 +283,39 @@ export function ClientInferenceTab() {
           </p>
         )}
         {manifest.data && (
-          <ul aria-label="Installed assets" className="mt-3 divide-y divide-border rounded-xl border border-border">
-            {manifest.data.models.map((model) => (
-              <li key={model.id} className="px-4 py-3 text-sm">
-                <span className="font-medium text-foreground">{model.repo ?? model.id}</span>
-                <span className="ml-2 text-muted-foreground">
-                  {model.kind}
-                  {' · '}
-                  {model.installed ? `${model.bytes} bytes` : 'missing'}
-                  {model.kind === 'onnx' && !model.available ? ' · unavailable while the flag is off' : ''}
-                </span>
-                <AssetUpload
-                  modelId={model.id}
-                  onDone={() => {
-                    void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
-                  }}
-                />
-              </li>
-            ))}
-          </ul>
+          installedModels.length === 0 ? (
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              No assets currently installed on the server.
+            </p>
+          ) : (
+            <ul aria-label="Installed assets" className="mt-3 divide-y divide-border rounded-xl border border-border">
+              {installedModels.map((model) => (
+                <li key={model.id} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-medium text-foreground">{model.repo ?? model.id}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        {model.kind}
+                        {' · '}
+                        {model.bytes > 0
+                          ? model.bytes >= 1024 * 1024
+                            ? `${Math.round(model.bytes / (1024 * 1024))} MB`
+                            : `${Math.round(model.bytes / 1024)} KB`
+                          : '0 bytes'}
+                        {model.kind === 'onnx' && !model.available ? ' · unavailable while the flag is off' : ''}
+                      </span>
+                    </div>
+                    <AssetUpload
+                      modelId={model.id}
+                      onDone={() => {
+                        void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+                      }}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )
         )}
       </section>
 
