@@ -186,8 +186,10 @@ surface within a normal sync cycle rather than lingering until a rare full run.
   `status: "trashed"`** — before its row is soft-deleted; a `200` (`current`) / `403`
   leaves the row untouched, so one user's restricted view can no longer nuke pages
   others can still see. The number of confirmation fetches per run is capped
-  (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set is deferred to a later run
-  (the whole run defers — zero soft-deletes that cycle).
+  (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set is processed oldest-first
+  in batches of that size across subsequent cycles (#1439). Skipping the whole run
+  when candidates exceed the cap never shrinks the set, so a real backlog stalls
+  forever. Per-candidate confirmation still prevents a mass false delete.
 - **Trash counts as deleted (#766).** Confluence DC's `DELETE /rest/api/content/{id}`
   on a current page moves it to the space **Trash** rather than purging it, and —
   depending on the DC version — `GET /content/{id}` may still answer `200` with
