@@ -46,6 +46,11 @@ export class BackupDumpError extends Error {
   }
 }
 
+export interface EncryptedBackupStream {
+  stream: Readable;
+  filename: string;
+}
+
 export function attachmentsRoot(): string {
   return path.resolve(process.env.ATTACHMENTS_DIR ?? 'data/attachments');
 }
@@ -235,10 +240,9 @@ export async function isBackupLockHeld(): Promise<boolean> {
   return isWorkerLocked(BACKUP_LOCK_NAME);
 }
 
-export async function createEncryptedBackupStream(secret: BackupSecret): Promise<{
-  stream: Readable;
-  filename: string;
-}> {
+export async function createEncryptedBackupStream(
+  secret: BackupSecret,
+): Promise<EncryptedBackupStream> {
   const token = await acquireWorkerLock(BACKUP_LOCK_NAME, LOCK_TTL_SECONDS, { failClosed: true });
   if (!token) throw new BackupLockError();
 

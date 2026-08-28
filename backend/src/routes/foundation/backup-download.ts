@@ -5,12 +5,13 @@ import {
   BackupDumpError,
   BackupLockError,
   createEncryptedBackupStream,
+  type EncryptedBackupStream,
 } from '../../core/services/backup-service.js';
 
 const TICKET_PATTERN = /^[0-9a-f]{64}$/;
 
 export async function backupDownloadRoutes(fastify: FastifyInstance) {
-  fastify.get('/backup/download/:ticket', async (request, reply) => {
+  fastify.get('/backup/download/:ticket', { exposeHeadRoute: false }, async (request, reply) => {
     const { ticket } = request.params as { ticket: string };
     if (!TICKET_PATTERN.test(ticket)) {
       return reply.code(404).send({
@@ -29,33 +30,18 @@ export async function backupDownloadRoutes(fastify: FastifyInstance) {
       });
     }
 
+    let backup: EncryptedBackupStream;
     try {
-      const { stream, filename } = await createEncryptedBackupStream(exportTicket.secret);
-      let auditRecorded = false;
-      const recordAudit = (action: AuditAction) => {
-        if (auditRecorded) return;
-        auditRecorded = true;
-        void logAuditEvent(
-          exportTicket.userId,
-          action,
-          'backup',
-          filename,
-          { filename },
-        );
-      };
-
-      stream.once('end', () => recordAudit('BACKUP_EXPORTED'));
-      stream.once('error', () => recordAudit('BACKUP_EXPORT_FAILED'));
-      reply.raw.once('close', () => {
-        if (!reply.raw.writableFinished) recordAudit('BACKUP_EXPORT_FAILED');
-      });
-
-      reply.header('Referrer-Policy', 'no-referrer');
-      reply.header('Cache-Control', 'no-store');
-      reply.header('Content-Type', 'application/octet-stream');
-      reply.header('Content-Disposition', `attachment; filename="${filename}"`);
-      return reply.send(stream);
+      backup = await createEncryptedBackupStream(exportTicket.secret);
     } catch (err) {
+      await logAuditEvent(
+        exportTicket.userId,
+        'BACKUP_EXPORT_FAILED',
+        'backup',
+        undefined,
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+
       if (err instanceof BackupLockError) {
         return reply.code(409).send({
           error: 'Conflict',
@@ -72,5 +58,31 @@ export async function backupDownloadRoutes(fastify: FastifyInstance) {
       }
       throw err;
     }
+
+    const { stream, filename } = backup;
+    let auditRecorded = false;
+    const recordAudit = (action: AuditAction) => {
+      if (auditRecorded) return;
+      auditRecorded = true;
+      void logAuditEvent(
+        exportTicket.userId,
+        action,
+        'backup',
+        filename,
+        { filename },
+      );
+    };
+
+    stream.once('error', () => recordAudit('BACKUP_EXPORT_FAILED'));
+    reply.raw.once('finish', () => recordAudit('BACKUP_EXPORTED'));
+    reply.raw.once('close', () => {
+      if (!reply.raw.writableFinished) recordAudit('BACKUP_EXPORT_FAILED');
+    });
+
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('Cache-Control', 'no-store');
+    reply.header('Content-Type', 'application/octet-stream');
+    reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+    return reply.send(stream);
   });
 }
