@@ -1,4 +1,5 @@
-import { lazy, Suspense, useState, useCallback } from 'react';
+import { lazy, Suspense, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   BarChart3, Brain, Search, AlertTriangle,
 } from 'lucide-react';
@@ -79,11 +80,47 @@ export function AnalyticsPage() {
   const { hasFeature } = useEnterprise();
   const analyticsEnabled = hasFeature('advanced_analytics');
 
-  const [activeTab, setActiveTab] = useState<AnalyticsTab>('knowledge');
-  const [dateRange, setDateRange] = useState<DateRange>(() => ({
-    startDate: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
-    endDate: new Date().toISOString().slice(0, 10),
-  }));
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const defaultStart = useMemo(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10), []);
+  const defaultEnd = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const tabParam = searchParams.get('tab') as AnalyticsTab | null;
+  const activeTab: AnalyticsTab =
+    tabParam && TABS.some((t) => t.id === tabParam) ? tabParam : 'knowledge';
+
+  const fromParam = searchParams.get('from');
+  const toParam = searchParams.get('to');
+
+  const dateRange: DateRange = useMemo(
+    () => ({
+      startDate: fromParam && /^\d{4}-\d{2}-\d{2}$/.test(fromParam) ? fromParam : defaultStart,
+      endDate: toParam && /^\d{4}-\d{2}-\d{2}$/.test(toParam) ? toParam : defaultEnd,
+    }),
+    [fromParam, toParam, defaultStart, defaultEnd],
+  );
+
+  const handleTabChange = useCallback(
+    (tab: AnalyticsTab) => {
+      const next = new URLSearchParams(searchParams);
+      if (tab === 'knowledge') next.delete('tab');
+      else next.set('tab', tab);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleDateChange = useCallback(
+    (update: Partial<DateRange>) => {
+      const next = new URLSearchParams(searchParams);
+      const nextStart = update.startDate ?? dateRange.startDate;
+      const nextEnd = update.endDate ?? dateRange.endDate;
+      next.set('from', nextStart);
+      next.set('to', nextEnd);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams, dateRange.startDate, dateRange.endDate],
+  );
   const authUser = useAuthStore((s) => s.user);
 
   const handleExportPdf = useCallback(
@@ -153,7 +190,7 @@ export function AnalyticsPage() {
               type="date"
               value={dateRange.startDate}
               max={dateRange.endDate}
-              onChange={(e) => setDateRange((prev) => ({ ...prev, startDate: e.target.value }))}
+              onChange={(e) => handleDateChange({ startDate: e.target.value })}
               className="nm-card px-2 py-1.5 text-xs"
               data-testid="date-start"
             />
@@ -163,7 +200,7 @@ export function AnalyticsPage() {
               value={dateRange.endDate}
               min={dateRange.startDate}
               max={today}
-              onChange={(e) => setDateRange((prev) => ({ ...prev, endDate: e.target.value }))}
+              onChange={(e) => handleDateChange({ endDate: e.target.value })}
               className="nm-card px-2 py-1.5 text-xs"
               data-testid="date-end"
             />
@@ -184,7 +221,7 @@ export function AnalyticsPage() {
           return (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabChange(tab.id)}
               className={cn(
                 'flex items-center gap-2 rounded px-3 py-2 text-sm transition-colors',
                 activeTab === tab.id

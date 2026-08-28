@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { ReferenceAction } from '@compendiq/contracts';
+import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
 interface AdminSettings {
   aiGuardrailNoFabrication?: string;
@@ -78,7 +79,7 @@ export function AiSafetyTab() {
   }
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <SkeletonFormFields />;
   }
 
   return (

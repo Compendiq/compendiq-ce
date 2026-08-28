@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { EnterpriseContext } from '../../../shared/enterprise/enterprise-context';
 import type { EnterpriseContextValue } from '../../../shared/enterprise/types';
 import { AnalyticsPage } from './AnalyticsPage';
@@ -45,6 +46,7 @@ function makeEnterpriseValue(features: string[]): EnterpriseContextValue {
 
 function renderWithProviders(
   features: string[] = ['advanced_analytics', 'ai_usage_analytics'],
+  initialEntries: string[] = ['/admin/analytics'],
 ) {
   const queryClient = createQueryClient();
   const enterpriseValue = features.length > 0
@@ -60,7 +62,9 @@ function renderWithProviders(
   return render(
     <QueryClientProvider client={queryClient}>
       <EnterpriseContext.Provider value={enterpriseValue}>
-        <AnalyticsPage />
+        <MemoryRouter initialEntries={initialEntries}>
+          <AnalyticsPage />
+        </MemoryRouter>
       </EnterpriseContext.Provider>
     </QueryClientProvider>,
   );
@@ -127,5 +131,14 @@ describe('AnalyticsPage', () => {
     renderWithProviders();
     expect(screen.queryByTestId('export-btn')).toBeNull();
     expect(screen.queryByTestId('export-pdf')).toBeNull();
+  });
+
+  it('initializes active tab and date range from URL query parameters', async () => {
+    renderWithProviders(['advanced_analytics', 'ai_usage_analytics'], [
+      '/admin/analytics?tab=ai-usage&from=2026-01-01&to=2026-01-15',
+    ]);
+    expect(await screen.findByTestId('ai-usage-dashboard-mock')).toBeInTheDocument();
+    expect((screen.getByTestId('date-start') as HTMLInputElement).value).toBe('2026-01-01');
+    expect((screen.getByTestId('date-end') as HTMLInputElement).value).toBe('2026-01-15');
   });
 });

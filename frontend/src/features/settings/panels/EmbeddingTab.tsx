@@ -18,30 +18,25 @@ export function EmbeddingTab() {
 
   const [chunkSize, setChunkSize] = useState<number | undefined>(undefined);
   const [chunkOverlap, setChunkOverlap] = useState<number | undefined>(undefined);
-  const [drawioEmbedUrl, setDrawioEmbedUrl] = useState<string | undefined>(undefined);
   // Issue #257 — admin-configurable BullMQ job-history retention.
   const [reembedHistoryRetention, setReembedHistoryRetention] = useState<number | undefined>(undefined);
 
   // Initialise local state once data loads
   const effectiveChunkSize = chunkSize ?? adminSettings?.embeddingChunkSize ?? 500;
   const effectiveChunkOverlap = chunkOverlap ?? adminSettings?.embeddingChunkOverlap ?? 50;
-  const effectiveDrawioUrl = drawioEmbedUrl ?? adminSettings?.drawioEmbedUrl ?? '';
   const effectiveRetention =
     reembedHistoryRetention ?? adminSettings?.reembedHistoryRetention ?? 150;
 
   const savedChunkSize = adminSettings?.embeddingChunkSize ?? 500;
   const savedChunkOverlap = adminSettings?.embeddingChunkOverlap ?? 50;
-  const savedDrawioUrl = adminSettings?.drawioEmbedUrl ?? '';
   const savedRetention = adminSettings?.reembedHistoryRetention ?? 150;
 
   const hasChunkChanges =
     (chunkSize !== undefined && chunkSize !== savedChunkSize) ||
     (chunkOverlap !== undefined && chunkOverlap !== savedChunkOverlap);
-  const hasDrawioChanges =
-    drawioEmbedUrl !== undefined && drawioEmbedUrl !== savedDrawioUrl;
   const hasRetentionChanges =
     reembedHistoryRetention !== undefined && reembedHistoryRetention !== savedRetention;
-  const hasChanges = hasChunkChanges || hasDrawioChanges || hasRetentionChanges;
+  const hasChanges = hasChunkChanges || hasRetentionChanges;
 
   const updateAdminSettings = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -52,7 +47,6 @@ export function EmbeddingTab() {
       queryClient.invalidateQueries({ queryKey: ['settings', 'drawio-url'] });
       setChunkSize(undefined);
       setChunkOverlap(undefined);
-      setDrawioEmbedUrl(undefined);
       setReembedHistoryRetention(undefined);
       const hasChunk = variables.embeddingChunkSize !== undefined || variables.embeddingChunkOverlap !== undefined;
       if (hasChunk) {
@@ -68,12 +62,6 @@ export function EmbeddingTab() {
     const updates: Record<string, unknown> = {};
     if (chunkSize !== undefined) updates.embeddingChunkSize = chunkSize;
     if (chunkOverlap !== undefined) updates.embeddingChunkOverlap = chunkOverlap;
-    if (drawioEmbedUrl !== undefined) {
-      // Send null to clear the stored value (backend deletes the row, falling back to default).
-      // Trim first so a whitespace-only input ("   ") is treated as a clear, not a round-trip 400.
-      const trimmed = drawioEmbedUrl.trim();
-      updates.drawioEmbedUrl = trimmed === '' ? null : trimmed;
-    }
     if (reembedHistoryRetention !== undefined) {
       updates.reembedHistoryRetention = reembedHistoryRetention;
     }
@@ -163,34 +151,6 @@ export function EmbeddingTab() {
           This may take several minutes and temporarily affects AI Q&amp;A for all users.
         </div>
       )}
-
-      <hr className="border-border" />
-
-      <div>
-        <label className="mb-1.5 block text-sm font-medium" htmlFor="admin-drawio-url-input">
-          Draw.io Embed URL
-        </label>
-        <p className="mb-1.5 text-sm text-muted-foreground">
-          URL of the draw.io embed server. Change this if{' '}
-          <code className="rounded bg-foreground/10 px-1 text-xs">embed.diagrams.net</code> is
-          blocked by your firewall. Leave empty to use the default (
-          <code className="rounded bg-foreground/10 px-1 text-xs">https://embed.diagrams.net</code>).
-        </p>
-        <p className="mb-1.5 text-xs text-muted-foreground/70">
-          Note: if you use a custom URL, also update the{' '}
-          <code className="rounded bg-foreground/10 px-1 text-xs">frame-src</code> directive in{' '}
-          <code className="rounded bg-foreground/10 px-1 text-xs">frontend/nginx-security-headers.conf</code>.
-        </p>
-        <input
-          id="admin-drawio-url-input"
-          type="url"
-          placeholder="https://embed.diagrams.net"
-          value={effectiveDrawioUrl}
-          onChange={(e) => setDrawioEmbedUrl(e.target.value)}
-          className="nm-input w-full max-w-md"
-          data-testid="admin-drawio-url-input"
-        />
-      </div>
 
       <hr className="border-border" />
 

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
+import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
 interface SmtpConfig {
   host: string;
@@ -53,7 +54,7 @@ export function SmtpSettingsTab() {
   });
 
   if (isLoading) {
-    return <div className="animate-pulse space-y-4"><div className="h-8 rounded bg-card" /><div className="h-8 rounded bg-card" /></div>;
+    return <SkeletonFormFields />;
   }
 
   return (
@@ -66,8 +67,9 @@ export function SmtpSettingsTab() {
       </div>
 
       <div className="space-y-4">
-        <label className="flex items-center gap-2">
+        <label htmlFor="smtp-enabled" className="flex items-center gap-2">
           <input
+            id="smtp-enabled"
             type="checkbox"
             checked={current.enabled ?? false}
             onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
@@ -78,8 +80,9 @@ export function SmtpSettingsTab() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">SMTP Host</label>
+            <label htmlFor="smtp-host" className="mb-1 block text-sm font-medium">SMTP Host</label>
             <input
+              id="smtp-host"
               type="text"
               value={current.host ?? ''}
               onChange={(e) => setForm({ ...form, host: e.target.value })}
@@ -88,8 +91,9 @@ export function SmtpSettingsTab() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Port</label>
+            <label htmlFor="smtp-port" className="mb-1 block text-sm font-medium">Port</label>
             <input
+              id="smtp-port"
               type="number"
               value={current.port ?? DEFAULT_SMTP_PORT}
               onChange={(e) => setForm({ ...form, port: parseInt(e.target.value, 10) })}
@@ -98,8 +102,9 @@ export function SmtpSettingsTab() {
           </div>
         </div>
 
-        <label className="flex items-center gap-2">
+        <label htmlFor="smtp-secure" className="flex items-center gap-2">
           <input
+            id="smtp-secure"
             type="checkbox"
             checked={current.secure ?? false}
             onChange={(e) => setForm({ ...form, secure: e.target.checked })}
@@ -110,8 +115,9 @@ export function SmtpSettingsTab() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">Username</label>
+            <label htmlFor="smtp-user" className="mb-1 block text-sm font-medium">Username</label>
             <input
+              id="smtp-user"
               type="text"
               value={current.user ?? ''}
               onChange={(e) => setForm({ ...form, user: e.target.value })}
@@ -120,8 +126,9 @@ export function SmtpSettingsTab() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Password</label>
+            <label htmlFor="smtp-pass" className="mb-1 block text-sm font-medium">Password</label>
             <input
+              id="smtp-pass"
               type="password"
               value={form.pass ?? ''}
               onChange={(e) => setForm({ ...form, pass: e.target.value })}
@@ -132,8 +139,9 @@ export function SmtpSettingsTab() {
         </div>
 
         <div>
-          <label className="mb-1 block text-sm font-medium">From Address</label>
+          <label htmlFor="smtp-from" className="mb-1 block text-sm font-medium">From Address</label>
           <input
+            id="smtp-from"
             type="email"
             value={current.from ?? ''}
             onChange={(e) => setForm({ ...form, from: e.target.value })}
@@ -157,11 +165,13 @@ export function SmtpSettingsTab() {
         <h4 className="mb-2 text-sm font-semibold">Send Test Email</h4>
         <div className="flex gap-2">
           <input
+            id="smtp-test-email"
             type="email"
             value={testEmail}
             onChange={(e) => setTestEmail(e.target.value)}
             placeholder="admin@example.com"
             className="nm-input flex-1"
+            aria-label="Recipient for test email"
           />
           <button
             onClick={() => testMutation.mutate(testEmail)}

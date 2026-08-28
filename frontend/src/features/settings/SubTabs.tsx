@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { cn } from '../../shared/lib/cn';
 
@@ -34,8 +34,9 @@ interface SubTabsProps {
  * so a query param keeps the routing flat and avoids a second layer of
  * lazy-loaded panel boundaries.
  */
-export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
+export function SubTabs({ ariaLabel, tabs, testIdRoot = 'tab' }: SubTabsProps) {
   const [params, setParams] = useSearchParams();
+  const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const visible = useMemo(() => tabs.filter((t) => t.visible !== false), [tabs]);
 
   const requested = params.get('sub');
@@ -63,6 +64,10 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
     return <div className="space-y-6">{visible[0]!.render()}</div>;
   }
 
+  const rootSlug = testIdRoot || 'tab';
+  const panelId = `subtabpanel-${rootSlug}-${activeId}`;
+  const tabId = `subtab-${rootSlug}-${activeId}`;
+
   return (
     <div className="space-y-6">
       {/* `inline-flex` instead of `flex` so the tablist hugs its content
@@ -73,34 +78,47 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
         aria-label={ariaLabel}
         className="inline-flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
         onKeyDown={(e) => {
-          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-          e.preventDefault();
           const ids = visible.map((t) => t.id);
           const idx = ids.indexOf(activeId);
-          const nextIdx =
-            e.key === 'ArrowRight'
-              ? (idx + 1) % ids.length
-              : (idx - 1 + ids.length) % ids.length;
-          const nextId = ids[nextIdx];
-          if (nextId) setSub(nextId);
+          let targetId: string | undefined;
+
+          if (e.key === 'ArrowRight') {
+            targetId = ids[(idx + 1) % ids.length];
+          } else if (e.key === 'ArrowLeft') {
+            targetId = ids[(idx - 1 + ids.length) % ids.length];
+          } else if (e.key === 'Home') {
+            targetId = ids[0];
+          } else if (e.key === 'End') {
+            targetId = ids[ids.length - 1];
+          }
+
+          if (targetId) {
+            e.preventDefault();
+            setSub(targetId);
+            tabRefs.current.get(targetId)?.focus();
+          }
         }}
       >
         {visible.map((tab) => {
           const isActive = tab.id === activeId;
+          const currentTabId = `subtab-${rootSlug}-${tab.id}`;
+          const currentPanelId = `subtabpanel-${rootSlug}-${tab.id}`;
           return (
             <button
               key={tab.id}
+              id={currentTabId}
+              ref={(node) => {
+                if (node) tabRefs.current.set(tab.id, node);
+                else tabRefs.current.delete(tab.id);
+              }}
               role="tab"
               aria-selected={isActive}
+              aria-controls={currentPanelId}
               tabIndex={isActive ? 0 : -1}
               onClick={() => setSub(tab.id)}
-              data-testid={testIdRoot ? `subtab-${testIdRoot}-${tab.id}` : undefined}
+              data-testid={`subtab-${rootSlug}-${tab.id}`}
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
-                // `panel-tab-active` is the one active-segment treatment, shared
-                // with the inspector's view switcher and the main nav. This was
-                // a fourth: a tinted pane carrying `shadow-sm` and a primary
-                // ring, both retired by the flat system.
+                'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 isActive
                   ? 'panel-tab-active font-medium'
                   : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
@@ -116,13 +134,16 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot }: SubTabsProps) {
           );
         })}
       </div>
-      {/* No motion wrapper around the body. An earlier draft used
-          AnimatePresence(mode="wait") to cross-fade sub-tabs, but the same
-          pattern caused stuck exit layers on React 19 + framer-motion 12
-          elsewhere in this codebase (see PageTransition.tsx) — the phantom
-          layer intercepts wheel events and blocks page scroll. The cross-fade
-          is decorative; the scroll is load-bearing. Plain swap wins. */}
-      <div>{active?.render()}</div>
+
+      <div
+        role="tabpanel"
+        id={panelId}
+        aria-labelledby={tabId}
+        tabIndex={0}
+        className="outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        {active?.render()}
+      </div>
     </div>
   );
 }

@@ -59,7 +59,10 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
     if (isLoading || !settings) return <SkeletonFormFields />;
     return <AiPromptsTab settings={settings} onSave={onSaveSettings} isAdmin={isAdmin} />;
   },
-  'personal/editor': renderWithSettings(EditorPreferencesTab),
+  'personal/editor': ({ settings, isLoading, onSaveSettings, isAdmin }) => {
+    if (isLoading || !settings) return <SkeletonFormFields />;
+    return <EditorPreferencesTab settings={settings} onSave={onSaveSettings} isAdmin={isAdmin} />;
+  },
   'personal/theme': ({ onSaveSettings }) => <ThemeTab onSave={onSaveSettings} />,
 
   // Knowledge

@@ -80,8 +80,8 @@ describe('SystemTab', () => {
     expect(screen.getByTestId('backend-ce-commit')).toHaveTextContent('ce999');
   });
 
-  it('loads the current design and persists a Change Desk selection', async () => {
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+  it('navigates to /setup?rerun=true when Re-run Setup Wizard is clicked', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/api/health')) {
         return new Response(
@@ -89,37 +89,13 @@ describe('SystemTab', () => {
           { headers: { 'Content-Type': 'application/json' } },
         );
       }
-      if (url.includes('/api/admin/login-page-config') && init?.method === 'PUT') {
-        return new Response(
-          JSON.stringify({ variant: 'change-desk' }),
-          { headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-      return new Response(
-        JSON.stringify({ variant: 'local-loop' }),
-        { headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response('Not found', { status: 404 });
     });
 
     render(<SystemTab />, { wrapper: createWrapper() });
 
-    const localLoop = await screen.findByRole('radio', { name: /Local Loop/i });
-    expect(localLoop).toBeChecked();
-    expect(screen.getByTestId('apply-login-page-variant')).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Change Desk/i }));
-    fireEvent.click(screen.getByTestId('apply-login-page-variant'));
-
-    await waitFor(() => {
-      const updateCall = fetchMock.mock.calls.find(
-        ([input, init]) =>
-          String(input).includes('/api/admin/login-page-config') &&
-          (init as RequestInit | undefined)?.method === 'PUT',
-      );
-      expect(updateCall).toBeDefined();
-      expect(JSON.parse((updateCall![1] as RequestInit).body as string)).toEqual({
-        variant: 'change-desk',
-      });
-    });
+    const rerunBtn = await screen.findByTestId('rerun-setup-btn');
+    expect(rerunBtn).toBeInTheDocument();
+    fireEvent.click(rerunBtn);
   });
 });

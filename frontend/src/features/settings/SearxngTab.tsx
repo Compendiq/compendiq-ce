@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Search, CheckCircle2, XCircle, Loader2, ExternalLink } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { Button } from '../../shared/components/Button';
+import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
 interface SearxngSettings {
   url: string;
@@ -50,7 +51,7 @@ export function SearxngTab() {
     onError: (err) => toast.error(err.message),
   });
 
-  if (isLoading) return <div className="flex items-center gap-2 text-muted-foreground"><Loader2 size={16} className="animate-spin" /> Loading...</div>;
+  if (isLoading) return <SkeletonFormFields />;
 
   return (
     <div className="space-y-6">
@@ -63,9 +64,9 @@ export function SearxngTab() {
       </div>
 
       <div>
-        <label className="mb-1.5 block text-sm font-medium">SearXNG URL</label>
+        <label htmlFor="searxng-url" className="mb-1.5 block text-sm font-medium">SearXNG URL</label>
         <div className="flex gap-2">
-          <input value={form.url} onChange={(e) => updateField('url', e.target.value)}
+          <input id="searxng-url" value={form.url} onChange={(e) => updateField('url', e.target.value)}
             className="flex-1 rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
             placeholder="http://searxng:8080" data-testid="searxng-url" />
           <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending}
@@ -97,14 +98,14 @@ export function SearxngTab() {
 
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="mb-1.5 block text-sm font-medium">Max Results</label>
-          <input type="number" value={form.maxResults} onChange={(e) => updateField('maxResults', parseInt(e.target.value, 10) || 5)}
+          <label htmlFor="searxng-max-results" className="mb-1.5 block text-sm font-medium">Max Results</label>
+          <input id="searxng-max-results" type="number" value={form.maxResults} onChange={(e) => updateField('maxResults', parseInt(e.target.value, 10) || 5)}
             min={1} max={20} className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50" data-testid="searxng-max-results" />
           <p className="mt-1 text-xs text-muted-foreground">Number of search results returned (1-20)</p>
         </div>
         <div>
-          <label className="mb-1.5 block text-sm font-medium">Search Categories</label>
-          <input value={form.categories} onChange={(e) => updateField('categories', e.target.value)}
+          <label htmlFor="searxng-categories" className="mb-1.5 block text-sm font-medium">Search Categories</label>
+          <input id="searxng-categories" value={form.categories} onChange={(e) => updateField('categories', e.target.value)}
             className="w-full rounded-lg border border-border bg-foreground/[0.03] px-3 py-2 text-sm outline-none focus:border-primary/50"
             placeholder="general" data-testid="searxng-categories" />
           <p className="mt-1 text-xs text-muted-foreground">Comma-separated: general, it, science, files</p>
