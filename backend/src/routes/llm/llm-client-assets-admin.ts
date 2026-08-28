@@ -6,6 +6,7 @@ import {
   ClientAssetInstallStatusSchema,
   ClientAssetSearchResponseSchema,
   HfRepoIdSchema,
+  HunspellInstallRequestSchema,
 } from '@compendiq/contracts';
 import {
   CLIENT_ASSET_UPLOAD_CHUNK_BYTES,
@@ -15,6 +16,7 @@ import {
   getClientModelInstallStatus,
   inspectClientModel,
   installClientModel,
+  installHunspellModel,
   searchClientModels,
 } from '../../core/services/client-model-hub.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
@@ -59,6 +61,12 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
     }
     void installClientModel(body.repo).catch(() => {});
     return reply.code(202).send(ClientAssetInstallStatusSchema.parse(getClientModelInstallStatus()));
+  });
+
+  fastify.post('/admin/client-assets/hunspell/install', ADMIN_RATE_LIMIT, async (request, reply) => {
+    const body = HunspellInstallRequestSchema.parse(request.body);
+    await installHunspellModel(body.id);
+    return reply.code(200).send({ ok: true, id: body.id });
   });
 
   fastify.put<{ Params: { modelId: string; '*': string } }>(

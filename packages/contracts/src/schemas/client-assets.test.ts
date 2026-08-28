@@ -6,6 +6,7 @@ import {
   ClientAssetIdSchema,
   ClientAssetInspectSchema,
   ClientAssetInstallRequestSchema,
+  HunspellInstallRequestSchema,
   ClientAssetInstallStatusSchema,
   ClientAssetManifestSchema,
   ClientAssetSearchResponseSchema,
@@ -152,5 +153,20 @@ describe('Hub install wire schemas', () => {
       total: 0,
       error: null,
     }).status).toBe('idle');
+  });
+});
+
+describe('HunspellInstallRequestSchema', () => {
+  it('accepts en_US and de_DE ids', () => {
+    expect(HunspellInstallRequestSchema.parse({ id: 'hunspell-en_US' })).toEqual({
+      id: 'hunspell-en_US',
+    });
+    expect(HunspellInstallRequestSchema.parse({ id: 'hunspell-de_DE' })).toEqual({
+      id: 'hunspell-de_DE',
+    });
+  });
+
+  it('rejects unknown ids', () => {
+    expect(() => HunspellInstallRequestSchema.parse({ id: 'hunspell-fr_FR' })).toThrow();
   });
 });
