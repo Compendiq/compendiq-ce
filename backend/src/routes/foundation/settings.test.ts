@@ -838,6 +838,25 @@ describe('Settings routes – GET/PUT settings (shared tables)', () => {
     expect(updateCalls[0][1]).toContain(JSON.stringify({ improve_clarity: 'Be clear!', generate_spec: 'Draft architecture RFC', generate_guide: 'Draft howto guide' }));
   });
 
+  it('PUT /settings theme-only does not write custom_prompts (#1436)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      payload: { theme: 'polar-slate' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const update = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE user_settings SET'),
+    );
+    expect(update?.[0]).toContain('theme = $1');
+    expect(update?.[0]).not.toContain('custom_prompts');
+    expect(update?.[1]).toEqual(['polar-slate', 'test-user-id']);
+  });
+
+
   // #1402 (review r1): ensureUserSettingsRow's `code !== '23503'` narrowing
   // (settings.ts) had no test pinning the negative direction — a mutation
   // that widens it to swallow every error left the whole suite green (see

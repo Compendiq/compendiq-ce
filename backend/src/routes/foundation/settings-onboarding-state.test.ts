@@ -320,4 +320,43 @@ describe.skipIf(!dbAvailable)('Onboarding checklist state — real-Postgres roun
     });
     expect(get.json().customPrompts).toEqual({ improve_grammar: 'my saved prompt' });
   });
+
+  // #1436: the same overwrite, triggered by a theme-only PUT — the original
+  // reproduction (save a prompt, then save the theme with no customPrompts
+  // in the body). The onboardingState case above is the #1402 review r1
+  // finding; this is the issue's stated evidence.
+  it('a theme-only PUT leaves a previously-saved customPrompts intact (#1436)', async () => {
+    const { token, userId } = await createUser('theme_custom_prompts_user');
+
+    const save = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { customPrompts: { improve_grammar: 'keep me' } },
+    });
+    expect(save.statusCode).toBe(200);
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { theme: 'polar-slate' },
+    });
+    expect(put.statusCode).toBe(200);
+
+    const row = await query<{ custom_prompts: Record<string, string>; theme: string }>(
+      'SELECT custom_prompts, theme FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    expect(row.rows[0]!.custom_prompts).toEqual({ improve_grammar: 'keep me' });
+    expect(row.rows[0]!.theme).toBe('polar-slate');
+
+    const get = await app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(get.json().customPrompts).toEqual({ improve_grammar: 'keep me' });
+    expect(get.json().theme).toBe('polar-slate');
+  });
 });
