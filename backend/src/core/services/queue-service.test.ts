@@ -489,6 +489,41 @@ describe('queue-service', () => {
       );
     });
 
+    it('assigns distinct ids to concurrent jobs enqueued in the same millisecond', async () => {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const [firstId, secondId] = await Promise.all([
+        enqueueJob('no-such-queue', { request: 'first' }),
+        enqueueJob('no-such-queue', { request: 'second' }),
+      ]);
+
+      expect(firstId).not.toBe(secondId);
+    });
+
+    it('passes each generated id to the matching legacy processor invocation', async () => {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const firstId = await enqueueJob('reembed-all', { request: 'first' });
+      await vi.waitFor(() => {
+        expect(legacy.runReembedAllJob).toHaveBeenCalledOnce();
+      });
+      const secondId = await enqueueJob('reembed-all', { request: 'second' });
+      await vi.waitFor(() => {
+        expect(legacy.runReembedAllJob).toHaveBeenCalledTimes(2);
+      });
+
+      expect(firstId).not.toBe(secondId);
+      const processedJobs = legacy.runReembedAllJob.mock.calls.map(([job]) => job);
+      expect(processedJobs).toEqual([
+        expect.objectContaining({ id: firstId, data: { request: 'first' } }),
+        expect.objectContaining({ id: secondId, data: { request: 'second' } }),
+      ]);
+    });
+
     it('does not create any BullMQ queues or schedulers in legacy mode', async () => {
       const { startQueueWorkers } = await import('./queue-service.js');
       await startQueueWorkers();

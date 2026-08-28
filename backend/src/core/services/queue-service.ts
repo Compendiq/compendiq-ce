@@ -8,6 +8,7 @@
  * Uses ioredis (BullMQ's native client) which coexists with the existing node-redis client.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Queue, Worker, type Job } from 'bullmq';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
@@ -222,10 +223,9 @@ export async function stopQueueWorkers(): Promise<void> {
  *     NOT remove it — the duplicate `add()` is ignored by BullMQ (emitting a
  *     `duplicated` event) and the second caller observes the same jobId.
  *     That's the "collapse concurrent POSTs" semantic.
- *   - This idempotency model is BullMQ-only: legacy mode ignores `opts.jobId`
- *     and runs the processor for every call, so concurrent POSTs do NOT
- *     collapse there — reembed self-guards downstream via the Redis
- *     embedding lock instead.
+ *   - Legacy mode still honors an explicit `opts.jobId`, but it does not
+ *     deduplicate matching ids: every call runs the processor. Without an
+ *     explicit id, each call receives a fresh UUID-based id.
  *
  * When BullMQ is disabled (`USE_BULLMQ=false`) this runs the queue's
  * registered processor inline, fire-and-forget (legacy fallback behaviour).
@@ -237,7 +237,7 @@ export async function enqueueJob(
   opts?: { jobId?: string; removeOnComplete?: number; removeOnFail?: number },
 ): Promise<string> {
   if (!USE_BULLMQ) {
-    const fakeId = opts?.jobId ?? `${queueName}-${Date.now()}`;
+    const fakeId = opts?.jobId ?? `${queueName}-${randomUUID()}`;
     const def = workerDefs.find((d) => d.queueName === queueName);
     if (def) {
       // Fire-and-forget inline execution. We don't await so the caller
@@ -295,7 +295,7 @@ export async function enqueueJob(
   }
 
   const job = await q.add(queueName, data, addOpts);
-  return job.id ?? opts?.jobId ?? `${queueName}-${Date.now()}`;
+  return job.id ?? opts?.jobId ?? `${queueName}-${randomUUID()}`;
 }
 
 /**
