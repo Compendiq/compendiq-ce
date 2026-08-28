@@ -1,11 +1,56 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { BackupStatusResponse, UpdateBackupSettingsInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
-import { useAuthStore } from '../../../stores/auth-store';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { PanelHeader } from '../PanelHeader';
+
+const S3_FORM_KEYS = [
+  's3Enabled',
+  's3Endpoint',
+  's3Bucket',
+  's3Region',
+  's3AccessKey',
+  's3SecretKey',
+  's3Prefix',
+  's3ForcePathStyle',
+] as const;
+
+function useNoticeRetry(
+  refetch: () => Promise<{ isError: boolean }>,
+  stillFailing: boolean,
+  focusTarget: React.RefObject<HTMLElement | null>,
+) {
+  const [retryInFlight, setRetryInFlight] = useState(false);
+  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
+
+  useEffect(() => {
+    if (!restoreFocusAfterRetry || stillFailing || retryInFlight) return;
+    setRestoreFocusAfterRetry(false);
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    focusTarget.current?.focus();
+  }, [focusTarget, restoreFocusAfterRetry, retryInFlight, stillFailing]);
+
+  const onRetry = useCallback(() => {
+    if (retryInFlight) return;
+    setRetryInFlight(true);
+    setRestoreFocusAfterRetry(true);
+    void refetch()
+      .then(
+        (result) => setRestoreFocusAfterRetry(!result.isError),
+        () => setRestoreFocusAfterRetry(false),
+      )
+      .finally(() => setRetryInFlight(false));
+  }, [refetch, retryInFlight]);
+
+  return { onRetry, retryInFlight };
+}
+
+export function navigateToBackupDownload(url: string) {
+  window.location.assign(url);
+}
 
 export function BackupTab() {
   const queryClient = useQueryClient();
@@ -13,9 +58,11 @@ export function BackupTab() {
   const [downloading, setDownloading] = useState(false);
   const [form, setForm] = useState<Partial<UpdateBackupSettingsInput>>({});
 
-  const { data, isLoading } = useQuery<BackupStatusResponse>({
+  const { data, isLoading, isError, error, isFetching, refetch } = useQuery<BackupStatusResponse>({
     queryKey: ['admin', 'backup'],
     queryFn: () => apiFetch('/admin/backup'),
+    refetchInterval: (query) =>
+      query.state.data?.history.some((run) => run.status === 'running') ? 3_000 : false,
   });
 
   const saveMutation = useMutation({
@@ -47,59 +94,130 @@ export function BackupTab() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  if (isLoading || !data) return <SkeletonFormFields />;
-
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const queryRetry = useNoticeRetry(refetch, isError, panelRef);
 
   async function downloadBackup() {
     setDownloading(true);
     try {
-      const { accessToken } = useAuthStore.getState();
-      const headers: HeadersInit = { 'Content-Type': 'application/json' };
-      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-      const res = await fetch('/api/admin/backup/export', {
+      const ticket = await apiFetch<{ downloadUrl: string }>('/admin/backup/export-ticket', {
         method: 'POST',
-        headers,
-        credentials: 'include',
         body: JSON.stringify(passphrase ? { passphrase } : {}),
       });
-      if (!res.ok) {
-        let message = `Backup failed (${res.status})`;
-        try {
-          const body = (await res.json()) as { message?: string; error?: string };
-          if (body.message) message = body.message;
-          else if (body.error) message = body.error;
-        } catch {
-          /* keep default */
-        }
-        toast.error(message);
-        return;
-      }
-      const blob = await res.blob();
-      const filename =
-        res.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1] ??
-        'compendiq-backup.enc';
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-        a.remove();
-      }, 100);
-      toast.success('Backup downloaded');
+      setPassphrase('');
+      navigateToBackupDownload(ticket.downloadUrl);
+      toast.success('Backup download started');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Backup failed');
+      toast.error(
+        err instanceof Error
+          ? `Backup download could not be prepared: ${err.message}. Retry.`
+          : 'Backup download could not be prepared. Retry.',
+      );
     } finally {
       setDownloading(false);
     }
   }
 
+  if (!data && (isError || queryRetry.retryInFlight)) {
+    return (
+      <div
+        ref={panelRef}
+        className="space-y-6"
+        tabIndex={-1}
+        aria-busy={isFetching || undefined}
+      >
+        <PanelHeader subtitle="Encrypted PostgreSQL + attachment backups. Archives use AES-256-GCM and never land unencrypted on disk." />
+        <div
+          role="alert"
+          className="space-y-2 rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm"
+        >
+          <p className="font-medium">
+            Backup settings could not be loaded. Retry to restore the controls.
+          </p>
+          {error instanceof Error && (
+            <p className="break-words text-muted-foreground">{error.message}</p>
+          )}
+          <button
+            type="button"
+            className="nm-button-ghost"
+            onClick={queryRetry.onRetry}
+            aria-disabled={queryRetry.retryInFlight || undefined}
+          >
+            {queryRetry.retryInFlight ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading || !data) {
+    return (
+      <div ref={panelRef} tabIndex={-1} aria-busy={isFetching || undefined}>
+        <SkeletonFormFields />
+      </div>
+    );
+  }
+
+  const savedS3Form: Pick<
+    UpdateBackupSettingsInput,
+    (typeof S3_FORM_KEYS)[number]
+  > = {
+    s3Enabled: data.s3.enabled,
+    s3Endpoint: data.s3.endpoint,
+    s3Bucket: data.s3.bucket,
+    s3Region: data.s3.region,
+    s3AccessKey: data.s3.accessKey,
+    s3SecretKey: data.s3.secretKey,
+    s3Prefix: data.s3.prefix,
+    s3ForcePathStyle: data.s3.forcePathStyle,
+  };
+  const hasUnsavedS3Changes = S3_FORM_KEYS.some(
+    (key) => form[key] !== undefined && form[key] !== savedS3Form[key],
+  );
+  const runDisabledReason = !data.hasMasterKey
+    ? 'Configure BACKUP_ENCRYPTION_KEY before running an S3 backup.'
+    : !data.s3.enabled
+      ? 'Enable and save S3 uploads before running a backup.'
+      : data.s3.endpoint.trim() === ''
+        ? 'Save an S3 endpoint before running a backup.'
+        : data.s3.bucket.trim() === ''
+          ? 'Save an S3 bucket before running a backup.'
+          : !data.s3.hasAccessKey || !data.s3.hasSecretKey
+            ? 'Save S3 access and secret keys before running a backup.'
+            : data.lockHeld
+              ? 'A backup is already running.'
+              : null;
+
   return (
-    <div className="space-y-8">
+    <div
+      ref={panelRef}
+      className="space-y-8"
+      tabIndex={-1}
+      aria-busy={isFetching || undefined}
+    >
       <PanelHeader subtitle="Encrypted PostgreSQL + attachment backups. Archives use AES-256-GCM and never land unencrypted on disk." />
 
+      {(isError || queryRetry.retryInFlight) && (
+        <div
+          role="status"
+          className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm"
+        >
+          <p>
+            <span>
+              Backup settings could not be refreshed. The displayed settings may be out of date.
+            </span>{' '}
+            <button
+              type="button"
+              className="underline aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={queryRetry.onRetry}
+              aria-disabled={queryRetry.retryInFlight || undefined}
+            >
+              {queryRetry.retryInFlight ? 'Retrying…' : 'Retry'}
+            </button>
+            .
+          </p>
+        </div>
+      )}
       <section className="space-y-4" aria-labelledby="backup-download-heading">
         <h3 id="backup-download-heading" className="text-lg font-semibold">Download backup</h3>
         <p className="text-sm text-muted-foreground">
@@ -221,7 +339,7 @@ export function BackupTab() {
             onChange={(e) => setForm({ ...form, s3ForcePathStyle: e.target.checked })}
             className="accent-primary h-4 w-4"
           />
-          <span className="text-sm">Path-style addressing (MinIO, R2, Wasabi)</span>
+          <span className="text-sm">Path-style addressing (public S3-compatible endpoints)</span>
         </label>
         <div className="flex flex-wrap gap-2">
           <button
@@ -236,13 +354,19 @@ export function BackupTab() {
           <button
             type="button"
             className="nm-button-ghost"
-            disabled={testMutation.isPending}
+            disabled={testMutation.isPending || hasUnsavedS3Changes}
             onClick={() => testMutation.mutate()}
+            aria-describedby={hasUnsavedS3Changes ? 'backup-test-s3-reason' : undefined}
             data-testid="backup-test-s3-btn"
           >
             {testMutation.isPending ? 'Testing…' : 'Test connection'}
           </button>
         </div>
+        {hasUnsavedS3Changes && (
+          <p id="backup-test-s3-reason" className="break-words text-sm text-muted-foreground">
+            Save changes before testing.
+          </p>
+        )}
       </section>
 
       <hr className="border-border" />
@@ -300,12 +424,18 @@ export function BackupTab() {
         <button
           type="button"
           className="nm-button-ghost"
-          disabled={runMutation.isPending || data.lockHeld}
+          disabled={runMutation.isPending || runDisabledReason !== null}
           onClick={() => runMutation.mutate()}
+          aria-describedby={runDisabledReason ? 'backup-run-now-reason' : undefined}
           data-testid="backup-run-now-btn"
         >
           {runMutation.isPending ? 'Queuing…' : 'Run backup to S3 now'}
         </button>
+        {runDisabledReason && (
+          <p id="backup-run-now-reason" className="break-words text-sm text-muted-foreground">
+            {runDisabledReason}
+          </p>
+        )}
       </section>
 
       <section className="space-y-2" aria-labelledby="backup-history-heading">
