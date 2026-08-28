@@ -19,29 +19,36 @@ export async function withLocalAttachmentMutationLock<T>(
   const client = await getPool().connect();
   let lockAcquired = false;
   let discardClient: Error | undefined;
+  let operationError: unknown;
+  let cleanupError: unknown;
+  let result: T | undefined;
 
   try {
     await client.query('SET statement_timeout = 0');
     await client.query('SELECT pg_advisory_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
     lockAcquired = true;
-    return await operation(client);
-  } finally {
-    try {
-      if (lockAcquired) {
-        await client.query('SELECT pg_advisory_unlock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
-      }
-    } catch (error) {
-      discardClient = error instanceof Error ? error : new Error(String(error));
-      throw error;
-    } finally {
-      try {
-        await client.query('RESET statement_timeout');
-      } catch (error) {
-        discardClient ??= error instanceof Error ? error : new Error(String(error));
-        throw error;
-      } finally {
-        client.release(discardClient);
-      }
-    }
+    result = await operation(client);
+  } catch (error) {
+    operationError = error;
   }
+
+  try {
+    if (lockAcquired) {
+      await client.query('SELECT pg_advisory_unlock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    }
+  } catch (error) {
+    cleanupError = error;
+    discardClient = error instanceof Error ? error : new Error(String(error));
+  }
+  try {
+    await client.query('RESET statement_timeout');
+  } catch (error) {
+    cleanupError ??= error;
+    discardClient ??= error instanceof Error ? error : new Error(String(error));
+  }
+  client.release(discardClient);
+
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+  return result as T;
 }

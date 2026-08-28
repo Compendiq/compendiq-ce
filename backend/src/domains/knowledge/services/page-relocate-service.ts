@@ -319,18 +319,6 @@ export function rewriteAttachmentRefs(
   return { html: changed ? doc.body.innerHTML : html, refs: [...refs.values()] };
 }
 
-/**
- * Direct children of a page under a given identifier flavour, INCLUDING
- * soft-deleted ones — the repoint statements rewrite those too, so the
- * compensating restore has to be able to put them back.
- */
-async function loadChildIds(key: string, pageId: number): Promise<number[]> {
-  const res = await query<{ id: number }>(
-    'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
-    [key, pageId],
-  );
-  return res.rows.map((r) => r.id);
-}
 
 /** Number of local version snapshots a move to Confluence would discard. */
 export async function countLocalVersions(pageId: number): Promise<number> {

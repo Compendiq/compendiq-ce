@@ -254,7 +254,6 @@ const STANDALONE_TRASH_PURGE_BATCH_SIZE = 10_000;
  * logged and the promise resolves with the count so far).
  */
 export async function purgeExpiredStandalonePages(): Promise<number> {
-  const pool = getPool();
   let deleted = 0;
 
   try {

@@ -104,28 +104,33 @@ export async function exportPostgresSnapshot(
 
   const closeClient = async (transactionCommand?: 'COMMIT' | 'ROLLBACK'): Promise<void> => {
     let discardClient: Error | undefined;
+    let transactionError: unknown;
+    let cleanupError: unknown;
+
     try {
       if (transactionCommand) await client.query(transactionCommand);
-    } finally {
-      try {
-        if (lockAcquired) {
-          await client.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
-          lockAcquired = false;
-        }
-      } catch (error) {
-        discardClient = error instanceof Error ? error : new Error(String(error));
-        throw error;
-      } finally {
-        try {
-          await client.query('RESET statement_timeout');
-        } catch (error) {
-          discardClient ??= error instanceof Error ? error : new Error(String(error));
-          throw error;
-        } finally {
-          client.release(discardClient);
-        }
-      }
+    } catch (error) {
+      transactionError = error;
     }
+    try {
+      if (lockAcquired) {
+        await client.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        lockAcquired = false;
+      }
+    } catch (error) {
+      cleanupError = error;
+      discardClient = error instanceof Error ? error : new Error(String(error));
+    }
+    try {
+      await client.query('RESET statement_timeout');
+    } catch (error) {
+      cleanupError ??= error;
+      discardClient ??= error instanceof Error ? error : new Error(String(error));
+    }
+    client.release(discardClient);
+
+    if (transactionError) throw transactionError;
+    if (cleanupError) throw cleanupError;
   };
 
   try {
