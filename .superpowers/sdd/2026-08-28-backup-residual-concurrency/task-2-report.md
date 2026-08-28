@@ -80,3 +80,56 @@ The worktree was clean immediately after the implementation commit. Only the two
 ## Concerns
 
 None identified within Task 2 scope. The advisory lock deliberately disables both statement and lock timeouts on its dedicated waiting session, then restores them before returning the client to the pool; this favors correctness for a potentially long media import as required by the task ruling.
+
+## Fix Round 1
+
+### Status
+
+Addressed the residual completion-boundary race. A Notion page now remains incomplete until its final mention-aware `body_html`/`body_text` update commits while holding that page's keyed advisory lock. Every completed-page fast path acquires the same lock and performs an authoritative re-read before returning `already_imported`.
+
+### TDD evidence
+
+Added a real-PostgreSQL regression test that uses a trigger plus a separate advisory-lock gate to pause the winner's forward-mention rewrite. The same-page waiter is then started while the final update is blocked.
+
+RED command (exit 1):
+
+```bash
+cd backend && npx vitest run src/domains/knowledge/services/notion-import-lock.test.ts src/domains/knowledge/services/notion-import-service.test.ts
+```
+
+Observed before the production fix:
+
+```text
+src/domains/knowledge/services/notion-import-service.test.ts (22 tests | 1 failed)
+× does not let a same-page waiter return before the final mention rewrite commits
+AssertionError: expected true to be false
+Test Files  1 failed | 1 passed (2)
+```
+
+The waiter settled while the gated rewrite was still uncommitted, reproducing the reviewed race.
+
+GREEN command (exit 0):
+
+```bash
+cd backend && npx vitest run src/domains/knowledge/services/notion-import-lock.test.ts src/domains/knowledge/services/notion-import-service.test.ts
+```
+
+Exact result:
+
+```text
+Test Files  2 passed (2)
+Tests       25 passed (25)
+Duration    2.26s
+```
+
+### Implementation
+
+- Completed-page discovery now always goes through `withNotionImportLock` and re-reads under the lock.
+- The deterministic multi-page flow first allocates all placeholder IDs one lock at a time, then prepares attachments one page lock at a time, and finally writes each completed body under only that page's lock.
+- Placeholder `body_html` and `body_text` remain empty through allocation and attachment preparation, so `findImportedPage(...).complete` cannot become true before the final rewrite.
+- Failed preparation removes the provisional page from the mention map before any final bodies are written.
+- The old post-lock `rewriteImportedMentions` pass was removed.
+
+### Concerns
+
+None identified within this fix scope. The focused suite covers the delayed final rewrite, the same-page waiter boundary, normalized lock serialization, attachment cleanup, hierarchy, retry, and mention rewrite behavior.

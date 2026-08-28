@@ -10,9 +10,9 @@ import {
   teardownTestDb,
   truncateAllTables,
 } from '../../../test-db-helper.js';
-import { query } from '../../../core/db/postgres.js';
+import { getPool, query } from '../../../core/db/postgres.js';
 import { NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
-import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
+import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
 import { runNotionImport } from './notion-import-service.js';
@@ -930,6 +930,140 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     } finally {
       releaseWinnerFile.resolve();
       await waiterServer.close();
+    }
+  });
+
+  it('does not let a same-page waiter return before the final mention rewrite commits', async () => {
+    const targetId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const hostId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const rewriteGateKey = 1_420_099;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        [hostId]: {
+          object: 'page',
+          id: hostId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Host'),
+        },
+        [targetId]: {
+          object: 'page',
+          id: targetId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Target'),
+        },
+      },
+      blockChildren: {
+        [hostId]: [{
+          object: 'block',
+          id: 'forward-mention',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{
+              type: 'mention',
+              mention: { type: 'page', page: { id: targetId } },
+              plain_text: 'Target',
+              href: `https://www.notion.so/${targetId.replace(/-/g, '')}`,
+            }],
+          },
+        }],
+        [targetId]: [paragraph('target-body', 'Target body')],
+      },
+    });
+    const gateClient = await getPool().connect();
+    let gateHeld = false;
+    let winner: Promise<NotionImportItem[]> | undefined;
+    let waiter: Promise<NotionImportItem[]> | undefined;
+    try {
+      await gateClient.query('SELECT pg_advisory_lock($1)', [rewriteGateKey]);
+      gateHeld = true;
+      await query(`
+        CREATE OR REPLACE FUNCTION delay_notion_final_rewrite() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.notion_page_id = '${hostId}' AND NEW.body_html LIKE '%/pages/%' THEN
+            PERFORM pg_advisory_xact_lock(${rewriteGateKey});
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await query(`
+        CREATE TRIGGER delay_notion_final_rewrite
+        BEFORE UPDATE OF body_html ON pages
+        FOR EACH ROW EXECUTE FUNCTION delay_notion_final_rewrite()
+      `);
+
+      winner = runNotionImport({
+        userId,
+        client,
+        pageIds: [hostId, targetId],
+        visibility: 'shared',
+      });
+      let finalRewriteBlocked = false;
+      while (!finalRewriteBlocked) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = 0
+              AND objid::bigint = $1
+              AND granted = FALSE`,
+          [rewriteGateKey],
+        );
+        finalRewriteBlocked = waiting.rows.length > 0;
+        if (!finalRewriteBlocked) await setImmediate();
+      }
+
+      waiter = runNotionImport({
+        userId,
+        client,
+        pageIds: [hostId],
+        visibility: 'shared',
+      });
+      let waiterSettled = false;
+      void waiter.then(
+        () => { waiterSettled = true; },
+        () => { waiterSettled = true; },
+      );
+      let waiterBlockedOnPageLock = false;
+      while (!waiterSettled && !waiterBlockedOnPageLock) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = $1
+              AND objid::bigint = $2
+              AND granted = FALSE`,
+          [NOTION_IMPORT_LOCK_KEY, notionImportLockId(hostId) >>> 0],
+        );
+        waiterBlockedOnPageLock = waiting.rows.length > 0;
+        if (!waiterSettled && !waiterBlockedOnPageLock) await setImmediate();
+      }
+
+      expect(waiterSettled).toBe(false);
+      expect(waiterBlockedOnPageLock).toBe(true);
+      await gateClient.query('SELECT pg_advisory_unlock($1)', [rewriteGateKey]);
+      gateHeld = false;
+
+      const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
+      expect(winnerItems.every((item) => item.status === 'success')).toBe(true);
+      expect(waiterItems[0]).toMatchObject({
+        notionPageId: hostId,
+        status: 'already_imported',
+        localPageId: winnerItems[0]?.localPageId,
+      });
+      const host = await query<{ body_html: string }>(
+        'SELECT body_html FROM pages WHERE notion_page_id = $1',
+        [hostId],
+      );
+      expect(host.rows[0]!.body_html).toContain(`/pages/${winnerItems[1]!.localPageId}`);
+      expect(host.rows[0]!.body_html).not.toContain('notion.so');
+    } finally {
+      if (gateHeld) {
+        await gateClient.query('SELECT pg_advisory_unlock($1)', [rewriteGateKey]);
+      }
+      await Promise.allSettled([winner, waiter].filter((run): run is Promise<NotionImportItem[]> => Boolean(run)));
+      await query('DROP TRIGGER IF EXISTS delay_notion_final_rewrite ON pages');
+      await query('DROP FUNCTION IF EXISTS delay_notion_final_rewrite()');
+      gateClient.release();
     }
   });
 
