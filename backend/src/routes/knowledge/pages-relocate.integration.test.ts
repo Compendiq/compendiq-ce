@@ -21,6 +21,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import type { Pool, PoolClient } from 'pg';
 import {
   setupTestDb,
   truncateAllTables,
@@ -34,6 +35,8 @@ import {
 } from '../../core/db/advisory-locks.js';
 import { userHasGlobalPermission } from '../../core/services/rbac-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+
+type PoolConnectCallback = Parameters<Pool['connect']>[0];
 
 // The attachment stores resolve their root from ATTACHMENTS_DIR at call time,
 // so pointing it at a temp dir before the route is imported keeps every file
@@ -495,6 +498,54 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(acquired).toBe(false);
     });
 
+    it.each([
+      ['advisory unlock', 'SELECT pg_advisory_unlock_shared($1)'],
+      ['statement-timeout reset', 'RESET statement_timeout'],
+    ])('never deletes the committed upstream page when barrier %s fails', async (_failure, failingSql) => {
+      const id = await createPage({
+        title: 'Committed barrier failure',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      h.client.createPage.mockResolvedValue(createdPage('900100'));
+
+      const pool = getPool();
+      const originalConnect = pool.connect.bind(pool);
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
+        ((callback?: PoolConnectCallback) => {
+          if (callback) return originalConnect(callback);
+          return originalConnect().then((client) => {
+            const originalQuery = client.query;
+            const query = originalQuery.bind(client);
+            // This test seam only wraps the promise/string query form used by
+            // the mutation barrier and its relocation callback.
+            client.query = ((text: string, values?: unknown[]) => {
+              if (text === failingSql) {
+                return Promise.reject(new Error(`injected ${_failure} failure`));
+              }
+              return query(text, values);
+            }) as unknown as typeof client.query;
+            return client;
+          });
+        }) as typeof pool.connect,
+      );
+
+      let response: { statusCode: number } | undefined;
+      try {
+        response = await toConfluence(id);
+      } finally {
+        connectSpy.mockRestore();
+      }
+
+      expect(response?.statusCode).toBe(500);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({
+        source: 'confluence',
+        confluence_id: '900100',
+      });
+    });
+
     it('rejects a confirmation whose version count is stale, changing nothing', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await addVersions(id, 4);
@@ -744,6 +795,91 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
 
       expect(response?.statusCode).toBe(200);
       expect(acquired).toBe(false);
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
+    it('does not make a second pool checkout for identifier prechecks while holding the barrier', async () => {
+      const id = await createPage({
+        title: 'Saturated pool',
+        source: 'confluence',
+        confluenceId: '700100',
+        spaceKey: 'CONF',
+      });
+
+      const pool = getPool();
+      const originalConnect = pool.connect.bind(pool);
+      const lockAcquired = Promise.withResolvers<void>();
+      const continueAfterSaturation = Promise.withResolvers<void>();
+      const holders: PoolClient[] = [];
+      let lockActive = false;
+      let poolCheckoutsWhileLocked = 0;
+
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
+        ((callback?: PoolConnectCallback) => {
+          if (callback) {
+            if (lockActive) poolCheckoutsWhileLocked += 1;
+            return originalConnect(callback);
+          }
+          return originalConnect().then((client) => {
+            const originalQuery = client.query;
+            const originalRelease = client.release;
+            const query = originalQuery.bind(client);
+            const release = originalRelease.bind(client);
+            client.query = (async (text: string, values?: unknown[]) => {
+              const result = await query(text, values);
+              if (text === 'SELECT pg_advisory_lock_shared($1)') {
+                lockActive = true;
+                lockAcquired.resolve();
+                await continueAfterSaturation.promise;
+              } else if (text === 'SELECT pg_advisory_unlock_shared($1)') {
+                lockActive = false;
+              }
+              return result;
+            }) as unknown as typeof client.query;
+            client.release = (error?: Error | boolean) => {
+              client.query = originalQuery;
+              client.release = originalRelease;
+              release(error);
+            };
+            return client;
+          });
+        }) as typeof pool.connect,
+      );
+
+      const pending = toLocal(id, '700100');
+      let settled = false;
+      let outcome: 'completed' | 'second-checkout';
+      let response: { statusCode: number } | undefined;
+      try {
+        await lockAcquired.promise;
+        while (pool.idleCount > 0 || pool.totalCount < pool.options.max) {
+          holders.push(await originalConnect());
+        }
+        expect(pool.idleCount).toBe(0);
+        expect(pool.totalCount).toBe(pool.options.max);
+
+        continueAfterSaturation.resolve();
+        const completion = pending.then((result) => {
+          settled = true;
+          response = result;
+          return 'completed' as const;
+        });
+        const secondCheckout = (async () => {
+          while (!settled && pool.waitingCount === 0) await nextEventLoopTurn();
+          return pool.waitingCount > 0 ? ('second-checkout' as const) : completion;
+        })();
+        outcome = await Promise.race([completion, secondCheckout]);
+      } finally {
+        settled = true;
+        continueAfterSaturation.resolve();
+        for (const holder of holders) holder.release();
+        response ??= await pending;
+        connectSpy.mockRestore();
+      }
+
+      expect(outcome).toBe('completed');
+      expect(poolCheckoutsWhileLocked).toBe(0);
+      expect(response?.statusCode).toBe(200);
       expect((await getRow(id)).source).toBe('standalone');
     });
 

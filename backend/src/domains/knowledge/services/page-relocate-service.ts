@@ -15,8 +15,10 @@
  * `WHERE space_key=$1 AND deleted_at IS NULL AND confluence_id IS NOT NULL` —
  * cannot see it. Committing a `confluence_id` for a page the upstream create
  * never produced would get the article soft-deleted on the next sync; that is
- * structurally impossible here. If anything after the create fails, the
- * just-created Confluence page is deleted again and nothing local changed.
+ * structurally impossible here. Until the local commit, any later failure
+ * deletes the just-created upstream page and leaves local state unchanged.
+ * Once committed, cleanup failures must never delete that page because the
+ * local row now points at it.
  *
  * **Confluence → local.** Commit the local flip FIRST, delete upstream after.
  * Once `confluence_id` is NULL the article is permanently outside deletion
@@ -514,8 +516,8 @@ async function relocateToConfluence(opts: {
   }
   const parentConfluenceId = await resolveConfluenceParent(page.id);
 
-  // 1. Create the page upstream. Nothing local points at it yet, so a failure
-  //    from here on is fully reversible by deleting it again.
+  // 1. Create the page upstream. Until the local commit, nothing local points
+  //    at it and every subsequent failure is reversible by deleting it again.
   const created = await client.createPage(
     spaceKey,
     page.title,
@@ -524,6 +526,7 @@ async function relocateToConfluence(opts: {
   );
   const newConfluenceId = created.id;
 
+  let localCommitted = false;
   try {
     await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence');
 
@@ -589,6 +592,7 @@ async function relocateToConfluence(opts: {
         const discarded = await txClient.query('DELETE FROM page_versions WHERE page_id = $1', [page.id]);
         await txClient.query('DELETE FROM local_attachments WHERE page_id = $1', [page.id]);
         await txClient.query('COMMIT');
+        localCommitted = true;
 
         result = {
           pageId: page.id,
@@ -613,23 +617,25 @@ async function relocateToConfluence(opts: {
       return result;
     });
   } catch (err) {
-    // Nothing local changed. Remove the page we created upstream so retries do
-    // not accumulate orphans and the next sync does not import it.
-    try {
-      await client.deletePage(newConfluenceId);
-    } catch (cleanupErr) {
-      logger.error(
-        {
-          pageId: page.id,
-          userId,
-          confluenceId: newConfluenceId,
-          err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-        },
-        'Relocate aborted but the newly created Confluence page could not be deleted — the next sync will import it as a new page',
-      );
-    }
-    if (newConfluenceId !== oldKey) {
-      await removeAttachmentDirectory(newConfluenceId).catch(() => undefined);
+    if (!localCommitted) {
+      // Nothing local changed. Remove the page we created upstream so retries
+      // do not accumulate orphans and the next sync does not import it.
+      try {
+        await client.deletePage(newConfluenceId);
+      } catch (cleanupErr) {
+        logger.error(
+          {
+            pageId: page.id,
+            userId,
+            confluenceId: newConfluenceId,
+            err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          },
+          'Relocate aborted but the newly created Confluence page could not be deleted — the next sync will import it as a new page',
+        );
+      }
+      if (newConfluenceId !== oldKey) {
+        await removeAttachmentDirectory(newConfluenceId).catch(() => undefined);
+      }
     }
     throw err;
   }
@@ -653,8 +659,8 @@ async function relocateToLocal(opts: {
   const warnings: string[] = [];
   return withLocalAttachmentMutationLock(async (txClient) => {
 
-  await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current');
-  await assertIdentifierUnambiguous(newKey, page.id, 'new local');
+  await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current', txClient);
+  await assertIdentifierUnambiguous(newKey, page.id, 'new local', txClient);
 
   // Stage attachment bytes into the LOCAL store before the commit. A standalone
   // page's diagrams are fetched from `/api/local-attachments/<id>/…`, so leaving
