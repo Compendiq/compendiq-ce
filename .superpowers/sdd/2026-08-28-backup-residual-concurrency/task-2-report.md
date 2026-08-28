@@ -133,3 +133,70 @@ Duration    2.26s
 ### Concerns
 
 None identified within this fix scope. The focused suite covers the delayed final rewrite, the same-page waiter boundary, normalized lock serialization, attachment cleanup, hierarchy, retry, and mention rewrite behavior.
+
+## Fix Round 2
+
+### Status
+
+Addressed the inter-phase lock gap. One import request now holds every normalized selected-page advisory lock continuously on one dedicated PostgreSQL session, from the first authoritative read through allocation, attachment preparation, final body writes, rehoming, and creator-owned cleanup. Disjoint page-ID batches still run independently.
+
+### TDD evidence
+
+Added a real-PostgreSQL inter-phase regression test. A trigger blocks the winner while allocating its second selected page, after the first page's placeholder has committed but before attachment preparation. A same-page waiter then targets the first page.
+
+RED command (exit 1):
+
+```bash
+cd backend && npx vitest run src/domains/knowledge/services/notion-import-service.test.ts -t 'keeps every selected page locked between allocation and attachment preparation'
+```
+
+Observed against the three-phase per-page locking implementation:
+
+```text
+src/domains/knowledge/services/notion-import-service.test.ts (23 tests | 1 failed | 22 skipped)
+× keeps every selected page locked between allocation and attachment preparation
+AssertionError: expected true to be false
+Test Files  1 failed (1)
+```
+
+The waiter settled while the winner remained between allocation and attachment preparation, reproducing the reviewed race.
+
+The batch-lock API tests also failed before implementation (exit 1):
+
+```text
+src/domains/knowledge/services/notion-import-lock.test.ts (5 tests | 2 failed)
+× holds a normalized, deduplicated batch on one PostgreSQL session
+× does not deadlock overlapping batches supplied in reverse order
+TypeError: withNotionImportLocks is not a function
+Test Files  1 failed (1)
+```
+
+GREEN focused verification (exit 0):
+
+```bash
+cd backend && npx vitest run src/domains/knowledge/services/notion-import-lock.test.ts src/domains/knowledge/services/notion-import-service.test.ts
+```
+
+Exact result:
+
+```text
+Test Files  2 passed (2)
+Tests       28 passed (28)
+Duration    2.33s
+```
+
+The emitted Notion 500/404 and attachment-download warning logs are exercised error-path fixtures in the passing import-service suite; there were no failed tests.
+
+### Implementation
+
+- Added `withNotionImportLocks(pageIds, operation)`.
+- IDs are normalized by removing dashes and lowercasing, deduplicated by normalized ID, then sorted by signed advisory-lock key with normalized ID as the collision tie-breaker.
+- Every two-key session advisory lock is acquired sequentially on one dedicated pool client and released in reverse order in `finally`; session statement and lock timeouts are reset before that client returns to the pool.
+- `withNotionImportLock` remains the one-ID wrapper.
+- `runNotionImport` encloses its complete selected-page flow in one batch callback and no longer releases/reacquires locks between allocation, attachment preparation, and finalization.
+- The overlapping reversed-order test gates both requested locks independently, proves both batches queue on the same deterministic first key, then proves both callbacks complete after the gates release.
+- The one-session test passes normalized duplicates and multiple IDs, observes exactly one granted-lock backend PID, and verifies no granted locks remain afterward.
+
+### Concerns
+
+None identified within Task 2 scope. A batch intentionally occupies one pool client for the full import duration, independent of whether it contains one page or the supported maximum of 200; it does not consume one waiting client per page.

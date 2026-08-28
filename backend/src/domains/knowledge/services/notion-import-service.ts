@@ -14,7 +14,7 @@ import { query } from '../../../core/db/postgres.js';
 import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
-import { withNotionImportLock } from './notion-import-lock.js';
+import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError } from './notion-client.js';
 import {
   convertNotionBlocks,
@@ -43,6 +43,10 @@ export interface RunNotionImportInput {
 }
 
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
+  return withNotionImportLocks(input.pageIds, async () => runLockedNotionImport(input));
+}
+
+async function runLockedNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
@@ -54,10 +58,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
       continue;
     }
-    const existing = await withNotionImportLock(
-      rawId,
-      async () => findImportedPage(input.userId, rawId),
-    );
+    const existing = await findImportedPage(input.userId, rawId);
     if (existing?.complete) {
       items.set(rawId, {
         notionPageId: rawId,
@@ -117,163 +118,158 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     new Set(toPersist.map((j) => normalizeNotionId(j.id))),
   );
 
-  // Allocate every local ID before converting any final body. This makes forward
-  // mention rewrites deterministic without holding more than one page lock.
+  // Allocate every local ID before converting any final body. Forward mention
+  // rewrites are deterministic, and the enclosing batch lock keeps every
+  // selected page exclusively owned until finalization or cleanup.
   for (const job of ordered) {
-    await withNotionImportLock(job.id, async () => {
-      const existing = await findImportedPage(input.userId, job.id);
-      if (existing?.complete) {
-        importedPages.set(normalizeNotionId(job.id), existing.id);
-        items.set(job.id, {
-          notionPageId: job.id,
-          status: 'already_imported',
-          localPageId: existing.id,
-        });
-        alreadyImported.push({
-          notionPageId: job.id,
-          localPageId: existing.id,
-          parentNotionId: job.parentNotionId,
-          page: job.page,
-        });
-        return;
-      }
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
 
-      try {
-        const localPageId = existing?.id ?? await nextPageId();
-        const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
-        await persistStandalonePage({
-          id: localPageId,
-          reuse: Boolean(existing),
-          userId: input.userId,
-          title: job.title,
-          spaceKey: destination.spaceKey,
-          parentId: parentLocal,
-          visibility: destination.visibility,
-          notionPageId: job.id,
-          bodyHtml: '',
-          bodyText: '',
-        });
-        job.localPageId = localPageId;
-        job.createdPlaceholder = !existing;
-        importedPages.set(normalizeNotionId(job.id), localPageId);
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          const concurrent = await findImportedPage(input.userId, job.id);
-          if (concurrent) {
-            job.localPageId = concurrent.id;
-            importedPages.set(normalizeNotionId(job.id), concurrent.id);
-            if (concurrent.complete) {
-              items.set(job.id, {
-                notionPageId: job.id,
-                status: 'already_imported',
-                localPageId: concurrent.id,
-              });
-            }
-            return;
+    try {
+      const localPageId = existing?.id ?? await nextPageId();
+      const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
+      await persistStandalonePage({
+        id: localPageId,
+        reuse: Boolean(existing),
+        userId: input.userId,
+        title: job.title,
+        spaceKey: destination.spaceKey,
+        parentId: parentLocal,
+        visibility: destination.visibility,
+        notionPageId: job.id,
+        bodyHtml: '',
+        bodyText: '',
+      });
+      job.localPageId = localPageId;
+      job.createdPlaceholder = !existing;
+      importedPages.set(normalizeNotionId(job.id), localPageId);
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        const concurrent = await findImportedPage(input.userId, job.id);
+        if (concurrent) {
+          job.localPageId = concurrent.id;
+          importedPages.set(normalizeNotionId(job.id), concurrent.id);
+          if (concurrent.complete) {
+            items.set(job.id, {
+              notionPageId: job.id,
+              status: 'already_imported',
+              localPageId: concurrent.id,
+            });
           }
+          continue;
         }
-        items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
       }
-    });
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
   }
 
   // Prepare attachments while every page remains observably incomplete. Failed
   // pages leave the mention map before any final body is written.
   for (const job of ordered) {
     if (!job.localPageId || items.has(job.id)) continue;
-    await withNotionImportLock(job.id, async () => {
-      const existing = await findImportedPage(input.userId, job.id);
-      if (existing?.complete) {
-        importedPages.set(normalizeNotionId(job.id), existing.id);
-        items.set(job.id, {
-          notionPageId: job.id,
-          status: 'already_imported',
-          localPageId: existing.id,
-        });
-        alreadyImported.push({
-          notionPageId: job.id,
-          localPageId: existing.id,
-          parentNotionId: job.parentNotionId,
-          page: job.page,
-        });
-        return;
-      }
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
 
-      if (existing && existing.id !== job.localPageId) {
-        job.localPageId = existing.id;
-        job.createdPlaceholder = false;
-        importedPages.set(normalizeNotionId(job.id), existing.id);
-      }
-      try {
-        const converted = convertNotionBlocks(job.blocks ?? [], {
-          localPageId: job.localPageId,
-          importedPages,
-        });
-        await storeAttachments(input.client, input.userId, job.localPageId, converted.attachments);
-        job.prepared = true;
-      } catch (err) {
-        if (job.createdPlaceholder) {
-          const placeholder = await findImportedPage(input.userId, job.id);
-          if (placeholder?.id === job.localPageId && !placeholder.complete) {
-            await abandonPage(job.localPageId, destination.parentId);
-          }
+    if (existing && existing.id !== job.localPageId) {
+      job.localPageId = existing.id;
+      job.createdPlaceholder = false;
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+    }
+    try {
+      const converted = convertNotionBlocks(job.blocks ?? [], {
+        localPageId: job.localPageId,
+        importedPages,
+      });
+      await storeAttachments(input.client, input.userId, job.localPageId, converted.attachments);
+      job.prepared = true;
+    } catch (err) {
+      if (job.createdPlaceholder) {
+        const placeholder = await findImportedPage(input.userId, job.id);
+        if (placeholder?.id === job.localPageId && !placeholder.complete) {
+          await abandonPage(job.localPageId, destination.parentId);
         }
-        importedPages.delete(normalizeNotionId(job.id));
-        items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
       }
-    });
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
   }
 
-  // The final body write is the completion boundary and therefore remains in
-  // the same keyed critical section observed by every completed-page fast path.
+  // The final body write is the completion boundary and remains inside the
+  // batch critical section observed by every completed-page fast path.
   for (const job of ordered) {
     if (!job.prepared || !job.localPageId || items.has(job.id)) continue;
-    await withNotionImportLock(job.id, async () => {
-      const existing = await findImportedPage(input.userId, job.id);
-      if (existing?.complete) {
-        importedPages.set(normalizeNotionId(job.id), existing.id);
-        items.set(job.id, {
-          notionPageId: job.id,
-          status: 'already_imported',
-          localPageId: existing.id,
-        });
-        alreadyImported.push({
-          notionPageId: job.id,
-          localPageId: existing.id,
-          parentNotionId: job.parentNotionId,
-          page: job.page,
-        });
-        return;
-      }
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
 
-      try {
-        if (!existing || existing.id !== job.localPageId) {
-          throw new Error('Notion import placeholder disappeared before finalization');
-        }
-        const converted = convertNotionBlocks(job.blocks ?? [], {
-          localPageId: job.localPageId,
-          importedPages,
-        });
-        await query(
-          'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
-          [job.localPageId, converted.bodyHtml, converted.bodyText],
-        );
-        items.set(job.id, {
-          notionPageId: job.id,
-          status: 'success',
-          localPageId: job.localPageId,
-        });
-      } catch (err) {
-        if (job.createdPlaceholder) {
-          const placeholder = await findImportedPage(input.userId, job.id);
-          if (placeholder?.id === job.localPageId && !placeholder.complete) {
-            await abandonPage(job.localPageId, destination.parentId);
-          }
-        }
-        importedPages.delete(normalizeNotionId(job.id));
-        items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    try {
+      if (!existing || existing.id !== job.localPageId) {
+        throw new Error('Notion import placeholder disappeared before finalization');
       }
-    });
+      const converted = convertNotionBlocks(job.blocks ?? [], {
+        localPageId: job.localPageId,
+        importedPages,
+      });
+      await query(
+        'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
+        [job.localPageId, converted.bodyHtml, converted.bodyText],
+      );
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'success',
+        localPageId: job.localPageId,
+      });
+    } catch (err) {
+      if (job.createdPlaceholder) {
+        const placeholder = await findImportedPage(input.userId, job.id);
+        if (placeholder?.id === job.localPageId && !placeholder.complete) {
+          await abandonPage(job.localPageId, destination.parentId);
+        }
+      }
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
   }
 
   await rehomeAlreadyImported(alreadyImported, importedPages);

@@ -933,6 +933,128 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     }
   });
 
+  it('keeps every selected page locked between allocation and attachment preparation', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111';
+    const secondId = '22222222-2222-4222-8222-222222222222';
+    const allocationGateKey = 1_420_098;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        [firstId]: {
+          object: 'page',
+          id: firstId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('First'),
+        },
+        [secondId]: {
+          object: 'page',
+          id: secondId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Second'),
+        },
+      },
+      blockChildren: {
+        [firstId]: [paragraph('first-body', 'First body')],
+        [secondId]: [paragraph('second-body', 'Second body')],
+      },
+    });
+    const gateClient = await getPool().connect();
+    let gateHeld = false;
+    let winner: Promise<NotionImportItem[]> | undefined;
+    let waiter: Promise<NotionImportItem[]> | undefined;
+    try {
+      await gateClient.query('SELECT pg_advisory_lock($1)', [allocationGateKey]);
+      gateHeld = true;
+      await query(`
+        CREATE OR REPLACE FUNCTION delay_second_notion_allocation() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.notion_page_id = '${secondId}' AND NEW.body_html = '' THEN
+            PERFORM pg_advisory_xact_lock(${allocationGateKey});
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await query(`
+        CREATE TRIGGER delay_second_notion_allocation
+        BEFORE INSERT ON pages
+        FOR EACH ROW EXECUTE FUNCTION delay_second_notion_allocation()
+      `);
+
+      winner = runNotionImport({
+        userId,
+        client,
+        pageIds: [firstId, secondId],
+        visibility: 'shared',
+      });
+      let secondAllocationBlocked = false;
+      while (!secondAllocationBlocked) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = 0
+              AND objid::bigint = $1
+              AND granted = FALSE`,
+          [allocationGateKey],
+        );
+        secondAllocationBlocked = waiting.rows.length > 0;
+        if (!secondAllocationBlocked) await setImmediate();
+      }
+
+      const firstPlaceholder = await query(
+        'SELECT 1 FROM pages WHERE notion_page_id = $1 AND body_html = $2',
+        [firstId, ''],
+      );
+      expect(firstPlaceholder.rows).toHaveLength(1);
+
+      waiter = runNotionImport({
+        userId,
+        client,
+        pageIds: [firstId],
+        visibility: 'shared',
+      });
+      let waiterSettled = false;
+      void waiter.then(
+        () => { waiterSettled = true; },
+        () => { waiterSettled = true; },
+      );
+      let waiterBlockedOnFirstPage = false;
+      while (!waiterSettled && !waiterBlockedOnFirstPage) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = $1
+              AND objid::bigint = $2
+              AND granted = FALSE`,
+          [NOTION_IMPORT_LOCK_KEY, notionImportLockId(firstId) >>> 0],
+        );
+        waiterBlockedOnFirstPage = waiting.rows.length > 0;
+        if (!waiterSettled && !waiterBlockedOnFirstPage) await setImmediate();
+      }
+
+      expect(waiterSettled).toBe(false);
+      expect(waiterBlockedOnFirstPage).toBe(true);
+      await gateClient.query('SELECT pg_advisory_unlock($1)', [allocationGateKey]);
+      gateHeld = false;
+
+      const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
+      expect(winnerItems.every((item) => item.status === 'success')).toBe(true);
+      expect(waiterItems[0]).toMatchObject({
+        notionPageId: firstId,
+        status: 'already_imported',
+        localPageId: winnerItems[0]?.localPageId,
+      });
+    } finally {
+      if (gateHeld) {
+        await gateClient.query('SELECT pg_advisory_unlock($1)', [allocationGateKey]);
+      }
+      await Promise.allSettled([winner, waiter].filter((run): run is Promise<NotionImportItem[]> => Boolean(run)));
+      await query('DROP TRIGGER IF EXISTS delay_second_notion_allocation ON pages');
+      await query('DROP FUNCTION IF EXISTS delay_second_notion_allocation()');
+      gateClient.release();
+    }
+  });
+
   it('does not let a same-page waiter return before the final mention rewrite commits', async () => {
     const targetId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const hostId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
