@@ -75,6 +75,23 @@ local **Ollama** / LM Studio / vLLM, or a hosted API such as **OpenAI** or
    - **mcp-docs** -- documentation-search MCP server (port 3100, internal)
    - **searxng** -- metasearch engine used by mcp-docs (port 8080, internal)
 
+   SearXNG receives mcp-docs requests directly on the Docker network. Its
+   trusted-proxy list therefore defaults to loopback only; direct callers do
+   not need `X-Forwarded-For`. If you deliberately route SearXNG through
+   Traefik, set `SEARXNG_TRUSTED_PROXIES` to a comma-separated list containing
+   only Traefik's source IPs or dedicated proxy-network CIDRs, for example
+   `10.42.0.5/32,2001:db8:42::/64`. Traefik emits `X-Forwarded-For` and
+   `X-Real-IP` automatically, but SearXNG honours them only when the connection
+   comes from one of those trusted addresses. Do not use `0.0.0.0/0`, `::/0`,
+   or a blanket application Docker subnet: an untrusted caller could then
+   forge its client IP. Invalid entries fail container startup instead of
+   being ignored.
+
+   Tracker cleanup still works when all three upstream ClearURLs endpoints are
+   unreachable: the derived image loads its pinned, licensed baseline of
+   common tracking parameters. The remote lists remain primary when available;
+   the fallback does not disable TLS verification or replace successful data.
+
 5. **Provide an LLM endpoint.** Either pull local Ollama models on the host:
 
    ```bash

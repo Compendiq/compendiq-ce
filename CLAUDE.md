@@ -814,6 +814,17 @@ can echo request fragments and internal topology. It is truncated at
 `PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
 `dangerouslySetInnerHTML`, never a Markdown renderer.
 
+## SearXNG Sidecar
+
+`mcp-docs` calls SearXNG directly, so `[botdetection].trusted_proxies`
+defaults to loopback only; never re-add a blanket Docker subnet. A deployment
+that actually proxies SearXNG may set `SEARXNG_TRUSTED_PROXIES` to
+comma-separated proxy IPs/CIDRs. The renderer must validate each entry and
+fail startup on malformed input; never trust all forwarded headers. The
+derived image keeps upstream ClearURLs fetches primary and patches only their
+all-failed branch to load the pinned local baseline. Keep the patch strict so
+an upstream integration-point change fails the image build.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
