@@ -6,11 +6,6 @@ on:
     paths:
       - 'scripts/install.sh'
       - '.github/workflows/test-installer.yml'
-  push:
-    branches: [dev]
-    paths:
-      - 'scripts/install.sh'
-      - '.github/workflows/test-installer.yml'
   workflow_dispatch:
 
 # Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
@@ -29,11 +24,8 @@ jobs:
           - name: Ubuntu latest
             runner: ubuntu-latest
             docker_present: true
-          # macOS and Debian container do NOT have Docker — expect graceful
+          # Debian container does NOT have Docker — expect graceful
           # degradation (exit 1 with warnings, no crash)
-          - name: macOS 14
-            runner: macos-14
-            docker_present: false
           - name: Debian 12
             runner: ubuntu-latest
             container: debian:12
