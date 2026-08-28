@@ -35,6 +35,8 @@ def trusted_proxies_from_env() -> list[str]:
             network = ipaddress.ip_network(entry, strict=False)
         except ValueError as exc:
             raise ValueError(f"invalid trusted proxy {entry!r}: {exc}") from exc
+        if network.prefixlen == 0:
+            raise ValueError(f"invalid trusted proxy {entry!r}: catch-all trusted proxy")
         normalized = network.with_prefixlen
         if normalized not in proxies:
             proxies.append(normalized)

@@ -140,6 +140,20 @@ describe('SearXNG limiter configuration (#1440)', () => {
     }
   });
 
+  it.each(['0.0.0.0/0', '::/0'])(
+    'fails closed on catch-all trusted-proxy network %s',
+    (trustedProxy) => {
+      const rendered = renderLimiter(trustedProxy);
+      try {
+        expect(rendered.result.status).not.toBe(0);
+        expect(rendered.result.stderr).toContain('catch-all trusted proxy');
+        expect(existsSync(rendered.output)).toBe(false);
+      } finally {
+        rmSync(rendered.tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('fails closed on malformed trusted-proxy configuration', () => {
     const rendered = renderLimiter('10.0.0.0/8, definitely-not-an-address');
     try {
