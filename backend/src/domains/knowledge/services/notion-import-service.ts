@@ -11,15 +11,16 @@ import {
   type NotionImportItem,
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
+import { htmlToText } from '../../../core/services/content-converter.js';
 import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
 import { NotionClient, NotionError } from './notion-client.js';
 import {
   convertNotionBlocks,
+  formatWikiMetadataCallout,
   type NotionBlock,
 } from './notion-block-converter.js';
-
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
 
 export class NotionImportError extends Error {
@@ -122,10 +123,13 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     try {
       const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
       localPageId = job.reuseId ?? (await nextPageId());
+
       const converted = convertNotionBlocks(job.blocks ?? [], {
         localPageId,
         importedPages,
       });
+      const { wikiProps, bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
+
       await persistStandalonePage({
         id: localPageId,
         reuse: Boolean(job.reuseId),
@@ -135,8 +139,11 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
         parentId: parentLocal,
         visibility: destination.visibility,
         notionPageId: job.id,
-        bodyHtml: converted.bodyHtml,
-        bodyText: converted.bodyText,
+        bodyHtml: finalHtml,
+        bodyText: finalBodyText,
+        labels: wikiProps.labels,
+        author: wikiProps.author,
+        verifiedAt: wikiProps.verifiedAt,
       });
       await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
       importedPages.set(normalizeNotionId(job.id), localPageId);
@@ -233,6 +240,9 @@ async function persistStandalonePage(opts: {
   notionPageId: string;
   bodyHtml: string;
   bodyText: string;
+  labels?: string[];
+  author?: string | null;
+  verifiedAt?: Date | null;
 }): Promise<void> {
   let parentPath: string | null = null;
   if (opts.parentId) {
@@ -249,9 +259,16 @@ async function persistStandalonePage(opts: {
     await query(
       `UPDATE pages
           SET title = $2, body_html = $3, body_text = $4, space_key = $5, parent_id = $6,
-              visibility = $7, path = $8, depth = $9, embedding_dirty = TRUE, image_embedding_dirty = TRUE
+              visibility = $7, path = $8, depth = $9, labels = $10,
+              author = COALESCE($11, author),
+              verified_at = COALESCE($12, verified_at),
+              embedding_dirty = TRUE, image_embedding_dirty = TRUE
         WHERE id = $1 AND deleted_at IS NULL`,
-      [opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey, opts.parentId, opts.visibility, newPath, depth],
+      [
+        opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey,
+        opts.parentId, opts.visibility, newPath, depth,
+        opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
+      ],
     );
     return;
   }
@@ -260,12 +277,16 @@ async function persistStandalonePage(opts: {
     `INSERT INTO pages
        (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
-        page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels, notion_page_id, path, depth)
+        page_type, embedding_dirty, image_embedding_dirty, embedding_status,
+        last_synced, labels, author, verified_at, notion_page_id, path, depth)
      VALUES ($1, $2, $3, $4, NULL, 'standalone', $5, $6, 1, $7, NULL, $8,
-             'page', TRUE, TRUE, 'not_embedded', NOW(), '{}', $9, $10, $11)`,
+             'page', TRUE, TRUE, 'not_embedded',
+             NOW(), $9, $10, $11, $12, $13, $14)`,
     [
       opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,
-      opts.visibility, opts.spaceKey, opts.parentId, opts.notionPageId, newPath, depth,
+      opts.visibility, opts.spaceKey, opts.parentId,
+      opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
+      opts.notionPageId, newPath, depth,
     ],
   );
 }
@@ -335,9 +356,11 @@ async function rewriteImportedMentions(
       localPageId: current.localPageId,
       importedPages,
     });
+    const { bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
+
     await query(
       `UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1`,
-      [current.localPageId, converted.bodyHtml, converted.bodyText],
+      [current.localPageId, finalHtml, finalBodyText],
     );
   }
 }
@@ -448,6 +471,156 @@ function parentPageIdOf(page: Record<string, unknown>): string | null {
   if (!parent || typeof parent.type !== 'string') return null;
   if (parent.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
   return null;
+}
+
+export interface ExtractedWikiProperties {
+  author: string | null;
+  verifiedAt: Date | null;
+  labels: string[];
+  status: string | null;
+  customProperties: Record<string, string>;
+}
+
+export function extractWikiPageProperties(page: Record<string, unknown>): ExtractedWikiProperties {
+  let author: string | null = null;
+  let verifiedAt: Date | null = null;
+  const labelsByLower = new Map<string, string>();
+  let status: string | null = null;
+  const customProperties: Record<string, string> = {};
+
+  const props = isRecord(page.properties) ? page.properties : {};
+
+  const addLabel = (name: string): void => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (!labelsByLower.has(key)) labelsByLower.set(key, trimmed);
+  };
+
+  // 1. Author / Owner
+  for (const [key, prop] of Object.entries(props)) {
+    if (!isRecord(prop)) continue;
+    const propType = typeof prop.type === 'string' ? prop.type : '';
+    const lowerKey = key.toLowerCase();
+
+    if (propType === 'people' && Array.isArray(prop.people) && prop.people.length > 0) {
+      const person = prop.people[0];
+      if (isRecord(person)) {
+        const name = typeof person.name === 'string' && person.name.trim() ? person.name.trim() : null;
+        if (name && (lowerKey.includes('owner') || lowerKey.includes('author'))) {
+          author = name;
+        }
+      }
+    } else if (propType === 'created_by' && isRecord(prop.created_by)) {
+      const name = typeof prop.created_by.name === 'string' && prop.created_by.name.trim() ? prop.created_by.name.trim() : null;
+      if (name && !author) {
+        author = name;
+      }
+    }
+  }
+
+  if (!author && isRecord(page.created_by) && typeof page.created_by.name === 'string' && page.created_by.name.trim()) {
+    author = page.created_by.name.trim();
+  }
+
+  // 2. Verification — only persist a real verification date, never import-time
+  for (const [, prop] of Object.entries(props)) {
+    if (!isRecord(prop)) continue;
+    const propType = typeof prop.type === 'string' ? prop.type : '';
+
+    if (propType === 'verification' && isRecord(prop.verification)) {
+      const v = prop.verification;
+      if (v.state === 'verified' && isRecord(v.date) && typeof v.date.start === 'string') {
+        const dateObj = new Date(v.date.start);
+        if (!isNaN(dateObj.getTime())) verifiedAt = dateObj;
+      }
+    }
+  }
+
+  // 3. Tags & Category (Category is mapped to tags)
+  for (const [key, prop] of Object.entries(props)) {
+    if (!isRecord(prop)) continue;
+    const propType = typeof prop.type === 'string' ? prop.type : '';
+    const lowerKey = key.toLowerCase();
+    const isLabelKey = lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label');
+
+    if (propType === 'multi_select' && Array.isArray(prop.multi_select) && isLabelKey) {
+      for (const item of prop.multi_select) {
+        if (isRecord(item) && typeof item.name === 'string') addLabel(item.name);
+      }
+    } else if (propType === 'select' && isRecord(prop.select) && isLabelKey) {
+      const selName = typeof prop.select.name === 'string' ? prop.select.name : null;
+      if (selName) addLabel(selName);
+    }
+  }
+
+  // 4. Status
+  for (const [key, prop] of Object.entries(props)) {
+    if (!isRecord(prop)) continue;
+    const propType = typeof prop.type === 'string' ? prop.type : '';
+    const lowerKey = key.toLowerCase();
+
+    if (propType === 'status' && isRecord(prop.status)) {
+      const stName = typeof prop.status.name === 'string' && prop.status.name.trim() ? prop.status.name.trim() : null;
+      if (stName) status = stName;
+    } else if (lowerKey === 'status' && propType === 'select' && isRecord(prop.select)) {
+      const stName = typeof prop.select.name === 'string' && prop.select.name.trim() ? prop.select.name.trim() : null;
+      if (stName) status = stName;
+    }
+  }
+
+  // 5. Custom / extended properties
+  for (const [key, prop] of Object.entries(props)) {
+    if (!isRecord(prop)) continue;
+    const propType = typeof prop.type === 'string' ? prop.type : '';
+    const lowerKey = key.toLowerCase();
+
+    if (propType === 'title' || propType === 'status' || propType === 'verification') continue;
+    if (lowerKey.includes('owner') || lowerKey.includes('author') || lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label')) continue;
+
+    if (propType === 'number' && typeof prop.number === 'number') {
+      customProperties[key] = String(prop.number);
+    } else if (propType === 'url' && typeof prop.url === 'string' && prop.url.trim()) {
+      customProperties[key] = prop.url.trim();
+    } else if (propType === 'email' && typeof prop.email === 'string' && prop.email.trim()) {
+      customProperties[key] = prop.email.trim();
+    } else if (propType === 'phone_number' && typeof prop.phone_number === 'string' && prop.phone_number.trim()) {
+      customProperties[key] = prop.phone_number.trim();
+    } else if (propType === 'date' && isRecord(prop.date) && typeof prop.date.start === 'string') {
+      customProperties[key] = prop.date.start;
+    } else if (propType === 'checkbox' && typeof prop.checkbox === 'boolean') {
+      customProperties[key] = prop.checkbox ? 'Yes' : 'No';
+    } else if (propType === 'select' && isRecord(prop.select) && typeof prop.select.name === 'string') {
+      customProperties[key] = prop.select.name;
+    }
+  }
+
+  return {
+    author,
+    verifiedAt,
+    labels: Array.from(labelsByLower.values()),
+    status,
+    customProperties,
+  };
+}
+
+function wikiConvertedBody(
+  page: Record<string, unknown>,
+  converted: { bodyHtml: string; bodyText: string },
+): { wikiProps: ExtractedWikiProperties; bodyHtml: string; bodyText: string } {
+  const wikiProps = extractWikiPageProperties(page);
+  const metaCalloutHtml = formatWikiMetadataCallout({
+    status: wikiProps.status,
+    author: wikiProps.author,
+    verifiedAt: wikiProps.verifiedAt,
+    tags: wikiProps.labels,
+    customProperties: wikiProps.customProperties,
+  });
+  return {
+    wikiProps,
+    bodyHtml: metaCalloutHtml ? `${metaCalloutHtml}${converted.bodyHtml}` : converted.bodyHtml,
+    bodyText: metaCalloutHtml ? `${htmlToText(metaCalloutHtml)}\n\n${converted.bodyText}` : converted.bodyText,
+  };
 }
 
 function parentBlockIdOf(page: Record<string, unknown> | null): string | null {
