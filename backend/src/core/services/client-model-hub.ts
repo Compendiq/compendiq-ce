@@ -60,6 +60,7 @@ export async function searchClientModels(
     });
   }
 
+  const fetchImpl = opts.fetch ?? fetch;
   const url = new URL(`${HUB_URL}/api/models`);
   url.searchParams.set('search', q);
   url.searchParams.set('pipeline_tag', 'text-generation');
@@ -67,22 +68,41 @@ export async function searchClientModels(
   url.searchParams.set('sort', 'downloads');
   url.searchParams.set('limit', '20');
 
-  const res = await (opts.fetch ?? fetch)(url);
+  const res = await fetchImpl(url);
   if (!res.ok) {
     throw new Error(`Hugging Face search failed (${res.status})`);
   }
   const raw = await res.json() as Array<{ id?: string; downloads?: number; likes?: number }>;
-  const models = [];
+  const candidates: Array<{ repo: string; downloads: number; likes: number; recommended: boolean }> = [];
   for (const item of raw) {
     const parsed = HfRepoIdSchema.safeParse(item.id);
     if (!parsed.success) continue;
-    models.push({
+    candidates.push({
       repo: parsed.data,
       downloads: Math.max(0, Math.trunc(item.downloads ?? 0)),
       likes: Math.max(0, Math.trunc(item.likes ?? 0)),
       recommended: RECOMMENDED_CLIENT_MODELS.some((m) => m.repo === parsed.data),
     });
   }
+
+  const exactRepoParsed = HfRepoIdSchema.safeParse(q);
+  if (exactRepoParsed.success && !candidates.some((c) => c.repo === exactRepoParsed.data)) {
+    candidates.unshift({
+      repo: exactRepoParsed.data,
+      downloads: 0,
+      likes: 0,
+      recommended: RECOMMENDED_CLIENT_MODELS.some((m) => m.repo === exactRepoParsed.data),
+    });
+  }
+
+  const inspected = await Promise.all(
+    candidates.map(async (item) => {
+      const inspect = await inspectClientModel(item.repo, { fetch: fetchImpl });
+      return { item, ok: inspect.ok };
+    }),
+  );
+
+  const models = inspected.filter((i) => i.ok).map((i) => i.item);
   return ClientAssetSearchResponseSchema.parse({ models });
 }
 
@@ -269,11 +289,11 @@ export const HUNSPELL_SOURCES: Record<HunspellAssetId, {
     files: [
       {
         name: 'en_US.aff',
-        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.aff',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en/index.aff',
       },
       {
         name: 'en_US.dic',
-        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.dic',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en/index.dic',
       },
     ],
   },

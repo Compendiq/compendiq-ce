@@ -5,13 +5,13 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listClientAssetManifest } from './client-model-assets.js';
 import {
+  HUNSPELL_SOURCES,
   inspectClientModel,
   installClientModel,
   installHunspellModel,
   resetClientModelInstallForTests,
   searchClientModels,
 } from './client-model-hub.js';
-
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -32,14 +32,25 @@ describe('searchClientModels', () => {
   it('filters Hub hits to transformers.js text-generation and marks recommended', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
-      expect(url).toContain('pipeline_tag=text-generation');
-      expect(url).toContain('filter=transformers.js');
-      expect(url).toContain('search=qwen');
-      return jsonResponse([
-        { id: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 10, likes: 2 },
-        { id: 'onnx-community/Qwen3-0.6B-ONNX', downloads: 5, likes: 1 },
-        { id: '../evil/model', downloads: 99, likes: 0 },
-      ]);
+      if (url.includes('/api/models?')) {
+        expect(url).toContain('pipeline_tag=text-generation');
+        expect(url).toContain('filter=transformers.js');
+        expect(url).toContain('search=qwen');
+        return jsonResponse([
+          { id: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 10, likes: 2 },
+          { id: 'onnx-community/Qwen3-0.6B-ONNX', downloads: 5, likes: 1 },
+          { id: 'onnx-community/Too-Large-Model', downloads: 20, likes: 5 },
+          { id: 'onnx-community/No-ONNX-Model', downloads: 15, likes: 3 },
+          { id: '../evil/model', downloads: 99, likes: 0 },
+        ]);
+      }
+      if (url.includes('Too-Large-Model/tree/main/onnx')) {
+        return jsonResponse([{ path: 'onnx/model_q4.onnx', size: 2_000_000_000, type: 'file' }]);
+      }
+      if (url.includes('No-ONNX-Model/tree/main/onnx')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return jsonResponse([{ path: 'onnx/model_q4.onnx', size: 100, type: 'file' }]);
     };
     const result = await searchClientModels('qwen', { fetch: fetchImpl });
     expect(result.models.map((m) => m.repo)).toEqual([
@@ -49,7 +60,6 @@ describe('searchClientModels', () => {
     expect(result.models[0]?.recommended).toBe(true);
   });
 });
-
 describe('inspectClientModel', () => {
   it('allows a q4 weight at or under 1 GiB', async () => {
     const fetchImpl: typeof fetch = async () => jsonResponse([
@@ -168,11 +178,24 @@ describe('installHunspellModel', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
+  it('has valid upstream URLs for all Hunspell sources', () => {
+    for (const [id, source] of Object.entries(HUNSPELL_SOURCES)) {
+      expect(source.files.length).toBeGreaterThan(0);
+      for (const file of source.files) {
+        expect(file.url).toMatch(/^https:\/\/raw\.githubusercontent\.com\/wooorm\/dictionaries\/main\/dictionaries\//);
+        // Ensure english points to /en/ directory, not /en-US/ which 404s
+        if (id === 'hunspell-en_US') {
+          expect(file.url).toContain('/dictionaries/en/');
+        }
+      }
+    }
+  });
+
   it('downloads aff and dic files and marks the hunspell model installed', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
-      if (url.includes('en-US/index.aff')) return new Response('SET UTF-8', { status: 200 });
-      if (url.includes('en-US/index.dic')) return new Response('1\nhello', { status: 200 });
+      if (url.includes('en/index.aff')) return new Response('SET UTF-8', { status: 200 });
+      if (url.includes('en/index.dic')) return new Response('1\nhello', { status: 200 });
       return new Response(null, { status: 404 });
     };
 
@@ -182,7 +205,6 @@ describe('installHunspellModel', () => {
     expect(hunspell?.installed).toBe(true);
     expect(hunspell?.files).toHaveLength(2);
   });
-
   it('cleans up partial files on network failure', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);

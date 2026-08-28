@@ -33,17 +33,27 @@ const NON_INHERITING: Record<string, string> = {
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
-function InlineCompletionInfo() {
+function UsecaseInfoPopover({
+  ariaLabel,
+  testId,
+  title,
+  children,
+}: {
+  ariaLabel: string;
+  testId?: string;
+  title: string;
+  children: ReactNode;
+}) {
   return (
     <Popover.Root>
       <Popover.Trigger asChild>
         <button
           type="button"
-          aria-label="About the inline-completion model"
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border-interactive hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid="inline-completion-info-trigger"
+          aria-label={ariaLabel}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border-interactive hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid={testId}
         >
-          <Info size={14} aria-hidden="true" />
+          <Info size={13} aria-hidden="true" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -53,20 +63,32 @@ function InlineCompletionInfo() {
           sideOffset={6}
           collisionPadding={8}
           className="nm-card-elevated z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
-          data-testid="inline-completion-info-content"
+          data-testid={testId ? `${testId}-content` : undefined}
         >
-          <p className="font-medium text-foreground">Choose for response time</p>
-          <p className="mt-1">
-            Assign a small, always-warm model. Word mode asks for only 8 tokens;
-            full suggestions request up to 48.
-          </p>
-          <p className="mt-2 border-t border-border pt-2">
-            This high-frequency path bypasses the general LLM queue. A dedicated
-            provider also isolates it from chat failures and traffic.
-          </p>
+          <p className="font-medium text-foreground">{title}</p>
+          {children}
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+function InlineCompletionInfo() {
+  return (
+    <UsecaseInfoPopover
+      ariaLabel="About the inline-completion model"
+      testId="inline-completion-info"
+      title="Choose for response time"
+    >
+      <p className="mt-1">
+        Assign a small, always-warm model. Word mode asks for only 8 tokens;
+        full suggestions request up to 48.
+      </p>
+      <p className="mt-2 border-t border-border pt-2">
+        This high-frequency path bypasses the general LLM queue. A dedicated
+        provider also isolates it from chat failures and traffic.
+      </p>
+    </UsecaseInfoPopover>
   );
 }
 
@@ -154,22 +176,29 @@ export function UsecaseAssignmentsSection({
               <span className="flex items-center gap-1 text-sm font-medium">
                 {USECASE_LABELS[u]}
                 {u === 'embedding' && (
-                  <span
-                    title="A model change is started from this row, not from Save"
-                    aria-label="embedding-info"
-                    className="text-muted-foreground"
+                  <UsecaseInfoPopover
+                    ariaLabel="embedding-info"
+                    testId="embedding-info"
+                    title="Model assignment & re-embedding"
                   >
-                    <Info size={14} aria-hidden="true" />
-                  </span>
+                    <p className="mt-1">
+                      A live model change is started from this row via shadow migration or re-embedding, not directly from the Save button.
+                    </p>
+                  </UsecaseInfoPopover>
                 )}
                 {u === 'rerank' && (
-                  <span
-                    title="Needs a Cohere/Jina-style /v1/rerank endpoint (llama.cpp's llama-server --rerank serves it; TEI's bare /rerank shape is NOT compatible). Leaving it unassigned disables the rerank stage — it never falls back to the default provider."
-                    aria-label="rerank-info"
-                    className="text-muted-foreground"
+                  <UsecaseInfoPopover
+                    ariaLabel="rerank-info"
+                    testId="rerank-info"
+                    title="Rerank endpoint requirements"
                   >
-                    ⓘ
-                  </span>
+                    <p className="mt-1">
+                      Needs a Cohere/Jina-style /v1/rerank endpoint (llama.cpp's llama-server --rerank serves it; TEI's bare /rerank shape is not compatible).
+                    </p>
+                    <p className="mt-2 border-t border-border pt-2">
+                      Leaving it unassigned disables the rerank stage — it never falls back to the default provider.
+                    </p>
+                  </UsecaseInfoPopover>
                 )}
                 {u === 'inline_completion' && (
                   <InlineCompletionInfo />

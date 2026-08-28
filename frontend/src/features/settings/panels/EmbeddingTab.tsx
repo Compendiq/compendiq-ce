@@ -95,7 +95,7 @@ export function EmbeddingTab() {
       */}
       <ImageIndexCard />
 
-      <div className="nm-card border-warning/30 p-3 text-sm text-warning">
+      <div className="nm-card p-3 text-sm text-muted-foreground">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.
       </div>
 

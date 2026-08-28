@@ -9,7 +9,7 @@ import {
 import { apiFetch } from '../../../shared/lib/api';
 import { formatRelativeTime } from '../../../shared/lib/format-relative-time';
 import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
-
+import { SETTINGS_PANELS } from '../settings-nav';
 /**
  * #1115 — the `image_embedding` row's detail strip: what the leg is for, what
  * it needs, and what the last probe found.
@@ -175,7 +175,14 @@ export function ImageEmbeddingCapability({
           {IMAGE_EMBEDDING_SUPPORT_NOTE}
         </p>
         <p className="text-muted-foreground text-xs" data-testid="image-embedding-index-pointer">
-          {IMAGE_EMBEDDING_INDEX_POINTER}
+          Index status — images embedded, pages pending and the last run — is on the{' '}
+          <a
+            href={`${SETTINGS_PANELS.models.path}?sub=embedding`}
+            className="text-foreground underline decoration-muted-foreground underline-offset-2 hover:text-action focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+          >
+            Embeddings tab
+          </a>
+          .
         </p>
 
         {/*

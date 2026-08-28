@@ -114,7 +114,7 @@ export function ClientInferenceTab() {
           Authors also opt in under Settings → {SETTINGS_PANELS.editor.label}. Weights stay
           on this origin; the browser never fetches Hugging Face.
         </p>
-        <div className="mt-3 flex items-center justify-between gap-4 rounded-xl border border-border px-4 py-4">
+        <div className="mt-3 flex items-center justify-between gap-4 rounded-[var(--radius-lg)] border border-border px-4 py-4">
           <label htmlFor="admin-client-inference" className="text-sm font-medium text-foreground">
             Enable on-device suggestions
           </label>
@@ -150,28 +150,43 @@ export function ClientInferenceTab() {
           id="client-inference-model-query"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+          className="mt-1 w-full rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           placeholder="Search Hugging Face"
           autoComplete="off"
         />
-        <ul role="listbox" aria-label="Model matches" className="mt-2 divide-y divide-border rounded-xl border border-border">
-          {hits.map((hit) => (
-            <li key={hit.repo}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedRepo === hit.repo}
-                className={`w-full px-4 py-3 text-left text-sm ${selectedRepo === hit.repo ? 'bg-foreground/5' : ''}`}
-                onClick={() => setSelectedRepo(hit.repo)}
-              >
-                <span className="font-medium text-foreground">{hit.repo}</span>
-                {hit.recommended ? (
-                  <span className="ml-2 text-xs text-muted-foreground">recommended</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {debouncedQuery.trim() ? (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Search results
+          </h4>
+        ) : (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Recommended models
+          </h4>
+        )}
+        {hits.length === 0 && debouncedQuery.trim() && !search.isPending ? (
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            No matching text-generation models found with q4 ONNX weights at or under 1 GiB.
+          </p>
+        ) : (
+          <ul role="listbox" aria-label="Model matches" className="mt-2 divide-y divide-border rounded-[var(--radius-lg)] border border-border overflow-hidden">
+            {hits.map((hit) => (
+              <li key={hit.repo}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selectedRepo === hit.repo}
+                  className={`w-full px-4 py-3 text-left text-sm transition-colors hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${selectedRepo === hit.repo ? 'bg-foreground/5' : ''}`}
+                  onClick={() => setSelectedRepo(hit.repo)}
+                >
+                  <span className="font-medium text-foreground">{hit.repo}</span>
+                  {hit.recommended ? (
+                    <span className="ml-2 text-xs text-muted-foreground">recommended</span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <button
           type="button"
           className="nm-button-ghost mt-3 h-8"
@@ -206,7 +221,7 @@ export function ClientInferenceTab() {
         <p className="mt-1 text-sm leading-6 text-muted-foreground">
           Download or upload standard Hunspell dictionaries for English and German spell linting in the editor.
         </p>
-        <ul aria-label="Hunspell dictionaries" className="mt-3 divide-y divide-border rounded-xl border border-border">
+        <ul aria-label="Hunspell dictionaries" className="mt-3 divide-y divide-border rounded-[var(--radius-lg)] border border-border">
           {HUNSPELL_MODELS.map((item) => {
             const entry = manifest.data?.models.find((m) => m.id === item.id);
             const isInstalled = entry?.installed ?? false;
@@ -288,7 +303,7 @@ export function ClientInferenceTab() {
               No assets currently installed on the server.
             </p>
           ) : (
-            <ul aria-label="Installed assets" className="mt-3 divide-y divide-border rounded-xl border border-border">
+            <ul aria-label="Installed assets" className="mt-3 divide-y divide-border rounded-[var(--radius-lg)] border border-border">
               {installedModels.map((model) => (
                 <li key={model.id} className="px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-center justify-between gap-2">

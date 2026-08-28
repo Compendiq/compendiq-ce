@@ -131,7 +131,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
       </div>
 
       <div className="space-y-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h3 className="text-sm font-semibold text-foreground">
           Improvement Prompts
         </h3>
         {IMPROVE_PROMPT_TYPES.map((pt) => (
@@ -151,7 +151,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
               <button
                 type="button"
                 onClick={() => handleChange(pt.key, '')}
-                className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                className="mt-1 text-xs text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-[var(--radius-sm)]"
               >
                 Reset to default
               </button>
@@ -161,7 +161,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
       </div>
 
       <div className="space-y-4 pt-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h3 className="text-sm font-semibold text-foreground">
           Create Skills Prompts
         </h3>
         {CREATE_PROMPT_TYPES.map((pt) => (
@@ -181,7 +181,7 @@ export function AiPromptsTab({ settings, onSave, isAdmin }: { settings: Settings
               <button
                 type="button"
                 onClick={() => handleChange(pt.key, '')}
-                className="mt-1 text-xs text-muted-foreground hover:text-destructive"
+                className="mt-1 text-xs text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-[var(--radius-sm)]"
               >
                 Reset to default
               </button>

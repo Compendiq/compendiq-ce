@@ -409,42 +409,40 @@ export function LlmTab() {
             Bounds on how AI streams are served. Changes take effect within 60 seconds.
           </p>
         </div>
-        <div className="rounded-lg border border-border bg-background/50 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <label
-                htmlFor="llm-max-concurrent-streams-per-user"
-                className="text-sm font-medium"
-              >
-                Max concurrent AI streams per user
-              </label>
-              <p className="text-xs text-muted-foreground">
-                Rejects additional streams with HTTP 429 once a user has this many open. Lowering
-                the cap takes effect for newly opened streams; in-flight streams continue to
-                completion.
-              </p>
-            </div>
-            <input
-              id="llm-max-concurrent-streams-per-user"
-              data-testid="llm-max-concurrent-streams-per-user"
-              type="number"
-              min={MIN_CONCURRENT_STREAMS_CAP}
-              max={MAX_CONCURRENT_STREAMS_CAP}
-              value={concurrentStreamsCap}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                if (Number.isFinite(v)) {
-                  setConcurrentStreamsCap(
-                    Math.max(
-                      MIN_CONCURRENT_STREAMS_CAP,
-                      Math.min(MAX_CONCURRENT_STREAMS_CAP, v),
-                    ),
-                  );
-                }
-              }}
-              className="w-24 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-right text-sm outline-none focus:ring-1 focus:ring-ring"
-            />
+        <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+          <div className="max-w-xl">
+            <label
+              htmlFor="llm-max-concurrent-streams-per-user"
+              className="text-sm font-medium"
+            >
+              Max concurrent AI streams per user
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Rejects additional streams with HTTP 429 once a user has this many open. Lowering
+              the cap takes effect for newly opened streams; in-flight streams continue to
+              completion.
+            </p>
           </div>
+          <input
+            id="llm-max-concurrent-streams-per-user"
+            data-testid="llm-max-concurrent-streams-per-user"
+            type="number"
+            min={MIN_CONCURRENT_STREAMS_CAP}
+            max={MAX_CONCURRENT_STREAMS_CAP}
+            value={concurrentStreamsCap}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10);
+              if (Number.isFinite(v)) {
+                setConcurrentStreamsCap(
+                  Math.max(
+                    MIN_CONCURRENT_STREAMS_CAP,
+                    Math.min(MAX_CONCURRENT_STREAMS_CAP, v),
+                  ),
+                );
+              }
+            }}
+            className="w-24 rounded-[var(--radius-md)] border border-border bg-background px-3 py-1.5 text-right text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
         </div>
         <div className="flex gap-3">
           <button

@@ -8,10 +8,10 @@ import { ProviderEditModal } from './ProviderEditModal';
 
 /** Quiet inline action in a settings row — ordinary, reversible. */
 const ROW_ACTION =
-  'rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-45';
+  'rounded-[var(--radius-sm)] px-2 py-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-45';
 
 /** The same row, but destructive. See `nm-action-destructive` in index.css. */
-const DESTRUCTIVE_ROW_ACTION = 'nm-action-destructive rounded-md px-2 py-1';
+const DESTRUCTIVE_ROW_ACTION = 'nm-action-destructive rounded-[var(--radius-sm)] px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 export function ProviderListSection() {
   const qc = useQueryClient();
