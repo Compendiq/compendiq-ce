@@ -55,10 +55,7 @@ export function IntegrationsWrapper() {
 
   return (
     <>
-      <PanelHeader
-        title="Integrations"
-        subtitle="External services Compendiq talks to: SMTP, SearXNG, Draw.io diagramming, MCP documentation."
-      />
+      <PanelHeader subtitle="External services Compendiq talks to: SMTP, SearXNG, Draw.io diagramming, MCP documentation." />
       <SubTabs ariaLabel="Integrations sub-sections" tabs={tabs} testIdRoot="integrations" />
     </>
   );
