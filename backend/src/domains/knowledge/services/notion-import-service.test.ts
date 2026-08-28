@@ -410,10 +410,12 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       visibility: 'shared',
     });
     expect(items).toEqual([expect.objectContaining({ notionPageId: 'row-listed', status: 'success' })]);
-    const pages = await query<{ title: string }>('SELECT title FROM pages');
-    expect(pages.rows.map((r) => r.title)).toEqual(['Acme Corp']);
+    const pages = await query<{ id: number; title: string; parent_id: string | null }>('SELECT id, title, parent_id FROM pages ORDER BY id');
+    expect(pages.rows.map((r) => r.title)).toEqual(['CRM', 'Acme Corp']);
+    const crmId = pages.rows.find((r) => r.title === 'CRM')!.id;
+    const acme = pages.rows.find((r) => r.title === 'Acme Corp')!;
+    expect(acme.parent_id).toBe(String(crmId));
   });
-
   it('rewrites mentions of imported pages and leaves skipped ones as Notion URLs', async () => {
     const importedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const skippedId = '11111111-2222-3333-4444-555555555555';
