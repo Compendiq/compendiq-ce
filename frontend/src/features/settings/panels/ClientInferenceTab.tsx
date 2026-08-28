@@ -154,24 +154,39 @@ export function ClientInferenceTab() {
           placeholder="Search Hugging Face"
           autoComplete="off"
         />
-        <ul role="listbox" aria-label="Model matches" className="mt-2 divide-y divide-border rounded-xl border border-border">
-          {hits.map((hit) => (
-            <li key={hit.repo}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedRepo === hit.repo}
-                className={`w-full px-4 py-3 text-left text-sm ${selectedRepo === hit.repo ? 'bg-foreground/5' : ''}`}
-                onClick={() => setSelectedRepo(hit.repo)}
-              >
-                <span className="font-medium text-foreground">{hit.repo}</span>
-                {hit.recommended ? (
-                  <span className="ml-2 text-xs text-muted-foreground">recommended</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {debouncedQuery.trim() ? (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Search results
+          </h4>
+        ) : (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Recommended models
+          </h4>
+        )}
+        {hits.length === 0 && debouncedQuery.trim() && !search.isPending ? (
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            No matching text-generation models found with q4 ONNX weights at or under 1 GiB.
+          </p>
+        ) : (
+          <ul role="listbox" aria-label="Model matches" className="mt-2 divide-y divide-border rounded-xl border border-border">
+            {hits.map((hit) => (
+              <li key={hit.repo}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selectedRepo === hit.repo}
+                  className={`w-full px-4 py-3 text-left text-sm ${selectedRepo === hit.repo ? 'bg-foreground/5' : ''}`}
+                  onClick={() => setSelectedRepo(hit.repo)}
+                >
+                  <span className="font-medium text-foreground">{hit.repo}</span>
+                  {hit.recommended ? (
+                    <span className="ml-2 text-xs text-muted-foreground">recommended</span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <button
           type="button"
           className="nm-button-ghost mt-3 h-8"

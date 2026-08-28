@@ -76,6 +76,7 @@ describe('ClientInferenceTab', () => {
     expect(sw).toHaveAttribute('data-disabled');
     expect(await screen.findByRole('button', { name: 'Download model' })).toBeInTheDocument();
     expect(await screen.findByLabelText('On-device model')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 4, name: 'Recommended models' })).toBeInTheDocument();
   });
 
   it('invalidates the manifest after the admin flag is saved', async () => {
@@ -124,12 +125,15 @@ describe('ClientInferenceTab', () => {
       throw new Error(`unexpected ${path} ${init?.method ?? ''}`);
     });
     renderTab();
+    expect(await screen.findByRole('heading', { level: 4, name: 'Recommended models' })).toBeInTheDocument();
     const input = await screen.findByLabelText('On-device model');
     fireEvent.change(input, { target: { value: 'smol' } });
+    expect(await screen.findByRole('heading', { level: 4, name: 'Search results' })).toBeInTheDocument();
     expect(await screen.findByRole('option', { name: /SmolLM2-135M-Instruct/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('option', { name: /SmolLM2-135M-Instruct/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Download model' }));
     await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('/admin/client-assets/inspect?repo='));
       expect(apiFetch).toHaveBeenCalledWith('/admin/client-assets/install', expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ repo: 'HuggingFaceTB/SmolLM2-135M-Instruct' }),

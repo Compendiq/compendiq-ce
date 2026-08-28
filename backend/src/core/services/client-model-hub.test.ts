@@ -32,14 +32,25 @@ describe('searchClientModels', () => {
   it('filters Hub hits to transformers.js text-generation and marks recommended', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
-      expect(url).toContain('pipeline_tag=text-generation');
-      expect(url).toContain('filter=transformers.js');
-      expect(url).toContain('search=qwen');
-      return jsonResponse([
-        { id: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 10, likes: 2 },
-        { id: 'onnx-community/Qwen3-0.6B-ONNX', downloads: 5, likes: 1 },
-        { id: '../evil/model', downloads: 99, likes: 0 },
-      ]);
+      if (url.includes('/api/models?')) {
+        expect(url).toContain('pipeline_tag=text-generation');
+        expect(url).toContain('filter=transformers.js');
+        expect(url).toContain('search=qwen');
+        return jsonResponse([
+          { id: 'onnx-community/Qwen2.5-0.5B-Instruct', downloads: 10, likes: 2 },
+          { id: 'onnx-community/Qwen3-0.6B-ONNX', downloads: 5, likes: 1 },
+          { id: 'onnx-community/Too-Large-Model', downloads: 20, likes: 5 },
+          { id: 'onnx-community/No-ONNX-Model', downloads: 15, likes: 3 },
+          { id: '../evil/model', downloads: 99, likes: 0 },
+        ]);
+      }
+      if (url.includes('Too-Large-Model/tree/main/onnx')) {
+        return jsonResponse([{ path: 'onnx/model_q4.onnx', size: 2_000_000_000, type: 'file' }]);
+      }
+      if (url.includes('No-ONNX-Model/tree/main/onnx')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return jsonResponse([{ path: 'onnx/model_q4.onnx', size: 100, type: 'file' }]);
     };
     const result = await searchClientModels('qwen', { fetch: fetchImpl });
     expect(result.models.map((m) => m.repo)).toEqual([
@@ -49,7 +60,6 @@ describe('searchClientModels', () => {
     expect(result.models[0]?.recommended).toBe(true);
   });
 });
-
 describe('inspectClientModel', () => {
   it('allows a q4 weight at or under 1 GiB', async () => {
     const fetchImpl: typeof fetch = async () => jsonResponse([
