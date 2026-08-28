@@ -29,7 +29,7 @@ const customPromptsShape = Object.fromEntries(
 export const CustomPromptsSchema = z.object(customPromptsShape).strict().default({});
 export type CustomPrompts = Partial<Record<CustomPromptKey, string>>;
 
-// #1402 (review r1): the write-side counterpart, deliberately NOT
+// #1402 (review r1) / #1436: the write-side counterpart, deliberately NOT
 // `CustomPromptsSchema` and NOT `CustomPromptsSchema.optional()`. In zod v4,
 // wrapping a schema in `.optional()` does not strip that schema's OWN
 // `.default({})` — `UpdateSettingsSchema.parse({ onboardingState: {...} })`
@@ -128,7 +128,7 @@ export const UpdateSettingsSchema = z.object({
   theme: z.string().optional(),
   syncIntervalMin: z.number().int().min(1).max(1440).optional(),
   showSpaceHomeContent: z.boolean().optional(),
-  // #1402 (review r1): CustomPromptsPatchSchema, not CustomPromptsSchema — see
+  // #1402 (review r1) / #1436: CustomPromptsPatchSchema, not CustomPromptsSchema — see
   // its comment above for why the defaulted schema silently wipes every
   // saved custom prompt on a PUT that never sent this key.
   customPrompts: CustomPromptsPatchSchema.optional(),

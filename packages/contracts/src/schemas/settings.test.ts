@@ -63,3 +63,19 @@ describe('client inference / spellcheck settings (#1418)', () => {
     expect(() => SettingsResponseSchema.parse(without)).toThrow();
   });
 });
+
+describe('UpdateSettingsSchema customPrompts omission (#1436)', () => {
+  it('does not materialise customPrompts when the key is absent', () => {
+    const parsed = UpdateSettingsSchema.parse({ theme: 'polar-slate' });
+    expect(parsed).toEqual({ theme: 'polar-slate' });
+    expect(parsed.customPrompts).toBeUndefined();
+  });
+
+  it('still accepts an explicit customPrompts object', () => {
+    const parsed = UpdateSettingsSchema.parse({
+      customPrompts: { improve_grammar: 'keep me' },
+    });
+    expect(parsed.customPrompts).toEqual({ improve_grammar: 'keep me' });
+  });
+});
+
