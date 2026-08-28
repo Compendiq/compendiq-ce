@@ -7,6 +7,11 @@ class MockIntersectionObserver {
   readonly root: Element | null = null;
   readonly rootMargin: string = '';
   readonly thresholds: ReadonlyArray<number> = [];
+  constructor(callback: IntersectionObserverCallback, _options?: IntersectionObserverInit) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('IntersectionObserver requires a callback');
+    }
+  }
   observe() {}
   unobserve() {}
   disconnect() {}
