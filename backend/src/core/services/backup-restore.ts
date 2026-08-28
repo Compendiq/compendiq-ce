@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { fileURLToPath } from 'node:url';
 import { runMigrations } from '../db/postgres.js';
 import { parseBackupManifest, type BackupManifest } from './backup-manifest.js';
 import {
@@ -15,6 +16,8 @@ import {
   unpackArchive,
   type BackupSecret,
 } from './backup-stream.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_RESTORE_STDERR_BYTES = 4096;

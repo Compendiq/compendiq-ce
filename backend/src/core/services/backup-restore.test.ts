@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { type ChildProcess, type spawn } from 'node:child_process';
+import { execFile, type ChildProcess, type spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { encryptBackupStream, packArchive, type ArchiveEntry } from './backup-stream.js';
 import { restoreBackup } from './backup-restore.js';
@@ -298,6 +299,48 @@ describe('restoreBackup validation', () => {
       }),
       /migration.*newer/i,
     );
+  });
+
+  it('discovers the newest shipped migration under ESM when none is injected', async () => {
+    const harness = await createHarness();
+    const backupPath = path.join(harness.workRoot, 'backup.cpq');
+    const chunks: Buffer[] = [];
+    for await (const chunk of encryptedFixture()) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    await writeFile(backupPath, Buffer.concat(chunks));
+
+    const script = `
+      import { createReadStream } from 'node:fs';
+      import { restoreBackup } from './src/core/services/backup-restore.ts';
+
+      const manifest = await restoreBackup({
+        encrypted: createReadStream(process.env.BACKUP_FIXTURE),
+        secret: { kind: 'master', keyMaterial: process.env.BACKUP_MASTER_KEY },
+        attachmentsRoot: process.env.ATTACHMENTS_ROOT,
+        postgresUrl: 'postgres://restore-test',
+        dryRun: true,
+      });
+      if (manifest.schemaMigration !== '${NEWEST_MIGRATION}') {
+        throw new Error('Unexpected schema migration: ' + manifest.schemaMigration);
+      }
+    `;
+    await promisify(execFile)(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          ATTACHMENTS_ROOT: harness.attachmentsRoot,
+          BACKUP_FIXTURE: backupPath,
+          BACKUP_MASTER_KEY: MASTER.keyMaterial,
+          PAT_ENCRYPTION_KEY: PAT_KEY,
+        },
+      },
+    );
+
+    expect(await readFile(harness.existingAttachment, 'utf8')).toBe(ORIGINAL);
   });
 
   it('rejects a missing database dump before mutating live state', async () => {
