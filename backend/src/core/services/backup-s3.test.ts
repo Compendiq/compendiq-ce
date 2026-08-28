@@ -28,6 +28,7 @@ interface TestAgentOptions {
 interface TestRequestOptions {
   headers: Record<string, string>;
   dispatcher?: unknown;
+  body?: Buffer | string;
 }
 
 const lookup = vi.hoisted(() => vi.fn());
@@ -193,6 +194,20 @@ describe('backup S3 transport', () => {
     );
   });
 
+  it('signs and transmits one AWS-encoded query for reserved and Unicode prefix characters', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+
+    await listBackupObjects(target({ prefix: 'space ~+&/ümlaut' }));
+
+    expect(undiciRequest.mock.calls[0]![0]).toBe(
+      'https://backups.s3.example.test/?list-type=2&prefix=space%20~%2B%26%2F%C3%BCmlaut',
+    );
+    expect(requestOptionsAt(0).headers.authorization).toBe(
+      'AWS4-HMAC-SHA256 Credential=access/20260828/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=6f8dfb75e2a854f24c5031cc190cb137259cc8f0681811c0b60c55b8b13ee17c',
+    );
+  });
+
   it('rejects redirects instead of following or treating them as success', async () => {
     undiciRequest.mockResolvedValue(xmlResponse('redirect', { location: 'https://attacker.example.test' }, 307));
 
@@ -292,6 +307,40 @@ describe('backup S3 transport', () => {
     await expect(
       pruneBackupObjects(target({ prefix: 'shared/' }), 0, 1, new Date('2026-08-28T00:00:00Z')),
     ).resolves.toEqual(['shared/compendiq-backup-20260820T000000Z.enc']);
+  });
+
+  it('decodes named and numeric XML references before owned-prefix pruning', async () => {
+    undiciRequest
+      .mockResolvedValueOnce(
+        xmlResponse(
+          '<ListBucketResult>' +
+            '<Contents><Key>finance&amp;legal/compendiq-backup-20260820T000000Z.enc</Key><LastModified>2026-08-20T00:00:00Z</LastModified><Size>1</Size></Contents>' +
+            '<Contents><Key>finance&#38;legal/compendiq-backup-20260819T000000Z.enc</Key><LastModified>2026-08-19T00:00:00Z</LastModified><Size>1</Size></Contents>' +
+            '<Contents><Key>finance&#x26;legal/compendiq-backup-20260818T000000Z.enc</Key><LastModified>2026-08-18T00:00:00Z</LastModified><Size>1</Size></Contents>' +
+          '</ListBucketResult>',
+        ),
+      )
+      .mockResolvedValueOnce(xmlResponse('<DeleteResult/>'));
+
+    await expect(
+      pruneBackupObjects(
+        target({ prefix: 'finance&legal/' }),
+        0,
+        1,
+        new Date('2026-08-28T00:00:00Z'),
+      ),
+    ).resolves.toEqual([
+      'finance&legal/compendiq-backup-20260820T000000Z.enc',
+      'finance&legal/compendiq-backup-20260819T000000Z.enc',
+      'finance&legal/compendiq-backup-20260818T000000Z.enc',
+    ]);
+    expect(requestOptionsAt(1).body).toBe(
+      '<Delete>' +
+        '<Object><Key>finance&amp;legal/compendiq-backup-20260820T000000Z.enc</Key></Object>' +
+        '<Object><Key>finance&amp;legal/compendiq-backup-20260819T000000Z.enc</Key></Object>' +
+        '<Object><Key>finance&amp;legal/compendiq-backup-20260818T000000Z.enc</Key></Object>' +
+      '</Delete>',
+    );
   });
 });
 

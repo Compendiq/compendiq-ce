@@ -436,15 +436,17 @@ export function assertSafeArchivePath(name: string): string {
   if (!name || name.includes('\0')) {
     throw new BackupArchiveError('Invalid archive member name');
   }
-  const normalised = name.replaceAll('\\', '/');
-  if (path.posix.isAbsolute(normalised) || normalised.startsWith('/')) {
+  if (name.includes('\\')) {
+    throw new BackupArchiveError(`Backslash rejected in archive member name: ${name}`);
+  }
+  if (path.posix.isAbsolute(name) || name.startsWith('/')) {
     throw new BackupArchiveError(`Absolute path rejected: ${name}`);
   }
-  const segments = normalised.split('/');
+  const segments = name.split('/');
   if (segments.some((s) => s === '..' || s === '')) {
     throw new BackupArchiveError(`Path traversal rejected: ${name}`);
   }
-  return normalised;
+  return name;
 }
 
 export function resolveAttachmentDest(attachmentsRoot: string, archiveName: string): string {

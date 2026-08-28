@@ -170,6 +170,14 @@ describe('path guards', () => {
     expect(() => assertSafeArchivePath('')).toThrow();
   });
 
+  it('rejects backslashes instead of normalizing an archive member to another restore path', async () => {
+    const name = String.raw`attachments/local/1/diagram\final.png`;
+    expect(() => assertSafeArchivePath(name)).toThrow(/backslash/i);
+    await expect(
+      readAll(packArchive([{ name, size: 1, stream: bufferStream('x') }])),
+    ).rejects.toThrow(/backslash/i);
+  });
+
   it('resolves attachment members under the attachments root', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'cq-backup-'));
     try {

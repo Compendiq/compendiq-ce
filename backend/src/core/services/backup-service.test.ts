@@ -12,6 +12,7 @@ const {
   mockRefreshWorkerLock,
   mockReleaseWorkerLock,
   mockGetBackupRuntimeConfig,
+  mockRequireMasterBackupKey,
   mockMarkBackupLastRun,
   mockObjectKeyFor,
   mockPruneBackupObjects,
@@ -24,6 +25,7 @@ const {
   mockAcquireWorkerLock: vi.fn(),
   mockRefreshWorkerLock: vi.fn(),
   mockGetBackupRuntimeConfig: vi.fn(),
+  mockRequireMasterBackupKey: vi.fn(),
   mockReleaseWorkerLock: vi.fn(),
   mockMarkBackupLastRun: vi.fn(),
   mockObjectKeyFor: vi.fn(),
@@ -57,7 +59,7 @@ vi.mock('./backup-settings.js', () => ({
   getBackupRuntimeConfig: mockGetBackupRuntimeConfig,
   hasMasterBackupKey: vi.fn(() => true),
   markBackupLastRun: mockMarkBackupLastRun,
-  requireMasterBackupKey: vi.fn(() => 'master-key-at-least-32-characters'),
+  requireMasterBackupKey: mockRequireMasterBackupKey,
 }));
 vi.mock('./backup-s3.js', () => ({
   objectKeyFor: mockObjectKeyFor,
@@ -132,6 +134,8 @@ beforeEach(() => {
   mockQuery.mockReset();
   mockGetPool.mockReset();
   mockGetBackupRuntimeConfig.mockReset();
+  mockRequireMasterBackupKey.mockReset();
+  mockRequireMasterBackupKey.mockReturnValue('master-key-at-least-32-characters');
   mockAcquireWorkerLock.mockReset();
   mockAcquireWorkerLock.mockResolvedValue('lock-token');
   mockRefreshWorkerLock.mockReset();
@@ -360,6 +364,65 @@ describe('backup run job correlation', () => {
         /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
       ),
       ['s3', 'admin-1', 'backup-job-42'],
+    );
+  });
+
+  it('records a terminal failed row for a correlated job when S3 configuration preflight fails', async () => {
+    mockGetBackupRuntimeConfig.mockResolvedValue({
+      s3: { enabled: false, endpoint: '', bucket: '' },
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'run-config-failed' }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    await expect(runS3Backup('admin-1', 'backup-job-config')).rejects.toThrow(
+      'S3 backup is not configured',
+    );
+
+    expect(mockQuery).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
+      ),
+      ['s3', 'admin-1', 'backup-job-config'],
+    );
+    expect(mockQuery).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('UPDATE backup_runs'),
+      ['run-config-failed', 'failed', null, null, 'S3 backup is not configured'],
+    );
+  });
+
+  it('records a terminal failed row for a correlated job when master-key preflight fails', async () => {
+    mockGetBackupRuntimeConfig.mockResolvedValue({
+      s3: {
+        enabled: true,
+        endpoint: 'https://s3.example.com',
+        bucket: 'backups',
+      },
+    });
+    mockRequireMasterBackupKey.mockImplementationOnce(() => {
+      throw new Error('BACKUP_ENCRYPTION_KEY is not set');
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'run-key-failed' }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    await expect(runS3Backup('admin-1', 'backup-job-key')).rejects.toThrow(
+      'BACKUP_ENCRYPTION_KEY is not set',
+    );
+
+    expect(mockQuery).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
+      ),
+      ['s3', 'admin-1', 'backup-job-key'],
+    );
+    expect(mockQuery).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('UPDATE backup_runs'),
+      ['run-key-failed', 'failed', null, null, 'BACKUP_ENCRYPTION_KEY is not set'],
     );
   });
 

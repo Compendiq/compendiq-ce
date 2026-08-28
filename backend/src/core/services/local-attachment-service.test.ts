@@ -8,6 +8,7 @@ import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '.
 import { getPool, query } from '../db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
+  canStoreLocalFilename,
   putLocalAttachment,
   getLocalAttachment,
   listLocalAttachments,
@@ -26,6 +27,12 @@ const EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;
 // inherit cruft from previous invocations.
 let tempBase = '';
 const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+
+describe('local attachment filename portability', () => {
+  it('rejects backslashes instead of storing a database filename with another restore path', () => {
+    expect(canStoreLocalFilename(String.raw`diagram\final.png`)).toBe(false);
+  });
+});
 
 describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
   beforeAll(async () => {

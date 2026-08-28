@@ -10,6 +10,7 @@ import type { LookupFunction } from 'node:net';
 import { createHash, createHmac } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { Agent, request } from 'undici';
+import he from 'he';
 import {
   resolvePublicNetworkUrl,
   SsrfError,
@@ -65,14 +66,18 @@ function amzDate(now: Date): { amz: string; date: string } {
   return { amz: iso, date: iso.slice(0, 8) };
 }
 
+function awsUriEncode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
 
 function canonicalQuery(params: URLSearchParams): string {
   const items: Array<[string, string]> = [];
-  for (const [k, v] of params.entries()) {
-    items.push([encodeURIComponent(k), encodeURIComponent(v)]);
+  for (const [key, value] of params.entries()) {
+    items.push([awsUriEncode(key), awsUriEncode(value)]);
   }
   items.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
-  return items.map(([k, v]) => `${k}=${v}`).join('&');
+  return items.map(([key, value]) => `${key}=${value}`).join('&');
 }
 
 function signingKey(secret: string, date: string, region: string): Buffer {
@@ -89,18 +94,18 @@ interface SignedRequest {
   body?: Buffer | string;
 }
 
-function buildUrl(target: S3Target, key: string, query?: URLSearchParams): { url: URL; host: string; path: string } {
+function buildUrl(target: S3Target, key: string, query: string): { url: URL; host: string; path: string } {
   const endpoint = new URL(target.endpoint);
   const encodedKey = key.split('/').map(encodeURIComponent).join('/');
   if (target.forcePathStyle) {
     const path = encodedKey ? `/${target.bucket}/${encodedKey}` : `/${target.bucket}`;
     const url = new URL(path.replace(/\/{2,}/g, '/'), endpoint);
-    if (query) url.search = query.toString();
+    url.search = query;
     return { url, host: endpoint.host, path: url.pathname };
   }
   const host = `${target.bucket}.${endpoint.host}`;
   const url = new URL(encodedKey ? `/${encodedKey}` : '/', `${endpoint.protocol}//${host}`);
-  if (query) url.search = query.toString();
+  url.search = query;
   return { url, host, path: url.pathname };
 }
 
@@ -109,7 +114,7 @@ function sign(
   method: string,
   host: string,
   path: string,
-  query: URLSearchParams,
+  query: string,
   body: Buffer | string | undefined,
   additionalHeaders: Record<string, string> = {},
   now = new Date(),
@@ -128,7 +133,7 @@ function sign(
   const canonicalRequest = [
     method,
     path || '/',
-    canonicalQuery(query),
+    query,
     canonicalHeaders,
     signedHeaders,
     payloadHash,
@@ -181,8 +186,9 @@ async function s3Request(
   body?: Buffer | string,
   additionalSignedHeaders: Record<string, string> = {},
 ): Promise<{ status: number; headers: Record<string, string>; text: string }> {
-  const { url, host, path } = buildUrl(target, key, query);
-  const headers = sign(target, method, host, path, query, body, additionalSignedHeaders);
+  const canonicalQueryString = canonicalQuery(query);
+  const { url, host, path } = buildUrl(target, key, canonicalQueryString);
+  const headers = sign(target, method, host, path, canonicalQueryString, body, additionalSignedHeaders);
   if (body !== undefined) {
     headers['content-length'] = String(Buffer.byteLength(body));
     if (typeof body === 'string') headers['content-type'] = 'application/xml';
@@ -213,11 +219,12 @@ function xmlEscape(value: string): string {
 
 function xmlText(xml: string, tag: string): string | null {
   const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`));
-  return match?.[1] ?? null;
+  return match?.[1] === undefined ? null : he.decode(match[1]);
 }
 
 function xmlAll(xml: string, tag: string): string[] {
-  return [...xml.matchAll(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'g'))].map((m) => m[1]!);
+  return [...xml.matchAll(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'g'))].map((match) =>
+    he.decode(match[1]!));
 }
 
 

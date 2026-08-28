@@ -532,13 +532,13 @@ export async function runS3Backup(
   triggeredBy: string | null,
   jobId: string | null,
 ): Promise<string> {
-  const cfg = await getBackupRuntimeConfig();
-  if (!cfg.s3.enabled || !cfg.s3.bucket || !cfg.s3.endpoint) {
-    throw new Error('S3 backup is not configured');
-  }
-  const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
   const runId = await insertBackupRun({ destination: 's3', triggeredBy, jobId });
   try {
+    const cfg = await getBackupRuntimeConfig();
+    if (!cfg.s3.enabled || !cfg.s3.bucket || !cfg.s3.endpoint) {
+      throw new Error('S3 backup is not configured');
+    }
+    const secret: BackupSecret = { kind: 'master', keyMaterial: requireMasterBackupKey() };
     const backup = await createEncryptedBackupStream(secret);
     let outcome:
       | { uploaded: UploadedObject; error?: never }

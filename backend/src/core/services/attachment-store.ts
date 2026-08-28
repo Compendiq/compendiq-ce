@@ -111,6 +111,9 @@ export function isStorableAttachmentFilename(filename: string): boolean {
   if (typeof filename !== 'string') {
     return false;
   }
+  if (filename.includes('\\')) {
+    return false;
+  }
   // `path.basename` strips any directory components — `../../etc/passwd`
   // collapses to `passwd`, `/abs/file` to `file`. We then re-validate.
   const base = path.basename(filename);

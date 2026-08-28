@@ -105,7 +105,7 @@ export async function cleanupStandalonePageAttachmentDirs(
   // only for a page that already exists. So it needs neither the ownership
   // EXISTS nor the grace window, only the same best-effort contract.
   try {
-    await deletePageIconImage(pageId);
+    await deletePageIconImage(pageId, client);
   } catch (err) {
     logger.warn(
       { err, pageId },

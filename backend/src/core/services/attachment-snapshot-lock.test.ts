@@ -1,9 +1,13 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import { isDbAvailable } from '../../test-db-helper.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import { getPool, query } from '../db/postgres.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
+import { deletePageIconImage } from './page-icon-store.js';
 
 const dbAvailable = await isDbAvailable();
 
@@ -91,6 +95,54 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
     } finally {
       await client.query('SELECT pg_advisory_unlock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
       client.release();
+    }
+  });
+
+  it('holds direct page-icon deletion behind the backup snapshot barrier', async () => {
+    const tempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'compendiq-page-icon-lock-'));
+    const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    process.env.ATTACHMENTS_DIR = tempBase;
+    const iconDir = path.join(tempBase, 'page-icons', '42');
+    await fs.mkdir(iconDir, { recursive: true });
+    await fs.writeFile(path.join(iconDir, 'old.png'), 'old');
+
+    const holder = await getPool().connect();
+    await holder.query('SET statement_timeout = 0');
+    await holder.query('SELECT pg_advisory_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    const blockerPid = await holder
+      .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+      .then((result) => result.rows[0]!.pid);
+    let holderUnlocked = false;
+    const deletion = deletePageIconImage(42);
+
+    try {
+      const sharedLockWaited = await waitForSharedWaiter(blockerPid);
+      const iconStillExists = await fs.stat(iconDir).then(
+        () => true,
+        () => false,
+      );
+      await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      holderUnlocked = true;
+      await deletion;
+
+      expect(sharedLockWaited).toBe(true);
+      expect(iconStillExists).toBe(true);
+      await expect(fs.stat(iconDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      if (!holderUnlocked) {
+        await holder
+          .query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID])
+          .catch(() => undefined);
+      }
+      await deletion.catch(() => undefined);
+      await holder.query('RESET statement_timeout').catch(() => undefined);
+      holder.release();
+      await fs.rm(tempBase, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) {
+        delete process.env.ATTACHMENTS_DIR;
+      } else {
+        process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+      }
     }
   });
 });

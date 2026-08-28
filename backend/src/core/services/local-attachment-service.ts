@@ -81,18 +81,22 @@ function localPageDir(pageId: number): string {
  * no way to say which file was at fault (#1169).
  *
  * Deliberately **not** identical to the Confluence cache's
- * `isStorableAttachmentFilename`: this store caps length, that one rejects NUL
- * bytes. A filename moving between the two stores must satisfy both, so
- * relocate asks both rather than picking one.
+ * `isStorableAttachmentFilename`: both reject backslashes so backup paths stay
+ * portable, while this store caps length and that one rejects NUL bytes. A
+ * filename moving between the stores must satisfy both, so relocate asks both.
  */
 export function canStoreLocalFilename(filename: string): boolean {
+  if (filename.includes('\\')) return false;
   const safe = path.basename(filename);
   return Boolean(safe) && !safe.startsWith('.') && safe.length <= 255;
 }
 
 function localFilePath(pageId: number, filename: string): string {
   if (!canStoreLocalFilename(filename)) {
-    throw new LocalAttachmentError('INVALID_FILENAME', 'Filename is empty, hidden, or too long');
+    throw new LocalAttachmentError(
+      'INVALID_FILENAME',
+      'Filename is empty, hidden, too long, or contains a backslash',
+    );
   }
   return path.join(localPageDir(pageId), path.basename(filename));
 }

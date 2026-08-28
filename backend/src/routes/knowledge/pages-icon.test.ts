@@ -33,6 +33,15 @@ vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
 }));
 
+const mockLockedQuery = vi.fn();
+const lockedClient = { query: mockLockedQuery };
+const mockWithLocalAttachmentMutationLock = vi.fn();
+vi.mock('../../core/services/attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: (
+    operation: (client: typeof lockedClient) => Promise<unknown>,
+  ) => mockWithLocalAttachmentMutationLock(operation),
+}));
+
 const mockWrite = vi.fn();
 const mockDelete = vi.fn().mockResolvedValue(undefined);
 const mockRead = vi.fn();
@@ -63,7 +72,7 @@ const pageRow = {
   icon_value: null,
 };
 
-describe('PATCH /api/pages/:id/icon', () => {
+describe('page icon mutation routes', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -104,6 +113,12 @@ describe('PATCH /api/pages/:id/icon', () => {
       }
       return { rows: [], rowCount: 1 };
     });
+    mockLockedQuery.mockReset();
+    mockLockedQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+    mockWithLocalAttachmentMutationLock.mockReset();
+    mockWithLocalAttachmentMutationLock.mockImplementation(
+      (operation: (client: typeof lockedClient) => Promise<unknown>) => operation(lockedClient),
+    );
   });
 
   it('sets an emoji mark and invalidates the pages cache', async () => {
@@ -114,7 +129,12 @@ describe('PATCH /api/pages/:id/icon', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ icon: { kind: 'emoji', value: '🚀' } });
-    expect(mockDelete).toHaveBeenCalledWith(42);
+    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
+    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
+    expect(mockLockedQuery).toHaveBeenCalledWith(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
+      [42, 'emoji', '🚀'],
+    );
     expect(mockInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
   });
 
@@ -126,7 +146,25 @@ describe('PATCH /api/pages/:id/icon', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ icon: null });
-    expect(mockDelete).toHaveBeenCalledWith(42);
+    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
+  });
+
+  it('writes an image and its pages row through the same barrier-owning client', async () => {
+    mockWrite.mockResolvedValueOnce({ sha: 'a'.repeat(64), format: 'png' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/icon-image',
+      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
+    expect(mockWrite).toHaveBeenCalledWith(42, Buffer.from('png'), lockedClient);
+    expect(mockLockedQuery).toHaveBeenCalledWith(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
+      [42, 'image', 'a'.repeat(64)],
+    );
   });
 
   it('accepts a catalogue brand slug', async () => {
