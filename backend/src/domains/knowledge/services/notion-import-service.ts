@@ -124,22 +124,11 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
       localPageId = job.reuseId ?? (await nextPageId());
 
-      const wikiProps = extractWikiPageProperties(job.page);
-      const metaCalloutHtml = formatWikiMetadataCallout({
-        status: wikiProps.status,
-        author: wikiProps.author,
-        verifiedAt: wikiProps.verifiedAt,
-        tags: wikiProps.labels,
-        customProperties: wikiProps.customProperties,
-      });
-
       const converted = convertNotionBlocks(job.blocks ?? [], {
         localPageId,
         importedPages,
       });
-
-      const finalHtml = metaCalloutHtml ? `${metaCalloutHtml}${converted.bodyHtml}` : converted.bodyHtml;
-      const finalBodyText = metaCalloutHtml ? `${htmlToText(metaCalloutHtml)}\n\n${converted.bodyText}` : converted.bodyText;
+      const { wikiProps, bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
 
       await persistStandalonePage({
         id: localPageId,
@@ -363,20 +352,12 @@ async function rewriteImportedMentions(
   for (const job of jobs) {
     const current = items.get(job.id);
     if (current?.status !== 'success' || !current.localPageId || !job.blocks) continue;
-    const wikiProps = extractWikiPageProperties(job.page);
-    const metaCalloutHtml = formatWikiMetadataCallout({
-      status: wikiProps.status,
-      author: wikiProps.author,
-      verifiedAt: wikiProps.verifiedAt,
-      tags: wikiProps.labels,
-      customProperties: wikiProps.customProperties,
-    });
     const converted = convertNotionBlocks(job.blocks, {
       localPageId: current.localPageId,
       importedPages,
     });
-    const finalHtml = metaCalloutHtml ? `${metaCalloutHtml}${converted.bodyHtml}` : converted.bodyHtml;
-    const finalBodyText = metaCalloutHtml ? `${htmlToText(metaCalloutHtml)}\n\n${converted.bodyText}` : converted.bodyText;
+    const { bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
+
     await query(
       `UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1`,
       [current.localPageId, finalHtml, finalBodyText],
@@ -489,9 +470,6 @@ function parentPageIdOf(page: Record<string, unknown>): string | null {
   const parent = isRecord(page.parent) ? page.parent : null;
   if (!parent || typeof parent.type !== 'string') return null;
   if (parent.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
-  if (parent.type === 'database_id' && typeof parent.database_id === 'string') return parent.database_id;
-  if (parent.type === 'data_source_id' && typeof parent.data_source_id === 'string') return parent.data_source_id;
-  if (parent.type === 'block_id' && typeof parent.block_id === 'string') return parent.block_id;
   return null;
 }
 
@@ -506,11 +484,18 @@ export interface ExtractedWikiProperties {
 export function extractWikiPageProperties(page: Record<string, unknown>): ExtractedWikiProperties {
   let author: string | null = null;
   let verifiedAt: Date | null = null;
-  const labelsSet = new Set<string>();
+  const labelsByLower = new Map<string, string>();
   let status: string | null = null;
   const customProperties: Record<string, string> = {};
 
   const props = isRecord(page.properties) ? page.properties : {};
+
+  const addLabel = (name: string): void => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (!labelsByLower.has(key)) labelsByLower.set(key, trimmed);
+  };
 
   // 1. Author / Owner
   for (const [key, prop] of Object.entries(props)) {
@@ -522,7 +507,7 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
       const person = prop.people[0];
       if (isRecord(person)) {
         const name = typeof person.name === 'string' && person.name.trim() ? person.name.trim() : null;
-        if (name && (lowerKey.includes('owner') || lowerKey.includes('author') || !author)) {
+        if (name && (lowerKey.includes('owner') || lowerKey.includes('author'))) {
           author = name;
         }
       }
@@ -538,20 +523,17 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
     author = page.created_by.name.trim();
   }
 
-  // 2. Verification
-  for (const [key, prop] of Object.entries(props)) {
+  // 2. Verification — only persist a real verification date, never import-time
+  for (const [, prop] of Object.entries(props)) {
     if (!isRecord(prop)) continue;
     const propType = typeof prop.type === 'string' ? prop.type : '';
-    const lowerKey = key.toLowerCase();
 
     if (propType === 'verification' && isRecord(prop.verification)) {
       const v = prop.verification;
-      if (v.state === 'verified') {
-        const dateObj = isRecord(v.date) && typeof v.date.start === 'string' ? new Date(v.date.start) : new Date();
-        verifiedAt = isNaN(dateObj.getTime()) ? new Date() : dateObj;
+      if (v.state === 'verified' && isRecord(v.date) && typeof v.date.start === 'string') {
+        const dateObj = new Date(v.date.start);
+        if (!isNaN(dateObj.getTime())) verifiedAt = dateObj;
       }
-    } else if (lowerKey.includes('verif') && propType === 'checkbox' && prop.checkbox === true) {
-      verifiedAt = new Date();
     }
   }
 
@@ -560,20 +542,15 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
     if (!isRecord(prop)) continue;
     const propType = typeof prop.type === 'string' ? prop.type : '';
     const lowerKey = key.toLowerCase();
+    const isLabelKey = lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label');
 
-    if (propType === 'multi_select' && Array.isArray(prop.multi_select)) {
+    if (propType === 'multi_select' && Array.isArray(prop.multi_select) && isLabelKey) {
       for (const item of prop.multi_select) {
-        if (isRecord(item) && typeof item.name === 'string' && item.name.trim()) {
-          labelsSet.add(item.name.trim());
-        }
+        if (isRecord(item) && typeof item.name === 'string') addLabel(item.name);
       }
-    } else if (propType === 'select' && isRecord(prop.select)) {
-      const selName = typeof prop.select.name === 'string' && prop.select.name.trim() ? prop.select.name.trim() : null;
-      if (selName) {
-        if (lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label')) {
-          labelsSet.add(selName);
-        }
-      }
+    } else if (propType === 'select' && isRecord(prop.select) && isLabelKey) {
+      const selName = typeof prop.select.name === 'string' ? prop.select.name : null;
+      if (selName) addLabel(selName);
     }
   }
 
@@ -621,9 +598,28 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
   return {
     author,
     verifiedAt,
-    labels: Array.from(labelsSet),
+    labels: Array.from(labelsByLower.values()),
     status,
     customProperties,
+  };
+}
+
+function wikiConvertedBody(
+  page: Record<string, unknown>,
+  converted: { bodyHtml: string; bodyText: string },
+): { wikiProps: ExtractedWikiProperties; bodyHtml: string; bodyText: string } {
+  const wikiProps = extractWikiPageProperties(page);
+  const metaCalloutHtml = formatWikiMetadataCallout({
+    status: wikiProps.status,
+    author: wikiProps.author,
+    verifiedAt: wikiProps.verifiedAt,
+    tags: wikiProps.labels,
+    customProperties: wikiProps.customProperties,
+  });
+  return {
+    wikiProps,
+    bodyHtml: metaCalloutHtml ? `${metaCalloutHtml}${converted.bodyHtml}` : converted.bodyHtml,
+    bodyText: metaCalloutHtml ? `${htmlToText(metaCalloutHtml)}\n\n${converted.bodyText}` : converted.bodyText,
   };
 }
 
