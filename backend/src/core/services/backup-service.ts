@@ -110,26 +110,81 @@ export function spawnPgDump(
   );
 }
 
-function dumpStreamFromProcess(child: ChildProcess): Readable {
+export function dumpStreamFromProcess(child: ChildProcess): Readable {
   if (!child.stdout) throw new BackupDumpError('pg_dump stdout is not piped');
+
   const stderrChunks: Buffer[] = [];
-  child.stderr?.on('data', (c: Buffer) => stderrChunks.push(c));
+  let stderrBytes = 0;
+  let stdoutEnded = false;
+  let childClosed = false;
+  let exitCode: number | null = null;
+  let completed = false;
+  let terminated = false;
+  let exitError: BackupDumpError | undefined;
+
+  const updateExitError = () => {
+    if (exitError) {
+      exitError.message = `pg_dump exited ${exitCode}: ${Buffer.concat(stderrChunks, stderrBytes).toString('utf8')}`;
+    }
+  };
+
   const out = new Transform({
     transform(chunk, _enc, cb) {
       this.push(chunk);
       cb();
     },
   });
-  child.stdout.pipe(out);
+
+  const maybeComplete = () => {
+    if (stdoutEnded && childClosed && exitCode === 0) {
+      completed = true;
+      out.end();
+    }
+  };
+
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    const remaining = 4096 - stderrBytes;
+    if (remaining > 0) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const retained = Buffer.from(buffer.subarray(0, remaining));
+      stderrChunks.push(retained);
+      stderrBytes += retained.length;
+      updateExitError();
+    }
+  });
+
+  child.stdout.on('data', (chunk: Buffer) => {
+    if (!out.write(chunk)) child.stdout?.pause();
+  });
+  out.on('drain', () => child.stdout?.resume());
+  child.stdout.on('end', () => {
+    stdoutEnded = true;
+    maybeComplete();
+  });
+  child.stdout.on('error', (err) => {
+    out.destroy(new BackupDumpError(`pg_dump stdout failed: ${err.message}`));
+  });
   child.on('error', (err) => {
     out.destroy(new BackupDumpError(`pg_dump failed to start: ${err.message}`));
   });
   child.on('close', (code) => {
-    if (code !== 0 && code !== null) {
-      const stderr = Buffer.concat(stderrChunks).toString('utf8').slice(0, 500);
-      out.destroy(new BackupDumpError(`pg_dump exited ${code}: ${stderr}`));
+    childClosed = true;
+    exitCode = code;
+    if (code !== 0) {
+      exitError = new BackupDumpError('');
+      updateExitError();
+      out.destroy(exitError);
+      return;
     }
+    maybeComplete();
   });
+  out.on('close', () => {
+    if (completed || terminated) return;
+    terminated = true;
+    child.stdout?.destroy();
+    child.kill('SIGTERM');
+  });
+
   return out;
 }
 
