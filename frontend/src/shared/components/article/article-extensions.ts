@@ -363,6 +363,21 @@ export const Panel = Node.create({
         // the type into every saved page that nothing ever reads.
         renderHTML: () => ({}),
       },
+      // Native `panel` renders through the info panel node, so its original
+      // macro identity and arbitrary parameters must survive ProseMirror's
+      // declared-attribute filter for lossless write-back (#1438).
+      macroName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
 

@@ -696,6 +696,18 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**`body_html` never contains a raw structured macro (#1438).**
+`confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
+clone nested `ac:structured-macro` nodes after their dedicated handler pass.
+Conversion therefore repeats to a fixed point with a strict monotonic guard:
+the raw macro count must decrease on every pass, or conversion throws rather
+than returning partial HTML or deleting the malformed macro. A cloned supported
+macro stays raw for the next dedicated pass; it must never be downgraded into
+the lossless long-tail `confluence-macro-unknown` node. Native `panel` renders
+through the existing info-panel node but carries `data-macro-name="panel"` and
+arbitrary direct text parameters through the editor, so write-back emits
+`ac:name="panel"` rather than permanently coercing it to `info`.
+
 **Notion import discovery is metadata-only.** `GET /api/notion/tree` builds the
 picker hierarchy from Notion Search and resolves Search-listed `block_id` parents, but
 must never list every page body's blocks: the retired walk spent up to 80 serial calls

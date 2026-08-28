@@ -3748,3 +3748,84 @@ describe('content-converter: #1220 self-nested placeholders on write-back', () =
     );
   });
 });
+
+// ==========================================================================
+// #1438 — forward conversion reaches a macro-free fixed point
+// ==========================================================================
+
+describe('content-converter: #1438 nested macro fallback', () => {
+  it('converts nested unknown macros without raw XML and round-trips their bodies and parameters', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor">' +
+      '<ac:parameter ac:name="outer-option">outer value</ac:parameter>' +
+      '<ac:rich-text-body><p>Outer body</p>' +
+      '<ac:structured-macro ac:name="inner-vendor">' +
+      '<ac:parameter ac:name="inner-option">inner value</ac:parameter>' +
+      '<ac:rich-text-body><p><strong>Inner body</strong></p></ac:rich-text-body>' +
+      '</ac:structured-macro></ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html.match(/class="confluence-macro-unknown"/g)).toHaveLength(2);
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:outer-vendor|inner-vendor)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="outer-option">outer value');
+    expect(roundTrip).toContain('ac:name="inner-option">inner value');
+    expect(roundTrip).toContain('<strong>Inner body</strong>');
+  });
+
+  it('converts a supported macro nested in an unknown macro without raw XML', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Supported body</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip).toContain('ac:name="outer-vendor"');
+    expect(roundTrip).toContain('ac:name="info"');
+    expect(roundTrip).toContain('Supported body');
+  });
+
+  it('converts an unknown macro cloned by a layout handler without a false no-progress failure', () => {
+    const storage =
+      '<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell>' +
+      '<ac:structured-macro ac:name="layout-vendor"><ac:rich-text-body>' +
+      '<p>Nested in layout</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:layout-cell></ac:layout-section></ac:layout>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('data-macro-name="layout-vendor"');
+    expect(html).toContain('Nested in layout');
+  });
+
+  it('renders native panel losslessly while converting its nested supported macro', () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel body</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Nested info</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+    expect(html).toContain('data-macro-name="panel"');
+    expect(html).toContain('data-macro-params=');
+    expect(html).not.toContain('confluence-macro-unknown');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:panel|info)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Nested info');
+  });
+});
