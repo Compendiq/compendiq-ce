@@ -69,10 +69,17 @@ export const UpdateBackupSettingsSchema = z.object({
 });
 export type UpdateBackupSettingsInput = z.infer<typeof UpdateBackupSettingsSchema>;
 
-export const BackupExportRequestSchema = z.object({
-  passphrase: z.string().min(12).max(1024).optional(),
+export const BackupExportTicketRequestSchema = z
+  .object({
+    passphrase: z.string().min(12).max(1024).optional(),
+  })
+  .strict();
+export type BackupExportTicketRequest = z.infer<typeof BackupExportTicketRequestSchema>;
+
+export const BackupExportTicketResponseSchema = z.object({
+  downloadUrl: z.string().regex(/^\/api\/backup\/download\/[0-9a-f]{64}$/),
 });
-export type BackupExportRequest = z.infer<typeof BackupExportRequestSchema>;
+export type BackupExportTicketResponse = z.infer<typeof BackupExportTicketResponseSchema>;
 
 export const BackupTestS3ResponseSchema = z.object({
   ok: z.boolean(),

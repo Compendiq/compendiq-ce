@@ -1,16 +1,17 @@
 /**
  * Encrypted backup export / S3 configuration (#1420).
  *
- *   GET  /api/admin/backup          — status, S3 config (secrets masked), history
- *   PUT  /api/admin/backup          — S3 + schedule settings
- *   POST /api/admin/backup/export   — streaming encrypted download
- *   POST /api/admin/backup/test-s3  — Head/list the configured bucket
- *   POST /api/admin/backup/run      — enqueue / run an S3 backup now
+ *   GET  /api/admin/backup                 — status, S3 config (secrets masked), history
+ *   PUT  /api/admin/backup                 — S3 + schedule settings
+ *   POST /api/admin/backup/export-ticket   — short-lived browser download ticket
+ *   POST /api/admin/backup/test-s3         — Head/list the configured bucket
+ *   POST /api/admin/backup/run             — enqueue / run an S3 backup now
  */
 
 import type { FastifyInstance } from 'fastify';
 import {
-  BackupExportRequestSchema,
+  BackupExportTicketRequestSchema,
+  BackupExportTicketResponseSchema,
   UpdateBackupSettingsSchema,
 } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
@@ -24,13 +25,11 @@ import {
 } from '../../core/services/backup-settings.js';
 import { assertSafeS3Endpoint, testS3Connection } from '../../core/services/backup-s3.js';
 import {
-  BackupDumpError,
-  BackupLockError,
-  createEncryptedBackupStream,
   isBackupLockHeld,
   listBackupRuns,
   resolveBackupSecret,
 } from '../../core/services/backup-service.js';
+import { createBackupExportTicket } from '../../core/services/backup-export-ticket.js';
 import { SsrfError } from '../../core/utils/ssrf-guard.js';
 
 const ADMIN_RATE_LIMIT = {
@@ -84,14 +83,13 @@ export async function adminBackupRoutes(fastify: FastifyInstance) {
   );
 
   fastify.post(
-    '/admin/backup/export',
+    '/admin/backup/export-ticket',
     {
       preHandler: fastify.requireAdmin,
       ...ADMIN_RATE_LIMIT,
-      compress: false,
     },
     async (request, reply) => {
-      const body = BackupExportRequestSchema.parse(request.body ?? {});
+      const body = BackupExportTicketRequestSchema.parse(request.body ?? {});
       let secret;
       try {
         secret = resolveBackupSecret(body.passphrase);
@@ -103,38 +101,13 @@ export async function adminBackupRoutes(fastify: FastifyInstance) {
         });
       }
 
-
-      try {
-        const { stream, filename } = await createEncryptedBackupStream(secret);
-        await logAuditEvent(
-          request.userId,
-          'BACKUP_EXPORTED',
-          'backup',
-          filename,
-          { filename },
-          request,
-        );
-        reply.header('Content-Type', 'application/octet-stream');
-        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
-        reply.header('Cache-Control', 'no-store');
-        return reply.send(stream);
-      } catch (err) {
-        if (err instanceof BackupLockError) {
-          return reply.code(409).send({
-            error: 'Conflict',
-            message: err.message,
-            statusCode: 409,
-          });
-        }
-        if (err instanceof BackupDumpError) {
-          return reply.code(503).send({
-            error: 'Service Unavailable',
-            message: err.message,
-            statusCode: 503,
-          });
-        }
-        throw err;
-      }
+      const ticket = await createBackupExportTicket({
+        userId: request.userId,
+        secret,
+      });
+      return BackupExportTicketResponseSchema.parse({
+        downloadUrl: `/api/backup/download/${ticket}`,
+      });
     },
   );
 

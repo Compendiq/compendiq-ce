@@ -159,6 +159,7 @@ export type AuditAction =
   // format, dimensions and size — never the bytes themselves.
   | 'IMAGE_PREPARED'
   | 'BACKUP_EXPORTED'
+  | 'BACKUP_EXPORT_FAILED'
   | 'BACKUP_UPLOADED'
   | 'BACKUP_SETTINGS_CHANGED'
   | 'BACKUP_S3_TESTED';

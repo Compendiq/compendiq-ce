@@ -1,17 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BackupExportRequestSchema,
+  BackupExportTicketRequestSchema,
+  BackupExportTicketResponseSchema,
   UpdateBackupSettingsSchema,
   BackupStatusResponseSchema,
 } from './backup.js';
 
-describe('BackupExportRequestSchema', () => {
+describe('BackupExportTicketRequestSchema', () => {
   it('accepts an omitted passphrase', () => {
-    expect(BackupExportRequestSchema.parse({})).toEqual({});
+    expect(BackupExportTicketRequestSchema.parse({})).toEqual({});
   });
 
-  it('rejects a short passphrase', () => {
-    expect(() => BackupExportRequestSchema.parse({ passphrase: 'short' })).toThrow();
+  it('rejects short passphrases and unknown fields', () => {
+    expect(() => BackupExportTicketRequestSchema.parse({ passphrase: 'short' })).toThrow();
+    expect(() => BackupExportTicketRequestSchema.parse({ unexpected: true })).toThrow();
+  });
+});
+
+describe('BackupExportTicketResponseSchema', () => {
+  it('accepts only a same-origin download path with a lowercase 256-bit ticket', () => {
+    expect(
+      BackupExportTicketResponseSchema.parse({
+        downloadUrl: `/api/backup/download/${'a'.repeat(64)}`,
+      }),
+    ).toEqual({ downloadUrl: `/api/backup/download/${'a'.repeat(64)}` });
+    expect(() =>
+      BackupExportTicketResponseSchema.parse({
+        downloadUrl: `https://example.com/api/backup/download/${'a'.repeat(64)}`,
+      }),
+    ).toThrow();
+    expect(() =>
+      BackupExportTicketResponseSchema.parse({
+        downloadUrl: `/api/backup/download/${'A'.repeat(64)}`,
+      }),
+    ).toThrow();
   });
 });
 

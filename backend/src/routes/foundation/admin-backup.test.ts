@@ -29,25 +29,16 @@ vi.mock('../../core/services/backup-settings.js', () => ({
 const isBackupLockHeld = vi.fn();
 const listBackupRuns = vi.fn();
 const resolveBackupSecret = vi.fn();
-const createEncryptedBackupStream = vi.fn();
 
 vi.mock('../../core/services/backup-service.js', () => ({
   isBackupLockHeld: (...args: unknown[]) => isBackupLockHeld(...args),
   listBackupRuns: (...args: unknown[]) => listBackupRuns(...args),
   resolveBackupSecret: (...args: unknown[]) => resolveBackupSecret(...args),
-  createEncryptedBackupStream: (...args: unknown[]) => createEncryptedBackupStream(...args),
-  BackupLockError: class BackupLockError extends Error {
-    constructor() {
-      super('A backup is already running');
-      this.name = 'BackupLockError';
-    }
-  },
-  BackupDumpError: class BackupDumpError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = 'BackupDumpError';
-    }
-  },
+}));
+
+const createBackupExportTicket = vi.fn();
+vi.mock('../../core/services/backup-export-ticket.js', () => ({
+  createBackupExportTicket: (...args: unknown[]) => createBackupExportTicket(...args),
 }));
 
 vi.mock('../../core/services/backup-s3.js', () => ({
@@ -112,14 +103,59 @@ describe('admin backup routes (#1420)', () => {
     }
   });
 
-  it('POST /api/admin/backup/export 400s without a secret', async () => {
+  it('removes the direct streaming export route', async () => {
+    const app = await build();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/admin/backup/export',
+      });
+
+      expect(response.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('POST /api/admin/backup/export-ticket returns a same-origin one-use URL', async () => {
+    const secret = { kind: 'passphrase', passphrase: 'correct horse battery staple' };
+    resolveBackupSecret.mockReturnValue(secret);
+    createBackupExportTicket.mockResolvedValue('a'.repeat(64));
+    const app = await build();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/admin/backup/export-ticket',
+        payload: { passphrase: secret.passphrase },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({
+        downloadUrl: `/api/backup/download/${'a'.repeat(64)}`,
+      });
+      expect(createBackupExportTicket).toHaveBeenCalledWith({
+        userId: 'admin-1',
+        secret,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('POST /api/admin/backup/export-ticket 400s without a usable secret', async () => {
     resolveBackupSecret.mockImplementation(() => {
       throw new Error('Provide a passphrase of at least 12 characters, or set BACKUP_ENCRYPTION_KEY');
     });
     const app = await build();
     try {
-      const res = await app.inject({ method: 'POST', url: '/api/admin/backup/export', payload: {} });
-      expect(res.statusCode).toBe(400);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/admin/backup/export-ticket',
+        payload: {},
+      });
+
+      expect(response.statusCode, response.body).toBe(400);
+      expect(createBackupExportTicket).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
