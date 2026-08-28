@@ -5,13 +5,13 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listClientAssetManifest } from './client-model-assets.js';
 import {
+  HUNSPELL_SOURCES,
   inspectClientModel,
   installClientModel,
   installHunspellModel,
   resetClientModelInstallForTests,
   searchClientModels,
 } from './client-model-hub.js';
-
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -168,11 +168,24 @@ describe('installHunspellModel', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
+  it('has valid upstream URLs for all Hunspell sources', () => {
+    for (const [id, source] of Object.entries(HUNSPELL_SOURCES)) {
+      expect(source.files.length).toBeGreaterThan(0);
+      for (const file of source.files) {
+        expect(file.url).toMatch(/^https:\/\/raw\.githubusercontent\.com\/wooorm\/dictionaries\/main\/dictionaries\//);
+        // Ensure english points to /en/ directory, not /en-US/ which 404s
+        if (id === 'hunspell-en_US') {
+          expect(file.url).toContain('/dictionaries/en/');
+        }
+      }
+    }
+  });
+
   it('downloads aff and dic files and marks the hunspell model installed', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);
-      if (url.includes('en-US/index.aff')) return new Response('SET UTF-8', { status: 200 });
-      if (url.includes('en-US/index.dic')) return new Response('1\nhello', { status: 200 });
+      if (url.includes('en/index.aff')) return new Response('SET UTF-8', { status: 200 });
+      if (url.includes('en/index.dic')) return new Response('1\nhello', { status: 200 });
       return new Response(null, { status: 404 });
     };
 
@@ -182,7 +195,6 @@ describe('installHunspellModel', () => {
     expect(hunspell?.installed).toBe(true);
     expect(hunspell?.files).toHaveLength(2);
   });
-
   it('cleans up partial files on network failure', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = String(input);

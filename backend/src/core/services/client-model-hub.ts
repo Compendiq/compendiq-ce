@@ -269,11 +269,11 @@ export const HUNSPELL_SOURCES: Record<HunspellAssetId, {
     files: [
       {
         name: 'en_US.aff',
-        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.aff',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en/index.aff',
       },
       {
         name: 'en_US.dic',
-        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en-US/index.dic',
+        url: 'https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/en/index.dic',
       },
     ],
   },
