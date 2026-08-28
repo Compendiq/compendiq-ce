@@ -20,6 +20,7 @@ import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   setupTestDb,
   truncateAllTables,
@@ -27,7 +28,10 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { query, getPool } from '../../core/db/postgres.js';
-import { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../core/db/advisory-locks.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_MOVE_ADVISORY_LOCK_ID,
+} from '../../core/db/advisory-locks.js';
 import { userHasGlobalPermission } from '../../core/services/rbac-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
@@ -184,6 +188,22 @@ async function childrenViaTreeJoin(parentId: number): Promise<number[]> {
     [parentId],
   );
   return res.rows.map((r) => r.id);
+}
+
+async function waitForDatabaseBlocker(blockerPid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE $1 = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [blockerPid],
+    );
+    if (result.rows[0]?.waiting) return true;
+    await nextEventLoopTurn();
+  }
+  return false;
 }
 
 // --- Attachment store helpers ---
@@ -427,6 +447,54 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(localRows.rowCount).toBe(0);
     });
 
+    it('holds the attachment snapshot barrier through the committed local-store cleanup', async () => {
+      const id = await createPage({
+        title: 'Barrier cleanup',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      await writeStoreB(id, 'diagram.png', 'diagram-bytes', userId);
+      h.client.createPage.mockResolvedValue(createdPage('900099'));
+
+      const localDir = path.join(attachmentsRoot, 'local', String(id));
+      const realRm = fs.rm.bind(fs);
+      const cleanupStarted = Promise.withResolvers<void>();
+      const cleanupGate = Promise.withResolvers<void>();
+      const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+        if (path.resolve(String(target)) === path.resolve(localDir)) {
+          cleanupStarted.resolve();
+          await cleanupGate.promise;
+        }
+        return realRm(target, options);
+      });
+
+      const waiter = await getPool().connect();
+      let response: { statusCode: number } | undefined;
+      let acquired = false;
+      try {
+        const pending = toConfluence(id);
+        await cleanupStarted.promise;
+        const lock = await waiter.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [ATTACHMENT_SNAPSHOT_LOCK_ID],
+        );
+        acquired = lock.rows[0]!.acquired;
+        if (acquired) {
+          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        }
+        cleanupGate.resolve();
+        response = await pending;
+      } finally {
+        cleanupGate.resolve();
+        rmSpy.mockRestore();
+        waiter.release();
+      }
+
+      expect(response?.statusCode).toBe(200);
+      expect(acquired).toBe(false);
+    });
+
     it('rejects a confirmation whose version count is stale, changing nothing', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await addVersions(id, 4);
@@ -623,6 +691,60 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         [id],
       );
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
+    it('holds one shared barrier from local-file staging through transaction commit', async () => {
+      const id = await createPage({
+        title: 'Barrier staging',
+        source: 'confluence',
+        confluenceId: '700099',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700099/chart.png" /></p>',
+      });
+      await writeStoreA('700099', 'chart.png', 'chart-bytes');
+
+      const rowHolder = await getPool().connect();
+      const waiter = await getPool().connect();
+      await rowHolder.query('BEGIN');
+      await rowHolder.query('SELECT id FROM pages WHERE id = $1 FOR UPDATE', [id]);
+      const stagedPath = path.join(attachmentsRoot, 'local', String(id), 'chart.png');
+      const stagedSignal = Promise.withResolvers<void>();
+      const realWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi.spyOn(fs, 'writeFile').mockImplementation(async (target, data, options) => {
+        await realWriteFile(target, data, options);
+        if (path.resolve(String(target)) === path.resolve(stagedPath)) stagedSignal.resolve();
+      });
+      let response: { statusCode: number } | undefined;
+      let acquired = false;
+      try {
+        const pending = toLocal(id, '700099');
+        await stagedSignal.promise;
+        const blockerPid = await rowHolder
+          .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+          .then((result) => result.rows[0]!.pid);
+        expect(await waitForDatabaseBlocker(blockerPid)).toBe(true);
+
+        const lock = await waiter.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [ATTACHMENT_SNAPSHOT_LOCK_ID],
+        );
+        acquired = lock.rows[0]!.acquired;
+        if (acquired) {
+          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        }
+
+        await rowHolder.query('COMMIT');
+        response = await pending;
+      } finally {
+        writeSpy.mockRestore();
+        await rowHolder.query('ROLLBACK').catch(() => undefined);
+        rowHolder.release();
+        waiter.release();
+      }
+
+      expect(response?.statusCode).toBe(200);
+      expect(acquired).toBe(false);
+      expect((await getRow(id)).source).toBe('standalone');
     });
 
     it('re-keys an attachment anchor, not just an image (#1169)', async () => {

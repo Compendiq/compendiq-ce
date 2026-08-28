@@ -348,13 +348,14 @@ export async function writeLocalAttachmentFileForRelocate(
   pageId: number,
   filename: string,
   data: Buffer,
+  client?: PoolClient,
 ): Promise<void> {
   await withLocalAttachmentMutationLock(async () => {
     const dir = localPageDir(pageId);
     const filePath = localFilePath(pageId, filename);
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(filePath, data);
-  });
+  }, client);
 }
 
 /**
@@ -374,15 +375,20 @@ export async function writeLocalAttachmentFileForRelocate(
 export async function removeLocalAttachmentFilesForRelocate(
   pageId: number,
   filenames: string[],
+  client?: PoolClient,
 ): Promise<void> {
-  await withLocalAttachmentMutationLock(async () => {
-    await Promise.all(
-      filenames.map(async (filename) => {
-        if (!canStoreLocalFilename(filename)) return;
-        await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
-      }),
-    );
-  });
+  try {
+    await withLocalAttachmentMutationLock(async () => {
+      await Promise.all(
+        filenames.map(async (filename) => {
+          if (!canStoreLocalFilename(filename)) return;
+          await fs.rm(localFilePath(pageId, filename), { force: true }).catch(() => undefined);
+        }),
+      );
+    }, client);
+  } catch {
+    // Best-effort even when connecting, locking, unlocking or resetting fails.
+  }
 }
 
 /**
@@ -403,6 +409,7 @@ export async function removeLocalAttachmentFilesForRelocate(
 export async function removeLocalAttachmentFileForSweep(
   pageId: number,
   filename: string,
+  client?: PoolClient,
 ): Promise<boolean> {
   if (path.basename(filename) !== filename || !canStoreLocalFilename(filename)) {
     return false;
@@ -410,7 +417,7 @@ export async function removeLocalAttachmentFileForSweep(
   return withLocalAttachmentMutationLock(async () => {
     await fs.rm(localFilePath(pageId, filename), { force: true });
     return true;
-  });
+  }, client);
 }
 
 /** Absolute directory holding a page's local attachments (#1123 relocate cleanup). */
@@ -442,13 +449,16 @@ export const LOCAL_STORE_DIRNAME = LOCAL_SUBDIR;
  * Throws on a non-integer id (a `NaN` would resolve to a literal `local/NaN`
  * directory); ENOENT is a no-op via `force`.
  */
-export async function removeLocalAttachmentDirectory(pageId: number): Promise<void> {
+export async function removeLocalAttachmentDirectory(
+  pageId: number,
+  client?: PoolClient,
+): Promise<void> {
   if (!Number.isInteger(pageId) || pageId <= 0) {
     throw new LocalAttachmentError('INVALID_FILENAME', 'Invalid page id');
   }
   await withLocalAttachmentMutationLock(async () => {
     await fs.rm(localPageDir(pageId), { recursive: true, force: true });
-  });
+  }, client);
 }
 
 export { MAX_LOCAL_ATTACHMENT_BYTES };

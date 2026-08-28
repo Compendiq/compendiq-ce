@@ -40,18 +40,17 @@
  * is the leak this module exists to close. The ADMIN-GUIDE's retention
  * section states the same caveat where an operator will read it.
  *
- * **Best-effort by contract, never throws.** Both call sites run AFTER the
- * database work has committed (the route's DELETE, the purge's batch) —
- * mirroring how the Confluence delete branch treats `cleanPageAttachments`: a
- * filesystem hiccup leaves orphaned files only, which the sweep converges, and
- * must never fail a request or a retention cycle whose DB work already
- * succeeded.
+ * **Best-effort by contract, never throws.** Callers retain the attachment
+ * snapshot barrier from the database delete through this cleanup. A filesystem
+ * hiccup leaves orphaned files only, which the sweep converges, and must never
+ * fail a request or a retention cycle whose database work already succeeded.
  *
  * Lives in `core` because `data-retention-service.ts` (core) is one of the two
  * callers and core may not import a domain (`backend/eslint.config.js`).
  */
 
 import fs from 'node:fs/promises';
+import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 import { attachmentCacheDir, removeCachedAttachmentDirectory } from './attachment-store.js';
@@ -79,10 +78,13 @@ import { deletePageIconImage } from './page-icon-store.js';
  */
 const CACHE_DIR_GRACE_MS = 5 * 60 * 1000;
 
-export async function cleanupStandalonePageAttachmentDirs(pageId: number): Promise<void> {
+export async function cleanupStandalonePageAttachmentDirs(
+  pageId: number,
+  client?: PoolClient,
+): Promise<void> {
   // The local store first: unambiguous ownership, so nothing to check.
   try {
-    await removeLocalAttachmentDirectory(pageId);
+    await removeLocalAttachmentDirectory(pageId, client);
   } catch (err) {
     logger.warn(
       { err, pageId },
@@ -114,10 +116,10 @@ export async function cleanupStandalonePageAttachmentDirs(pageId: number): Promi
   // The Confluence-style tree: only when no Confluence page owns the key.
   try {
     const key = String(pageId);
-    const owned = await query<{ owned: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM pages WHERE confluence_id = $1) AS owned`,
-      [key],
-    );
+    const statement = `SELECT EXISTS (SELECT 1 FROM pages WHERE confluence_id = $1) AS owned`;
+    const owned = client
+      ? await client.query<{ owned: boolean }>(statement, [key])
+      : await query<{ owned: boolean }>(statement, [key]);
     if (owned.rows[0]?.owned) {
       logger.info(
         { pageId },

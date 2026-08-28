@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
   putLocalAttachment,
@@ -500,6 +500,19 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       expect(changedWhileSnapshotOpen).toBe(false);
       expect(await changed(pageId)).toBe(true);
       expect(sharedLockWaited).toBe(true);
+    });
+    it('keeps relocate cleanup best-effort when acquiring the snapshot lock fails', async () => {
+      const connect = vi
+        .spyOn(getPool(), 'connect')
+        .mockRejectedValueOnce(new Error('snapshot lock connection failed'));
+
+      try {
+        await expect(
+          removeLocalAttachmentFilesForRelocate(42, ['staged.png']),
+        ).resolves.toBeUndefined();
+      } finally {
+        connect.mockRestore();
+      }
     });
   });
 });

@@ -66,8 +66,9 @@ import {
   listLocalAttachmentsForRelocate,
   removeLocalAttachmentFilesForRelocate,
   writeLocalAttachmentFileForRelocate,
-  localAttachmentsDir,
+  removeLocalAttachmentDirectory,
 } from '../../../core/services/local-attachment-service.js';
+import { withLocalAttachmentMutationLock } from '../../../core/services/attachment-snapshot-lock.js';
 import {
   ConfluenceError,
   type ConfluenceClient,
@@ -547,86 +548,70 @@ async function relocateToConfluence(opts: {
     const finalHtml = confluenceToHtml(finalStorage, newConfluenceId, spaceKey);
     const finalText = htmlToText(finalHtml);
 
-    // 4. One transaction for the entire local side.
-    const txClient = await getPool().connect();
-    try {
-      await txClient.query('BEGIN');
-      const fresh = await lockAndReload(txClient, page.id);
-      if (fresh.source !== 'standalone' || fresh.confluence_id !== null) {
-        throw new RelocateError(409, 'Page was relocated by someone else while this move was in flight');
+    // 4. One transaction for the entire local side. The shared attachment
+    // snapshot barrier stays on this transaction's client through the
+    // post-commit source-directory cleanup.
+    return await withLocalAttachmentMutationLock(async (txClient) => {
+      let result: RelocatePageResponse;
+      try {
+        await txClient.query('BEGIN');
+        const fresh = await lockAndReload(txClient, page.id);
+        if (fresh.source !== 'standalone' || fresh.confluence_id !== null) {
+          throw new RelocateError(409, 'Page was relocated by someone else while this move was in flight');
+        }
+        await assertIdentifierUnambiguous(oldKey, page.id, 'current', txClient);
+        await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence', txClient);
+
+        await txClient.query(
+          `UPDATE pages SET
+             source = 'confluence',
+             confluence_id = $2,
+             space_key = $3,
+             body_html = $4,
+             body_storage = $5,
+             body_text = $6,
+             visibility = 'shared',
+             version = $7,
+             last_synced = NOW(),
+             embedding_dirty = TRUE,
+             image_embedding_dirty = TRUE,
+             embedding_status = 'not_embedded',
+             embedded_at = NULL
+           WHERE id = $1`,
+          [page.id, newConfluenceId, spaceKey, finalHtml, finalStorage, finalText, created.version.number],
+        );
+        await invalidateCollabDocAfterBodyWrite(page.id, txClient);
+
+        const repointed = await txClient.query(
+          'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
+          [oldKey, newConfluenceId, page.id],
+        );
+        const discarded = await txClient.query('DELETE FROM page_versions WHERE page_id = $1', [page.id]);
+        await txClient.query('DELETE FROM local_attachments WHERE page_id = $1', [page.id]);
+        await txClient.query('COMMIT');
+
+        result = {
+          pageId: page.id,
+          source: 'confluence',
+          spaceKey,
+          confluenceId: newConfluenceId,
+          childrenRepointed: repointed.rowCount ?? 0,
+          versionsDiscarded: discarded.rowCount ?? 0,
+          attachmentsMigrated: payloads.length,
+          upstreamDeleted: false,
+          warnings,
+        };
+      } catch (err) {
+        await txClient.query('ROLLBACK').catch(() => undefined);
+        throw err;
       }
-      // Re-check under the lock: the pre-flight check ran on a pooled
-      // connection before BEGIN, so a row claiming either identifier could
-      // have appeared since. Now it is a clean 409 instead of a unique-index
-      // violation surfacing as a 500.
-      await assertIdentifierUnambiguous(oldKey, page.id, 'current', txClient);
-      await assertIdentifierUnambiguous(newConfluenceId, page.id, 'new Confluence', txClient);
 
-      await txClient.query(
-        `UPDATE pages SET
-           source = 'confluence',
-           confluence_id = $2,
-           space_key = $3,
-           body_html = $4,
-           body_storage = $5,
-           body_text = $6,
-           -- Confluence has no standalone-visibility analogue; the space's
-           -- RBAC governs access from here. Normalising to 'shared' keeps a
-           -- stale 'private' from resurfacing if the page is moved back.
-           visibility = 'shared',
-           version = $7,
-           last_synced = NOW(),
-           embedding_dirty = TRUE,
-           -- #1115 P2 — a relocate REKEYS every image: the body persisted here
-           -- has its img src attributes rewritten onto the other store's
-           -- prefix, so every (source, attachment_key) in the index now names
-           -- a row this page no longer references. Only a re-scan can
-           -- reconcile that, and the flag is what schedules it.
-           image_embedding_dirty = TRUE,
-           embedding_status = 'not_embedded',
-           embedded_at = NULL
-         WHERE id = $1`,
-        [page.id, newConfluenceId, spaceKey, finalHtml, finalStorage, finalText, created.version.number],
-      );
-      await invalidateCollabDocAfterBodyWrite(page.id, txClient);
-
-      // Every direct child stored the numeric id; they must now store the
-      // confluence_id or the tree CTE stops resolving them. Soft-deleted
-      // children are included on purpose: skipping them leaves a trashed page
-      // holding an identifier no row owns any more, so restoring it from trash
-      // would orphan it permanently.
-      const repointed = await txClient.query(
-        'UPDATE pages SET parent_id = $2 WHERE parent_id = $1 AND id <> $3',
-        [oldKey, newConfluenceId, page.id],
-      );
-
-      // Decision 3: local history is discarded — Confluence is the historian now.
-      const discarded = await txClient.query('DELETE FROM page_versions WHERE page_id = $1', [page.id]);
-
-      // The local attachment store rejects non-standalone pages outright, so
-      // these rows would be stranded. The bytes are in Confluence and in the
-      // Confluence cache under the new key.
-      await txClient.query('DELETE FROM local_attachments WHERE page_id = $1', [page.id]);
-
-      await txClient.query('COMMIT');
-
-      return {
-        pageId: page.id,
-        source: 'confluence',
-        spaceKey,
-        confluenceId: newConfluenceId,
-        childrenRepointed: repointed.rowCount ?? 0,
-        versionsDiscarded: discarded.rowCount ?? 0,
-        attachmentsMigrated: payloads.length,
-        upstreamDeleted: false,
-        warnings,
-      };
-    } catch (err) {
-      await txClient.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      txClient.release();
-    }
+      if (result.confluenceId !== String(page.id)) {
+        await removeAttachmentDirectory(String(page.id)).catch(() => undefined);
+      }
+      await removeLocalAttachmentDirectory(page.id, txClient).catch(() => undefined);
+      return result;
+    });
   } catch (err) {
     // Nothing local changed. Remove the page we created upstream so retries do
     // not accumulate orphans and the next sync does not import it.
@@ -666,6 +651,7 @@ async function relocateToLocal(opts: {
   const oldConfluenceId = page.confluence_id!;
   const newKey = String(page.id);
   const warnings: string[] = [];
+  return withLocalAttachmentMutationLock(async (txClient) => {
 
   await assertIdentifierUnambiguous(oldConfluenceId, page.id, 'current');
   await assertIdentifierUnambiguous(newKey, page.id, 'new local');
@@ -684,12 +670,12 @@ async function relocateToLocal(opts: {
   const staged: Array<{ filename: string; contentType: string; size: number; sha: string }> = [];
   /** Undo the staging. Safe to call more than once — `fs.rm` uses `force`. */
   const discardStaged = () =>
-    removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename));
+    removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename), txClient);
   try {
     for (const filename of await listCachedAttachments(oldConfluenceId)) {
       const data = await readCachedAttachmentFile(oldConfluenceId, filename);
       if (data === null) continue;
-      await writeLocalAttachmentFileForRelocate(page.id, filename, data);
+      await writeLocalAttachmentFileForRelocate(page.id, filename, data, txClient);
       // Recorded only after the write succeeds, so `staged` never names a file
       // that is not on disk — and names every one that is.
       staged.push({
@@ -716,20 +702,23 @@ async function relocateToLocal(opts: {
   // attachments as `<ri:attachment ri:filename="…">`, which carries no page
   // key. It is kept verbatim so macro fidelity survives a later move back.
 
-  const aces = await query<PageAce>(
+  const aces = await txClient.query<PageAce>(
     `SELECT principal_type, principal_id, permission FROM access_control_entries
       WHERE resource_type = 'page' AND resource_id = $1`,
     [page.id],
   );
+  const childIds = await txClient.query<{ id: number }>(
+    'SELECT id FROM pages WHERE parent_id = $1 AND id <> $2 ORDER BY id',
+    [oldConfluenceId, page.id],
+  );
   const snapshot: PreMoveSnapshot = {
     ...page,
-    childIds: await loadChildIds(oldConfluenceId, page.id),
+    childIds: childIds.rows.map((row) => row.id),
     oldKey: oldConfluenceId,
     aces: aces.rows,
   };
 
   let childrenRepointed = 0;
-  const txClient = await getPool().connect();
   try {
     await txClient.query('BEGIN');
     const fresh = await lockAndReload(txClient, page.id);
@@ -811,8 +800,6 @@ async function relocateToLocal(opts: {
     // claim about the disk as well as the database (#1169 review).
     await discardStaged();
     throw err;
-  } finally {
-    txClient.release();
   }
 
   // The local side is committed and the article now sits permanently outside
@@ -828,7 +815,7 @@ async function relocateToLocal(opts: {
     } else {
       // Provably still live: put everything back so neither side changed,
       // rather than leaving a duplicate for the next sync to import.
-      await restorePreMoveState(snapshot, staged.map((s) => s.filename));
+      await restorePreMoveState(snapshot, staged.map((s) => s.filename), txClient);
       // `restorePreMoveState` drops the `local_attachments` rows; the bytes are
       // this function's to remove, and after the restore nothing references
       // them — the page is Confluence-sourced again and reads from the cache
@@ -862,6 +849,7 @@ async function relocateToLocal(opts: {
     upstreamDeleted,
     warnings,
   };
+  });
 }
 
 /**
@@ -894,8 +882,9 @@ async function confirmUpstreamGone(
 async function restorePreMoveState(
   snapshot: PreMoveSnapshot,
   stagedFilenames: string[],
+  existingClient?: PoolClient,
 ): Promise<void> {
-  const txClient = await getPool().connect();
+  const txClient = existingClient ?? await getPool().connect();
   try {
     await txClient.query('BEGIN');
     await txClient.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
@@ -981,18 +970,10 @@ async function restorePreMoveState(
       'Relocate compensation failed — the article is local and safe, but the Confluence page still exists and will be re-imported by the next sync',
     );
   } finally {
-    txClient.release();
+    if (!existingClient) txClient.release();
   }
 }
 
-/** Best-effort removal of the local attachment directory after a move away. */
-async function removeLocalAttachmentDirectory(pageId: number): Promise<void> {
-  try {
-    await fs.rm(localAttachmentsDir(pageId), { recursive: true, force: true });
-  } catch {
-    // Orphaned files only — the DB is consistent.
-  }
-}
 
 /**
  * Entry point. `page` must already have been authorised by the route
@@ -1015,20 +996,13 @@ export async function relocatePage(opts: {
     if (page.source !== 'standalone') {
       throw new RelocateError(400, 'Page is already a Confluence page');
     }
-    const result = await relocateToConfluence({
+    return relocateToConfluence({
       page,
       userId,
       spaceKey: input.spaceKey,
       client,
       expectedVersionCount: input.acknowledgeDiscardedVersions,
     });
-    // Post-commit cleanup of the source-side stores. Guarded against the case
-    // where Confluence handed back an id equal to our numeric key.
-    if (result.confluenceId !== String(page.id)) {
-      await removeAttachmentDirectory(String(page.id)).catch(() => undefined);
-    }
-    await removeLocalAttachmentDirectory(page.id);
-    return result;
   }
 
   if (page.source !== 'confluence' || !page.confluence_id) {

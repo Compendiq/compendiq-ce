@@ -77,4 +77,20 @@ describe.skipIf(!dbAvailable)('local attachment mutation snapshot lock', () => {
       holder.release();
     }
   });
+
+  it('reuses a caller-owned shared-lock client without acquiring a nested session', async () => {
+    const client = await getPool().connect();
+    await client.query('SELECT pg_advisory_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    try {
+      const received = await withLocalAttachmentMutationLock(
+        async (lockedClient) => lockedClient,
+        client,
+      );
+
+      expect(received).toBe(client);
+    } finally {
+      await client.query('SELECT pg_advisory_unlock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      client.release();
+    }
+  });
 });
