@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Encrypted data backup and restore (#1420). Admins can download an AES-256-GCM archive of PostgreSQL (`pg_dump -Fc`) plus attachments from Settings → Backup & Recovery, optionally encrypting with a passphrase (PBKDF2-SHA256, 600k iterations) or `BACKUP_ENCRYPTION_KEY` (HKDF). Scheduled S3/S3-compatible uploads (MinIO, R2, Wasabi, B2) store access keys encrypted at rest, reject cloud-metadata endpoints, prune by count/age, and restore via `backend/scripts/restore-backup.ts`. The backend image now includes `postgresql17-client`.
+
 ### Fixed
 
 - Deletion reconciliation now persists a per-space round-robin cursor, so a full batch of restricted or inconclusive Confluence pages cannot permanently starve later confirmed deletions while the 200-request per-cycle cap remains enforced (#1439).

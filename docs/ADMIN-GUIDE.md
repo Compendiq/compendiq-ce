@@ -1508,9 +1508,25 @@ out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
 
 ## Backup Strategy
 
-### PostgreSQL
+### In-app encrypted backup (#1420)
 
-Use `pg_dump` for database backups:
+Settings → **Backup & Recovery** (admin) streams a gzip+AES-256-GCM archive of `pg_dump -Fc` plus `ATTACHMENTS_DIR`. The file never lands unencrypted on the backend (read-only container, 1024m `mem_limit`).
+
+- **Download:** optional passphrase (≥12 chars, PBKDF2-SHA256 600k). If `BACKUP_ENCRYPTION_KEY` is set (≥32 bytes), downloads can omit the passphrase.
+- **S3:** endpoint, bucket, region, access/secret keys (encrypted at rest with `encryptPat`), prefix, path-style for MinIO/R2/Wasabi. Endpoints are SSRF-checked; `169.254.169.254` is never allowlisted.
+- **Schedule:** interval hours, keep-last-N, delete-after-days. One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
+- **Restore** (outside Fastify):
+
+```bash
+npx tsx backend/scripts/restore-backup.ts --file compendiq-backup-….enc --passphrase '…'
+# or BACKUP_ENCRYPTION_KEY=… npx tsx backend/scripts/restore-backup.ts --file … --dry-run
+```
+
+Requires `postgresql17-client` (`pg_restore --clean --if-exists`) and the same `PAT_ENCRYPTION_KEY` fingerprint recorded in `manifest.json`. `--force` overrides a fingerprint mismatch. The runtime image installs `postgresql17-client` for `pg_dump`.
+
+### Manual PostgreSQL dump
+
+Use `pg_dump` if you are not using the in-app exporter:
 
 ```bash
 # Full backup
@@ -1542,7 +1558,7 @@ docker compose -f docker/docker-compose.yml exec redis redis-cli -a <redis-passw
 
 ### Attachments
 
-If you have synced Confluence attachments, back up the attachments volume:
+In-app backups already include `ATTACHMENTS_DIR`. To copy the volume alone:
 
 ```bash
 docker run --rm -v compendiq_attachments:/data -v $(pwd):/backup alpine tar czf /backup/attachments_backup.tar.gz -C /data .
@@ -1552,8 +1568,9 @@ docker run --rm -v compendiq_attachments:/data -v $(pwd):/backup alpine tar czf 
 
 | Component | Frequency | Retention |
 |-----------|-----------|-----------|
-| PostgreSQL | Daily | 30 days |
-| Attachments | Weekly | 4 weeks |
+| Encrypted in-app backup | Daily (Settings → Backup & Recovery) | Keep last 7 / 30 days |
+| PostgreSQL (manual `pg_dump`) | Daily if not using in-app backup | 30 days |
+| Attachments volume | Covered by in-app backup | 4 weeks if copied separately |
 | `.env` file | After every change | Keep current + previous |
 
 ## Monitoring

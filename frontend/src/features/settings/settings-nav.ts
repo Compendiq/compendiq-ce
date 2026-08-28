@@ -116,6 +116,7 @@ export const SETTINGS_NAV = [
       // Wrapper: Email / SMTP, SearXNG, MCP Docs.
       navItem('integrations', 'Integrations', { adminOnly: true }),
       navItem('license', 'License', { adminOnly: true }),
+      navItem('backup', 'Backup & Recovery', { adminOnly: true }),
       // Wrapper: System status / Errors.
       navItem('diagnostics', 'Diagnostics', { adminOnly: true }),
     ],

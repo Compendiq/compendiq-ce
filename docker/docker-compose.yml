@@ -69,6 +69,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required - set a strong password, e.g. openssl rand -hex 24}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       PAT_ENCRYPTION_KEY: ${PAT_ENCRYPTION_KEY:?PAT_ENCRYPTION_KEY is required}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       LLM_AUTH_TYPE: ${LLM_AUTH_TYPE:-bearer}
       LLM_VERIFY_SSL: ${LLM_VERIFY_SSL:-true}

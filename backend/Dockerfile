@@ -53,6 +53,11 @@ COPY --from=tools /usr/bin/dumb-init /usr/bin/dumb-init
 # Copy pre-created data directory with correct ownership
 COPY --from=tools --chown=node:node /opt/app/data /app/data
 
+# pg_dump / pg_restore for encrypted backups (#1420). Must live in the
+# runtime image: the backend container is read-only and cannot shell out
+# to the postgres service's binaries.
+RUN apk add --no-cache postgresql17-client
+
 WORKDIR /app
 COPY --chown=node:node --from=builder /app/backend/package.json ./
 # Copy production node_modules (hoisted to root by npm workspaces).

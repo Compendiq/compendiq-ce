@@ -31,6 +31,7 @@ const AccessControlWrapper = lazy(() => import('./wrappers/AccessControlWrapper'
 const ComplianceWrapper = lazy(() => import('./wrappers/ComplianceWrapper').then((m) => ({ default: m.ComplianceWrapper })));
 const IntegrationsWrapper = lazy(() => import('./wrappers/IntegrationsWrapper').then((m) => ({ default: m.IntegrationsWrapper })));
 const DiagnosticsWrapper = lazy(() => import('./wrappers/DiagnosticsWrapper').then((m) => ({ default: m.DiagnosticsWrapper })));
+const BackupTab = lazy(() => import('./panels/BackupTab').then((m) => ({ default: m.BackupTab })));
 
 type PanelRenderer = (ctx: PanelRenderContext) => ReactElement;
 
@@ -86,6 +87,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
   // System
   'system/integrations': () => <IntegrationsWrapper />,
   'system/license': () => <LicenseStatusCard />,
+  'system/backup': () => <BackupTab />,
   'system/diagnostics': () => <DiagnosticsWrapper />,
 };
 

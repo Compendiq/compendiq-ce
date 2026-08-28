@@ -97,6 +97,10 @@ const legacy = vi.hoisted(() => ({
   stopRetentionWorker: vi.fn(),
   runRetentionCleanup: vi.fn(),
   runReembedAllJob: vi.fn(),
+  startBackupLegacyWorker: vi.fn(),
+  stopBackupLegacyWorker: vi.fn(),
+  processBackupJob: vi.fn(),
+  runForcedBackup: vi.fn(),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
@@ -132,6 +136,13 @@ vi.mock('./data-retention-service.js', () => ({
 
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   runReembedAllJob: legacy.runReembedAllJob,
+}));
+
+vi.mock('./backup-worker.js', () => ({
+  startBackupLegacyWorker: legacy.startBackupLegacyWorker,
+  stopBackupLegacyWorker: legacy.stopBackupLegacyWorker,
+  processBackupJob: legacy.processBackupJob,
+  runForcedBackup: legacy.runForcedBackup,
 }));
 
 vi.mock('../db/postgres.js', () => ({

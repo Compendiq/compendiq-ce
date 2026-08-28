@@ -144,6 +144,7 @@ describe('SettingsSidebar — rail visibility', () => {
     expect(screen.getByTestId('nav-settings-access')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-integrations')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-license')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-backup')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-diagnostics')).toBeInTheDocument();
 
     // Data & Compliance is an all-EE wrapper — hidden in CE.
