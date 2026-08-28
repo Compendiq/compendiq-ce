@@ -205,6 +205,41 @@ export function filterTreeNodes(
   return nodes.map(filterNode).filter((node): node is NotionTreeNode => node !== null);
 }
 
+export function searchTreeNodes(
+  nodes: NotionTreeNode[],
+  query: string,
+): { filtered: NotionTreeNode[]; matchedIds: Set<string> } {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return { filtered: nodes, matchedIds: new Set() };
+  }
+
+  const matchedIds = new Set<string>();
+
+  function filterRecursive(node: NotionTreeNode): NotionTreeNode | null {
+    const isSelfMatch = node.title.toLowerCase().includes(trimmed);
+    const filteredChildren = node.children
+      .map(filterRecursive)
+      .filter((child): child is NotionTreeNode => child !== null);
+
+    const isChildMatch = filteredChildren.length > 0;
+    if (isSelfMatch || isChildMatch) {
+      matchedIds.add(node.id);
+      return {
+        ...node,
+        children: filteredChildren,
+      };
+    }
+    return null;
+  }
+
+  const filtered = nodes
+    .map(filterRecursive)
+    .filter((node): node is NotionTreeNode => node !== null);
+
+  return { filtered, matchedIds };
+}
+
 export function summarizeImport(nodes: NotionTreeNode[], selected: ReadonlySet<string>): ImportSummary {
   const importIds = selectablePageIds(nodes, selected);
   const skippedDatabases = new Set<string>();

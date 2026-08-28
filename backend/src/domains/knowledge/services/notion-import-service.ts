@@ -41,8 +41,9 @@ export interface RunNotionImportInput {
   spaceKey?: string;
   parentId?: string;
   visibility: 'private' | 'shared';
+  overwriteExisting?: boolean;
+  databaseModes?: Record<string, 'table' | 'articles' | 'skip'>;
 }
-
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
@@ -55,8 +56,12 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
       continue;
     }
+    if (input.databaseModes && input.databaseModes[rawId] === 'skip') {
+      items.set(rawId, { notionPageId: rawId, status: 'skip', reason: 'Database is excluded from import' });
+      continue;
+    }
     const existing = await findImportedPage(input.userId, rawId);
-    if (existing?.complete) {
+    if (existing?.complete && !input.overwriteExisting) {
       items.set(rawId, {
         notionPageId: rawId,
         status: 'already_imported',
@@ -82,11 +87,26 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       items.set(rawId, { notionPageId: rawId, status: 'fail', reason: classified.reason });
       continue;
     }
+
+    const parentNotionId = parentPageIdOf(classified.page);
+    if (
+      parentNotionId &&
+      input.databaseModes &&
+      input.databaseModes[parentNotionId] === 'skip'
+    ) {
+      items.set(rawId, {
+        notionPageId: rawId,
+        status: 'skip',
+        reason: 'Parent database is excluded from import',
+      });
+      continue;
+    }
+
     jobs.push({
       id: rawId,
       page: classified.page,
       title: extractTitle(classified.page),
-      parentNotionId: parentPageIdOf(classified.page),
+      parentNotionId,
       reuseId: existing?.id,
     });
   }

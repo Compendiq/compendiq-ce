@@ -110,6 +110,8 @@ export async function notionRoutes(fastify: FastifyInstance) {
         spaceKey: body.spaceKey,
         parentId: body.parentId,
         visibility: body.visibility,
+        overwriteExisting: body.overwriteExisting,
+        databaseModes: body.databaseModes,
       });
       const created = items.filter((i) => i.status === 'success');
       if (created.length > 0) {

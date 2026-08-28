@@ -903,6 +903,74 @@ describe('NotionImportDialog picker cap and a11y', () => {
     expect(screen.queryByText('Commands DB')).not.toBeInTheDocument();
     expect(screen.getByText('Architecture Doc')).toBeInTheDocument();
   });
+
+  it('filters and auto-expands tree branches using search input', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+
+    const searchInput = screen.getByPlaceholderText(/search pages and databases/i);
+    fireEvent.change(searchInput, { target: { value: 'nested' } });
+
+    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeInTheDocument();
+    expect(screen.queryByText('CRM')).not.toBeInTheDocument();
+  });
+
+  it('renders per-database mode selectors and sends overwriteExisting and databaseModes on import', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          {
+            id: 'handbook',
+            title: 'Handbook',
+            type: 'page',
+            selectable: true,
+            children: [
+              {
+                id: 'crm',
+                title: 'CRM',
+                type: 'database',
+                selectable: false,
+                skipReason: NOTION_UNSUPPORTED_LABEL,
+                children: [{ id: 'row-1', title: 'Row 1', type: 'page', selectable: true, children: [] }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
+    const crmNode = screen.getByTestId('notion-node-crm');
+    const tableBtn = within(crmNode).getByRole('button', { name: 'Table' });
+    const articlesBtn = within(crmNode).getByRole('button', { name: 'Articles' });
+    const skipBtn = within(crmNode).getByRole('button', { name: 'Skip' });
+
+    expect(tableBtn).toBeInTheDocument();
+    expect(articlesBtn).toBeInTheDocument();
+    expect(skipBtn).toBeInTheDocument();
+
+    fireEvent.click(articlesBtn);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await screen.findByTestId('notion-import-confirm-copy');
+    const reSyncCheckbox = screen.getByLabelText(/update existing pages/i);
+    expect(reSyncCheckbox).not.toBeChecked();
+    fireEvent.click(reSyncCheckbox);
+    expect(reSyncCheckbox).toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    await screen.findByTestId('notion-import-result');
+    const importCall = calls.find((c) => c.url.includes('/notion/import'));
+    expect(importCall).toBeDefined();
+    const body = JSON.parse(importCall!.body!);
+    expect(body.overwriteExisting).toBe(true);
+    expect(body.databaseModes).toEqual({ crm: 'articles' });
+  });
   it('rehomes focus to the result heading after a successful Import', async () => {
     renderDialog();
     await connectWithDummyToken();

@@ -278,6 +278,42 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyHtml).toContain('<td>HTTP</td>');
   });
 
+  it('converts toggle headings and nested children', () => {
+    const result = convert([
+      block('th1', 'toggle_heading_1', { rich_text: [rich('Advanced Config')] }, {
+        has_children: true,
+        children: [block('p1', 'paragraph', { rich_text: [rich('Nested details')] })],
+      }),
+    ]);
+    expect(result.bodyHtml).toContain('<h1>Advanced Config</h1>');
+    expect(result.bodyHtml).toContain('<p>Nested details</p>');
+  });
+
+  it('converts equation blocks and inline equations', () => {
+    const result = convert([
+      block('eq1', 'equation', { expression: 'E = mc^2' }),
+      block('p1', 'paragraph', {
+        rich_text: [
+          rich('The formula is '),
+          { type: 'equation', equation: { expression: 'a^2 + b^2 = c^2' }, plain_text: 'a^2 + b^2 = c^2' },
+        ],
+      }),
+    ]);
+    expect(result.bodyHtml).toContain('<pre class="math-block"><code class="language-math">E = mc^2</code></pre>');
+    expect(result.bodyHtml).toContain('$a^2 + b^2 = c^2$');
+  });
+
+  it('extracts callout icons and renders them in the callout banner', () => {
+    const result = convert([
+      block('co1', 'callout', {
+        rich_text: [rich('Important note')],
+        icon: { type: 'emoji', emoji: '💡' },
+      }),
+    ]);
+    expect(result.bodyHtml).toContain('<span class="callout-icon">💡</span>');
+    expect(result.bodyHtml).toContain('<p>Important note</p>');
+  });
+
   it('skips unsupported blocks without flattening or stubbing them, and lists them in the report', () => {
     const result = convert([
       block('p', 'paragraph', { rich_text: [rich('Keep')] }),

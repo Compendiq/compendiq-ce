@@ -342,6 +342,72 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(modules.rows[0]!.parent_id).toBe(String(ansible.rows[0]!.id));
   });
 
+  it('updates an existing page when overwriteExisting is true', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        doc: {
+          object: 'page',
+          id: 'doc',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Updated Document'),
+        },
+      },
+      blockChildren: {
+        doc: [paragraph('p1', 'Fresh updated content from Notion')],
+      },
+    });
+
+    const orig = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id, embedding_dirty)
+       VALUES ('Old Document', '<p>old</p>', 'old', 1, 'standalone', $1, 'doc', FALSE) RETURNING id`,
+      [userId],
+    );
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['doc'],
+      visibility: 'shared',
+      overwriteExisting: true,
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ notionPageId: 'doc', status: 'success', localPageId: orig.rows[0]!.id }),
+    ]);
+    const updated = await query<{ title: string; body_text: string; embedding_dirty: boolean }>(
+      'SELECT title, body_text, embedding_dirty FROM pages WHERE id = $1',
+      [orig.rows[0]!.id],
+    );
+    expect(updated.rows[0]!.title).toBe('Updated Document');
+    expect(updated.rows[0]!.body_text).toContain('Fresh updated content from Notion');
+    expect(updated.rows[0]!.embedding_dirty).toBe(true);
+  });
+
+  it('skips pages belonging to databases configured with skip mode', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'row-1': {
+          object: 'page',
+          id: 'row-1',
+          parent: { type: 'database_id', database_id: 'db-tracker' },
+          properties: titleProp('Task 1'),
+        },
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['row-1'],
+      visibility: 'shared',
+      databaseModes: { 'db-tracker': 'skip' },
+    });
+
+    expect(items).toEqual([expect.objectContaining({ notionPageId: 'row-1', status: 'skip' })]);
+  });
+
 
   it('skips databases in the payload without stubbing a page and continues the run', async () => {
     const client = await start({
