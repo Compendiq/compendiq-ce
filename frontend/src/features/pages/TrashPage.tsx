@@ -16,7 +16,7 @@ export function TrashPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkRestoring, setIsBulkRestoring] = useState(false);
 
-  const items = trashData?.items ?? [];
+  const items = useMemo(() => trashData?.items ?? [], [trashData?.items]);
 
   const filteredItems = useMemo(() => {
     if (!searchQuery.trim()) return items;

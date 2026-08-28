@@ -374,7 +374,7 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page, collabConfig?.enabled]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
@@ -386,7 +386,7 @@ export function PageViewPage() {
     setIsDirty(true);
     setPendingDraft(null);
     setEditing(true);
-  }, [pendingDraft, page]);
+  }, [pendingDraft, page, captureScrollOffset]);
 
   const handleDeclineDraft = useCallback(() => {
     setPendingDraft(null);
@@ -396,7 +396,7 @@ export function PageViewPage() {
     setDraftLabels(page.labels ?? []);
     setIsDirty(false);
     setEditing(true);
-  }, [page]);
+  }, [page, captureScrollOffset]);
 
   // The editor is dirty when the title diverges from the persisted page, the
   // body was touched, or draft tag changes exist.
@@ -416,7 +416,7 @@ export function PageViewPage() {
     setIsDirty(false);
     setDraftLabels([]);
     setEditing(false);
-  }, [draftKey]);
+  }, [captureScrollOffset]);
 
   const titleOrLabelsDiverged = useCallback(() => {
     if (!page) return false;

@@ -92,10 +92,13 @@ export function AnalyticsPage() {
   const fromParam = searchParams.get('from');
   const toParam = searchParams.get('to');
 
-  const dateRange: DateRange = {
-    startDate: fromParam && /^\d{4}-\d{2}-\d{2}$/.test(fromParam) ? fromParam : defaultStart,
-    endDate: toParam && /^\d{4}-\d{2}-\d{2}$/.test(toParam) ? toParam : defaultEnd,
-  };
+  const dateRange: DateRange = useMemo(
+    () => ({
+      startDate: fromParam && /^\d{4}-\d{2}-\d{2}$/.test(fromParam) ? fromParam : defaultStart,
+      endDate: toParam && /^\d{4}-\d{2}-\d{2}$/.test(toParam) ? toParam : defaultEnd,
+    }),
+    [fromParam, toParam, defaultStart, defaultEnd],
+  );
 
   const handleTabChange = useCallback(
     (tab: AnalyticsTab) => {
