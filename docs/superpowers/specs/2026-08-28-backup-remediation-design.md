@@ -203,3 +203,40 @@ Update:
 - cross-database transactional rollback of arbitrary migrations;
 - changing the existing encrypted envelope magic or KDF parameters;
 - storing backup payloads in Redis or on backend local disk.
+
+## Residual Concurrency Addendum
+
+The final scoped review exposed four races not closed by stream staging alone. These requirements amend the approved design.
+
+### Attachment snapshot barrier
+
+Add `ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001` to `core/db/advisory-locks.ts`. Backup capture takes the session-level exclusive PostgreSQL advisory lock on the same dedicated client that exports the repeatable-read snapshot, before `BEGIN`, and holds it until every attachment stream and `pg_dump` has finished or failed.
+
+Every authoritative local-attachment mutation takes the corresponding session-level shared advisory lock on a dedicated client before its first filesystem mutation and holds it through the related PostgreSQL commit/rollback. This includes create, overwrite, delete, directory cleanup, and import-only local-file helpers in `local-attachment-service.ts`. Those functions must route their related SQL through the locked client; a global pool query inside the critical section would separate the DB mutation from the lock owner.
+
+Lock waits use `statement_timeout = 0` on the dedicated session and reset session settings before returning the client. PostgreSQL releases the lock automatically if the process or connection dies. Confluence cache and client-model files are not authoritative `local_attachments` rows and stay outside this barrier.
+
+Backup cleanup always attempts, in order: terminate and reap `pg_dump`, close the snapshot transaction, release the attachment snapshot advisory lock, release its client, then release the Redis cluster backup lock. Each later cleanup step lives in `finally` and runs even when an earlier step fails. A snapshot `COMMIT` failure therefore cannot strand the Redis lock.
+
+### Notion import serialization
+
+Add `NOTION_IMPORT_LOCK_KEY = 1_420_002` as a two-key session advisory-lock namespace. Hash the immutable Notion page ID deterministically to the second signed 32-bit key. Hold that lock across placeholder discovery/creation, media download, local attachment publication, final page update, and failure cleanup.
+
+After a waiter acquires the lock it re-reads import state. It returns an already completed import rather than reusing or deleting it. Only the lock owner that created an incomplete placeholder may abandon that placeholder on failure.
+
+### Backup job correlation
+
+Migration 108 adds nullable `backup_runs.job_id TEXT` plus an index. `enqueueJob`'s returned BullMQ/legacy job ID flows through `backup-worker.ts` into `runS3Backup`, `insertBackupRun`, the status contract, and the admin history response.
+
+`BackupTab` stores the exact returned `jobId`. It polls every three seconds until history contains that job ID and then until that row is terminal. Pre-appearance polling stops after 60 seconds and shows a degraded status explaining that the queued run has not appeared; it never treats an unrelated cache-unknown run as the requested run.
+
+### Residual regression tests
+
+Tests must prove:
+
+1. a local attachment overwrite blocks behind the backup exclusive lock and cannot change bytes between exported snapshot and archive read;
+2. create/delete/import-only local attachment mutations use the same shared lock and locked SQL client;
+3. snapshot-close failure still releases the Redis backup lock;
+4. two same-page Notion imports serialize, and a failing waiter cannot delete the winner's completed page/media;
+5. the exact queued job ID appears in history and controls polling; unrelated new runs cannot satisfy it;
+6. pre-appearance polling stops at 60 seconds with a visible recoverable status.
