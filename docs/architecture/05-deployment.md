@@ -84,6 +84,27 @@ no baked-in defaults; `redis` runs with `maxmemory-policy noeviction`
 because BullMQ stores queue/job state there and eviction would silently
 drop jobs.
 
+### SearXNG proxy and offline-rule boundary
+
+`mcp-docs` connects directly to `searxng` on `backend-net`. The SearXNG
+limiter consequently trusts loopback only by default and treats the mcp-docs
+socket address as the client; it must not trust the whole Docker subnet and
+then demand a forwarded-IP header from that direct caller.
+
+An operator who puts SearXNG behind a reverse proxy may set
+`SEARXNG_TRUSTED_PROXIES` to comma-separated IP addresses or CIDRs. Container
+startup validates and normalizes every entry before generating
+`limiter.toml`, and fails on malformed input. Traefik already supplies
+`X-Forwarded-For` / `X-Real-IP`; only Traefik's actual source address or a
+dedicated proxy-network CIDR belongs in the trusted list. A catch-all CIDR or
+the application network would let callers forge their apparent IP.
+
+The derived SearXNG image keeps upstream's three HTTPS ClearURLs sources as
+the primary rule source. If every request fails, a narrow build-time patch
+loads a pinned LGPL baseline bundled with the image. The image build verifies
+the expected upstream patch point and fails rather than silently shipping an
+unapplied fallback when the upstream module changes.
+
 ## Container hardening (issue #1050)
 
 Every service runs with least privilege. The exact values live in
