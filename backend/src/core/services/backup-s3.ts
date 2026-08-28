@@ -9,7 +9,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { request } from 'undici';
 import {
-  assertNonSsrfUrl,
+  assertPublicNetworkUrl,
   SsrfError,
   validateUrlSyntaxAndProtocol,
 } from '../utils/ssrf-guard.js';
@@ -45,7 +45,7 @@ export async function assertSafeS3Endpoint(endpoint: string): Promise<URL> {
   if (METADATA_HOSTS.has(host) || host.startsWith('169.254.')) {
     throw new SsrfError('S3 endpoint points at a cloud metadata address');
   }
-  await assertNonSsrfUrl(url.toString());
+  await assertPublicNetworkUrl(url.toString());
   return url;
 }
 
@@ -153,6 +153,7 @@ async function s3Request(
     headers['content-length'] = String(Buffer.byteLength(body));
     if (typeof body === 'string') headers['content-type'] = 'application/xml';
   }
+  await assertPublicNetworkUrl(url.toString());
   const res = await request(url.toString(), { method, headers, body });
   const text = await res.body.text();
   const hdrs: Record<string, string> = {};

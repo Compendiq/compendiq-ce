@@ -1,11 +1,23 @@
 import type * as SsrfGuard from '../utils/ssrf-guard.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { assertSafeS3Endpoint, deleteBackupObjects, objectKeyFor } from './backup-s3.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  addAllowedBaseUrlSilent,
+  clearAllowedBaseUrls,
+} from '../utils/ssrf-guard.js';
+import {
+  assertSafeS3Endpoint,
+  deleteBackupObjects,
+  objectKeyFor,
+  testS3Connection,
+} from './backup-s3.js';
 
 const lookup = vi.hoisted(() => vi.fn());
 const addAllowed = vi.hoisted(() => vi.fn());
+const undiciRequest = vi.hoisted(() => vi.fn());
 
 vi.mock('node:dns/promises', () => ({ lookup }));
+
+vi.mock('undici', () => ({ request: undiciRequest }));
 
 vi.mock('../utils/ssrf-guard.js', async () => {
   const actual = await vi.importActual<typeof SsrfGuard>('../utils/ssrf-guard.js');
@@ -17,9 +29,20 @@ vi.mock('../utils/ssrf-guard.js', async () => {
 
 describe('assertSafeS3Endpoint', () => {
   beforeEach(() => {
+    clearAllowedBaseUrls();
     lookup.mockReset();
     lookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
     addAllowed.mockClear();
+    undiciRequest.mockReset();
+    undiciRequest.mockResolvedValue({
+      statusCode: 200,
+      headers: {},
+      body: { text: vi.fn().mockResolvedValue('') },
+    });
+  });
+
+  afterEach(() => {
+    clearAllowedBaseUrls();
   });
 
   it.each([
@@ -42,6 +65,12 @@ describe('assertSafeS3Endpoint', () => {
     expect(addAllowed).not.toHaveBeenCalled();
   });
 
+  it('rejects a private endpoint even when another subsystem allowlisted its origin', async () => {
+    addAllowedBaseUrlSilent('http://10.0.0.2:9000');
+
+    await expect(assertSafeS3Endpoint('http://10.0.0.2:9000')).rejects.toThrow(/private|internal/i);
+  });
+
   it('rejects file URLs', async () => {
     await expect(assertSafeS3Endpoint('file:///etc/passwd')).rejects.toThrow();
   });
@@ -61,6 +90,22 @@ describe('assertSafeS3Endpoint', () => {
         [],
       ),
     ).rejects.toThrow(/private|internal/i);
+  });
+
+  it('validates a crafted virtual-host request URL before I/O', async () => {
+    await expect(
+      testS3Connection({
+        endpoint: 'https://s3.example.test',
+        bucket: '127.0.0.1:9000/',
+        region: 'us-east-1',
+        accessKey: 'access',
+        secretKey: 'secret',
+        prefix: 'compendiq-backups/',
+        forcePathStyle: false,
+      }),
+    ).rejects.toThrow(/private|internal/i);
+
+    expect(undiciRequest).not.toHaveBeenCalled();
   });
 });
 

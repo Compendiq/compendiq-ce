@@ -275,6 +275,10 @@ export function validateUrl(urlString: string): void {
     return;
   }
 
+  validatePublicNetworkHost(parsed);
+}
+
+function validatePublicNetworkHost(parsed: URL): void {
   const hostname = parsed.hostname.toLowerCase();
 
   // Strip IPv6 brackets if present
@@ -385,6 +389,17 @@ export async function validateUrlWithDns(urlString: string): Promise<void> {
   if (!allowedOrigins.has(parsed.origin.toLowerCase())) {
     await resolveAndValidateIp(parsed.hostname);
   }
+}
+
+/**
+ * Strict public-network validation for callers that must never inherit an
+ * exemption registered by another subsystem. Unlike `assertNonSsrfUrl`, this
+ * always applies private-host and DNS checks, even for allowlisted origins.
+ */
+export async function assertPublicNetworkUrl(urlString: string): Promise<void> {
+  const parsed = validateUrlSyntaxAndProtocol(urlString);
+  validatePublicNetworkHost(parsed);
+  await resolveAndValidateIp(parsed.hostname);
 }
 
 /**
