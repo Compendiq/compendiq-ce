@@ -268,6 +268,41 @@ describe('NotionImportDialog picker skip rules', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Onboarding' }));
     expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBePartiallyChecked();
   });
+
+  it('shows group checkbox and badge on a database with child pages', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          {
+            id: 'wiki-db',
+            title: 'Kubernetes Wiki',
+            type: 'database',
+            selectable: false,
+            skipReason: NOTION_UNSUPPORTED_LABEL,
+            reasonCode: 'database',
+            children: [
+              { id: 'p1', title: 'AOWD', type: 'page', selectable: true, children: [] },
+              { id: 'p2', title: 'Redis Cheatsheet', type: 'page', selectable: true, children: [] },
+            ],
+          },
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    const wikiNode = screen.getByTestId('notion-node-wiki-db');
+    expect(wikiNode).toHaveTextContent('Kubernetes Wiki');
+    expect(wikiNode).toHaveTextContent('Database');
+    expect(wikiNode).toHaveTextContent(/2 pages can be imported/i);
+
+    const groupCheckbox = within(wikiNode).getByRole('checkbox', { name: /Select all 2 pages in Kubernetes Wiki/i });
+    expect(groupCheckbox).not.toBeChecked();
+
+    fireEvent.click(groupCheckbox);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(/2 pages will import/i);
+  });
 });
 
 describe('NotionImportDialog large workspace rendering', () => {
@@ -775,7 +810,7 @@ describe('NotionImportDialog tree cache and empty retry', () => {
 });
 
 describe('NotionImportDialog picker cap and a11y', () => {
-  it('disables Continue when more than 200 pages are selected', () => {
+  it('enables Continue with batch count when more than 200 pages are selected for multi-batch import', () => {
     render(
       <NotionImportPickFooter
         importCount={201}
@@ -784,10 +819,90 @@ describe('NotionImportDialog picker cap and a11y', () => {
         onContinue={() => {}}
       />,
     );
-    expect(screen.getByTestId('notion-import-page-cap')).toHaveTextContent(/200/);
-    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
+    expect(screen.getByText(/201 pages selected · 2 batches/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /continue \(2 batches\)/i })).toBeEnabled();
   });
 
+  it('renders imported badge and supports selecting unimported pages and hiding imported pages', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          {
+            id: 'p-imported',
+            title: 'Imported Guide',
+            type: 'page',
+            selectable: true,
+            alreadyImported: true,
+            localPageId: 42,
+            children: [],
+          },
+          {
+            id: 'p-new',
+            title: 'New Article',
+            type: 'page',
+            selectable: true,
+            alreadyImported: false,
+            children: [],
+          },
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(screen.getByTestId('notion-imported-badge-p-imported')).toHaveTextContent('Imported');
+
+    fireEvent.click(screen.getByRole('button', { name: /select unimported/i }));
+    expect(screen.getByRole('checkbox', { name: 'New Article' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Imported Guide' })).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText(/hide imported/i));
+    expect(screen.queryByText('Imported Guide')).not.toBeInTheDocument();
+    expect(screen.getByText('New Article')).toBeInTheDocument();
+  });
+
+  it('supports Pages only selection and excluding database rows', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          {
+            id: 'p-doc',
+            title: 'Architecture Doc',
+            type: 'page',
+            selectable: true,
+            isDatabaseRow: false,
+            children: [],
+          },
+          {
+            id: 'db-1',
+            title: 'Commands DB',
+            type: 'database',
+            selectable: false,
+            skipReason: NOTION_UNSUPPORTED_LABEL,
+            children: [
+              {
+                id: 'p-row',
+                title: 'nslookup',
+                type: 'page',
+                selectable: true,
+                isDatabaseRow: true,
+                children: [],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    fireEvent.click(screen.getByRole('button', { name: /pages only/i }));
+    expect(screen.getByRole('checkbox', { name: 'Architecture Doc' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /select all 1 pages in commands db/i })).not.toBeChecked();
+
+    fireEvent.click(screen.getByLabelText(/exclude database rows/i));
+    expect(screen.queryByText('Commands DB')).not.toBeInTheDocument();
+    expect(screen.getByText('Architecture Doc')).toBeInTheDocument();
+  });
   it('rehomes focus to the result heading after a successful Import', async () => {
     renderDialog();
     await connectWithDummyToken();

@@ -52,6 +52,7 @@ const SUPPORTED_TYPES = new Set([
   'table',
   'image',
   'child_page',
+  'child_database',
   'link_to_page',
 ]);
 
@@ -262,6 +263,8 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
       return renderImage(block, ctx);
     case 'child_page':
       return renderChildPage(block, ctx);
+    case 'child_database':
+      return renderChildDatabase(block, ctx);
     case 'link_to_page':
       return renderLinkToPage(block, ctx);
     default:
@@ -414,6 +417,114 @@ function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
   const href = resolvePageHref(notionId, undefined, ctx) ?? (notionId ? notionWebUrl(notionId) : '');
   if (!href) return `<p>${escapeHtml(title)}</p>`;
   return `<p><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></p>`;
+}
+
+function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
+  const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
+  if (rows.length === 0) {
+    skip(block, ctx);
+    return '';
+  }
+
+  const data = payload(block, 'child_database');
+  const rawTitle = typeof data.title === 'string' && data.title.trim()
+    ? data.title.trim()
+    : (typeof block.title === 'string' && block.title.trim() ? block.title.trim() : '');
+  const title = rawTitle === 'New database' || rawTitle === 'Untitled' ? '' : rawTitle;
+  const heading = title ? `<h3>${escapeHtml(title)}</h3>` : '';
+  const propKeys: string[] = Array.isArray(block.databaseColumns) && block.databaseColumns.length > 0
+    ? (block.databaseColumns as string[])
+    : Array.from(
+        new Set(
+          rows.flatMap((r) =>
+            isRecord(r) && isRecord(r.properties) ? Object.keys(r.properties) : [],
+          ),
+        ),
+      );
+
+  propKeys.sort((a, b) => {
+    const aLower = a.toLowerCase();
+    const bLower = b.toLowerCase();
+    const aIsPrimary = aLower === 'name' || aLower === 'title' || aLower === 'command';
+    const bIsPrimary = bLower === 'name' || bLower === 'title' || bLower === 'command';
+    if (aIsPrimary && !bIsPrimary) return -1;
+    if (!aIsPrimary && bIsPrimary) return 1;
+    return a.localeCompare(b);
+  });
+
+  const headerRow = propKeys.map((col) => `<th>${escapeHtml(col)}</th>`).join('');
+  const thead = headerRow ? `<thead><tr>${headerRow}</tr></thead>` : '';
+
+  const bodyRows = rows
+    .map((row) => {
+      const props = isRecord(row) && isRecord(row.properties) ? row.properties : {};
+      const cells = propKeys
+        .map((col) => {
+          const propValue = props[col];
+          const text = extractPropertyText(propValue);
+          return `<td>${escapeHtml(text)}</td>`;
+        })
+        .join('');
+      return `<tr>${cells}</tr>`;
+    })
+    .join('');
+
+  const tbody = `<tbody>${bodyRows}</tbody>`;
+  return `${heading}<table>${thead}${tbody}</table>`;
+}
+
+function extractPropertyText(prop: unknown): string {
+  if (!prop || typeof prop !== 'object') return '';
+  const p = prop as Record<string, unknown>;
+  const propType = typeof p.type === 'string' ? p.type : '';
+
+  if (propType === 'title' && Array.isArray(p.title)) {
+    return plainOfRichArray(p.title);
+  }
+  if (propType === 'rich_text' && Array.isArray(p.rich_text)) {
+    return plainOfRichArray(p.rich_text);
+  }
+  if (propType === 'number' && typeof p.number === 'number') {
+    return String(p.number);
+  }
+  if (propType === 'select' && isRecord(p.select) && typeof p.select.name === 'string') {
+    return p.select.name;
+  }
+  if (propType === 'multi_select' && Array.isArray(p.multi_select)) {
+    return p.multi_select
+      .map((item) => (isRecord(item) && typeof item.name === 'string' ? item.name : ''))
+      .filter(Boolean)
+      .join(', ');
+  }
+  if (propType === 'status' && isRecord(p.status) && typeof p.status.name === 'string') {
+    return p.status.name;
+  }
+  if (propType === 'checkbox' && typeof p.checkbox === 'boolean') {
+    return p.checkbox ? '✓' : '';
+  }
+  if (propType === 'url' && typeof p.url === 'string') {
+    return p.url;
+  }
+  if (propType === 'email' && typeof p.email === 'string') {
+    return p.email;
+  }
+  if (propType === 'phone_number' && typeof p.phone_number === 'string') {
+    return p.phone_number;
+  }
+  if (propType === 'date' && isRecord(p.date) && typeof p.date.start === 'string') {
+    return p.date.start;
+  }
+
+  return '';
+}
+
+function plainOfRichArray(richTexts: unknown[]): string {
+  return richTexts
+    .map((rt) => {
+      if (isRecord(rt) && typeof rt.plain_text === 'string') return rt.plain_text;
+      return '';
+    })
+    .join('');
 }
 
 function renderLinkToPage(block: NotionBlock, ctx: ConvertCtx): string {

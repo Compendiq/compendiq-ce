@@ -13,10 +13,10 @@ import {
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeNode,
 } from '@compendiq/contracts';
+import { query } from '../../../core/db/postgres.js';
 import { NotionClient, NotionError } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
-
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -89,6 +89,33 @@ function parentIdOf(item: Record<string, unknown>): string | null {
   return null;
 }
 
+export function extractParentRelationId(item: Record<string, unknown>): string | null {
+  const props = item.properties;
+  if (!props || typeof props !== 'object') return null;
+
+  for (const [key, prop] of Object.entries(props as Record<string, unknown>)) {
+    if (!prop || typeof prop !== 'object') continue;
+    const lowerKey = key.toLowerCase();
+    const isParentKey =
+      lowerKey.includes('parent') ||
+      lowerKey.includes('übergeordnet') ||
+      lowerKey.includes('overordnet');
+
+    const propType = typeof (prop as { type?: unknown }).type === 'string' ? (prop as { type: string }).type : '';
+
+    if (propType === 'relation' && isParentKey) {
+      const relation = (prop as { relation?: unknown }).relation;
+      if (Array.isArray(relation) && relation.length > 0) {
+        const first = relation[0];
+        if (first && typeof first === 'object' && 'id' in first && typeof first.id === 'string' && first.id.trim()) {
+          return first.id.trim();
+        }
+      }
+    }
+  }
+  return null;
+}
+
 
 function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   if (typeof item.id !== 'string' || item.id.length === 0) return null;
@@ -97,20 +124,37 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   const extras = url ? { url } : {};
 
   if (item.object === 'page' || (item.object === 'block' && item.type === 'child_page')) {
-    return { id: item.id, title, type: 'page', selectable: true, ...extras, children: [] };
+    const isDatabaseRow = parentTypeOf(item) === 'database_id' || parentTypeOf(item) === 'data_source_id';
+    return {
+      id: item.id,
+      title,
+      type: 'page',
+      selectable: true,
+      ...(isDatabaseRow ? { isDatabaseRow: true } : {}),
+      ...extras,
+      children: [],
+    };
   }
   if (
     item.object === 'database' ||
     item.object === 'data_source' ||
     (item.object === 'block' && item.type === 'child_database')
   ) {
+    let reasonCode = 'database';
+    if (item.object === 'data_source') {
+      reasonCode = 'data_source';
+    } else if (item.is_inline === true) {
+      reasonCode = 'inline_database';
+    } else if (item.object === 'block' && item.type === 'child_database') {
+      reasonCode = 'child_database';
+    }
     return {
       id: item.id,
       title,
       type: 'database',
       selectable: false,
       skipReason: NOTION_UNSUPPORTED_LABEL,
-      reasonCode: 'database',
+      reasonCode,
       ...extras,
       children: [],
     };
@@ -152,7 +196,7 @@ async function resolveHostPageId(
     if (seen.has(key)) return null;
     seen.add(key);
     const known = nodes.get(key);
-    if (known?.type === 'page') return known.id;
+    if (known) return known.id;
 
     let block: Record<string, unknown>;
     try {
@@ -163,7 +207,7 @@ async function resolveHostPageId(
     }
     const type = parentTypeOf(block);
     const id = parentIdOf(block);
-    if (type === 'page_id' && id) return id;
+    if ((type === 'page_id' || type === 'database_id' || type === 'data_source_id') && id) return id;
     if (type === 'block_id' && id) {
       current = id;
       continue;
@@ -173,11 +217,13 @@ async function resolveHostPageId(
   return null;
 }
 
-export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<NotionTreeNode[]> {
+export async function fetchNotionWorkspaceTree(
+  client: NotionClient,
+  options: { userId?: string } = {},
+): Promise<NotionTreeNode[]> {
   const results = await client.searchAll();
   const nodes = new Map<string, NotionTreeNode>();
   const rawByKey = new Map<string, Record<string, unknown>>();
-
   for (const raw of results) {
     if (!raw || typeof raw !== 'object') continue;
     const item = raw as Record<string, unknown>;
@@ -192,17 +238,60 @@ export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<No
 
   const attached = new Set<string>();
 
+  // Pass 1: Sub-item parent relation properties (e.g. Wiki sub-pages)
   for (const [key, node] of nodes) {
-    const raw = rawByKey.get(key)!;
-    if (parentTypeOf(raw) === 'block_id') continue;
-    const parentId = parentIdOf(raw);
-    if (!parentId) continue;
-    const parent = nodes.get(normalizeId(parentId));
+    const raw = rawByKey.get(key);
+    if (!raw) continue;
+    const relationParentId = extractParentRelationId(raw);
+    if (!relationParentId) continue;
+    const parent = nodes.get(normalizeId(relationParentId));
     if (parent && parent !== node) {
       attach(parent, node, attached);
     }
   }
 
+  // Pass 2: Direct parent relations (page_id, database_id, data_source_id)
+  // Fetch missing parent databases/pages on-demand if omitted from search results
+  const missingParentsChecked = new Set<string>();
+  for (const [key, node] of nodes) {
+    if (attached.has(key)) continue;
+    const raw = rawByKey.get(key)!;
+    if (parentTypeOf(raw) === 'block_id') continue;
+    const parentId = parentIdOf(raw);
+    if (!parentId) continue;
+    const parentKey = normalizeId(parentId);
+    let parent = nodes.get(parentKey);
+    if (!parent && !missingParentsChecked.has(parentKey)) {
+      missingParentsChecked.add(parentKey);
+      try {
+        let parentRaw: Record<string, unknown>;
+        if (parentTypeOf(raw) === 'database_id' || parentTypeOf(raw) === 'data_source_id') {
+          parentRaw = await client.getDatabase(parentId);
+        } else {
+          try {
+            parentRaw = await client.getPage(parentId);
+          } catch {
+            parentRaw = await client.getDatabase(parentId);
+          }
+        }
+        if (parentRaw && !isTrashed(parentRaw)) {
+          const parentNode = toNode(parentRaw);
+          if (parentNode) {
+            nodes.set(parentKey, parentNode);
+            rawByKey.set(parentKey, parentRaw);
+            parent = parentNode;
+          }
+        }
+      } catch {
+        // missing or no permission; leave at root
+      }
+    }
+    if (parent && parent !== node) {
+      attach(parent, node, attached);
+    }
+  }
+
+  // Pass 3: Block-parent walk for pages nested under blocks/toggles/columns
   for (const [key, node] of nodes) {
     if (attached.has(key)) continue;
     const raw = rawByKey.get(key);
@@ -212,8 +301,45 @@ export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<No
     const hostId = await resolveHostPageId(client, blockId, nodes);
     if (!hostId) continue;
     const host = nodes.get(normalizeId(hostId));
-    if (host && host.type === 'page') {
+    if (host && host !== node) {
       attach(host, node, attached);
+    }
+  }
+
+  // Pass 4: Attach any newly discovered parent nodes that themselves have parents
+  for (const [key, node] of nodes) {
+    if (attached.has(key)) continue;
+    const raw = rawByKey.get(key);
+    if (!raw) continue;
+    const parentId = extractParentRelationId(raw) ?? parentIdOf(raw);
+    if (!parentId) continue;
+    const parent = nodes.get(normalizeId(parentId));
+    if (parent && parent !== node) {
+      attach(parent, node, attached);
+    }
+  }
+  if (options.userId) {
+    try {
+      const existing = await query<{ id: number; notion_page_id: string }>(
+        `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
+         FROM pages
+         WHERE created_by_user_id = $1
+           AND notion_page_id IS NOT NULL
+           AND deleted_at IS NULL`,
+        [options.userId],
+      );
+      const existingByNotionId = new Map<string, number>();
+      for (const row of existing.rows) {
+        existingByNotionId.set(row.notion_page_id, row.id);
+      }
+      for (const [key, node] of nodes) {
+        if (node.type === 'page' && existingByNotionId.has(key)) {
+          node.alreadyImported = true;
+          node.localPageId = existingByNotionId.get(key);
+        }
+      }
+    } catch {
+      // Graceful fallback if database is not reachable (e.g. mock unit tests)
     }
   }
 

@@ -21,6 +21,7 @@ import {
   formatWikiMetadataCallout,
   type NotionBlock,
 } from './notion-block-converter.js';
+import { extractParentRelationId } from './notion-tree.js';
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
 
 export class NotionImportError extends Error {
@@ -113,6 +114,31 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   ]);
   applyChildPageHosts(toPersist, alreadyImported);
   await resolveRemainingBlockParents(input.client, toPersist, alreadyImported, selectedKeys);
+
+  // Ensure container pages for database parents so child pages nest properly
+  for (const job of toPersist) {
+    if (job.parentNotionId && !importedPages.has(normalizeNotionId(job.parentNotionId))) {
+      await ensureDatabaseContainerPage({
+        client: input.client,
+        userId: input.userId,
+        databaseId: job.parentNotionId,
+        destination,
+        importedPages,
+      });
+    }
+  }
+  for (const row of alreadyImported) {
+    if (row.parentNotionId && !importedPages.has(normalizeNotionId(row.parentNotionId))) {
+      await ensureDatabaseContainerPage({
+        client: input.client,
+        userId: input.userId,
+        databaseId: row.parentNotionId,
+        destination,
+        importedPages,
+      });
+    }
+  }
+
   const ordered = topoBySelectedParent(
     toPersist,
     new Set(toPersist.map((j) => normalizeNotionId(j.id))),
@@ -121,7 +147,12 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   for (const job of ordered) {
     let localPageId: number | undefined = job.reuseId;
     try {
-      const parentLocal = resolveParentLocalId(job.parentNotionId, importedPages, destination.parentId);
+      const parentLocal = await resolveParentLocalId(
+        job.parentNotionId,
+        importedPages,
+        destination.parentId,
+        input.userId,
+      );
       localPageId = job.reuseId ?? (await nextPageId());
 
       const converted = convertNotionBlocks(job.blocks ?? [], {
@@ -170,8 +201,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
   }
 
   await rewriteImportedMentions(ordered, items, importedPages);
-  await rehomeAlreadyImported(alreadyImported, importedPages);
-
+  await rehomeAlreadyImported(alreadyImported, importedPages, input.userId);
   return input.pageIds.map((id) => items.get(id) ?? { notionPageId: id, status: 'fail', reason: 'Unknown item' });
 }
 
@@ -396,7 +426,30 @@ async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<N
   for (const item of raw) {
     if (!isRecord(item) || typeof item.type !== 'string') continue;
     const block = item as NotionBlock;
-    if (block.has_children === true && typeof block.id === 'string' && !NO_RECURSE_TYPES.has(block.type)) {
+    if (block.type === 'child_database' && typeof block.id === 'string') {
+      try {
+        const searchRes = await client.search({
+          filter: { property: 'object', value: 'page' },
+        });
+        const rows = searchRes.results.filter(
+          (it) =>
+            it.parent &&
+            typeof it.parent === 'object' &&
+            (it.parent as { database_id?: string }).database_id === block.id,
+        );
+        try {
+          const dbDef = await client.getDatabase(block.id);
+          if (dbDef && isRecord(dbDef.properties)) {
+            block.databaseColumns = Object.keys(dbDef.properties);
+          }
+        } catch {
+          // ignore
+        }
+        block.databaseRows = rows;
+      } catch {
+        // ignore
+      }
+    } else if (block.has_children === true && typeof block.id === 'string' && !NO_RECURSE_TYPES.has(block.type)) {
       block.children = await fetchBlocksDeep(client, block.id);
     }
     out.push(block);
@@ -427,14 +480,21 @@ async function storeAttachments(
   }
 }
 
-function resolveParentLocalId(
+async function resolveParentLocalId(
   parentNotionId: string | null,
   importedPages: Map<string, number>,
   destinationParentId: string | null,
-): string | null {
+  userId: string,
+): Promise<string | null> {
   if (parentNotionId) {
     const local = importedPages.get(normalizeNotionId(parentNotionId));
     if (typeof local === 'number') return String(local);
+
+    const found = await findImportedPage(userId, parentNotionId);
+    if (found?.complete) {
+      importedPages.set(normalizeNotionId(parentNotionId), found.id);
+      return String(found.id);
+    }
   }
   return destinationParentId;
 }
@@ -467,11 +527,76 @@ function topoBySelectedParent<T extends { id: string; parentNotionId: string | n
 }
 
 function parentPageIdOf(page: Record<string, unknown>): string | null {
+  const relationParent = extractParentRelationId(page);
+  if (relationParent) return relationParent;
+
   const parent = isRecord(page.parent) ? page.parent : null;
   if (!parent || typeof parent.type !== 'string') return null;
   if (parent.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
+  if (parent.type === 'database_id' && typeof parent.database_id === 'string') return parent.database_id;
+  if (parent.type === 'data_source_id' && typeof parent.data_source_id === 'string') return parent.data_source_id;
   return null;
 }
+
+async function ensureDatabaseContainerPage(opts: {
+  client: NotionClient;
+  userId: string;
+  databaseId: string;
+  destination: Destination;
+  importedPages: Map<string, number>;
+}): Promise<number | null> {
+  const normId = normalizeNotionId(opts.databaseId);
+  const existingLocal = opts.importedPages.get(normId);
+  if (typeof existingLocal === 'number') return existingLocal;
+
+  const found = await findImportedPage(opts.userId, opts.databaseId);
+  if (found?.complete) {
+    opts.importedPages.set(normId, found.id);
+    return found.id;
+  }
+
+  try {
+    let db: Record<string, unknown>;
+    try {
+      db = await opts.client.getDatabase(opts.databaseId);
+    } catch {
+      return null;
+    }
+    if (!db || isTrashed(db)) return null;
+    const title = extractTitle(db) || 'Database';
+    const pageId = found?.id ?? (await nextPageId());
+
+    await persistStandalonePage({
+      id: pageId,
+      reuse: Boolean(found?.id),
+      userId: opts.userId,
+      title,
+      spaceKey: opts.destination.spaceKey,
+      parentId: opts.destination.parentId,
+      visibility: opts.destination.visibility,
+      notionPageId: opts.databaseId,
+      bodyHtml: `<p class="text-muted-foreground italic">Notion database collection</p>`,
+      bodyText: `Notion database collection: ${title}`,
+      labels: ['notion-import', 'database'],
+      author: null,
+      verifiedAt: null,
+    });
+
+    opts.importedPages.set(normId, pageId);
+    return pageId;
+  } catch (err) {
+    logger.warn(
+      { databaseId: opts.databaseId, err: failReason(err) },
+      'notion-import: failed to ensure database container page',
+    );
+    return null;
+  }
+}
+
+function isTrashed(item: Record<string, unknown>): boolean {
+  return item.in_trash === true || item.archived === true;
+}
+
 
 export interface ExtractedWikiProperties {
   author: string | null;
@@ -717,14 +842,21 @@ async function getPageQuietly(client: NotionClient, id: string): Promise<Record<
     return null;
   }
 }
-
 async function rehomeAlreadyImported(
   already: AlreadyImported[],
   importedPages: Map<string, number>,
+  userId: string,
 ): Promise<void> {
   for (const row of already) {
     if (!row.parentNotionId) continue;
-    const parentLocal = importedPages.get(normalizeNotionId(row.parentNotionId));
+    let parentLocal = importedPages.get(normalizeNotionId(row.parentNotionId));
+    if (typeof parentLocal !== 'number') {
+      const found = await findImportedPage(userId, row.parentNotionId);
+      if (found?.complete) {
+        parentLocal = found.id;
+        importedPages.set(normalizeNotionId(row.parentNotionId), found.id);
+      }
+    }
     if (typeof parentLocal !== 'number') continue;
     await rehomePage(row.localPageId, String(parentLocal));
   }
