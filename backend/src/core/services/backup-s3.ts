@@ -9,7 +9,6 @@ import { createHash, createHmac } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { request } from 'undici';
 import {
-  addAllowedBaseUrl,
   assertNonSsrfUrl,
   SsrfError,
   validateUrlSyntaxAndProtocol,
@@ -46,7 +45,6 @@ export async function assertSafeS3Endpoint(endpoint: string): Promise<URL> {
   if (METADATA_HOSTS.has(host) || host.startsWith('169.254.')) {
     throw new SsrfError('S3 endpoint points at a cloud metadata address');
   }
-  addAllowedBaseUrl(url.origin);
   await assertNonSsrfUrl(url.toString());
   return url;
 }
@@ -307,8 +305,8 @@ export async function listBackupObjects(target: S3Target): Promise<ListedObject[
 }
 
 export async function deleteBackupObjects(target: S3Target, keys: string[]): Promise<void> {
-  if (keys.length === 0) return;
   await assertSafeS3Endpoint(target.endpoint);
+  if (keys.length === 0) return;
   const xml =
     `<Delete>` +
     keys.map((k) => `<Object><Key>${xmlEscape(k)}</Key></Object>`).join('') +

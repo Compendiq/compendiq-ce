@@ -1,7 +1,8 @@
-import { encryptPat, decryptPat, isEncryptedSecretFormat } from '../utils/crypto.js';
-import { query } from '../db/postgres.js';
+import type { PoolClient } from 'pg';
 import { BACKUP_SECRET_MASK } from '@compendiq/contracts';
 import type { BackupS3Config, BackupScheduleConfig, UpdateBackupSettingsInput } from '@compendiq/contracts';
+import { getPool, query } from '../db/postgres.js';
+import { encryptPat, decryptPat, isEncryptedSecretFormat } from '../utils/crypto.js';
 
 export const BACKUP_SETTING_KEYS = {
   s3Enabled: 'backup_s3_enabled',
@@ -41,14 +42,13 @@ async function readSettings(): Promise<Record<string, string>> {
   return map;
 }
 
-async function upsert(key: string, value: string): Promise<void> {
-  await query(
-    `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+const UPSERT_SQL = `INSERT INTO admin_settings (setting_key, setting_value, updated_at)
      VALUES ($1, $2, NOW())
      ON CONFLICT (setting_key) DO UPDATE
-       SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`,
-    [key, value],
-  );
+       SET setting_value = EXCLUDED.setting_value, updated_at = NOW()`;
+
+async function upsert(client: PoolClient, key: string, value: string): Promise<void> {
+  await client.query(UPSERT_SQL, [key, value]);
 }
 
 function readSecret(stored: string | undefined): string {
@@ -139,42 +139,70 @@ export async function getBackupPublicConfig(): Promise<{
 }
 
 export async function updateBackupSettings(input: UpdateBackupSettingsInput): Promise<void> {
-  if (input.s3Enabled !== undefined) await upsert(BACKUP_SETTING_KEYS.s3Enabled, String(input.s3Enabled));
-  if (input.s3Endpoint !== undefined) await upsert(BACKUP_SETTING_KEYS.s3Endpoint, input.s3Endpoint.trim());
-  if (input.s3Bucket !== undefined) await upsert(BACKUP_SETTING_KEYS.s3Bucket, input.s3Bucket.trim());
-  if (input.s3Region !== undefined) await upsert(BACKUP_SETTING_KEYS.s3Region, input.s3Region.trim());
-  if (input.s3Prefix !== undefined) await upsert(BACKUP_SETTING_KEYS.s3Prefix, input.s3Prefix.trim());
+  const updates: Array<[key: string, value: string]> = [];
+
+  if (input.s3Enabled !== undefined) {
+    updates.push([BACKUP_SETTING_KEYS.s3Enabled, String(input.s3Enabled)]);
+  }
+  if (input.s3Endpoint !== undefined) {
+    updates.push([BACKUP_SETTING_KEYS.s3Endpoint, input.s3Endpoint.trim()]);
+  }
+  if (input.s3Bucket !== undefined) {
+    updates.push([BACKUP_SETTING_KEYS.s3Bucket, input.s3Bucket.trim()]);
+  }
+  if (input.s3Region !== undefined) {
+    updates.push([BACKUP_SETTING_KEYS.s3Region, input.s3Region.trim()]);
+  }
+  if (input.s3Prefix !== undefined) {
+    updates.push([BACKUP_SETTING_KEYS.s3Prefix, input.s3Prefix.trim()]);
+  }
   if (input.s3ForcePathStyle !== undefined) {
-    await upsert(BACKUP_SETTING_KEYS.s3ForcePathStyle, String(input.s3ForcePathStyle));
+    updates.push([BACKUP_SETTING_KEYS.s3ForcePathStyle, String(input.s3ForcePathStyle)]);
   }
   if (input.s3AccessKey !== undefined && input.s3AccessKey !== BACKUP_SECRET_MASK) {
-    await upsert(
+    updates.push([
       BACKUP_SETTING_KEYS.s3AccessKey,
       input.s3AccessKey === '' ? '' : encryptPat(input.s3AccessKey),
-    );
+    ]);
   }
   if (input.s3SecretKey !== undefined && input.s3SecretKey !== BACKUP_SECRET_MASK) {
-    await upsert(
+    updates.push([
       BACKUP_SETTING_KEYS.s3SecretKey,
       input.s3SecretKey === '' ? '' : encryptPat(input.s3SecretKey),
-    );
+    ]);
   }
   if (input.scheduleEnabled !== undefined) {
-    await upsert(BACKUP_SETTING_KEYS.scheduleEnabled, String(input.scheduleEnabled));
+    updates.push([BACKUP_SETTING_KEYS.scheduleEnabled, String(input.scheduleEnabled)]);
   }
   if (input.intervalHours !== undefined) {
-    await upsert(BACKUP_SETTING_KEYS.intervalHours, String(input.intervalHours));
+    updates.push([BACKUP_SETTING_KEYS.intervalHours, String(input.intervalHours)]);
   }
   if (input.retentionCount !== undefined) {
-    await upsert(BACKUP_SETTING_KEYS.retentionCount, String(input.retentionCount));
+    updates.push([BACKUP_SETTING_KEYS.retentionCount, String(input.retentionCount)]);
   }
   if (input.retentionDays !== undefined) {
-    await upsert(BACKUP_SETTING_KEYS.retentionDays, String(input.retentionDays));
+    updates.push([BACKUP_SETTING_KEYS.retentionDays, String(input.retentionDays)]);
+  }
+
+  if (updates.length === 0) return;
+
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    for (const [key, value] of updates) {
+      await upsert(client, key, value);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
 export async function markBackupLastRun(iso: string): Promise<void> {
-  await upsert(BACKUP_SETTING_KEYS.lastRunAt, iso);
+  await query(UPSERT_SQL, [BACKUP_SETTING_KEYS.lastRunAt, iso]);
 }
 
 export function hasMasterBackupKey(): boolean {

@@ -1,28 +1,44 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { assertSafeS3Endpoint, objectKeyFor } from './backup-s3.js';
+import type * as SsrfGuard from '../utils/ssrf-guard.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { assertSafeS3Endpoint, deleteBackupObjects, objectKeyFor } from './backup-s3.js';
 
-const addAllowed = vi.fn();
-const assertNonSsrf = vi.fn().mockResolvedValue(undefined);
+const lookup = vi.hoisted(() => vi.fn());
+const addAllowed = vi.hoisted(() => vi.fn());
+
+vi.mock('node:dns/promises', () => ({ lookup }));
 
 vi.mock('../utils/ssrf-guard.js', async () => {
-  const actual = await vi.importActual<typeof import('../utils/ssrf-guard.js')>('../utils/ssrf-guard.js');
+  const actual = await vi.importActual<typeof SsrfGuard>('../utils/ssrf-guard.js');
   return {
     ...actual,
-    addAllowedBaseUrl: (...args: unknown[]) => addAllowed(...args),
-    assertNonSsrfUrl: (...args: unknown[]) => assertNonSsrf(...args),
+    addAllowedBaseUrl: addAllowed,
   };
 });
 
 describe('assertSafeS3Endpoint', () => {
   beforeEach(() => {
+    lookup.mockReset();
+    lookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
     addAllowed.mockClear();
-    assertNonSsrf.mockClear();
   });
 
-  it('rejects cloud metadata addresses without allowlisting them', async () => {
-    await expect(assertSafeS3Endpoint('http://169.254.169.254/latest/meta-data/')).rejects.toThrow(
-      /metadata/i,
-    );
+  it.each([
+    ['IPv4 loopback', 'http://127.0.0.1:9000', /private|internal/i],
+    ['IPv6 loopback', 'http://[::1]:9000', /private|internal/i],
+    ['RFC 1918', 'http://10.0.0.2:9000', /private|internal/i],
+    ['cloud metadata', 'http://169.254.169.254/latest', /metadata|private/i],
+    ['internal hostname', 'http://minio.internal', /private|internal/i],
+  ])('rejects %s endpoints without allowlisting them', async (_label, endpoint, message) => {
+    await expect(assertSafeS3Endpoint(endpoint)).rejects.toThrow(message);
+    expect(addAllowed).not.toHaveBeenCalled();
+  });
+
+  it('rejects a public hostname when DNS resolves it to a private address', async () => {
+    lookup.mockResolvedValue([{ address: '10.0.0.2', family: 4 }]);
+
+    await expect(assertSafeS3Endpoint('https://backup.example.test')).rejects.toThrow(/blocked|private/i);
+
+    expect(lookup).toHaveBeenCalledWith('backup.example.test', { all: true });
     expect(addAllowed).not.toHaveBeenCalled();
   });
 
@@ -30,10 +46,21 @@ describe('assertSafeS3Endpoint', () => {
     await expect(assertSafeS3Endpoint('file:///etc/passwd')).rejects.toThrow();
   });
 
-  it('allowlists a public HTTPS endpoint then SSRF-checks it', async () => {
-    await assertSafeS3Endpoint('https://s3.amazonaws.com');
-    expect(addAllowed).toHaveBeenCalled();
-    expect(assertNonSsrf).toHaveBeenCalled();
+  it('validates an empty delete operation before returning', async () => {
+    await expect(
+      deleteBackupObjects(
+        {
+          endpoint: 'http://127.0.0.1:9000',
+          bucket: 'backups',
+          region: 'us-east-1',
+          accessKey: 'access',
+          secretKey: 'secret',
+          prefix: 'compendiq-backups/',
+          forcePathStyle: true,
+        },
+        [],
+      ),
+    ).rejects.toThrow(/private|internal/i);
   });
 });
 
