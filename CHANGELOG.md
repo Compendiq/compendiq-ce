@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deletion reconciliation now persists a per-space round-robin cursor, so a full batch of restricted or inconclusive Confluence pages cannot permanently starve later confirmed deletions while the 200-request per-cycle cap remains enforced (#1439).
 - The backend (and EE) runtime image now merges workspace-demoted `backend/node_modules` onto `/app/node_modules`. npm was nesting collab TipTap packages (`@tiptap/extension-code-block` and siblings) under the backend workspace, the image only copied the root tree, and `ghcr.io/compendiq/compendiq-ce-backend:dev` crash-looped on boot while the Docker smoke test stayed green on four packages that happen to hoist. The smoke test now imports those TipTap packages and `collab-schema.js`.
 
 ## [0.7.2] - 2026-07-28

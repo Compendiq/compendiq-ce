@@ -284,6 +284,33 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
     expect(parseInt(remaining.rows[0]!.n, 10)).toBe(1);
   });
 
+  it('advances past a full batch of surviving candidates on the next cycle (#1439)', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name)
+       VALUES ('DEV', 'Development')`,
+    );
+    const survivingIds = Array.from({ length: 200 }, (_, i) => `restricted-${i}`);
+    for (const id of [...survivingIds, 'gone-after-cap']) await insertPage(id, 'DEV');
+
+    const client = makeClient({
+      liveIds: [],
+      presentForGetPage: survivingIds,
+      goneForGetPage: ['gone-after-cap'],
+    });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    expect(client.getPageCalls).toEqual(survivingIds);
+    expect(counts.pagesDeleted).toBe(0);
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    const secondCycleCalls = client.getPageCalls.slice(200);
+    expect(secondCycleCalls).toHaveLength(200);
+    expect(secondCycleCalls[0]).toBe('gone-after-cap');
+    expect(await getDeletedAt('gone-after-cap')).not.toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
+  });
+
   it('reconciles normally at the cap boundary (exactly 200 candidates)', async () => {
     // 200 candidates is within the cap, so the run proceeds: each is confirmed gone
     // and soft-deleted. Guards against an off-by-one in the > vs >= comparison.
