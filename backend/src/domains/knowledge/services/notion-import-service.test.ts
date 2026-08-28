@@ -885,6 +885,142 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     }
     expect(lines.join('\n')).not.toContain(TOKEN);
   });
+
+  it('extracts wiki page attributes (owner, verified, tags, category mapped to tags, status) and persists them', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'wiki-page-1': {
+          object: 'page',
+          id: 'wiki-page-1',
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            ...titleProp('System Architecture & Invariants'),
+            Owner: {
+              type: 'people',
+              people: [{ object: 'user', name: 'Alice Engineer', person: { email: 'alice@example.com' } }],
+            },
+            Verification: {
+              type: 'verification',
+              verification: {
+                state: 'verified',
+                verified_by: { name: 'Security Lead' },
+                date: { start: '2026-08-15' },
+              },
+            },
+            Tags: {
+              type: 'multi_select',
+              multi_select: [{ name: 'core' }, { name: 'backend' }],
+            },
+            Category: {
+              type: 'select',
+              select: { name: 'Architecture' },
+            },
+            Status: {
+              type: 'status',
+              status: { name: 'Published' },
+            },
+            'Review Cycle': {
+              type: 'select',
+              select: { name: 'Quarterly' },
+            },
+          },
+        },
+      },
+      blockChildren: {
+        'wiki-page-1': [paragraph('w1', 'Core architectural principles.')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['wiki-page-1'],
+      visibility: 'shared',
+    });
+
+    expect(items[0]?.status).toBe('success');
+
+    const pageRow = await query<{
+      title: string;
+      author: string | null;
+      verified_at: Date | null;
+      labels: string[];
+      body_html: string;
+    }>(
+      'SELECT title, author, verified_at, labels, body_html FROM pages WHERE notion_page_id = $1',
+      ['wiki-page-1'],
+    );
+
+    expect(pageRow.rows).toHaveLength(1);
+    const row = pageRow.rows[0]!;
+    expect(row.title).toBe('System Architecture & Invariants');
+    expect(row.author).toBe('Alice Engineer');
+    expect(row.verified_at).not.toBeNull();
+    // Category 'Architecture' mapped into tags along with 'core' and 'backend'
+    expect(row.labels).toEqual(expect.arrayContaining(['core', 'backend', 'Architecture']));
+    // Metadata callout block prepended with status and custom properties
+    expect(row.body_html).toContain('notion-wiki-metadata');
+    expect(row.body_html).toContain('Published');
+    expect(row.body_html).toContain('Quarterly');
+    expect(row.body_html).toContain('Core architectural principles.');
+  });
+
+  it('preserves multi-level hierarchy among sub-wiki pages when importing', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'wiki-root': {
+          object: 'page',
+          id: 'wiki-root',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Engineering Wiki'),
+        },
+        'wiki-doc': {
+          object: 'page',
+          id: 'wiki-doc',
+          parent: { type: 'page_id', page_id: 'wiki-root' },
+          properties: titleProp('RFC 100'),
+        },
+        'wiki-subdoc': {
+          object: 'page',
+          id: 'wiki-subdoc',
+          parent: { type: 'page_id', page_id: 'wiki-doc' },
+          properties: titleProp('RFC 100 Appendix'),
+        },
+      },
+      blockChildren: {
+        'wiki-root': [paragraph('r1', 'Wiki Home')],
+        'wiki-doc': [paragraph('d1', 'RFC Content')],
+        'wiki-subdoc': [paragraph('sd1', 'Appendix Content')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['wiki-root', 'wiki-doc', 'wiki-subdoc'],
+      visibility: 'shared',
+    });
+
+    expect(items.map((i) => i.status)).toEqual(['success', 'success', 'success']);
+
+    const pages = await query<{ id: number; title: string; parent_id: string | null; depth: number; path: string }>(
+      'SELECT id, title, parent_id, depth, path FROM pages WHERE notion_page_id IN ($1, $2, $3) ORDER BY depth ASC',
+      ['wiki-root', 'wiki-doc', 'wiki-subdoc'],
+    );
+
+    expect(pages.rows).toHaveLength(3);
+    const rootPage = pages.rows.find((p) => p.title === 'Engineering Wiki')!;
+    const docPage = pages.rows.find((p) => p.title === 'RFC 100')!;
+    const subDocPage = pages.rows.find((p) => p.title === 'RFC 100 Appendix')!;
+
+    expect(rootPage.parent_id).toBeNull();
+    expect(docPage.parent_id).toBe(String(rootPage.id));
+    expect(subDocPage.parent_id).toBe(String(docPage.id));
+    expect(subDocPage.depth).toBe(2);
+    expect(subDocPage.path).toBe(`/${rootPage.id}/${docPage.id}/${subDocPage.id}`);
+  });
 });
 
 describe('notion-import-service isolation', () => {

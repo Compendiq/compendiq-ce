@@ -85,6 +85,40 @@ export interface NotionConversionSkip {
   reason: 'unsupported';
 }
 
+export interface WikiMetadataInput {
+  status?: string | null;
+  author?: string | null;
+  verifiedAt?: Date | null;
+  tags?: string[];
+  customProperties?: Record<string, string>;
+}
+
+export function formatWikiMetadataCallout(meta: WikiMetadataInput): string {
+  const items: string[] = [];
+  if (meta.status) {
+    items.push(`<strong>Status:</strong> ${escapeHtml(meta.status)}`);
+  }
+  if (meta.author) {
+    items.push(`<strong>Owner:</strong> ${escapeHtml(meta.author)}`);
+  }
+  if (meta.verifiedAt) {
+    const d = meta.verifiedAt instanceof Date ? meta.verifiedAt.toISOString().slice(0, 10) : String(meta.verifiedAt);
+    items.push(`<strong>Verified:</strong> ${escapeHtml(d)}`);
+  }
+  if (meta.tags && meta.tags.length > 0) {
+    items.push(`<strong>Tags:</strong> ${escapeHtml(meta.tags.join(', '))}`);
+  }
+  if (meta.customProperties) {
+    for (const [k, v] of Object.entries(meta.customProperties)) {
+      if (v) {
+        items.push(`<strong>${escapeHtml(k)}:</strong> ${escapeHtml(v)}`);
+      }
+    }
+  }
+  if (items.length === 0) return '';
+  return `<div data-type="callout" class="notion-wiki-metadata"><p>${items.join(' &nbsp;|&nbsp; ')}</p></div>`;
+}
+
 export interface NotionConvertOptions {
   /** Local page PK used in `/api/local-attachments/{id}/…` src attributes. */
   localPageId: number;

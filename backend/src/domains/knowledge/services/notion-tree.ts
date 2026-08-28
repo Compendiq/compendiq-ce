@@ -84,6 +84,7 @@ function parentIdOf(item: Record<string, unknown>): string | null {
   if (!p) return null;
   if (p.type === 'page_id' && typeof p.page_id === 'string') return p.page_id;
   if (p.type === 'database_id' && typeof p.database_id === 'string') return p.database_id;
+  if (p.type === 'data_source_id' && typeof p.data_source_id === 'string') return p.data_source_id;
   if (p.type === 'block_id' && typeof p.block_id === 'string') return p.block_id;
   return null;
 }
@@ -109,6 +110,7 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
       type: 'database',
       selectable: false,
       skipReason: NOTION_UNSUPPORTED_LABEL,
+      reasonCode: 'database',
       ...extras,
       children: [],
     };
@@ -119,6 +121,7 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
     type: 'unsupported',
     selectable: false,
     skipReason: NOTION_UNSUPPORTED_LABEL,
+    reasonCode: typeof item.type === 'string' ? item.type : 'unsupported',
     ...extras,
     children: [],
   };
