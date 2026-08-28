@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Encrypted data backup and restore (#1420). Admins can download an AES-256-GCM archive of PostgreSQL (`pg_dump -Fc`) plus attachments from Settings → Backup & Recovery, optionally encrypting with a passphrase (PBKDF2-SHA256, 600k iterations) or `BACKUP_ENCRYPTION_KEY` (HKDF). Scheduled S3/S3-compatible uploads (MinIO, R2, Wasabi, B2) store access keys encrypted at rest, reject cloud-metadata endpoints, prune by count/age, and restore via `backend/scripts/restore-backup.ts`. The backend image now includes `postgresql17-client`.
+- Encrypted data backup and restore (#1420). Admins can stream constant-memory AES-256-GCM archives of PostgreSQL (`pg_dump -Fc`) plus attachments from Settings → Backup & Recovery. Browser exports now use an authenticated 30-second, single-use Redis ticket followed by native same-origin navigation, so passphrases stay out of URLs and complete archives are never buffered in a browser `Blob`. Scheduled uploads support publicly reachable S3-compatible endpoints only, validate both configured and final request URLs against private/internal networks, store credentials encrypted at rest, update settings atomically, and prune by count/age. The standalone restore CLI authenticates and strictly validates a same-filesystem disk stage before mutation, restores PostgreSQL with `--single-transaction`, rolls attachments back when `pg_restore` fails, then runs shipped migrations. The backend image includes `postgresql17-client`.
 
 ### Fixed
 

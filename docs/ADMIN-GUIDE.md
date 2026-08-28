@@ -1510,19 +1510,90 @@ out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
 
 ### In-app encrypted backup (#1420)
 
-Settings → **Backup & Recovery** (admin) streams a gzip+AES-256-GCM archive of `pg_dump -Fc` plus `ATTACHMENTS_DIR`. The file never lands unencrypted on the backend (read-only container, 1024m `mem_limit`).
+Settings → **Backup & Recovery** (admin) streams a gzip+AES-256-GCM archive of
+`pg_dump -Fc` plus `ATTACHMENTS_DIR`. Backup generation remains constant-memory:
+the backend does not buffer a complete dump, attachment, or archive, and it
+does not report success until `pg_dump` closes with exit code `0`.
 
-- **Download:** optional passphrase (≥12 chars, PBKDF2-SHA256 600k). If `BACKUP_ENCRYPTION_KEY` is set (≥32 bytes), downloads can omit the passphrase.
-- **S3:** endpoint, bucket, region, access/secret keys (encrypted at rest with `encryptPat`), prefix, path-style for MinIO/R2/Wasabi. Endpoints are SSRF-checked; `169.254.169.254` is never allowlisted.
-- **Schedule:** interval hours, keep-last-N, delete-after-days. One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
-- **Restore** (outside Fastify):
+- **Download:** the authenticated admin request creates a 256-bit Redis ticket
+  with a 30-second TTL, then the browser performs native navigation to the
+  returned same-origin URL. That redemption route is intentionally public
+  because navigation cannot attach the admin access-token header; the random
+  ticket is the bearer capability, is consumed atomically on the first GET,
+  and returns `404` after use or expiry. The ticket contains no backup bytes,
+  never places a passphrase in the URL, and the browser never buffers the
+  archive in a `Blob`. Passphrases must be at least 12 characters and use
+  PBKDF2-SHA256 (600,000 iterations). If `BACKUP_ENCRYPTION_KEY` is set
+  (at least 32 bytes), downloads can omit the passphrase.
+- **S3:** only publicly reachable HTTP(S) S3-compatible endpoints are
+  supported. Loopback, private, link-local/cloud-metadata, internal-hostname,
+  and DNS-to-private destinations are rejected, even if another feature
+  allowlisted the origin; the final path-style or virtual-host request URL is
+  checked again immediately before network I/O. Path-style addressing remains
+  available for public S3-compatible services. Access and secret keys are
+  encrypted at rest with `encryptPat`, and one failed settings write rolls the
+  complete update back. **Test connection** uses the saved configuration, so
+  save S3 edits first.
+- **Schedule:** configure interval hours, keep-last-N, and delete-after-days.
+  One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
+  History refreshes while a run is active.
+
+Restore is an offline, standalone operation: stop Fastify traffic before a
+non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
+checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
+must reach the target database. `ATTACHMENTS_DIR` must identify the real live
+attachment tree; its parent must be writable and on the filesystem that will
+hold the restored tree.
+
+The CLI creates a mode-`0700` `.compendiq-restore-*` directory next to
+`ATTACHMENTS_DIR`. Reserve free space there for the complete decrypted
+`database.dump` and attachment tree **in addition to the existing live data**
+(and account separately for the encrypted input file). Keeping staging beside
+the live tree is required for the rename-based attachment swap.
+
+Prefer `BACKUP_PASSPHRASE` over the compatibility `--passphrase` flag. The
+following Bash example reads without echoing or recording the secret literal
+in shell history, exports it only for the restore process, validates the full
+archive, and then clears it:
 
 ```bash
-npx tsx backend/scripts/restore-backup.ts --file compendiq-backup-….enc --passphrase '…'
-# or BACKUP_ENCRYPTION_KEY=… npx tsx backend/scripts/restore-backup.ts --file … --dry-run
+read -r -s -p 'Backup passphrase: ' BACKUP_PASSPHRASE
+printf '\n'
+export BACKUP_PASSPHRASE
+npx tsx backend/scripts/restore-backup.ts \
+  --file compendiq-backup-YYYYMMDD.enc \
+  --dry-run
+unset BACKUP_PASSPHRASE
 ```
 
-Requires `postgresql17-client` (`pg_restore --clean --if-exists`) and the same `PAT_ENCRYPTION_KEY` fingerprint recorded in `manifest.json`. `--force` overrides a fingerprint mismatch. The runtime image installs `postgresql17-client` for `pg_dump`.
+Remove `--dry-run` only after validation succeeds and an application outage is
+in place. Without a passphrase, the CLI uses `BACKUP_ENCRYPTION_KEY`. The
+legacy `--passphrase` form remains accepted but exposes the value in process
+listings and often shell history; do not use it for routine operations.
+
+Before any live mutation, restore fully consumes AES-GCM authentication and
+validates safe/unique archive members, a strict closed manifest (bounded to
+1 MiB), the exact SHA-256 checksum set, database size, the
+`PAT_ENCRYPTION_KEY` fingerprint, and that the archive migration is not newer
+than this binary. `--force` overrides **only** the PAT-key fingerprint
+mismatch; it never bypasses authentication, schema, path, member, checksum,
+size, or forward-migration checks. Validation failure and dry-run leave
+PostgreSQL and live attachments unchanged and remove staging.
+
+Commit renames the previous attachment tree aside, installs the staged tree,
+and runs `pg_restore --clean --if-exists --no-owner --no-acl
+--single-transaction`, followed by the shipped database migrations. If
+`pg_restore` fails, the replacement attachment tree is removed and the
+previous tree is restored; the secure staging directory remains beside
+`ATTACHMENTS_DIR` for diagnosis and must be removed after recovery.
+
+**Migration-failure boundary:** `pg_restore` has already committed its single
+transaction and the restored attachments remain live before migrations run.
+Arbitrary migrations cannot be rolled back safely, so a migration failure
+does not attempt a database or attachment rollback. The error reports both
+the retained old-attachment rollback directory and restore staging directory.
+Keep both while diagnosing/recovering the database; remove them manually only
+after the restored state is accepted or another restore has completed.
 
 ### Manual PostgreSQL dump
 

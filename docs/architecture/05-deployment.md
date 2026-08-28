@@ -159,6 +159,60 @@ same value; the installer auto-generates it into `.env` on first install and
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
 | `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
 
+## Backup process boundaries
+
+```mermaid
+flowchart LR
+    browser(["Admin browser"])
+    publicS3[("Public S3-compatible service")]
+    encrypted["Encrypted backup file"]
+
+    subgraph online["Online backend process"]
+        beBackup["Backup exporter<br/>postgresql17-client: pg_dump<br/>constant-memory stream"]
+    end
+
+    subgraph offline["Standalone restore boundary (Fastify offline)"]
+        cli["backend/scripts/restore-backup.ts<br/>postgresql17-client: pg_restore"]
+        stage[("mode-0700 staging<br/>beside ATTACHMENTS_DIR")]
+    end
+
+    pg[("PostgreSQL 17")]
+    attachments[("Live ATTACHMENTS_DIR<br/>same filesystem as staging")]
+
+    pg -- "pg_dump -Fc" --> beBackup
+    attachments -- "attachment read streams" --> beBackup
+    beBackup -- "30-second ticket download" --> browser
+    beBackup -- "validated public HTTP(S)" --> publicS3
+
+    encrypted --> cli
+    cli -- "authenticate + validate<br/>stream to disk" --> stage
+    stage -- "rename swap after validation" --> attachments
+    cli -- "pg_restore<br/>--single-transaction" --> pg
+
+    classDef ext fill:#fff,stroke:#333
+    classDef svc fill:#eefbe8,stroke:#4caf50
+    classDef data fill:#eef6ff,stroke:#4a90e2
+    class browser,publicS3,encrypted ext
+    class beBackup,cli svc
+    class pg,attachments,stage data
+```
+
+The backend runtime image installs `postgresql17-client` so the online
+exporter can spawn `pg_dump`; no database or attachment payload is staged on
+the backend root filesystem. Restore is not an API and does not run inside the
+serving Fastify process. The operator launches the standalone source-tree CLI
+where `POSTGRES_URL` can reach PostgreSQL, `pg_restore` is installed, and the
+real `ATTACHMENTS_DIR` is mounted.
+
+The restore stage is a temporary directory under the parent of
+`ATTACHMENTS_DIR`, with mode `0700`. It must be on the same filesystem as the
+live tree so attachment installation and rollback use atomic renames. The
+stage holds a complete decrypted database dump and attachment tree, so its
+filesystem needs that much free capacity in addition to the live data.
+PostgreSQL and the live attachment tree are not touched until the complete
+archive has authenticated and passed manifest, member, checksum, size,
+fingerprint, and migration validation.
+
 ## Additional compose files
 
 - `docker-compose.confluence.yml` — spins up a throwaway Confluence DC for

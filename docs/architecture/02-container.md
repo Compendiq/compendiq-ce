@@ -23,6 +23,13 @@ flowchart TB
             wemb["Embedding worker"]
             wqual["Quality worker"]
             wsum["Summary worker"]
+            wbackup["Backup worker"]
+        end
+
+        subgraph backup_download["Backup download (in-process)"]
+            direction LR
+            bticket["Export ticket service<br/>30-second Redis capability"]
+            bredeem["Public capability redemption<br/>single-use GET + archive stream"]
         end
 
         pg[("<b>postgres</b><br/>PostgreSQL 17 + pgvector<br/>(HNSW; embedding width follows the model)")]
@@ -36,6 +43,11 @@ flowchart TB
     fe  -- "REST + SSE<br/>/api/*" --> be
 
     be --> workers
+    be --> backup_download
+    fe -- "authenticated POST<br/>/api/admin/backup/export-ticket" --> bticket
+    fe -- "public same-origin GET<br/>/api/backup/download/:ticket" --> bredeem
+    bticket -- "SET EX 30" --> redis
+    bredeem -- "atomic GET + DEL" --> redis
     be -- "SQL (pg pool)" --> pg
     be -- "RESP" --> redis
     be -- "HTTP + shared-secret token<br/>(x-mcp-docs-token, required in prod)" --> mcp
@@ -51,8 +63,8 @@ flowchart TB
     classDef side fill:#fff4e5,stroke:#e5a23c,color:#222
     class confluence,ollama,openai ext
     class pg,redis data
-    class fe,be app
-    class mcp,searx,workers side
+    class fe,be,bticket,bredeem app
+    class mcp,searx,workers,backup_download side
 ```
 
 The `backend → mcp-docs` call is authenticated with a shared-secret token
@@ -61,6 +73,13 @@ network isolation. The sidecar runs `NODE_ENV=production` and **fails closed**
 — `/mcp` returns `401` until the token is set on both services (`/health`
 stays open). See [`05-deployment.md`](./05-deployment.md) → MCP sidecar
 authentication.
+
+Backup downloads use two in-process backend components. The admin-only POST
+creates a 256-bit ticket in Redis; the browser then navigates through the
+frontend proxy to the public GET route. That GET has no JWT hook because a
+top-level navigation cannot attach the access-token header. Instead, the
+30-second ticket is the single-use bearer capability and Redis consumption is
+atomic. The URL contains neither backup bytes nor a passphrase.
 
 **The postgres box carries no vector width on purpose.** `page_embeddings.embedding`
 is typed from the *resolved* embedding model's probed width, not from a constant:
@@ -96,6 +115,8 @@ container. They are started from `backend/src/index.ts` via
 - **Embedding worker** — consumes dirty pages (`pages.embedding_dirty=true`).
 - **Quality worker** — rates page clarity/completeness.
 - **Summary worker** — auto-summarizes pages.
+- **Backup worker** — checks the persisted schedule, then streams one
+  cluster-locked encrypted archive to a configured public S3 endpoint.
 
 ## Shared contracts
 

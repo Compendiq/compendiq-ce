@@ -244,9 +244,21 @@ erDiagram
     }
 
     admin_settings {
-        text key PK
-        text value
-        text type "json | text"
+        text setting_key PK "includes backup_s3_*, schedule, retention, last-run keys"
+        text setting_value "S3 credentials are AES-256-GCM ciphertext"
+        timestamptz updated_at
+    }
+
+    backup_runs {
+        uuid id PK
+        timestamptz created_at
+        timestamptz finished_at
+        text destination "download | s3"
+        text status "running | success | failed"
+        bigint bytes
+        text object_key
+        text error
+        text triggered_by "nullable user id text; null for schedule"
     }
 
     roles {
@@ -335,6 +347,25 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+Backup configuration is stored as rows in `admin_settings`, not as a separate
+wide table. Migration 107 seeds `backup_s3_enabled`, `backup_s3_endpoint`,
+`backup_s3_bucket`, `backup_s3_region`, `backup_s3_access_key`,
+`backup_s3_secret_key`, `backup_s3_prefix`, `backup_s3_force_path_style`,
+`backup_schedule_enabled`, `backup_interval_hours`,
+`backup_retention_count`, and `backup_retention_days`;
+`backup_last_run_at` is written after a successful S3 run. Access and secret
+keys are encrypted before persistence. Updates write every provided backup
+key through one PostgreSQL transaction, so a partial configuration cannot
+commit.
+
+`backup_runs` is written by scheduled and manually triggered S3 jobs and
+drives the admin history/status view. Its destination constraint also admits
+`download`, while current ticket-download outcomes are recorded in
+`audit_log`. The row stores lifecycle status, byte count, S3 object key, error,
+and trigger attribution. `triggered_by` is deliberately nullable text rather
+than a user foreign key so scheduled runs and historical actor identifiers
+remain representable.
 
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
