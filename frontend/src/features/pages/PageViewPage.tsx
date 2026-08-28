@@ -254,6 +254,33 @@ export function PageViewPage() {
       setCollabHasSynced(false);
     }
   }, [id, setStoreHeadings]);
+  const editingScrollOffsetRef = useRef<number>(0);
+
+  const captureScrollOffset = useCallback(() => {
+    const container = (
+      document.querySelector('[data-testid="article-scroll"]')
+      ?? document.querySelector('[data-scroll-container]')
+    ) as HTMLElement | null;
+    if (container) {
+      editingScrollOffsetRef.current = container.scrollTop;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const offset = editingScrollOffsetRef.current;
+    if (offset > 0) {
+      const container = (
+        document.querySelector('[data-testid="article-scroll"]')
+        ?? document.querySelector('[data-scroll-container]')
+      ) as HTMLElement | null;
+      if (container) {
+        container.scrollTop = offset;
+        requestAnimationFrame(() => {
+          if (container) container.scrollTop = offset;
+        });
+      }
+    }
+  }, [editing]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();
@@ -324,6 +351,7 @@ export function PageViewPage() {
 
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
+    captureScrollOffset();
     setEditTitle(page.title);
     setDraftLabels(page.labels ?? []);
     const startCollab = collabConfig?.enabled === true;
@@ -350,6 +378,7 @@ export function PageViewPage() {
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
+    captureScrollOffset();
     setEditHtml(pendingDraft);
     if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
@@ -361,6 +390,7 @@ export function PageViewPage() {
 
   const handleDeclineDraft = useCallback(() => {
     setPendingDraft(null);
+    captureScrollOffset();
     if (!page) return;
     setEditHtml(page.bodyHtml);
     setDraftLabels(page.labels ?? []);
@@ -380,7 +410,7 @@ export function PageViewPage() {
   }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
-    if (draftKey) clearDraft(draftKey);
+    captureScrollOffset();
     setCollabSession(false);
     setCollabHasSynced(false);
     setIsDirty(false);

@@ -137,4 +137,50 @@ describe('TrashPage', () => {
       expect(restoreCall).toBeTruthy();
     });
   });
+
+  it('filters trash items by search query', async () => {
+    mockApi({
+      items: [
+        { id: '1', title: 'Architecture Document', deletedAt: new Date().toISOString(), autoPurgeAt: new Date(Date.now() + DAY_MS).toISOString(), deletedBy: 'alice' },
+        { id: '2', title: 'Marketing Plan', deletedAt: new Date().toISOString(), autoPurgeAt: new Date(Date.now() + DAY_MS).toISOString(), deletedBy: 'bob' },
+      ],
+      total: 2,
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    const searchInput = screen.getByTestId('trash-search-input');
+    fireEvent.change(searchInput, { target: { value: 'marketing' } });
+
+    expect(screen.queryByTestId('trash-item-1')).toBeNull();
+    expect(screen.getByTestId('trash-item-2')).toBeInTheDocument();
+  });
+
+  it('supports selecting all items and bulk restoring them', async () => {
+    const fetchSpy = mockApi({
+      items: [
+        { id: '1', title: 'Doc A', deletedAt: new Date().toISOString(), autoPurgeAt: new Date(Date.now() + DAY_MS).toISOString(), deletedBy: 'alice' },
+        { id: '2', title: 'Doc B', deletedAt: new Date().toISOString(), autoPurgeAt: new Date(Date.now() + DAY_MS).toISOString(), deletedBy: 'bob' },
+      ],
+      total: 2,
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    fireEvent.click(screen.getByTestId('trash-select-all'));
+    expect(await screen.findByTestId('trash-bulk-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('trash-bulk-count')).toHaveTextContent('2 pages selected');
+
+    fireEvent.click(screen.getByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.filter(
+        ([url, init]) =>
+          typeof url === 'string' &&
+          url.includes('/restore') &&
+          init?.method === 'POST',
+      );
+      expect(calls.length).toBe(2);
+    });
+  });
 });
