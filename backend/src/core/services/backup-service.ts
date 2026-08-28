@@ -71,10 +71,10 @@ export function resolveBackupSecret(passphrase?: string): BackupSecret {
 }
 
 export async function latestSchemaMigration(): Promise<string> {
-  const result = await query<{ filename: string }>(
-    `SELECT filename FROM _migrations ORDER BY filename DESC LIMIT 1`,
+  const result = await query<{ name: string }>(
+    `SELECT name FROM _migrations ORDER BY name DESC LIMIT 1`,
   );
-  return result.rows[0]?.filename ?? 'unknown';
+  return result.rows[0]?.name ?? 'unknown';
 }
 
 interface AttachmentFile {

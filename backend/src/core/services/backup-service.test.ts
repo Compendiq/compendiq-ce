@@ -3,7 +3,13 @@ import { EventEmitter, once } from 'node:events';
 import { PassThrough, type Readable } from 'node:stream';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
-import { dumpStreamFromProcess } from './backup-service.js';
+
+const mockQuery = vi.fn();
+vi.mock('../db/postgres.js', () => ({
+  query: (sql: string, params?: unknown[]) => mockQuery(sql, params),
+}));
+
+import { dumpStreamFromProcess, latestSchemaMigration } from './backup-service.js';
 
 async function readAll(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -24,6 +30,21 @@ function fakeChild() {
   }) as unknown as ChildProcess;
   return { process, stdout, stderr, kill };
 }
+
+describe('latestSchemaMigration', () => {
+  it('reads the migration name recorded by the production migration runner', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ name: '107_backup_settings.sql' }],
+      rowCount: 1,
+    });
+
+    await expect(latestSchemaMigration()).resolves.toBe('107_backup_settings.sql');
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringMatching(/SELECT name FROM _migrations ORDER BY name DESC/),
+      undefined,
+    );
+  });
+});
 
 describe('dumpStreamFromProcess', () => {
   it('rejects when stdout ends before pg_dump later exits non-zero', async () => {

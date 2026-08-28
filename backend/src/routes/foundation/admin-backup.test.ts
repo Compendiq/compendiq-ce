@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify from 'fastify';
 import { adminBackupRoutes } from './admin-backup.js';
+import { SsrfError } from '../../core/utils/ssrf-guard.js';
 
 vi.mock('../../core/services/rate-limit-service.js', () => ({
   getRateLimits: vi.fn(async () => ({ admin: { max: 20 } })),
@@ -41,8 +42,9 @@ vi.mock('../../core/services/backup-export-ticket.js', () => ({
   createBackupExportTicket: (...args: unknown[]) => createBackupExportTicket(...args),
 }));
 
+const assertSafeS3Endpoint = vi.fn(async () => new URL('https://s3.amazonaws.com'));
 vi.mock('../../core/services/backup-s3.js', () => ({
-  assertSafeS3Endpoint: vi.fn(async () => new URL('https://s3.amazonaws.com')),
+  assertSafeS3Endpoint: (...args: unknown[]) => assertSafeS3Endpoint(...args),
   testS3Connection: vi.fn(async () => undefined),
 }));
 
@@ -156,6 +158,30 @@ describe('admin backup routes (#1420)', () => {
 
       expect(response.statusCode, response.body).toBe(400);
       expect(createBackupExportTicket).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('PUT /api/admin/backup rejects a localhost S3 endpoint as a client error', async () => {
+    assertSafeS3Endpoint.mockRejectedValueOnce(
+      new SsrfError('SSRF blocked: cannot connect to internal/private network'),
+    );
+    const app = await build();
+    try {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/backup',
+        payload: { s3Endpoint: 'http://localhost:9000' },
+      });
+
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'Bad Request',
+        message: 'SSRF blocked: cannot connect to internal/private network',
+        statusCode: 400,
+      });
+      expect(updateBackupSettings).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

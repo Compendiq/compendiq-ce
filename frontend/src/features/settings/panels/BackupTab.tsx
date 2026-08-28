@@ -48,7 +48,7 @@ function useNoticeRetry(
   return { onRetry, retryInFlight };
 }
 
-export function navigateToBackupDownload(url: string) {
+function navigateToBackupDownload(url: string) {
   window.location.assign(url);
 }
 
@@ -238,7 +238,7 @@ export function BackupTab() {
             : 'Set a passphrase of at least 12 characters, or configure BACKUP_ENCRYPTION_KEY on the server.'}
         </p>
         {data.lockHeld && (
-          <p className="text-sm text-amber-700 dark:text-amber-400" role="status">
+          <p className="text-sm text-warning" role="status">
             A backup is already running.
           </p>
         )}

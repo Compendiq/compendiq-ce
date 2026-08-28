@@ -63,10 +63,19 @@ export async function adminBackupRoutes(fastify: FastifyInstance) {
   fastify.put(
     '/admin/backup',
     { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
-    async (request) => {
+    async (request, reply) => {
       const body = UpdateBackupSettingsSchema.parse(request.body ?? {});
       if (body.s3Endpoint) {
-        await assertSafeS3Endpoint(body.s3Endpoint);
+        try {
+          await assertSafeS3Endpoint(body.s3Endpoint);
+        } catch (err) {
+          if (!(err instanceof SsrfError)) throw err;
+          return reply.code(400).send({
+            error: 'Bad Request',
+            message: err.message,
+            statusCode: 400,
+          });
+        }
       }
       await updateBackupSettings(body);
       await logAuditEvent(
