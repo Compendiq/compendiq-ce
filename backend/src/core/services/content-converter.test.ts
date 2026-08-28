@@ -3828,4 +3828,66 @@ describe('content-converter: #1438 nested macro fallback', () => {
     expect(roundTrip).toContain('ac:name="custom-option">keep me');
     expect(roundTrip).toContain('Nested info');
   });
+  it.each(['constructor', 'toString', '__proto__'])(
+    'keeps prototype-key macro name %s in the lossless unknown fallback',
+    (macroName) => {
+      const storage =
+        `<ac:structured-macro ac:name="${macroName}">` +
+        `<ac:parameter ac:name="mode">${macroName} mode</ac:parameter>` +
+        `<ac:rich-text-body><p>${macroName} body</p></ac:rich-text-body>` +
+        '</ac:structured-macro>';
+
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('class="confluence-macro-unknown"');
+      expect(html).toContain(`data-macro-name="${macroName}"`);
+
+      const roundTrip = htmlToConfluence(html);
+      expect(roundTrip).toContain(`ac:name="${macroName}"`);
+      expect(roundTrip).toContain(`ac:name="mode">${macroName} mode`);
+      expect(roundTrip).toContain(`<p>${macroName} body</p>`);
+    },
+  );
+
+  it('throws instead of returning a raw macro hidden inside template content', () => {
+    const storage =
+      '<template><p>Before</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Template body must not leak</p></ac:rich-text-body></ac:structured-macro>' +
+      '<p>After</p></template>';
+
+    expect(() => confluenceToHtml(storage)).toThrow(
+      'Confluence macro conversion made no progress (1 raw macros remain)',
+    );
+  });
+
+  it('freezes a native panel and its nested media through the full AI Improve round-trip', async () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel identity must survive</p>' +
+      '<img src="/api/attachments/42/runbook.png" alt="Runbook">' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const bodyHtml = confluenceToHtml(storage);
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toContain('data-macro-name="panel"');
+    expect(media[0]!.html).toContain('<img');
+
+    const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+    expect(markdown).toContain('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+    const rebuilt = restoreMedia(
+      await markdownToHtml(markdown, {
+        layoutSkeleton: extractLayoutSkeleton(protectedHtml),
+      }),
+      media,
+    );
+    const roundTrip = htmlToConfluence(rebuilt);
+
+    expect(roundTrip).toContain('ac:name="panel"');
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Panel identity must survive');
+  });
 });

@@ -601,6 +601,11 @@ Exception: a legacy section/column nested inside a `td`, `th`, `li`,
 `blockquote`, or panel div **stays opaque-frozen** — a boundary token line
 inside such a construct would be ripped out of it by the token
 normalization, e.g. splitting a GFM table row.)
+Native `panel` nodes are also opaque-frozen: they reuse the visual
+`div.panel-info` shape, while `data-macro-name="panel"` and
+`data-macro-params` are the only lossless record of their identity and
+arbitrary parameters. Nested media travels inside that single capture rather
+than receiving a second token.
 
 `assembleContextIfNeeded` in `_helpers.ts` applies `protectMedia` when the
 caller passes `opts.protectMedia = true` (set by `llmImproveRoutes`).

@@ -171,6 +171,10 @@ const EXPAND_MACRO_NAMES = new Set(['expand', 'ui-expand']);
  */
 const EXPANDED_PARAM_MACROS = new Set(['ui-expand']);
 
+function countRawStructuredMacros(html: string): number {
+  return html.match(/<ac:structured-macro(?=[\s>])/gi)?.length ?? 0;
+}
+
 const PANEL_MACRO_NAMES: Record<string, true> = {
   panel: true,
   info: true,
@@ -269,7 +273,7 @@ function confluenceToHtmlPass(
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
-  const macrosBefore = macrosAtPassStart.size;
+  const macrosBefore = countRawStructuredMacros(doc.body.innerHTML);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
@@ -311,7 +315,7 @@ function confluenceToHtmlPass(
   // so editor/write-back never coerces it permanently to `info` (#1438).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro);
-    if (!PANEL_MACRO_NAMES[name]) continue;
+    if (!Object.hasOwn(PANEL_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
     const div = doc.createElement('div');
     div.className = `panel-${name === 'panel' ? 'info' : name}`;
@@ -706,7 +710,7 @@ function confluenceToHtmlPass(
     // Replacement reparses an outer body into fresh nodes. A fresh supported
     // clone must remain raw for its next dedicated pass; a fresh unknown clone
     // can safely take the lossless long-tail fallback immediately.
-    if (!macrosAtPassStart.has(macro) && DEDICATED_MACRO_NAMES[name]) continue;
+    if (!macrosAtPassStart.has(macro) && Object.hasOwn(DEDICATED_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const div = doc.createElement('div');
@@ -743,8 +747,9 @@ function confluenceToHtmlPass(
     el.remove();
   }
 
-  const macrosAfter = byTag(doc, 'ac:structured-macro').length;
-  return { html: doc.body.innerHTML, macrosBefore, macrosAfter };
+  const html = doc.body.innerHTML;
+  const macrosAfter = countRawStructuredMacros(html);
+  return { html, macrosBefore, macrosAfter };
 }
 
 /**
@@ -1346,6 +1351,8 @@ const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
 // LAYOUT_TOKEN_* below) so the inner content stays improvable. The labels
 // macro placeholder IS opaque — it is atomic (no prose inside) so the token
 // pattern fits it exactly.
+const NATIVE_PANEL_SELECTOR = 'div.panel-info[data-macro-name="panel"]';
+
 const MEDIA_SELECTOR = [
   'img',
   'div.confluence-drawio',
@@ -1357,6 +1364,10 @@ const MEDIA_SELECTOR = [
   // would then rebuild nothing from). Inner prose becomes non-improvable —
   // the same preserve-over-improve tradeoff already accepted for labels/drawio.
   'div.confluence-macro-unknown',
+  // #1438: a native panel reuses the visual info-panel node, but its macro
+  // identity and arbitrary parameters have no Markdown representation.
+  // Freeze the whole node so Improve cannot coerce it to an `info` macro.
+  NATIVE_PANEL_SELECTOR,
   // #901: freeze atomic macro placeholders — toc / children / attachments /
   // include (block) and jira / status / user-mention (inline). Like labels and
   // unknown-macro they carry NO LLM-editable prose (only a synthetic visible
@@ -1413,8 +1424,13 @@ function isConstrainedPosition(el: Element): boolean {
 }
 
 /** Subtrees that travel as one opaque media token, so they emit no tokens. */
-const OPAQUE_SUBTREE_SELECTOR =
-  'div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown';
+const OPAQUE_SUBTREE_SELECTOR = [
+  'div.confluence-drawio',
+  'div.confluence-mermaid',
+  'div.mermaid',
+  'div.confluence-macro-unknown',
+  NATIVE_PANEL_SELECTOR,
+].join(',');
 
 /** Layout-token kinds enclosing `el`, outermost first — the open-time stack. */
 function enclosingLayoutKinds(el: Element): string[] {
@@ -1669,7 +1685,7 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // freezes, everywhere else it round-trips as [[[EXPAND …]]] tokens.
       if (isExpandSection(n) && !isFrozenExpand(n)) return false;
       // Descendants of an already-frozen node travel inside it.
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
+      if (n.parentElement?.closest(OPAQUE_SUBTREE_SELECTOR)) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained
