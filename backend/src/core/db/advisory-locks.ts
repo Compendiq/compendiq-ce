@@ -1,10 +1,8 @@
 /**
  * Application-defined PostgreSQL advisory-lock keys.
  *
- * Keys must stay unique among advisory-lock users of this database (the
- * migrations runner uses 745_001). Taken with `pg_advisory_xact_lock`, i.e.
- * transaction-scoped: released automatically at COMMIT/ROLLBACK, so an error
- * path can never leak one.
+ * Keys must stay unique among advisory-lock users of this database. Each key
+ * documents whether its callers use transaction- or session-scoped locks.
  */
 
 /**
@@ -37,3 +35,10 @@ export const COLLAB_INIT_LOCK_KEY = 1_411_001;
  * and held exclusively while backup exports capture database and file state.
  */
 export const ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;
+
+/**
+ * First key of the session advisory lock serializing imports of one normalized
+ * Notion page ID. The SHA-256-derived signed second key lives with the import
+ * service.
+ */
+export const NOTION_IMPORT_LOCK_KEY = 1_420_002;
