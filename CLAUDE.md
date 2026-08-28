@@ -825,6 +825,7 @@ Full reference is `.env.example`. Keys you must set:
 
 - `JWT_SECRET` — 32+ chars, required
 - `PAT_ENCRYPTION_KEY` — 32+ chars, required
+- `MCP_DOCS_TOKEN` — 32+ chars, required for the MCP sidecar in production
 - `POSTGRES_URL`, `REDIS_URL`
 - `POSTGRES_PASSWORD`, `REDIS_PASSWORD` — required by docker compose (no defaults; URL-safe values, e.g. `openssl rand -hex 24`)
 
