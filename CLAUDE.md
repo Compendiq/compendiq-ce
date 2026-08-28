@@ -696,6 +696,15 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**Notion import discovery is metadata-only.** `GET /api/notion/tree` builds the
+picker hierarchy from Notion Search and resolves Search-listed `block_id` parents, but
+must never list every page body's blocks: the retired walk spent up to 80 serial calls
+against Notion's 3 req/s limit before a large workspace could render. The picker groups
+descendants behind disclosures, mounts them only when expanded, and reveals root pages
+in batches of 50. Selecting a parent atomically selects every selectable descendant;
+oversized groups are refused rather than partially selected, and a refreshed tree prunes
+selection IDs that are no longer present before enforcing the 200-page cap.
+
 **Markdown import** on the New Page form is a *conversion*, not a create (#1133).
 `POST /api/pages/import/preview` parses YAML front-matter, runs `markdownToHtml` and
 sanitizes — and persists nothing. The form loads the result into the editor the way

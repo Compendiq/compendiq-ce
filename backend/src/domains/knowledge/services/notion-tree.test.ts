@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
-import { NotionClient, NotionError, setNotionApiBaseUrlForTests } from './notion-client.js';
-import { fetchNotionWorkspaceTree, NOTION_TREE_MAX_CHILD_LISTS } from './notion-tree.js';
+import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
+import { fetchNotionWorkspaceTree } from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
 
@@ -207,6 +206,43 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(Object.keys(handbook!)).not.toContain('includesChildren');
   });
 
+  it('builds the initial tree without listing every page body', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        {
+          object: 'page',
+          id: 'onboarding',
+          parent: { type: 'page_id', page_id: 'handbook' },
+          properties: titleProp('Onboarding'),
+        },
+      ],
+      blockChildren: {
+        handbook: [
+          {
+            object: 'block',
+            id: 'slow-body-content',
+            type: 'toggle',
+            has_children: true,
+            toggle: { rich_text: [] },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'onboarding')).toMatchObject({
+      type: 'page',
+      selectable: true,
+    });
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
+  });
+
   it('does not invent row-pages from database block children', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
@@ -245,17 +281,8 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(server!.requests.some((r) => r.url.includes('/query'))).toBe(false);
   });
 
-  it('source never queries databases and never talks to api.notion.com', () => {
-    const src = readFileSync(new URL('./notion-tree.ts', import.meta.url), 'utf8');
-    expect(src).not.toMatch(/databases\/.*query/);
-    expect(src).not.toContain('queryDatabase');
-    expect(src).not.toContain('api.notion.com');
-    expect(src).toContain('NOTION_TREE_MAX_CHILD_LISTS');
-    expect(src).not.toContain("'bulleted_list_item'");
-    expect(src).not.toContain("'numbered_list_item'");
-  });
 
-  it('nests child_database and child_page found under a toggle; block_id parents are not roots', async () => {
+  it('groups a Search-listed page under its host when Notion reports a block parent', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
       searchResults: [
@@ -266,43 +293,12 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
           properties: titleProp('Handbook'),
         },
         {
-          object: 'database',
-          id: 'crm',
-          parent: { type: 'page_id', page_id: 'elsewhere' },
-          title: richTitle('CRM'),
-        },
-        {
           object: 'page',
           id: 'nested-in-toggle',
           parent: { type: 'block_id', block_id: 'toggle-1' },
           properties: titleProp('Nested under toggle'),
         },
       ],
-      blockChildren: {
-        handbook: [
-          {
-            object: 'block',
-            id: 'toggle-1',
-            type: 'toggle',
-            has_children: true,
-            toggle: { rich_text: [] },
-          },
-        ],
-        'toggle-1': [
-          {
-            object: 'block',
-            id: 'crm',
-            type: 'child_database',
-            child_database: { title: 'CRM' },
-          },
-          {
-            object: 'block',
-            id: 'nested-in-toggle',
-            type: 'child_page',
-            child_page: { title: 'Nested under toggle' },
-          },
-        ],
-      },
       blocks: {
         'toggle-1': {
           object: 'block',
@@ -314,40 +310,19 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       },
     });
 
-    expect(nodes.map((n) => n.id)).toEqual(['handbook', 'crm']);
-    const handbook = findById(nodes as TreeNode[], 'handbook');
-    expect(handbook?.children.map((c) => c.id)).toEqual(
-      expect.arrayContaining(['nested-in-toggle']),
-    );
+    expect(nodes.map((node) => node.id)).toEqual(['handbook']);
     expect(findById(nodes as TreeNode[], 'nested-in-toggle')).toMatchObject({
       type: 'page',
       selectable: true,
       title: 'Nested under toggle',
     });
-    const linked = handbook?.children.find((c) => c.id !== 'nested-in-toggle');
-    expect(linked).toMatchObject({
-      type: 'database',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
-      title: 'CRM',
-    });
-    expect(linked?.id).not.toBe('crm');
-    expect((linked as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
-    expect(linked?.children ?? []).toEqual([]);
-    const ids = flatten(nodes as TreeNode[]).map((n) => n.id);
-    expect(new Set(ids).size).toBe(ids.length);
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
 
-  it('keeps the canonical database (and its rows) on the real host when a linked view is walked first', async () => {
+  it('keeps a Search-listed database and its rows on the resolved host page', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
       searchResults: [
-        {
-          object: 'page',
-          id: 'linked-host',
-          parent: { type: 'workspace', workspace: true },
-          properties: titleProp('Linked host'),
-        },
         {
           object: 'page',
           id: 'real-host',
@@ -367,33 +342,6 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
           properties: titleProp('Acme Corp'),
         },
       ],
-      blockChildren: {
-        'linked-host': [
-          {
-            object: 'block',
-            id: 'crm',
-            type: 'child_database',
-            child_database: { title: 'CRM' },
-          },
-        ],
-        'real-host': [
-          {
-            object: 'block',
-            id: 'toggle-on-real',
-            type: 'toggle',
-            has_children: true,
-            toggle: { rich_text: [] },
-          },
-        ],
-        'toggle-on-real': [
-          {
-            object: 'block',
-            id: 'crm',
-            type: 'child_database',
-            child_database: { title: 'CRM' },
-          },
-        ],
-      },
       blocks: {
         'toggle-on-real': {
           object: 'block',
@@ -406,77 +354,17 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     const realHost = findById(nodes as TreeNode[], 'real-host');
-    const linkedHost = findById(nodes as TreeNode[], 'linked-host');
-    const canonical = realHost?.children.find((c) => c.id === 'crm');
-    const clone = linkedHost?.children.find((c) => c.id !== undefined);
+    const canonical = realHost?.children.find((child) => child.id === 'crm');
     expect(canonical).toMatchObject({
       id: 'crm',
       type: 'database',
       selectable: false,
       skipReason: NOTION_UNSUPPORTED_LABEL,
     });
-    expect(canonical?.children.map((c) => c.id)).toContain('row-listed');
-    expect(clone).toMatchObject({
-      id: 'linked:linked-host:crm',
-      type: 'database',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
-    });
-    expect((clone as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
-    expect(clone?.children ?? []).toEqual([]);
-    expect(linkedHost?.children.some((c) => c.id === 'crm')).toBe(false);
-    const ids = flatten(nodes as TreeNode[]).map((n) => n.id);
-    expect(new Set(ids).size).toBe(ids.length);
+    expect(canonical?.children.map((child) => child.id)).toContain('row-listed');
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
 
-  it('finds a linked database nested under a toggleable heading', async () => {
-    const nodes = await treeFor({
-      validToken: TOKEN,
-      searchResults: [
-        {
-          object: 'page',
-          id: 'handbook',
-          parent: { type: 'workspace', workspace: true },
-          properties: titleProp('Handbook'),
-        },
-        {
-          object: 'database',
-          id: 'crm',
-          parent: { type: 'page_id', page_id: 'elsewhere' },
-          title: richTitle('CRM'),
-        },
-      ],
-      blockChildren: {
-        handbook: [
-          {
-            object: 'block',
-            id: 'h1-toggle',
-            type: 'heading_1',
-            has_children: true,
-            heading_1: { is_toggleable: true, rich_text: [] },
-          },
-        ],
-        'h1-toggle': [
-          {
-            object: 'block',
-            id: 'crm',
-            type: 'child_database',
-            child_database: { title: 'CRM' },
-          },
-        ],
-      },
-    });
-
-    const handbook = findById(nodes as TreeNode[], 'handbook');
-    const linked = handbook?.children.find((c) => c.type === 'database');
-    expect(linked).toMatchObject({
-      id: 'linked:handbook:crm',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
-      title: 'CRM',
-    });
-    expect((linked as { linkedFromId?: string } | undefined)?.linkedFromId).toBe('crm');
-  });
 
   it('does not walk block children of Search-listed database row-pages', async () => {
     const nodes = await treeFor({
@@ -514,8 +402,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(findById(nodes as TreeNode[], 'should-not-fetch')).toBeUndefined();
-    expect(server!.requests.some((r) => r.url.includes('/blocks/row-listed/children'))).toBe(false);
-    expect(server!.requests.some((r) => r.url.includes('/blocks/handbook/children'))).toBe(true);
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
 
   it('does not fetch children of nested list items — Search already listed the pages', async () => {
@@ -565,9 +452,8 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       selectable: true,
       title: 'Onboarding',
     });
-    const childUrls = server!.requests.filter((r) => r.url.includes('/children')).map((r) => r.url);
-    expect(childUrls.some((url) => /\/blocks\/li-\d+\/children/.test(url))).toBe(false);
-    expect(childUrls.filter((url) => url.includes('/blocks/handbook/children'))).toHaveLength(1);
+    const childUrls = server!.requests.filter((request) => request.url.includes('/children'));
+    expect(childUrls).toEqual([]);
   });
 
   it('does not loop forever when synced blocks point at each other', async () => {
@@ -613,12 +499,12 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(findById(nodes as TreeNode[], 'handbook')).toMatchObject({ type: 'page', selectable: true });
-    const childFetches = server!.requests.filter((r) => r.url.includes('/children'));
-    expect(childFetches.length).toBeLessThan(10);
+    const childFetches = server!.requests.filter((request) => request.url.includes('/children'));
+    expect(childFetches).toEqual([]);
   });
 
-  it('returns every Search page after the block-walk budget is spent', async () => {
-    const pageCount = NOTION_TREE_MAX_CHILD_LISTS + 15;
+  it('returns every Search page without one body request per page', async () => {
+    const pageCount = 500;
     const searchResults = Array.from({ length: pageCount }, (_, i) => ({
       object: 'page',
       id: `page-${i}`,
@@ -632,29 +518,26 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(nodes).toHaveLength(pageCount);
-    expect(nodes.map((n) => n.id)).toEqual(searchResults.map((p) => p.id));
-    const childFetches = server!.requests.filter((r) => /\/v1\/blocks\/[^/]+\/children/.test(r.url));
-    expect(childFetches.length).toBeLessThanOrEqual(NOTION_TREE_MAX_CHILD_LISTS);
+    expect(nodes.map((node) => node.id)).toEqual(searchResults.map((page) => page.id));
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
 
-  it('fails the tree when block children return 5xx rather than 200ing a partial forest', async () => {
-    await expect(
-      treeFor({
-        validToken: TOKEN,
-        searchResults: [
-          {
-            object: 'page',
-            id: 'handbook',
-            parent: { type: 'workspace', workspace: true },
-            properties: titleProp('Handbook'),
-          },
-        ],
-        blockChildrenErrors: { handbook: 503 },
-      }),
-    ).rejects.toSatisfy((err: unknown) => {
-      expect(err).toBeInstanceOf(NotionError);
-      expect((err as InstanceType<typeof NotionError>).statusCode).toBe(503);
-      return true;
+  it('does not fail initial discovery when a page body endpoint is unavailable', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+      ],
+      blockChildrenErrors: { handbook: 503 },
     });
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({ id: 'handbook', selectable: true });
+    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
   });
 });

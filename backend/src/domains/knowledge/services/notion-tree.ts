@@ -1,50 +1,22 @@
 /**
  * Workspace tree for selective Notion import (#1463 / #1459).
  *
- * Discovery is Search (pages + databases) plus a bounded walk of
- * `child_database` / `child_page` blocks under layout containers (linked
- * views that Search omits as duplicates; pages nested under toggles/columns).
- * There is no database-query: a row is in the tree only when Search
- * returned it as a page object. Database row-pages are not walked for
- * linked views. The walk must not recurse into list items or follow
- * synced-block cycles — that is how a shared workspace hangs the picker.
+ * Initial discovery uses Search only, then resolves Search-listed pages whose
+ * parent is a block back to their host page. It deliberately does not list the
+ * body blocks of every page: on a large workspace that added up to 80 serial
+ * requests against Notion's 3 req/s limit before the picker could render.
+ *
+ * There is no database query. A row is present only when Search returned it as
+ * a page object.
  */
 import {
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeNode,
-  type NotionTreeSkippedNode,
 } from '@compendiq/contracts';
 import { NotionClient, NotionError } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
 
-/**
- * Block-children list calls during tree discovery. Search already returned
- * every shared page; walking past this is how a real workspace hangs the
- * picker on “Loading workspace…”. Linked views past the budget stay omitted.
- */
-export const NOTION_TREE_MAX_CHILD_LISTS = 80;
-
-/**
- * Layout containers that can host `child_page` / `child_database`.
- * List items, quotes and to-dos also nest in Notion, but walking them
- * is one HTTP call per bullet at 3 req/s — Search already listed those
- * pages (and `block_id` parents are resolved without this walk).
- */
-const LAYOUT_BLOCK_TYPES = new Set([
-  'toggle',
-  'column_list',
-  'column',
-  'callout',
-  'synced_block',
-  'heading_1',
-  'heading_2',
-  'heading_3',
-]);
-
-export function linkedViewNodeId(hostPageId: string, databaseId: string): string {
-  return `linked:${hostPageId}:${databaseId}`;
-}
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -116,9 +88,6 @@ function parentIdOf(item: Record<string, unknown>): string | null {
   return null;
 }
 
-function isDatabaseRowPage(item: Record<string, unknown>): boolean {
-  return item.object === 'page' && parentTypeOf(item) === 'database_id';
-}
 
 function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   if (typeof item.id !== 'string' || item.id.length === 0) return null;
@@ -155,48 +124,18 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   };
 }
 
-function notionObjectId(node: NotionTreeNode): string {
-  if (node.type !== 'page' && node.linkedFromId) return node.linkedFromId;
-  return node.id;
-}
-
-function hasChildRef(parent: NotionTreeNode, notionId: string): boolean {
-  const key = normalizeId(notionId);
-  return parent.children.some((c) => normalizeId(notionObjectId(c)) === key);
-}
-
 function attach(parent: NotionTreeNode, child: NotionTreeNode, attached: Set<string>): void {
   if (parent === child) return;
-  if (hasChildRef(parent, notionObjectId(child))) return;
+  const childKey = normalizeId(child.id);
+  if (parent.children.some((candidate) => normalizeId(candidate.id) === childKey)) return;
   parent.children.push(child);
-  attached.add(normalizeId(child.id));
-}
-
-function makeLinkedView(hostPageId: string, existing: NotionTreeSkippedNode): NotionTreeSkippedNode {
-  return {
-    id: linkedViewNodeId(hostPageId, existing.id),
-    title: existing.title,
-    type: existing.type,
-    selectable: false,
-    skipReason: NOTION_UNSUPPORTED_LABEL,
-    linkedFromId: existing.id,
-    ...(existing.url ? { url: existing.url } : {}),
-    children: [],
-  };
+  attached.add(childKey);
 }
 
 function isMissing(err: unknown): boolean {
   return err instanceof NotionError && (err.statusCode === 404 || err.statusCode === 403);
 }
 
-async function listChildren(client: NotionClient, blockId: string): Promise<Array<Record<string, unknown>>> {
-  try {
-    return await client.getAllBlockChildren(blockId);
-  } catch (err) {
-    if (isMissing(err)) return [];
-    throw err;
-  }
-}
 
 async function resolveHostPageId(
   client: NotionClient,
@@ -275,64 +214,6 @@ export async function fetchNotionWorkspaceTree(client: NotionClient): Promise<No
     }
   }
 
-  const seenBlocks = new Set<string>();
-  let childLists = 0;
-
-  async function walkHosted(blockId: string, hostPage: NotionTreeNode): Promise<void> {
-    const walkKey = normalizeId(blockId);
-    if (seenBlocks.has(walkKey)) return;
-    if (childLists >= NOTION_TREE_MAX_CHILD_LISTS) return;
-    seenBlocks.add(walkKey);
-    childLists += 1;
-    const blocks = await listChildren(client, blockId);
-    for (const block of blocks) {
-      if (!block || typeof block !== 'object' || typeof block.id !== 'string') continue;
-
-      if (block.type === 'child_page') {
-        const existing = nodes.get(normalizeId(block.id));
-        const pageNode =
-          existing && existing.type === 'page' ? existing : toNode({ ...block, object: 'block', type: 'child_page' });
-        if (pageNode && pageNode.type === 'page') {
-          if (!nodes.has(normalizeId(pageNode.id))) {
-            nodes.set(normalizeId(pageNode.id), pageNode);
-          }
-          attach(hostPage, pageNode, attached);
-        }
-        continue;
-      }
-
-      if (block.type === 'child_database') {
-        if (hasChildRef(hostPage, block.id)) continue;
-        const existing = nodes.get(normalizeId(block.id));
-        if (existing && existing.type !== 'page') {
-          // Search already owns this object; this host only linked it.
-          hostPage.children.push(makeLinkedView(hostPage.id, existing));
-        } else {
-          const node = toNode(block);
-          if (node && node.type !== 'page') {
-            nodes.set(normalizeId(node.id), node);
-            attach(hostPage, node, attached);
-          }
-        }
-        continue;
-      }
-
-      if (
-        typeof block.type === 'string' &&
-        LAYOUT_BLOCK_TYPES.has(block.type) &&
-        block.has_children === true
-      ) {
-        await walkHosted(block.id, hostPage);
-      }
-    }
-  }
-
-  for (const [key, node] of nodes) {
-    if (node.type !== 'page') continue;
-    const raw = rawByKey.get(key);
-    if (raw && isDatabaseRowPage(raw)) continue;
-    await walkHosted(node.id, node);
-  }
 
   return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
 }

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { useAuthStore } from '../../../stores/auth-store';
 import { NotionImportDialog, NotionImportPickFooter } from './NotionImportDialog';
-import { shouldCommitImportResult } from './notion-import-selection';
+import { NOTION_IMPORT_MAX_PAGES, shouldCommitImportResult } from './notion-import-selection';
 
 const TOKEN = 'ntn_dummy_secret_do_not_echo';
 
@@ -221,6 +221,7 @@ describe('NotionImportDialog picker skip rules', () => {
   it('labels databases and unsupported nodes and refuses to select them', async () => {
     renderDialog();
     await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
 
     const crm = screen.getByTestId('notion-node-crm');
     expect(crm).toHaveTextContent(NOTION_UNSUPPORTED_LABEL);
@@ -235,19 +236,95 @@ describe('NotionImportDialog picker skip rules', () => {
     expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
   });
 
-  it('lets a parent be selected without children, and nested pages independently', async () => {
+  it('groups descendants behind expandable parent rows', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Onboarding' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Nested notes' })).toBeNull();
+    expect(screen.getByTestId('notion-import-tree')).not.toHaveAttribute('role');
+    expect(screen.getByRole('button', { name: 'Expand Handbook' })).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
+    expect(screen.getByRole('button', { name: 'Collapse Handbook' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Onboarding' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Nested notes' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Onboarding' }));
+    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeInTheDocument();
+  });
+
+  it('selects an entire collapsed parent group and exposes partial selection', async () => {
     renderDialog();
     await connectWithDummyToken();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
-    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Onboarding' })).not.toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(/3 pages will import/i);
 
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Nested notes' }));
-    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Onboarding' })).not.toBeChecked();
-    expect(screen.getByRole('button', { name: /continue/i })).not.toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Onboarding' }));
+    expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBePartiallyChecked();
+  });
+});
+
+describe('NotionImportDialog large workspace rendering', () => {
+  it('renders root groups in bounded batches and exposes the remainder', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: Array.from({ length: 51 }, (_, index) => ({
+          id: `root-${index}`,
+          title: `Root page ${index}`,
+          type: 'page',
+          selectable: true,
+          children: [],
+        })),
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(screen.getByRole('checkbox', { name: 'Root page 49' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Root page 50' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 1 more page' }));
+    expect(screen.getByRole('checkbox', { name: 'Root page 50' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show .* more page/i })).toBeNull();
+  });
+
+  it('drops stale selections before enforcing the page cap after a tree refresh', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [{
+          id: 'old-parent',
+          title: 'Old parent',
+          type: 'page',
+          selectable: true,
+          children: Array.from({ length: NOTION_IMPORT_MAX_PAGES - 1 }, (_, index) => ({
+            id: `old-child-${index}`,
+            title: `Old child ${index}`,
+            type: 'page',
+            selectable: true,
+            children: [],
+          })),
+        }],
+      },
+    });
+    const { queryClient } = renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Old parent' }));
+
+    queryClient.setQueryData(['notion', 'tree'], {
+      nodes: [{ id: 'fresh', title: 'Fresh page', type: 'page', selectable: true, children: [] }],
+    });
+    const fresh = await screen.findByRole('checkbox', { name: 'Fresh page' });
+    fireEvent.click(fresh);
+
+    expect(fresh).toBeChecked();
+    expect(screen.queryByText(/exceeds the 200-page import limit/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
   });
 });
 
@@ -259,7 +336,7 @@ describe('NotionImportDialog confirm copy', () => {
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
 
     const confirm = await screen.findByTestId('notion-import-confirm-copy');
-    expect(confirm).toHaveTextContent(/1 page will import/);
+    expect(confirm).toHaveTextContent(/3 pages will import/);
     expect(confirm).toHaveTextContent(/database skipped/i);
     expect(confirm).toHaveTextContent(/including its rows|including their rows/);
     expect(confirm).toHaveTextContent(/stay in Notion/i);
@@ -282,7 +359,7 @@ describe('NotionImportDialog confirm copy', () => {
     });
     const post = calls.find((c) => c.method === 'POST' && /\/notion\/import$/.test(c.url));
     const body = JSON.parse(post!.body ?? '{}') as Record<string, unknown>;
-    expect(body.pageIds).toEqual(['handbook']);
+    expect(body.pageIds).toEqual(['handbook', 'onboarding', 'nested']);
     expect(body.spaceKey).toBe('notes');
     expect(body.visibility).toBe('shared');
     expect(body).not.toHaveProperty('token');
