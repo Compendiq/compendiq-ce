@@ -171,8 +171,28 @@ const EXPAND_MACRO_NAMES = new Set(['expand', 'ui-expand']);
  */
 const EXPANDED_PARAM_MACROS = new Set(['ui-expand']);
 
-function countRawStructuredMacros(html: string): number {
-  return html.match(/<ac:structured-macro(?=[\s>])/gi)?.length ?? 0;
+function countRawStructuredMacros(root: Element | DocumentFragment): number {
+  let count = 0;
+  const pending: Array<Element | DocumentFragment> = [root];
+
+  while (pending.length > 0) {
+    const parent = pending.pop()!;
+    for (const child of parent.children) {
+      const tagName = child.tagName.toLowerCase();
+      if (tagName === 'ac:structured-macro') count += 1;
+
+      // Template descendants live in a separate DocumentFragment and are not
+      // returned by getElementsByTagName. Inspect that fragment explicitly
+      // without relying on JSDOM's broken escaped-colon selectors.
+      pending.push(
+        tagName === 'template'
+          ? (child as HTMLTemplateElement).content
+          : child,
+      );
+    }
+  }
+
+  return count;
 }
 
 const PANEL_MACRO_NAMES: Record<string, true> = {
@@ -273,7 +293,7 @@ function confluenceToHtmlPass(
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
   const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
-  const macrosBefore = countRawStructuredMacros(doc.body.innerHTML);
+  const macrosBefore = countRawStructuredMacros(doc.body);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
@@ -748,7 +768,7 @@ function confluenceToHtmlPass(
   }
 
   const html = doc.body.innerHTML;
-  const macrosAfter = countRawStructuredMacros(html);
+  const macrosAfter = countRawStructuredMacros(doc.body);
   return { html, macrosBefore, macrosAfter };
 }
 

@@ -3848,6 +3848,30 @@ describe('content-converter: #1438 nested macro fallback', () => {
     },
   );
 
+  it('ignores macro-looking markup inside comments when checking conversion progress', () => {
+    const storage =
+      '<p>Before comment</p>' +
+      '<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->' +
+      '<p>After comment</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->');
+    expect(html).toContain('<p>After comment</p>');
+  });
+
+  it('ignores macro-looking markup inside raw-text elements when checking conversion progress', () => {
+    const storage =
+      '<script type="application/json">' +
+      '{"example":"<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>"}' +
+      '</script><p>After script</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>');
+    expect(html).toContain('<p>After script</p>');
+  });
+
   it('throws instead of returning a raw macro hidden inside template content', () => {
     const storage =
       '<template><p>Before</p>' +
