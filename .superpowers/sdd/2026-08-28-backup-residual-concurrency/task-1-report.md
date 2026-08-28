@@ -165,3 +165,78 @@ The final deterministic relocation contention subset also passed: `2 passed`,
   affected sweep mutation contract and orchestration suites above passed.
 - Per assignment, no project-wide typecheck, lint, build, or full test suite was
   run.
+
+---
+
+## Residual Fix — Round 2/5
+
+### Status
+
+Complete. The remaining relocation client-reuse and post-commit compensation
+hazards are fixed and committed locally.
+
+### Commit
+
+- `85d9297390786926f5b1fa225db72a69b8921b45` — `fix(backup): harden relocation barrier cleanup`
+
+### RED
+
+Caller-level relocation command before the implementation change:
+
+```bash
+cd backend
+npx vitest run --maxWorkers=1 --no-file-parallelism \
+  src/routes/knowledge/pages-relocate.integration.test.ts
+```
+
+- Exit code: `1`
+- Test files: `1 failed (1)`
+- Tests: `3 failed | 46 passed (49)`
+- Duration: `3.67s`
+- Both injected cleanup cases failed because `deletePage('900100')` ran once
+  after the local transaction had committed: one case rejected
+  `pg_advisory_unlock_shared`, and the other rejected
+  `RESET statement_timeout`.
+- The saturated-pool case failed with
+  `expected 'second-checkout' to be 'completed'`, proving the two initial
+  identifier checks attempted a pooled query while the shared-lock client was
+  already held.
+
+### GREEN
+
+Final focused relocation/barrier command:
+
+```bash
+cd backend
+npx vitest run --maxWorkers=1 --no-file-parallelism \
+  src/core/services/attachment-snapshot-lock.test.ts \
+  src/routes/knowledge/pages-relocate.integration.test.ts
+```
+
+- Exit code: `0`
+- Test files: `2 passed (2)`
+- Tests: `51 passed (51)`
+- Duration: `4.20s`
+- `git diff --check` exited `0` before the implementation commit.
+
+### Fixes
+
+- Passed the shared-lock-owning `PoolClient` into both Confluence-to-local
+  identifier prechecks, keeping their SQL off the general pool.
+- Added a caller-level real PostgreSQL saturation seam that fills every
+  remaining main-pool slot while the mutation client owns the shared barrier;
+  relocation completes without a second checkout or pooled query.
+- Recorded the successful local-to-Confluence commit boundary before barrier
+  teardown. Unlock or timeout-reset failures still surface, but can no longer
+  delete the upstream page or its new attachment cache after the local row
+  commits its `confluence_id`.
+- Added caller-level injected failures for both advisory unlock and
+  statement-timeout reset, asserting the committed row continues to point at
+  the upstream page and destructive compensation is not invoked.
+
+### Concerns
+
+- No known implementation concerns.
+- Per assignment, validation was limited to the focused relocation and
+  attachment-barrier suites; no project-wide typecheck, lint, build, or full
+  test suite was run.
