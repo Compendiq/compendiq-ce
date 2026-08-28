@@ -46,15 +46,6 @@ export type BackupSecret =
   | { kind: 'master'; keyMaterial: string }
   | { kind: 'passphrase'; passphrase: string };
 
-export interface BackupManifest {
-  version: 1;
-  createdAt: string;
-  schemaMigration: string;
-  patEncryptionKeyFingerprint: string;
-  databaseSizeBytes: number | null;
-  checksums: Record<string, string>;
-  format: 'cpqarc1';
-}
 
 export interface ArchiveEntry {
   name: string;
@@ -380,7 +371,16 @@ export async function* unpackArchive(
     const nameLenBuf = await readExactFromIterator(iterator, leftover, 2);
     if (!nameLenBuf) throw new BackupArchiveError('Archive truncated at member header');
     const nameLen = nameLenBuf.readUInt16BE(0);
-    if (nameLen === 0) return;
+    if (nameLen === 0) {
+      if (leftover.buf.length > 0) {
+        throw new BackupArchiveError('Archive has trailing data after the terminator');
+      }
+      const next = await iterator.next();
+      if (!next.done) {
+        throw new BackupArchiveError('Archive has trailing data after the terminator');
+      }
+      return;
+    }
     const nameBuf = await readExactFromIterator(iterator, leftover, nameLen);
     if (!nameBuf) throw new BackupArchiveError('Archive truncated at member name');
     const name = nameBuf.toString('utf8');

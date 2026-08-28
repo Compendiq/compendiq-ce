@@ -11,13 +11,13 @@ import {
   refreshWorkerLock,
   releaseWorkerLock,
 } from './redis-cache.js';
+import type { BackupManifest } from './backup-manifest.js';
 import {
   encryptBackupStream,
   fingerprintPatEncryptionKey,
   hashingPassThrough,
   packArchive,
   type ArchiveEntry,
-  type BackupManifest,
   type BackupSecret,
 } from './backup-stream.js';
 import {

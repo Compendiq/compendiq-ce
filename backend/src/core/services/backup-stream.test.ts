@@ -127,6 +127,39 @@ describe('archive pack/unpack', () => {
     }
     expect(recovered['database.dump']).toBe('PGDUMP');
   });
+
+  it('rejects bytes after the archive terminator', async () => {
+    const packed = await readAll(
+      packArchive([{ name: 'database.dump', stream: bufferStream('PGDUMP') }]),
+    );
+    const withTrailingByte = Buffer.concat([packed, Buffer.from([0x01])]);
+    const consume = async () => {
+      for await (const member of unpackArchive(bufferStream(withTrailingByte))) {
+        await readAll(member.stream);
+      }
+    };
+
+    await expect(consume()).rejects.toThrow(/trailing/i);
+  });
+
+  it('waits for source EOF after the archive terminator', async () => {
+    const packed = await readAll(
+      packArchive([{ name: 'database.dump', stream: bufferStream('PGDUMP') }]),
+    );
+    const source = Readable.from(
+      (async function* () {
+        yield packed;
+        throw new Error('authenticated EOF failed');
+      })(),
+    );
+    const consume = async () => {
+      for await (const member of unpackArchive(source)) {
+        await readAll(member.stream);
+      }
+    };
+
+    await expect(consume()).rejects.toThrow(/authenticated EOF failed/i);
+  });
 });
 
 describe('path guards', () => {
