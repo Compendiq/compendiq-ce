@@ -261,27 +261,54 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
     expect(counts.pagesDeleted).toBe(1);
   });
 
-  it('defers the WHOLE run (zero soft-deletes) when candidates exceed MAX_DELETION_CONFIRMATIONS=200', async () => {
-    // 201 local rows, none present in the live listing — e.g. a permission change
-    // suddenly hid a large subtree from this principal. The cap must trip BEFORE any
-    // confirmation fetch so we neither hammer Confluence nor risk a mass false delete.
+  it('processes at most MAX_DELETION_CONFIRMATIONS=200 candidates per run and leaves the rest (#1439)', async () => {
+    // 201 local rows, all confirmed gone. The cap bounds confirmation fetches
+    // this cycle; skipping the WHOLE run when candidates > cap is the #1439
+    // production stall (431 ITE pages deferred forever because the set never
+    // shrinks). Processing every candidate in one run would also fail this
+    // test — that re-opens unbounded Confluence GETs.
     const ids = Array.from({ length: 201 }, (_, i) => `cap-${i}`);
     for (const id of ids) await insertPage(id, 'DEV');
 
-    // Even though every candidate would confirm as a 404, the cap defers first.
     const client = makeClient({ liveIds: [], goneForGetPage: ids });
     const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
 
     await detectDeletedPages(client as never, 'DEV', counts);
 
-    // No confirmation fetches and nothing soft-deleted — the run is deferred whole.
-    expect(client.getPageCalls).toEqual([]);
-    expect(counts.pagesDeleted).toBe(0);
+    expect(client.getPageCalls).toHaveLength(200);
+    expect(counts.pagesDeleted).toBe(200);
     const remaining = await query<{ n: string }>(
       'SELECT COUNT(*) AS n FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
       ['DEV'],
     );
-    expect(parseInt(remaining.rows[0]!.n, 10)).toBe(201);
+    expect(parseInt(remaining.rows[0]!.n, 10)).toBe(1);
+  });
+
+  it('advances past a full batch of surviving candidates on the next cycle (#1439)', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name)
+       VALUES ('DEV', 'Development')`,
+    );
+    const survivingIds = Array.from({ length: 200 }, (_, i) => `restricted-${i}`);
+    for (const id of [...survivingIds, 'gone-after-cap']) await insertPage(id, 'DEV');
+
+    const client = makeClient({
+      liveIds: [],
+      presentForGetPage: survivingIds,
+      goneForGetPage: ['gone-after-cap'],
+    });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    expect(client.getPageCalls).toEqual(survivingIds);
+    expect(counts.pagesDeleted).toBe(0);
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    const secondCycleCalls = client.getPageCalls.slice(200);
+    expect(secondCycleCalls).toHaveLength(200);
+    expect(secondCycleCalls[0]).toBe('gone-after-cap');
+    expect(await getDeletedAt('gone-after-cap')).not.toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
   });
 
   it('reconciles normally at the cap boundary (exactly 200 candidates)', async () => {

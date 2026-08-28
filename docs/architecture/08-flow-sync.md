@@ -185,9 +185,14 @@ surface within a normal sync cycle rather than lingering until a rare full run.
   confirmed gone via a direct `GET /content/{id}` — a **404** *or* a **200 with
   `status: "trashed"`** — before its row is soft-deleted; a `200` (`current`) / `403`
   leaves the row untouched, so one user's restricted view can no longer nuke pages
-  others can still see. The number of confirmation fetches per run is capped
-  (`MAX_DELETION_CONFIRMATIONS`); a larger candidate set is deferred to a later run
-  (the whole run defers — zero soft-deletes that cycle).
+  others can still see. Confirmation fetches are capped at
+  `MAX_DELETION_CONFIRMATIONS`. `spaces.deletion_reconcile_cursor` records the
+  last `pages.id` attempted; the next cycle resumes after it and wraps at the
+  end (#1439). The cursor advances after every completed batch regardless of
+  whether candidates were deleted, still current, or inconclusive, so surviving
+  rows cannot permanently starve later candidates. It is written only after the
+  batch finishes, making a crash repeat safe confirmation work rather than skip
+  unprocessed rows. Per-candidate confirmation still prevents a mass false delete.
 - **Trash counts as deleted (#766).** Confluence DC's `DELETE /rest/api/content/{id}`
   on a current page moves it to the space **Trash** rather than purging it, and —
   depending on the DC version — `GET /content/{id}` may still answer `200` with

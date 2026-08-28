@@ -67,6 +67,16 @@ erDiagram
         text notion_integration_token "AES-256-GCM Notion internal integration token (#1462)"
     }
 
+    spaces {
+        int id PK
+        text space_key UK
+        text space_name
+        text source "confluence | local"
+        timestamptz last_synced
+        int custom_home_page_id FK
+        int deletion_reconcile_cursor "last attempted pages.id; wraps across batches (#1439)"
+    }
+
     pages {
         int id PK
         uuid user_id FK

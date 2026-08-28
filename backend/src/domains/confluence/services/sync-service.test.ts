@@ -486,10 +486,10 @@ describe('sync-service', () => {
           return emptyResult as QueryResult;
         }
 
-        // detectDeletedPages: existing pages in DB
-        if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
+        // detectDeletedPages: existing pages in DB, in cursor order
+        if (sqlStr.includes('SELECT p.id, p.confluence_id') && sqlStr.includes('p.deleted_at IS NULL')) {
           return {
-            rows: dbPageIds.map((id) => ({ confluence_id: id })),
+            rows: dbPageIds.map((id, index) => ({ id: index + 1, confluence_id: id })),
             rowCount: dbPageIds.length, command: '', oid: 0, fields: [],
           } as QueryResult;
         }

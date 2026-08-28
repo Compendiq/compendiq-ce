@@ -57,10 +57,12 @@ const SYNC_STATUS_TTL = 86_400; // 24 h
  * calls deletion reconciliation will issue in a single space sync (#706). A page
  * absent from one user's listing is confirmed gone with a direct fetch before we
  * soft-delete it, which keeps shared spaces correct (a 403/200 means "still there,
- * just not visible to this principal" — not deleted). If a single sweep turns up
- * more candidates than this (e.g. a large permission change suddenly hides a whole
- * subtree from this user), we skip confirmation that run and defer — better to
- * reconcile a few pages late than to hammer Confluence or risk a mass false delete.
+ * just not visible to this principal" — not deleted). When there are more
+ * candidates than this, a persisted per-space cursor makes later cycles resume
+ * after the last attempted row and wrap at the end (#1439). The cursor advances
+ * for every confirmation outcome, so restricted or inconclusive rows cannot
+ * permanently starve later candidates. Confirmation still prevents a mass false
+ * delete: a 403/200 leaves the row in place.
  */
 const MAX_DELETION_CONFIRMATIONS = 200;
 
@@ -1592,8 +1594,10 @@ async function syncMissingAttachments(
  * some DC versions still serve trashed content on a direct GET) counts as gone. A page
  * that still exists but is merely hidden from this principal answers 200 `current`
  * or 403, so one user's restricted view can no longer nuke pages others can still
- * see. The number of confirmation fetches per run is capped
- * (`MAX_DELETION_CONFIRMATIONS`).
+ * see. Confirmation fetches are capped at `MAX_DELETION_CONFIRMATIONS`; a
+ * persisted per-space cursor resumes after every attempted row and wraps at the
+ * end, so every candidate is eventually revisited without one batch starving
+ * the rows behind it (#1439).
  *
  * Per-cycle fan-out: this runs once per (user × space). A shared space would
  * otherwise re-run the listing + confirmation fetches once per user each cycle, so
@@ -1653,37 +1657,51 @@ async function detectDeletedPages(
     );
   }
 
-  // Local non-deleted rows for this space. Only rows backed by a Confluence page
-  // are reconcilable — standalone KB articles carry a space_key but a NULL
-  // confluence_id and have no upstream to confirm against. Excluding them here
-  // (mirroring the guard in purgeDeletedPages) keeps a NULL id from becoming a
-  // bogus candidate that fires getPage(null) and aborts the sync (#905).
-  const existingResult = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL AND confluence_id IS NOT NULL',
+  // Local non-deleted rows for this space, ordered cyclically from the row after
+  // the persisted cursor. Only rows backed by a Confluence page are reconcilable
+  // — standalone KB articles carry a space_key but a NULL confluence_id and have
+  // no upstream to confirm against. Excluding them here (mirroring the guard in
+  // purgeDeletedPages) keeps a NULL id from becoming a bogus candidate that fires
+  // getPage(null) and aborts the sync (#905).
+  const existingResult = await query<{ id: number; confluence_id: string }>(
+    `SELECT p.id, p.confluence_id
+       FROM pages p
+       LEFT JOIN spaces s ON s.space_key = p.space_key
+      WHERE p.space_key = $1
+        AND p.deleted_at IS NULL
+        AND p.confluence_id IS NOT NULL
+      ORDER BY
+        CASE WHEN p.id > COALESCE(s.deletion_reconcile_cursor, 0) THEN 0 ELSE 1 END,
+        p.id`,
     [spaceKey],
   );
 
   // Candidates: present locally, absent from this principal's live listing. Absence
   // alone is not proof of deletion (the page may be restricted from this principal),
   // so we confirm each via a direct fetch below.
-  const candidates = existingResult.rows
-    .map((r) => r.confluence_id)
-    .filter((confluenceId) => !liveIds.has(confluenceId));
+  const candidates = existingResult.rows.filter(
+    (row) => !liveIds.has(row.confluence_id),
+  );
 
   if (candidates.length === 0) return;
 
+  const batch = candidates.slice(0, MAX_DELETION_CONFIRMATIONS);
   if (candidates.length > MAX_DELETION_CONFIRMATIONS) {
-    // Guard against a permission change suddenly hiding a large subtree from this
-    // principal: skip this run rather than issue thousands of confirmation fetches
-    // or risk a mass false delete. A later sync re-evaluates once the set is smaller.
+    // Bound confirmation fetches this cycle; the remainder converges on later
+    // runs. Confirmation still rejects a mass false delete (403/200 = leave in
+    // place). Skipping the whole batch is what stalled space ITE at 431 (#1439).
     logger.warn(
-      { spaceKey, candidates: candidates.length, cap: MAX_DELETION_CONFIRMATIONS },
-      'Skipping deletion reconciliation: too many candidates this run (deferring)',
+      {
+        spaceKey,
+        candidates: candidates.length,
+        cap: MAX_DELETION_CONFIRMATIONS,
+        processing: batch.length,
+      },
+      'Capping deletion reconciliation this run; remaining candidates deferred to later cycles',
     );
-    return;
   }
 
-  for (const confluenceId of candidates) {
+  for (const { confluence_id: confluenceId } of batch) {
     // Confirm the page is genuinely gone before soft-deleting. Two outcomes
     // count as "gone" (#706, #766):
     //   - 404: the content no longer exists for this DC (purged, or the DC
@@ -1729,6 +1747,14 @@ async function detectDeletedPages(
     await clearPageFailures(confluenceId);
     counts.pagesDeleted++;
   }
+
+  // Persist only after the whole batch finishes. A crash before this point safely
+  // repeats confirmation work; advancing for every completed outcome prevents
+  // surviving 200/403 rows from monopolising the next cycle.
+  await query(
+    'UPDATE spaces SET deletion_reconcile_cursor = $2 WHERE space_key = $1',
+    [spaceKey, batch[batch.length - 1]!.id],
+  );
 }
 
 /**
