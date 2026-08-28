@@ -347,6 +347,23 @@ describe('article-extensions', () => {
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.panel-note' }));
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.panel-tip' }));
     });
+
+    it('preserves a native panel macro identity and parameters through editor serialization', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Panel],
+        content:
+          '<div class="panel-info" data-macro-name="panel" ' +
+          'data-macro-params="{&quot;title&quot;:&quot;Operations&quot;,&quot;custom-option&quot;:&quot;keep me&quot;}">' +
+          '<p>Panel body</p></div>',
+      });
+
+      const output = editor.getHTML();
+      expect(output).toContain('class="panel-info"');
+      expect(output).toContain('data-macro-name="panel"');
+      expect(output).toContain('data-macro-params=');
+      expect(output).toContain('custom-option');
+      editor.destroy();
+    });
   });
 
   describe('DrawioDiagram', () => {

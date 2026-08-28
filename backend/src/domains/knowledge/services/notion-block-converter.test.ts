@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { convertNotionBlocks } from './notion-block-converter.js';
+import { convertNotionBlocks, formatWikiMetadataCallout } from './notion-block-converter.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { buildPageImageUrl } from '../../../core/services/image-references.js';
 
@@ -244,6 +244,40 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyHtml).toContain('<a href="/pages/7">Nested notes</a>');
   });
 
+  it('renders child_database with attached rows into an HTML table on the host page', () => {
+    const result = convert([
+      {
+        id: 'db-1',
+        type: 'child_database',
+        child_database: { title: 'Ports' },
+        databaseColumns: ['Port', 'Service'],
+        databaseRows: [
+          {
+            properties: {
+              Port: { type: 'number', number: 22 },
+              Service: { type: 'title', title: [{ plain_text: 'SSH' }] },
+            },
+          },
+          {
+            properties: {
+              Port: { type: 'number', number: 80 },
+              Service: { type: 'title', title: [{ plain_text: 'HTTP' }] },
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(result.bodyHtml).toContain('<h3>Ports</h3>');
+    expect(result.bodyHtml).toContain('<table>');
+    expect(result.bodyHtml).toContain('<th>Port</th>');
+    expect(result.bodyHtml).toContain('<th>Service</th>');
+    expect(result.bodyHtml).toContain('<td>22</td>');
+    expect(result.bodyHtml).toContain('<td>SSH</td>');
+    expect(result.bodyHtml).toContain('<td>80</td>');
+    expect(result.bodyHtml).toContain('<td>HTTP</td>');
+  });
+
   it('skips unsupported blocks without flattening or stubbing them, and lists them in the report', () => {
     const result = convert([
       block('p', 'paragraph', { rich_text: [rich('Keep')] }),
@@ -448,6 +482,35 @@ describe('convertNotionBlocks', () => {
 
     expect(result.bodyHtml).not.toContain('href="/pages/1"');
     expect(result.bodyHtml).toContain('trap');
+  });
+});
+
+describe('formatWikiMetadataCallout', () => {
+  it('renders status, owner, verified, tags, and custom properties in a callout', () => {
+    const html = formatWikiMetadataCallout({
+      status: 'In Review',
+      author: 'Alice & Bob',
+      verifiedAt: new Date('2026-08-15T00:00:00.000Z'),
+      tags: ['security', 'core'],
+      customProperties: {
+        'Jira Epic': 'PROJ-123',
+        'Risk Level': 'Low',
+      },
+    });
+
+    expect(html).toContain('data-type="callout"');
+    expect(html).toContain('class="notion-wiki-metadata"');
+    expect(html).toContain('<strong>Status:</strong> In Review');
+    expect(html).toContain('<strong>Owner:</strong> Alice &amp; Bob');
+    expect(html).toContain('<strong>Verified:</strong> 2026-08-15');
+    expect(html).toContain('<strong>Tags:</strong> security, core');
+    expect(html).toContain('<strong>Jira Epic:</strong> PROJ-123');
+    expect(html).toContain('<strong>Risk Level:</strong> Low');
+  });
+
+  it('returns empty string when no metadata is provided', () => {
+    const html = formatWikiMetadataCallout({});
+    expect(html).toBe('');
   });
 });
 

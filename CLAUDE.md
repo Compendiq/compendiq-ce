@@ -696,6 +696,18 @@ DB (HTML) ⇄ htmlToMarkdown/markdownToHtml ⇄ {LLM: Markdown, Editor/TipTap: H
 ```
 Custom `turndown` rules per Confluence macro (code blocks, task lists, panels, mentions, page links, draw.io). See `docs/architecture/11-content-pipeline.md`.
 
+**`body_html` never contains a raw structured macro (#1438).**
+`confluenceToHtml` uses static DOM snapshots, and replacing an outer macro can
+clone nested `ac:structured-macro` nodes after their dedicated handler pass.
+Conversion therefore repeats to a fixed point with a strict monotonic guard:
+the raw macro count must decrease on every pass, or conversion throws rather
+than returning partial HTML or deleting the malformed macro. A cloned supported
+macro stays raw for the next dedicated pass; it must never be downgraded into
+the lossless long-tail `confluence-macro-unknown` node. Native `panel` renders
+through the existing info-panel node but carries `data-macro-name="panel"` and
+arbitrary direct text parameters through the editor, so write-back emits
+`ac:name="panel"` rather than permanently coercing it to `info`.
+
 **Notion import discovery is metadata-only.** `GET /api/notion/tree` builds the
 picker hierarchy from Notion Search and resolves Search-listed `block_id` parents, but
 must never list every page body's blocks: the retired walk spent up to 80 serial calls
@@ -802,6 +814,17 @@ can echo request fragments and internal topology. It is truncated at
 `PROBE_ERROR_MAX_CHARS` on the way out and rendered as plain JSX text — never
 `dangerouslySetInnerHTML`, never a Markdown renderer.
 
+## SearXNG Sidecar
+
+`mcp-docs` calls SearXNG directly, so `[botdetection].trusted_proxies`
+defaults to loopback only; never re-add a blanket Docker subnet. A deployment
+that actually proxies SearXNG may set `SEARXNG_TRUSTED_PROXIES` to
+comma-separated proxy IPs/CIDRs. The renderer must validate each entry and
+fail startup on malformed input; never trust all forwarded headers. The
+derived image keeps upstream ClearURLs fetches primary and patches only their
+all-failed branch to load the pinned local baseline. Keep the patch strict so
+an upstream integration-point change fails the image build.
+
 ## Versioning
 
 SemVer, pre-1.0. Single source of truth: **root `package.json` `"version"`**. Backend reads at startup (`core/utils/version.ts` → `APP_VERSION`); frontend injects `__APP_VERSION__` via Vite `define`; mcp-docs reads its own.
@@ -825,6 +848,7 @@ Full reference is `.env.example`. Keys you must set:
 
 - `JWT_SECRET` — 32+ chars, required
 - `PAT_ENCRYPTION_KEY` — 32+ chars, required
+- `MCP_DOCS_TOKEN` — 32+ chars, required for the MCP sidecar in production
 - `POSTGRES_URL`, `REDIS_URL`
 - `POSTGRES_PASSWORD`, `REDIS_PASSWORD` — required by docker compose (no defaults; URL-safe values, e.g. `openssl rand -hex 24`)
 

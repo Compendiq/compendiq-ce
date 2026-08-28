@@ -15,7 +15,7 @@ import { NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
 import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
-import { runNotionImport } from './notion-import-service.js';
+import { extractWikiPageProperties, runNotionImport } from './notion-import-service.js';
 import { notionImportLockId } from './notion-import-lock.js';
 
 const dbAvailable = await isDbAvailable();
@@ -239,6 +239,113 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(nested.rows[0]!.parent_id).not.toBe(String(destId));
   });
 
+  it('nests a block_id child under the selected host when the child_page block is absent from the host tree', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        host: {
+          object: 'page',
+          id: 'host',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Host'),
+        },
+        nested: {
+          object: 'page',
+          id: 'nested',
+          parent: { type: 'block_id', block_id: 'toggle-1' },
+          properties: titleProp('Nested'),
+        },
+      },
+      blocks: {
+        'toggle-1': {
+          object: 'block',
+          id: 'toggle-1',
+          type: 'toggle',
+          parent: { type: 'page_id', page_id: 'host' },
+        },
+      },
+      blockChildren: {
+        host: [paragraph('h1', 'host body')],
+        nested: [paragraph('n1', 'nested body')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['host', 'nested'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    expect(items.every((i) => i.status === 'success')).toBe(true);
+    const host = await query<{ id: number }>('SELECT id FROM pages WHERE notion_page_id = $1', ['host']);
+    const nested = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE notion_page_id = $1',
+      ['nested'],
+    );
+    expect(nested.rows[0]!.parent_id).toBe(String(host.rows[0]!.id));
+    expect(nested.rows[0]!.parent_id).not.toBe(String(destId));
+  });
+  it('nests a wiki sub-item under its parent page via relation property', async () => {
+    const dest = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, space_key, visibility, path)
+       VALUES ('Dest', '<p>d</p>', 'd', 1, 'standalone', $1, 'wiki', 'private', '/0') RETURNING id`,
+      [userId],
+    );
+    const destId = dest.rows[0]!.id;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ansible: {
+          object: 'page',
+          id: 'ansible',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: titleProp('Ansible Playbooks'),
+        },
+        modules: {
+          object: 'page',
+          id: 'modules',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: {
+            ...titleProp('Modules'),
+            'Parent item': {
+              type: 'relation',
+              relation: [{ id: 'ansible' }],
+            },
+          },
+        },
+      },
+      blockChildren: {
+        ansible: [paragraph('a1', 'ansible body')],
+        modules: [paragraph('m1', 'modules body')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['ansible', 'modules'],
+      spaceKey: 'wiki',
+      parentId: String(destId),
+      visibility: 'private',
+    });
+    expect(items.every((i) => i.status === 'success')).toBe(true);
+    const ansible = await query<{ id: number }>('SELECT id FROM pages WHERE notion_page_id = $1', ['ansible']);
+    const modules = await query<{ parent_id: string | null }>(
+      'SELECT parent_id FROM pages WHERE notion_page_id = $1',
+      ['modules'],
+    );
+    expect(modules.rows[0]!.parent_id).toBe(String(ansible.rows[0]!.id));
+  });
+
+
   it('skips databases in the payload without stubbing a page and continues the run', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -306,10 +413,12 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       visibility: 'shared',
     });
     expect(items).toEqual([expect.objectContaining({ notionPageId: 'row-listed', status: 'success' })]);
-    const pages = await query<{ title: string }>('SELECT title FROM pages');
-    expect(pages.rows.map((r) => r.title)).toEqual(['Acme Corp']);
+    const pages = await query<{ id: number; title: string; parent_id: string | null }>('SELECT id, title, parent_id FROM pages ORDER BY id');
+    expect(pages.rows.map((r) => r.title)).toEqual(['CRM', 'Acme Corp']);
+    const crmId = pages.rows.find((r) => r.title === 'CRM')!.id;
+    const acme = pages.rows.find((r) => r.title === 'Acme Corp')!;
+    expect(acme.parent_id).toBe(String(crmId));
   });
-
   it('rewrites mentions of imported pages and leaves skipped ones as Notion URLs', async () => {
     const importedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const skippedId = '11111111-2222-3333-4444-555555555555';
@@ -1332,6 +1441,237 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       logger.off('log', handler);
     }
     expect(lines.join('\n')).not.toContain(TOKEN);
+  });
+
+  it('extracts wiki page attributes (owner, verified, tags, category mapped to tags, status) and persists them', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'wiki-page-1': {
+          object: 'page',
+          id: 'wiki-page-1',
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            ...titleProp('System Architecture & Invariants'),
+            Owner: {
+              type: 'people',
+              people: [{ object: 'user', name: 'Alice Engineer', person: { email: 'alice@example.com' } }],
+            },
+            Verification: {
+              type: 'verification',
+              verification: {
+                state: 'verified',
+                verified_by: { name: 'Security Lead' },
+                date: { start: '2026-08-15' },
+              },
+            },
+            Tags: {
+              type: 'multi_select',
+              multi_select: [{ name: 'core' }, { name: 'backend' }],
+            },
+            Category: {
+              type: 'select',
+              select: { name: 'Architecture' },
+            },
+            Status: {
+              type: 'status',
+              status: { name: 'Published' },
+            },
+            'Review Cycle': {
+              type: 'select',
+              select: { name: 'Quarterly' },
+            },
+          },
+        },
+      },
+      blockChildren: {
+        'wiki-page-1': [paragraph('w1', 'Core architectural principles.')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['wiki-page-1'],
+      visibility: 'shared',
+    });
+
+    expect(items[0]?.status).toBe('success');
+
+    const pageRow = await query<{
+      title: string;
+      author: string | null;
+      verified_at: Date | null;
+      labels: string[];
+      body_html: string;
+    }>(
+      'SELECT title, author, verified_at, labels, body_html FROM pages WHERE notion_page_id = $1',
+      ['wiki-page-1'],
+    );
+
+    expect(pageRow.rows).toHaveLength(1);
+    const row = pageRow.rows[0]!;
+    expect(row.title).toBe('System Architecture & Invariants');
+    expect(row.author).toBe('Alice Engineer');
+    expect(row.verified_at).not.toBeNull();
+    // Category 'Architecture' mapped into tags along with 'core' and 'backend'
+    expect(row.labels).toEqual(expect.arrayContaining(['core', 'backend', 'Architecture']));
+    // Metadata callout block prepended with status and custom properties
+    expect(row.body_html).toContain('notion-wiki-metadata');
+    expect(row.body_html).toContain('Published');
+    expect(row.body_html).toContain('Quarterly');
+    expect(row.body_html).toContain('Core architectural principles.');
+  });
+
+  it('preserves multi-level hierarchy among sub-wiki pages when importing', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'wiki-root': {
+          object: 'page',
+          id: 'wiki-root',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Engineering Wiki'),
+        },
+        'wiki-doc': {
+          object: 'page',
+          id: 'wiki-doc',
+          parent: { type: 'page_id', page_id: 'wiki-root' },
+          properties: titleProp('RFC 100'),
+        },
+        'wiki-subdoc': {
+          object: 'page',
+          id: 'wiki-subdoc',
+          parent: { type: 'page_id', page_id: 'wiki-doc' },
+          properties: titleProp('RFC 100 Appendix'),
+        },
+      },
+      blockChildren: {
+        'wiki-root': [paragraph('r1', 'Wiki Home')],
+        'wiki-doc': [paragraph('d1', 'RFC Content')],
+        'wiki-subdoc': [paragraph('sd1', 'Appendix Content')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['wiki-root', 'wiki-doc', 'wiki-subdoc'],
+      visibility: 'shared',
+    });
+
+    expect(items.map((i) => i.status)).toEqual(['success', 'success', 'success']);
+
+    const pages = await query<{ id: number; title: string; parent_id: string | null; depth: number; path: string }>(
+      'SELECT id, title, parent_id, depth, path FROM pages WHERE notion_page_id IN ($1, $2, $3) ORDER BY depth ASC',
+      ['wiki-root', 'wiki-doc', 'wiki-subdoc'],
+    );
+
+    expect(pages.rows).toHaveLength(3);
+    const rootPage = pages.rows.find((p) => p.title === 'Engineering Wiki')!;
+    const docPage = pages.rows.find((p) => p.title === 'RFC 100')!;
+    const subDocPage = pages.rows.find((p) => p.title === 'RFC 100 Appendix')!;
+
+    expect(rootPage.parent_id).toBeNull();
+    expect(docPage.parent_id).toBe(String(rootPage.id));
+    expect(subDocPage.parent_id).toBe(String(docPage.id));
+    expect(subDocPage.depth).toBe(2);
+    expect(subDocPage.path).toBe(`/${rootPage.id}/${docPage.id}/${subDocPage.id}`);
+  });
+});
+
+describe('extractWikiPageProperties', () => {
+  it('does not treat a non-owner people property as author', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Assignee: {
+          type: 'people',
+          people: [{ object: 'user', name: 'Bob Reviewer' }],
+        },
+      },
+    });
+    expect(extracted.author).toBeNull();
+  });
+
+  it('maps Owner people and ignores other people fields', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Assignee: {
+          type: 'people',
+          people: [{ object: 'user', name: 'Bob Reviewer' }],
+        },
+        Owner: {
+          type: 'people',
+          people: [{ object: 'user', name: 'Alice Engineer' }],
+        },
+      },
+    });
+    expect(extracted.author).toBe('Alice Engineer');
+  });
+
+  it('does not copy unrelated multi_select values into labels', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Stakeholders: {
+          type: 'multi_select',
+          multi_select: [{ name: 'Legal' }, { name: 'Security' }],
+        },
+        Tags: {
+          type: 'multi_select',
+          multi_select: [{ name: 'core' }],
+        },
+      },
+    });
+    expect(extracted.labels).toEqual(['core']);
+  });
+
+  it('leaves verifiedAt null when verification has no date', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Verification: {
+          type: 'verification',
+          verification: { state: 'verified' },
+        },
+      },
+    });
+    expect(extracted.verifiedAt).toBeNull();
+  });
+
+  it('leaves verifiedAt null for a checked verification checkbox', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Verified: { type: 'checkbox', checkbox: true },
+      },
+    });
+    expect(extracted.verifiedAt).toBeNull();
+  });
+
+  it('keeps a verification timestamp when date.start is present', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Verification: {
+          type: 'verification',
+          verification: { state: 'verified', date: { start: '2026-08-15' } },
+        },
+      },
+    });
+    expect(extracted.verifiedAt?.toISOString().slice(0, 10)).toBe('2026-08-15');
+  });
+
+  it('dedupes tags and category case-insensitively, keeping first casing', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Tags: {
+          type: 'multi_select',
+          multi_select: [{ name: 'Architecture' }],
+        },
+        Category: {
+          type: 'select',
+          select: { name: 'architecture' },
+        },
+      },
+    });
+    expect(extracted.labels).toEqual(['Architecture']);
   });
 });
 

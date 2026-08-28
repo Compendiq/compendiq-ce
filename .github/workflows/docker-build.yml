@@ -12,9 +12,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed images
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      searxng: ${{ steps.filter.outputs.searxng }}
+      mcp: ${{ steps.filter.outputs.mcp }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed images
+        id: filter
+        run: |
+          set -euo pipefail
+          all_true() {
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            echo "searxng=true" >> "$GITHUB_OUTPUT"
+            echo "mcp=true" >> "$GITHUB_OUTPUT"
+            echo "Building all images."
+          }
+          REF="${{ github.ref }}"
+          BEFORE="${{ github.event.before }}"
+          ZERO="0000000000000000000000000000000000000000"
+          case "$REF" in
+            refs/tags/*)
+              all_true
+              exit 0
+              ;;
+          esac
+          if [ "${{ github.event_name }}" != "push" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "$ZERO" ]; then
+            all_true
+            exit 0
+          fi
+          if ! CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}"); then
+            echo "Could not diff $BEFORE..${{ github.sha }} — building all images."
+            all_true
+            exit 0
+          fi
+          flag() {
+            local name="$1" pattern="$2"
+            if echo "$CHANGED" | grep -qE "$pattern"; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+              echo "$name=true"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+              echo "$name=false"
+            fi
+          }
+          flag backend '^(backend/|packages/contracts/|package-lock\.json|package\.json$|\.dockerignore$|\.github/workflows/docker-build\.yml)'
+          flag frontend '^(frontend/|packages/contracts/|package-lock\.json|package\.json$|build-info\.json$|\.dockerignore$|\.github/workflows/docker-build\.yml)'
+          flag searxng '^(docker/searxng/|\.github/workflows/docker-build\.yml)'
+          flag mcp '^(mcp-docs/|\.dockerignore$|\.github/workflows/docker-build\.yml)'
+
   docker-backend:
     name: Backend Image
-    if: github.actor != 'dependabot[bot]'
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -59,8 +119,8 @@ jobs:
           push: true
           cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache
           cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-backend:buildcache,mode=max
-          sbom: true
-          provenance: mode=max
+          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
+          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}
 
       # Smoke-load the runtime image's prod node_modules. Guards against the
       # class of bug where npm's hoister demotes a backend prod dep to
@@ -82,7 +142,8 @@ jobs:
 
   docker-frontend:
     name: Frontend Image
-    if: github.actor != 'dependabot[bot]'
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -147,12 +208,13 @@ jobs:
           push: true
           cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache
           cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-frontend:buildcache,mode=max
-          sbom: true
-          provenance: mode=max
+          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
+          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}
 
   docker-searxng:
     name: SearXNG Image
-    if: github.actor != 'dependabot[bot]'
+    needs: changes
+    if: needs.changes.outputs.searxng == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -200,7 +262,8 @@ jobs:
 
   docker-mcp-docs:
     name: MCP Docs Image
-    if: github.actor != 'dependabot[bot]'
+    needs: changes
+    if: needs.changes.outputs.mcp == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -245,5 +308,5 @@ jobs:
           push: true
           cache-from: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache
           cache-to: type=registry,ref=ghcr.io/compendiq/compendiq-ce-mcp-docs:buildcache,mode=max
-          sbom: true
-          provenance: mode=max
+          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
+          provenance: ${{ startsWith(github.ref, 'refs/tags/') && 'mode=max' || 'false' }}

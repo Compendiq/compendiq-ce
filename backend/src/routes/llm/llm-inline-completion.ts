@@ -35,6 +35,20 @@ export function abortOnPrematureResponseClose(
   return () => response.removeListener('close', onClose);
 }
 
+export function rethrowUnlessClientDisconnect(
+  error: unknown,
+  controller: AbortController,
+): void {
+  if (
+    controller.signal.aborted &&
+    error instanceof Error &&
+    error.name === 'AbortError'
+  ) {
+    return;
+  }
+  throw error;
+}
+
 async function recordAggregateUsage(
   fastify: FastifyInstance,
   usage: { promptTokens?: number; completionTokens?: number } | undefined,
@@ -113,6 +127,9 @@ export async function llmInlineCompletionRoutes(fastify: FastifyInstance) {
           provider: resolved.config.name,
           usage: result.usage,
         });
+      } catch (error) {
+        rethrowUnlessClientDisconnect(error, controller);
+        return;
       } finally {
         removeDisconnectListener();
       }

@@ -171,6 +171,60 @@ const EXPAND_MACRO_NAMES = new Set(['expand', 'ui-expand']);
  */
 const EXPANDED_PARAM_MACROS = new Set(['ui-expand']);
 
+function countRawStructuredMacros(root: Element | DocumentFragment): number {
+  let count = 0;
+  const pending: Array<Element | DocumentFragment> = [root];
+
+  while (pending.length > 0) {
+    const parent = pending.pop()!;
+    for (const child of parent.children) {
+      const tagName = child.tagName.toLowerCase();
+      if (tagName === 'ac:structured-macro') count += 1;
+
+      // Template descendants live in a separate DocumentFragment and are not
+      // returned by getElementsByTagName. Inspect that fragment explicitly
+      // without relying on JSDOM's broken escaped-colon selectors.
+      pending.push(
+        tagName === 'template'
+          ? (child as HTMLTemplateElement).content
+          : child,
+      );
+    }
+  }
+
+  return count;
+}
+
+const PANEL_MACRO_NAMES: Record<string, true> = {
+  panel: true,
+  info: true,
+  warning: true,
+  note: true,
+  tip: true,
+};
+
+// Keep this registry in lockstep with the dedicated structured-macro handlers
+// below. It is not a long-tail inventory: it only prevents a fresh clone of a
+// supported macro from being prematurely downgraded by the catch-all.
+const DEDICATED_MACRO_NAMES: Record<string, true> = {
+  code: true,
+  ...PANEL_MACRO_NAMES,
+  expand: true,
+  'ui-expand': true,
+  drawio: true,
+  status: true,
+  toc: true,
+  jira: true,
+  include: true,
+  'excerpt-include': true,
+  column: true,
+  section: true,
+  children: true,
+  'ui-children': true,
+  attachments: true,
+  labels: true,
+};
+
 /**
  * Transfer innerHTML from a source element to a target element.
  * Server-side JSDOM only — used for Confluence macro conversion.
@@ -180,14 +234,66 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
   target.innerHTML = source?.innerHTML ?? fallback;
 }
 
+function appendSerializedMacroParams(macro: Element, rawParams: string | null): void {
+  if (!rawParams) return;
+  try {
+    const params = JSON.parse(rawParams) as Record<string, unknown>;
+    for (const [paramName, paramValue] of Object.entries(params)) {
+      if (typeof paramValue !== 'string') continue;
+      const parameter = macro.ownerDocument.createElement('ac:parameter');
+      parameter.setAttribute('ac:name', paramName);
+      parameter.textContent = paramValue;
+      macro.appendChild(parameter);
+    }
+  } catch {
+    // A malformed data attribute must not prevent the macro itself from
+    // surviving write-back. Its body and identity remain lossless.
+  }
+}
+
+interface ConfluenceConversionPass {
+  html: string;
+  macrosBefore: number;
+  macrosAfter: number;
+}
+
 /**
- * Converts Confluence storage format (XHTML) to clean HTML for TipTap editor.
- * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
+ * Convert repeated static-snapshot passes until every structured macro has a
+ * concrete HTML representation. Replacing an outer macro reparses its body and
+ * can clone raw nested macros after their handler's snapshot has gone stale.
+ *
+ * Each successful pass removes at least one outer wrapper while preserving its
+ * descendants, so the raw macro count must strictly decrease. Refuse to return
+ * partial HTML if that invariant ever fails: the loop is bounded by the input
+ * macro count and a malformed/unhandled shape is never silently discarded.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
+  let input = storageXhtml;
+  while (true) {
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey);
+    if (pass.macrosAfter === 0) return pass.html;
+    if (pass.macrosAfter >= pass.macrosBefore) {
+      throw new Error(
+        `Confluence macro conversion made no progress (${pass.macrosBefore} raw macros remain)`,
+      );
+    }
+    input = pass.html;
+  }
+}
+
+/**
+ * Run one static-snapshot conversion pass.
+ */
+function confluenceToHtmlPass(
+  storageXhtml: string,
+  pageId?: string,
+  spaceKey?: string,
+): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+  const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
+  const macrosBefore = countRawStructuredMacros(doc.body);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
@@ -224,14 +330,22 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     taskList.replaceWith(ul);
   }
 
-  // Process panels: ac:structured-macro[name=info|warning|note|tip] -> <div class="panel-*">
-  const panelTypes = new Set(['info', 'warning', 'note', 'tip']);
+  // Process panels: native `panel` uses the existing info panel node for
+  // display, but carries its original identity and arbitrary text parameters
+  // so editor/write-back never coerces it permanently to `info` (#1438).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro);
-    if (!panelTypes.has(name)) continue;
+    if (!Object.hasOwn(PANEL_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
     const div = doc.createElement('div');
-    div.className = `panel-${name}`;
+    div.className = `panel-${name === 'panel' ? 'info' : name}`;
+    if (name === 'panel') {
+      div.setAttribute('data-macro-name', name);
+      const params = collectDirectTextParams(macro);
+      if (Object.keys(params).length > 0) {
+        div.setAttribute('data-macro-params', JSON.stringify(params));
+      }
+    }
     transferInnerHtml(div, bodyEl);
     macro.replaceWith(div);
   }
@@ -613,6 +727,10 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   // fixed for ALL unhandled macros (excerpt, anchor, gallery, chart, …) (#865).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro) || 'unknown';
+    // Replacement reparses an outer body into fresh nodes. A fresh supported
+    // clone must remain raw for its next dedicated pass; a fresh unknown clone
+    // can safely take the lossless long-tail fallback immediately.
+    if (!macrosAtPassStart.has(macro) && Object.hasOwn(DEDICATED_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const div = doc.createElement('div');
@@ -649,7 +767,9 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     el.remove();
   }
 
-  return doc.body.innerHTML;
+  const html = doc.body.innerHTML;
+  const macrosAfter = countRawStructuredMacros(doc.body);
+  return { html, macrosBefore, macrosAfter };
 }
 
 /**
@@ -748,7 +868,9 @@ export function htmlToConfluence(html: string): string {
   for (const panelType of ['info', 'warning', 'note', 'tip']) {
     for (const div of [...doc.querySelectorAll(`.panel-${panelType}`)].reverse()) {
       const macro = doc.createElement('ac:structured-macro');
-      macro.setAttribute('ac:name', panelType);
+      const macroName = div.getAttribute('data-macro-name') || panelType;
+      macro.setAttribute('ac:name', macroName);
+      appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'));
       const body = doc.createElement('ac:rich-text-body');
       transferInnerHtml(body, div);
       macro.appendChild(body);
@@ -999,23 +1121,7 @@ export function htmlToConfluence(html: string): string {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', name);
 
-    // Rebuild parameters persisted generically on the forward pass.
-    const rawParams = div.getAttribute('data-macro-params');
-    if (rawParams) {
-      try {
-        const params = JSON.parse(rawParams) as Record<string, unknown>;
-        for (const [paramName, paramValue] of Object.entries(params)) {
-          if (typeof paramValue !== 'string') continue;
-          const p = doc.createElement('ac:parameter');
-          p.setAttribute('ac:name', paramName);
-          p.textContent = paramValue;
-          macro.appendChild(p);
-        }
-      } catch {
-        // Malformed params attribute — preserve the macro without them rather
-        // than fail the whole write-back.
-      }
-    }
+    appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'));
 
     // Restore the rich-text-body. The forward pass only writes the
     // `[Confluence macro: {name}]` placeholder (see the fallback in the
@@ -1265,6 +1371,8 @@ const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
 // LAYOUT_TOKEN_* below) so the inner content stays improvable. The labels
 // macro placeholder IS opaque — it is atomic (no prose inside) so the token
 // pattern fits it exactly.
+const NATIVE_PANEL_SELECTOR = 'div.panel-info[data-macro-name="panel"]';
+
 const MEDIA_SELECTOR = [
   'img',
   'div.confluence-drawio',
@@ -1276,6 +1384,10 @@ const MEDIA_SELECTOR = [
   // would then rebuild nothing from). Inner prose becomes non-improvable —
   // the same preserve-over-improve tradeoff already accepted for labels/drawio.
   'div.confluence-macro-unknown',
+  // #1438: a native panel reuses the visual info-panel node, but its macro
+  // identity and arbitrary parameters have no Markdown representation.
+  // Freeze the whole node so Improve cannot coerce it to an `info` macro.
+  NATIVE_PANEL_SELECTOR,
   // #901: freeze atomic macro placeholders — toc / children / attachments /
   // include (block) and jira / status / user-mention (inline). Like labels and
   // unknown-macro they carry NO LLM-editable prose (only a synthetic visible
@@ -1332,8 +1444,13 @@ function isConstrainedPosition(el: Element): boolean {
 }
 
 /** Subtrees that travel as one opaque media token, so they emit no tokens. */
-const OPAQUE_SUBTREE_SELECTOR =
-  'div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown';
+const OPAQUE_SUBTREE_SELECTOR = [
+  'div.confluence-drawio',
+  'div.confluence-mermaid',
+  'div.mermaid',
+  'div.confluence-macro-unknown',
+  NATIVE_PANEL_SELECTOR,
+].join(',');
 
 /** Layout-token kinds enclosing `el`, outermost first — the open-time stack. */
 function enclosingLayoutKinds(el: Element): string[] {
@@ -1588,7 +1705,7 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // freezes, everywhere else it round-trips as [[[EXPAND …]]] tokens.
       if (isExpandSection(n) && !isFrozenExpand(n)) return false;
       // Descendants of an already-frozen node travel inside it.
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
+      if (n.parentElement?.closest(OPAQUE_SUBTREE_SELECTOR)) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained

@@ -168,6 +168,14 @@ const GOLDEN: Array<{ name: string; html: string; expectTypes: string[] }> = [
     expectTypes: ['panel'],
   },
   {
+    name: 'native-panel',
+    html:
+      '<div class="panel-info" data-macro-name="panel" '
+      + 'data-macro-params=\'{"title":"Operations","custom-option":"keep me"}\'>'
+      + '<p>Native panel body</p></div>',
+    expectTypes: ['panel'],
+  },
+  {
     name: 'table',
     html: '<table><tbody><tr><th><p>Head</p></th></tr><tr><td><p>Cell</p></td></tr></tbody></table>',
     expectTypes: ['table', 'tableRow'],
@@ -271,6 +279,12 @@ describe('collab schema parity (#1445)', () => {
       if (fixture.name === 'draw.io') {
         expect(html2).toContain('confluence-drawio');
         expect(html2).not.toContain('data:image/png');
+      }
+      if (fixture.name === 'native-panel') {
+        expect(html2).toContain('data-macro-name="panel"');
+        expect(html2).toContain(
+          'data-macro-params="{&quot;title&quot;:&quot;Operations&quot;,&quot;custom-option&quot;:&quot;keep me&quot;}"',
+        );
       }
     }
   });

@@ -16,6 +16,7 @@ import { query } from '../../core/db/postgres.js';
 import {
   abortOnPrematureResponseClose,
   llmInlineCompletionRoutes,
+  rethrowUnlessClientDisconnect,
 } from './llm-inline-completion.js';
 
 const dbAvailable = await isDbAvailable();
@@ -48,6 +49,31 @@ describe('abortOnPrematureResponseClose', () => {
     response.emit('close');
 
     expect(controller.signal.aborted).toBe(true);
+  });
+});
+
+describe('rethrowUnlessClientDisconnect', () => {
+  it('consumes an AbortError after the route-owned controller aborts', () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = new DOMException('This operation was aborted', 'AbortError');
+    expect(() => rethrowUnlessClientDisconnect(error, controller)).not.toThrow();
+  });
+
+  it('rethrows a provider deadline AbortError while the route controller is active', () => {
+    const controller = new AbortController();
+    const error = new DOMException('This operation was aborted', 'AbortError');
+
+    expect(() => rethrowUnlessClientDisconnect(error, controller)).toThrow(error);
+  });
+
+  it('rethrows a non-abort failure after the route controller aborts', () => {
+    const controller = new AbortController();
+    const error = new Error('provider response carried no completion text');
+    controller.abort();
+
+    expect(() => rethrowUnlessClientDisconnect(error, controller)).toThrow(error);
   });
 });
 
