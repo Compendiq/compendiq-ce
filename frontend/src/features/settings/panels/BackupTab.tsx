@@ -58,6 +58,18 @@ export function BackupTab() {
   const [downloading, setDownloading] = useState(false);
   const [form, setForm] = useState<Partial<UpdateBackupSettingsInput>>({});
 
+  function updateCredential(
+    key: 's3AccessKey' | 's3SecretKey',
+    value: string,
+  ) {
+    setForm((current) => {
+      if (value !== '') return { ...current, [key]: value };
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery<BackupStatusResponse>({
     queryKey: ['admin', 'backup'],
     queryFn: () => apiFetch('/admin/backup'),
@@ -313,7 +325,7 @@ export function BackupTab() {
               type="password"
               className="nm-input"
               value={form.s3AccessKey ?? ''}
-              onChange={(e) => setForm({ ...form, s3AccessKey: e.target.value })}
+              onChange={(e) => updateCredential('s3AccessKey', e.target.value)}
               placeholder={data.s3.hasAccessKey ? 'Stored — enter to rotate' : ''}
               autoComplete="off"
             />
@@ -325,7 +337,7 @@ export function BackupTab() {
               type="password"
               className="nm-input"
               value={form.s3SecretKey ?? ''}
-              onChange={(e) => setForm({ ...form, s3SecretKey: e.target.value })}
+              onChange={(e) => updateCredential('s3SecretKey', e.target.value)}
               placeholder={data.s3.hasSecretKey ? 'Stored — enter to rotate' : ''}
               autoComplete="off"
             />

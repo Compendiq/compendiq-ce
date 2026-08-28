@@ -238,6 +238,42 @@ describe('BackupTab (#1420)', () => {
     expect(screen.queryByText('Save changes before testing.')).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['access key', 'Access key', 's3AccessKey'],
+    ['secret key', 'Secret key', 's3SecretKey'],
+  ] as const)(
+    'treats a stored %s editor as unchanged after typing and clearing it',
+    async (_credential, label, formKey) => {
+      const fetchSpy = mockFetch(READY_STATUS);
+      render(<BackupTab />, { wrapper: wrapper() });
+
+      const input = await screen.findByLabelText(label);
+      const testButton = screen.getByTestId('backup-test-s3-btn');
+      expect(input).toHaveValue('');
+      expect(testButton).toBeEnabled();
+
+      fireEvent.change(input, { target: { value: 'rotated-credential' } });
+      expect(testButton).toBeDisabled();
+
+      fireEvent.change(input, { target: { value: '' } });
+      expect(testButton).toBeEnabled();
+      expect(screen.queryByText('Save changes before testing.')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('backup-save-btn'));
+      await waitFor(() => {
+        const saveRequest = fetchSpy.mock.calls.find(
+          ([target, init]) =>
+            requestUrl(target).endsWith('/admin/backup') &&
+            (init as RequestInit | undefined)?.method === 'PUT',
+        );
+        expect(saveRequest).toBeDefined();
+        expect(JSON.parse((saveRequest![1] as RequestInit).body as string)).not.toHaveProperty(
+          formKey,
+        );
+      });
+    },
+  );
+
   it.each(RUN_DISABLED_CASES)(
     'disables Run now with a visible reason when %s',
     async (_case, status, reason) => {
