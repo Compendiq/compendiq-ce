@@ -110,6 +110,8 @@ export async function notionRoutes(fastify: FastifyInstance) {
         spaceKey: body.spaceKey,
         parentId: body.parentId,
         visibility: body.visibility,
+        overwriteExisting: body.overwriteExisting,
+        databaseModes: body.databaseModes,
       });
       const created = items.filter((i) => i.status === 'success');
       if (created.length > 0) {
@@ -122,7 +124,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
       for (const item of created) {
         await logAuditEvent(
           request.userId,
-          'PAGE_CREATED',
+          item.updated ? 'PAGE_UPDATED' : 'PAGE_CREATED',
           'page',
           String(item.localPageId),
           { source: 'standalone', notionPageId: item.notionPageId },

@@ -42,8 +42,9 @@ export interface RunNotionImportInput {
   spaceKey?: string;
   parentId?: string;
   visibility: 'private' | 'shared';
+  overwriteExisting?: boolean;
+  databaseModes?: Record<string, 'skip'>;
 }
-
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   return withNotionImportLocks(input.pageIds, async () => runLockedNotionImport(input));
 }
@@ -53,6 +54,13 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
   const alreadyImported: AlreadyImported[] = [];
+  const skippedDatabases = new Set(
+    Object.entries(input.databaseModes ?? {})
+      .filter(([, mode]) => mode === 'skip')
+      .map(([id]) => normalizeNotionId(id)),
+  );
+  const isSkippedDatabase = (id: string | null | undefined): boolean =>
+    Boolean(id && skippedDatabases.has(normalizeNotionId(id)));
 
   for (const rawId of input.pageIds) {
     if (items.has(rawId)) continue;
@@ -60,8 +68,12 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
       continue;
     }
+    if (isSkippedDatabase(rawId)) {
+      items.set(rawId, { notionPageId: rawId, status: 'skip', reason: 'Database is excluded from import' });
+      continue;
+    }
     const existing = await findImportedPage(input.userId, rawId);
-    if (existing?.complete) {
+    if (existing?.complete && !input.overwriteExisting) {
       items.set(rawId, {
         notionPageId: rawId,
         status: 'already_imported',
@@ -78,21 +90,33 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     }
     const classified = await classifySelection(input.client, rawId);
     if (classified.kind === 'skip') {
-      if (existing) await abandonPage(existing.id, destination.parentId);
+      if (existing && !existing.complete) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: classified.reason });
       continue;
     }
     if (classified.kind === 'fail') {
-      if (existing) await abandonPage(existing.id, destination.parentId);
+      if (existing && !existing.complete) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'fail', reason: classified.reason });
       continue;
     }
+
+    const parentNotionId = parentPageIdOf(classified.page);
+    if (isSkippedDatabase(parentNotionId)) {
+      items.set(rawId, {
+        notionPageId: rawId,
+        status: 'skip',
+        reason: 'Parent database is excluded from import',
+      });
+      continue;
+    }
+
     jobs.push({
       id: rawId,
       page: classified.page,
       title: extractTitle(classified.page),
-      parentNotionId: parentPageIdOf(classified.page),
+      parentNotionId,
       reuseId: existing?.id,
+      reuseComplete: existing?.complete === true,
     });
   }
 
@@ -107,7 +131,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     try {
       job.blocks = await fetchBlocksDeep(input.client, job.id);
     } catch (err) {
-      if (job.reuseId) await abandonPage(job.reuseId, destination.parentId);
+      if (job.reuseId && !job.reuseComplete) await abandonPage(job.reuseId, destination.parentId);
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
     }
   }
@@ -154,7 +178,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   // selected page exclusively owned until finalization or cleanup.
   for (const job of ordered) {
     const existing = await findImportedPage(input.userId, job.id);
-    if (existing?.complete) {
+    if (existing?.complete && !input.overwriteExisting) {
       importedPages.set(normalizeNotionId(job.id), existing.id);
       items.set(job.id, {
         notionPageId: job.id,
@@ -167,6 +191,13 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         parentNotionId: job.parentNotionId,
         page: job.page,
       });
+      continue;
+    }
+    if (existing?.complete && input.overwriteExisting) {
+      job.localPageId = existing.id;
+      job.createdPlaceholder = false;
+      job.reuseComplete = true;
+      importedPages.set(normalizeNotionId(job.id), existing.id);
       continue;
     }
 
@@ -203,12 +234,15 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         if (concurrent) {
           job.localPageId = concurrent.id;
           importedPages.set(normalizeNotionId(job.id), concurrent.id);
-          if (concurrent.complete) {
+          if (concurrent.complete && !input.overwriteExisting) {
             items.set(job.id, {
               notionPageId: job.id,
               status: 'already_imported',
               localPageId: concurrent.id,
             });
+          } else if (concurrent.complete && input.overwriteExisting) {
+            job.createdPlaceholder = false;
+            job.reuseComplete = true;
           }
           continue;
         }
@@ -222,7 +256,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   for (const job of ordered) {
     if (!job.localPageId || items.has(job.id)) continue;
     const existing = await findImportedPage(input.userId, job.id);
-    if (existing?.complete) {
+    if (existing?.complete && !job.reuseComplete) {
       importedPages.set(normalizeNotionId(job.id), existing.id);
       items.set(job.id, {
         notionPageId: job.id,
@@ -267,7 +301,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   for (const job of ordered) {
     if (!job.prepared || !job.localPageId || items.has(job.id)) continue;
     const existing = await findImportedPage(input.userId, job.id);
-    if (existing?.complete) {
+    if (existing?.complete && !job.reuseComplete) {
       importedPages.set(normalizeNotionId(job.id), existing.id);
       items.set(job.id, {
         notionPageId: job.id,
@@ -291,15 +325,40 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         localPageId: job.localPageId,
         importedPages,
       });
-      const { bodyHtml, bodyText } = wikiConvertedBody(job.page, converted);
-      await query(
-        'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
-        [job.localPageId, bodyHtml, bodyText],
-      );
+      const { wikiProps, bodyHtml, bodyText } = wikiConvertedBody(job.page, converted);
+      if (job.reuseComplete) {
+        const parentLocal = await resolveParentLocalId(
+          job.parentNotionId,
+          importedPages,
+          destination.parentId,
+          input.userId,
+        );
+        await persistStandalonePage({
+          id: job.localPageId,
+          reuse: true,
+          userId: input.userId,
+          title: job.title,
+          spaceKey: destination.spaceKey,
+          parentId: parentLocal,
+          visibility: destination.visibility,
+          notionPageId: job.id,
+          bodyHtml,
+          bodyText,
+          labels: wikiProps.labels,
+          author: wikiProps.author,
+          verifiedAt: wikiProps.verifiedAt,
+        });
+      } else {
+        await query(
+          'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
+          [job.localPageId, bodyHtml, bodyText],
+        );
+      }
       items.set(job.id, {
         notionPageId: job.id,
         status: 'success',
         localPageId: job.localPageId,
+        ...(job.reuseComplete ? { updated: true } : {}),
       });
     } catch (err) {
       if (job.createdPlaceholder) {
@@ -323,6 +382,7 @@ interface ImportJob {
   title: string;
   parentNotionId: string | null;
   reuseId?: number;
+  reuseComplete?: boolean;
   blocks?: NotionBlock[];
   localPageId?: number;
   createdPlaceholder?: boolean;

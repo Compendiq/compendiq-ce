@@ -163,6 +163,30 @@ describe('NotionImportRequestSchema', () => {
       NotionImportRequestSchema.parse({ pageIds: ['page-1'], token: 'secret_should_not_pass' }),
     ).toThrow();
   });
+
+  it('accepts overwriteExisting and skip-only databaseModes', () => {
+    expect(
+      NotionImportRequestSchema.parse({
+        pageIds: ['page-1'],
+        overwriteExisting: true,
+        databaseModes: { 'db-1': 'skip' },
+      }),
+    ).toEqual({
+      pageIds: ['page-1'],
+      visibility: 'shared',
+      overwriteExisting: true,
+      databaseModes: { 'db-1': 'skip' },
+    });
+  });
+
+  it('rejects unimplemented table and articles database modes', () => {
+    expect(() =>
+      NotionImportRequestSchema.parse({ pageIds: ['page-1'], databaseModes: { crm: 'table' } }),
+    ).toThrow();
+    expect(() =>
+      NotionImportRequestSchema.parse({ pageIds: ['page-1'], databaseModes: { crm: 'articles' } }),
+    ).toThrow();
+  });
 });
 
 describe('NotionImportResponseSchema', () => {

@@ -903,6 +903,92 @@ describe('NotionImportDialog picker cap and a11y', () => {
     expect(screen.queryByText('Commands DB')).not.toBeInTheDocument();
     expect(screen.getByText('Architecture Doc')).toBeInTheDocument();
   });
+
+  it('filters and auto-expands tree branches using search input', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+
+    const searchInput = screen.getByRole('searchbox', { name: /search pages and databases/i });
+    fireEvent.change(searchInput, { target: { value: 'nested' } });
+
+    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeInTheDocument();
+    expect(screen.queryByText('CRM')).not.toBeInTheDocument();
+  });
+
+  it('renders a skip control per database and sends overwriteExisting and skip modes on import', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          {
+            id: 'handbook',
+            title: 'Handbook',
+            type: 'page',
+            selectable: true,
+            children: [
+              {
+                id: 'crm',
+                title: 'CRM',
+                type: 'database',
+                selectable: false,
+                skipReason: NOTION_UNSUPPORTED_LABEL,
+                children: [{ id: 'row-1', title: 'Row 1', type: 'page', selectable: true, children: [] }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
+    const crmNode = screen.getByTestId('notion-node-crm');
+    expect(within(crmNode).queryByRole('button', { name: 'Table' })).not.toBeInTheDocument();
+    expect(within(crmNode).queryByRole('button', { name: 'Articles' })).not.toBeInTheDocument();
+    const skipBtn = within(crmNode).getByRole('button', { name: 'Skip' });
+
+    fireEvent.click(skipBtn);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    await screen.findByTestId('notion-import-confirm-copy');
+    expect(screen.getByTestId('notion-import-confirm-copy')).toHaveTextContent('1 page will import');
+    const reSyncCheckbox = screen.getByLabelText(/update existing pages/i);
+    expect(reSyncCheckbox).not.toBeChecked();
+    fireEvent.click(reSyncCheckbox);
+    expect(reSyncCheckbox).toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    await screen.findByTestId('notion-import-result');
+    const importCall = calls.find((c) => c.url.includes('/notion/import'));
+    expect(importCall).toBeDefined();
+    const body = JSON.parse(importCall!.body!);
+    expect(body.overwriteExisting).toBe(true);
+    expect(body.databaseModes).toEqual({ crm: 'skip' });
+    expect(body.pageIds).toEqual(['handbook']);
+  });
+
+  it('clears search when the dialog closes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onClose = vi.fn();
+    const ui = (open: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <NotionImportDialog open={open} onClose={onClose} />
+      </QueryClientProvider>
+    );
+    const view = render(ui(true));
+    await connectWithDummyToken();
+    fireEvent.change(screen.getByRole('searchbox', { name: /search pages and databases/i }), {
+      target: { value: 'nested' },
+    });
+    expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeInTheDocument();
+    view.rerender(ui(false));
+    view.rerender(ui(true));
+    await screen.findByRole('heading', { name: 'Choose pages' });
+    expect(screen.getByRole('searchbox', { name: /search pages and databases/i })).toHaveValue('');
+  });
   it('rehomes focus to the result heading after a successful Import', async () => {
     renderDialog();
     await connectWithDummyToken();

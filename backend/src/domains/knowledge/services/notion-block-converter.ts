@@ -53,6 +53,7 @@ const SUPPORTED_TYPES = new Set([
   'image',
   'child_page',
   'child_database',
+  'equation',
   'link_to_page',
 ]);
 
@@ -265,6 +266,8 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
       return renderChildPage(block, ctx);
     case 'child_database':
       return renderChildDatabase(block, ctx);
+    case 'equation':
+      return renderEquation(payload(block, type));
     case 'link_to_page':
       return renderLinkToPage(block, ctx);
     default:
@@ -339,10 +342,24 @@ function renderTaskList(items: readonly NotionBlock[], ctx: ConvertCtx): string 
 function renderCallout(block: NotionBlock, ctx: ConvertCtx): string {
   const data = payload(block, 'callout');
   const cls = panelClass(typeof data.color === 'string' ? data.color : undefined);
+  const icon = extractIcon(data.icon);
+  const iconHtml = icon ? `<span class="callout-icon">${escapeHtml(icon)}</span>` : '';
   const text = renderRichText(asRichArray(data.rich_text), ctx);
   const nested = convertSequence(childrenOf(block, data), ctx);
   const inner = text ? `<p>${text}</p>` : '';
-  return `<div class="${cls}">${inner}${nested}</div>`;
+  return `<div class="${cls}" data-type="callout">${iconHtml}${inner}${nested}</div>`;
+}
+
+function extractIcon(iconObj: unknown): string {
+  if (!iconObj || typeof iconObj !== 'object') return '';
+  const icon = iconObj as Record<string, unknown>;
+  if (icon.type === 'emoji' && typeof icon.emoji === 'string') return icon.emoji;
+  return '';
+}
+
+function renderEquation(data: Record<string, unknown>): string {
+  const expr = typeof data.expression === 'string' ? data.expression : '';
+  return `<pre class="math-block"><code class="language-math">${escapeHtml(expr)}</code></pre>`;
 }
 
 function panelClass(color: string | undefined): string {
@@ -549,6 +566,12 @@ function renderRichText(items: readonly Record<string, unknown>[], ctx: ConvertC
 
 function renderRichItem(item: Record<string, unknown>, ctx: ConvertCtx): string {
   const type = typeof item.type === 'string' ? item.type : 'text';
+  if (type === 'equation') {
+    const expr = isRecord(item.equation) && typeof item.equation.expression === 'string'
+      ? item.equation.expression
+      : (typeof item.plain_text === 'string' ? item.plain_text : '');
+    return `$${escapeHtml(expr)}$`;
+  }
   let href: string | null = null;
   const text = plainOf(item);
 

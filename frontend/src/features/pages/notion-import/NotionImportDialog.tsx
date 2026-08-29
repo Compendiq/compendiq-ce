@@ -27,6 +27,7 @@ import {
   groupSelectionState,
   isSelectablePage,
   NOTION_IMPORT_MAX_PAGES,
+  searchTreeNodes,
   selectableIdsInGroup,
   selectablePageIds,
   notionTitleById,
@@ -130,6 +131,8 @@ function TreeNodeRow({
   locked,
   expandedIds,
   onToggleExpanded,
+  databaseModes,
+  onSetDatabaseMode,
 }: {
   node: NotionTreeNode;
   selected: ReadonlySet<string>;
@@ -138,6 +141,8 @@ function TreeNodeRow({
   locked: boolean;
   expandedIds: ReadonlySet<string>;
   onToggleExpanded: (id: string) => void;
+  databaseModes?: Record<string, 'skip'>;
+  onSetDatabaseMode?: (databaseId: string) => void;
 }) {
   const selectable = isSelectablePage(node);
   const groupIds = selectableIdsInGroup(node);
@@ -235,6 +240,26 @@ function TreeNodeRow({
                 Database stays in Notion · {selectableCount} page{selectableCount === 1 ? '' : 's'} can be imported
               </span>
             </div>
+            {node.type === 'database' && onSetDatabaseMode ? (
+              <button
+                type="button"
+                className={cn(
+                  'ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
+                  databaseModes?.[node.id] === 'skip'
+                    ? 'bg-destructive text-destructive-foreground shadow-xs'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                aria-pressed={databaseModes?.[node.id] === 'skip'}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSetDatabaseMode(node.id);
+                }}
+                title="Exclude this database from import"
+              >
+                Skip
+              </button>
+            ) : null}
           </label>
         ) : (
           <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -260,6 +285,8 @@ function TreeNodeRow({
               locked={locked}
               expandedIds={expandedIds}
               onToggleExpanded={onToggleExpanded}
+              databaseModes={databaseModes}
+              onSetDatabaseMode={onSetDatabaseMode}
             />
           ))}
         </ul>
@@ -294,6 +321,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [selectionLimitMessage, setSelectionLimitMessage] = useState<string | null>(null);
   const [hideImported, setHideImported] = useState(false);
   const [hideDatabaseRows, setHideDatabaseRows] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [databaseModes, setDatabaseModes] = useState<Record<string, 'skip'>>({});
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
     total: number;
@@ -342,6 +372,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     setTreeRetryInFlight(false);
     restoreFocusAfterImport.current = false;
     restoreFocusAfterTreeRetry.current = false;
+    setSearchQuery('');
+    setDatabaseModes({});
+    setOverwriteExisting(false);
   }, [open, setStep]);
 
   const nodes = useMemo(() => tree.data?.nodes ?? [], [tree.data?.nodes]);
@@ -353,11 +386,22 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     });
     setSelectionLimitMessage(null);
   }, [nodes]);
-  const summary = useMemo(() => summarizeImport(nodes, selected), [nodes, selected]);
+  const summary = useMemo(() => summarizeImport(nodes, selected, databaseModes), [nodes, selected, databaseModes]);
   const confirmCopy = formatConfirmCopy(summary);
+  const { filtered: searchFilteredNodes, matchedIds } = useMemo(
+    () => searchTreeNodes(nodes, searchQuery),
+    [nodes, searchQuery],
+  );
+
+  useEffect(() => {
+    if (searchQuery.trim() && matchedIds.size > 0) {
+      setExpandedIds((prev) => new Set([...prev, ...matchedIds]));
+    }
+  }, [searchQuery, matchedIds]);
+
   const filteredNodes = useMemo(
-    () => filterTreeNodes(nodes, { hideImported, hideDatabaseRows }),
-    [nodes, hideImported, hideDatabaseRows],
+    () => filterTreeNodes(searchFilteredNodes, { hideImported, hideDatabaseRows }),
+    [searchFilteredNodes, hideImported, hideDatabaseRows],
   );
   const visibleNodes = filteredNodes.slice(0, visibleRootCount);
   const remainingRootCount = Math.max(0, filteredNodes.length - visibleRootCount);
@@ -428,7 +472,6 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
       toast.error(errorMessage(err));
     }
   };
-
   const handleImport = async () => {
     if (importPending || !spaceKey || summary.importIds.length === 0) return;
     const batches = chunkPageIds(summary.importIds);
@@ -457,6 +500,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           spaceKey,
           parentId,
           visibility,
+          overwriteExisting,
+          databaseModes,
         });
 
         allItems.push(...response.items);
@@ -477,6 +522,18 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
       setBatchProgress(null);
     }
   };
+
+  const handleSetDatabaseMode = useCallback((databaseId: string) => {
+    setDatabaseModes((prev) => {
+      if (prev[databaseId] === 'skip') {
+        const next = { ...prev };
+        delete next[databaseId];
+        return next;
+      }
+      return { ...prev, [databaseId]: 'skip' };
+    });
+  }, []);
+
   const handleSelectPagesOnly = useCallback(() => {
     if (runImport.isPending) return;
     const docIds = documentPageIds(nodes, hideImported);
@@ -701,6 +758,27 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    <div className="relative">
+                      <input
+                        type="search"
+                        className="nm-input h-8 w-full pl-3 pr-8 text-xs"
+                        placeholder="Search pages and databases in workspace…"
+                        aria-label="Search pages and databases in workspace"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        disabled={importPending}
+                      />
+                      {searchQuery ? (
+                        <button
+                          type="button"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          onClick={() => setSearchQuery('')}
+                          aria-label="Clear search"
+                        >
+                          <X size={12} aria-hidden />
+                        </button>
+                      ) : null}
+                    </div>
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2 text-xs">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <button
@@ -794,6 +872,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                           locked={importPending}
                           expandedIds={expandedIds}
                           onToggleExpanded={handleToggleExpanded}
+                          databaseModes={databaseModes}
+                          onSetDatabaseMode={handleSetDatabaseMode}
                         />
                       ))}
                     </ul>
@@ -839,6 +919,23 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 <p data-testid="notion-import-confirm-copy" className="text-sm text-foreground">
                   {confirmCopy}
                 </p>
+                <div className="rounded-md border border-border/70 bg-card p-3">
+                  <label className="flex cursor-pointer items-start gap-2.5 text-xs text-foreground select-none">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 rounded border-border-interactive accent-primary"
+                      checked={overwriteExisting}
+                      onChange={(e) => setOverwriteExisting(e.target.checked)}
+                      disabled={importPending}
+                    />
+                    <div>
+                      <span className="font-medium">Update existing pages with latest Notion content</span>
+                      <p className="mt-0.5 text-muted-foreground">
+                        Re-syncs previously imported pages, updating their content and re-running AI embeddings without changing page IDs.
+                      </p>
+                    </div>
+                  </label>
+                </div>
                 {summary.skippedUnsupportedCount > 0 && (
                   <p className="text-xs text-muted-foreground">
                     {summary.skippedUnsupportedCount === 1

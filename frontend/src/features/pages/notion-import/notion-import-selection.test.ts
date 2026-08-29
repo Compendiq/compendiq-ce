@@ -13,6 +13,7 @@ import {
   importedPageIds,
   NOTION_IMPORT_MAX_PAGES,
   selectablePageIds,
+  searchTreeNodes,
   shouldCommitImportResult,
   summarizeImport,
   toggleSelectedPageGroup,
@@ -221,6 +222,28 @@ describe('summarizeImport / formatConfirmCopy', () => {
     expect(copy).toContain('1 page will import');
     expect(copy).toMatch(/rows/i);
     expect(copy).toMatch(/appear as their own page/i);
+  });
+
+  it('excludes selected rows of skip-mode databases from importIds', () => {
+    const tree = [
+      page('handbook', 'Handbook', [
+        database('crm', 'CRM', [page('row-1', 'Row 1')]),
+      ]),
+    ];
+    const summary = summarizeImport(tree, new Set(['handbook', 'row-1']), { crm: 'skip' });
+    expect(summary.importIds).toEqual(['handbook']);
+    expect(summary.importCount).toBe(1);
+  });
+});
+
+describe('searchTreeNodes', () => {
+  it('keeps a child when the query matches the ancestor path', () => {
+    const tree = [page('handbook', 'Handbook', [page('notes', 'Notes')])];
+    const { filtered, matchedIds } = searchTreeNodes(tree, 'handbook / notes');
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]!.children.map((c) => c.title)).toEqual(['Notes']);
+    expect(matchedIds.has('handbook')).toBe(true);
+    expect(matchedIds.has('notes')).toBe(true);
   });
 });
 

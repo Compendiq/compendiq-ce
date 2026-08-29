@@ -205,8 +205,62 @@ export function filterTreeNodes(
   return nodes.map(filterNode).filter((node): node is NotionTreeNode => node !== null);
 }
 
-export function summarizeImport(nodes: NotionTreeNode[], selected: ReadonlySet<string>): ImportSummary {
-  const importIds = selectablePageIds(nodes, selected);
+export function searchTreeNodes(
+  nodes: NotionTreeNode[],
+  query: string,
+): { filtered: NotionTreeNode[]; matchedIds: Set<string> } {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return { filtered: nodes, matchedIds: new Set() };
+  }
+
+  const matchedIds = new Set<string>();
+
+  function filterRecursive(node: NotionTreeNode, ancestors: string[]): NotionTreeNode | null {
+    const titles = [...ancestors, node.title.toLowerCase()];
+    const isSelfMatch =
+      node.title.toLowerCase().includes(trimmed) || titles.join(' / ').includes(trimmed);
+    const filteredChildren = node.children
+      .map((child) => filterRecursive(child, titles))
+      .filter((child): child is NotionTreeNode => child !== null);
+
+    const isChildMatch = filteredChildren.length > 0;
+    if (isSelfMatch || isChildMatch) {
+      matchedIds.add(node.id);
+      return {
+        ...node,
+        children: filteredChildren,
+      };
+    }
+    return null;
+  }
+
+  const filtered = nodes
+    .map((node) => filterRecursive(node, []))
+    .filter((node): node is NotionTreeNode => node !== null);
+
+  return { filtered, matchedIds };
+}
+
+export function summarizeImport(
+  nodes: NotionTreeNode[],
+  selected: ReadonlySet<string>,
+  databaseModes?: Record<string, 'skip'>,
+): ImportSummary {
+  const skippedRowIds = new Set<string>();
+  if (databaseModes) {
+    const collect = (node: NotionTreeNode, parentSkipped: boolean): void => {
+      const selfSkip =
+        node.type === 'database' &&
+        (databaseModes[node.id] === 'skip' ||
+          (typeof node.linkedFromId === 'string' && databaseModes[node.linkedFromId] === 'skip'));
+      const skipped = parentSkipped || selfSkip;
+      if (skipped && isSelectablePage(node)) skippedRowIds.add(node.id);
+      for (const child of node.children) collect(child, skipped);
+    };
+    for (const node of nodes) collect(node, false);
+  }
+  const importIds = selectablePageIds(nodes, selected).filter((id) => !skippedRowIds.has(id));
   const skippedDatabases = new Set<string>();
   let skippedUnsupportedCount = 0;
   walk(nodes, (node) => {

@@ -462,6 +462,37 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     }
   });
 
+  it('audits overwrite of an existing page as PAGE_UPDATED', async () => {
+    const orig = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id)
+       VALUES ('Old Notes', '<p>old</p>', 'old', 1, 'standalone', $1, 'notes') RETURNING id`,
+      [userId],
+    );
+    const pageId = orig.rows[0]!.id;
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const res = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'], visibility: 'private', overwriteExisting: true },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items[0]).toMatchObject({
+        notionPageId: 'notes',
+        status: 'success',
+        localPageId: pageId,
+      });
+      const audit = await query<{ action: string }>(
+        `SELECT action FROM audit_log WHERE resource_type = 'page' AND resource_id = $1 ORDER BY created_at`,
+        [String(pageId)],
+      );
+      expect(audit.rows.map((r) => r.action)).toEqual(['PAGE_UPDATED']);
+    } finally {
+      await instance.close();
+    }
+  });
+
   it('GET handlers still never decrypt the token after the import route is added', () => {
     const src = readFileSync(new URL('./notion.ts', import.meta.url), 'utf8');
     const start = src.indexOf("fastify.get('/notion/connection'");

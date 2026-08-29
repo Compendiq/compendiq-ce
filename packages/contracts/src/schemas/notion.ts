@@ -86,6 +86,9 @@ export const NotionTreeResponseSchema = z
   .strict();
 export type NotionTreeResponse = z.infer<typeof NotionTreeResponseSchema>;
 
+export const NotionDatabaseModeEnum = z.literal('skip');
+export type NotionDatabaseMode = z.infer<typeof NotionDatabaseModeEnum>;
+
 /** Confirmed selection + local destination for a one-shot Notion import (#1465). */
 export const NotionImportRequestSchema = z
   .object({
@@ -93,6 +96,8 @@ export const NotionImportRequestSchema = z
     spaceKey: z.string().min(1).optional(),
     parentId: z.union([z.string(), z.number()]).transform(String).optional(),
     visibility: PageVisibilityEnum.optional().default('shared'),
+    overwriteExisting: z.boolean().optional(),
+    databaseModes: z.record(z.string(), NotionDatabaseModeEnum).optional(),
   })
   .strict();
 export type NotionImportRequest = z.infer<typeof NotionImportRequestSchema>;
@@ -106,6 +111,7 @@ export const NotionImportItemSchema = z
     status: NotionImportItemStatusEnum,
     localPageId: z.number().int().positive().optional(),
     reason: z.string().optional(),
+    updated: z.boolean().optional(),
   })
   .strict();
 export type NotionImportItem = z.infer<typeof NotionImportItemSchema>;
