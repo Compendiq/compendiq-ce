@@ -24,12 +24,37 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../../../core/db/postgres.js', () => ({
-  query: vi.fn(async (sql: string) => {
-    // The owner lookup for a Confluence attachment key.
+const barrier = vi.hoisted(() => ({
+  active: false,
+  calls: 0,
+  deleteSqlInside: false,
+  dirtyInside: false,
+  dbQuery: vi.fn(async (sql: string) => {
     if (sql.includes('SELECT id FROM pages WHERE confluence_id')) return { rows: [{ id: 7 }] };
+    if (sql.includes('DELETE FROM page_image_embeddings')) {
+      barrier.deleteSqlInside = barrier.active;
+    }
     return { rows: [], rowCount: 0 };
   }),
+}));
+
+
+vi.mock('../../../core/db/postgres.js', () => ({
+  query: (sql: string) => barrier.dbQuery(sql),
+}));
+
+vi.mock('../../../core/services/attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: async (
+    operation: (client: { query: typeof barrier.dbQuery }) => Promise<unknown>,
+  ) => {
+    barrier.calls += 1;
+    barrier.active = true;
+    try {
+      return await operation({ query: barrier.dbQuery });
+    } finally {
+      barrier.active = false;
+    }
+  },
 }));
 
 vi.mock('../../../core/services/redis-cache.js', () => ({
@@ -68,6 +93,7 @@ vi.mock('./attachment-handler.js', () => ({ getExpectedAttachmentFilenames: vi.f
 
 import { attachmentsRootNow } from '../../../core/services/attachment-store.js';
 import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
+import { removeCachedAttachmentFile } from '../../../core/services/attachment-store.js';
 import {
   ATTACHMENT_SWEEP_GRACE_MS,
   deleteCandidates,
@@ -90,6 +116,12 @@ describe('#1349 deleteCandidates — pagesMarkedDirty reports the flag it really
     vi.mocked(attachmentsRootNow).mockReturnValue(root);
     vi.mocked(markPageImagesDirty).mockClear();
     vi.mocked(markPageImagesDirty).mockResolvedValue(true);
+    barrier.active = false;
+    barrier.calls = 0;
+    barrier.deleteSqlInside = false;
+    barrier.dirtyInside = false;
+    barrier.dbQuery.mockClear();
+    vi.mocked(removeCachedAttachmentFile).mockReset().mockResolvedValue(undefined);
   });
   afterEach(async () => {
     await fs.rm(root, { recursive: true, force: true });
@@ -107,7 +139,7 @@ describe('#1349 deleteCandidates — pagesMarkedDirty reports the flag it really
     );
 
     expect(totals.files).toBe(1);
-    expect(markPageImagesDirty).toHaveBeenCalledWith(7);
+    expect(markPageImagesDirty).toHaveBeenCalledWith(7, expect.anything());
     expect(totals.pagesMarkedDirty).toBe(1);
   });
 
@@ -127,7 +159,30 @@ describe('#1349 deleteCandidates — pagesMarkedDirty reports the flag it really
     // re-queue claim stands down. Over-reporting `pagesMarkedDirty` would
     // hide a page whose index rows are now stale and whose flag is down.
     expect(totals.files).toBe(1);
-    expect(markPageImagesDirty).toHaveBeenCalledWith(7);
+    expect(markPageImagesDirty).toHaveBeenCalledWith(7, expect.anything());
     expect(totals.pagesMarkedDirty).toBe(0);
+  });
+
+  it('keeps filesystem deletion, embedding-row prune and dirty SQL in one barrier callback', async () => {
+    await seedAgedFile('90001', 'orphan.png');
+    vi.mocked(removeCachedAttachmentFile).mockImplementationOnce(async () => {
+      expect(barrier.active).toBe(true);
+    });
+    vi.mocked(markPageImagesDirty).mockImplementationOnce(async (_pageId, client) => {
+      barrier.dirtyInside = barrier.active;
+      expect(client).toEqual(expect.objectContaining({ query: barrier.dbQuery }));
+      return true;
+    });
+
+    await deleteCandidates(
+      [{ store: 'confluence', key: '90001', filename: 'orphan.png', bytes: 5, reason: 'orphan_file' }],
+      { confluence: new Set(), local: new Set() },
+      () => undefined,
+      emptyDeletedTotals(),
+    );
+
+    expect(barrier.calls).toBe(1);
+    expect(barrier.deleteSqlInside).toBe(true);
+    expect(barrier.dirtyInside).toBe(true);
   });
 });

@@ -20,6 +20,8 @@ import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import type { Pool, PoolClient } from 'pg';
 import {
   setupTestDb,
   truncateAllTables,
@@ -27,9 +29,14 @@ import {
   isDbAvailable,
 } from '../../test-db-helper.js';
 import { query, getPool } from '../../core/db/postgres.js';
-import { PAGE_MOVE_ADVISORY_LOCK_ID } from '../../core/db/advisory-locks.js';
+import {
+  ATTACHMENT_SNAPSHOT_LOCK_ID,
+  PAGE_MOVE_ADVISORY_LOCK_ID,
+} from '../../core/db/advisory-locks.js';
 import { userHasGlobalPermission } from '../../core/services/rbac-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+
+type PoolConnectCallback = Parameters<Pool['connect']>[0];
 
 // The attachment stores resolve their root from ATTACHMENTS_DIR at call time,
 // so pointing it at a temp dir before the route is imported keeps every file
@@ -184,6 +191,22 @@ async function childrenViaTreeJoin(parentId: number): Promise<number[]> {
     [parentId],
   );
   return res.rows.map((r) => r.id);
+}
+
+async function waitForDatabaseBlocker(blockerPid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE $1 = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [blockerPid],
+    );
+    if (result.rows[0]?.waiting) return true;
+    await nextEventLoopTurn();
+  }
+  return false;
 }
 
 // --- Attachment store helpers ---
@@ -427,6 +450,102 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(localRows.rowCount).toBe(0);
     });
 
+    it('holds the attachment snapshot barrier through the committed local-store cleanup', async () => {
+      const id = await createPage({
+        title: 'Barrier cleanup',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      await writeStoreB(id, 'diagram.png', 'diagram-bytes', userId);
+      h.client.createPage.mockResolvedValue(createdPage('900099'));
+
+      const localDir = path.join(attachmentsRoot, 'local', String(id));
+      const realRm = fs.rm.bind(fs);
+      const cleanupStarted = Promise.withResolvers<void>();
+      const cleanupGate = Promise.withResolvers<void>();
+      const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+        if (path.resolve(String(target)) === path.resolve(localDir)) {
+          cleanupStarted.resolve();
+          await cleanupGate.promise;
+        }
+        return realRm(target, options);
+      });
+
+      const waiter = await getPool().connect();
+      let response: { statusCode: number } | undefined;
+      let acquired = false;
+      try {
+        const pending = toConfluence(id);
+        await cleanupStarted.promise;
+        const lock = await waiter.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [ATTACHMENT_SNAPSHOT_LOCK_ID],
+        );
+        acquired = lock.rows[0]!.acquired;
+        if (acquired) {
+          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        }
+        cleanupGate.resolve();
+        response = await pending;
+      } finally {
+        cleanupGate.resolve();
+        rmSpy.mockRestore();
+        waiter.release();
+      }
+
+      expect(response?.statusCode).toBe(200);
+      expect(acquired).toBe(false);
+    });
+
+    it.each([
+      ['advisory unlock', 'SELECT pg_advisory_unlock_shared($1)'],
+      ['statement-timeout reset', 'RESET statement_timeout'],
+    ])('never deletes the committed upstream page when barrier %s fails', async (_failure, failingSql) => {
+      const id = await createPage({
+        title: 'Committed barrier failure',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      h.client.createPage.mockResolvedValue(createdPage('900100'));
+
+      const pool = getPool();
+      const originalConnect = pool.connect.bind(pool);
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
+        ((callback?: PoolConnectCallback) => {
+          if (callback) return originalConnect(callback);
+          return originalConnect().then((client) => {
+            const originalQuery = client.query;
+            const query = originalQuery.bind(client);
+            // This test seam only wraps the promise/string query form used by
+            // the mutation barrier and its relocation callback.
+            client.query = ((text: string, values?: unknown[]) => {
+              if (text === failingSql) {
+                return Promise.reject(new Error(`injected ${_failure} failure`));
+              }
+              return query(text, values);
+            }) as unknown as typeof client.query;
+            return client;
+          });
+        }) as typeof pool.connect,
+      );
+
+      let response: { statusCode: number } | undefined;
+      try {
+        response = await toConfluence(id);
+      } finally {
+        connectSpy.mockRestore();
+      }
+
+      expect(response?.statusCode).toBe(500);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({
+        source: 'confluence',
+        confluence_id: '900100',
+      });
+    });
+
     it('rejects a confirmation whose version count is stale, changing nothing', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await addVersions(id, 4);
@@ -623,6 +742,145 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         [id],
       );
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
+    it('holds one shared barrier from local-file staging through transaction commit', async () => {
+      const id = await createPage({
+        title: 'Barrier staging',
+        source: 'confluence',
+        confluenceId: '700099',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700099/chart.png" /></p>',
+      });
+      await writeStoreA('700099', 'chart.png', 'chart-bytes');
+
+      const rowHolder = await getPool().connect();
+      const waiter = await getPool().connect();
+      await rowHolder.query('BEGIN');
+      await rowHolder.query('SELECT id FROM pages WHERE id = $1 FOR UPDATE', [id]);
+      const stagedPath = path.join(attachmentsRoot, 'local', String(id), 'chart.png');
+      const stagedSignal = Promise.withResolvers<void>();
+      const realWriteFile = fs.writeFile.bind(fs);
+      const writeSpy = vi.spyOn(fs, 'writeFile').mockImplementation(async (target, data, options) => {
+        await realWriteFile(target, data, options);
+        if (path.resolve(String(target)) === path.resolve(stagedPath)) stagedSignal.resolve();
+      });
+      let response: { statusCode: number } | undefined;
+      let acquired = false;
+      try {
+        const pending = toLocal(id, '700099');
+        await stagedSignal.promise;
+        const blockerPid = await rowHolder
+          .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+          .then((result) => result.rows[0]!.pid);
+        expect(await waitForDatabaseBlocker(blockerPid)).toBe(true);
+
+        const lock = await waiter.query<{ acquired: boolean }>(
+          'SELECT pg_try_advisory_lock($1) AS acquired',
+          [ATTACHMENT_SNAPSHOT_LOCK_ID],
+        );
+        acquired = lock.rows[0]!.acquired;
+        if (acquired) {
+          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        }
+
+        await rowHolder.query('COMMIT');
+        response = await pending;
+      } finally {
+        writeSpy.mockRestore();
+        await rowHolder.query('ROLLBACK').catch(() => undefined);
+        rowHolder.release();
+        waiter.release();
+      }
+
+      expect(response?.statusCode).toBe(200);
+      expect(acquired).toBe(false);
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
+    it('does not make a second pool checkout for identifier prechecks while holding the barrier', async () => {
+      const id = await createPage({
+        title: 'Saturated pool',
+        source: 'confluence',
+        confluenceId: '700100',
+        spaceKey: 'CONF',
+      });
+
+      const pool = getPool();
+      const originalConnect = pool.connect.bind(pool);
+      const lockAcquired = Promise.withResolvers<void>();
+      const continueAfterSaturation = Promise.withResolvers<void>();
+      const holders: PoolClient[] = [];
+      let lockActive = false;
+      let poolCheckoutsWhileLocked = 0;
+
+      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
+        ((callback?: PoolConnectCallback) => {
+          if (callback) {
+            if (lockActive) poolCheckoutsWhileLocked += 1;
+            return originalConnect(callback);
+          }
+          return originalConnect().then((client) => {
+            const originalQuery = client.query;
+            const originalRelease = client.release;
+            const query = originalQuery.bind(client);
+            const release = originalRelease.bind(client);
+            client.query = (async (text: string, values?: unknown[]) => {
+              const result = await query(text, values);
+              if (text === 'SELECT pg_advisory_lock_shared($1)') {
+                lockActive = true;
+                lockAcquired.resolve();
+                await continueAfterSaturation.promise;
+              } else if (text === 'SELECT pg_advisory_unlock_shared($1)') {
+                lockActive = false;
+              }
+              return result;
+            }) as unknown as typeof client.query;
+            client.release = (error?: Error | boolean) => {
+              client.query = originalQuery;
+              client.release = originalRelease;
+              release(error);
+            };
+            return client;
+          });
+        }) as typeof pool.connect,
+      );
+
+      const pending = toLocal(id, '700100');
+      let settled = false;
+      let outcome: 'completed' | 'second-checkout';
+      let response: { statusCode: number } | undefined;
+      try {
+        await lockAcquired.promise;
+        while (pool.idleCount > 0 || pool.totalCount < pool.options.max) {
+          holders.push(await originalConnect());
+        }
+        expect(pool.idleCount).toBe(0);
+        expect(pool.totalCount).toBe(pool.options.max);
+
+        continueAfterSaturation.resolve();
+        const completion = pending.then((result) => {
+          settled = true;
+          response = result;
+          return 'completed' as const;
+        });
+        const secondCheckout = (async () => {
+          while (!settled && pool.waitingCount === 0) await nextEventLoopTurn();
+          return pool.waitingCount > 0 ? ('second-checkout' as const) : completion;
+        })();
+        outcome = await Promise.race([completion, secondCheckout]);
+      } finally {
+        settled = true;
+        continueAfterSaturation.resolve();
+        for (const holder of holders) holder.release();
+        response ??= await pending;
+        connectSpy.mockRestore();
+      }
+
+      expect(outcome).toBe('completed');
+      expect(poolCheckoutsWhileLocked).toBe(0);
+      expect(response?.statusCode).toBe(200);
+      expect((await getRow(id)).source).toBe('standalone');
     });
 
     it('re-keys an attachment anchor, not just an image (#1169)', async () => {

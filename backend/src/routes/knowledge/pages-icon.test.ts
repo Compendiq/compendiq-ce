@@ -13,8 +13,9 @@ vi.mock('../../core/services/redis-cache.js', () => ({
   },
 }));
 
+const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -31,6 +32,15 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 const mockQueryFn = vi.fn();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
+}));
+
+const mockLockedQuery = vi.fn();
+const lockedClient = { query: mockLockedQuery };
+const mockWithLocalAttachmentMutationLock = vi.fn();
+vi.mock('../../core/services/attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: (
+    operation: (client: typeof lockedClient) => Promise<unknown>,
+  ) => mockWithLocalAttachmentMutationLock(operation),
 }));
 
 const mockWrite = vi.fn();
@@ -63,7 +73,7 @@ const pageRow = {
   icon_value: null,
 };
 
-describe('PATCH /api/pages/:id/icon', () => {
+describe('page icon mutation routes', () => {
   let app: ReturnType<typeof Fastify>;
 
   beforeAll(async () => {
@@ -98,12 +108,28 @@ describe('PATCH /api/pages/:id/icon', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockInvalidate.mockReset();
+    mockInvalidate.mockResolvedValue(undefined);
+    mockInvalidateAcrossUsers.mockReset();
+    mockInvalidateAcrossUsers.mockResolvedValue(undefined);
+    mockLogAuditEvent.mockReset();
+    mockLogAuditEvent.mockResolvedValue(undefined);
+    mockWrite.mockReset();
+    mockDelete.mockReset();
+    mockDelete.mockResolvedValue(undefined);
+    mockRead.mockReset();
     mockQueryFn.mockImplementation((sql: string) => {
       if (typeof sql === 'string' && sql.includes('SELECT id, source')) {
         return { rows: [pageRow] };
       }
       return { rows: [], rowCount: 1 };
     });
+    mockLockedQuery.mockReset();
+    mockLockedQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+    mockWithLocalAttachmentMutationLock.mockReset();
+    mockWithLocalAttachmentMutationLock.mockImplementation(
+      (operation: (client: typeof lockedClient) => Promise<unknown>) => operation(lockedClient),
+    );
   });
 
   it('sets an emoji mark and invalidates the pages cache', async () => {
@@ -114,7 +140,12 @@ describe('PATCH /api/pages/:id/icon', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ icon: { kind: 'emoji', value: '🚀' } });
-    expect(mockDelete).toHaveBeenCalledWith(42);
+    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
+    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
+    expect(mockLockedQuery).toHaveBeenCalledWith(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
+      [42, 'emoji', '🚀'],
+    );
     expect(mockInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
   });
 
@@ -126,7 +157,132 @@ describe('PATCH /api/pages/:id/icon', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ icon: null });
-    expect(mockDelete).toHaveBeenCalledWith(42);
+    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
+  });
+
+  it('writes an image and its pages row through the same barrier-owning client', async () => {
+    mockWrite.mockResolvedValueOnce({ sha: 'a'.repeat(64), format: 'png' });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/icon-image',
+      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
+    expect(mockWrite).toHaveBeenCalledWith(42, Buffer.from('png'), lockedClient);
+    expect(mockLockedQuery).toHaveBeenCalledWith(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
+      [42, 'image', 'a'.repeat(64)],
+    );
+  });
+
+  it.each([
+    {
+      route: 'upload/replace',
+      method: 'POST',
+      url: '/api/pages/42/icon-image',
+      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
+      expected: { icon: { kind: 'image', value: 'b'.repeat(64) } },
+    },
+    {
+      route: 'delete',
+      method: 'PATCH',
+      url: '/api/pages/42/icon',
+      payload: { icon: null },
+      expected: { icon: null },
+    },
+  ] as const)(
+    'releases the saturated one-client pool before auditing an icon $route',
+    async ({ method, url, payload, expected }) => {
+      const events: string[] = [];
+      let checkedOutClients = 0;
+
+      mockWithLocalAttachmentMutationLock.mockImplementationOnce(
+        async (operation: (client: typeof lockedClient) => Promise<unknown>) => {
+          checkedOutClients += 1;
+          events.push('barrier:acquired');
+          try {
+            return await operation(lockedClient);
+          } finally {
+            checkedOutClients -= 1;
+            events.push('barrier:released');
+          }
+        },
+      );
+      mockWrite.mockImplementationOnce(async () => {
+        events.push('filesystem:write');
+        return { sha: 'b'.repeat(64), format: 'png' };
+      });
+      mockDelete.mockImplementationOnce(async () => {
+        events.push('filesystem:delete');
+      });
+      mockLockedQuery.mockImplementationOnce(async () => {
+        events.push('pages:update');
+        return { rows: [], rowCount: 1 };
+      });
+      mockInvalidateAcrossUsers.mockImplementationOnce(async () => {
+        events.push('cache:invalidate');
+      });
+      mockLogAuditEvent.mockImplementationOnce(async () => {
+        events.push('audit:checkout');
+        if (checkedOutClients === 1) {
+          // Model logAuditEvent's best-effort handling when PG_POOL_MAX=1:
+          // its global query cannot check out a second client.
+          events.push('audit:dropped-pool-saturated');
+          return;
+        }
+        checkedOutClients += 1;
+        events.push('audit:query');
+        checkedOutClients -= 1;
+        events.push('audit:released');
+      });
+
+      const response = await app.inject({ method, url, payload });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(expected);
+      expect(checkedOutClients).toBe(0);
+      expect(events).toEqual([
+        'barrier:acquired',
+        method === 'POST' ? 'filesystem:write' : 'filesystem:delete',
+        'pages:update',
+        'barrier:released',
+        'cache:invalidate',
+        'audit:checkout',
+        'audit:query',
+        'audit:released',
+      ]);
+    },
+  );
+
+  it.each([
+    {
+      route: 'upload/replace',
+      method: 'POST',
+      url: '/api/pages/42/icon-image',
+      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
+    },
+    {
+      route: 'delete',
+      method: 'PATCH',
+      url: '/api/pages/42/icon',
+      payload: { icon: null },
+    },
+  ] as const)('does not audit a failed icon $route mutation', async ({ method, url, payload }) => {
+    const failure = new Error('filesystem mutation failed');
+    if (method === 'POST') {
+      mockWrite.mockRejectedValueOnce(failure);
+    } else {
+      mockDelete.mockRejectedValueOnce(failure);
+    }
+
+    const response = await app.inject({ method, url, payload });
+
+    expect(response.statusCode).toBe(500);
+    expect(mockLockedQuery).not.toHaveBeenCalled();
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
   it('accepts a catalogue brand slug', async () => {

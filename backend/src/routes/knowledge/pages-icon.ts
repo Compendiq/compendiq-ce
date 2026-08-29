@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { UpdatePageIconSchema } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
@@ -13,6 +14,7 @@ import {
   readPageIconImage,
   writePageIconImage,
 } from '../../core/services/page-icon-store.js';
+import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
 
 const IdParamSchema = z.object({ id: z.string().min(1) });
 const ImageQuerySchema = z.object({ v: z.string().min(1).max(128).optional() });
@@ -86,21 +88,28 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     page: PageIconRow,
     kind: string | null,
     value: string | null,
-    userId: string,
-    request: FastifyRequest,
+    client: PoolClient,
   ) {
-    await query('UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1', [
+    await client.query('UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1', [
       page.id,
       kind,
       value,
     ]);
+    return { icon: toPageIcon(kind, value) };
+  }
+
+  async function finalizeIconMutation(
+    page: PageIconRow,
+    kind: string | null,
+    userId: string,
+    request: FastifyRequest,
+  ): Promise<void> {
     if (page.visibility === 'shared' || page.source === 'confluence') {
       await cache.invalidateAcrossUsers('pages');
     } else {
       await cache.invalidate(userId, 'pages');
     }
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(page.id), { icon: kind }, request);
-    return { icon: toPageIcon(kind, value) };
   }
 
   fastify.patch('/pages/:id/icon', async (request) => {
@@ -111,13 +120,17 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     if (!page) throw fastify.httpErrors.notFound('Page not found');
     await assertCanEdit(fastify, userId, page);
 
-    if (body.icon === null) {
-      await deletePageIconImage(page.id);
-      return persistIcon(page, null, null, userId, request);
-    }
+    const result = await withLocalAttachmentMutationLock(async (client) => {
+      if (body.icon === null) {
+        await deletePageIconImage(page.id, client);
+        return persistIcon(page, null, null, client);
+      }
 
-    await deletePageIconImage(page.id);
-    return persistIcon(page, body.icon.kind, body.icon.value, userId, request);
+      await deletePageIconImage(page.id, client);
+      return persistIcon(page, body.icon.kind, body.icon.value, client);
+    });
+    await finalizeIconMutation(page, body.icon?.kind ?? null, userId, request);
+    return result;
   });
 
   fastify.post('/pages/:id/icon-image', async (request) => {
@@ -129,8 +142,13 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     await assertCanEdit(fastify, userId, page);
 
     try {
-      const written = await writePageIconImage(page.id, parseDataUri(dataUri));
-      return persistIcon(page, 'image', written.sha, userId, request);
+      const bytes = parseDataUri(dataUri);
+      const result = await withLocalAttachmentMutationLock(async (client) => {
+        const written = await writePageIconImage(page.id, bytes, client);
+        return persistIcon(page, 'image', written.sha, client);
+      });
+      await finalizeIconMutation(page, 'image', userId, request);
+      return result;
     } catch (err) {
       if (err instanceof PageIconStoreError) {
         if (err.code === 'TOO_LARGE') throw fastify.httpErrors.payloadTooLarge(err.message);

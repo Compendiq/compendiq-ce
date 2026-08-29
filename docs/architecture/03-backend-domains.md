@@ -10,7 +10,7 @@ imports enforced by `eslint-plugin-boundaries` (see
 flowchart LR
     subgraph routes["routes/ (HTTP entry points)"]
         direction TB
-        rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>rbac, notifications, setup"]
+        rF["foundation<br/>health, auth, settings,<br/>admin, admin-embedding-locks,<br/>backup admin + public download,<br/>rbac, notifications, setup"]
         rC["confluence<br/>spaces, sync, attachments"]
         rL["llm<br/>llm-ask (SSE), improve, generate,<br/>summarize, diagram, conversations,<br/>inline-completion, embeddings,<br/>embedding-shadow, models,<br/>admin, pdf, prepare-image"]
         rK["knowledge<br/>pages CRUD, relocate, versions, tags,<br/>embeddings, duplicates, pinned,<br/>templates, comments, search,<br/>analytics, export/import,<br/>notion connection, tree, and import,<br/>pages-collab (WS gateway)"]
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -455,6 +455,58 @@ route added later inherits the rule rather than the bypass.
 
 ## Background workers
 
-Workers live inside the `domains/*/services/` layer and are started from
+Content workers live inside `domains/*/services/`; the cross-cutting backup
+worker lives in `core/services/backup-worker.ts`. All are started from
 `backend/src/index.ts`. See [`08-flow-sync.md`](./08-flow-sync.md) and
-[`09-flow-rag-chat.md`](./09-flow-rag-chat.md) for the runtime behaviour.
+[`09-flow-rag-chat.md`](./09-flow-rag-chat.md) for the content-worker runtime
+behaviour, and the backup ownership map below for backup execution.
+
+## Backup ownership (#1420)
+
+Backup crosses PostgreSQL, Redis, the attachment filesystem, and public S3, so
+its implementation belongs to `core/services` rather than to a content
+domain. The foundation routes and standalone script only compose those
+owners:
+
+```mermaid
+flowchart LR
+    classDef core fill:#eef6ff,stroke:#4a90e2
+    classDef route fill:#fae8e8,stroke:#c0392b
+    classDef cli fill:#f5f5f5,stroke:#999,stroke-dasharray: 4 4
+
+    rAdmin["routes/foundation/admin-backup.ts<br/>admin settings, ticket creation, enqueue"]:::route
+    rDownload["routes/foundation/backup-download.ts<br/>public capability redemption"]:::route
+    cTicket["core/services/backup-export-ticket.ts<br/>Redis TTL + atomic consume"]:::core
+    cWorker["core/services/backup-worker.ts<br/>due check + forced run"]:::core
+    cBackup["core/services/backup-service.ts<br/>lock, pg_dump stream, run history"]:::core
+    cS3["core/services/backup-s3.ts<br/>public-only request transport"]:::core
+    cArchive["core/services/backup-stream.ts<br/>+ backup-manifest.ts"]:::core
+    cRestore["core/services/backup-restore.ts<br/>stage, validate, commit, rollback"]:::core
+    cDb["core/db/postgres.ts<br/>pool + shipped migrations"]:::core
+    cli["scripts/restore-backup.ts<br/>standalone process"]:::cli
+
+    rAdmin --> cTicket
+    rAdmin --> cBackup
+    rDownload --> cTicket
+    rDownload --> cBackup
+    cWorker --> cBackup
+    cBackup --> cS3
+    cBackup --> cArchive
+    cli --> cRestore
+    cRestore --> cArchive
+    cRestore --> cDb
+```
+
+`admin-backup.ts` remains authenticated and admin-gated. The separately
+registered `backup-download.ts` route intentionally has no authentication
+hook: it accepts only a syntactically valid 256-bit ticket and asks
+`backup-export-ticket.ts` to consume it once. `backup-worker.ts` owns schedule
+polling/forced execution, while `backup-service.ts` owns the cluster lock,
+`pg_dump` lifecycle, encrypted stream creation, S3 run history, and S3
+handoff.
+
+Restore has no Fastify route. `scripts/restore-backup.ts` runs outside the
+server, and `backup-restore.ts` exclusively owns its on-disk stage/validation
+and commit/rollback phases. It reuses the archive implementation and calls
+`core/db/postgres.ts` only after `pg_restore` succeeds so shipped migrations
+run from the same standalone process.

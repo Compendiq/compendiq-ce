@@ -85,6 +85,7 @@ const ERROR_AUDIT_ACTIONS = [
   'WEBHOOK_DELIVERY_FAILED',
   'WEBHOOK_DELIVERY_DEAD',
   'EMBEDDING_RESET_FAILED',
+  'BACKUP_EXPORT_FAILED',
 ] as const;
 
 async function readHealthApiToken(): Promise<string | null> {

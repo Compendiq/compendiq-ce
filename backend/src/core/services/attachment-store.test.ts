@@ -81,6 +81,12 @@ describe('ATTACHMENT_ROOT_RESERVED_DIRNAMES (#1418 SPEC-009)', () => {
   });
 });
 
+describe('attachment filename portability', () => {
+  it('rejects backslashes as non-portable path separators', () => {
+    expect(store.isStorableAttachmentFilename(String.raw`diagram\final.png`)).toBe(false);
+  });
+});
+
 describe('resolveAttachmentBytes (#1115)', () => {
   it('reads the Confluence cache tree keyed by confluence_id', async () => {
     await writeFileAt(path.join('44556677', 'diagram.png'), pngBytes());

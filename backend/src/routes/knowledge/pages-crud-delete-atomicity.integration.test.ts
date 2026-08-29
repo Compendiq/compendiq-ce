@@ -27,15 +27,17 @@ import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { PAGE_ICON_STORE_DIRNAME } from '../../core/services/page-icon-store.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../core/db/advisory-locks.js';
 
 // --- Boundary mocks (everything else is real) ---
 
@@ -211,6 +213,27 @@ async function iconExists(pageId: number): Promise<boolean> {
   }
 }
 
+async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND mode = 'ShareLock'
+            AND NOT granted
+            AND classid = 0
+            AND objid = $1
+            AND $2 = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
+    );
+    if (result.rows[0]?.waiting) return true;
+    await nextEventLoopTurn();
+  }
+  return false;
+}
+
 // --- Tests ---
 
 describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergence (#766)', () => {
@@ -264,6 +287,42 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
   });
 
   // ── single delete ─────────────────────────────────────────────────────────
+
+  it('keeps a permanent standalone delete and its directory cleanup behind one snapshot barrier', async () => {
+    const pageId = await insertStandalone('Barrier delete', userId, 'private');
+    const localDir = path.join(attachmentsDir, 'local', String(pageId));
+    await fs.mkdir(localDir, { recursive: true });
+    await fs.writeFile(path.join(localDir, 'diagram.png'), 'bytes');
+
+    const holder = await getPool().connect();
+    await holder.query('SELECT pg_advisory_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    const blockerPid = await holder
+      .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+      .then((result) => result.rows[0]!.pid);
+    let unlocked = false;
+    try {
+      const pending = app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${pageId}?permanent=true`,
+      });
+      expect(await waitForAttachmentMutationWaiter(blockerPid)).toBe(true);
+      expect(await getRowById(pageId)).not.toBeNull();
+      await expect(fs.stat(path.join(localDir, 'diagram.png'))).resolves.toBeTruthy();
+
+      await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      unlocked = true;
+      const response = await pending;
+
+      expect(response.statusCode).toBe(200);
+      expect(await getRowById(pageId)).toBeNull();
+      await expect(fs.stat(localDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      if (!unlocked) {
+        await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      }
+      holder.release();
+    }
+  });
 
   it('hard-deletes the row and pins when the Confluence delete succeeds', async () => {
     const pageId = await insertPage('conf-ok');

@@ -157,7 +157,12 @@ export type AuditAction =
   // #1154: image staging for AI source material. Emitted by
   // POST /llm/prepare-image on a successful stage; metadata carries filename,
   // format, dimensions and size — never the bytes themselves.
-  | 'IMAGE_PREPARED';
+  | 'IMAGE_PREPARED'
+  | 'BACKUP_EXPORTED'
+  | 'BACKUP_EXPORT_FAILED'
+  | 'BACKUP_UPLOADED'
+  | 'BACKUP_SETTINGS_CHANGED'
+  | 'BACKUP_S3_TESTED';
 
 interface AuditLogEntry {
   id: string;

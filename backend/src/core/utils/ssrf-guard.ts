@@ -14,7 +14,9 @@
  * lazy `addAllowedBaseUrl` calls from request handlers continue to function.
  */
 
+import type { LookupAddress } from 'node:dns';
 import { lookup } from 'node:dns/promises';
+import ipaddr from 'ipaddr.js';
 import { logger } from './logger.js';
 import { prefixedRedisChannel } from './prefixed-redis-channel.js';
 
@@ -275,6 +277,10 @@ export function validateUrl(urlString: string): void {
     return;
   }
 
+  validatePublicNetworkHost(parsed);
+}
+
+function validatePublicNetworkHost(parsed: URL): void {
   const hostname = parsed.hostname.toLowerCase();
 
   // Strip IPv6 brackets if present
@@ -347,6 +353,54 @@ function isBlockedIp(ip: string): boolean {
   return isBlockedIpv4(ip) || isBlockedIpv6(ip);
 }
 
+export interface PublicNetworkAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+export interface ResolvedPublicNetworkUrl {
+  url: URL;
+  addresses: PublicNetworkAddress[];
+}
+
+function parseGloballyRoutableUnicast(address: string): PublicNetworkAddress | null {
+  try {
+    let parsed = ipaddr.parse(address);
+    if (parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()) {
+      parsed = parsed.toIPv4Address();
+    }
+    if (parsed.range() !== 'unicast') return null;
+    return {
+      address,
+      family: parsed.kind() === 'ipv6' ? 6 : 4,
+    };
+  } catch {
+    return null;
+  }
+}
+async function resolveGloballyRoutableAddresses(hostname: string): Promise<PublicNetworkAddress[]> {
+  let resolved: LookupAddress[];
+  try {
+    resolved = await lookup(hostname, { all: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new SsrfError(`SSRF blocked: DNS resolution failed for ${hostname}: ${message}`);
+  }
+
+  if (resolved.length === 0) {
+    throw new SsrfError(`SSRF blocked: DNS returned no public addresses for ${hostname}`);
+  }
+  return resolved.map(({ address }) => {
+    const publicAddress = parseGloballyRoutableUnicast(address);
+    if (!publicAddress) {
+      throw new SsrfError(
+        `SSRF blocked: address is not globally routable unicast: ${hostname} -> ${address}`,
+      );
+    }
+    return publicAddress;
+  });
+}
+
 /**
  * DNS rebinding mitigation: resolve hostname and verify the IP is not private.
  * NOTE: This narrows the rebinding window but does not fully prevent it --
@@ -385,6 +439,26 @@ export async function validateUrlWithDns(urlString: string): Promise<void> {
   if (!allowedOrigins.has(parsed.origin.toLowerCase())) {
     await resolveAndValidateIp(parsed.hostname);
   }
+}
+
+/**
+ * Resolve a URL under the strict public-network policy and return the exact
+ * validated A/AAAA answers so the caller can pin them into its connection.
+ * This policy deliberately ignores the process-global allowlist.
+ */
+export async function resolvePublicNetworkUrl(urlString: string): Promise<ResolvedPublicNetworkUrl> {
+  const url = validateUrlSyntaxAndProtocol(urlString);
+  validatePublicNetworkHost(url);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (ipaddr.isValid(hostname) && !parseGloballyRoutableUnicast(hostname)) {
+    throw new SsrfError(`SSRF blocked: address is not globally routable unicast: ${hostname}`);
+  }
+  const addresses = await resolveGloballyRoutableAddresses(hostname);
+  return { url, addresses };
+}
+
+export async function assertPublicNetworkUrl(urlString: string): Promise<void> {
+  await resolvePublicNetworkUrl(urlString);
 }
 
 /**

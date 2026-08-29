@@ -113,6 +113,7 @@ RUN apk add --no-cache \
 FROM node:24-alpine AS runtime
 
 RUN apk add --no-cache dumb-init wget
+RUN apk add --no-cache postgresql17-client
 
 # Chromium dependencies
 COPY --from=chromium /usr/lib/ /usr/lib/

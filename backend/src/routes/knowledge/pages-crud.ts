@@ -21,6 +21,7 @@ import {
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
+import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
@@ -1617,15 +1618,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       if (queryParams.permanent === 'true') {
-        // Hard delete
-        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
-        await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
-        // #1349: attachment files live on the filesystem and cannot join the
-        // DB delete — best-effort, never throws (same contract as the
-        // Confluence branch's cleanPageAttachments below). Removes
-        // `local/<pk>/` unconditionally and `<pk>/` in the Confluence-style
-        // tree only when no Confluence page owns that key.
-        await cleanupStandalonePageAttachmentDirs(existingPage.id);
+        // Hard delete and attachment cleanup share one barrier-owning client,
+        // so a backup cannot archive the post-delete database with pre-delete
+        // directories (or the inverse).
+        await withLocalAttachmentMutationLock(async (client) => {
+          try {
+            await client.query('BEGIN');
+            await client.query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [
+              userId,
+              existingPage.id,
+            ]);
+            await client.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+            await client.query('COMMIT');
+          } catch (err) {
+            await client.query('ROLLBACK').catch(() => undefined);
+            throw err;
+          }
+          await cleanupStandalonePageAttachmentDirs(existingPage.id, client);
+        });
       } else {
         // Soft delete — move to trash
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);

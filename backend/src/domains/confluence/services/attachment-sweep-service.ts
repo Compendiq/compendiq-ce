@@ -97,6 +97,7 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { setImmediate as yieldToLoop } from 'node:timers/promises';
 import { z } from 'zod';
+import type { PoolClient } from 'pg';
 import {
   AttachmentStoreSweepStatsSchema,
   AttachmentSweepRunSchema,
@@ -123,6 +124,7 @@ import {
   removeLocalAttachmentFileForSweep,
 } from '../../../core/services/local-attachment-service.js';
 import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
+import { withLocalAttachmentMutationLock } from '../../../core/services/attachment-snapshot-lock.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { SUPPORTED_IMAGE_EXTENSIONS, isExternalImageKey } from '../../../core/services/image-references.js';
 import { getExpectedAttachmentFilenames } from './attachment-handler.js';
@@ -592,32 +594,39 @@ function asPageId(key: string): number | null {
 }
 
 /** Which of `keys` any page row (live, trashed, folder — all of them) claims. */
-async function knownConfluenceTreeKeys(keys: string[]): Promise<Set<string>> {
+async function knownConfluenceTreeKeys(
+  keys: string[],
+  client?: PoolClient,
+): Promise<Set<string>> {
   const known = new Set<string>();
   for (let i = 0; i < keys.length; i += KEY_BATCH) {
     const batch = keys.slice(i, i + KEY_BATCH);
-    const byConfluenceId = await query<{ confluence_id: string }>(
-      `SELECT DISTINCT confluence_id FROM pages WHERE confluence_id = ANY($1::text[])`,
-      [batch],
-    );
+    const confluenceStatement =
+      `SELECT DISTINCT confluence_id FROM pages WHERE confluence_id = ANY($1::text[])`;
+    const byConfluenceId = client
+      ? await client.query<{ confluence_id: string }>(confluenceStatement, [batch])
+      : await query<{ confluence_id: string }>(confluenceStatement, [batch]);
     for (const row of byConfluenceId.rows) known.add(row.confluence_id);
     const numeric = batch.map(asPageId).filter((n): n is number => n !== null);
     if (numeric.length > 0) {
-      const byId = await query<{ id: number }>(
-        `SELECT id FROM pages WHERE id = ANY($1::int[])`,
-        [numeric],
-      );
+      const idStatement = `SELECT id FROM pages WHERE id = ANY($1::int[])`;
+      const byId = client
+        ? await client.query<{ id: number }>(idStatement, [numeric])
+        : await query<{ id: number }>(idStatement, [numeric]);
       for (const row of byId.rows) known.add(String(row.id));
     }
   }
   return known;
 }
 
-async function knownLocalPageIds(ids: number[]): Promise<Set<number>> {
+async function knownLocalPageIds(ids: number[], client?: PoolClient): Promise<Set<number>> {
   const known = new Set<number>();
   for (let i = 0; i < ids.length; i += KEY_BATCH) {
     const batch = ids.slice(i, i + KEY_BATCH);
-    const res = await query<{ id: number }>(`SELECT id FROM pages WHERE id = ANY($1::int[])`, [batch]);
+    const statement = `SELECT id FROM pages WHERE id = ANY($1::int[])`;
+    const res = client
+      ? await client.query<{ id: number }>(statement, [batch])
+      : await query<{ id: number }>(statement, [batch]);
     for (const row of res.rows) known.add(row.id);
   }
   return known;
@@ -1082,16 +1091,19 @@ function applyStatsAdjustment(
 }
 
 /** Page ids owning a Confluence-tree directory key (0, 1 or 2 rows). */
-async function confluenceKeyOwners(key: string): Promise<number[]> {
+async function confluenceKeyOwners(key: string, client?: PoolClient): Promise<number[]> {
   const owners = new Set<number>();
-  const byConfluenceId = await query<{ id: number }>(
-    `SELECT id FROM pages WHERE confluence_id = $1`,
-    [key],
-  );
+  const confluenceStatement = `SELECT id FROM pages WHERE confluence_id = $1`;
+  const byConfluenceId = client
+    ? await client.query<{ id: number }>(confluenceStatement, [key])
+    : await query<{ id: number }>(confluenceStatement, [key]);
   for (const row of byConfluenceId.rows) owners.add(row.id);
   const asId = asPageId(key);
   if (asId !== null) {
-    const byId = await query<{ id: number }>(`SELECT id FROM pages WHERE id = $1`, [asId]);
+    const idStatement = `SELECT id FROM pages WHERE id = $1`;
+    const byId = client
+      ? await client.query<{ id: number }>(idStatement, [asId])
+      : await query<{ id: number }>(idStatement, [asId]);
     for (const row of byId.rows) owners.add(row.id);
   }
   return [...owners];
@@ -1130,6 +1142,7 @@ export async function deleteCandidates(
   totals: DeletedTotals,
   adjustments: StoreStatsAdjustments = emptyStatsAdjustments(),
 ): Promise<DeletedTotals> {
+  return withLocalAttachmentMutationLock(async (client) => {
   const cutoffMs = Date.now() - ATTACHMENT_SWEEP_GRACE_MS;
   const dirtyPages = new Set<number>();
   const ownersByKey = new Map<string, number[]>();
@@ -1139,8 +1152,8 @@ export async function deleteCandidates(
     confluence: candidates.filter((c) => c.reason === 'orphan_directory' && c.store === 'confluence').map((c) => c.key),
     local: candidates.filter((c) => c.reason === 'orphan_directory' && c.store === 'local').map((c) => c.key),
   };
-  const stillKnownConfluence = await knownConfluenceTreeKeys(dirKeys.confluence);
-  const stillKnownLocal = await knownLocalPageIds(dirKeys.local.map(Number));
+  const stillKnownConfluence = await knownConfluenceTreeKeys(dirKeys.confluence, client);
+  const stillKnownLocal = await knownLocalPageIds(dirKeys.local.map(Number), client);
 
   try {
     for (const candidate of candidates) {
@@ -1173,7 +1186,7 @@ export async function deleteCandidates(
         // lists in the re-verification tests.
         if (recheck.files.some((f) => keep[candidate.store].has(f.name))) continue;
         if (candidate.store === 'local') {
-          await removeLocalAttachmentDirectory(Number(candidate.key));
+          await removeLocalAttachmentDirectory(Number(candidate.key), client);
         } else {
           await removeCachedAttachmentDirectory(candidate.key);
         }
@@ -1212,7 +1225,11 @@ export async function deleteCandidates(
       if (candidate.store === 'local') {
         // `false` = the name was refused, nothing was removed — skip WITHOUT
         // counting, or the record claims a deletion that did not happen.
-        const removed = await removeLocalAttachmentFileForSweep(Number(candidate.key), filename);
+        const removed = await removeLocalAttachmentFileForSweep(
+          Number(candidate.key),
+          filename,
+          client,
+        );
         if (!removed) continue;
       } else {
         await removeCachedAttachmentFile(candidate.key, filename);
@@ -1231,13 +1248,13 @@ export async function deleteCandidates(
       const owners: number[] =
         cachedOwners ??
         (candidate.store === 'local'
-          ? [...(await knownLocalPageIds([Number(candidate.key)]))]
-          : await confluenceKeyOwners(candidate.key));
+          ? [...(await knownLocalPageIds([Number(candidate.key)], client))]
+          : await confluenceKeyOwners(candidate.key, client));
       if (cachedOwners === undefined) {
         ownersByKey.set(ownersCacheKey, owners);
       }
       if (owners.length > 0) {
-        const pruned = await query(
+        const pruned = await client.query(
           `DELETE FROM page_image_embeddings
             WHERE page_id = ANY($1::int[]) AND source = $2 AND attachment_key = $3`,
           [owners, candidate.store, filename],
@@ -1258,7 +1275,7 @@ export async function deleteCandidates(
     // review). It now reports whether the statement ran; the flag IS the
     // queue, so over-reporting hides the backlog an operator would look for.
     for (const pageId of dirtyPages) {
-      if (await markPageImagesDirty(pageId)) {
+      if (await markPageImagesDirty(pageId, client)) {
         totals.pagesMarkedDirty += 1;
       } else {
         logger.warn({ pageId }, 'attachment-sweep: failed to mark a page image-dirty');
@@ -1266,6 +1283,7 @@ export async function deleteCandidates(
     }
   }
   return totals;
+  });
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────
