@@ -364,7 +364,17 @@ variable is still live wherever the server has not READ a saved value — which
 is what the startup notice ("while no `rag_ef_search` row has been read") and
 the panel's own muted line ("the server has not read a saved value for the
 setting below") now say, both re-worded off "never saved" by #1512 because a
-cold read failure reaches the same state. Three
+cold read failure reaches the same state. #1512's verification round found the
+FIFTH surface that grep, not the suite, had to catch: the pin's own success
+TOAST still answered the press with "RAG_EF_SEARCH is no longer read" — the
+absolute the other four had dropped — and it now says the saved value "takes
+over from" the variable, pinned in `RetrievalTab.test.tsx`. The same note also
+names the one cost that state can carry ("if a value was saved before and this
+server could not read it, saving here replaces it"), because the operator in
+front of the button is not reading ADMIN-GUIDE, and the route test
+`re-offers the variable to a pod that could not read the saved row` pins that
+disclosed overwrite deliberately so a later edit cannot mistake it for a
+regression. Three
 rules that review r1 had to add and that a fifth probe or a later edit must
 keep: a row read that THREW never falls through to the variable **over a value
 already resolved** (an unreadable row is not an absent one, and the

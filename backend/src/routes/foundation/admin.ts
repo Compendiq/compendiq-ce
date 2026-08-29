@@ -579,9 +579,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragConfidenceCalibration,
       // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel,
       // and whether the deprecated environment variable is what produced it.
-      // This is the resolver's own provenance, never a guess: a failed read
-      // reports whatever the server last resolved, and only a resolve that
-      // threw with no row ever read reaches the variable (#1512). So the panel
+      // This is the resolver's own provenance, never a guess: `env` means the
+      // server is running on the variable — a read that SUCCEEDED on an absent
+      // row (the original #1285 path), or a resolve that threw with no row
+      // read and none written by this process. A read that FAILS over an
+      // already-resolved value reports that value's own source, and one that
+      // fails right after a save reports the written row (#1512). So the panel
       // offers to pin a number exactly when the server is running on it.
       ragEfSearch: efSearch.value,
       ragEfSearchFromEnv: efSearch.source === 'env',

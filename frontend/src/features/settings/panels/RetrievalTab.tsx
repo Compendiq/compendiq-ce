@@ -811,7 +811,16 @@ export function RetrievalTab() {
       // Invalidating is what clears the note: the refetch comes back with
       // `ragEfSearchFromEnv: false` because the row now exists.
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
-      toast.success(`Index search depth saved as ${value} — RAG_EF_SEARCH is no longer read`);
+      // The same sentence the note above the button now uses, and for the same
+      // reason (#1512, review r2): "RAG_EF_SEARCH is no longer read" is an
+      // absolute this release retired everywhere else — a pod that restarts
+      // with the variable still set, or one that never served this write,
+      // still falls back to it when its own first settings read fails. The
+      // receipt for a press states what the press did, not a promise about
+      // every other process in the deployment.
+      toast.success(
+        `Index search depth saved as ${value} — the saved value now takes over from RAG_EF_SEARCH`,
+      );
     },
     onError: (err) => {
       toast.error(err instanceof Error ? err.message : 'Failed to save the index search depth');
@@ -1225,7 +1234,8 @@ export function RetrievalTab() {
               This depth is coming from the deprecated{' '}
               <code className="font-mono">RAG_EF_SEARCH</code> environment variable, because the
               server has not read a saved value for the setting below. Save it once — at this value
-              or another — and the saved value takes over.
+              or another — and the saved value takes over. If a value was saved before and this
+              server could not read it, saving here replaces it.
             </span>
             {/*
               WCAG 2.5.3: the visible label is the accessible name, so no

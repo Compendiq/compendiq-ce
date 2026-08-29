@@ -594,9 +594,11 @@ still takes effect immediately on the pod that served the write. **Unset
 `RAG_EF_SEARCH` once the panel is saved.** While that fallback stands the panel
 shows the environment note and its **Keep <value>** button again, and pressing
 **Keep** writes the *variable's* number as the saved value — over the number an
-admin saved earlier, which that pod could not read. The panel cannot tell you
-what it could not read, so the variable, not the note, is where that risk is
-removed.
+admin saved earlier, which that pod could not read. The note now says so where
+the button is ("if a value was saved before and this server could not read it,
+saving here replaces it"), but it cannot tell you the value it could not read,
+so the variable — unset once the panel is saved — is where that risk is
+actually removed.
 
 **Fuzzy title matching is fixed at similarity 0.3 and is deliberately not a
 setting (#1285).** The typo-tolerant title lookup in search uses `pg_trgm`'s

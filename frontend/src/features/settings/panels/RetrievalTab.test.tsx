@@ -2833,6 +2833,15 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     // startup notice ("while no row has been read").
     expect(note.textContent).toMatch(/has not read a saved value/);
     expect(note.textContent).not.toMatch(/never been saved/);
+    // Review r2 of #1512 (verification round) — the same narrowing has a
+    // consequence the copy stopped short of. Because a read that THREW on a
+    // process holding no row evidence now reaches the variable, this note can
+    // stand on a pod where a `rag_ef_search` row DOES exist and was simply
+    // unreadable — and the button below writes the variable's number over it.
+    // The operator standing in front of the button is not reading
+    // ADMIN-GUIDE, so the one branch that can carry that cost has to be named
+    // here, in the note that carries the write.
+    expect(note.textContent).toMatch(/could not read it, saving here replaces it/);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toMatch(/warning|amber|destructive/);
 
@@ -2976,6 +2985,39 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
       document.activeElement,
       'the button unmounts itself — move focus to the knob it was about, never leave it on <body>',
     ).toBe(input('ragEfSearch'));
+  });
+
+  it('answers the press without re-asserting the absolute the note beside it dropped', async () => {
+    // Review r2 of #1512 (verification round) — the note above this button was
+    // narrowed to what the server can actually know ("has not read a saved
+    // value … the saved value takes over") because a restarted pod, or a pod
+    // of the deployment that did not serve the write, still falls back to the
+    // variable when its own first settings read fails
+    // (docs/ADMIN-GUIDE.md, `RAG_EF_SEARCH`; CLAUDE.md). The toast that
+    // ANSWERS the press is the same control, the same press, the same second,
+    // and it went on claiming `RAG_EF_SEARCH is no longer read` — the retired
+    // absolute, re-asserted by the fifth surface, unguarded by any test.
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: { ...defaultSettings, ragEfSearch: 250, ragEfSearchFromEnv: true },
+      afterPut: (body, settings) => {
+        if ('ragEfSearch' in body) settings.ragEfSearchFromEnv = false;
+      },
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    fireEvent.click(screen.getByTestId('retrieval-ef-search-env-pin'));
+
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    const message = String(toastSuccess.mock.calls.at(-1)?.[0]);
+    // It still has to say WHAT was saved — the number is the whole receipt.
+    expect(message).toContain('250');
+    expect(message).toMatch(/takes over/);
+    expect(message).not.toMatch(/no longer read|never read again|never been saved/);
+    expect(toastError).not.toHaveBeenCalled();
   });
 
   it('reports a pin in flight with aria-disabled, never the focus-dropping attribute', async () => {
