@@ -2212,6 +2212,23 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(rerankKeep.querySelector('.animate-spin')).toBeNull();
     expect(rerankKeep).not.toHaveAttribute('aria-busy');
 
+    // …and it IS still unavailable, which is the other half of the split and
+    // the part nothing enforced: one `useMutation` object cannot carry two
+    // concurrent keeps, so a second `mutate` from the sibling strip would
+    // overwrite `variables` and `isPending` and leave the first write
+    // unannounced. Scoping `keepBlocked` per key too — the plausible next
+    // edit — passed every other case in this file.
+    expect(rerankKeep).toHaveAttribute('aria-disabled', 'true');
+    const turn = Promise.withResolvers<void>();
+    await act(async () => {
+      fireEvent.click(rerankKeep);
+      // The mock records the body before it blocks, so a queued second write
+      // is visible after one turn of the event loop.
+      setTimeout(turn.resolve, 0);
+      await turn.promise;
+    });
+    expect(puts).toHaveLength(1);
+
     await act(async () => {
       put.resolve();
       await put.promise;
