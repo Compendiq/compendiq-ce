@@ -650,15 +650,25 @@ describe('rag_ef_search (#1285)', () => {
     }
   });
 
-  it('never reinstates RAG_EF_SEARCH when the row read THREW', async () => {
-    // Review r1. A failed read is not evidence that no row exists, and the
-    // difference matters on exactly the instance the deprecation story is
-    // written for: one that saved the panel and still carries a stale
-    // variable. Falling through to the env there would put a value four
-    // documents call retired back in force — and cache it for a full TTL.
-    process.env.RAG_EF_SEARCH = '900';
-    mockQuery.mockRejectedValue(new Error('connection reset'));
-    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+  it('never reinstates RAG_EF_SEARCH over a value the server actually read', async () => {
+    // Review r1's concern, narrowed by #1512 to the instance it is actually
+    // about: one that SAVED the panel and still carries a stale variable. A
+    // failed read is not evidence that the row vanished, so what stands is the
+    // value the server last resolved FROM that row — and a retired variable is
+    // never reinstated over it.
+    vi.useFakeTimers();
+    try {
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: '150' }] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+
+      // TTL expires; the settings SELECT blips with the variable set.
+      vi.advanceTimersByTime(61_000);
+      process.env.RAG_EF_SEARCH = '900';
+      mockQuery.mockRejectedValue(new Error('connection reset'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+    } finally {
+      vi.useRealTimers();
+    }
 
     // …and the bootstrap is still reached when the read SUCCEEDS and the row
     // is genuinely absent, which is the case it exists for.
@@ -666,6 +676,39 @@ describe('rag_ef_search (#1285)', () => {
     mockQuery.mockReset();
     mockQuery.mockResolvedValue({ rows: [] });
     expect(await getRagEfSearch()).toBe(900);
+  });
+
+  it('holds an env-configured floor across a transient read failure (#1512)', async () => {
+    // The standard upgrade state: `RAG_EF_SEARCH` set, no row. At cache expiry
+    // ONE pool-pressure or statement-timeout failure used to resolve
+    // `{100, 'default'}` and cache it for a full TTL — every kNN probe on that
+    // pod dropped from a 400 floor to 100, and `GET /api/admin/settings`
+    // reported `ragEfSearchFromEnv: false`, so the panel lost the env note AND
+    // its one-key `Keep` remedy exactly while the value was wrong. Fail toward
+    // the operator's last known setting, the direction
+    // `getRagContextCharsPerPage` already takes.
+    vi.useFakeTimers();
+    try {
+      process.env.RAG_EF_SEARCH = '400';
+      mockQuery.mockResolvedValue({ rows: [] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('statement timeout'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reaches the bootstrap on a COLD resolve that threw (#1512)', async () => {
+    // Nothing has resolved yet, so there is no last-known value to hold — and
+    // the JSDoc, `.env.example`, ADMIN-GUIDE and the startup notice all promise
+    // this instance is still running on the variable. A first read that blipped
+    // is not the moment to retire it behind the operator's back.
+    process.env.RAG_EF_SEARCH = '400';
+    mockQuery.mockRejectedValue(new Error('pool exhausted'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
   });
 
   it('reports where the floor came from, for the panel that has to offer a remedy', async () => {
@@ -684,12 +727,14 @@ describe('rag_ef_search (#1285)', () => {
     delete process.env.RAG_EF_SEARCH;
     expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
 
-    // A failed read is 'default', never 'env': the panel must not offer to pin
-    // a value the server did not resolve from the variable.
+    // A failed COLD read reaches the variable, and reports it as `env`
+    // (#1512): `default` is what strips the panel's note and its `Keep`
+    // remedy, and it would do so on exactly the instance the deprecation
+    // story promises is still running on the variable.
     invalidateRagEfSearchCache();
     process.env.RAG_EF_SEARCH = '250';
     mockQuery.mockRejectedValue(new Error('down'));
-    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'env' });
   });
 
   it('is cached, so four kNN callsites cost no round-trip inside the TTL', async () => {

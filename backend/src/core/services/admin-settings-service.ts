@@ -718,11 +718,13 @@ function parseRagEfSearchEnv(raw: string): number | null {
  * The deprecated `RAG_EF_SEARCH` env var, validated the same way a row is, or
  * `null` when it is unset or unusable.
  *
- * **Bootstrap only.** It is consulted exactly when no `rag_ef_search` row
- * exists — which, unlike `fts_language`, is the state of every instance that
- * has never saved the Retrieval panel, because nothing seeds this row. So the
- * value stays live until an admin saves once, and that is what the startup
- * notice says.
+ * **Bootstrap only.** It is consulted when no `rag_ef_search` row exists —
+ * which, unlike `fts_language`, is the state of every instance that has never
+ * saved the Retrieval panel, because nothing seeds this row — and, since #1512,
+ * on a COLD resolve whose read threw, where "no row" is precisely what has not
+ * been established and the alternative is retiring a live variable on a blip.
+ * So the value stays live until an admin saves once, and that is what the
+ * startup notice says.
  */
 function ragEfSearchEnvBootstrap(): number | null {
   const n = parseRagEfSearchEnv((process.env.RAG_EF_SEARCH ?? '').trim());
@@ -750,17 +752,31 @@ function ragEfSearchEnvBootstrap(): number | null {
  * Soft-fails to the fallback: like `getRagFetchWidth`, this read failing must
  * degrade the tuning and never the search.
  *
- * **A read that THREW is not evidence that no row exists** (review r1). The
- * first cut left `fromRow` false in the catch, so a transient failure — pool
- * pressure, a statement timeout — put a stale `RAG_EF_SEARCH` back in force
- * for a full TTL on an instance that had saved the panel, which is the exact
- * opposite of what the startup notice, `.env.example`, ADMIN-GUIDE and the
- * panel's own line all promise. The bootstrap is consulted only when the read
- * SUCCEEDED and returned nothing; a failure falls to the constant default.
+ * **A read that THREW is not evidence that no row exists** (review r1), and it
+ * is not evidence that the row is GONE either (#1512). So a failure holds the
+ * last `{value, source}` this function resolved — the direction
+ * `getRagContextCharsPerPage` already takes ("fail toward the operator's last
+ * known setting"): the expired cache object is still in hand, because only its
+ * `expiresAt` was consulted above. That keeps a saved instance on the row's
+ * number, so a stale variable is never reinstated over a value the server
+ * actually read, and it keeps an upgraded instance on the variable, which is
+ * what the startup notice, `.env.example`, ADMIN-GUIDE and the panel's own line
+ * all promise is still in force.
+ *
+ * On a COLD resolve that threw there is no last value to hold, and the constant
+ * default is the wrong answer there for the same reason: it silently retires a
+ * live `RAG_EF_SEARCH` for a full TTL, dropping every kNN probe to 100 and —
+ * because `ragEfSearchFromEnv` is derived from `source === 'env'` — stripping
+ * the panel's note and its one-key `Keep` remedy exactly while the value is
+ * wrong. A cold failure therefore falls through to the bootstrap; only an
+ * instance with no row, no variable and no memory resolves the constant.
  */
 export async function resolveRagEfSearch(): Promise<{ value: number; source: RagEfSearchSource }> {
-  if (ragEfSearchCache && Date.now() < ragEfSearchCache.expiresAt) {
-    return { value: ragEfSearchCache.value, source: ragEfSearchCache.source };
+  // Retained past the expiry check on purpose: it is the last value this
+  // function resolved, and a failed read below falls back to it.
+  const lastResolved = ragEfSearchCache;
+  if (lastResolved && Date.now() < lastResolved.expiresAt) {
+    return { value: lastResolved.value, source: lastResolved.source };
   }
   let resolved = RAG_EF_SEARCH_DEFAULT;
   let source: RagEfSearchSource = 'default';
@@ -781,7 +797,10 @@ export async function resolveRagEfSearch(): Promise<{ value: number; source: Rag
     readFailed = true;
     logger.warn({ err }, 'Failed to resolve rag_ef_search — using the configured fallback');
   }
-  if (source !== 'row' && !readFailed) {
+  if (readFailed && lastResolved) {
+    resolved = lastResolved.value;
+    source = lastResolved.source;
+  } else if (source !== 'row') {
     const fromEnv = ragEfSearchEnvBootstrap();
     if (fromEnv !== null) {
       resolved = fromEnv;
@@ -798,6 +817,13 @@ export async function getRagEfSearch(): Promise<number> {
   return (await resolveRagEfSearch()).value;
 }
 
+/**
+ * A full FORGET, deliberately — not a reset that keeps the last resolved value
+ * (#1512). It runs on the admin PUT, where the row genuinely just changed, and
+ * it is the hook ~30 tests in four files call between cases; a memory that
+ * survived it would leak one test's floor into the next, and would leave the
+ * writing pod holding the pre-save number on the next read failure.
+ */
 export function invalidateRagEfSearchCache(): void {
   ragEfSearchCache = null;
 }
