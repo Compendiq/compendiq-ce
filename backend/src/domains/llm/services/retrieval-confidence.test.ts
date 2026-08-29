@@ -28,12 +28,14 @@
  * score, or taking 0 away from this one, breaks a documented invariant rather
  * than one scenario.
  *
- * Deliberately dependency-free, like the module it tests: the only runtime
- * import is the formula itself (`SearchResult` is a type-only import, erased
- * at build). No mocks, no module graph — which is the other half of why this
- * file exists next to the same assertions inside a 3,000-line suite that has
- * to mock `rag-service`'s whole graph to reach them.
+ * Almost dependency-free, like the module it tests: the only runtime imports
+ * are the formula itself and `node:fs`, which the enumeration cell uses to
+ * read the two union DECLARATIONS (`SearchResult` is a type-only import,
+ * erased at build). No mocks, no module graph — which is the other half of
+ * why this file exists next to the same assertions inside a 3,000-line suite
+ * that has to mock `rag-service`'s whole graph to reach them.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { SearchResult } from './rag-service.js';
 import {
@@ -41,6 +43,28 @@ import {
   type RetrievalConfidence,
   type RetrievalHealthCaveat,
 } from './retrieval-confidence.js';
+
+/**
+ * The `export type <name> = …;` declaration in a source file: its raw body and
+ * the string literals it names, in source order.
+ *
+ * Union MEMBERSHIP is erased at build, so a test cannot iterate it — and
+ * because backend's tsconfig excludes every `*.test.ts` from the tsc program,
+ * a total `Record<Union, …>` in a test file is never compiled either, so the
+ * compiler cannot check it. Reading the declaration is what is left, and it is
+ * the technique `hnsw-ef-search.test.ts` uses to discover ef_search call
+ * sites: assert against the source of truth, not against a copy of it.
+ */
+function unionDeclaration(relative: string, name: string): { body: string; members: string[] } {
+  const source = readFileSync(new URL(relative, import.meta.url), 'utf8');
+  const match = new RegExp(`export type ${name} =([^;]*);`).exec(source);
+  expect(match, `${relative} must declare 'export type ${name} = …;'`).not.toBeNull();
+  const body = match?.[1] ?? '';
+  return {
+    body,
+    members: [...body.matchAll(/'([^']+)'/g)].flatMap((m) => (m[1] === undefined ? [] : [m[1]])),
+  };
+}
 
 function row(pageId: number, over: Partial<SearchResult> = {}): SearchResult {
   return {
@@ -163,15 +187,51 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
    * the answer is grounded in, so "then it should still be measurable" is a
    * plausible-sounding future change. It is not measurable — there is nothing
    * to measure in an empty set — and this row is what says so.
+   *
+   * The table is a `Record<RetrievalHealthCaveat, …>` so the intent is stated
+   * in the type, but the ENFORCEMENT is the source-derived cell below, not the
+   * compiler: backend's tsconfig excludes every test file from the tsc
+   * program, so a missing `Record` property here is never compiled (measured
+   * in review r2: a fifth `DegradedReason` left `npm run typecheck -w backend`
+   * at exit 0 with the tuple form AND with the `Record` form — the reason the
+   * type-level fix two reviewers proposed is not the fix that works here).
    */
-  it.each<[RetrievalHealthCaveat, number | null]>([
-    ['embedding_failed', null],
-    ['no_embeddings', null],
-    ['partial_embeddings', null],
-    ['image_leg_unavailable', null],
-    ['coverage_unknown', null],
-  ])('an empty set under %s scores %s', (caveat, score) => {
-    expect(computeRetrievalConfidence([], caveat)).toEqual({ score, basis: 'none' });
+  const EMPTY_SET_CAVEAT_SCORES: Record<RetrievalHealthCaveat, number | null> = {
+    embedding_failed: null,
+    no_embeddings: null,
+    partial_embeddings: null,
+    image_leg_unavailable: null,
+    coverage_unknown: null,
+  };
+
+  it.each(Object.entries(EMPTY_SET_CAVEAT_SCORES) as [RetrievalHealthCaveat, number | null][])(
+    'an empty set under %s scores %s',
+    (caveat, score) => {
+      expect(computeRetrievalConfidence([], caveat)).toEqual({ score, basis: 'none' });
+    },
+  );
+
+  it('enumerates every declared RetrievalHealthCaveat member — a new arm reds here', () => {
+    // `RetrievalHealthCaveat` is a TYPE: no runtime members to iterate, and no
+    // compiler looking at this file, so the only thing that can notice a
+    // widened union is the declaration itself. Read it. A parse that finds
+    // nothing yields an empty expectation and reds too, so renaming either
+    // type cannot quietly disarm this cell.
+    const caveat = unionDeclaration('./retrieval-confidence.ts', 'RetrievalHealthCaveat');
+    const declared = new Set(caveat.members);
+    // The caveat union is `DegradedReason | 'coverage_unknown'` today; follow
+    // the reference so the four reasons count, and stay correct if a later
+    // edit inlines them here instead.
+    if (caveat.body.includes('DegradedReason')) {
+      for (const member of unionDeclaration('./rag-service.ts', 'DegradedReason').members) {
+        declared.add(member);
+      }
+    }
+
+    expect(
+      [...declared].sort(),
+      'add the new caveat to EMPTY_SET_CAVEAT_SCORES with the score it must produce',
+    ).toEqual(Object.keys(EMPTY_SET_CAVEAT_SCORES).sort());
   });
 
   it('defaults the caveat to null, so the no-argument empty call is the HEALTHY verdict', () => {
