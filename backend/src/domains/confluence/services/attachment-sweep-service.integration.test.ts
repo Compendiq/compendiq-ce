@@ -550,6 +550,15 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.stores!.local.orphanDirectories).toBe(1);
       expect(run!.stores!.local.directories).toBe(1);
       expect(run!.stores!.local.files).toBe(1);
+      // #1515 (fixer, external round): the BYTES half. `files` alone left the
+      // card's byte figure — the number an operator sizes a cleanup by — free
+      // to double, and it does: with `LOCAL_DIR_PATTERN` widened, `local/4242/`
+      // is walked once per spelling and its one file is counted twice
+      // (`expected 38 to be 19`, isolated probe quoted in the PR). Statted, not
+      // hard-coded, so the figure stays the walk's own arithmetic.
+      const kept = await fs.stat(path.join(tempBase, 'local', '4242', 'a.png'));
+      expect(run!.stores!.local.bytes).toBe(kept.size);
+      expect(run!.stores!.local.orphanDirectoryBytes).toBe(kept.size);
       expect(await exists(path.join(tempBase, 'local', '04242', 'b.png'))).toBe(true);
     });
 
