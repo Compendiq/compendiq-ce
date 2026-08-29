@@ -140,6 +140,26 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
       space.name.toLowerCase().includes(needle) || space.key.toLowerCase().includes(needle),
   );
 
+  /**
+   * How many rows the filter is hiding — said out loud, and said on screen.
+   *
+   * `selected` is deliberately untouched by filtering, which is right and was
+   * silent: `Save Selection (12)` sat under a single visible row with nothing
+   * explaining the other eleven. The count strip is the same recipe the
+   * Library uses for its own filtered lists (`browse-results-context` /
+   * `search-results-context` in `PagesPage`), and it only renders while a
+   * filter is active — an unfiltered list counting itself is noise.
+   *
+   * The announcer is a sibling of the input and always mounted, only its text
+   * changing, for the reason `PagesPage`'s `filters-live-announcer` is: a live
+   * region that first appears alongside its own content can go unannounced.
+   * The visible strip and the zero-match block therefore carry no role.
+   */
+  const filterActive = needle.length > 0;
+  const filterSummary = filterActive
+    ? `Showing ${visibleSpaces.length} of ${allSpaces.length} spaces`
+    : '';
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -182,27 +202,47 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
 
       {/* Filter — only once there is a list to narrow. */}
       {allSpaces.length > 0 && (
-        <div className="relative flex items-center">
-          <Search size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground" />
-          <input
-            type="text"
-            value={spaceFilter}
-            onChange={(e) => setSpaceFilter(e.target.value)}
-            placeholder="Filter spaces by name or key…"
-            aria-label="Filter spaces"
-            data-testid="space-filter-input"
-            className="nm-input pl-8 pr-8"
-          />
-          {spaceFilter && (
-            <button
-              type="button"
-              onClick={() => setSpaceFilter('')}
-              aria-label="Clear space filter"
-              className="absolute right-2 text-muted-foreground transition-colors hover:text-foreground"
-              data-testid="space-filter-clear"
-            >
-              <X size={13} />
-            </button>
+        <div className="space-y-1.5">
+          <div className="relative flex items-center">
+            <Search size={14} aria-hidden="true" className="pointer-events-none absolute left-2.5 text-muted-foreground" />
+            <input
+              type="text"
+              value={spaceFilter}
+              onChange={(e) => setSpaceFilter(e.target.value)}
+              placeholder="Filter spaces by name or key…"
+              aria-label="Filter spaces"
+              data-testid="space-filter-input"
+              className="nm-input pl-8 pr-8"
+            />
+            {spaceFilter && (
+              <button
+                type="button"
+                onClick={() => setSpaceFilter('')}
+                aria-label="Clear space filter"
+                // The repo's icon-button recipe: a 24x24 target inside the
+                // input's existing `pr-8` reserve (WCAG 2.2 SC 2.5.8), wearing
+                // `--color-ring` rather than the UA outline. Nothing moves.
+                className="nm-icon-button absolute right-1 h-6 w-6"
+                data-testid="space-filter-clear"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          {/* Always mounted, text-only changes — the one thing the filter
+              says out loud. */}
+          <span
+            role="status"
+            aria-live="polite"
+            className="sr-only"
+            data-testid="space-filter-announcer"
+          >
+            {filterSummary}
+          </span>
+          {filterActive && (
+            <p className="text-xs text-muted-foreground" data-testid="space-filter-count">
+              {filterSummary}
+            </p>
           )}
         </div>
       )}
@@ -277,13 +317,23 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         </div>
       ) : allSpaces.length > 0 ? (
         /* The list is loaded — the filter is what emptied it, so say that
-           rather than sending the user back to Fetch Spaces (#1402). */
+           rather than sending the user back to Fetch Spaces (#1402). No role
+           here: the always-mounted announcer beside the input owns the speech.
+           The reset lives IN the block too, because the only other one is an
+           unlabelled 24x24 icon ~70px up and out of the reader's eye line. */
         <div
           className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground"
           data-testid="space-filter-empty"
-          role="status"
         >
-          No spaces match "{spaceFilter.trim()}"
+          <p>No spaces match "{spaceFilter.trim()}"</p>
+          <button
+            type="button"
+            onClick={() => setSpaceFilter('')}
+            className="nm-button-ghost mt-3 h-8 px-2.5 text-xs"
+            data-testid="space-filter-empty-clear"
+          >
+            Clear filter
+          </button>
         </div>
       ) : (
         <div className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground">

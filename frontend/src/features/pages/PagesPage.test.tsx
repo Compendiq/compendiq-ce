@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { PagesPage } from './PagesPage';
 import { FIND_LABEL, FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
-import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
+import { CONFLUENCE_SETTINGS_PATH, SPACES_SETTINGS_PATH } from '../../shared/lib/routes';
 
 // No <Toaster/> is mounted in these unit tests (it lives at the app root,
 // main.tsx), so a real `toast()` call renders nothing this suite can query.
@@ -129,8 +129,33 @@ function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatu
   });
 }
 
+/**
+ * The shape `GET /pages` answers with, named once so fixtures and helpers can
+ * refer to the contract rather than to `makeManyPages`'s implementation.
+ */
+interface MockPagesResponse {
+  items: Array<{
+    id: string;
+    spaceKey: string;
+    title: string;
+    version: number;
+    parentId: string | null;
+    labels: string[];
+    author: string;
+    lastModifiedAt: string;
+    lastSynced: string;
+    embeddingDirty: boolean;
+    embeddingStatus: 'embedded';
+    embeddedAt: string;
+  }>;
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 /** Generate N mock page items for large-list tests */
-function makeManyPages(n: number) {
+function makeManyPages(n: number): MockPagesResponse {
   return {
     items: Array.from({ length: n }, (_, i) => ({
       id: `page-${i + 1}`,
@@ -192,7 +217,7 @@ const emptyPinnedResponse = { items: [], total: 0 };
 const mockConnectedSettings = { hasConfluencePat: true, selectedSpaces: ['DEV'] };
 
 function mockFetchWithPages(
-  pagesResponse: ReturnType<typeof makeManyPages>,
+  pagesResponse: MockPagesResponse,
   settings: Record<string, unknown> = {},
 ) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -708,14 +733,14 @@ describe('PagesPage', () => {
     // branch below is a different diagnosis and carries different copy.
     it('renders EmptyState with "No pages found" title', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
     });
 
     it('shows "Go to Settings" action button when no search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
       expect(screen.getByText('Create a Page')).toBeInTheDocument();
@@ -723,7 +748,7 @@ describe('PagesPage', () => {
 
     it('keeps the corpus-empty copy verbatim once spaces are connected', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(
         await screen.findByText('Create a page, or connect a Confluence space to fill this list'),
@@ -733,7 +758,7 @@ describe('PagesPage', () => {
 
     it('shows "Try a different search term" when search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as MockPagesResponse);
       render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
       // Type in the search box
       const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
@@ -743,7 +768,7 @@ describe('PagesPage', () => {
 
     it('hides "Go to Settings" action when search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as MockPagesResponse);
       render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
       const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
@@ -762,7 +787,7 @@ describe('PagesPage', () => {
     describe('when filters (not corpus emptiness) caused the empty result set', () => {
       it('names the active filter instead of blaming an unsynced knowledge base', async () => {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        mockFetchWithPages(emptyPages as MockPagesResponse);
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -774,7 +799,7 @@ describe('PagesPage', () => {
 
       it('shows "Clear filters" instead of "Go to Settings" as the primary action', async () => {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        mockFetchWithPages(emptyPages as MockPagesResponse);
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -786,7 +811,7 @@ describe('PagesPage', () => {
 
       it('clicking "Clear filters" in the empty state actually clears the filter', async () => {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        mockFetchWithPages(emptyPages as MockPagesResponse);
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -802,7 +827,7 @@ describe('PagesPage', () => {
 
       it('mentions both the search term and the filter when both are active', async () => {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        mockFetchWithPages(emptyPages as MockPagesResponse);
         render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -814,7 +839,7 @@ describe('PagesPage', () => {
 
       it('summarizes more than 3 active filters instead of listing every label', async () => {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+        mockFetchWithPages(emptyPages as MockPagesResponse);
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -828,17 +853,28 @@ describe('PagesPage', () => {
       });
     });
 
-    // --- "No spaces connected" is a different diagnosis (#1402 phase 3) ---
+    // --- Which emptiness is this? (#1402 phase 3) -------------------------
     //
-    // One generic block used to answer two unrelated questions. A user who
-    // has never entered a PAT was told to "create a page, or connect a
+    // One generic block used to answer several unrelated questions. A user
+    // who has never entered a PAT was told to "create a page, or connect a
     // Confluence space" and handed a `Go to Settings` button that landed on
     // the settings root, leaving them to find the Confluence panel themselves
     // — while a user with three spaces synced and genuinely zero local pages
     // read the same sentence and was sent to a screen they had already
-    // finished with. Both branches read from the `settings` this component
-    // already fetches; neither adds a request.
-    describe('when no Confluence spaces are connected', () => {
+    // finished with.
+    //
+    // "No PAT" and "PAT but no spaces" are two more states, not one. The
+    // Getting Started checklist on THIS screen treats them as two separate
+    // milestones and `CONFLUENCE_SETTINGS_PATH` renders only the PAT form, so
+    // collapsing them told a user with a token that they had no token and
+    // sent them to the panel they had already completed.
+    //
+    // All four combinations are fixtured explicitly below, each asserting its
+    // own title AND its own CTA destination — including the one that looks
+    // impossible and is not (`{pat: false, spaces: ['DEV']}`: a PAT cleared
+    // server-side leaves the selections behind), whose absence is what made
+    // the PAT disjunct unfalsifiable in the first place.
+    describe('when the corpus, not a filter, is what is empty', () => {
       /** Renders the current path so the CTA's destination can be read. */
       function PathProbe() {
         const location = useLocation();
@@ -859,19 +895,99 @@ describe('PagesPage', () => {
         );
       }
 
-      it('names the missing connection instead of blaming an empty corpus', async () => {
+      function serve(settings: Record<string, unknown>) {
         vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: false,
-          selectedSpaces: [],
+        mockFetchWithPages(emptyPages as MockPagesResponse, settings);
+      }
+
+      /**
+       * Every state `GET /settings` can actually report, and what each one is
+       * allowed to say. The CTA destination is part of the claim: a title that
+       * names the right gap while the button lands on the wrong panel is the
+       * bug this table exists to catch.
+       */
+      const matrix = [
+        {
+          name: 'no PAT, no spaces — nothing has been set up',
+          settings: { hasConfluencePat: false, selectedSpaces: [] },
+          title: 'No Confluence spaces connected',
+          cta: 'Connect Confluence',
+          destination: CONFLUENCE_SETTINGS_PATH,
+        },
+        {
+          // Real, not hypothetical: an admin clearing the token server-side
+          // leaves the space selection behind. The token is still the gap.
+          name: 'no PAT but stale selections — the token is still the gap',
+          settings: { hasConfluencePat: false, selectedSpaces: ['DEV'] },
+          title: 'No Confluence spaces connected',
+          cta: 'Connect Confluence',
+          destination: CONFLUENCE_SETTINGS_PATH,
+        },
+        {
+          // The checklist one block up says "Connect your Confluence account"
+          // is DONE for this user; telling them it is not would contradict it.
+          name: 'PAT but nothing selected — the spaces are the gap',
+          settings: { hasConfluencePat: true, selectedSpaces: [] },
+          title: 'No spaces selected',
+          cta: 'Choose spaces',
+          destination: SPACES_SETTINGS_PATH,
+        },
+        {
+          name: 'PAT and spaces — Confluence is fine, the library just is empty',
+          settings: { hasConfluencePat: true, selectedSpaces: ['DEV'] },
+          title: 'No pages found',
+          cta: 'Go to Settings',
+          destination: '/settings',
+        },
+      ] as const;
+
+      /**
+       * Scoped to the empty state, deliberately.
+       *
+       * The Getting Started checklist renders on this same screen and offers
+       * its own `Choose spaces` for the same milestone — Ruling 2 keeps both
+       * and demotes this one rather than deleting either. A page-wide
+       * `getByText` would therefore read the checklist's button and pass no
+       * matter what the empty state said.
+       */
+      async function emptyState() {
+        await screen.findByTestId('empty-state-title');
+        return within(screen.getByTestId('empty-state'));
+      }
+
+      for (const state of matrix) {
+        it(`names the gap: ${state.name}`, async () => {
+          serve(state.settings);
+          render(<PagesPage />, { wrapper: createWrapper() });
+          const block = await emptyState();
+
+          expect(block.getByTestId('empty-state-title')).toHaveTextContent(state.title);
+          expect(block.getByRole('button', { name: state.cta })).toBeInTheDocument();
+          // Exactly one diagnosis at a time — the other three must be absent.
+          for (const other of matrix.filter((m) => m.title !== state.title)) {
+            expect(block.queryByRole('button', { name: other.cta })).not.toBeInTheDocument();
+          }
         });
+
+        it(`lands the CTA on the right panel: ${state.name}`, async () => {
+          serve(state.settings);
+          renderWithProbe();
+          const block = await emptyState();
+
+          fireEvent.click(block.getByRole('button', { name: state.cta }));
+
+          await waitFor(() =>
+            expect(screen.getByTestId('path-probe')).toHaveTextContent(state.destination),
+          );
+        });
+      }
+
+      it('describes the missing connection rather than blaming an empty corpus', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
         render(<PagesPage />, { wrapper: createWrapper() });
 
-        expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
-          'No Confluence spaces connected',
-        );
         expect(
-          screen.getByText(
+          await screen.findByText(
             "Connect your Confluence Data Center instance to sync your team's documentation and knowledge bases.",
           ),
         ).toBeInTheDocument();
@@ -881,57 +997,145 @@ describe('PagesPage', () => {
         ).not.toBeInTheDocument();
       });
 
-      it('offers "Connect Confluence" rather than a bare "Go to Settings"', async () => {
-        vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: false,
-          selectedSpaces: [],
-        });
+      it('credits the token it can see when only the spaces are missing', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
         render(<PagesPage />, { wrapper: createWrapper() });
 
-        expect(await screen.findByText('Connect Confluence')).toBeInTheDocument();
-        expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
-        // Creating a local page is still the escape hatch for someone who
-        // never intends to connect Confluence at all.
-        expect(screen.getByText('Create a Page')).toBeInTheDocument();
+        expect(
+          await screen.findByText(
+            'Your Confluence account is connected. Choose the spaces to sync and their pages will appear here.',
+          ),
+        ).toBeInTheDocument();
       });
 
-      it('lands the CTA on the Confluence panel, not the settings root', async () => {
-        vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: false,
-          selectedSpaces: [],
-        });
-        renderWithProbe();
+      // Creating a local page is still the escape hatch for someone who never
+      // intends to connect Confluence at all.
+      it('keeps "Create a Page" beside every unfiltered diagnosis', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        expect(await screen.findByText('Create a Page')).toBeInTheDocument();
+      });
 
-        fireEvent.click(await screen.findByText('Connect Confluence'));
+      /**
+       * Ruling 2: the checklist above already asks for this setup with a
+       * ghost CTA, and the header owns `New Page`. The empty state's prompt
+       * speaks second, so `/pages` keeps exactly one filled Steel accent.
+       */
+      it('demotes the setup CTA so it cannot outrank the checklist above it', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
 
-        await waitFor(() =>
-          expect(screen.getByTestId('path-probe')).toHaveTextContent(CONFLUENCE_SETTINGS_PATH),
+        expect(block.getByRole('button', { name: 'Connect Confluence' })).toHaveClass(
+          'nm-button-secondary',
         );
       });
 
-      // A PAT with nothing selected syncs nothing, so the library is empty for
-      // the same reason and the same remedy applies.
-      it('still points at Confluence when a PAT exists but no space is selected', async () => {
-        vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: true,
-          selectedSpaces: [],
-        });
+      it('demotes the spaces CTA the same way', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
         render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
 
-        expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
-          'No Confluence spaces connected',
+        expect(block.getByRole('button', { name: 'Choose spaces' })).toHaveClass(
+          'nm-button-secondary',
         );
+      });
+
+      // The header's `New Page` stays the route's single filled Steel accent.
+      it('leaves the empty state carrying no filled accent at all', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
+
+        for (const button of block.getAllByRole('button')) {
+          expect(button).not.toHaveClass('nm-button-primary');
+        }
+      });
+
+      /**
+       * An unresolved or failed `GET /settings` is not evidence of anything.
+       *
+       * Both cases below used to render `No Confluence spaces connected` at a
+       * user whose Confluence is fine — a diagnosis derived from a fetch that
+       * had not answered, which on a cold load where `/pages` wins the race is
+       * a real flash of the wrong sentence. Falling through to the generic
+       * copy is the only claim true in every state, and it is the same rule
+       * the `pagesError && !pagesData` branch and `use-onboarding`'s
+       * `settings !== undefined` gate already follow.
+       */
+      describe('when settings are not known', () => {
+        function servePagesOnly(settingsResponse: () => Promise<Response>) {
+          vi.restoreAllMocks();
+          vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+            const url = typeof input === 'string' ? input : (input as Request).url;
+            if (url.includes('/embeddings/status')) {
+              return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/pages/filters')) {
+              return new Response(JSON.stringify(mockFilterOptions), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/spaces')) {
+              return new Response(JSON.stringify(mockSpaces), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/sync/status')) {
+              return new Response(JSON.stringify({ status: 'idle' }), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/pages/pinned')) {
+              return new Response(JSON.stringify({ items: [], total: 0 }), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/settings')) return settingsResponse();
+            return new Response(JSON.stringify(emptyPages), {
+              headers: { 'Content-Type': 'application/json' },
+            });
+          });
+        }
+
+        it('says nothing about Confluence while /settings is still in flight', async () => {
+          servePagesOnly(() => new Promise<Response>(() => {}));
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No pages found',
+          );
+          expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+          expect(screen.queryByText('Choose spaces')).not.toBeInTheDocument();
+        });
+
+        it('does not turn a failed /settings into a diagnosis', async () => {
+          servePagesOnly(async () => new Response('boom', { status: 500 }));
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No pages found',
+          );
+          expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+          expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
+        });
+
+        // `useSettings()` does no runtime validation, so a 200 missing the
+        // field must not throw during render and take the whole route down.
+        it('survives a settings payload with no selectedSpaces field', async () => {
+          serve({ hasConfluencePat: true });
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No spaces selected',
+          );
+        });
       });
 
       it('does not blame the connection when the user\'s own filter emptied the list', async () => {
-        vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: false,
-          selectedSpaces: [],
-        });
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
@@ -943,11 +1147,7 @@ describe('PagesPage', () => {
       });
 
       it('does not blame the connection when a search returned nothing', async () => {
-        vi.restoreAllMocks();
-        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
-          hasConfluencePat: false,
-          selectedSpaces: [],
-        });
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
         render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {

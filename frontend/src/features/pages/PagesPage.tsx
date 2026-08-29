@@ -36,7 +36,7 @@ import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
-import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
+import { CONFLUENCE_SETTINGS_PATH, SPACES_SETTINGS_PATH } from '../../shared/lib/routes';
 import { OnboardingChecklistCard } from '../onboarding/OnboardingChecklistCard';
 import { NotionImportDialog } from './notion-import/NotionImportDialog';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -699,7 +699,7 @@ export function PagesPage() {
   const activeFilterCount = activeFilters.length;
 
   /**
-   * Why the browse list is empty — three answers, not one (#1402 phase 3).
+   * Why the browse list is empty — four answers, not one (#1402 phase 3).
    *
    * A filter or a search term emptying the list is the user's own doing and
    * already says which. What was left undiagnosed is the unfiltered case: it
@@ -710,13 +710,38 @@ export function PagesPage() {
    * panel themselves; the first was sent back to a screen they had finished
    * with.
    *
+   * "No PAT" and "PAT but no spaces" are NOT the same dead end, and the first
+   * cut of this block collapsed them into one `No Confluence spaces connected`
+   * pointing at the PAT panel. On this very screen the Getting Started
+   * checklist treats `Connect your Confluence account` and `Choose the spaces
+   * to sync` as two separate milestones, and `CONFLUENCE_SETTINGS_PATH` renders
+   * only the PAT form — so a user who already had a token read "not connected"
+   * directly under a checklist row ticked Done, and the CTA sent them back to
+   * the step they had finished. The two branches now name their own gap and
+   * deep-link their own panel, wording matched to the checklist milestone so
+   * the two surfaces on one screen cannot disagree.
+   *
    * Both halves read the `settings` this component already fetches for its
-   * KPIs — `hasConfluencePat` and `selectedSpaces` are on `GET /settings`, and
-   * a PAT with nothing selected syncs nothing, so it is the same dead end.
+   * KPIs — `hasConfluencePat` and `selectedSpaces` are on `GET /settings` — and
+   * both are gated on `settingsKnown`. An unresolved or failed `GET /settings`
+   * is not evidence of anything: without the gate a pending fetch (or a 500)
+   * rendered "No Confluence spaces connected" at a connected user, which is the
+   * same failure-as-empty-state mistake the `pagesError && !pagesData` branch
+   * below exists to avoid. Unknown settings fall through to the generic copy,
+   * which is true in every state. `use-onboarding` gates on the same
+   * `settings !== undefined`, and reads `selectedSpaces` with the same optional
+   * chain — `useSettings()` does no runtime validation, so a response missing
+   * the field would otherwise throw during render and take the route down.
    */
   const unfilteredEmpty = activeFilterCount === 0 && !search;
+  const settingsKnown = settings !== undefined;
   const promptConfluenceConnect =
-    unfilteredEmpty && (!settings?.hasConfluencePat || settings.selectedSpaces.length === 0);
+    unfilteredEmpty && settingsKnown && !settings.hasConfluencePat;
+  const promptSelectSpaces =
+    unfilteredEmpty &&
+    settingsKnown &&
+    settings.hasConfluencePat === true &&
+    (settings.selectedSpaces?.length ?? 0) === 0;
 
   // #1351: Space stopped being one of the filters semantic/hybrid ignore —
   // vectorSearch/hybridSearch now apply an explicit space_key predicate
@@ -1942,23 +1967,38 @@ export function PagesPage() {
             <EmptyState
               icon={FolderOpen}
               className="border-0 bg-transparent"
-              title={promptConfluenceConnect ? 'No Confluence spaces connected' : 'No pages found'}
+              title={
+                promptConfluenceConnect
+                  ? 'No Confluence spaces connected'
+                  : promptSelectSpaces
+                    ? 'No spaces selected'
+                    : 'No pages found'
+              }
               description={
                 promptConfluenceConnect
                   ? "Connect your Confluence Data Center instance to sync your team's documentation and knowledge bases."
-                  : activeFilterCount > 0
-                    ? (search
-                        ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
-                        : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                    : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
+                  : promptSelectSpaces
+                    ? 'Your Confluence account is connected. Choose the spaces to sync and their pages will appear here.'
+                    : activeFilterCount > 0
+                      ? (search
+                          ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
+                          : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
+                      : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 promptConfluenceConnect
                   ? { label: 'Connect Confluence', onClick: () => navigate(CONFLUENCE_SETTINGS_PATH) }
-                  : activeFilterCount > 0
-                    ? { label: 'Clear filters', onClick: clearAllFilters }
-                    : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+                  : promptSelectSpaces
+                    ? { label: 'Choose spaces', onClick: () => navigate(SPACES_SETTINGS_PATH) }
+                    : activeFilterCount > 0
+                      ? { label: 'Clear filters', onClick: clearAllFilters }
+                      : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
               }
+              /* The checklist one block above asks for this same setup, and
+                 the header's `New Page` is this route's own primary action. A
+                 filled Steel button here would be the third voice and the
+                 loudest — so the setup prompts speak second. */
+              actionTone={promptConfluenceConnect || promptSelectSpaces ? 'secondary' : 'primary'}
               secondaryAction={
                 unfilteredEmpty
                   ? { label: 'Create a Page', onClick: () => navigate('/pages/new') }

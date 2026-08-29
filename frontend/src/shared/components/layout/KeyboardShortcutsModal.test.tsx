@@ -3,6 +3,7 @@ import { render as rtlRender, screen, fireEvent, waitFor, act } from '@testing-l
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { useKeyboardShortcutsStore } from '../../../stores/keyboard-shortcuts-store';
+import { SHORTCUTS, TIPTAP_SHORTCUTS } from '../../lib/shortcut-registry';
 
 // #1402: the modal now records the "Learn power shortcuts" milestone, which is
 // a `PUT /settings`. Mocked at the network boundary; everything else is real.
@@ -131,6 +132,40 @@ describe('KeyboardShortcutsModal', () => {
     expect(screen.getByRole('heading', { name: /Keyboard Shortcuts/ })).toBeInTheDocument();
   });
 
+  /**
+   * The number CLAUDE.md, the CHANGELOG and this component's own doc-comment
+   * quote. Phases 1 and 2 of #1402 both shipped an inaccurate count, so the
+   * count is now derived from the registry in a test rather than transcribed:
+   * `SHORTCUTS` (23 — `navigation` carries two `Keyboard Shortcuts` rows, `?`
+   * and `ctrl+/`) plus `TIPTAP_SHORTCUTS` (11) is 34 rows under 5 headings.
+   */
+  it('renders every registry and TipTap row, and nothing else', () => {
+    useKeyboardShortcutsStore.setState({ isOpen: true });
+    render(<KeyboardShortcutsModal />);
+
+    expect(SHORTCUTS).toHaveLength(23);
+    expect(TIPTAP_SHORTCUTS).toHaveLength(11);
+    expect(screen.getAllByTestId('shortcut-row')).toHaveLength(
+      SHORTCUTS.length + TIPTAP_SHORTCUTS.length,
+    );
+    // Four registry categories plus the formatting block.
+    expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(5);
+  });
+
+  /**
+   * The search row grew the dialog's non-scrolling chrome from ~107px to
+   * ~166px. Only the inner list was capped, so on a 390px-tall phone in
+   * landscape the title/Close row and the footer went off-screen with nothing
+   * to scroll back with — `Dialog.Content` had no height of its own.
+   */
+  it('caps its own height rather than only the list', () => {
+    useKeyboardShortcutsStore.setState({ isOpen: true });
+    render(<KeyboardShortcutsModal />);
+
+    expect(screen.getByRole('dialog')).toHaveClass('max-h-[90svh]', 'flex', 'flex-col');
+    const scroller = screen.getAllByTestId('shortcut-row')[0]!.closest('.overflow-y-auto');
+    expect(scroller).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  });
 
   it('renders the TipTap formatting shortcuts section', () => {
     useKeyboardShortcutsStore.setState({ isOpen: true });
@@ -153,17 +188,20 @@ describe('KeyboardShortcutsModal', () => {
 
   // --- Search / filter (#1402 phase 3) -------------------------------------
   //
-  // The modal lists 22 registry shortcuts across four categories plus 11
-  // TipTap formatting rows in a 60vh scroller, so "rapidly narrows" needed a
-  // filter rather than a scroll. Matching is a case-insensitive substring of
-  // `label` only — the registry entry shape is `{id, keys, label, category}`,
-  // there is no description to also match, and matching `keys` would make
-  // "s" hit every ctrl+shift row.
+  // The modal lists 23 registry shortcuts across four categories plus 11
+  // TipTap formatting rows — 34 in all — in a 60vh scroller, so "rapidly
+  // narrows" needed a filter rather than a scroll. Matching is a
+  // case-insensitive substring of `label` only — the registry entry shape is
+  // `{id, keys, label, category}`, there is no description to also match, and
+  // matching `keys` would make "s" hit every ctrl+shift row.
   describe('search', () => {
     function open() {
       useKeyboardShortcutsStore.setState({ isOpen: true });
       render(<KeyboardShortcutsModal />);
-      return screen.getByTestId('shortcut-search-input') as HTMLInputElement;
+      // By ROLE and accessible name, not by test id: the `aria-label` is the
+      // only accessible name this input has once the placeholder is gone, and
+      // a `getByTestId` query cannot tell whether it is still there.
+      return screen.getByRole('textbox', { name: 'Search shortcuts' }) as HTMLInputElement;
     }
 
     function type(input: HTMLInputElement, value: string) {
@@ -279,6 +317,103 @@ describe('KeyboardShortcutsModal', () => {
 
       expect((screen.getByTestId('shortcut-search-input') as HTMLInputElement).value).toBe('');
       expect(screen.getByText('Find')).toBeInTheDocument();
+    });
+
+    // The clear button is 14 lines of JSX with a focus-restore side effect
+    // and had no test at all: deleting it whole left the suite green.
+    it('clears the query, restores the list and hands focus back', () => {
+      const input = open();
+      expect(screen.queryByTestId('shortcut-search-clear')).not.toBeInTheDocument();
+
+      type(input, 'sidebar');
+      expect(screen.queryByText('Find')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('shortcut-search-clear'));
+
+      expect(input.value).toBe('');
+      expect(screen.getByText('Find')).toBeInTheDocument();
+      expect(screen.getByText('Bold')).toBeInTheDocument();
+      // The control removes itself, so it must not take focus with it.
+      expect(screen.queryByTestId('shortcut-search-clear')).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(input);
+    });
+
+    // --- What the search says out loud ---------------------------------------
+    //
+    // Pinned the way this repo pins its other announcers (BulkActionBar,
+    // AiAssistantPage, PagesPage): the region must be in the accessibility
+    // tree BEFORE the first keystroke, so the assertion is on an empty-text
+    // region at rest, not on one that appears with its own first sentence.
+    describe('live announcement', () => {
+      it('mounts the live region silent, before anything is typed', () => {
+        open();
+        const announcer = screen.getByTestId('shortcut-search-announcer');
+        expect(announcer).toHaveAttribute('role', 'status');
+        expect(announcer).toHaveAttribute('aria-live', 'polite');
+        expect(announcer).toHaveTextContent('');
+      });
+
+      it('announces the match count when narrowing finds something', () => {
+        const input = open();
+        type(input, 'sidebar');
+        expect(screen.getByTestId('shortcut-search-announcer')).toHaveTextContent(
+          '1 shortcut matches "sidebar"',
+        );
+      });
+
+      it('pluralises the count', () => {
+        const input = open();
+        type(input, 'toggle');
+        expect(screen.getByTestId('shortcut-search-announcer').textContent).toMatch(
+          /^\d+ shortcuts match "toggle"$/,
+        );
+      });
+
+      it('announces the no-match sentence at zero', () => {
+        const input = open();
+        type(input, 'zzznotashortcut');
+        expect(screen.getByTestId('shortcut-search-announcer')).toHaveTextContent(
+          'No shortcuts match "zzznotashortcut"',
+        );
+      });
+
+      it('goes silent again when the query is cleared', () => {
+        const input = open();
+        type(input, 'sidebar');
+        type(input, '');
+        expect(screen.getByTestId('shortcut-search-announcer')).toHaveTextContent('');
+      });
+
+      // Announced once, by the sr-only region. The visible line is decoration.
+      it('does not double-announce the visible zero-match line', () => {
+        const input = open();
+        type(input, 'zzznotashortcut');
+        expect(screen.getByTestId('shortcut-search-empty')).not.toHaveAttribute('role', 'status');
+        expect(
+          screen.getAllByRole('status').filter((el) => el.textContent?.includes('zzznotashortcut')),
+        ).toHaveLength(1);
+      });
+    });
+
+    // `?` opens this dialog, and autofocusing the search box swallowed it:
+    // single-key shortcuts are dropped on editable targets, so pressing the
+    // advertised key again typed a character and landed the user on
+    // `No shortcuts match "?"`. On an empty box the key still means "toggle
+    // the shortcuts dialog"; once they are searching it is a search character.
+    describe('the ? key round trip', () => {
+      it('closes the dialog when ? is pressed on an empty search box', () => {
+        const input = open();
+        fireEvent.keyDown(input, { key: '?' });
+        expect(useKeyboardShortcutsStore.getState().isOpen).toBe(false);
+      });
+
+      it('leaves ? as an ordinary character once something is typed', () => {
+        const input = open();
+        type(input, 'zen');
+        fireEvent.keyDown(input, { key: '?' });
+        expect(useKeyboardShortcutsStore.getState().isOpen).toBe(true);
+        expect(screen.getByText('Zen Mode')).toBeInTheDocument();
+      });
     });
   });
 });
