@@ -120,6 +120,16 @@ function stripComments(text: string): string {
  * pattern test. The moment a rule EXEMPTS anything — and the shadow rule below
  * has to, or it flags English — a merged body is a hole: one prose sentence
  * exempts every class list merged in beside it.
+ *
+ * The resync has one cost, and it is LOUD rather than silent: a static
+ * `className="…"` attribute wrapped across lines — legal JSX, and absent from
+ * this tree today — is cut at the newline, and its closing `"` then reads as an
+ * OPENER, so the continuation lines never become a segment. That is a missed
+ * class list, so it does not go unnoticed: `sees every class list in the tree
+ * as its own segment` draws its sample from the raw text and fails on exactly
+ * that shape, and its message names this cause. The alternative — carrying the
+ * quote across the newline — is the swallow-the-file bug above, and a scanner
+ * cannot tell a wrapped attribute from an apostrophe in copy.
  */
 function stringBodies(text: string): string[] {
   const out: string[] = [];
@@ -214,6 +224,12 @@ function interpolations(body: string): { start: number; end: number }[] {
  *
  * `'` is deliberately NOT a cut: it is legal inside a class list, in
  * `before:content-['']`, and cutting there splits a real attribute in half.
+ * `"` IS a cut, because that is what puts a desynced body back into its parts —
+ * but only outside a balanced `[…]` or `(…)` group. A `"` inside an arbitrary
+ * value is content: `bg-[url("/x.png")]` and `shadow-[var(--x,"fallback")]` are
+ * legal Tailwind 4, and cutting there split the list into `bg-[url(` and
+ * `)] shadow-lg`. Neither half is a token shape — one opens on a closer — so
+ * both read as prose and every shadow in the list was exempt, silently.
  */
 function classSegments(text: string): string[] {
   const out: string[] = [];
@@ -233,8 +249,46 @@ function collectSegments(code: string, out: string[]): void {
   }
 }
 
+/**
+ * The positions of a chunk that sit inside a BALANCED `[…]` or `(…)` group.
+ *
+ * Balanced is the operative word: an unbalanced `[` — prose, or a bracket that
+ * really does span the boundary — protects nothing, so a stray opener can never
+ * swallow the rest of the chunk and merge unrelated class lists into one
+ * segment. Openers are matched against the nearest opener of their OWN kind, so
+ * `[a)b]` still masks as one group, the same rule `maskGroups` uses on a token.
+ */
+function groupInterior(chunk: string): boolean[] {
+  const inside = new Array<boolean>(chunk.length).fill(false);
+  const open: { close: string; at: number }[] = [];
+  for (let i = 0; i < chunk.length; i += 1) {
+    const c = chunk[i]!;
+    if (c === '[' || c === '(') {
+      open.push({ close: c === '[' ? ']' : ')', at: i });
+      continue;
+    }
+    if (c !== ']' && c !== ')') continue;
+    for (let k = open.length - 1; k >= 0; k -= 1) {
+      if (open[k]!.close !== c) continue;
+      for (let j = open[k]!.at; j <= i; j += 1) inside[j] = true;
+      open.length = k;
+      break;
+    }
+  }
+  return inside;
+}
+
 function pushChunks(chunk: string, out: string[]): void {
-  for (const piece of chunk.split(/[\n"`]/)) out.push(piece);
+  const inside = groupInterior(chunk);
+  let start = 0;
+  for (let i = 0; i < chunk.length; i += 1) {
+    const c = chunk[i]!;
+    if (c !== '\n' && c !== '"' && c !== '`') continue;
+    if (inside[i]) continue;
+    out.push(chunk.slice(start, i));
+    start = i + 1;
+  }
+  out.push(chunk.slice(start));
 }
 
 const PALETTE =
@@ -312,8 +366,19 @@ function maskGroups(token: string): string | null {
   return out;
 }
 
-const TOKEN_PART = String.raw`(?:[A-Za-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|${GROUP_MARK})`;
-const TAILWIND_TOKEN = new RegExp(`^!?@?-{0,2}${TOKEN_PART}(?:[-:/]{1,2}${TOKEN_PART})*!?$`);
+/**
+ * The `!` important marker may open ANY part of a token, not just the whole
+ * token. Tailwind 3 spelled it after the variants and before the utility —
+ * `hover:!shadow-md`, `sm:!-mt-1` — and tailwindcss 4.3 still compiles that
+ * form alongside v4's own trailing `hover:shadow-md!`. A grammar that allowed
+ * `!` only at the token edges rejected the post-variant spelling, and a
+ * rejected token makes its whole class list prose: one `hover:!bg-card`
+ * anywhere in an attribute exempted every shadow standing beside it, and the
+ * shadow token itself (`hover:!shadow-md`) was never recognised either. The
+ * pattern this rule replaces caught all of them through its `\b`.
+ */
+const TOKEN_PART = String.raw`(?:!?-{0,2}(?:[A-Za-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|${GROUP_MARK}))`;
+const TAILWIND_TOKEN = new RegExp(`^!?@?${TOKEN_PART}(?:[-:/]{1,2}${TOKEN_PART})*!?$`);
 
 /**
  * English function words. Nothing else separates a class list from a sentence:
@@ -386,11 +451,20 @@ const SHADOW_UTILITY = new RegExp(
 /**
  * The system shadow, in every spelling that resolves to it. `--shadow-overlay`
  * lives in the `@theme` block, so Tailwind 4 generates `shadow-overlay` from it
- * as well — three call sites already use that spelling, and the arbitrary-value
- * form is what the overlays that are not `nm-card-elevated` use (two drawers, a
- * round floating button, a dropdown). Allowed by name, per token: allowing a
- * whole BODY because one legitimate overlay shadow appears in it, which is what
- * this cell used to do, exempts every other shadow standing next to it.
+ * as well — BulkActionBar, LibraryFilterDropdown and TrashPage use that
+ * spelling, and the three overlays that are not `nm-card-elevated` use the
+ * arbitrary-value form (AiDockSheet and CommentsSidebar are drawers,
+ * TableOfContents a round floating button). Allowed by name, per token:
+ * allowing a whole BODY because one legitimate overlay shadow appears in it,
+ * which is what this cell used to do, exempts every other shadow standing next
+ * to it.
+ *
+ * `--shadow-overlay-sm` is allowed with it. It is the same `@theme` block's
+ * shallow sibling (index.css, under "The one shadow family in the system"),
+ * documented there as the Library search surface's exception, so a call site
+ * spelling it is using the system shadow rather than reaching past it. Nothing
+ * spells it today; this is the one place the rule is deliberately wider than
+ * the pattern it replaces, whose allowance covered only `--shadow-overlay`.
  */
 const SYSTEM_SHADOW =
   /^shadow-(?:overlay(?:-sm)?|\[var\(--shadow-overlay(?:-sm)?\)\]|\(--shadow-overlay(?:-sm)?\))$/;
@@ -421,15 +495,29 @@ function shadowUtilities(segment: string): string[] {
   const out: string[] = [];
   for (const raw of segment.split(/\s+/)) {
     if (raw === '') continue;
-    const token = raw.replace(/^!+/, '').replace(/!+$/, '');
-    // Variants decide WHEN a utility paints, never whether it is a shadow.
-    const utility = utilityOf(token);
+    const token = raw.replace(/!+$/, '');
+    // Variants decide WHEN a utility paints, never whether it is a shadow. The
+    // `!` marker is stripped AFTER them, because Tailwind 3 spelled it between
+    // the two — `hover:!shadow-md` — so stripping only at the token edges left
+    // a leading `!` on the utility and no shadow pattern matched it.
+    const utility = utilityOf(token).replace(/^!+/, '');
     if (!SHADOW_UTILITY.test(utility) || SYSTEM_SHADOW.test(utility)) continue;
     out.push(utility);
   }
   return out;
 }
 
+/**
+ * Every banned shadow in every segment that is a class list, with the segment
+ * quoted for the failure message.
+ *
+ * The `.slice(0, 100)` is DISPLAY only, and the allowance is decided per token
+ * above it. Judging an allowance on the shortened string is a live bug this
+ * file shipped for one commit: a legitimate `shadow-[var(--shadow-overlay)]`
+ * sitting past column 100 of a long class list got cut off, the allowance
+ * stopped matching, and the guard failed on the exact call sites it was
+ * written to permit.
+ */
 function shadowOffenders(segments: string[]): { token: string; segment: string }[] {
   const out: { token: string; segment: string }[] = [];
   for (const segment of segments) {
@@ -446,22 +534,10 @@ const FILES = sources(SRC).map((f) => {
   return { path: relative(SRC, f), text: stripped, segments: classSegments(stripped) };
 });
 
-/**
- * Matches inside class-list segments only — never bare identifiers.
- *
- * `allow` is applied to the FULL segment, before truncation. Applying an
- * allowance to the shortened display string is a live bug I shipped for one
- * commit: a legitimate `shadow-[var(--shadow-overlay)]` sitting past column 100
- * of a long class list got cut off, the allowance stopped matching, and the guard
- * failed on the exact call sites it was written to permit.
- */
-function callsites(
-  file: { segments: string[] },
-  pattern: RegExp,
-  allow?: (body: string) => boolean,
-): string[] {
+/** Matches inside class-list segments only — never bare identifiers. */
+function callsites(file: { segments: string[] }, pattern: RegExp): string[] {
   return file.segments
-    .filter((s) => pattern.test(s) && !(allow?.(s) ?? false))
+    .filter((s) => pattern.test(s))
     .map((s) => s.replace(/\s+/g, ' ').trim().slice(0, 100));
 }
 
@@ -796,6 +872,36 @@ describe('the shadow guard is itself under test', () => {
     ).toEqual([]);
   });
 
+  /**
+   * The class lists of a file drawn from its RAW TEXT: every static
+   * `className="…"` attribute and every `` className={`…`} `` template body.
+   *
+   * Selecting the superset sample from `file.segments` is the same circularity
+   * the oracle above fixes one layer up, just one layer down: `file.segments`
+   * is the output of the scanner under test, so a class list the scanner SPLITS
+   * or drops is never in the sample, and the `isClassList || looksLikeClassList`
+   * filter then removes the grammar-rejected ones as well. Two shapes that made
+   * this rule weaker than the pattern it replaces lived in exactly that blind
+   * spot — a `"` inside an arbitrary value, cut into unbalanced halves, and a
+   * `!` important marker after a variant, which the grammar rejected and so
+   * turned its whole list into prose — and every tree-derived cell stayed green
+   * with a live `shadow-lg` planted beside either of them.
+   */
+  const rawClassLists = (file: { text: string }): string[] => {
+    const out: string[] = [];
+    for (const attr of file.text.matchAll(/className="([^"]*)"/g)) out.push(attr[1]!);
+    for (const attr of file.text.matchAll(/className=\{`([^`]*)`\}/g)) out.push(attr[1]!);
+    return out.filter((value) => value.trim() !== '');
+  };
+
+  /**
+   * A class list put back into source form, so the SHIPPED scanner runs on it.
+   * A backtick body rather than a `"` attribute, because the shapes this guard
+   * gets wrong are the ones carrying a `"` — which cannot be written inside a
+   * double-quoted attribute at all, and so would be untestable in that form.
+   */
+  const asSource = (classList: string): string => `const cls = \`${classList}\`;`;
+
   it('is a superset of the pre-v4 pattern on every real class list in the tree', () => {
     // The fixture table above proves the shapes; this proves the SCOPE. Every
     // class list the sweep can see, mutated with every shape the old pattern
@@ -823,6 +929,34 @@ describe('the shadow guard is itself under test', () => {
     }
     expect(checked, 'nothing was compared — the sweep or the mutation broke').toBeGreaterThan(10000);
     expect(missed.slice(0, 12), 'the new rule is weaker than the one it replaced').toEqual([]);
+  });
+
+  it('is a superset of the pre-v4 pattern on every class list in the raw source text', () => {
+    // The same comparison, on a sample the scanner cannot edit. The cell above
+    // asks "of the segments the scanner produced, is any weaker than before?";
+    // this one asks the question the scanner cannot dodge — for every class
+    // list that is written in the tree, does the SHIPPED pipeline still fire
+    // where the pattern this replaces fired? A class list the scanner splits or
+    // loses fails here and cannot fail above.
+    const missed: string[] = [];
+    let checked = 0;
+    for (const file of FILES) {
+      for (const classList of rawClassLists(file)) {
+        for (const form of CAUGHT_BEFORE) {
+          const mutated = `${classList} ${form}`;
+          if (!PRE_V4_PATTERN.test(mutated)) continue;
+          checked += 1;
+          if (flagged(asSource(mutated)).length > 0) continue;
+          missed.push(`${file.path}: ${form} in "${classList.replace(/\s+/g, ' ').trim().slice(0, 70)}"`);
+        }
+      }
+    }
+    expect(checked, 'nothing was compared — the attribute enumeration broke').toBeGreaterThan(10000);
+    expect(
+      missed.slice(0, 12),
+      'the new rule is weaker than the one it replaced on a class list that is ' +
+        'written in this tree — the scanner lost it or the grammar refused it',
+    ).toEqual([]);
   });
 
   it('is a superset of the pre-v4 pattern across the whole shadow token grammar', () => {
@@ -853,12 +987,23 @@ describe('the shadow guard is itself under test', () => {
       // is not a shadow. The pre-v4 pattern caught this on `shadow-[`.
       '-[color:var(--nm-shadow-out-strong)]',
       '-[shadow:0_0_8px_#22d3ee]',
+      // A `"` inside the arbitrary value. Legal CSS — a custom-property
+      // fallback is a string — and the shape that showed the segment cut was
+      // wrong: cutting a body at every `"` split the class list into two
+      // unbalanced halves, both of which read as prose.
+      '-[var(--x,"fallback")]',
       '-(--shadow-glow)',
       '-cyan-400',
       '-black',
     ];
     const ALPHA = ['', '/40'];
-    const VARIANT = ['', 'hover:', 'md:', 'group-hover:', 'dark:md:'];
+    // `!` is Tailwind 3's important marker, still compiled by Tailwind 4.3
+    // alongside v4's own trailing `!`. It may open the whole token or sit
+    // between the variants and the utility, and the second position is the one
+    // a grammar written for the first silently rejects — which made the token
+    // unrecognisable, its whole class list prose, and every shadow in that list
+    // exempt.
+    const VARIANT = ['', 'hover:', 'md:', 'group-hover:', 'dark:md:', '!', 'hover:!', 'dark:md:!'];
 
     const missed: string[] = [];
     let compared = 0;
@@ -870,7 +1015,7 @@ describe('the shadow guard is itself under test', () => {
             const segment = `${THEME_SWATCH} ${token}`;
             if (!PRE_V4_PATTERN.test(segment)) continue;
             compared += 1;
-            if (flagged(`<div className="${segment}" />`).length > 0) continue;
+            if (flagged(asSource(segment)).length > 0) continue;
             missed.push(token);
           }
         }
@@ -945,7 +1090,14 @@ describe('the shadow guard is itself under test', () => {
     expect(
       invisible.length,
       `${invisible.length} class lists are invisible to the sweep as their own ` +
-        `segment, so a prose exemption beside them exempts them too:\n` +
+        `segment, so a prose exemption beside them exempts them too.\n` +
+        `If the class list below spans more than one line inside a static ` +
+        `className="…" attribute, that is the known cause: \`stringBodies\` ` +
+        `resyncs at every newline inside a "/' body — which is what stops one ` +
+        `apostrophe in JSX copy swallowing the rest of the file — so the ` +
+        `attribute's closing quote reads as an OPENER and the continuation ` +
+        `lines are lost. Put the class list on one line, or in a backtick, ` +
+        `which is not resynced.\n` +
         invisible.slice(0, 12).join('\n'),
     ).toBe(0);
   });
@@ -1005,10 +1157,19 @@ describe('the shadow guard is itself under test', () => {
 
   it('cuts an interpolation at its own closing brace, not at the first one', () => {
     // `\$\{[^{}]*\}` stops at the first `}`, so an interpolation carrying an
-    // object literal was mis-cut and its tail was left inline in the class-list
-    // text — where it is neither a class list nor prose, and so exempt.
-    const braced = "const cls = `p-2 ${cn({ 'shadow-lg': on })} rounded-md`;";
-    expect(flagged(braced)).toEqual(['shadow-lg']);
+    // object literal is mis-cut and its tail — `)} shadow-lg` — is left inline
+    // in the class-list text, where it is neither a class list nor prose, and
+    // so exempt.
+    //
+    // The shadow has to sit AFTER the mis-cut for this to measure the cut. The
+    // fixture below it puts the shadow inside the interpolation's own string
+    // literal, and the recursive descent recovers that one whether the brace
+    // scan is balanced or not — so it guards the descent, not the cut, and the
+    // balanced scan was shipped with no cell that could fail on it.
+    expect(flagged('const cls = `p-2 ${cn({ a: 1 })} shadow-lg`;')).toEqual(['shadow-lg']);
+    expect(flagged('const cls = `p-2 ${a ? cn({ b: 1 }) : c} shadow-xs`;')).toEqual(['shadow-xs']);
+    const nested = "const cls = `p-2 ${cn({ 'shadow-lg': on })} rounded-md`;";
+    expect(flagged(nested)).toEqual(['shadow-lg']);
   });
 
   it('reads an uppercase third-party class as a class, not as prose', () => {
@@ -1059,5 +1220,89 @@ describe('the shadow guard is itself under test', () => {
     const form = 'shadow-[0_0_8px_var(--x,rgb(0_0_0/[0.3]))]';
     expect(PRE_V4_PATTERN.test(form)).toBe(true);
     expect(flagged(`<div className="${THEME_SWATCH} ${form}" />`)).toEqual([form]);
+  });
+
+  /**
+   * Legal Tailwind 4 shapes this tree does not happen to spell today.
+   *
+   * Every sample in this file that comes from the tree can only be as strong as
+   * the tree, and the two shapes that made this rule weaker than the pattern it
+   * replaces are both absent from it: `grep -rn 'bg-\[url(' frontend/src` and
+   * `grep -rn ':![a-z]' frontend/src` are each empty, so both holes sat under a
+   * fully green suite with a live `shadow-lg` planted beside them. A guard for
+   * a grammar needs fixtures the grammar allows, not only the ones already
+   * written down.
+   */
+  const LATENT_SHAPES = [
+    // A `"` inside an arbitrary value: `bg-[url("…")]`, and `content-["…"]` for
+    // any punctuation that would need escaping in a single-quoted CSS string.
+    // Cutting a body at every `"` split lists like these into unbalanced halves
+    // — `bg-[url(` and `)] shadow-lg` — and a half that opens on a closer is
+    // not a token shape, so both halves read as prose.
+    'bg-[url("/x.png")]',
+    'after:content-["\\2014"]',
+    // Tailwind 3's important marker in its post-variant position. Tailwind 4.3
+    // still compiles `hover:!shadow-md` (and v4's own `hover:shadow-md!`), and
+    // a grammar that allows `!` only at the token edges rejects the token, which
+    // makes the whole class list prose.
+    'hover:!bg-card',
+    'dark:md:!text-sm',
+    'focus-visible:!ring-2',
+    'sm:!-mt-1',
+  ];
+
+  it('recognises legal Tailwind 4 shapes this tree does not happen to use yet', () => {
+    const rejected = LATENT_SHAPES.filter((token) => !isTailwindToken(token));
+    expect(
+      rejected,
+      'a token the grammar refuses turns its whole class list into prose, and ' +
+        'prose exempts every banned utility standing in it',
+    ).toEqual([]);
+  });
+
+  it('does not let a latent shape exempt the shadow standing beside it', () => {
+    const escaped: string[] = [];
+    for (const shape of LATENT_SHAPES) {
+      for (const form of CAUGHT_BEFORE) {
+        const segment = `${THEME_SWATCH} ${shape} ${form}`;
+        if (!PRE_V4_PATTERN.test(segment)) continue;
+        if (flagged(asSource(segment)).length > 0) continue;
+        escaped.push(`${form} beside ${shape}`);
+      }
+    }
+    expect(escaped, 'the pre-v4 pattern caught every one of these').toEqual([]);
+  });
+
+  it('flags a shadow that carries the important marker after its variants', () => {
+    // The marker says how hard the declaration wins, never whether it paints a
+    // shadow. All three spellings compile under tailwindcss 4.3.
+    expect(flagged(`<div className="${THEME_SWATCH} hover:!shadow-md" />`)).toEqual(['shadow-md']);
+    expect(flagged(`<div className="${THEME_SWATCH} md:!drop-shadow-lg" />`)).toEqual([
+      'drop-shadow-lg',
+    ]);
+    expect(flagged(`<div className="${THEME_SWATCH} hover:shadow-md!" />`)).toEqual(['shadow-md']);
+    expect(flagged(`<div className="${THEME_SWATCH} !shadow-lg" />`)).toEqual(['shadow-lg']);
+    // And the marker on an unrelated utility must not exempt an ordinary shadow
+    // standing beside it — the way a rejected token actually escapes.
+    expect(flagged(`<div className="${THEME_SWATCH} hover:!text-red-500 shadow-lg" />`)).toEqual([
+      'shadow-lg',
+    ]);
+  });
+
+  it('does not cut a class list at a `"` that is inside an arbitrary value', () => {
+    // `"` has to stay a cut — a `'`-opened body that ran past a `className="…"`
+    // is put back into its parts by exactly that cut — but a `"` inside a
+    // balanced `[…]` or `(…)` group is content, not a boundary.
+    const list = 'flex p-1.5 bg-[url("/x.png")] shadow-lg';
+    expect(classSegments(asSource(list))).toContain(list);
+    expect(flagged(asSource(list))).toEqual(['shadow-lg']);
+    expect(flagged(asSource('p-1.5 shadow-[var(--x,"fallback")]'))).toEqual([
+      'shadow-[var(--x,"fallback")]',
+    ]);
+    // The cut itself is still there: an unbalanced `"` splits as before, which
+    // is what recovers a class list from a desynced body.
+    expect(classSegments('doesn\'t tilt <div className="p-1.5 shadow" />')).toContain(
+      'p-1.5 shadow',
+    );
   });
 });
