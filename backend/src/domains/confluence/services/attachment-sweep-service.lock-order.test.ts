@@ -250,13 +250,19 @@ describe('#1349 runAttachmentSweep epilogue ordering', () => {
  * the real holder is a worker that has nothing to do with attachments.
  *
  * Both real constants are imported (the whole point — a literal here would
- * rebuild the exact hole), and the collision is asserted as a DISTINCTNESS
- * claim as well as by value, so renaming either side deliberately still has
- * to keep them apart.
+ * rebuild the exact hole), and the value claim and the DISTINCTNESS claim are
+ * SEPARATE cells on purpose: in one cell the value assertion throws first and
+ * the distinctness assertion is never reached, so the rename mutation could
+ * only ever be shown to red one of the two. Split, the single mutation
+ * `'attachment-sweep'` → `'image-embedding-index'` reds BOTH, and renaming
+ * either side deliberately still has to keep them apart.
  */
 describe('#1514 the attachment sweep worker-lock name', () => {
-  it('is the pinned literal, and never collides with the image-index worker lock', () => {
+  it('is the pinned literal', () => {
     expect(ATTACHMENT_SWEEP_WORKER_LOCK).toBe('attachment-sweep');
+  });
+
+  it('never collides with the image-index worker lock', () => {
     expect(ATTACHMENT_SWEEP_WORKER_LOCK).not.toBe(IMAGE_INDEX_WORKER_LOCK);
   });
 });
