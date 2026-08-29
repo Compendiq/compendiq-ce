@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, CheckSquare, Square, Trash2 } from 'lucide-react';
+import { RefreshCw, CheckSquare, Square, Trash2, Search, X } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
 import { toast } from 'sonner';
@@ -122,6 +122,24 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
   // Build merged list of spaces
   const allSpaces = mergeSpaces(availableSpaces ?? [], syncedSpaces ?? [], Array.from(selected));
 
+  /**
+   * Local filter over the merged list (#1402 phase 3).
+   *
+   * `GET /spaces/available` returns every space the PAT can read — dozens to
+   * hundreds on a real Data Center instance — and this list was a flat
+   * unfiltered `.map()`, so picking three known spaces meant scrolling the
+   * whole estate. Key as well as name, because the key is what people quote to
+   * each other. Local state only: no request, no URL param — a lookup inside
+   * one settings panel is not a shareable view, and `selected` is deliberately
+   * untouched, so filtering hides rows without deselecting them.
+   */
+  const [spaceFilter, setSpaceFilter] = useState('');
+  const needle = spaceFilter.trim().toLowerCase();
+  const visibleSpaces = allSpaces.filter(
+    (space) =>
+      space.name.toLowerCase().includes(needle) || space.key.toLowerCase().includes(needle),
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -162,14 +180,41 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         </Switch.Root>
       </div>
 
+      {/* Filter — only once there is a list to narrow. */}
+      {allSpaces.length > 0 && (
+        <div className="relative flex items-center">
+          <Search size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground" />
+          <input
+            type="text"
+            value={spaceFilter}
+            onChange={(e) => setSpaceFilter(e.target.value)}
+            placeholder="Filter spaces by name or key…"
+            aria-label="Filter spaces"
+            data-testid="space-filter-input"
+            className="nm-input pl-8 pr-8"
+          />
+          {spaceFilter && (
+            <button
+              type="button"
+              onClick={() => setSpaceFilter('')}
+              aria-label="Clear space filter"
+              className="absolute right-2 text-muted-foreground transition-colors hover:text-foreground"
+              data-testid="space-filter-clear"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Space list. Each row mixes a selection toggle (the whole row) with
           a per-space home picker (#379). Nested <button> inside <button>
           would be invalid HTML, so the row is a div with role=listitem
           plus an inner <button> for the toggle, and the home picker is a
           sibling that calls stopPropagation in its own click handler. */}
-      {allSpaces.length > 0 ? (
+      {visibleSpaces.length > 0 ? (
         <div className="space-y-1.5" role="list" aria-label="Spaces list">
-          {allSpaces.map((space) => {
+          {visibleSpaces.map((space) => {
             const isSelected = selected.has(space.key);
             return (
               <div
@@ -229,6 +274,16 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
               </div>
             );
           })}
+        </div>
+      ) : allSpaces.length > 0 ? (
+        /* The list is loaded — the filter is what emptied it, so say that
+           rather than sending the user back to Fetch Spaces (#1402). */
+        <div
+          className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground"
+          data-testid="space-filter-empty"
+          role="status"
+        >
+          No spaces match "{spaceFilter.trim()}"
         </div>
       ) : (
         <div className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground">
