@@ -1,9 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { cacheStore } = vi.hoisted(() => ({
+  cacheStore: new Map<string, unknown>(),
+}));
+
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class {
-    async invalidate() {}
+    async get(userId: string, type: string, identifier: string) {
+      return cacheStore.get(`${userId}:${type}:${identifier}`) ?? null;
+    }
+    async set(userId: string, type: string, identifier: string, data: unknown) {
+      cacheStore.set(`${userId}:${type}:${identifier}`, data);
+    }
+    async invalidate(userId: string, type: string) {
+      for (const key of [...cacheStore.keys()]) {
+        if (key.startsWith(`${userId}:${type}:`)) cacheStore.delete(key);
+      }
+    }
     async invalidateAcrossUsers() {}
   },
 }));
@@ -23,6 +37,10 @@ import { notionRoutes } from './notion.js';
 
 const dbAvailable = await isDbAvailable();
 const TOKEN = 'secret_route_ntn_must_never_appear_on_get';
+
+beforeEach(() => {
+  cacheStore.clear();
+});
 
 describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', () => {
   let server: FakeNotionServer;
@@ -277,6 +295,40 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
       await instance.close();
     }
   });
+
+  it('serves a second tree GET from cache without another Notion search', async () => {
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      server.requests.length = 0;
+      const first = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(first.statusCode).toBe(200);
+      expect(server.requests.filter((r) => r.url.includes('/v1/search')).length).toBeGreaterThan(0);
+      const firstBody = first.json();
+      server.requests.length = 0;
+      const second = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual(firstBody);
+      expect(server.requests.filter((r) => r.url.includes('/v1/search'))).toEqual([]);
+    } finally {
+      await instance.close();
+    }
+  });
+
+  it('invalidates the tree cache when the Notion token is replaced', async () => {
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      server.requests.length = 0;
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const after = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(after.statusCode).toBe(200);
+      expect(server.requests.filter((r) => r.url.includes('/v1/search')).length).toBeGreaterThan(0);
+    } finally {
+      await instance.close();
+    }
+  });
 });
 
 describe.skipIf(!dbAvailable)('GET /api/notion/tree upstream failures (#1463)', () => {
@@ -457,6 +509,27 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
       const get = await instance.inject({ method: 'GET', url: '/api/notion/connection' });
       expect(get.json()).toEqual({ hasToken: true });
       expect(get.body).not.toContain(TOKEN);
+    } finally {
+      await instance.close();
+    }
+  });
+
+  it('invalidates the tree cache after a successful import', async () => {
+    const instance = await app();
+    try {
+      await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
+      const first = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(first.statusCode).toBe(200);
+      server.requests.length = 0;
+      const imported = await instance.inject({
+        method: 'POST',
+        url: '/api/notion/import',
+        payload: { pageIds: ['notes'], visibility: 'private' },
+      });
+      expect(imported.statusCode).toBe(200);
+      const after = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
+      expect(after.statusCode).toBe(200);
+      expect(server.requests.filter((r) => r.url.includes('/v1/search')).length).toBeGreaterThan(0);
     } finally {
       await instance.close();
     }

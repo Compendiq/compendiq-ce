@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useSearchParams, useLocation } from 'react-router-dom';
 import { LazyMotion, MotionConfig, domAnimation } from 'framer-motion';
-import { useAuthStore } from './stores/auth-store';
+import { peekPersistedSession, useAuthStore } from './stores/auth-store';
 import { useSessionInit } from './shared/hooks/useSessionInit';
 import { useClearCacheOnLogout } from './shared/hooks/useClearCacheOnLogout';
 import { useThemeEffect } from './shared/hooks/useThemeEffect';
@@ -9,13 +9,14 @@ import { useTokenRefreshTimer } from './shared/hooks/useTokenRefreshTimer';
 import { useSetupStatus } from './shared/hooks/useSetupStatus';
 import { AppLayout } from './shared/components/layout/AppLayout';
 import { ErrorBoundary } from './shared/components/feedback/ErrorBoundary';
+import { AppBootSkeleton, RouteLoadingFallback } from './shared/components/feedback/AppLoadingFallback';
 
 import { LoginPage } from './features/settings/LoginPage';
 import { OidcCallbackPage } from './features/auth/OidcCallbackPage';
 import { SetupWizard } from './features/setup/SetupWizard';
 // Route-based code splitting: lazy-load all page components (#186)
 // LoginPage is statically imported — it's the first screen for
-// unauthenticated users and lazy-loading it causes a "Loading..." flash.
+// unauthenticated users and lazy-loading it causes a boot-skeleton flash.
 const SettingsLayout = lazy(() =>
   import('./features/settings/SettingsLayout').then((m) => ({
     default: m.SettingsLayout,
@@ -89,15 +90,6 @@ const ReviewDetailPage = lazy(() =>
     default: m.ReviewDetailPage,
   })),
 );
-export function PageLoadingFallback() {
-  return (
-    <div className="flex items-center justify-center h-64">
-      <div className="nm-card p-8 text-center">
-        <div className="animate-pulse text-muted-foreground">Loading...</div>
-      </div>
-    </div>
-  );
-}
 
 /**
  * Terminal error state for SetupRoute: the setup-status fetch failed and we
@@ -128,7 +120,7 @@ function SetupRoute({ children }: { children: React.ReactNode }) {
   const { setupComplete, hasData, isLoading, error, refetch } = useSetupStatus();
   const [searchParams] = useSearchParams();
   const isRerun = searchParams.get('rerun') === 'true';
-  if (isLoading) return <PageLoadingFallback />;
+  if (isLoading) return <AppBootSkeleton variant="quiet" />;
   // A failed setup-status fetch with no cached data leaves setup state truly
   // unknown. Don't render the first-run wizard on that ambiguity — an already
   // configured instance would otherwise show setup to a real user (#932) —
@@ -155,8 +147,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const { setupComplete, isLoading, error } = useSetupStatus();
 
-  // While checking setup status, show loading
-  if (isLoading) return <PageLoadingFallback />;
+  // While checking setup status, stay inside the product chrome for a
+  // returning session. Guests get the quiet header — not a fake workspace
+  // that would then jump to login or the wizard. Persist rehydrates
+  // asynchronously, so peek the stored flag to avoid a guest-header flash.
+  if (isLoading) {
+    const returning = isAuthenticated || peekPersistedSession();
+    return <AppBootSkeleton variant={returning ? 'workspace' : 'quiet'} />;
+  }
 
   // Redirect to the setup wizard only when we positively know setup is
   // incomplete. A failed/undefined setup-status fetch (backend restart,
@@ -184,7 +182,7 @@ export function App() {
     <LazyMotion features={domAnimation}>
       <MotionConfig reducedMotion="user">
         <ErrorBoundary>
-          <Suspense fallback={<PageLoadingFallback />}>
+          <Suspense fallback={<AppBootSkeleton variant="quiet" />}>
             <Routes>
               <Route path="/setup" element={<SetupRoute><SetupWizard /></SetupRoute>} />
               <Route path="/login" element={<LoginPage />} />
@@ -195,7 +193,7 @@ export function App() {
                   <ProtectedRoute>
                     <AppLayout>
                       <ErrorBoundary>
-                        <Suspense fallback={<PageLoadingFallback />}>
+                        <Suspense fallback={<RouteLoadingFallback />}>
                           <Routes>
                             <Route path="/" element={<PagesPage />} />
                             <Route

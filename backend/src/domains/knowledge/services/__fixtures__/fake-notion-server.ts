@@ -26,6 +26,8 @@ export interface FakeNotionState {
   blocks?: Record<string, Record<string, unknown>>;
   /** Status to return for GET /v1/blocks/:id instead of the block object. */
   blockErrors?: Record<string, number>;
+  /** Status to return for GET /v1/pages/:id instead of the page object. */
+  pageErrors?: Record<string, number>;
   /** Status to return for GET /v1/blocks/:id/children instead of a list. */
   blockChildrenErrors?: Record<string, number>;
   /**
@@ -35,6 +37,8 @@ export interface FakeNotionState {
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
   /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
   files?: Record<string, { contentType: string; body: Buffer | string }>;
+  /** Pause GET page/database/block lookups so tests can observe in-flight concurrency. */
+  lookupDelayMs?: number;
   beforeFileResponse?: (path: string) => Promise<void>;
 }
 
@@ -42,6 +46,7 @@ export interface FakeNotionServer {
   baseUrl: string;
   requests: FakeNotionRequest[];
   state: FakeNotionState;
+  peakConcurrentLookups: number;
   close: () => Promise<void>;
 }
 
@@ -71,7 +76,22 @@ function unauthorized() {
 
 export async function startFakeNotionServer(state: FakeNotionState): Promise<FakeNotionServer> {
   const requests: FakeNotionRequest[] = [];
+  const lookupStats = { inFlight: 0, peak: 0 };
 
+  async function runLookup<T>(fn: () => T | Promise<T>): Promise<T> {
+    lookupStats.inFlight += 1;
+    if (lookupStats.inFlight > lookupStats.peak) lookupStats.peak = lookupStats.inFlight;
+    try {
+      if (state.lookupDelayMs) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, state.lookupDelayMs);
+        });
+      }
+      return await fn();
+    } finally {
+      lookupStats.inFlight -= 1;
+    }
+  }
   const server: Server = createServer(async (req, res) => {
     const url = req.url ?? '/';
     const method = (req.method ?? 'GET').toUpperCase();
@@ -133,12 +153,24 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const pageMatch = /^\/v1\/pages\/([^/]+)$/.exec(path);
     if (method === 'GET' && pageMatch) {
-      const page = state.pages?.[pageMatch[1]!];
-      if (!page) {
-        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
-        return;
-      }
-      send(res, 200, page);
+      await runLookup(() => {
+        const errorStatus = state.pageErrors?.[pageMatch[1]!];
+        if (errorStatus) {
+          send(res, errorStatus, {
+            object: 'error',
+            status: errorStatus,
+            code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+            message: 'upstream',
+          });
+          return;
+        }
+        const page = state.pages?.[pageMatch[1]!];
+        if (!page) {
+          send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+          return;
+        }
+        send(res, 200, page);
+      });
       return;
     }
 
@@ -156,12 +188,14 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const dbMatch = /^\/v1\/databases\/([^/]+)$/.exec(path);
     if (method === 'GET' && dbMatch) {
-      const db = state.databases?.[dbMatch[1]!];
-      if (!db) {
-        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
-        return;
-      }
-      send(res, 200, db);
+      await runLookup(() => {
+        const db = state.databases?.[dbMatch[1]!];
+        if (!db) {
+          send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+          return;
+        }
+        send(res, 200, db);
+      });
       return;
     }
 
@@ -198,22 +232,24 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     const blockMatch = /^\/v1\/blocks\/([^/]+)$/.exec(path);
     if (method === 'GET' && blockMatch) {
-      const errorStatus = state.blockErrors?.[blockMatch[1]!];
-      if (errorStatus) {
-        send(res, errorStatus, {
-          object: 'error',
-          status: errorStatus,
-          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
-          message: 'upstream',
-        });
-        return;
-      }
-      const block = state.blocks?.[blockMatch[1]!];
-      if (!block) {
-        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
-        return;
-      }
-      send(res, 200, block);
+      await runLookup(() => {
+        const errorStatus = state.blockErrors?.[blockMatch[1]!];
+        if (errorStatus) {
+          send(res, errorStatus, {
+            object: 'error',
+            status: errorStatus,
+            code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+            message: 'upstream',
+          });
+          return;
+        }
+        const block = state.blocks?.[blockMatch[1]!];
+        if (!block) {
+          send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+          return;
+        }
+        send(res, 200, block);
+      });
       return;
     }
 
@@ -235,11 +271,13 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
   });
   const addr = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${addr.port}`;
-
   return {
     baseUrl,
     requests,
     state,
+    get peakConcurrentLookups() {
+      return lookupStats.peak;
+    },
     close: () =>
       new Promise((resolve, reject) => {
         // Undici keep-alive holds pooled sockets; `close()` alone waits on

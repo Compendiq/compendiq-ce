@@ -9,6 +9,7 @@
  * There is no database query. A row is present only when Search returned it as
  * a page object.
  */
+import pLimit from 'p-limit';
 import {
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeNode,
@@ -17,6 +18,8 @@ import { query } from '../../../core/db/postgres.js';
 import { NotionClient, NotionError } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
+
+const NOTION_LOOKUP_CONCURRENCY = 5;
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -251,58 +254,95 @@ export async function fetchNotionWorkspaceTree(
   }
 
   // Pass 2: Direct parent relations (page_id, database_id, data_source_id)
-  // Fetch missing parent databases/pages on-demand if omitted from search results
-  const missingParentsChecked = new Set<string>();
-  for (const [key, node] of nodes) {
+  // Fetch missing parent databases/pages on-demand concurrently if omitted from search results
+  const missingParentsToFetch = new Map<string, { parentId: string; type: string | null }>();
+  for (const [key] of nodes) {
     if (attached.has(key)) continue;
-    const raw = rawByKey.get(key)!;
-    if (parentTypeOf(raw) === 'block_id') continue;
+    const raw = rawByKey.get(key);
+    if (!raw || parentTypeOf(raw) === 'block_id') continue;
     const parentId = parentIdOf(raw);
     if (!parentId) continue;
     const parentKey = normalizeId(parentId);
-    let parent = nodes.get(parentKey);
-    if (!parent && !missingParentsChecked.has(parentKey)) {
-      missingParentsChecked.add(parentKey);
-      try {
-        let parentRaw: Record<string, unknown>;
-        if (parentTypeOf(raw) === 'database_id' || parentTypeOf(raw) === 'data_source_id') {
-          parentRaw = await client.getDatabase(parentId);
-        } else {
-          try {
-            parentRaw = await client.getPage(parentId);
-          } catch {
-            parentRaw = await client.getDatabase(parentId);
-          }
-        }
-        if (parentRaw && !isTrashed(parentRaw)) {
-          const parentNode = toNode(parentRaw);
-          if (parentNode) {
-            nodes.set(parentKey, parentNode);
-            rawByKey.set(parentKey, parentRaw);
-            parent = parentNode;
-          }
-        }
-      } catch {
-        // missing or no permission; leave at root
-      }
+    if (!nodes.has(parentKey) && !missingParentsToFetch.has(parentKey)) {
+      missingParentsToFetch.set(parentKey, { parentId, type: parentTypeOf(raw) });
     }
+  }
+
+  if (missingParentsToFetch.size > 0) {
+    const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+    await Promise.all(
+      Array.from(missingParentsToFetch.entries()).map(([parentKey, { parentId, type }]) =>
+        limit(async () => {
+          try {
+            let parentRaw: Record<string, unknown>;
+            if (type === 'database_id' || type === 'data_source_id') {
+              parentRaw = await client.getDatabase(parentId);
+            } else {
+              try {
+                parentRaw = await client.getPage(parentId);
+              } catch (err) {
+                if (!isMissing(err)) throw err;
+                parentRaw = await client.getDatabase(parentId);
+              }
+            }
+            if (parentRaw && !isTrashed(parentRaw)) {
+              const parentNode = toNode(parentRaw);
+              if (parentNode) {
+                nodes.set(parentKey, parentNode);
+                rawByKey.set(parentKey, parentRaw);
+              }
+            }
+          } catch (err) {
+            if (isMissing(err)) return;
+            throw err;
+          }
+        }),
+      ),
+    );
+  }
+
+  for (const [key, node] of nodes) {
+    if (attached.has(key)) continue;
+    const raw = rawByKey.get(key);
+    if (!raw || parentTypeOf(raw) === 'block_id') continue;
+    const parentId = parentIdOf(raw);
+    if (!parentId) continue;
+    const parentKey = normalizeId(parentId);
+    const parent = nodes.get(parentKey);
     if (parent && parent !== node) {
       attach(parent, node, attached);
     }
   }
 
-  // Pass 3: Block-parent walk for pages nested under blocks/toggles/columns
+  // Pass 3: Block-parent walk for pages nested under blocks/toggles/columns (resolved concurrently)
+  const blockParentNodes: Array<{ key: string; node: NotionTreeNode; blockId: string }> = [];
   for (const [key, node] of nodes) {
     if (attached.has(key)) continue;
     const raw = rawByKey.get(key);
     if (!raw || parentTypeOf(raw) !== 'block_id') continue;
     const blockId = parentIdOf(raw);
-    if (!blockId) continue;
-    const hostId = await resolveHostPageId(client, blockId, nodes);
-    if (!hostId) continue;
-    const host = nodes.get(normalizeId(hostId));
-    if (host && host !== node) {
-      attach(host, node, attached);
+    if (blockId) {
+      blockParentNodes.push({ key, node, blockId });
+    }
+  }
+
+  if (blockParentNodes.length > 0) {
+    const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+    const blockResolutions = await Promise.all(
+      blockParentNodes.map(({ node, blockId }) =>
+        limit(async () => {
+          const hostId = await resolveHostPageId(client, blockId, nodes);
+          return { node, hostId };
+        }),
+      ),
+    );
+    for (const { node, hostId } of blockResolutions) {
+      if (hostId) {
+        const host = nodes.get(normalizeId(hostId));
+        if (host && host !== node) {
+          attach(host, node, attached);
+        }
+      }
     }
   }
 

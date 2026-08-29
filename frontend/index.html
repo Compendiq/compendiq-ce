@@ -111,13 +111,57 @@
         }
       })();
     </script>
+    <style>
+      /* First-paint chassis. React replaces #root on mount. Hex fallbacks
+         cover the gap before index.css defines the theme tokens. No extra
+         inline script — CSP hashes only the FOUC theme block above. */
+      #boot-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+        background: var(--app-chassis, #09090a);
+        pointer-events: none;
+      }
+      html:not(.dark) #boot-shell { background: var(--app-chassis, #eeeff0); }
+      .boot-sr {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .boot-header {
+        display: flex;
+        align-items: center;
+        height: 2.75rem;
+        min-height: 2.75rem;
+        padding: 0 12px;
+        flex-shrink: 0;
+      }
+      .boot-header img { height: 24px; width: auto; }
+      @media (min-width: 768px) {
+        .boot-header { padding-left: 24px; }
+      }
+    </style>
   </head>
   <!-- Background comes from index.css's `body { background: var(--surface-backdrop) }`,
        which is now a flat colour. A `bg-background` utility here would be
        redundant rather than harmful, but keeping the paint in one place means
        first paint and post-hydration cannot disagree. -->
   <body class="h-screen overflow-hidden text-foreground antialiased">
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-shell" role="status" aria-live="polite" aria-busy="true">
+        <span class="boot-sr">Loading Compendiq</span>
+        <div class="boot-header">
+          <img src="/favicon.svg" alt="Compendiq" width="24" height="24" />
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

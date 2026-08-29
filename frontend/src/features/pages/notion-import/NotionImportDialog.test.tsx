@@ -765,6 +765,27 @@ describe('NotionImportDialog tree cache and empty retry', () => {
     expect(screen.queryByRole('checkbox', { name: 'Handbook' })).toBeNull();
   });
 
+  it('invalidates the cached tree after import so alreadyImported can refresh', async () => {
+    const { queryClient } = renderDialog();
+    await connectWithDummyToken();
+    expect(queryClient.getQueryData(['notion', 'tree'])).toEqual(MIXED_TREE);
+    const treeGetsBefore = calls.filter((c) => c.method === 'GET' && /\/notion\/tree$/.test(c.url)).length;
+    expect(treeGetsBefore).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+    await screen.findByTestId('notion-import-result');
+
+    await waitFor(() => {
+      expect(calls.filter((c) => c.method === 'GET' && /\/notion\/tree$/.test(c.url)).length).toBeGreaterThan(
+        treeGetsBefore,
+      );
+    });
+  });
+
   it('lets an empty tree retry instead of keeping a successful [] cache', async () => {
     givenHappyPath({ tree: { nodes: [] } });
     renderDialog();

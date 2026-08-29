@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuthStore } from './stores/auth-store';
 import { createQueryClient } from './shared/lib/query-client';
-import { App, PageLoadingFallback } from './App';
+import { App } from './App';
 
 describe('App – ProtectedRoute token restoration', () => {
   let fetchSpy: MockInstance<typeof fetch>;
@@ -155,7 +155,7 @@ describe('App – expired session must not hang on the loading fallback', () => 
   }
 
   // Reproduces the reported hang: opening the app with an expired/revoked
-  // refresh cookie shows "Loading..." forever until a manual reload.
+  // refresh cookie shows the boot skeleton forever until a manual reload.
   //
   // The sequence is a starvation, not a failed fetch. useSessionInit's refresh
   // 401s and calls clearAuth(); that true->false flip fires
@@ -421,27 +421,82 @@ describe('App – SetupRoute setup-status error handling (#932)', () => {
   }, 15000);
 });
 
-describe('PageLoadingFallback', () => {
-  it('renders a glassmorphic loading indicator', () => {
-    render(<PageLoadingFallback />);
-    expect(screen.getByText('Loading...')).toBeInTheDocument();
+describe('App – boot loading chrome', () => {
+  let fetchSpy: MockInstance<typeof fetch>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { promise } = Promise.withResolvers<Response>();
+    fetchSpy.mockImplementation(() => promise);
   });
 
-  it('applies the correct CSS classes', () => {
-    const { container } = render(<PageLoadingFallback />);
-    const outerDiv = container.firstElementChild as HTMLElement;
-    expect(outerDiv.className).toContain('flex');
-    expect(outerDiv.className).toContain('items-center');
-    expect(outerDiv.className).toContain('justify-center');
-    expect(outerDiv.className).toContain('h-64');
+  afterEach(() => {
+    useAuthStore.getState().clearAuth();
+    localStorage.removeItem('compendiq-auth');
+  });
 
-    const glassCard = outerDiv.firstElementChild as HTMLElement;
-    expect(glassCard.className).toContain('nm-card');
-    expect(glassCard.className).toContain('p-8');
+  function renderApp(initialPath = '/') {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <App />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
 
-    const loadingText = glassCard.firstElementChild as HTMLElement;
-    expect(loadingText.className).toContain('animate-pulse');
-    expect(loadingText.className).toContain('text-muted-foreground');
+  it('paints the workspace chassis while setup-status is in flight for a session', () => {
+    useAuthStore.setState({
+      accessToken: 'persisted-token',
+      user: { id: '1', username: 'test', role: 'user' },
+      isAuthenticated: true,
+    });
+
+    renderApp('/');
+
+    expect(screen.getByTestId('app-boot-skeleton')).toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+    expect(document.querySelector('.nm-card')).toBeNull();
+  });
+
+  it('paints a quiet header while setup-status is in flight for a guest', () => {
+    useAuthStore.setState({
+      accessToken: null,
+      user: null,
+      isAuthenticated: false,
+    });
+
+    renderApp('/');
+
+    expect(screen.getByTestId('quiet-boot-skeleton')).toBeInTheDocument();
+    expect(screen.queryByTestId('library-list-skeleton')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+  });
+
+  it('paints the workspace chassis from a persisted session before the store hydrates', () => {
+    useAuthStore.setState({
+      accessToken: null,
+      user: null,
+      isAuthenticated: false,
+    });
+    localStorage.setItem(
+      'compendiq-auth',
+      JSON.stringify({
+        state: {
+          isAuthenticated: true,
+          user: { id: '1', username: 'test', role: 'user' },
+        },
+        version: 1,
+      }),
+    );
+
+    renderApp('/');
+
+    expect(screen.getByTestId('app-boot-skeleton')).toBeInTheDocument();
+    expect(screen.queryByTestId('quiet-boot-skeleton')).not.toBeInTheDocument();
   });
 });
 
