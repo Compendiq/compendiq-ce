@@ -1112,6 +1112,82 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.deleted).toMatchObject({ directories: 0, files: 0 });
     });
 
+    /**
+     * #1516 — `asPageId`'s round-trip guard (`if (String(parsed) !== key)
+     * return null; // zero-padded '007' must not match id 7`) was the one
+     * safety predicate in this file no test could falsify: deleting it left
+     * all 71 sweep cells green.
+     *
+     * The issue asks for the guard to be pinned on the directory-ORPHAN
+     * verdict, and that assertion cannot falsify it (executed probe, quoted
+     * in the PR): `knownConfluenceTreeKeys` records `String(row.id)`, so a
+     * widened `asPageId('042')` puts `'42'` — never the key `'042'` — into
+     * the known set, and `042/` is judged exactly as it is with the guard in
+     * place. The reachable call site is `confluenceKeyOwners`, which answers
+     * a page-id LIST for one key and feeds both the `page_image_embeddings`
+     * prune and the image-reindex re-queue. With the guard gone, key `042`
+     * (a key a page really owns via `confluence_id`) ALSO resolves to the
+     * unrelated live page whose id is 42, so deleting an orphan file under
+     * `042/` prunes THAT page's index row for a file it still holds and
+     * re-queues it — silent index loss booked against the wrong page.
+     */
+    it('a zero-padded Confluence key never prunes the index rows of the page id it collapses onto (#1516)', async () => {
+      const userId = await seedUser('zero-pad');
+      // The collateral page: the zero-padded key's numeric collapse is its id.
+      const collateral = await query<{ id: number }>(
+        `INSERT INTO pages (title, space_key, source, page_type, version, body_html, created_by_user_id)
+         VALUES ('Collateral', 'LOCAL', 'standalone', 'page', 1, '', $1) RETURNING id`,
+        [userId],
+      );
+      const collateralId = collateral.rows[0]!.id;
+      // Number(key) === collateralId, but String(Number(key)) !== key.
+      const key = `0${collateralId}`;
+      // The page that really owns the directory key.
+      const owner = await query<{ id: number }>(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version, body_html)
+         VALUES ('Owner', 'DEV', $1, 'confluence', 'page', 1, '') RETURNING id`,
+        [key],
+      );
+      const ownerId = owner.rows[0]!.id;
+
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = ANY($1::int[])`, [
+        [collateralId, ownerId],
+      ]);
+      // The SAME attachment_key on both pages: the prune is keyed by
+      // (page_id, source, attachment_key), so the owner LIST is the only
+      // thing deciding which of the two rows goes.
+      await seedEmbeddingRow(ownerId, 'confluence', 'orphan.png');
+      await seedEmbeddingRow(collateralId, 'confluence', 'orphan.png');
+
+      const orphan = await writeAged(key, 'orphan.png');
+      await ageDirs(key);
+
+      const run = await runAttachmentSweep({ dryRun: false });
+
+      expect(run!.status).toBe('completed');
+      // The file is an unreferenced orphan under a key its own page owns, so
+      // it goes — this cell is about the collateral, not about the delete.
+      expect(await exists(orphan)).toBe(false);
+      expect(run!.deleted!.imageEmbeddingRows).toBe(1);
+      const survivors = await query<{ page_id: number }>(
+        `SELECT page_id FROM page_image_embeddings ORDER BY page_id`,
+      );
+      expect(
+        survivors.rows.map((r) => r.page_id),
+        'the collapsed-onto page keeps its own index row',
+      ).toEqual([collateralId]);
+      const dirty = await query<{ id: number; image_embedding_dirty: boolean }>(
+        `SELECT id, image_embedding_dirty FROM pages WHERE id = ANY($1::int[])`,
+        [[collateralId, ownerId]],
+      );
+      expect(dirty.rows.find((r) => r.id === ownerId)!.image_embedding_dirty).toBe(true);
+      expect(
+        dirty.rows.find((r) => r.id === collateralId)!.image_embedding_dirty,
+        'the collapsed-onto page is never re-queued for an image re-index',
+      ).toBe(false);
+      expect(run!.deleted!.pagesMarkedDirty).toBe(1);
+    });
+
     // Fixer, external round — permanent data loss. `page-icons/` is a store of
     // its own under the SAME root, its name passes PAGE_ID_PATTERN (`-` is in
     // the class), and no page row claims the key. `readKeyDir` sees only its

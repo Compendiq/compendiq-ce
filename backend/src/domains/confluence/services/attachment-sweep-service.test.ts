@@ -104,6 +104,28 @@ describe('collectAttachmentUrlReferences (#1349 keep-set feeder)', () => {
     expect(sets.confluence.has('plain.png')).toBe(true);
   });
 
+  // #1524 — the punctuation trim was the one conservatism widening in this
+  // collector that no cell could falsify: replacing the loop body with
+  // `void name;` left all 71 sweep tests green. The single-quoted spellings
+  // above cannot falsify it, because the apostrophe-truncated-prefix loop
+  // below produces the same clean name for them. The trim is the SOLE
+  // producer of the clean name for a PLAIN-TEXT spelling that drags trailing
+  // punctuation into the match — prose or a Markdown-imported body writing
+  // `see /api/attachments/90001/a.png).` — because `)` and `.` are both
+  // inside the filename class, the match sits outside any quoted attribute
+  // (so there is no continuation and no closing delimiter), and nothing else
+  // in the pipeline strips a trailing character. Without it the keep-set
+  // holds only `a.png).`, the on-disk `a.png` is judged an orphan and a live
+  // run deletes a referenced file.
+  it('trims trailing punctuation off a PLAIN-TEXT spelling — the only producer of the clean name there (#1524)', () => {
+    const sets = emptySets();
+    collectAttachmentUrlReferences('see /api/attachments/90001/a.png). Also /api/local-attachments/7/b.webp,', sets);
+    expect(sets.confluence.has('a.png')).toBe(true);
+    expect(sets.local.has('b.webp')).toBe(true);
+    // The untrimmed spellings stay too — over-keeping is the safe direction.
+    expect(sets.confluence.has('a.png).')).toBe(true);
+  });
+
   it('a single-quoted attribute with no space before the self-closing slash still lands the name (review r3)', () => {
     // `src='…/a.png'/>` drags `'/` into the match: `/` is not in the trim set,
     // so the trimmed variant still ends in a slash and the basename filter
