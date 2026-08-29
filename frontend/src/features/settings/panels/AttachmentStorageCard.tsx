@@ -71,8 +71,14 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 const STATS_QUERY_KEY = ['admin', 'attachment-storage-stats'] as const;
 const SWEEP_QUERY_KEY = ['admin', 'attachment-sweep'] as const;
 
-/** ≥5s — the admin rate limit is 20/min per route and two routes poll. */
-const POLL_MS = 5_000;
+/**
+ * ≥5s — the admin rate limit is 20/min per route and two routes poll.
+ *
+ * Exported for the test to assert the floor itself (#1523): the value is a
+ * rate-limit constraint, not a preference, and a private copy of the number
+ * in the test could not see it shrink.
+ */
+export const POLL_MS = 5_000;
 /**
  * Poll floor after a kick, until the payload reports the lock.
  *

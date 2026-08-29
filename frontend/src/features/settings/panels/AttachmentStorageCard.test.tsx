@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AttachmentStorageStats, AttachmentSweepRun, AttachmentSweepStatus } from '@compendiq/contracts';
-import { AttachmentStorageCard } from './AttachmentStorageCard';
+import { AttachmentStorageCard, POLL_MS } from './AttachmentStorageCard';
 import { toast } from 'sonner';
 
 vi.mock('sonner', () => ({
@@ -105,11 +105,16 @@ interface FetchPlan {
 let postedBodies: unknown[] = [];
 
 /**
- * Restated, not imported: the card does not export them, and a test that read
- * the module's own constants would advance by whatever they happen to be and
- * pass against a warm-up shortened to nothing. These are the documented
- * values — 5s poll (the admin rate limit is 20/min per route and two routes
- * poll) and a 20s post-kick window.
+ * The DOCUMENTED cadence, restated as the timer quantum these cells advance
+ * by — a cell that advanced by whatever the module happens to export would
+ * still find a tick against a poll shortened to nothing, and would pass
+ * against a warm-up shortened to nothing. 5s poll (the admin rate limit is
+ * 20/min per route and two routes poll) and a 20s post-kick window.
+ *
+ * #1523: the restatement is the ADVANCEMENT unit only — it no longer stands
+ * in for the module's value. The card now exports `POLL_MS` and the floor
+ * cell below asserts that value directly, so shrinking the card's constant
+ * reds here instead of sailing past a test carrying its own copy of 5000.
  */
 const POLL_MS_UNDER_TEST = 5_000;
 const KICK_WARMUP_MS_UNDER_TEST = 20_000;
@@ -1361,6 +1366,27 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(css.slice(at, css.indexOf('}', at)), 'the focus mechanic must be a real outline').toContain(
       'outline:',
     );
+  });
+
+  /**
+   * #1523 — the poll cadence is a rate-limit FLOOR, not a preference.
+   *
+   * Both polling queries return `POLL_MS` from `pollWhile`, and the admin
+   * routes are limited to 20 requests/minute EACH, so two routes polling at
+   * 5s sit exactly at 12/min per route — the comfort zone the card's header
+   * comment claims. Anything faster spends the operator's budget on the poll
+   * and 429s the very Dry run the card offers as the remedy.
+   *
+   * The cell asserts the MODULE's constant. The suite's own
+   * `POLL_MS_UNDER_TEST` is the quantum its fake-timer cells advance by, and
+   * a shrunken card constant still produces ticks inside those windows: with
+   * `POLL_MS` at 1s the warm-up cell above advanced 3 × 5s and stayed green.
+   */
+  it('polls no faster than the admin rate limit allows', () => {
+    expect(
+      POLL_MS,
+      'POLL_MS is a rate-limit floor: the admin limit is 20/min PER ROUTE and two routes poll, so 5s is the fastest safe cadence',
+    ).toBeGreaterThanOrEqual(5_000);
   });
 
   /**
