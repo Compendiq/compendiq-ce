@@ -572,7 +572,29 @@ describe('OnboardingChecklistCard — graduation', () => {
     expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
   });
 
-  it('does not celebrate again for a user who already graduated', () => {
+  /**
+   * The `!graduated` half of the celebration gate, made falsifiable (#1402
+   * phase 3). A finished guide reopened from the User Menu shows the checked
+   * list, NOT a second congratulation — `completedAt` is already set, so this
+   * user has been congratulated once and only once. Deleting `!graduated` from
+   * the gate turns this red; before this case existed it turned nothing red,
+   * because the only graduated fixture was also `dismissed: true` and so
+   * asserted the whole card away rather than the congratulation.
+   */
+  it('shows the checked list without a second congratulation when a graduated user reopens the guide', () => {
+    renderCard(
+      settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
+        firstAiQueryMade: true,
+        shortcutsModalViewed: true,
+        pageCreatedOrEdited: true,
+        completedAt: '2026-01-01T00:00:00.000Z',
+      }),
+    );
+    expect(screen.getByTestId('onboarding-checklist')).toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing at all for a graduated user who also dismissed it', () => {
     renderCard(
       settingsFixture({ hasConfluencePat: true, selectedSpaces: ['ENG'] }, {
         firstAiQueryMade: true,
@@ -583,6 +605,7 @@ describe('OnboardingChecklistCard — graduation', () => {
       }),
     );
     expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('onboarding-complete')).not.toBeInTheDocument();
   });
 
   it('lets the reopened, finished guide be closed again', async () => {
