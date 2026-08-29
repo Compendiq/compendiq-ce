@@ -192,12 +192,25 @@ const PALETTE =
  * child variants (`*:mt-0`) and the BEM-ish project classes that live in the same
  * attributes (`drawio-nodeview__btn--edit`).
  *
- * `p-1.5` is the case to keep in mind when touching this: it carries a `.`, so
- * the obvious "letters, digits and hyphens" token test rejects it, the segment
- * around it is judged prose, and a bare `shadow` in that same class list walks
- * out through the exemption. Three narrowing attempts died on exactly that.
+ * Two cases to keep in mind when touching this, both of which turn a real class
+ * list into "prose" and so exempt every banned utility standing in it:
+ *   - `p-1.5` carries a `.`, so the obvious "letters, digits and hyphens" token
+ *     test rejects it and a bare `shadow` in that same list walks out through
+ *     the exemption. Three narrowing attempts died on exactly that.
+ *   - arbitrary selectors NEST their brackets. `[&_pre:not([data-title])]:p-4`
+ *     (Editor.tsx) and `[&_ul[data-type=taskList]_li]:flex` (ArticleViewer.tsx)
+ *     are live class lists here, and a `\[[^\]]*\]` bracket stops at the first
+ *     inner `]`. Both lists were being read as prose, which exempted all twelve
+ *     shadow spellings the pre-v4 pattern caught in them.
+ *
+ * The bracket sub-grammar is spelled out to a fixed depth rather than made
+ * recursive because JS regexes have no recursion. Each level's alternatives are
+ * disjoint on their first character, so there is no ambiguity to backtrack over.
  */
-const TOKEN_PART = String.raw`(?:[a-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|\[[^\]]*\]|\((?:--)?[^)]*\))`;
+const BRACKET_D1 = String.raw`\[[^\[\]]*\]`;
+const BRACKET_D2 = String.raw`\[(?:[^\[\]]|${BRACKET_D1})*\]`;
+const BRACKET = String.raw`\[(?:[^\[\]]|${BRACKET_D2})*\]`;
+const TOKEN_PART = String.raw`(?:[a-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|${BRACKET}|\((?:--)?[^)]*\))`;
 const TAILWIND_TOKEN = new RegExp(`^!?@?-{0,2}${TOKEN_PART}(?:[-:/]{1,2}${TOKEN_PART})*!?$`);
 
 /**
@@ -229,18 +242,27 @@ function isClassList(segment: string): boolean {
 }
 
 /**
- * Every way Tailwind 4 spells a shadow: the scale (`2xs` and `xs` are v4's, and
- * v4 RENAMED the old `sm` to `xs` — so a pattern written for v3 certifies the
- * spelling the upgrade produced), arbitrary values, the `(--custom-prop)`
- * shorthand, a theme shadow by name, and coloured shadows with or without an
- * alpha. `shadow-none` is deliberately absent: it paints nothing.
+ * Every way Tailwind 4 spells a shadow: the FAMILY prefix, the scale (`2xs` and
+ * `xs` are v4's, and v4 RENAMED the old `sm` to `xs` — so a pattern written for
+ * v3 certifies the spelling the upgrade produced), arbitrary values, the
+ * `(--custom-prop)` shorthand, a theme shadow by name, and coloured shadows with
+ * or without an alpha. `shadow-none` is deliberately absent: it paints nothing.
+ *
+ * There are four families, not two. The range this repo pins — `tailwindcss
+ * ^4.2.1`, 4.3.0 resolved — ships `--text-shadow-*` (v4.1) and `--inset-shadow-*`
+ * (v4.0) theme keys alongside `--shadow-*` and `--drop-shadow-*`,
+ * so `text-shadow-lg` and `inset-shadow-sm` are live spellings of the thing this
+ * rule bans. The pre-v4 pattern caught both of them incidentally, through its
+ * leading `\b`; an anchored `^(?:drop-)?shadow` does not, and dropping them
+ * would have made this rule WEAKER than the one it replaces on 26 token shapes.
  */
+const SHADOW_FAMILY = 'drop-|text-|inset-';
 const SHADOW_ROLE =
   'black|white|current|transparent|inherit|primary|secondary|accent|muted|card|popover|border|input|ring|foreground|background|destructive|success|warning|info|action';
 const SHADOW_UTILITY = new RegExp(
-  `^(?:drop-)?shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|inner)|-\\[[^\\]]*\\]|-\\((?:--)?[^)]*\\)` +
+  `^(?:${SHADOW_FAMILY})?shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|inner)|-${BRACKET}|-\\((?:--)?[^)]*\\)` +
     `|-(?:${PALETTE})-\\d{2,3}|-(?:${SHADOW_ROLE})|-overlay(?:-sm)?)?` +
-    `(?:\\/(?:\\[[^\\]]*\\]|\\d{1,3}(?:\\.\\d+)?))?$`,
+    `(?:\\/(?:${BRACKET}|\\d{1,3}(?:\\.\\d+)?))?$`,
 );
 
 /**
@@ -255,13 +277,35 @@ const SHADOW_UTILITY = new RegExp(
 const SYSTEM_SHADOW =
   /^shadow-(?:overlay(?:-sm)?|\[var\(--shadow-overlay(?:-sm)?\)\]|\(--shadow-overlay(?:-sm)?\))$/;
 
+/**
+ * The utility a token names, with its variants removed.
+ *
+ * The split has to happen at the last colon that is OUTSIDE brackets and
+ * parentheses. A colon is legal inside an arbitrary value — `shadow-[color:…]`,
+ * `shadow-[shadow:…]` — and cutting at the last colon in the whole token throws
+ * the utility away and keeps the tail of the value, which is not a shadow by any
+ * pattern. The pre-v4 rule caught those on `shadow-[`, so cutting naively is a
+ * hole rather than a cosmetic detail.
+ */
+function utilityOf(token: string): string {
+  let depth = 0;
+  let cut = -1;
+  for (let i = 0; i < token.length; i += 1) {
+    const c = token[i]!;
+    if (c === '[' || c === '(') depth += 1;
+    else if (c === ']' || c === ')') depth -= 1;
+    else if (c === ':' && depth === 0) cut = i;
+  }
+  return token.slice(cut + 1);
+}
+
 function shadowUtilities(segment: string): string[] {
   const out: string[] = [];
   for (const raw of segment.split(/\s+/)) {
     if (raw === '') continue;
     const token = raw.replace(/^!+/, '').replace(/!+$/, '');
     // Variants decide WHEN a utility paints, never whether it is a shadow.
-    const utility = token.slice(token.lastIndexOf(':') + 1);
+    const utility = utilityOf(token);
     if (!SHADOW_UTILITY.test(utility) || SYSTEM_SHADOW.test(utility)) continue;
     out.push(utility);
   }
@@ -536,6 +580,32 @@ describe('the shadow guard is itself under test', () => {
     'hover:shadow-lg',
   ];
 
+  /**
+   * An INDEPENDENT class-list oracle, written from a closed list of unambiguous
+   * utility prefixes rather than from the token grammar under test.
+   *
+   * The tree-wide superset cell below used to pick its sample with `isClassList`
+   * itself, and that is circular: a real class list the predicate refuses to
+   * recognise is dropped from the sample, so the one failure mode a token-shape
+   * rule actually has is the one the cell cannot see. Measured on this tree, the
+   * circular version passed green while `Editor.tsx`'s nested-bracket variant
+   * list — `[&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4` — was being
+   * read as PROSE, which exempted every shadow spelling in it, all twelve of
+   * which the pre-v4 pattern caught.
+   *
+   * Two independently-recognised utilities is the bar: high enough that no
+   * English sentence clears it, low enough that every class list does.
+   */
+  const ORACLE_BARE =
+    /^(?:flex|grid|hidden|block|inline-flex|inline-block|absolute|relative|fixed|sticky|truncate|grow|italic|uppercase|underline)$/;
+  const ORACLE_PREFIXED =
+    /^(?:items|justify|gap|p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|w|h|min-w|max-w|text|bg|border|rounded|font|leading|tracking|opacity|z|overflow|cursor|transition|size|shrink|space-x|space-y|whitespace|select|pointer-events)-\S+$/;
+  const looksLikeClassList = (segment: string): boolean =>
+    segment.split(/\s+/).filter((token) => {
+      const utility = token.slice(token.lastIndexOf(':') + 1);
+      return ORACLE_BARE.test(utility) || ORACLE_PREFIXED.test(utility);
+    }).length >= 2;
+
   it('flags a bare `shadow` added to a real class list that also contains `p-1.5`', () => {
     expect(flagged(`<div className="${THEME_SWATCH} shadow" />`)).toEqual(['shadow']);
   });
@@ -568,6 +638,27 @@ describe('the shadow guard is itself under test', () => {
     expect(missed, 'the replacement must be a superset of the pattern it replaces').toEqual([]);
   });
 
+  it('recognises every class list the independent oracle can see', () => {
+    // The premise the two superset cells rest on. A real class list read as
+    // prose is exempt from every rule in this file, so this has to be measured
+    // against something other than the predicate under test.
+    const misjudged: string[] = [];
+    let seen = 0;
+    for (const file of FILES) {
+      for (const segment of file.segments) {
+        if (!looksLikeClassList(segment)) continue;
+        seen += 1;
+        if (!isClassList(segment)) misjudged.push(`${file.path}: ${segment.trim().slice(0, 90)}`);
+      }
+    }
+    expect(seen, 'the oracle matched nothing — the sweep or the oracle is broken').toBeGreaterThan(2000);
+    expect(
+      misjudged,
+      'these are class lists by any reading, and the token grammar calls them ' +
+        'prose — every banned utility in them is exempt',
+    ).toEqual([]);
+  });
+
   it('is a superset of the pre-v4 pattern on every real class list in the tree', () => {
     // The fixture table above proves the shapes; this proves the SCOPE. Every
     // class list the sweep can see, mutated with every shape the old pattern
@@ -575,11 +666,15 @@ describe('the shadow guard is itself under test', () => {
     // A token-shape rule can only lose ground here — one token it refuses to
     // recognise turns a real class list into prose and exempts the lot — so the
     // check is run over the tree rather than over a handful of examples.
+    //
+    // The sample is the UNION of what the grammar accepts and what the oracle
+    // recognises, never the grammar alone: selecting with `isClassList` hides
+    // exactly the segments the grammar gets wrong.
     const missed: string[] = [];
     let checked = 0;
     for (const file of FILES) {
       for (const segment of file.segments) {
-        if (!isClassList(segment)) continue;
+        if (!isClassList(segment) && !looksLikeClassList(segment)) continue;
         for (const form of CAUGHT_BEFORE) {
           const mutated = `${segment} ${form}`;
           if (!PRE_V4_PATTERN.test(mutated)) continue;
@@ -591,6 +686,61 @@ describe('the shadow guard is itself under test', () => {
     }
     expect(checked, 'nothing was compared — the sweep or the mutation broke').toBeGreaterThan(10000);
     expect(missed.slice(0, 12), 'the new rule is weaker than the one it replaced').toEqual([]);
+  });
+
+  it('is a superset of the pre-v4 pattern across the whole shadow token grammar', () => {
+    // The fixture tables enumerate the spellings someone thought of. This
+    // enumerates the grammar: every prefix × scale × arbitrary value × alpha ×
+    // variant combination, compared token by token against the pattern this
+    // replaces. It is how `text-shadow-lg` and `inset-shadow-sm` were found —
+    // both are live Tailwind 4 families (`--text-shadow-*` and
+    // `--inset-shadow-*` are theme keys in tailwindcss 4.3), the pre-v4 pattern
+    // caught both through its `\b`, and a `^(?:drop-)?shadow` rule silently did
+    // not. Twenty-six token shapes, every one of them a real regression.
+    const PREFIX = ['', 'drop-', 'text-', 'inset-'];
+    const SCALE = [
+      '',
+      '-2xs',
+      '-xs',
+      '-sm',
+      '-md',
+      '-lg',
+      '-xl',
+      '-2xl',
+      '-inner',
+      '-[0_0_8px_#22d3ee]',
+      '-[var(--nm-shadow-out-strong)]',
+      // A colon INSIDE the arbitrary value. Stripping variants at the last
+      // colon in the token — rather than at the last one outside brackets and
+      // parens — throws the utility away and keeps the tail of the value, which
+      // is not a shadow. The pre-v4 pattern caught this on `shadow-[`.
+      '-[color:var(--nm-shadow-out-strong)]',
+      '-[shadow:0_0_8px_#22d3ee]',
+      '-(--shadow-glow)',
+      '-cyan-400',
+      '-black',
+    ];
+    const ALPHA = ['', '/40'];
+    const VARIANT = ['', 'hover:', 'md:', 'group-hover:', 'dark:md:'];
+
+    const missed: string[] = [];
+    let compared = 0;
+    for (const variant of VARIANT) {
+      for (const prefix of PREFIX) {
+        for (const scale of SCALE) {
+          for (const alpha of ALPHA) {
+            const token = `${variant}${prefix}shadow${scale}${alpha}`;
+            const segment = `${THEME_SWATCH} ${token}`;
+            if (!PRE_V4_PATTERN.test(segment)) continue;
+            compared += 1;
+            if (flagged(`<div className="${segment}" />`).length > 0) continue;
+            missed.push(token);
+          }
+        }
+      }
+    }
+    expect(compared, 'nothing was compared — the generator broke').toBeGreaterThan(100);
+    expect(missed, 'the new rule is weaker than the one it replaces').toEqual([]);
   });
 
   it('catches the Tailwind 4 forms the pre-v4 pattern could not see', () => {
