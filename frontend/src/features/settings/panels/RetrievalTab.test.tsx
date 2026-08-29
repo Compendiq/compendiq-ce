@@ -1868,6 +1868,50 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     expect(survivingKeep).not.toHaveAttribute('aria-busy');
   });
 
+  it('leaves the RERANK Keep at rest too when the server declined to record (#1510)', async () => {
+    // The twin of the case above, on the second basis. Both call sites derive
+    // `keepWriting` from `keepMutation.isPending && variables?.key === …`, and
+    // `variables` SURVIVES settle in react-query v5 — so the `isPending`
+    // conjunct is what stops a settled press from leaving `Keeping 0.35…` and
+    // `aria-busy` standing for ever on the outcome the button OUTLIVES. Pinned
+    // at the similarity site only, the rerank site could lose that conjunct
+    // with the suite green (review r3 mutated exactly that).
+    toastSuccess.mockClear();
+    toastError.mockClear();
+    mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThresholdRerank: 0.35,
+        ragConfidenceCalibration: calibration({ rerank: staleRerank }),
+      },
+      putResult: () => ({
+        ragConfidenceCalibrationWrite: {
+          similarity: null,
+          rerank: { outcome: 'unresolved', model: null },
+        },
+      }),
+    });
+    renderTab();
+    await ready();
+
+    const rerankStripId = 'retrieval-ragConfidenceThresholdRerank-calibration-stale';
+    fireEvent.click(
+      within(await screen.findByTestId(rerankStripId)).getByTestId(
+        'retrieval-ragConfidenceThresholdRerank-calibration-keep',
+      ),
+    );
+
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastSuccess).not.toHaveBeenCalled();
+    const survivingKeep = within(await screen.findByTestId(rerankStripId)).getByTestId(
+      'retrieval-ragConfidenceThresholdRerank-calibration-keep',
+    );
+    await waitFor(() => expect(survivingKeep).toHaveTextContent(/Keep 0\.35/));
+    expect(survivingKeep).not.toHaveTextContent(/Keeping/);
+    expect(survivingKeep.querySelector('.animate-spin')).toBeNull();
+    expect(survivingKeep).not.toHaveAttribute('aria-busy');
+  });
+
   it('says the live model could not be RESOLVED, never that none is assigned', async () => {
     // Review r3. Both states reach the panel with a null live pair, and only
     // one is a fact about the assignment. Naming the wrong one sends the
@@ -3081,6 +3125,24 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(record.querySelector('.animate-spin')).toBeNull();
     expect(record).not.toHaveAttribute('aria-busy');
     expect(record).toHaveAttribute('aria-disabled', 'true');
+
+    // And the dim has to be READABLE, because the split makes it the whole
+    // visual delta here (review r3): the label no longer swaps and the spinner
+    // is gone, so `aria-disabled`'s opacity is all a sighted operator gets for
+    // an unbounded PUT that can reindex the corpus in-request. At
+    // `opacity-45` this 12px text composites to 3.93:1 in Graphite and 2.88:1
+    // in Paper (`--color-foreground` over `--color-background`, computed from
+    // the tokens), under the 4.5:1 floor; 70% clears it at 8.00 / 6.36. WCAG's
+    // inactive-component exemption does not cover these three: they keep focus
+    // and their handlers are what refuse — the same argument the Retry beside
+    // them is already held to, and the flat rule
+    // `EmbeddingShadowCompareSection` states ("never 45"). Asserted as a
+    // FLOOR, so a retune upward is free and only a regression fails.
+    for (const remedy of [pin, keep, record]) {
+      const dim = /aria-disabled:opacity-(\d+)/.exec(remedy.className);
+      expect(dim, `${remedy.dataset.testid} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), remedy.dataset.testid).toBeGreaterThanOrEqual(70);
+    }
 
     // `aria-disabled` blocks no events, so the Save lock has to be the
     // handler's: one press each, and no second PUT after a turn of the event

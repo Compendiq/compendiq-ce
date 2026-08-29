@@ -360,8 +360,11 @@ reads a JSDoc, so grep the retired phrasings across `backend/src`, `docs/` and
 `frontend/src` rather than trusting a green suite. `RAG_EF_SEARCH` survives as a bootstrap
 fallback in `getRagEfSearch`'s row → env → 100 cascade, and it is the LEGACY-LLM-VARS
 kind of deprecated rather than `FTS_LANGUAGE`'s: nothing seeds the row, so the
-variable is still live on every instance that has never saved the panel, which
-is exactly what the startup notice and the panel's own muted line say. Three
+variable is still live wherever the server has not READ a saved value — which
+is what the startup notice ("while no `rag_ef_search` row has been read") and
+the panel's own muted line ("the server has not read a saved value for the
+setting below") now say, both re-worded off "never saved" by #1512 because a
+cold read failure reaches the same state. Three
 rules that review r1 had to add and that a fifth probe or a later edit must
 keep: a row read that THREW never falls through to the variable **over a value
 already resolved** (an unreadable row is not an absent one, and the
@@ -381,7 +384,9 @@ hook ~30 tests in four files call between cases — which is precisely why the
 admin PUT calls `noteRagEfSearchRowSaved(value)` instead (review r1 of #1512):
 a bare forget leaves the reader unable to tell "cleared by this write" from
 "nothing has ever resolved", and the panel refetches straight into that window,
-so one blipped SELECT there reinstated the RETIRED variable over the row just
+so one SELECT there — blipped, or SUCCEEDING on the pre-INSERT snapshot, which
+is a raced snapshot and not evidence the row is gone (review r3) — reinstated
+the RETIRED variable over the row just
 saved and re-offered the `Keep <old env value>` that writes it back; the
 floor is resolved **before** the probe checks its
 client out, never between `BEGIN` and the `SET LOCAL`, because on a cache miss

@@ -219,15 +219,24 @@ function focusKnobBeforeNoticeClears(fieldId: string, pressed: HTMLElement | nul
  * It stays because it is free and, since `PendingRemedyLabel` below, actually
  * true of the subtree; it is not the in-flight signal.
  *
- * What was genuinely missing is the half a human can perceive. A 45% dim reads
- * as "disabled", not as "working", and the write is an unbounded network PUT,
- * so on a slow server the operator was left standing on a control that had
- * gone quiet until the toast landed. `AuthPanel`'s recipe is four parts, not
- * two: the attribute pair here, plus the spinner and the label swap that
+ * What was genuinely missing is the half a human can perceive. A dim reads as
+ * "disabled", not as "working", and the write is an unbounded network PUT, so
+ * on a slow server the operator was left standing on a control that had gone
+ * quiet until the toast landed. `AuthPanel`'s recipe is four parts, not two:
+ * the attribute pair here, plus the spinner and the label swap that
  * `PendingRemedyLabel` restores.
+ *
+ * `opacity-70`, never 45 (review r3 of #1510/#1511, the rule
+ * `EmbeddingShadowCompareSection` and the `Retry` two screens down already
+ * state). At 45% this 12px text composites to 3.93:1 in Graphite and 2.88:1 in
+ * Paper against `--color-foreground` on `--color-background`, under the 4.5:1
+ * floor; 70% clears it at 8.00 / 6.36. WCAG's inactive-component exemption
+ * does not cover these three buttons — they keep focus and their HANDLERS are
+ * what refuse — and since the #1511 split the dim is the ONLY channel while a
+ * panel-wide Save runs, because the label no longer swaps there.
  */
 const PENDING_REMEDY_CLASS =
-  'aria-disabled:cursor-not-allowed aria-disabled:opacity-45 aria-disabled:hover:bg-transparent';
+  'aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent';
 
 /**
  * The perceivable half of that state: a spinner and a gerund.

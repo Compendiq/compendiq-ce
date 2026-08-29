@@ -782,6 +782,45 @@ describe('rag_ef_search (#1285)', () => {
     }
   });
 
+  it('holds a save that lands while a SUCCEEDING read is in flight (#1512, review r3)', async () => {
+    // The same window as above, reached through the SUCCESS door. The PUT does
+    // not wait for readers, so a SELECT issued on the pre-INSERT snapshot
+    // returns `rows: []` — a successful read of an absent row — after
+    // `noteRagEfSearchRowSaved` has already landed. Nothing in production
+    // deletes this row, so a post-save absent-row read is always that raced
+    // snapshot and never evidence the row is gone; consulting only the cache
+    // there reinstated the RETIRED variable as `source: 'env'` over the row the
+    // admin had just written, which is the one-click `Keep 900` overwrite the
+    // whole fix exists to remove — and, because the written row was consulted
+    // only on a FAILED read, that poisoned entry then shadowed the save across
+    // subsequent failures too.
+    vi.useFakeTimers();
+    try {
+      process.env.RAG_EF_SEARCH = '900';
+      mockQuery.mockResolvedValue({ rows: [] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 900, source: 'env' });
+
+      vi.advanceTimersByTime(61_000);
+      const held = Promise.withResolvers<{ rows: Array<{ setting_value: string }> }>();
+      mockQuery.mockImplementationOnce(() => held.promise);
+      const inFlight = resolveRagEfSearch();
+      await Promise.resolve();
+      // Exactly what the admin PUT runs, mid-read.
+      noteRagEfSearchRowSaved(150);
+      // The pre-INSERT snapshot: the read SUCCEEDS and sees no row.
+      held.resolve({ rows: [] });
+      expect(await inFlight).toEqual({ value: 150, source: 'row' });
+
+      // …and the next reader, now failing, holds the row rather than the
+      // variable the save retired.
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('statement timeout'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('re-validates the saved value rather than holding a number the reader would reject', async () => {
     // The row evidence is served as `source: 'row'`, so it must clear the same
     // bar the reader's own parse does — otherwise a bad write would be held as

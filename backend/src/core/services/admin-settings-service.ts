@@ -717,11 +717,18 @@ let ragEfSearchCache: { value: number; source: RagEfSearchSource; expiresAt: num
  * press writes it back. That is the ADR-021 rule ("on subsequent boots the env
  * vars are ignored") broken on the one instance it is meant to protect.
  *
- * Written only by `noteRagEfSearchRowSaved`, read only when the cache is empty
- * AND the read failed, and cleared by `invalidateRagEfSearchCache()` — so that
- * hook stays the full forget the ~30 tests calling it between cases rely on.
- * A successful read needs nothing from it: success repopulates the cache, and
- * the cache is what the next failure holds.
+ * Written only by `noteRagEfSearchRowSaved`, read whenever no row has been READ
+ * — a failed read with the cache emptied by the save, and a read that succeeded
+ * on the pre-INSERT snapshot and so saw no row (review r3) — and cleared by
+ * `invalidateRagEfSearchCache()`, so that hook stays the full forget the ~30
+ * tests calling it between cases rely on.
+ *
+ * What it does NOT close: a read whose snapshot predates the save but which
+ * returns the PRE-SAVE ROW resolves `source: 'row'` on that older number, and
+ * re-caches it for a TTL. Nothing here can rank two row values without a
+ * version, so that #1118-class race is left alone deliberately — and it is not
+ * a #1512-class harm, since the source stays `row`: the panel's env note and
+ * its `Keep <old env value>` button do not come back.
  */
 let ragEfSearchWrittenRow: number | null = null;
 /**
@@ -750,13 +757,13 @@ function parseRagEfSearchEnv(raw: string): number | null {
  * The deprecated `RAG_EF_SEARCH` env var, validated the same way a row is, or
  * `null` when it is unset or unusable.
  *
- * **Bootstrap only.** It is consulted when no `rag_ef_search` row exists —
- * which, unlike `fts_language`, is the state of every instance that has never
- * saved the Retrieval panel, because nothing seeds this row — and, since #1512,
- * on a resolve whose read threw with no row yet evidenced, where "no row" is
- * precisely what has not been established and the alternative is retiring a
- * live variable on a blip. So the value stays live until an admin saves once,
- * and that is what the startup notice says.
+ * **Bootstrap only.** It is consulted when no `rag_ef_search` row has been READ
+ * and none written by this process — which, unlike `fts_language`, is the state
+ * of every instance that has never saved the Retrieval panel, because nothing
+ * seeds this row — and, since #1512, on a resolve whose read threw with no row
+ * yet evidenced, where "no row" is precisely what has not been established and
+ * the alternative is retiring a live variable on a blip. So the value stays
+ * live until an admin saves once, and that is what the startup notice says.
  *
  * `reason` is not decoration: the two callers know different things, and the
  * log line has to say which (review r1). "No rag_ef_search row" is a FACT on
@@ -806,11 +813,15 @@ function ragEfSearchEnvBootstrap(reason: RagEfSearchBootstrapReason): number | n
  *
  * When the cache was emptied by the admin PUT there is no last resolution to
  * hold, but `ragEfSearchWrittenRow` still records the row that PUT wrote — and
- * a failure there holds THAT, as `source: 'row'`. Falling to the bootstrap in
- * that window would reinstate a variable the save had just retired, over the
- * number the admin is looking at (review r1); see `ragEfSearchWrittenRow` for
- * why "the cache is empty" and "nothing has ever resolved" are different
- * facts.
+ * that is what stands, as `source: 'row'`, for BOTH ways a reader lands in that
+ * window: a failure, and a read that SUCCEEDED on the pre-INSERT snapshot and
+ * so saw no row (review r3). Nothing deletes this row in production, so an
+ * absent-row read after a save is a raced snapshot, not evidence. Falling to
+ * the bootstrap either way would reinstate a variable the save had just
+ * retired, over the number the admin is looking at (review r1); see
+ * `ragEfSearchWrittenRow` for why "the cache is empty" and "nothing has ever
+ * resolved" are different facts, and for the row-versus-row race this still
+ * does not close.
  *
  * Only with no row evidenced at all — a genuinely cold resolve that threw — is
  * the bootstrap reached, and the constant default is the wrong answer there for
@@ -823,7 +834,8 @@ function ragEfSearchEnvBootstrap(reason: RagEfSearchBootstrapReason): number | n
  * Both memories are PER PROCESS, so "cold" is not only a first-ever resolve: a
  * pod that restarts with the variable still set, and any pod of a multi-pod
  * deployment that did not serve the write, reaches the bootstrap too if its own
- * first settings read fails — for one TTL, and until a read succeeds. That is
+ * first settings read fails — and, since a failure re-caches what it held, it
+ * is re-held every TTL until a read succeeds, not for one TTL. That is
  * the limit of what one process can know here (a cold resolve cannot tell "never
  * saved" from "saved, row unreadable"), and it is what the docs say rather than
  * promising the variable is gone the moment any pod saves.
@@ -863,7 +875,15 @@ export async function resolveRagEfSearch(): Promise<{ value: number; source: Rag
   if (readFailed && lastResolved) {
     resolved = lastResolved.value;
     source = lastResolved.source;
-  } else if (readFailed && ragEfSearchWrittenRow !== null) {
+  } else if (source !== 'row' && ragEfSearchWrittenRow !== null) {
+    // Two doors into the same window, and the row evidence answers both
+    // (review r3). A FAILED read gets here with the cache emptied by the save;
+    // a read that SUCCEEDED and saw NO ROW gets here because its SELECT ran on
+    // the pre-INSERT snapshot. Nothing in production deletes `rag_ef_search`,
+    // so an absent-row read in this window is a raced snapshot and never
+    // evidence the row is gone — treating it as evidence reinstated the retired
+    // variable as `source: 'env'` over the row the admin had just written, and
+    // shadowed it for a TTL and across every later failure.
     resolved = ragEfSearchWrittenRow;
     source = 'row';
   } else if (source !== 'row') {
@@ -905,17 +925,19 @@ export function invalidateRagEfSearchCache(): void {
  * row this process knows exists.
  *
  * The forget alone was the bug. It left the reader unable to tell "the cache
- * was cleared by a write" from "nothing has ever resolved", so one blipped
- * SELECT in the window after a save — the window the panel's own refetch runs
- * in — reinstated a retired `RAG_EF_SEARCH` over the saved row, reported it as
- * `source: 'env'`, and re-offered the `Keep <old env value>` button whose press
- * writes the stale number back. Recording the row closes that window FOR THE
- * PROCESS THAT SERVED THE SAVE — which is as far as process-local evidence
- * reaches, and no further: a pod that restarts with the variable still set, or
- * a sibling pod that never served the write, has neither memory, so a failed
- * first read there still reaches the bootstrap for one TTL (review r2 probed
- * it; ADMIN-GUIDE and `.env.example` state the exception rather than promising
- * the variable is gone the moment any pod saves).
+ * was cleared by a write" from "nothing has ever resolved", so a SELECT in the
+ * window after a save — the window the panel's own refetch runs in — reinstated
+ * a retired `RAG_EF_SEARCH` over the saved row, reported it as `source: 'env'`,
+ * and re-offered the `Keep <old env value>` button whose press writes the stale
+ * number back. That happened whether the SELECT blipped or SUCCEEDED on the
+ * pre-INSERT snapshot (review r3), so the row recorded here is consulted on
+ * both. Recording it closes that window FOR THE PROCESS THAT SERVED THE SAVE —
+ * which is as far as process-local evidence reaches, and no further: a pod that
+ * restarts with the variable still set, or a sibling pod that never served the
+ * write, has neither memory, so a failed first read there still reaches the
+ * bootstrap, and holds it until one of its reads succeeds (review r2 probed the
+ * window, r3 the duration; ADMIN-GUIDE and `.env.example` state the exception
+ * rather than promising the variable is gone the moment any pod saves).
  *
  * Re-validated rather than trusted: the route's schema already bounds this to
  * pgvector's [1, 1000] whole numbers, and a value the READER would reject must
