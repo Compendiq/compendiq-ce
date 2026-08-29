@@ -1427,6 +1427,24 @@ describe('AttachmentStorageCard (#1349)', () => {
         afterKick.sweep,
       );
 
+      // #1523, external round. The floor has to bind the CADENCE, not just the
+      // constant: `expect(POLL_MS).toBeGreaterThanOrEqual(5_000)` stays green
+      // while `pollWhile` returns a literal, and the probe for that mutation
+      // (both `return POLL_MS` arms -> `return 1_000`) left all 58 cells
+      // passing with the card polling five times faster than its rate-limit
+      // floor. So bound the ticks from ABOVE as well: a window of three floors
+      // admits three ticks per route, plus one for the boundary the kick's own
+      // settle leaves mid-interval. A 1s cadence lands ~15 and reds here.
+      const TICK_BUDGET = 3 + 1;
+      expect(
+        duringWarmup.stats - afterKick.stats,
+        'the STATS query must poll no faster than the floor: 20/min per route is the admin limit',
+      ).toBeLessThanOrEqual(TICK_BUDGET);
+      expect(
+        duringWarmup.sweep - afterKick.sweep,
+        'the SWEEP query must poll no faster than the floor: 20/min per route is the admin limit',
+      ).toBeLessThanOrEqual(TICK_BUDGET);
+
       // Past the 20s window with `running` still false: both intervals stand down.
       await vi.advanceTimersByTimeAsync(KICK_WARMUP_MS_UNDER_TEST);
       const settled = getsByRoute();
