@@ -280,7 +280,7 @@ provider rows:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDING_MODEL` | `bge-m3` | **Bootstrap-only / inert** — see the deprecated table above. Assign the Embedding use case under Settings → AI Models. |
-| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently, read failures included. A settings read that FAILS keeps whatever the server last resolved — or the row a save has just written — and only on a cold start with neither keeps this variable, rather than dropping the floor to 100 for a minute (#1512). Setting it logs a startup notice. |
+| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; from the first save on it is ignored on every successful read. A settings read that FAILS keeps whatever the server last resolved — or the row a save has just written — rather than dropping the floor to 100 for a minute (#1512); both of those memories are per-process, so a process that has read neither — a fresh pod, a restart, a pod of the deployment that did not serve the write — and whose first settings read fails will read this variable once more, for at most one 60 s TTL, and the panel can then re-offer its **Keep <value>** button. Unset it once the panel is saved. Setting it logs a startup notice. |
 
 ### Background Workers
 
@@ -577,9 +577,12 @@ name.
 cached for 60 seconds; when that cache expires and the `admin_settings` SELECT
 then fails — pool pressure, a statement timeout — it keeps the value and the
 provenance it last resolved. Saving the panel clears that cache, so in the
-window right after a save what it keeps is the row the save just wrote; only on
-a cold start with neither a resolved value nor a saved row does it keep this
-variable. It used to fall to the constant 100, which dropped every
+window right after a save what it keeps is the row the save just wrote; only a
+resolve holding neither — nothing resolved and no row written by that process
+since boot — keeps this variable. Both memories are per-process, so a pod that
+restarts with the variable still set, or a second pod that never served the
+write, still falls back to it if its own first settings read fails, for at most
+one TTL and until a read succeeds. It used to fall to the constant 100, which dropped every
 kNN probe on that pod to 100 for a full minute and made `Settings → AI Models →
 Retrieval` report the depth as 100 with no environment note and no **Keep**
 button — losing the remedy exactly while the number was wrong. Saving the panel

@@ -1890,7 +1890,9 @@ test pins that.
   `{value, source}` the reader resolved — or, when the admin PUT has just
   cleared that cache, the row that PUT wrote, which `noteRagEfSearchRowSaved`
   hands over for exactly this window — and only a cold resolve holding neither
-  reaches the bootstrap. Falling to the constant 100 there dropped every
+  reaches the bootstrap. Both memories are per-process, so "cold" also covers a
+  pod that restarts with the variable still set and any pod that did not serve
+  the write: a failed first read there reaches the bootstrap for one TTL. Falling to the constant 100 there dropped every
   probe on that pod from the operator's configured floor for a full TTL and,
   because `ragEfSearchFromEnv` is derived from `source === 'env'`, took the
   panel's note and its `Keep` remedy with it while the value was wrong. Raising

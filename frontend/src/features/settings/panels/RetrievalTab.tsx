@@ -1215,8 +1215,8 @@ export function RetrievalTab() {
             <span id={EF_SEARCH_ENV_NOTE_ID}>
               This depth is coming from the deprecated{' '}
               <code className="font-mono">RAG_EF_SEARCH</code> environment variable, because the
-              setting below has never been saved. Save it once — at this value or another — and the
-              variable is never read again.
+              server has not read a saved value for the setting below. Save it once — at this value
+              or another — and the saved value takes over.
             </span>
             {/*
               WCAG 2.5.3: the visible label is the accessible name, so no

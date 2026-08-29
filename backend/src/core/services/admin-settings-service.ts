@@ -724,7 +724,19 @@ let ragEfSearchCache: { value: number; source: RagEfSearchSource; expiresAt: num
  * the cache is what the next failure holds.
  */
 let ragEfSearchWrittenRow: number | null = null;
-let ragEfSearchEnvBootstrapLogged = false;
+/**
+ * Why this knows why it was reached, and why the one-shot is PER reason: the
+ * bootstrap runs on every cache miss, so each line has to be said once — but a
+ * single flag for both let the first `read-failed` line swallow the accurate
+ * `absent-row` diagnosis for the process lifetime, leaving the instance that
+ * genuinely has no row saying only "could not read", the inverse of the
+ * confusion the split was added to prevent (review r2).
+ */
+type RagEfSearchBootstrapReason = 'absent-row' | 'read-failed';
+const ragEfSearchEnvBootstrapLogged: Record<RagEfSearchBootstrapReason, boolean> = {
+  'absent-row': false,
+  'read-failed': false,
+};
 
 /** `RAG_EF_SEARCH` parsed and range-checked, or `null` if it is unusable. */
 function parseRagEfSearchEnv(raw: string): number | null {
@@ -752,11 +764,11 @@ function parseRagEfSearchEnv(raw: string): number | null {
  * debugging a floor drop who reads it there concludes their save never landed,
  * when the true cause is the `Failed to resolve rag_ef_search` warning above.
  */
-function ragEfSearchEnvBootstrap(reason: 'absent-row' | 'read-failed'): number | null {
+function ragEfSearchEnvBootstrap(reason: RagEfSearchBootstrapReason): number | null {
   const n = parseRagEfSearchEnv((process.env.RAG_EF_SEARCH ?? '').trim());
   if (n === null) return null;
-  if (!ragEfSearchEnvBootstrapLogged) {
-    ragEfSearchEnvBootstrapLogged = true;
+  if (!ragEfSearchEnvBootstrapLogged[reason]) {
+    ragEfSearchEnvBootstrapLogged[reason] = true;
     logger.info(
       { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: n, reason },
       reason === 'absent-row'
@@ -784,12 +796,13 @@ function ragEfSearchEnvBootstrap(reason: 'absent-row' | 'read-failed'): number |
  * is not evidence that the row is GONE either (#1512). So a failure holds the
  * last `{value, source}` this function resolved — the direction
  * `getRagContextCharsPerPage` already takes ("fail toward the operator's last
- * known setting"): the expired cache object is still in hand, because only its
- * `expiresAt` was consulted above. That keeps a saved instance on the row's
- * number, so a stale variable is never reinstated over a value the server
- * actually read, and it keeps an upgraded instance on the variable, which is
- * what the startup notice, `.env.example`, ADMIN-GUIDE and the panel's own line
- * all promise is still in force.
+ * known setting"): the cache object is read again AFTER the await, because a
+ * save that lands mid-read empties it and that is the one signal that the
+ * resolution captured before the await is stale (review r2). That keeps a saved
+ * instance on the row's number, so a stale variable is never reinstated over a
+ * value the server actually read, and it keeps an upgraded instance on the
+ * variable, which is what the startup notice, `.env.example`, ADMIN-GUIDE and
+ * the panel's own line all promise is still in force.
  *
  * When the cache was emptied by the admin PUT there is no last resolution to
  * hold, but `ragEfSearchWrittenRow` still records the row that PUT wrote — and
@@ -806,13 +819,19 @@ function ragEfSearchEnvBootstrap(reason: 'absent-row' | 'read-failed'): number |
  * `ragEfSearchFromEnv` is derived from `source === 'env'` — stripping the
  * panel's note and its one-key `Keep` remedy exactly while the value is wrong.
  * Only an instance with no row, no variable and no memory resolves the constant.
+ *
+ * Both memories are PER PROCESS, so "cold" is not only a first-ever resolve: a
+ * pod that restarts with the variable still set, and any pod of a multi-pod
+ * deployment that did not serve the write, reaches the bootstrap too if its own
+ * first settings read fails — for one TTL, and until a read succeeds. That is
+ * the limit of what one process can know here (a cold resolve cannot tell "never
+ * saved" from "saved, row unreadable"), and it is what the docs say rather than
+ * promising the variable is gone the moment any pod saves.
  */
 export async function resolveRagEfSearch(): Promise<{ value: number; source: RagEfSearchSource }> {
-  // Retained past the expiry check on purpose: it is the last value this
-  // function resolved, and a failed read below falls back to it.
-  const lastResolved = ragEfSearchCache;
-  if (lastResolved && Date.now() < lastResolved.expiresAt) {
-    return { value: lastResolved.value, source: lastResolved.source };
+  const cachedBeforeRead = ragEfSearchCache;
+  if (cachedBeforeRead && Date.now() < cachedBeforeRead.expiresAt) {
+    return { value: cachedBeforeRead.value, source: cachedBeforeRead.source };
   }
   let resolved = RAG_EF_SEARCH_DEFAULT;
   let source: RagEfSearchSource = 'default';
@@ -833,6 +852,14 @@ export async function resolveRagEfSearch(): Promise<{ value: number; source: Rag
     readFailed = true;
     logger.warn({ err }, 'Failed to resolve rag_ef_search — using the configured fallback');
   }
+  // Re-read rather than reusing the capture above: the admin PUT does not wait
+  // for readers, so `noteRagEfSearchRowSaved` can land between that capture and
+  // this line — and it empties the cache, which is exactly the signal that the
+  // captured resolution is stale (review r2). Holding the capture there would
+  // discard the save, re-cache the retired variable as `source: 'env'` over the
+  // row the admin just wrote, and — because the written row is only consulted
+  // with an empty cache — keep shadowing it until a read succeeds.
+  const lastResolved = ragEfSearchCache;
   if (readFailed && lastResolved) {
     resolved = lastResolved.value;
     source = lastResolved.source;
@@ -882,9 +909,13 @@ export function invalidateRagEfSearchCache(): void {
  * SELECT in the window after a save — the window the panel's own refetch runs
  * in — reinstated a retired `RAG_EF_SEARCH` over the saved row, reported it as
  * `source: 'env'`, and re-offered the `Keep <old env value>` button whose press
- * writes the stale number back. Recording the row is also what makes ADR-021's
- * promise literal again: the first save on an instance retires the environment,
- * with no read-failure window in which it comes back.
+ * writes the stale number back. Recording the row closes that window FOR THE
+ * PROCESS THAT SERVED THE SAVE — which is as far as process-local evidence
+ * reaches, and no further: a pod that restarts with the variable still set, or
+ * a sibling pod that never served the write, has neither memory, so a failed
+ * first read there still reaches the bootstrap for one TTL (review r2 probed
+ * it; ADMIN-GUIDE and `.env.example` state the exception rather than promising
+ * the variable is gone the moment any pod saves).
  *
  * Re-validated rather than trusted: the route's schema already bounds this to
  * pgvector's [1, 1000] whole numbers, and a value the READER would reject must

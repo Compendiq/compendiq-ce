@@ -2780,6 +2780,15 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
 
     const note = screen.getByTestId('retrieval-ef-search-env-note');
     expect(note.textContent).toMatch(/RAG_EF_SEARCH/);
+    // Review r2 of #1512 — it used to state a certainty the server cannot
+    // have: "the setting below has never been saved". A resolve whose read
+    // FAILED with no row evidenced in that process reaches the variable too,
+    // on a restarted pod or one that never served the write, so the sentence
+    // an operator actually reads has to say what the server knows — that it
+    // has not READ a saved value — the same narrowing #1512 applied to the
+    // startup notice ("while no row has been read").
+    expect(note.textContent).toMatch(/has not read a saved value/);
+    expect(note.textContent).not.toMatch(/never been saved/);
     expect(note.className).toContain('text-muted-foreground');
     expect(note.className).not.toMatch(/warning|amber|destructive/);
 
