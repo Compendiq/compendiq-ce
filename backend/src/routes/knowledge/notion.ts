@@ -81,7 +81,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
       const client = new NotionClient(token);
       const nodes = await fetchNotionWorkspaceTree(client, { userId: request.userId });
       const response = NotionTreeResponseSchema.parse({ nodes });
-      await cache.set(request.userId, 'notion_tree', 'workspace', response, 120);
+      await cache.set(request.userId, 'notion_tree', 'workspace', response);
       return response;
     } catch (err) {
       if (err instanceof NotionError && err.statusCode >= 400) {

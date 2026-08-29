@@ -9,6 +9,7 @@
  * There is no database query. A row is present only when Search returned it as
  * a page object.
  */
+import pLimit from 'p-limit';
 import {
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeNode,
@@ -17,6 +18,8 @@ import { query } from '../../../core/db/postgres.js';
 import { NotionClient, NotionError } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
+
+const NOTION_LOOKUP_CONCURRENCY = 5;
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -266,32 +269,36 @@ export async function fetchNotionWorkspaceTree(
   }
 
   if (missingParentsToFetch.size > 0) {
-    const parentFetchPromises = Array.from(missingParentsToFetch.entries()).map(
-      async ([parentKey, { parentId, type }]) => {
-        try {
-          let parentRaw: Record<string, unknown>;
-          if (type === 'database_id' || type === 'data_source_id') {
-            parentRaw = await client.getDatabase(parentId);
-          } else {
-            try {
-              parentRaw = await client.getPage(parentId);
-            } catch {
+    const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+    await Promise.all(
+      Array.from(missingParentsToFetch.entries()).map(([parentKey, { parentId, type }]) =>
+        limit(async () => {
+          try {
+            let parentRaw: Record<string, unknown>;
+            if (type === 'database_id' || type === 'data_source_id') {
               parentRaw = await client.getDatabase(parentId);
+            } else {
+              try {
+                parentRaw = await client.getPage(parentId);
+              } catch (err) {
+                if (!isMissing(err)) throw err;
+                parentRaw = await client.getDatabase(parentId);
+              }
             }
-          }
-          if (parentRaw && !isTrashed(parentRaw)) {
-            const parentNode = toNode(parentRaw);
-            if (parentNode) {
-              nodes.set(parentKey, parentNode);
-              rawByKey.set(parentKey, parentRaw);
+            if (parentRaw && !isTrashed(parentRaw)) {
+              const parentNode = toNode(parentRaw);
+              if (parentNode) {
+                nodes.set(parentKey, parentNode);
+                rawByKey.set(parentKey, parentRaw);
+              }
             }
+          } catch (err) {
+            if (isMissing(err)) return;
+            throw err;
           }
-        } catch {
-          // missing or no permission; leave at root
-        }
-      },
+        }),
+      ),
     );
-    await Promise.allSettled(parentFetchPromises);
   }
 
   for (const [key, node] of nodes) {
@@ -320,17 +327,20 @@ export async function fetchNotionWorkspaceTree(
   }
 
   if (blockParentNodes.length > 0) {
-    const blockResolutions = await Promise.allSettled(
-      blockParentNodes.map(async ({ node, blockId }) => {
-        const hostId = await resolveHostPageId(client, blockId, nodes);
-        return { node, hostId };
-      }),
+    const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+    const blockResolutions = await Promise.all(
+      blockParentNodes.map(({ node, blockId }) =>
+        limit(async () => {
+          const hostId = await resolveHostPageId(client, blockId, nodes);
+          return { node, hostId };
+        }),
+      ),
     );
-    for (const res of blockResolutions) {
-      if (res.status === 'fulfilled' && res.value.hostId) {
-        const host = nodes.get(normalizeId(res.value.hostId));
-        if (host && host !== res.value.node) {
-          attach(host, res.value.node, attached);
+    for (const { node, hostId } of blockResolutions) {
+      if (hostId) {
+        const host = nodes.get(normalizeId(hostId));
+        if (host && host !== node) {
+          attach(host, node, attached);
         }
       }
     }

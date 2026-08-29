@@ -23,11 +23,20 @@ export function useNotionConnection(enabled = true) {
 }
 
 export function prefetchNotionConnection(queryClient: QueryClient): void {
-  void queryClient.prefetchQuery({
-    queryKey: ['notion', 'connection'],
-    queryFn: async () => NotionConnectionResponseSchema.parse(await apiFetch('/notion/connection')),
-    staleTime: 60_000,
-  });
+  void queryClient
+    .fetchQuery({
+      queryKey: ['notion', 'connection'],
+      queryFn: async () => NotionConnectionResponseSchema.parse(await apiFetch('/notion/connection')),
+      staleTime: 60_000,
+    })
+    .then((status) => {
+      if (!status.hasToken) return;
+      void queryClient.prefetchQuery({
+        queryKey: ['notion', 'tree'],
+        queryFn: async () => NotionTreeResponseSchema.parse(await apiFetch('/notion/tree')),
+        staleTime: 30_000,
+      });
+    });
 }
 
 export function useConnectNotion() {
@@ -83,6 +92,7 @@ export function useRunNotionImport() {
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['pages'] });
+      void queryClient.invalidateQueries({ queryKey: ['notion', 'tree'] });
     },
   });
 }

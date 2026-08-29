@@ -58,6 +58,8 @@ export function NewPagePage() {
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | undefined>();
+  // Seeds the editor's initial content (empty, or a template applied before
+  // the editor has mounted). The live body is read from the editor instance on
   // create (#954) — it is not synced per keystroke.
   const [bodyHtml, setBodyHtml] = useState('');
   const [articleType, setArticleType] = useState<ArticleType>('local');

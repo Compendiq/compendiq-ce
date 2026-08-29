@@ -605,4 +605,117 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(linux).toBeDefined();
     expect(linux?.children.map((c) => c.id)).toContain('tmux');
   });
+
+  it('fails the tree when a block-parent walk hits a non-missing Notion error', async () => {
+    await expect(
+      treeFor({
+        validToken: TOKEN,
+        searchResults: [
+          {
+            object: 'page',
+            id: 'handbook',
+            parent: { type: 'workspace', workspace: true },
+            properties: titleProp('Handbook'),
+          },
+          {
+            object: 'page',
+            id: 'nested-in-toggle',
+            parent: { type: 'block_id', block_id: 'toggle-1' },
+            properties: titleProp('Nested under toggle'),
+          },
+        ],
+        blockErrors: { 'toggle-1': 500 },
+      }),
+    ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it('fails the tree when a missing-parent lookup is rate-limited', async () => {
+    await expect(
+      treeFor({
+        validToken: TOKEN,
+        searchResults: [
+          {
+            object: 'page',
+            id: 'child',
+            parent: { type: 'page_id', page_id: 'parent-busy' },
+            properties: titleProp('Child'),
+          },
+        ],
+        pages: {
+          'parent-busy': {
+            object: 'page',
+            id: 'parent-busy',
+            parent: { type: 'workspace', workspace: true },
+            properties: titleProp('Busy parent'),
+          },
+        },
+        pageErrors: { 'parent-busy': 429 },
+      }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it('caps concurrent block-parent lookups', async () => {
+    const nested = Array.from({ length: 8 }, (_, i) => `nested-${i}`);
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      lookupDelayMs: 40,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'handbook',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Handbook'),
+        },
+        ...nested.map((id, i) => ({
+          object: 'page',
+          id,
+          parent: { type: 'block_id', block_id: `toggle-${i}` },
+          properties: titleProp(id),
+        })),
+      ],
+      blocks: Object.fromEntries(
+        nested.map((_, i) => [
+          `toggle-${i}`,
+          {
+            object: 'block',
+            id: `toggle-${i}`,
+            type: 'toggle',
+            parent: { type: 'page_id', page_id: 'handbook' },
+            has_children: true,
+          },
+        ]),
+      ),
+    });
+
+    expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
+    expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('nested-'))).toHaveLength(8);
+  });
+
+  it('caps concurrent missing-parent lookups', async () => {
+    const parentIds = Array.from({ length: 8 }, (_, i) => `parent-${i}`);
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      lookupDelayMs: 40,
+      pages: Object.fromEntries(
+        parentIds.map((id) => [
+          id,
+          {
+            object: 'page',
+            id,
+            parent: { type: 'workspace', workspace: true },
+            properties: titleProp(id),
+          },
+        ]),
+      ),
+      searchResults: parentIds.map((parentId, i) => ({
+        object: 'page',
+        id: `child-${i}`,
+        parent: { type: 'page_id', page_id: parentId },
+        properties: titleProp(`Child ${i}`),
+      })),
+    });
+
+    expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
+    expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('child-'))).toHaveLength(8);
+  });
 });
