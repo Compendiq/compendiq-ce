@@ -10,7 +10,7 @@ export const SEARCH_MODE_LABELS = {
 } as const;
 
 export const SEARCH_MODE_DESCRIPTIONS = {
-  hybrid: 'Hybrid (Recommended): Combines AI semantic understanding with exact keyword matching.',
-  keyword: 'Keyword: Matches exact terms and applies all advanced filters (freshness, quality, date).',
-  semantic: 'Semantic: Matches concepts and meaning using vector similarity.',
+  hybrid: 'Hybrid (Recommended): Combines meaning and keyword matching. Space applies; advanced filters require Keyword.',
+  keyword: 'Keyword: Matches exact terms and applies all advanced filters (author, labels, freshness, quality, date, embedding, source).',
+  semantic: 'Semantic: Matches concepts and meaning. Space applies; advanced filters require Keyword.',
 } as const;

@@ -111,6 +111,60 @@ function summarizeFilterLabels(labels: string[]): string {
     : `${labels.slice(0, 3).join(', ')}, and ${labels.length - 3} more`;
 }
 
+function SourceVisibilityBadges({
+  pageItem,
+  showSource,
+  showVisibility,
+  className,
+}: {
+  pageItem: { id: string; source: 'confluence' | 'standalone'; visibility?: string };
+  showSource: boolean;
+  showVisibility: boolean;
+  className?: string;
+}) {
+  if (!showSource && !showVisibility) return null;
+  return (
+    <>
+      {showSource && (pageItem.source === 'standalone' ? (
+        <span
+          className={cn('shrink-0', className, neutralChipClass)}
+          data-testid="badge-local"
+          data-source-badge={pageItem.id}
+        >
+          Local
+        </span>
+      ) : (
+        <span
+          className={cn('shrink-0', className, neutralChipClass)}
+          data-testid="badge-confluence"
+          data-source-badge={pageItem.id}
+        >
+          Confluence
+        </span>
+      ))}
+      {showVisibility && pageItem.source === 'standalone' && (
+        pageItem.visibility === 'shared' ? (
+          <span
+            className={cn('shrink-0', className, neutralChipClass)}
+            data-testid="badge-shared"
+            data-visibility-badge={pageItem.id}
+          >
+            <Globe size={10} /> Shared
+          </span>
+        ) : (
+          <span
+            className={cn('shrink-0', className, neutralChipClass)}
+            data-testid="badge-private"
+            data-visibility-badge={pageItem.id}
+          >
+            <Lock size={10} /> Private
+          </span>
+        )
+      )}
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Memoized page list item: prevents re-render from embedding-status polling
 // ---------------------------------------------------------------------------
@@ -219,65 +273,21 @@ const PageListItem = memo(function PageListItem({
           className="nm-focus-ring flex min-w-0 flex-1 items-center gap-4 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
         >
           <div className="min-w-0 flex-1 text-left max-sm:basis-auto">
-            {/* Title line. Every badge beside the title is `shrink-0`, so the
-                title was the only thing that could give way: at 390px the
-                metadata took its width first and the title — the one thing
-                identifying a row — absorbed the entire deficit ("Incident
-                runbook: Postgres c…", "Quart…"). Below `sm` this row may
-                wrap instead: a title short enough to share the line with its
-                badges keeps today's layout, and a long one takes the full
-                width while the badges drop to their own line beneath it.
-                Content-driven, not forced — short rows never pay the extra
-                line. Identity beats metadata on a phone, and a taller row
-                beats an unreadable one. DOM order is unchanged, so the
-                button's accessible name reads exactly as before. */}
+            {/* Title line. Below `sm` source/visibility sit in this wrap so a
+                long title takes the width and the chips drop under it. At `sm+`
+                those copies are `sm:hidden` and the chips live in the right
+                rail instead — title line stays a single truncated identity. */}
             <div className="flex items-center gap-2 max-sm:flex-wrap max-sm:gap-y-1">
-              {/* 13px medium. At 16px the title read as a card heading, which
-                  is what made forty rows look like forty cards. */}
-              <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+              <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                 {pageItem.icon && <PageIcon icon={pageItem.icon} pageId={pageItem.id} size="row" />}
                 <span className="min-w-0 truncate" title={pageItem.title}>{pageItem.title}</span>
               </p>
-              {/* Source badge. Neutral, like Private below: a source is a
-                  category, not a state, so it may not borrow the status
-                  greens/indigos — the label is the differentiator. The recipe
-                  and its measured rationale live in neutral-chip.ts. */}
-              {showSource && (pageItem.source === 'standalone' ? (
-                <span
-                  className={cn('shrink-0', neutralChipClass)}
-                  data-testid="badge-local"
-                  data-source-badge={pageItem.id}
-                >
-                  Local
-                </span>
-              ) : (
-                <span
-                  className={cn('shrink-0', neutralChipClass)}
-                  data-testid="badge-confluence"
-                  data-source-badge={pageItem.id}
-                >
-                  Confluence
-                </span>
-              ))}
-              {showVisibility && pageItem.source === 'standalone' && (
-                (pageItem.visibility === 'shared') ? (
-                  <span
-                    className={cn('shrink-0', neutralChipClass)}
-                    data-testid="badge-shared"
-                    data-visibility-badge={pageItem.id}
-                  >
-                    <Globe size={10} /> Shared
-                  </span>
-                ) : (
-                  <span
-                    className={cn('shrink-0', neutralChipClass)}
-                    data-testid="badge-private"
-                    data-visibility-badge={pageItem.id}
-                  >
-                    <Lock size={10} /> Private
-                  </span>
-                )
-              )}
+              <SourceVisibilityBadges
+                pageItem={pageItem}
+                showSource={showSource}
+                showVisibility={showVisibility}
+                className="sm:hidden"
+              />
             </div>
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
               {pageItem.spaceKey !== '__local__' && (
@@ -301,6 +311,11 @@ const PageListItem = memo(function PageListItem({
               The facts are not lost on mobile: every one of them is on the page
               itself, which is one tap away. */}
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
+            <SourceVisibilityBadges
+              pageItem={pageItem}
+              showSource={showSource}
+              showVisibility={showVisibility}
+            />
             {pageItem.labels.length > 0 && (
               <div className="flex gap-1">
                 {pageItem.labels.slice(0, 3).map((label) => (
@@ -1784,6 +1799,25 @@ export function PagesPage() {
                                     <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                                       <span title={item.spaceKey}>{spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}</span>
                                     </div>
+                                  )}
+                                  {item.spaceKey && (
+                                    item.spaceKey !== '__local__' ? (
+                                      <span
+                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
+                                        data-testid="badge-confluence"
+                                        data-source-badge={item.id}
+                                      >
+                                        Confluence
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
+                                        data-testid="badge-local"
+                                        data-source-badge={item.id}
+                                      >
+                                        Local
+                                      </span>
+                                    )
                                   )}
                                 </div>
 
