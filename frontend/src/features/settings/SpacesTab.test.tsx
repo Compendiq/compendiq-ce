@@ -358,4 +358,205 @@ describe('SpacesTab', () => {
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     expect(mockOnSave).toHaveBeenCalledWith({ selectedSpaces: ['DEV'] });
   });
+
+  // --- Local filter over the space list (#1402 phase 3) --------------------
+  //
+  // `GET /spaces/available` returns every space the PAT can read, which on a
+  // real Data Center instance is routinely dozens to hundreds. The list was a
+  // flat unfiltered `.map()`, so selecting three known spaces meant scrolling
+  // the whole estate. Local-only: no request, no URL state — this is a lookup
+  // inside one settings panel, not a shareable view.
+  describe('space filter', () => {
+    function serveSpaces(spaces: Array<Record<string, unknown>>) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(spaces), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    }
+
+    const threeSpaces = [
+      { key: 'DEV', name: 'Development', lastSynced: '2026-03-01T00:00:00Z', pageCount: 42 },
+      { key: 'DOCS', name: 'Documentation', lastSynced: '2026-03-02T00:00:00Z', pageCount: 15 },
+      { key: 'OPS', name: 'Operations', lastSynced: '2026-03-03T00:00:00Z', pageCount: 7 },
+    ];
+
+    /**
+     * By ROLE and accessible name, not by test id.
+     *
+     * `aria-label="Filter spaces"` is this input's only accessible name — it
+     * has no visible label and the placeholder does not count — so a query
+     * that reaches it by `data-testid` cannot notice the label going missing.
+     */
+    function filterInput() {
+      return screen.getByRole('textbox', { name: 'Filter spaces' });
+    }
+
+    async function renderWithSpaces() {
+      serveSpaces(threeSpaces);
+      render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+      await waitFor(() => expect(screen.getByText('Development')).toBeInTheDocument());
+    }
+
+    it('offers no filter until there is a list to filter', () => {
+      render(<SpacesTab onSave={mockOnSave} />, { wrapper: createWrapper() });
+      expect(screen.queryByTestId('space-filter-input')).not.toBeInTheDocument();
+    });
+
+    it('narrows the list by name', async () => {
+      await renderWithSpaces();
+
+      fireEvent.change(filterInput(), { target: { value: 'documentation' } });
+
+      expect(screen.getByText('Documentation')).toBeInTheDocument();
+      expect(screen.queryByText('Development')).not.toBeInTheDocument();
+      expect(screen.queryByText('Operations')).not.toBeInTheDocument();
+    });
+
+    it('narrows the list by key, which is what people actually remember', async () => {
+      await renderWithSpaces();
+
+      fireEvent.change(filterInput(), { target: { value: 'ops' } });
+
+      expect(screen.getByText('Operations')).toBeInTheDocument();
+      expect(screen.queryByText('Development')).not.toBeInTheDocument();
+    });
+
+    // Space keys are uppercase by convention, so `DEV` is the realistic
+    // keystroke and a case-sensitive fold would drop every row.
+    it('matches case-insensitively, against the key and the name alike', async () => {
+      await renderWithSpaces();
+
+      fireEvent.change(filterInput(), { target: { value: 'DEV' } });
+      expect(screen.getByText('Development')).toBeInTheDocument();
+      expect(screen.queryByText('Operations')).not.toBeInTheDocument();
+
+      fireEvent.change(filterInput(), { target: { value: 'oPeRaTiOnS' } });
+      expect(screen.getByText('Operations')).toBeInTheDocument();
+      expect(screen.queryByText('Development')).not.toBeInTheDocument();
+    });
+
+    // The modal's filter covers this; without it here the two halves of one
+    // ruling had unequal guard strength and `.trim()` was free to delete.
+    it('a whitespace-only query is not a filter', async () => {
+      await renderWithSpaces();
+
+      fireEvent.change(filterInput(), { target: { value: '   ' } });
+
+      expect(screen.getByText('Development')).toBeInTheDocument();
+      expect(screen.getByText('Documentation')).toBeInTheDocument();
+      expect(screen.getByText('Operations')).toBeInTheDocument();
+      expect(screen.queryByTestId('space-filter-count')).not.toBeInTheDocument();
+    });
+
+    it('says nothing matched rather than telling the user to fetch spaces again', async () => {
+      await renderWithSpaces();
+
+      fireEvent.change(filterInput(), { target: { value: 'zzznotaspace' } });
+
+      expect(screen.getByTestId('space-filter-empty')).toHaveTextContent(
+        'No spaces match "zzznotaspace"',
+      );
+      // The fetch prompt is for an unfetched list; here the list exists.
+      expect(screen.queryByText(/Click "Fetch Spaces"/)).not.toBeInTheDocument();
+    });
+
+    // The only other reset is a 24px icon ~70px above and out of the eye line.
+    it('offers the reset inside the zero-match block', async () => {
+      await renderWithSpaces();
+      fireEvent.change(filterInput(), { target: { value: 'zzznotaspace' } });
+
+      fireEvent.click(screen.getByTestId('space-filter-empty-clear'));
+
+      expect(screen.getByText('Development')).toBeInTheDocument();
+      expect(screen.queryByTestId('space-filter-empty')).not.toBeInTheDocument();
+    });
+
+    it('leaves a selection made before filtering intact', async () => {
+      await renderWithSpaces();
+
+      fireEvent.click(screen.getByText('Development'));
+      fireEvent.change(filterInput(), { target: { value: 'ops' } });
+      fireEvent.click(screen.getByText('Operations'));
+
+      // Filtering hides rows; it does not deselect them.
+      expect(screen.getByText('Save Selection (2)')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Save Selection (2)'));
+      expect(mockOnSave).toHaveBeenCalledWith({ selectedSpaces: ['DEV', 'OPS'] });
+    });
+
+    // Cleared by CLICKING the button, not by a synthetic change event — the
+    // whole control could be deleted and this test stayed green before.
+    it('restores the full list when the filter is cleared', async () => {
+      await renderWithSpaces();
+
+      expect(screen.queryByTestId('space-filter-clear')).not.toBeInTheDocument();
+      fireEvent.change(filterInput(), { target: { value: 'ops' } });
+      expect(screen.queryByText('Development')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('space-filter-clear'));
+
+      expect((filterInput() as HTMLInputElement).value).toBe('');
+      expect(screen.getByText('Development')).toBeInTheDocument();
+      expect(screen.getByText('Documentation')).toBeInTheDocument();
+      expect(screen.getByText('Operations')).toBeInTheDocument();
+      expect(screen.queryByTestId('space-filter-clear')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The filter hides rows without deselecting them, which is correct and was
+     * silent: `Save Selection (2)` could sit under one visible row with
+     * nothing accounting for the difference. Announced once, by an always-
+     * mounted region — the same rule the Library's `filters-live-announcer`
+     * follows, and the reason neither the visible strip nor the zero-match
+     * block carries a role of its own.
+     */
+    describe('the count of what is hidden', () => {
+      it('mounts the live region silent, before anything is typed', async () => {
+        await renderWithSpaces();
+
+        const announcer = screen.getByTestId('space-filter-announcer');
+        expect(announcer).toHaveAttribute('role', 'status');
+        expect(announcer).toHaveAttribute('aria-live', 'polite');
+        expect(announcer).toHaveTextContent('');
+        // Nothing is hidden, so there is nothing to report on screen either.
+        expect(screen.queryByTestId('space-filter-count')).not.toBeInTheDocument();
+      });
+
+      it('shows and announces how many of the list survived the filter', async () => {
+        await renderWithSpaces();
+
+        fireEvent.change(filterInput(), { target: { value: 'ops' } });
+
+        expect(screen.getByTestId('space-filter-count')).toHaveTextContent(
+          'Showing 1 of 3 spaces',
+        );
+        expect(screen.getByTestId('space-filter-announcer')).toHaveTextContent(
+          'Showing 1 of 3 spaces',
+        );
+      });
+
+      it('counts zero rather than going quiet when nothing matches', async () => {
+        await renderWithSpaces();
+
+        fireEvent.change(filterInput(), { target: { value: 'zzznotaspace' } });
+
+        expect(screen.getByTestId('space-filter-count')).toHaveTextContent(
+          'Showing 0 of 3 spaces',
+        );
+        // Announced once: the zero-match block itself is decoration.
+        expect(screen.getByTestId('space-filter-empty')).not.toHaveAttribute('role', 'status');
+      });
+
+      it('stops counting once the filter is cleared', async () => {
+        await renderWithSpaces();
+        fireEvent.change(filterInput(), { target: { value: 'ops' } });
+
+        fireEvent.click(screen.getByTestId('space-filter-clear'));
+
+        expect(screen.queryByTestId('space-filter-count')).not.toBeInTheDocument();
+        expect(screen.getByTestId('space-filter-announcer')).toHaveTextContent('');
+      });
+    });
+  });
 });

@@ -55,9 +55,10 @@ Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the bro
 After configuring your Confluence connection:
 
 1. Go to **Settings → Knowledge → Spaces & Sync**.
-2. You will see all available Confluence spaces.
-3. Select the spaces you want to sync to Compendiq.
-4. Click **Sync** to start the initial synchronization.
+2. Click **Fetch Spaces** to load every space your PAT can read.
+3. If the list is long, use the filter box above it to narrow by space name or key. It changes only what you see — spaces you have already ticked stay selected, and a count tells you how many of the list are showing.
+4. Select the spaces you want to sync to Compendiq.
+5. Click **Sync** to start the initial synchronization.
 
 Synced spaces are periodically updated in the background (default: every 15 minutes).
 
@@ -301,7 +302,7 @@ The knowledge graph provides a visual map of relationships between pages:
 
 ## Keyboard Shortcuts
 
-Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
+Press `?` or `Ctrl+/` to open the keyboard shortcuts modal, then start typing in its search box to narrow the list. Key shortcuts:
 
 ### Navigation
 
