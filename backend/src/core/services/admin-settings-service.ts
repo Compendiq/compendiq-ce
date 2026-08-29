@@ -704,6 +704,26 @@ const RAG_EF_SEARCH_TTL_MS = 60_000;
 export type RagEfSearchSource = 'row' | 'env' | 'default';
 
 let ragEfSearchCache: { value: number; source: RagEfSearchSource; expiresAt: number } | null = null;
+/**
+ * The `rag_ef_search` row this process has just WRITTEN and not yet read back,
+ * or `null` (#1512, review r1).
+ *
+ * It exists for exactly one window. The admin PUT drops this knob's cache the
+ * moment its row lands, and the panel refetches straight into the gap; with
+ * only the cache to go on, the reader cannot tell "cleared by a write" from
+ * "nothing has ever resolved", so one blipped SELECT there reinstated the
+ * RETIRED `RAG_EF_SEARCH` over the row the admin had just saved, reported it as
+ * `source: 'env'`, and re-offered the one-click `Keep <old env value>` whose
+ * press writes it back. That is the ADR-021 rule ("on subsequent boots the env
+ * vars are ignored") broken on the one instance it is meant to protect.
+ *
+ * Written only by `noteRagEfSearchRowSaved`, read only when the cache is empty
+ * AND the read failed, and cleared by `invalidateRagEfSearchCache()` — so that
+ * hook stays the full forget the ~30 tests calling it between cases rely on.
+ * A successful read needs nothing from it: success repopulates the cache, and
+ * the cache is what the next failure holds.
+ */
+let ragEfSearchWrittenRow: number | null = null;
 let ragEfSearchEnvBootstrapLogged = false;
 
 /** `RAG_EF_SEARCH` parsed and range-checked, or `null` if it is unusable. */
@@ -721,19 +741,27 @@ function parseRagEfSearchEnv(raw: string): number | null {
  * **Bootstrap only.** It is consulted when no `rag_ef_search` row exists —
  * which, unlike `fts_language`, is the state of every instance that has never
  * saved the Retrieval panel, because nothing seeds this row — and, since #1512,
- * on a COLD resolve whose read threw, where "no row" is precisely what has not
- * been established and the alternative is retiring a live variable on a blip.
- * So the value stays live until an admin saves once, and that is what the
- * startup notice says.
+ * on a resolve whose read threw with no row yet evidenced, where "no row" is
+ * precisely what has not been established and the alternative is retiring a
+ * live variable on a blip. So the value stays live until an admin saves once,
+ * and that is what the startup notice says.
+ *
+ * `reason` is not decoration: the two callers know different things, and the
+ * log line has to say which (review r1). "No rag_ef_search row" is a FACT on
+ * `absent-row` and an unestablished claim on `read-failed` — an operator
+ * debugging a floor drop who reads it there concludes their save never landed,
+ * when the true cause is the `Failed to resolve rag_ef_search` warning above.
  */
-function ragEfSearchEnvBootstrap(): number | null {
+function ragEfSearchEnvBootstrap(reason: 'absent-row' | 'read-failed'): number | null {
   const n = parseRagEfSearchEnv((process.env.RAG_EF_SEARCH ?? '').trim());
   if (n === null) return null;
   if (!ragEfSearchEnvBootstrapLogged) {
     ragEfSearchEnvBootstrapLogged = true;
     logger.info(
-      { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: n },
-      'No rag_ef_search row — falling back to the deprecated RAG_EF_SEARCH environment variable. Save Settings → AI Models → Retrieval once to make the setting authoritative.',
+      { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: n, reason },
+      reason === 'absent-row'
+        ? 'No rag_ef_search row — falling back to the deprecated RAG_EF_SEARCH environment variable. Save Settings → AI Models → Retrieval once to make the setting authoritative.'
+        : 'Could not read the rag_ef_search row and none has been read yet — falling back to the deprecated RAG_EF_SEARCH environment variable. Save Settings → AI Models → Retrieval once to make the setting authoritative.',
     );
   }
   return n;
@@ -763,13 +791,21 @@ function ragEfSearchEnvBootstrap(): number | null {
  * what the startup notice, `.env.example`, ADMIN-GUIDE and the panel's own line
  * all promise is still in force.
  *
- * On a COLD resolve that threw there is no last value to hold, and the constant
- * default is the wrong answer there for the same reason: it silently retires a
- * live `RAG_EF_SEARCH` for a full TTL, dropping every kNN probe to 100 and —
- * because `ragEfSearchFromEnv` is derived from `source === 'env'` — stripping
- * the panel's note and its one-key `Keep` remedy exactly while the value is
- * wrong. A cold failure therefore falls through to the bootstrap; only an
- * instance with no row, no variable and no memory resolves the constant.
+ * When the cache was emptied by the admin PUT there is no last resolution to
+ * hold, but `ragEfSearchWrittenRow` still records the row that PUT wrote — and
+ * a failure there holds THAT, as `source: 'row'`. Falling to the bootstrap in
+ * that window would reinstate a variable the save had just retired, over the
+ * number the admin is looking at (review r1); see `ragEfSearchWrittenRow` for
+ * why "the cache is empty" and "nothing has ever resolved" are different
+ * facts.
+ *
+ * Only with no row evidenced at all — a genuinely cold resolve that threw — is
+ * the bootstrap reached, and the constant default is the wrong answer there for
+ * the same reason it is wrong on an absent row: it silently retires a live
+ * `RAG_EF_SEARCH` for a full TTL, dropping every kNN probe to 100 and — because
+ * `ragEfSearchFromEnv` is derived from `source === 'env'` — stripping the
+ * panel's note and its one-key `Keep` remedy exactly while the value is wrong.
+ * Only an instance with no row, no variable and no memory resolves the constant.
  */
 export async function resolveRagEfSearch(): Promise<{ value: number; source: RagEfSearchSource }> {
   // Retained past the expiry check on purpose: it is the last value this
@@ -800,8 +836,11 @@ export async function resolveRagEfSearch(): Promise<{ value: number; source: Rag
   if (readFailed && lastResolved) {
     resolved = lastResolved.value;
     source = lastResolved.source;
+  } else if (readFailed && ragEfSearchWrittenRow !== null) {
+    resolved = ragEfSearchWrittenRow;
+    source = 'row';
   } else if (source !== 'row') {
-    const fromEnv = ragEfSearchEnvBootstrap();
+    const fromEnv = ragEfSearchEnvBootstrap(readFailed ? 'read-failed' : 'absent-row');
     if (fromEnv !== null) {
       resolved = fromEnv;
       source = 'env';
@@ -818,14 +857,44 @@ export async function getRagEfSearch(): Promise<number> {
 }
 
 /**
- * A full FORGET, deliberately — not a reset that keeps the last resolved value
- * (#1512). It runs on the admin PUT, where the row genuinely just changed, and
- * it is the hook ~30 tests in four files call between cases; a memory that
- * survived it would leak one test's floor into the next, and would leave the
- * writing pod holding the pre-save number on the next read failure.
+ * A full FORGET, deliberately — the cached resolution AND the row evidence
+ * (#1512). It is the hook ~30 tests in four files call between cases; a memory
+ * that survived it would leak one test's floor into the next, and would leave
+ * the writing pod holding the PRE-save number on the next read failure.
+ *
+ * Which is why the admin PUT calls `noteRagEfSearchRowSaved` rather than this:
+ * it forgets the same two things and then records the row it just wrote, so the
+ * writing pod holds the POST-save number instead. Reached from production only
+ * through that function.
  */
 export function invalidateRagEfSearchCache(): void {
   ragEfSearchCache = null;
+  ragEfSearchWrittenRow = null;
+}
+
+/**
+ * What the admin PUT calls once the `rag_ef_search` row lands (#1512, review
+ * r1): forget the cached resolution, then record the value just written as the
+ * row this process knows exists.
+ *
+ * The forget alone was the bug. It left the reader unable to tell "the cache
+ * was cleared by a write" from "nothing has ever resolved", so one blipped
+ * SELECT in the window after a save — the window the panel's own refetch runs
+ * in — reinstated a retired `RAG_EF_SEARCH` over the saved row, reported it as
+ * `source: 'env'`, and re-offered the `Keep <old env value>` button whose press
+ * writes the stale number back. Recording the row is also what makes ADR-021's
+ * promise literal again: the first save on an instance retires the environment,
+ * with no read-failure window in which it comes back.
+ *
+ * Re-validated rather than trusted: the route's schema already bounds this to
+ * pgvector's [1, 1000] whole numbers, and a value the READER would reject must
+ * not be held as if the reader had produced it.
+ */
+export function noteRagEfSearchRowSaved(value: number | undefined): void {
+  invalidateRagEfSearchCache();
+  if (value === undefined || !Number.isInteger(value)) return;
+  if (value < RAG_EF_SEARCH_MIN || value > RAG_EF_SEARCH_MAX) return;
+  ragEfSearchWrittenRow = value;
 }
 
 /**
@@ -845,9 +914,11 @@ export function invalidateRagEfSearchCache(): void {
  * [1, 1000] bound: such an instance drops from a 1000 floor to 100 on
  * upgrade. Saying "it is used" there would name the one case where it is not.
  *
- * **Both branches hedge on the row** (review r2). This function reads
- * `process.env` and nothing else — it cannot know whether a `rag_ef_search`
- * row exists, and a present row wins over the variable either way. The
+ * **Both branches hedge on the row** (review r2), and since #1512 on the row
+ * being READ rather than merely existing: a row whose first read threw has not
+ * retired the variable yet. This function reads `process.env` and nothing else
+ * — it cannot know whether a `rag_ef_search` row exists, and a row the reader
+ * has seen wins over the variable either way. The
  * out-of-range branch used to state the fallback flatly ("the floor falls
  * back to 100"), which is a claim about the *resolved* floor and is simply
  * false on any instance that has saved the panel; it now scopes the sentence
@@ -860,13 +931,13 @@ export function warnIfRagEfSearchEnvSet(): void {
   if (parsed === null) {
     logger.warn(
       { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: present },
-      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — while no \`rag_ef_search\` row exists the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
+      `RAG_EF_SEARCH=${present} is not a whole number inside pgvector's [${RAG_EF_SEARCH_MIN}, ${RAG_EF_SEARCH_MAX}] and is ignored — while no \`rag_ef_search\` row has been read the floor falls back to ${RAG_EF_SEARCH_DEFAULT}; set it on Settings → AI Models → Retrieval`,
     );
     return;
   }
   logger.warn(
     { envVar: 'RAG_EF_SEARCH', setting: 'rag_ef_search', value: parsed },
-    'RAG_EF_SEARCH is deprecated — it is used only while no `rag_ef_search` row exists; set it on Settings → AI Models → Retrieval',
+    'RAG_EF_SEARCH is deprecated — it is used only while no `rag_ef_search` row has been read; set it on Settings → AI Models → Retrieval',
   );
 }
 

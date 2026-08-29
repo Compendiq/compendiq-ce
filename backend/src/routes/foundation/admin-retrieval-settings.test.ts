@@ -976,6 +976,38 @@ describe('PUT /api/admin/settings — the ef_search floor (#1285)', () => {
     await expect(getRagEfSearch()).resolves.toBe(120);
   });
 
+  it('keeps the saved row when the refetch blips — one save retires the env for good (ADR-021, #1512)', async () => {
+    // The test above proves the env var loses to a row on the HAPPY path. The
+    // path it does not walk is the one the panel actually runs: the client
+    // refetches `/api/admin/settings` the instant the PUT resolves, and the
+    // handler has just dropped this knob's cache, so that read is a cold one —
+    // under the pool pressure #1512 is about, it is the read that throws.
+    //
+    // Gating the cold `RAG_EF_SEARCH` bootstrap on an empty cache made that
+    // window reinstate the retired variable OVER the saved row and report
+    // `ragEfSearchFromEnv: true`, which re-renders the `Keep 900` button whose
+    // press PUTs 900 back over the admin's 150.
+    process.env.RAG_EF_SEARCH = '900';
+    const before = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(before.json()).ragEfSearchFromEnv).toBe(true);
+
+    await put({ ragEfSearch: 150 });
+
+    const live = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (/SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ef_search'/.test(sql)) {
+        throw new Error('statement timeout');
+      }
+      return live(sql, params);
+    });
+    const after = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    mockQuery.mockImplementation(live);
+
+    const parsed = AdminSettingsSchema.parse(after.json());
+    expect(parsed.ragEfSearch).toBe(150);
+    expect(parsed.ragEfSearchFromEnv).toBe(false);
+  });
+
   it('rejects a value outside pgvector’s own bound, rather than saving a lie', async () => {
     for (const body of [
       { ragEfSearch: 0 },

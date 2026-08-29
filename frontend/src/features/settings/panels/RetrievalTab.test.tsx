@@ -3006,6 +3006,12 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
         ragEfSearch: 250,
         ragEfSearchFromEnv: true,
         ragConfidenceThreshold: 0.35,
+        // Review r1 — the rerank threshold is here so the THIRD remedy renders
+        // too. `CalibrationNotice` has two buttons, and `Record` (the
+        // unknown-calibration branch) reads the same two flags as `Keep`; with
+        // only the amber strip on screen, re-folding that branch's label back
+        // onto `keepBlocked` left the whole file green.
+        ragConfidenceThresholdRerank: 0.2,
         ragConfidenceCalibration: {
           similarity: {
             providerId: '11111111-2222-3333-4444-555555555555',
@@ -3051,6 +3057,21 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     expect(keep.querySelector('.animate-spin')).toBeNull();
     expect(keep).not.toHaveAttribute('aria-busy');
     expect(keep).toHaveAttribute('aria-disabled', 'true');
+
+    // The muted strip's `Record` is the same split on the OTHER branch of
+    // `CalibrationNotice`, and it is a claim about the server too: nothing is
+    // being recorded while a panel-wide PUT runs. Verified as a gap by
+    // mutation (review r1) — re-folding that branch's label and `aria-busy`
+    // back onto `keepBlocked` left all 139 cases green.
+    const record = screen.getByTestId('retrieval-ragConfidenceThresholdRerank-calibration-record');
+    expect(record).toHaveTextContent('Record 0.2');
+    expect(
+      record,
+      'the panel-wide PUT records no calibration — announcing one names a write the server was never asked for',
+    ).not.toHaveTextContent(/Recording 0\.2…/);
+    expect(record.querySelector('.animate-spin')).toBeNull();
+    expect(record).not.toHaveAttribute('aria-busy');
+    expect(record).toHaveAttribute('aria-disabled', 'true');
 
     // `aria-disabled` blocks no events, so the Save lock has to be the
     // handler's: one press each, and no second PUT after a turn of the event

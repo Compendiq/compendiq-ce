@@ -1879,7 +1879,7 @@ test pins that.
   load, so the deployment's recall floor could not be changed without a restart
   and was invisible on the panel that owns every other retrieval number; that
   variable is now a bootstrap fallback consulted
-  only while no row exists, and reported as deprecated at startup — with the
+  only while no row has been read, and reported as deprecated at startup — with the
   panel offering a one-key `Keep <value>` write on exactly the instances where
   the variable is still what produced the number (`ragEfSearchFromEnv` on the
   settings payload), since Save sends only the values an admin changed and
@@ -1887,8 +1887,10 @@ test pins that.
   through to the variable OVER A VALUE ALREADY RESOLVED: an unreadable row is
   not an absent one, and the fall-through would reinstate a retired value for a
   full cache TTL. What it does instead (**#1512**) is hold the last
-  `{value, source}` the reader resolved — or, on a cold resolve with nothing
-  held yet, reach the bootstrap. Falling to the constant 100 there dropped every
+  `{value, source}` the reader resolved — or, when the admin PUT has just
+  cleared that cache, the row that PUT wrote, which `noteRagEfSearchRowSaved`
+  hands over for exactly this window — and only a cold resolve holding neither
+  reaches the bootstrap. Falling to the constant 100 there dropped every
   probe on that pod from the operator's configured floor for a full TTL and,
   because `ragEfSearchFromEnv` is derived from `source === 'env'`, took the
   panel's note and its `Keep` remedy with it while the value was wrong. Raising

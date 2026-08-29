@@ -367,15 +367,20 @@ keep: a row read that THREW never falls through to the variable **over a value
 already resolved** (an unreadable row is not an absent one, and the
 fall-through silently reinstated a retired env value for a TTL) — #1512
 narrowed that to what it was actually protecting: a failure now holds the last
-`{value, source}` `resolveRagEfSearch` resolved, and a COLD failure with
-nothing resolved yet reaches the bootstrap rather than the constant 100,
+`{value, source}` `resolveRagEfSearch` resolved, and a COLD failure — nothing
+resolved AND no row written — reaches the bootstrap rather than the constant 100,
 because the old shape retired a live `RAG_EF_SEARCH` on one statement timeout,
 dropped every kNN probe on that pod to 100 for a full TTL and — since
 `ragEfSearchFromEnv` is `source === 'env'` — stripped the panel's note and its
 `Keep` remedy exactly while the value was wrong (`getRagContextCharsPerPage`'s
 "fail toward the operator's last known setting", same direction);
-`invalidateRagEfSearchCache()` stays a full forget, because it runs on the
-admin PUT and is the reset hook ~30 tests in four files call between cases; the
+`invalidateRagEfSearchCache()` stays a full forget, because it is the reset
+hook ~30 tests in four files call between cases — which is precisely why the
+admin PUT calls `noteRagEfSearchRowSaved(value)` instead (review r1 of #1512):
+a bare forget leaves the reader unable to tell "cleared by this write" from
+"nothing has ever resolved", and the panel refetches straight into that window,
+so one blipped SELECT there reinstated the RETIRED variable over the row just
+saved and re-offered the `Keep <old env value>` that writes it back; the
 floor is resolved **before** the probe checks its
 client out, never between `BEGIN` and the `SET LOCAL`, because on a cache miss
 it queries the MAIN pool and a transaction asking its own pool for a second

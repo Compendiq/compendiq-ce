@@ -280,7 +280,7 @@ provider rows:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDING_MODEL` | `bge-m3` | **Bootstrap-only / inert** — see the deprecated table above. Assign the Embedding use case under Settings → AI Models. |
-| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently. A settings read that FAILS keeps whatever the server last resolved, and on a cold start keeps this variable, rather than dropping the floor to 100 for a minute (#1512). Setting it logs a startup notice. |
+| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently, read failures included. A settings read that FAILS keeps whatever the server last resolved — or the row a save has just written — and only on a cold start with neither keeps this variable, rather than dropping the floor to 100 for a minute (#1512). Setting it logs a startup notice. |
 
 ### Background Workers
 
@@ -565,7 +565,7 @@ per probe at 100 against 1.74 ms at 1000 on that corpus — and nothing else:
 runbook tells you to watch is fixed by how the index was built and is identical
 at every value here. It was `RAG_EF_SEARCH` before #1285 — env-only, read once
 at startup — and that variable is now a bootstrap fallback consulted while no
-`rag_ef_search` row exists. On an instance that is still running on it the
+`rag_ef_search` row has been read. On an instance that is still running on it the
 panel says so above the control and offers a **Keep <value>** button, because
 Save only sends values you changed and the number shown already matches what
 the server resolved — pressing it writes the row and the variable is never read
@@ -576,8 +576,10 @@ name.
 **A settings read that fails does not change the floor (#1512).** The reader is
 cached for 60 seconds; when that cache expires and the `admin_settings` SELECT
 then fails — pool pressure, a statement timeout — it keeps the value and the
-provenance it last resolved, and on a cold start with nothing resolved yet it
-keeps this variable. It used to fall to the constant 100, which dropped every
+provenance it last resolved. Saving the panel clears that cache, so in the
+window right after a save what it keeps is the row the save just wrote; only on
+a cold start with neither a resolved value nor a saved row does it keep this
+variable. It used to fall to the constant 100, which dropped every
 kNN probe on that pod to 100 for a full minute and made `Settings → AI Models →
 Retrieval` report the depth as 100 with no environment note and no **Keep**
 button — losing the remedy exactly while the number was wrong. Saving the panel

@@ -48,6 +48,7 @@ import {
   getRagEfSearch,
   resolveRagEfSearch,
   invalidateRagEfSearchCache,
+  noteRagEfSearchRowSaved,
   warnIfRagEfSearchEnvSet,
   RAG_EF_SEARCH_DEFAULT,
 } from './admin-settings-service.js';
@@ -711,6 +712,50 @@ describe('rag_ef_search (#1285)', () => {
     expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
   });
 
+  it('does not reinstate RAG_EF_SEARCH in the window right after a save (#1512)', async () => {
+    // Review r1 of #1512. The first shape of this fix gated the cold bootstrap
+    // on an EMPTY CACHE — and the admin PUT empties the cache on every save, so
+    // the panel's own refetch ran straight into a window where one blipped
+    // SELECT reinstated the retired variable OVER the row just written, called
+    // it `source: 'env'`, and re-offered `Keep 900` — a one-click overwrite of
+    // the admin's 150, on the very instance ADR-021 says the environment is
+    // inert on. The write hands its value over instead of dropping it, so what
+    // stands under a failed read is the row, as a row.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '120' }] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 120, source: 'row' });
+
+    // Exactly what the PUT handler runs when the `rag_ef_search` row lands.
+    noteRagEfSearchRowSaved(150);
+    mockQuery.mockRejectedValue(new Error('statement timeout'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+  });
+
+  it('holds a FIRST save across a blipped read, so one save really does retire the variable (#1512)', async () => {
+    // The upgrade instance, which is the one the whole deprecation story is
+    // about: running on the variable, no row, admin saves once. Nothing has
+    // ever been READ from the row here, so only the write itself can tell the
+    // reader a row now exists.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 900, source: 'env' });
+
+    noteRagEfSearchRowSaved(150);
+    mockQuery.mockRejectedValue(new Error('pool exhausted'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+  });
+
+  it('re-validates the saved value rather than holding a number the reader would reject', async () => {
+    // The row evidence is served as `source: 'row'`, so it must clear the same
+    // bar the reader's own parse does — otherwise a bad write would be held as
+    // if the reader had produced it. The route's schema already bounds this;
+    // the reader does not get to assume that.
+    process.env.RAG_EF_SEARCH = '400';
+    noteRagEfSearchRowSaved(1001);
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+  });
+
   it('reports where the floor came from, for the panel that has to offer a remedy', async () => {
     // Review r1 — the panel's Save is a pure value diff, so on an instance
     // running on the env var the number on screen already equals the server's
@@ -797,7 +842,10 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
     // stated flatly is false on every instance that HAS saved the panel: with
     // `RAG_EF_SEARCH=2000` and a saved row of 300 every probe runs at 300
     // while boot claims 100.
-    expect(message).toContain('while no `rag_ef_search` row exists');
+    // #1512 narrowed both branches from "exists" to "has been read": a row
+    // whose first read threw has not retired the variable yet, so "exists" is
+    // the one word the notice cannot use.
+    expect(message).toContain('while no `rag_ef_search` row has been read');
     // …and it is still resolved that way, which is what the notice claims.
     invalidateRagEfSearchCache();
     mockQuery.mockReset();

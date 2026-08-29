@@ -96,6 +96,7 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   // instance running on the env var from one holding a saved row.
   resolveRagEfSearch: vi.fn().mockResolvedValue({ value: 100, source: 'default' }),
   invalidateRagEfSearchCache: vi.fn(),
+  noteRagEfSearchRowSaved: vi.fn(),
   invalidateRagFetchWidthCache: vi.fn(),
   invalidateRagRerankCandidatesCache: vi.fn(),
   invalidateRagConfidenceThresholdCache: vi.fn(),
