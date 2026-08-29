@@ -181,7 +181,7 @@ export class NotionClient {
 
   async searchAll(params: Omit<NotionSearchParams, 'startCursor'> = {}): Promise<Array<Record<string, unknown>>> {
     return paginateAll((cursor) =>
-      this.search({ ...params, startCursor: cursor ?? undefined }),
+      this.search({ pageSize: 100, ...params, startCursor: cursor ?? undefined }),
     );
   }
 

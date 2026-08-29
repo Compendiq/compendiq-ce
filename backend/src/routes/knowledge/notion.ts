@@ -37,6 +37,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
     const { token } = ConnectNotionSchema.parse(request.body);
     try {
       const status = await connectNotionToken(request.userId, token);
+      await cache.invalidate(request.userId, 'notion_tree');
       await logAuditEvent(
         request.userId,
         'NOTION_TOKEN_UPDATED',
@@ -58,6 +59,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
 
   fastify.delete('/notion/connection', async (request) => {
     const status = await disconnectNotionToken(request.userId);
+    await cache.invalidate(request.userId, 'notion_tree');
     await logAuditEvent(request.userId, 'NOTION_TOKEN_UPDATED', 'settings', request.userId, { connected: false }, request);
     return toResponse(status);
   });
@@ -71,10 +73,16 @@ export async function notionRoutes(fastify: FastifyInstance) {
         statusCode: 400,
       });
     }
+    const cached = await cache.get<{ nodes: unknown[] }>(request.userId, 'notion_tree', 'workspace');
+    if (cached) {
+      return NotionTreeResponseSchema.parse(cached);
+    }
     try {
       const client = new NotionClient(token);
       const nodes = await fetchNotionWorkspaceTree(client, { userId: request.userId });
-      return NotionTreeResponseSchema.parse({ nodes });
+      const response = NotionTreeResponseSchema.parse({ nodes });
+      await cache.set(request.userId, 'notion_tree', 'workspace', response, 120);
+      return response;
     } catch (err) {
       if (err instanceof NotionError && err.statusCode >= 400) {
         const status =
@@ -131,9 +139,8 @@ export async function notionRoutes(fastify: FastifyInstance) {
           request,
         );
       }
-      const payload = NotionImportResponseSchema.parse({ items });
-      expectNoSecret(payload, token);
-      return payload;
+      await cache.invalidate(request.userId, 'notion_tree');
+      return NotionImportResponseSchema.parse({ items });
     } catch (err) {
       if (err instanceof NotionImportError) {
         const bodyOut = { error: 'ClientError', message: err.message, statusCode: err.statusCode };

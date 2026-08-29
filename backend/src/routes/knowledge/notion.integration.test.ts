@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 vi.mock('../../core/services/redis-cache.js', () => ({
   RedisCache: class {
+    async get() { return null; }
+    async set() {}
     async invalidate() {}
     async invalidateAcrossUsers() {}
   },

@@ -18,6 +18,15 @@ export function useNotionConnection(enabled = true) {
     queryKey: ['notion', 'connection'],
     queryFn: async () => NotionConnectionResponseSchema.parse(await apiFetch('/notion/connection')),
     enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function prefetchNotionConnection(queryClient: QueryClient): void {
+  void queryClient.prefetchQuery({
+    queryKey: ['notion', 'connection'],
+    queryFn: async () => NotionConnectionResponseSchema.parse(await apiFetch('/notion/connection')),
+    staleTime: 60_000,
   });
 }
 

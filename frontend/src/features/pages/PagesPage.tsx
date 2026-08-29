@@ -38,6 +38,7 @@ import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { OnboardingChecklistCard } from '../onboarding/OnboardingChecklistCard';
 import { NotionImportDialog } from './notion-import/NotionImportDialog';
+import { prefetchNotionConnection } from './notion-import/use-notion-import';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { FIND_LABEL, FIND_PLACEHOLDER, LIBRARY_HEADING, SEARCH_MODE_DESCRIPTIONS, SEARCH_MODE_LABELS } from './pages-find';
 
@@ -1089,6 +1090,8 @@ export function PagesPage() {
             <button
               type="button"
               onClick={() => setNotionImportOpen(true)}
+              onMouseEnter={() => prefetchNotionConnection(queryClient)}
+              onFocus={() => prefetchNotionConnection(queryClient)}
               className="nm-button-ghost h-8 px-3 text-xs sm:text-sm"
               data-testid="import-notion-button"
             >

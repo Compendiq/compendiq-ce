@@ -587,6 +587,7 @@ const TTL = {
   search: 300,     // 5 minutes
   sync: 60,        // 1 minute (sync status)
   llm: 3600,       // 1 hour (LLM response cache)
+  notion_tree: 120, // 2 minutes (Notion workspace tree cache)
 } as const;
 
 type CacheType = keyof typeof TTL;

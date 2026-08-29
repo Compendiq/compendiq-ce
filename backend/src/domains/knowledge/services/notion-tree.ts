@@ -251,58 +251,88 @@ export async function fetchNotionWorkspaceTree(
   }
 
   // Pass 2: Direct parent relations (page_id, database_id, data_source_id)
-  // Fetch missing parent databases/pages on-demand if omitted from search results
-  const missingParentsChecked = new Set<string>();
-  for (const [key, node] of nodes) {
+  // Fetch missing parent databases/pages on-demand concurrently if omitted from search results
+  const missingParentsToFetch = new Map<string, { parentId: string; type: string | null }>();
+  for (const [key] of nodes) {
     if (attached.has(key)) continue;
-    const raw = rawByKey.get(key)!;
-    if (parentTypeOf(raw) === 'block_id') continue;
+    const raw = rawByKey.get(key);
+    if (!raw || parentTypeOf(raw) === 'block_id') continue;
     const parentId = parentIdOf(raw);
     if (!parentId) continue;
     const parentKey = normalizeId(parentId);
-    let parent = nodes.get(parentKey);
-    if (!parent && !missingParentsChecked.has(parentKey)) {
-      missingParentsChecked.add(parentKey);
-      try {
-        let parentRaw: Record<string, unknown>;
-        if (parentTypeOf(raw) === 'database_id' || parentTypeOf(raw) === 'data_source_id') {
-          parentRaw = await client.getDatabase(parentId);
-        } else {
-          try {
-            parentRaw = await client.getPage(parentId);
-          } catch {
-            parentRaw = await client.getDatabase(parentId);
-          }
-        }
-        if (parentRaw && !isTrashed(parentRaw)) {
-          const parentNode = toNode(parentRaw);
-          if (parentNode) {
-            nodes.set(parentKey, parentNode);
-            rawByKey.set(parentKey, parentRaw);
-            parent = parentNode;
-          }
-        }
-      } catch {
-        // missing or no permission; leave at root
-      }
+    if (!nodes.has(parentKey) && !missingParentsToFetch.has(parentKey)) {
+      missingParentsToFetch.set(parentKey, { parentId, type: parentTypeOf(raw) });
     }
+  }
+
+  if (missingParentsToFetch.size > 0) {
+    const parentFetchPromises = Array.from(missingParentsToFetch.entries()).map(
+      async ([parentKey, { parentId, type }]) => {
+        try {
+          let parentRaw: Record<string, unknown>;
+          if (type === 'database_id' || type === 'data_source_id') {
+            parentRaw = await client.getDatabase(parentId);
+          } else {
+            try {
+              parentRaw = await client.getPage(parentId);
+            } catch {
+              parentRaw = await client.getDatabase(parentId);
+            }
+          }
+          if (parentRaw && !isTrashed(parentRaw)) {
+            const parentNode = toNode(parentRaw);
+            if (parentNode) {
+              nodes.set(parentKey, parentNode);
+              rawByKey.set(parentKey, parentRaw);
+            }
+          }
+        } catch {
+          // missing or no permission; leave at root
+        }
+      },
+    );
+    await Promise.allSettled(parentFetchPromises);
+  }
+
+  for (const [key, node] of nodes) {
+    if (attached.has(key)) continue;
+    const raw = rawByKey.get(key);
+    if (!raw || parentTypeOf(raw) === 'block_id') continue;
+    const parentId = parentIdOf(raw);
+    if (!parentId) continue;
+    const parentKey = normalizeId(parentId);
+    const parent = nodes.get(parentKey);
     if (parent && parent !== node) {
       attach(parent, node, attached);
     }
   }
 
-  // Pass 3: Block-parent walk for pages nested under blocks/toggles/columns
+  // Pass 3: Block-parent walk for pages nested under blocks/toggles/columns (resolved concurrently)
+  const blockParentNodes: Array<{ key: string; node: NotionTreeNode; blockId: string }> = [];
   for (const [key, node] of nodes) {
     if (attached.has(key)) continue;
     const raw = rawByKey.get(key);
     if (!raw || parentTypeOf(raw) !== 'block_id') continue;
     const blockId = parentIdOf(raw);
-    if (!blockId) continue;
-    const hostId = await resolveHostPageId(client, blockId, nodes);
-    if (!hostId) continue;
-    const host = nodes.get(normalizeId(hostId));
-    if (host && host !== node) {
-      attach(host, node, attached);
+    if (blockId) {
+      blockParentNodes.push({ key, node, blockId });
+    }
+  }
+
+  if (blockParentNodes.length > 0) {
+    const blockResolutions = await Promise.allSettled(
+      blockParentNodes.map(async ({ node, blockId }) => {
+        const hostId = await resolveHostPageId(client, blockId, nodes);
+        return { node, hostId };
+      }),
+    );
+    for (const res of blockResolutions) {
+      if (res.status === 'fulfilled' && res.value.hostId) {
+        const host = nodes.get(normalizeId(res.value.hostId));
+        if (host && host !== res.value.node) {
+          attach(host, res.value.node, attached);
+        }
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Save, Upload, LayoutTemplate, Globe, Lock, X, ChevronDown, Sparkles, Loader2, Download } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
@@ -23,6 +24,7 @@ import { toast } from 'sonner';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 import { NotionImportDialog } from './notion-import/NotionImportDialog';
+import { prefetchNotionConnection } from './notion-import/use-notion-import';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
 
@@ -45,6 +47,7 @@ type ArticleType = 'local' | 'confluence';
 type Visibility = 'private' | 'shared';
 
 export function NewPagePage() {
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: spaces } = useSpaces();
   const createMutation = useCreatePage();
@@ -55,8 +58,6 @@ export function NewPagePage() {
   const [title, setTitle] = useState('');
   const [spaceKey, setSpaceKey] = useState('');
   const [parentId, setParentId] = useState<string | undefined>();
-  // Seeds the editor's initial content (empty, or a template applied before
-  // the editor has mounted). The live body is read from the editor instance on
   // create (#954) — it is not synced per keystroke.
   const [bodyHtml, setBodyHtml] = useState('');
   const [articleType, setArticleType] = useState<ArticleType>('local');
@@ -321,6 +322,8 @@ export function NewPagePage() {
                     <button
                       type="button"
                       onClick={() => setShowNotionImport(true)}
+                      onMouseEnter={() => prefetchNotionConnection(queryClient)}
+                      onFocus={() => prefetchNotionConnection(queryClient)}
                       className="nm-icon-button shrink-0"
                       title="Import from Notion"
                       aria-label="Import from Notion"
@@ -564,6 +567,8 @@ export function NewPagePage() {
                 <button
                   type="button"
                   onClick={() => setShowNotionImport(true)}
+                  onMouseEnter={() => prefetchNotionConnection(queryClient)}
+                  onFocus={() => prefetchNotionConnection(queryClient)}
                   className="group flex flex-col items-start gap-2 rounded-lg border border-border/70 bg-card p-3.5 text-left transition-colors hover:border-border hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   data-testid="starter-notion-btn"
                 >
