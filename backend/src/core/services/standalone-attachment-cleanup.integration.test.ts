@@ -15,7 +15,7 @@
  * Real Postgres + a temp ATTACHMENTS_DIR (local-attachment-service.test.ts
  * pattern).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -27,6 +27,7 @@ import { purgeExpiredStandalonePages } from './data-retention-service.js';
 import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
   ATTACHMENT_ROOT_RESERVED_DIRNAMES,
+  attachmentCacheDir,
   attachmentsRootNow,
   removeCachedAttachmentDirectory,
   removeCachedAttachmentFile,
@@ -310,6 +311,75 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
     it('never throws — a filesystem problem is logged, not fatal', async () => {
       // No page rows, no directories at all: both removals are ENOENT no-ops.
       await expect(cleanupStandalonePageAttachmentDirs(999_999)).resolves.toBeUndefined();
+    });
+
+    /**
+     * #1522 — "unknown age resolves to leaving it alone".
+     *
+     * The age probe distinguishes exactly two failures: ENOENT (nothing to
+     * remove, return) and everything else (the age cannot be established, so
+     * rethrow into the outer best-effort catch — warn, and the directory
+     * survives). Nothing exercised the second arm: replacing it so a stat
+     * failure falls through with `mtimeMs: 0` — i.e. treating a directory
+     * whose age is UNKNOWN as ancient and removing it — left this file and its
+     * three neighbours at 78 passed. The sweep's equivalent discipline
+     * (`stats.unreadableDirectories`) is killed by two cells when removed, so
+     * the rule was pinned one level down and prose-only here.
+     *
+     * What is at stake is the shared keyspace: `<pk>/` may be a live
+     * Confluence page's entire attachment cache during a first sync, and the
+     * age check is the guard for exactly that window. Falling through on an
+     * unreadable directory would evict that cache on the strength of a stat
+     * that never answered.
+     *
+     * `fs.stat` is spied for THIS path only rather than `chmod 000`-ing the
+     * parent (the sweep's pattern): directory traversal permission gates the
+     * stat and the `fs.rm` alike, so sealing the parent would make the
+     * MUTANT's removal fail too and this cell would pass for the wrong
+     * reason. The spy leaves the removal path fully live, which is what makes
+     * the survival assertion falsifiable.
+     */
+    it('leaves the Confluence cache alone when the directory age cannot be established', async () => {
+      const userId = await seedUser();
+      const pageId = await seedStandalonePage(userId);
+      const cacheFile = await writeFileAt(String(pageId), 'pasted.png');
+      await writeFileAt('local', String(pageId), 'diagram.png');
+      // Aged PAST the grace window, and no Confluence page owns the key: every
+      // other guard says "remove". The unreadable stat is the only thing that
+      // can spare this directory.
+      await ageDir(String(pageId));
+      await query('DELETE FROM pages WHERE id = $1', [pageId]);
+
+      const cacheDir = attachmentCacheDir(String(pageId));
+      const realStat = fs.stat.bind(fs);
+      const statSpy = vi
+        .spyOn(fs, 'stat')
+        .mockImplementation((async (target: Parameters<typeof fs.stat>[0], ...rest: unknown[]) => {
+          if (target === cacheDir) {
+            const err: NodeJS.ErrnoException = new Error(
+              `EACCES: permission denied, stat '${cacheDir}'`,
+            );
+            err.code = 'EACCES';
+            throw err;
+          }
+          return (realStat as (...args: unknown[]) => unknown)(target, ...rest);
+        }) as typeof fs.stat);
+
+      try {
+        // Best-effort contract: the caller is inside a delete/purge and must
+        // never be failed by a filesystem problem (mirrors the cell above).
+        await expect(cleanupStandalonePageAttachmentDirs(pageId)).resolves.toBeUndefined();
+      } finally {
+        statSpy.mockRestore();
+      }
+
+      expect(
+        await exists(cacheFile),
+        'a directory whose age could not be read must be left to the orphan sweep',
+      ).toBe(true);
+      // …and the removal really was reached: the unambiguous local store went,
+      // so the survival above is the age guard, not an inert run.
+      expect(await exists(path.join(tempBase, 'local', String(pageId)))).toBe(false);
     });
   });
 

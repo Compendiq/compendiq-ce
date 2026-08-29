@@ -97,6 +97,11 @@ import {
   ATTACHMENT_SWEEP_LAST_RUN_KEY,
   ATTACHMENT_SWEEP_WORKER_LOCK,
 } from './attachment-sweep-service.js';
+// #1514 — the REAL constant from the colliding worker, imported for the
+// distinctness assertion at the bottom of this file. Named import only: the
+// module's top level defines constants, so nothing runs on load, and the
+// mocks above already stand in for the shared graph it touches.
+import { IMAGE_INDEX_WORKER_LOCK } from '../../llm/services/image-embedding-service.js';
 
 /** The module's own `LOCK_REFRESH_MS`; restated because it is not exported. */
 const LOCK_REFRESH_MS_UNDER_TEST = 60_000;
@@ -227,5 +232,31 @@ describe('#1349 runAttachmentSweep epilogue ordering', () => {
       keepSetGate = null;
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * #1514 — the lock's NAME, not its ordering.
+ *
+ * Every consumer reads the exported constant, so renaming it kept the whole
+ * sweep suite green: `attachments-sweep.test.ts` asserts
+ * `locked).toHaveBeenCalledWith('attachment-sweep')` against a literal it
+ * supplies itself in its own module mock, so that expectation is satisfied by
+ * the mock rather than by the production value. Swapping line 132 to
+ * `'image-embedding-index'` therefore left 18 tests passing — while in
+ * production the destructive sweep and the #1115 image-index worker would
+ * share one Redis key and each answer `alreadyRunning` for the other: the
+ * operator presses Delete orphans, is told a sweep is already running, and
+ * the real holder is a worker that has nothing to do with attachments.
+ *
+ * Both real constants are imported (the whole point — a literal here would
+ * rebuild the exact hole), and the collision is asserted as a DISTINCTNESS
+ * claim as well as by value, so renaming either side deliberately still has
+ * to keep them apart.
+ */
+describe('#1514 the attachment sweep worker-lock name', () => {
+  it('is the pinned literal, and never collides with the image-index worker lock', () => {
+    expect(ATTACHMENT_SWEEP_WORKER_LOCK).toBe('attachment-sweep');
+    expect(ATTACHMENT_SWEEP_WORKER_LOCK).not.toBe(IMAGE_INDEX_WORKER_LOCK);
   });
 });
