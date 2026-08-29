@@ -1231,6 +1231,20 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
     liveResolved: true,
     stale: false,
   };
+  /**
+   * #1510 — the SECOND basis, stale at the same time as the first. The panel
+   * renders one strip per basis and both can stand at once, which is the state
+   * a single shared pending flag mis-reported.
+   */
+  const staleRerank = {
+    providerId: '22222222-3333-4444-5555-666666666666',
+    model: 'bge-reranker-v2-m3',
+    setAt: '2026-08-02T09:00:00.000Z',
+    liveProviderId: '22222222-3333-4444-5555-666666666666',
+    liveModel: 'bge-reranker-v2-gemma',
+    liveResolved: true,
+    stale: true,
+  };
   /** What the route answers when it really recorded the pair. */
   const recorded = (model: string | null) => () => ({
     ragConfidenceCalibrationWrite: { similarity: { outcome: 'recorded', model }, rerank: null },
@@ -2140,6 +2154,71 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
   });
 
   /**
+   * #1510 — the in-flight announcement belongs to the write, not to the panel.
+   *
+   * `keepPending` was ONE flag handed to BOTH strips, and #1285 promoted it
+   * from driving only `disabled` to driving a visible spinner, a gerund and
+   * `aria-busy`. So pressing `Keep 0.2` on the similarity strip made the rerank
+   * strip read `Keeping 0.35…` for a write that does not exist — which defeats
+   * `PendingRemedyLabel`'s own rationale, quoted in its JSDoc: the number is
+   * the only thing on the button that says which threshold is being written,
+   * and two of these render at once.
+   *
+   * The `aria-disabled` half is deliberately NOT asserted away here: one
+   * `useMutation` object cannot carry two concurrent keeps, so the sibling
+   * really is unavailable. That is the split — unavailable is shared, writing
+   * is per key.
+   */
+  it('announces the write on the threshold being written, never on the strip beside it (#1510)', async () => {
+    const put = Promise.withResolvers<void>();
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragConfidenceThreshold: 0.2,
+        ragConfidenceThresholdRerank: 0.35,
+        ragConfidenceCalibration: calibration({
+          similarity: staleSimilarity,
+          rerank: staleRerank,
+        }),
+      },
+      holdPut: put.promise,
+    });
+    renderTab();
+    await ready();
+
+    // Both strips really are standing, or every assertion below is vacuous.
+    const keep = within(await screen.findByTestId(stripId)).getByTestId(
+      'retrieval-ragConfidenceThreshold-calibration-keep',
+    );
+    const rerankKeep = within(
+      await screen.findByTestId('retrieval-ragConfidenceThresholdRerank-calibration-stale'),
+    ).getByTestId('retrieval-ragConfidenceThresholdRerank-calibration-keep');
+
+    fireEvent.click(keep);
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragConfidenceThreshold: 0.2 });
+
+    // The one that is writing says so.
+    expect(keep).toHaveTextContent(/Keeping 0\.2…/);
+    expect(keep).toHaveAttribute('aria-busy', 'true');
+    expect(keep.querySelector('.animate-spin')).not.toBeNull();
+
+    // The one that is not, does not.
+    expect(rerankKeep).toHaveTextContent('Keep 0.35');
+    expect(
+      rerankKeep,
+      'no write exists for the rerank threshold — announcing one is a lie about what the server is doing',
+    ).not.toHaveTextContent(/Keeping 0\.35…/);
+    expect(rerankKeep.querySelector('.animate-spin')).toBeNull();
+    expect(rerankKeep).not.toHaveAttribute('aria-busy');
+
+    await act(async () => {
+      put.resolve();
+      await put.promise;
+    });
+  });
+
+  /**
    * The THIRD remedy, and the one the two guards above did not reach (review
    * r1 of the verification round). Verified as a gap by mutation on the shipped
    * head: reverting `Record`'s `aria-disabled` to `disabled` — leaving the
@@ -2148,10 +2227,11 @@ describe('RetrievalTab — confidence calibration (#1114)', () => {
    * never come back to these three" was enforced for two of three.
    *
    * The muted note is the branch that most needs it: it is the one every
-   * upgraded instance with a live threshold renders, and it is reachable in
-   * the pending window twice over — `keepPending` is true while its own write
-   * is in flight AND while the panel-wide Save is, with the note mounted
-   * throughout both.
+   * upgraded instance with a live threshold renders, and it is reachable in the
+   * pending window twice over — `keepBlocked` is true while its own write is in
+   * flight AND while the panel-wide Save is, with the note mounted throughout
+   * both. Only the first of those is a write, which is what `keepWriting`
+   * separated out (#1511).
    */
   it('reports a Record in flight with aria-disabled, never the focus-dropping attribute', async () => {
     let release!: () => void;
@@ -2880,6 +2960,99 @@ describe('RetrievalTab — the ef_search floor (#1285)', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('retrieval-ef-search-env-note')).not.toBeInTheDocument(),
     );
+  });
+
+  /**
+   * #1511 — Save's `isPending` was folded into both remedy flags, so a
+   * panel-wide PUT made every remedy announce a write of its own.
+   *
+   * The admin changes Fetch width and presses Save; the `RAG_EF_SEARCH` note's
+   * button read `Keeping 250…` with a spinner and `aria-busy`, and the
+   * calibration strip's read `Keeping 0.35…`. Nothing was being kept: only the
+   * panel-wide PUT was running, and that PUT can be long — an `ftsLanguage`
+   * change reindexes the corpus in-request. Before #1285 the same flag only set
+   * `disabled`, which was truthful.
+   *
+   * So the two channels split. `aria-disabled` and the click guard keep Save,
+   * because Save re-hydrates the form and a one-key write racing it can be
+   * reverted — that unavailability is real. The LABEL, the spinner and
+   * `aria-busy` come from the remedy's OWN mutation, because those are claims
+   * about what the server is doing. The `aria-disabled` and second-press
+   * assertions below are the mutation-check that the guard was not loosened to
+   * buy the honest label.
+   */
+  it('reports the remedies unavailable while Save runs, without claiming they are writing (#1511)', async () => {
+    const put = Promise.withResolvers<void>();
+    const puts = mockApi({
+      settings: {
+        ...defaultSettings,
+        ragEfSearch: 250,
+        ragEfSearchFromEnv: true,
+        ragConfidenceThreshold: 0.35,
+        ragConfidenceCalibration: {
+          similarity: {
+            providerId: '11111111-2222-3333-4444-555555555555',
+            model: 'bge-m3',
+            setAt: '2026-08-01T10:00:00.000Z',
+            liveProviderId: '11111111-2222-3333-4444-555555555555',
+            liveModel: 'Qwen3-Embedding-4B',
+            liveResolved: true,
+            stale: true,
+          },
+          rerank: null,
+        },
+      },
+      holdPut: put.promise,
+    });
+    renderTab();
+    await ready();
+    await waitFor(() => expect(input('ragEfSearch').value).toBe('250'));
+
+    // Arm Save with a knob at the other end of the panel, then press it.
+    type('ragFetchWidth', '12');
+    fireEvent.click(screen.getByTestId('retrieval-save-btn'));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ ragFetchWidth: 12 });
+
+    const pin = screen.getByTestId('retrieval-ef-search-env-pin');
+    expect(pin).toHaveTextContent('Keep 250');
+    expect(
+      pin,
+      'the panel-wide PUT is not a pin — announcing one names a write the server was never asked for',
+    ).not.toHaveTextContent(/Keeping 250…/);
+    expect(pin.querySelector('.animate-spin')).toBeNull();
+    expect(pin).not.toHaveAttribute('aria-busy');
+    // …and it is still genuinely unavailable, which is the truthful channel.
+    expect(pin).toHaveAttribute('aria-disabled', 'true');
+
+    const keep = screen.getByTestId('retrieval-ragConfidenceThreshold-calibration-keep');
+    expect(keep).toHaveTextContent('Keep 0.35');
+    expect(
+      keep,
+      'nothing is being recorded — only the panel-wide PUT is running',
+    ).not.toHaveTextContent(/Keeping 0\.35…/);
+    expect(keep.querySelector('.animate-spin')).toBeNull();
+    expect(keep).not.toHaveAttribute('aria-busy');
+    expect(keep).toHaveAttribute('aria-disabled', 'true');
+
+    // `aria-disabled` blocks no events, so the Save lock has to be the
+    // handler's: one press each, and no second PUT after a turn of the event
+    // loop.
+    await act(async () => {
+      fireEvent.click(pin);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+    await act(async () => {
+      fireEvent.click(keep);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(puts).toHaveLength(1);
+
+    await act(async () => {
+      put.resolve();
+      await put.promise;
+    });
   });
 
   it('states that fuzzy title matching is fixed, where the keyword index is configured', async () => {

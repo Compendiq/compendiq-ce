@@ -174,7 +174,7 @@ const EF_SEARCH_ENV_NOTE_ID = 'retrieval-ef-search-env-sentence';
  * why it takes the element that was pressed and moves nothing unless the caret
  * is still on it. A write is in flight for as long as the server takes, the
  * three remedies are deliberately not locked against one another (see
- * `keepPending`), and every one of them resolves into a panel the operator may
+ * `keepBlocked`), and every one of them resolves into a panel the operator may
  * have moved on in — onto another remedy's button, or into any of fourteen
  * fields. Yanking the caret out of one of those is the same 2.4.3 failure this
  * function exists to prevent, arriving from the other direction. A `null`
@@ -810,24 +810,44 @@ export function RetrievalTab() {
   });
 
   /**
-   * A remedy reports itself unavailable while ITS OWN write is in flight, and
-   * while SAVE is — `aria-disabled`, never `disabled`, and every handler
-   * guards on this itself (see `PENDING_REMEDY_CLASS`).
+   * TWO booleans per remedy, because the two channels state different facts
+   * (#1510, #1511). Folding them into one made both lie.
    *
-   * Deliberately not one lock across all three (review r2 of the verification
-   * round, which found the comment here claiming one). Save is in both flags
-   * because it PUTs the whole changed set and its `onSuccess` re-hydrates the
-   * form, so a one-key write racing it can be reverted or can revert. The
-   * three remedies race nothing: each PUTs a single, different key, none of
-   * them re-hydrates, and `admin.ts` writes only the keys a request carried.
-   * Greying two unrelated notices because the operator pressed a third would
-   * report an unavailability that is not real — and it would not have bought
-   * the focus safety either, since `aria-disabled` leaves a button focusable
-   * by design. That is `focusKnobBeforeNoticeClears`'s job, and it does it by
-   * refusing to move a caret that is no longer on the pressed button.
+   * `…Blocked` is UNAVAILABILITY — the click guard and `aria-disabled`, never
+   * `disabled` (see `PENDING_REMEDY_CLASS`), with every handler guarding on it
+   * itself. Save belongs here: it PUTs the whole changed set and its
+   * `onSuccess` re-hydrates the form, so a one-key write racing it can be
+   * reverted or can revert. `keepBlocked` stays SHARED across the two
+   * calibration strips for a mechanical reason: one `useMutation` object
+   * cannot carry two concurrent keeps — a second `mutate` overwrites
+   * `isPending` and `variables` — so while one is writing the other genuinely
+   * cannot be performed.
+   *
+   * `…Writing` is a claim about what the SERVER is doing — the gerund, the
+   * spinner and `aria-busy` (`PendingRemedyLabel`). Only the remedy's own
+   * mutation may set it. Save's `isPending` used to, so pressing Save made the
+   * pin read `Keeping 250…` and both strips `Recording …`/`Keeping …` for
+   * writes that did not exist, for as long as a panel-wide PUT takes — and an
+   * `ftsLanguage` change reindexes the corpus in-request (#1511). And
+   * `keepWriting` is scoped PER KEY, because the panel renders one strip per
+   * confidence basis and both can stand at once: a shared flag had the rerank
+   * strip announcing `Keeping 0.35…` while the operator kept 0.2, which
+   * defeats the very thing `PendingRemedyLabel` keeps its number for (#1510).
+   * `variables` survives settle in react-query v5, so the `isPending`
+   * conjunct is load-bearing.
+   *
+   * Still deliberately not one lock across all three (review r2 of the
+   * verification round). The three remedies race nothing: each PUTs a single,
+   * different key, none re-hydrates, and `admin.ts` writes only the keys a
+   * request carried. Greying two unrelated notices because the operator
+   * pressed a third would report an unavailability that is not real — and it
+   * would not buy focus safety either, since `aria-disabled` leaves a button
+   * focusable by design. That is `focusKnobBeforeNoticeClears`'s job, and it
+   * does it by refusing to move a caret that is no longer on the pressed
+   * button.
    */
-  const keepPending = keepMutation.isPending || mutation.isPending;
-  const efSearchPinPending = pinEfSearchMutation.isPending || mutation.isPending;
+  const keepBlocked = keepMutation.isPending || mutation.isPending;
+  const efSearchPinBlocked = pinEfSearchMutation.isPending || mutation.isPending;
 
   function set<K extends keyof RetrievalValues>(key: K, value: RetrievalValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -1208,20 +1228,20 @@ export function RetrievalTab() {
               onClick={(event) => {
                 // `aria-disabled` blocks no events, so the guard is the handler
                 // (see `PENDING_REMEDY_CLASS`).
-                if (efSearchPinPending) return;
+                if (efSearchPinBlocked) return;
                 pinEfSearchMutation.mutate({
                   value: saved.ragEfSearch,
                   pressed: event.currentTarget,
                 });
               }}
-              aria-disabled={efSearchPinPending || undefined}
-              aria-busy={efSearchPinPending || undefined}
+              aria-disabled={efSearchPinBlocked || undefined}
+              aria-busy={pinEfSearchMutation.isPending || undefined}
               aria-describedby={EF_SEARCH_ENV_NOTE_ID}
               className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
               data-testid="retrieval-ef-search-env-pin"
             >
               <PendingRemedyLabel
-                pending={efSearchPinPending}
+                pending={pinEfSearchMutation.isPending}
                 verb="Keep"
                 gerund="Keeping"
                 value={saved.ragEfSearch}
@@ -1435,7 +1455,10 @@ export function RetrievalTab() {
           supported={settings?.ragConfidenceCalibration !== undefined}
           calibration={settings?.ragConfidenceCalibration?.similarity ?? null}
           onKeep={(event) => handleKeepCalibration('ragConfidenceThreshold', event.currentTarget)}
-          keepPending={keepPending}
+          keepBlocked={keepBlocked}
+          keepWriting={
+            keepMutation.isPending && keepMutation.variables?.key === 'ragConfidenceThreshold'
+          }
         />
         <NumberRow
           field={FIELDS.ragConfidenceThreshold}
@@ -1505,7 +1528,11 @@ export function RetrievalTab() {
           calibration={settings?.ragConfidenceCalibration?.rerank ?? null}
           onKeep={(event) =>
             handleKeepCalibration('ragConfidenceThresholdRerank', event.currentTarget)}
-          keepPending={keepPending}
+          keepBlocked={keepBlocked}
+          keepWriting={
+            keepMutation.isPending &&
+            keepMutation.variables?.key === 'ragConfidenceThresholdRerank'
+          }
         />
         <NumberRow
           field={FIELDS.ragConfidenceThresholdRerank}
@@ -2293,7 +2320,8 @@ function CalibrationNotice({
   supported,
   calibration,
   onKeep,
-  keepPending,
+  keepBlocked,
+  keepWriting,
 }: {
   fieldKey: keyof typeof CONFIDENCE_BASIS_COPY;
   label: string;
@@ -2307,12 +2335,19 @@ function CalibrationNotice({
    * one callback.
    */
   onKeep: (event: MouseEvent<HTMLButtonElement>) => void;
-  keepPending: boolean;
+  /**
+   * The two channels the panel keeps apart (#1510, #1511) — see the flags'
+   * JSDoc above. `keepBlocked` is unavailability, shared with Save and with
+   * the sibling strip; `keepWriting` is this key's own write, and it is the
+   * only one allowed to speak in the label, the spinner or `aria-busy`.
+   */
+  keepBlocked: boolean;
+  keepWriting: boolean;
 }) {
   // `aria-disabled` blocks no events, so the inert state is enforced here
   // rather than by the attribute (see `PENDING_REMEDY_CLASS`).
   const keep = (event: MouseEvent<HTMLButtonElement>) => {
-    if (keepPending) return;
+    if (keepBlocked) return;
     onKeep(event);
   };
   if (value <= 0 || !supported) return null;
@@ -2329,22 +2364,24 @@ function CalibrationNotice({
           would pass unnoticed. Record the model behind it now, or re-tune it below.
         </span>
         {/*
-          The label swaps to a gerund and gains a spinner while the write is in
-          flight, but KEEPS ITS NUMBER — see `PendingRemedyLabel` for why the
-          number is what tells two simultaneous notices apart, and
+          The label swaps to a gerund and gains a spinner while THIS KEY's write
+          is in flight, but KEEPS ITS NUMBER — see `PendingRemedyLabel` for why
+          the number is what tells two simultaneous notices apart, and
           `PENDING_REMEDY_CLASS` for why the attribute pair is not the signal.
+          `keepBlocked` and `keepWriting` are two different facts (#1510,
+          #1511): unavailable is not the same as writing.
         */}
         <button
           type="button"
           onClick={keep}
-          aria-disabled={keepPending || undefined}
-          aria-busy={keepPending || undefined}
+          aria-disabled={keepBlocked || undefined}
+          aria-busy={keepWriting || undefined}
           aria-describedby={unknownSentenceId}
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-record`}
         >
           <PendingRemedyLabel
-            pending={keepPending}
+            pending={keepWriting}
             verb="Record"
             gerund="Recording"
             value={value}
@@ -2431,13 +2468,13 @@ function CalibrationNotice({
         <button
           type="button"
           onClick={keep}
-          aria-disabled={keepPending || undefined}
-          aria-busy={keepPending || undefined}
+          aria-disabled={keepBlocked || undefined}
+          aria-busy={keepWriting || undefined}
           aria-describedby={sentenceId}
           className={`nm-button-ghost shrink-0 text-xs ${PENDING_REMEDY_CLASS}`}
           data-testid={`retrieval-${fieldKey}-calibration-keep`}
         >
-          <PendingRemedyLabel pending={keepPending} verb="Keep" gerund="Keeping" value={value} />
+          <PendingRemedyLabel pending={keepWriting} verb="Keep" gerund="Keeping" value={value} />
         </button>
       </div>
     </div>
