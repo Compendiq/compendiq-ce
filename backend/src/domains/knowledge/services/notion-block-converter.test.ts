@@ -278,15 +278,15 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyHtml).toContain('<td>HTTP</td>');
   });
 
-  it('converts toggle headings and nested children', () => {
+  it('does not invent a toggle_heading type the Notion API never sends', () => {
     const result = convert([
       block('th1', 'toggle_heading_1', { rich_text: [rich('Advanced Config')] }, {
         has_children: true,
         children: [block('p1', 'paragraph', { rich_text: [rich('Nested details')] })],
       }),
     ]);
-    expect(result.bodyHtml).toContain('<h1>Advanced Config</h1>');
-    expect(result.bodyHtml).toContain('<p>Nested details</p>');
+    expect(result.bodyHtml).not.toContain('Advanced Config');
+    expect(result.skips.map((s) => s.type)).toEqual(['toggle_heading_1']);
   });
 
   it('converts equation blocks and inline equations', () => {

@@ -384,6 +384,80 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(updated.rows[0]!.embedding_dirty).toBe(true);
   });
 
+  it('does not delete a complete page when overwriteExisting hits a Notion 404', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {},
+    });
+
+    const orig = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id, embedding_dirty)
+       VALUES ('Old Document', '<p>old</p>', 'old', 1, 'standalone', $1, 'doc', FALSE) RETURNING id`,
+      [userId],
+    );
+    const pageId = orig.rows[0]!.id;
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['doc'],
+      visibility: 'shared',
+      overwriteExisting: true,
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ notionPageId: 'doc', status: 'fail' }),
+    ]);
+    const kept = await query<{ title: string; body_text: string }>(
+      'SELECT title, body_text FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [pageId],
+    );
+    expect(kept.rows).toHaveLength(1);
+    expect(kept.rows[0]!.title).toBe('Old Document');
+    expect(kept.rows[0]!.body_text).toBe('old');
+  });
+
+  it('does not delete a complete page when overwriteExisting cannot fetch blocks', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        doc: {
+          object: 'page',
+          id: 'doc',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Updated Document'),
+        },
+      },
+      blockChildrenErrors: { doc: 503 },
+    });
+
+    const orig = await query<{ id: number }>(
+      `INSERT INTO pages (title, body_html, body_text, version, source, created_by_user_id, notion_page_id, embedding_dirty)
+       VALUES ('Old Document', '<p>old</p>', 'old', 1, 'standalone', $1, 'doc', FALSE) RETURNING id`,
+      [userId],
+    );
+    const pageId = orig.rows[0]!.id;
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['doc'],
+      visibility: 'shared',
+      overwriteExisting: true,
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ notionPageId: 'doc', status: 'fail' }),
+    ]);
+    const kept = await query<{ title: string; body_text: string }>(
+      'SELECT title, body_text FROM pages WHERE id = $1 AND deleted_at IS NULL',
+      [pageId],
+    );
+    expect(kept.rows).toHaveLength(1);
+    expect(kept.rows[0]!.title).toBe('Old Document');
+    expect(kept.rows[0]!.body_text).toBe('old');
+  });
+
   it('skips pages belonging to databases configured with skip mode', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -403,6 +477,30 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       pageIds: ['row-1'],
       visibility: 'shared',
       databaseModes: { 'db-tracker': 'skip' },
+    });
+
+    expect(items).toEqual([expect.objectContaining({ notionPageId: 'row-1', status: 'skip' })]);
+  });
+
+  it('skips database rows when databaseModes keys differ only by dashes', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'row-1': {
+          object: 'page',
+          id: 'row-1',
+          parent: { type: 'database_id', database_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+          properties: titleProp('Task 1'),
+        },
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['row-1'],
+      visibility: 'shared',
+      databaseModes: { aaaaaaaabbbbccccddddeeeeeeeeeeee: 'skip' },
     });
 
     expect(items).toEqual([expect.objectContaining({ notionPageId: 'row-1', status: 'skip' })]);

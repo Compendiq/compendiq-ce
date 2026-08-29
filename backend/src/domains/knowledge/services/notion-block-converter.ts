@@ -41,9 +41,6 @@ const SUPPORTED_TYPES = new Set([
   'heading_2',
   'heading_3',
   'heading_4',
-  'toggle_heading_1',
-  'toggle_heading_2',
-  'toggle_heading_3',
   'paragraph',
   'quote',
   'code',
@@ -239,13 +236,10 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
   }
   switch (type) {
     case 'heading_1':
-    case 'toggle_heading_1':
       return wrapRich('h1', block, ctx);
     case 'heading_2':
-    case 'toggle_heading_2':
       return wrapRich('h2', block, ctx);
     case 'heading_3':
-    case 'toggle_heading_3':
       return wrapRich('h3', block, ctx);
     case 'heading_4':
       return wrapRich('h4', block, ctx);

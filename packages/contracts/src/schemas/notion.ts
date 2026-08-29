@@ -40,7 +40,6 @@ export type NotionTreeSkippedNode = {
   selectable: false;
   skipReason: string;
   reasonCode?: string;
-  defaultMode?: 'table' | 'articles' | 'skip';
   /** Notion database id when `id` is a linked-view key, not the object id. */
   linkedFromId?: string;
   url?: string;
@@ -72,7 +71,6 @@ export const NotionTreeNodeSchema: z.ZodType<NotionTreeNode> = z.lazy(() =>
         selectable: z.literal(false),
         skipReason: z.string().min(1),
         reasonCode: z.string().min(1).optional(),
-        defaultMode: z.enum(['table', 'articles', 'skip']).optional(),
         linkedFromId: z.string().min(1).optional(),
         url: z.string().optional(),
         children: z.array(NotionTreeNodeSchema),
@@ -88,7 +86,7 @@ export const NotionTreeResponseSchema = z
   .strict();
 export type NotionTreeResponse = z.infer<typeof NotionTreeResponseSchema>;
 
-export const NotionDatabaseModeEnum = z.enum(['table', 'articles', 'skip']);
+export const NotionDatabaseModeEnum = z.literal('skip');
 export type NotionDatabaseMode = z.infer<typeof NotionDatabaseModeEnum>;
 
 /** Confirmed selection + local destination for a one-shot Notion import (#1465). */
@@ -113,6 +111,7 @@ export const NotionImportItemSchema = z
     status: NotionImportItemStatusEnum,
     localPageId: z.number().int().positive().optional(),
     reason: z.string().optional(),
+    updated: z.boolean().optional(),
   })
   .strict();
 export type NotionImportItem = z.infer<typeof NotionImportItemSchema>;

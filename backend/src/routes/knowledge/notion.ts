@@ -124,7 +124,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
       for (const item of created) {
         await logAuditEvent(
           request.userId,
-          'PAGE_CREATED',
+          item.updated ? 'PAGE_UPDATED' : 'PAGE_CREATED',
           'page',
           String(item.localPageId),
           { source: 'standalone', notionPageId: item.notionPageId },

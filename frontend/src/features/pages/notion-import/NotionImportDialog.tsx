@@ -141,8 +141,8 @@ function TreeNodeRow({
   locked: boolean;
   expandedIds: ReadonlySet<string>;
   onToggleExpanded: (id: string) => void;
-  databaseModes?: Record<string, 'table' | 'articles' | 'skip'>;
-  onSetDatabaseMode?: (databaseId: string, mode: 'table' | 'articles' | 'skip') => void;
+  databaseModes?: Record<string, 'skip'>;
+  onSetDatabaseMode?: (databaseId: string) => void;
 }) {
   const selectable = isSelectablePage(node);
   const groupIds = selectableIdsInGroup(node);
@@ -241,59 +241,24 @@ function TreeNodeRow({
               </span>
             </div>
             {node.type === 'database' && onSetDatabaseMode ? (
-              <div className="ml-auto flex items-center gap-1 rounded bg-muted/40 p-0.5 text-[11px]">
-                <button
-                  type="button"
-                  className={cn(
-                    'rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-                    (databaseModes?.[node.id] ?? 'table') === 'table'
-                      ? 'bg-primary text-primary-foreground shadow-xs'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onSetDatabaseMode(node.id, 'table');
-                  }}
-                  title="Render rows as a single HTML table inside the parent article"
-                >
-                  Table
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    'rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-                    databaseModes?.[node.id] === 'articles'
-                      ? 'bg-primary text-primary-foreground shadow-xs'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onSetDatabaseMode(node.id, 'articles');
-                  }}
-                  title="Import each row as a separate standalone article"
-                >
-                  Articles
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    'rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-                    databaseModes?.[node.id] === 'skip'
-                      ? 'bg-destructive text-destructive-foreground shadow-xs'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onSetDatabaseMode(node.id, 'skip');
-                  }}
-                  title="Exclude this database from import"
-                >
-                  Skip
-                </button>
-              </div>
+              <button
+                type="button"
+                className={cn(
+                  'ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
+                  databaseModes?.[node.id] === 'skip'
+                    ? 'bg-destructive text-destructive-foreground shadow-xs'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                aria-pressed={databaseModes?.[node.id] === 'skip'}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSetDatabaseMode(node.id);
+                }}
+                title="Exclude this database from import"
+              >
+                Skip
+              </button>
             ) : null}
           </label>
         ) : (
@@ -357,7 +322,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [hideImported, setHideImported] = useState(false);
   const [hideDatabaseRows, setHideDatabaseRows] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [databaseModes, setDatabaseModes] = useState<Record<string, 'table' | 'articles' | 'skip'>>({});
+  const [databaseModes, setDatabaseModes] = useState<Record<string, 'skip'>>({});
   const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
@@ -407,6 +372,9 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     setTreeRetryInFlight(false);
     restoreFocusAfterImport.current = false;
     restoreFocusAfterTreeRetry.current = false;
+    setSearchQuery('');
+    setDatabaseModes({});
+    setOverwriteExisting(false);
   }, [open, setStep]);
 
   const nodes = useMemo(() => tree.data?.nodes ?? [], [tree.data?.nodes]);
@@ -418,7 +386,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     });
     setSelectionLimitMessage(null);
   }, [nodes]);
-  const summary = useMemo(() => summarizeImport(nodes, selected), [nodes, selected]);
+  const summary = useMemo(() => summarizeImport(nodes, selected, databaseModes), [nodes, selected, databaseModes]);
   const confirmCopy = formatConfirmCopy(summary);
   const { filtered: searchFilteredNodes, matchedIds } = useMemo(
     () => searchTreeNodes(nodes, searchQuery),
@@ -555,8 +523,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     }
   };
 
-  const handleSetDatabaseMode = useCallback((databaseId: string, mode: 'table' | 'articles' | 'skip') => {
-    setDatabaseModes((prev) => ({ ...prev, [databaseId]: mode }));
+  const handleSetDatabaseMode = useCallback((databaseId: string) => {
+    setDatabaseModes((prev) => {
+      if (prev[databaseId] === 'skip') {
+        const next = { ...prev };
+        delete next[databaseId];
+        return next;
+      }
+      return { ...prev, [databaseId]: 'skip' };
+    });
   }, []);
 
   const handleSelectPagesOnly = useCallback(() => {
@@ -785,9 +760,10 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                   <div className="space-y-2">
                     <div className="relative">
                       <input
-                        type="text"
+                        type="search"
                         className="nm-input h-8 w-full pl-3 pr-8 text-xs"
                         placeholder="Search pages and databases in workspace…"
+                        aria-label="Search pages and databases in workspace"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         disabled={importPending}

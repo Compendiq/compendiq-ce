@@ -42,13 +42,20 @@ export interface RunNotionImportInput {
   parentId?: string;
   visibility: 'private' | 'shared';
   overwriteExisting?: boolean;
-  databaseModes?: Record<string, 'table' | 'articles' | 'skip'>;
+  databaseModes?: Record<string, 'skip'>;
 }
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
   const alreadyImported: AlreadyImported[] = [];
+  const skippedDatabases = new Set(
+    Object.entries(input.databaseModes ?? {})
+      .filter(([, mode]) => mode === 'skip')
+      .map(([id]) => normalizeNotionId(id)),
+  );
+  const isSkippedDatabase = (id: string | null | undefined): boolean =>
+    Boolean(id && skippedDatabases.has(normalizeNotionId(id)));
 
   for (const rawId of input.pageIds) {
     if (items.has(rawId)) continue;
@@ -56,7 +63,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
       continue;
     }
-    if (input.databaseModes && input.databaseModes[rawId] === 'skip') {
+    if (isSkippedDatabase(rawId)) {
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: 'Database is excluded from import' });
       continue;
     }
@@ -78,22 +85,18 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     }
     const classified = await classifySelection(input.client, rawId);
     if (classified.kind === 'skip') {
-      if (existing) await abandonPage(existing.id, destination.parentId);
+      if (existing && !existing.complete) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'skip', reason: classified.reason });
       continue;
     }
     if (classified.kind === 'fail') {
-      if (existing) await abandonPage(existing.id, destination.parentId);
+      if (existing && !existing.complete) await abandonPage(existing.id, destination.parentId);
       items.set(rawId, { notionPageId: rawId, status: 'fail', reason: classified.reason });
       continue;
     }
 
     const parentNotionId = parentPageIdOf(classified.page);
-    if (
-      parentNotionId &&
-      input.databaseModes &&
-      input.databaseModes[parentNotionId] === 'skip'
-    ) {
+    if (isSkippedDatabase(parentNotionId)) {
       items.set(rawId, {
         notionPageId: rawId,
         status: 'skip',
@@ -108,6 +111,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       title: extractTitle(classified.page),
       parentNotionId,
       reuseId: existing?.id,
+      reuseComplete: existing?.complete === true,
     });
   }
 
@@ -122,7 +126,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     try {
       job.blocks = await fetchBlocksDeep(input.client, job.id);
     } catch (err) {
-      if (job.reuseId) await abandonPage(job.reuseId, destination.parentId);
+      if (job.reuseId && !job.reuseComplete) await abandonPage(job.reuseId, destination.parentId);
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
     }
   }
@@ -198,7 +202,12 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
       });
       await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
       importedPages.set(normalizeNotionId(job.id), localPageId);
-      items.set(job.id, { notionPageId: job.id, status: 'success', localPageId });
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'success',
+        localPageId,
+        ...(job.reuseComplete ? { updated: true } : {}),
+      });
     } catch (err) {
       if (isUniqueViolation(err)) {
         const existing = await findImportedPage(input.userId, job.id);
@@ -212,7 +221,7 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
           continue;
         }
       }
-      if (localPageId) {
+      if (localPageId && !job.reuseComplete) {
         await abandonPage(localPageId, destination.parentId);
         importedPages.delete(normalizeNotionId(job.id));
       }
@@ -231,6 +240,7 @@ interface ImportJob {
   title: string;
   parentNotionId: string | null;
   reuseId?: number;
+  reuseComplete?: boolean;
   blocks?: NotionBlock[];
 }
 
