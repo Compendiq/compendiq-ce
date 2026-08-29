@@ -49,6 +49,7 @@
  * the way to raising a flag — a missed flag costs one stale row until the next
  * write or re-scan, an exception costs the sync.
  */
+import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -66,14 +67,22 @@ import { logger } from '../utils/logger.js';
  * (ADR-025), so a counter that over-reports it hides exactly the backlog an
  * operator would go looking for. `false` therefore means the write threw;
  * `true` means it went through, whether or not the page was in scope.
+ *
+ * Attachment mutations may pass their advisory-lock-owning client so this
+ * file-adjacent UPDATE stays on the protected database session.
  */
-export async function markPageImagesDirty(pageId: number): Promise<boolean> {
+export async function markPageImagesDirty(
+  pageId: number,
+  client?: Pick<PoolClient, 'query'>,
+): Promise<boolean> {
+  const statement = `UPDATE pages SET image_embedding_dirty = TRUE
+        WHERE id = $1 AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'`;
   try {
-    await query(
-      `UPDATE pages SET image_embedding_dirty = TRUE
-        WHERE id = $1 AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'`,
-      [pageId],
-    );
+    if (client) {
+      await client.query(statement, [pageId]);
+    } else {
+      await query(statement, [pageId]);
+    }
     return true;
   } catch (err) {
     logger.warn({ err, pageId }, 'Could not mark a page image_embedding_dirty');

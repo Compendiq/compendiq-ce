@@ -64,6 +64,12 @@ vi.mock('../../core/services/standalone-attachment-cleanup.js', () => ({
   cleanupStandalonePageAttachmentDirs: (...args: unknown[]) => mockCleanupStandaloneDirs(...args),
 }));
 
+const mutationLockState = { active: false };
+const mockWithAttachmentMutationLock = vi.fn();
+vi.mock('../../core/services/attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: (...args: unknown[]) => mockWithAttachmentMutationLock(...args),
+}));
+
 const mockDiscardPageIcon = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../core/services/page-icon-store.js', () => ({
   discardPageIconForDeletedPage: (...args: unknown[]) => mockDiscardPageIcon(...args),
@@ -132,6 +138,16 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetTxQuery();
+    mockWithAttachmentMutationLock.mockImplementation(
+      async (operation: (client: { query: typeof mockTxQueryFn }) => Promise<unknown>) => {
+        mutationLockState.active = true;
+        try {
+          return await operation({ query: mockTxQueryFn });
+        } finally {
+          mutationLockState.active = false;
+        }
+      },
+    );
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
   });
 
@@ -158,7 +174,21 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockCleanupStandaloneDirs).toHaveBeenCalledTimes(1);
-    expect(mockCleanupStandaloneDirs).toHaveBeenCalledWith(42);
+    expect(mockCleanupStandaloneDirs).toHaveBeenCalledWith(42, expect.anything());
+  });
+
+  it('keeps the shared attachment barrier across the hard-delete SQL and filesystem cleanup', async () => {
+    stubStandalonePageLoad();
+    mockCleanupStandaloneDirs.mockImplementationOnce(async (_pageId: number, client: unknown) => {
+      expect(mutationLockState.active).toBe(true);
+      expect(client).toEqual(expect.objectContaining({ query: mockTxQueryFn }));
+    });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/pages/42?permanent=true' });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWithAttachmentMutationLock).toHaveBeenCalledTimes(1);
+    expect(mockTxQueryFn.mock.calls.some(([sql]) => /DELETE FROM pages\b/i.test(String(sql)))).toBe(true);
   });
 
   it('soft delete leaves the directories alone — the page is restorable', async () => {

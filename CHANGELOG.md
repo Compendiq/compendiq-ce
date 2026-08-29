@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Encrypted data backup and restore (#1420). Admins can stream constant-memory AES-256-GCM archives of PostgreSQL (`pg_dump -Fc`) plus attachments from Settings → Backup & Recovery. Browser exports now use an authenticated 30-second, single-use Redis ticket followed by native same-origin navigation, so passphrases stay out of URLs and complete archives are never buffered in a browser `Blob`. Scheduled uploads support publicly reachable S3-compatible endpoints only, validate both configured and final request URLs against private/internal networks, store credentials encrypted at rest, update settings atomically, and prune by count/age. The standalone restore CLI authenticates and strictly validates a same-filesystem disk stage before mutation, restores PostgreSQL with `--single-transaction`, rolls attachments back when `pg_restore` fails, then runs shipped migrations. The backend image includes `postgresql17-client`.
+
 ### Fixed
 
 - SearXNG no longer trusts the whole Docker subnet as a reverse proxy, so direct mcp-docs requests do not trigger missing forwarded-IP errors. Operators can explicitly configure validated proxy IPs/CIDRs, and the derived image loads a pinned local tracker-rule baseline when every upstream ClearURLs endpoint is unavailable (#1440).

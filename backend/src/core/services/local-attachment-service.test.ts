@@ -1,24 +1,38 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
+  canStoreLocalFilename,
   putLocalAttachment,
   getLocalAttachment,
   listLocalAttachments,
+  removeLocalAttachmentDirectory,
+  removeLocalAttachmentFileForSweep,
   removeLocalAttachmentFilesForRelocate,
   writeLocalAttachmentFileForRelocate,
   MAX_LOCAL_ATTACHMENT_BYTES,
 } from './local-attachment-service.js';
+import { exportPostgresSnapshot } from './backup-service.js';
 
 const dbAvailable = await isDbAvailable();
+const EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;
 
 // Override ATTACHMENTS_DIR to a temp dir so repeated test runs don't
 // inherit cruft from previous invocations.
 let tempBase = '';
 const originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+
+describe('local attachment filename portability', () => {
+  it('rejects backslashes instead of storing a database filename with another restore path', () => {
+    expect(canStoreLocalFilename(String.raw`diagram\final.png`)).toBe(false);
+  });
+});
 
 describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
   beforeAll(async () => {
@@ -54,6 +68,27 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       [opts?.visibility ?? 'private', userId],
     );
     return { userId, pageId: p.rows[0]!.id };
+  }
+
+  async function waitForSharedLockWaiter(blockerPid: number): Promise<boolean> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const result = await query<{ waiting: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+             FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND mode = 'ShareLock'
+              AND NOT granted
+              AND classid = 0
+              AND objid = $1
+              AND $2 = ANY(pg_blocking_pids(pid))
+         ) AS waiting`,
+        [EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
+      );
+      if (result.rows[0]?.waiting) return true;
+      await nextEventLoopTurn();
+    }
+    return false;
   }
 
   it('migration creates local_attachments with the expected shape', async () => {
@@ -286,6 +321,205 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       await removeLocalAttachmentFilesForRelocate(pageId, ['.hidden', '']);
 
       expect(await staged(pageId)).toEqual(['real.png']);
+    });
+  });
+  describe('attachment snapshot barrier', () => {
+    it('holds a same-name overwrite until archived bytes have been read, then commits matching metadata', async () => {
+      const { userId, pageId } = await seedUserAndPage();
+      const filename = 'snapshot-race.txt';
+      const oldData = Buffer.from('archived-before-overwrite');
+      const newData = Buffer.from('committed-after-backup');
+      await putLocalAttachment({
+        pageId,
+        filename,
+        contentType: 'text/plain',
+        data: oldData,
+        userId,
+      });
+
+      const snapshot = await exportPostgresSnapshot();
+      const blockerPid = await snapshot.client
+        .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+        .then((result) => result.rows[0]!.pid);
+      let overwriteSettled = false;
+      const overwrite = putLocalAttachment({
+        pageId,
+        filename,
+        contentType: 'text/plain',
+        data: newData,
+        userId,
+      }).then((record) => {
+        overwriteSettled = true;
+        return record;
+      });
+
+      const sharedLockWaited = await waitForSharedLockWaiter(blockerPid);
+      const settledBeforeArchiveRead = overwriteSettled;
+      const archivedBytes = await fs.readFile(path.join(tempBase, 'local', String(pageId), filename));
+      await snapshot.close();
+      const record = await overwrite;
+      const storedBytes = await fs.readFile(path.join(tempBase, 'local', String(pageId), filename));
+      const row = await query<{ sha256: string }>(
+        'SELECT sha256 FROM local_attachments WHERE page_id = $1 AND filename = $2',
+        [pageId, filename],
+      );
+
+      expect(settledBeforeArchiveRead).toBe(false);
+      expect(archivedBytes).toEqual(oldData);
+      expect(storedBytes).toEqual(newData);
+      expect(record.sha256).toBe(createHash('sha256').update(newData).digest('hex'));
+      expect(row.rows[0]?.sha256).toBe(record.sha256);
+      expect(sharedLockWaited).toBe(true);
+    });
+
+    it('runs file-adjacent SQL on the shared-lock-owning client', async () => {
+      expect(ATTACHMENT_SNAPSHOT_LOCK_ID).toBe(EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID);
+      const { userId, pageId } = await seedUserAndPage();
+      await query(`
+        CREATE OR REPLACE FUNCTION test_require_attachment_snapshot_shared_lock()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+              FROM pg_locks
+             WHERE locktype = 'advisory'
+               AND pid = pg_backend_pid()
+               AND mode = 'ShareLock'
+               AND granted
+               AND classid = 0
+               AND objid = ${EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID}
+          ) THEN
+            RAISE EXCEPTION 'local_attachments SQL did not use the shared-lock client';
+          END IF;
+          RETURN NEW;
+        END
+        $$
+      `);
+      await query(`
+        CREATE TRIGGER test_attachment_snapshot_shared_lock
+        BEFORE INSERT OR UPDATE ON local_attachments
+        FOR EACH ROW EXECUTE FUNCTION test_require_attachment_snapshot_shared_lock()
+      `);
+      await query(`
+        CREATE TRIGGER test_page_snapshot_shared_lock
+        BEFORE UPDATE OF image_embedding_dirty ON pages
+        FOR EACH ROW EXECUTE FUNCTION test_require_attachment_snapshot_shared_lock()
+      `);
+
+      try {
+        await expect(
+          putLocalAttachment({
+            pageId,
+            filename: 'same-client.txt',
+            contentType: 'text/plain',
+            data: Buffer.from('same client'),
+            userId,
+          }),
+        ).resolves.toMatchObject({ pageId, filename: 'same-client.txt' });
+        const page = await query<{ image_embedding_dirty: boolean }>(
+          'SELECT image_embedding_dirty FROM pages WHERE id = $1',
+          [pageId],
+        );
+        expect(page.rows[0]?.image_embedding_dirty).toBe(true);
+      } finally {
+        await query('DROP TRIGGER IF EXISTS test_page_snapshot_shared_lock ON pages');
+        await query('DROP TRIGGER IF EXISTS test_attachment_snapshot_shared_lock ON local_attachments');
+        await query('DROP FUNCTION IF EXISTS test_require_attachment_snapshot_shared_lock()');
+      }
+    });
+
+    it.each([
+      {
+        name: 'relocate write',
+        arrange: async (pageId: number) => {
+          await fs.mkdir(path.join(tempBase, 'local', String(pageId)), { recursive: true });
+        },
+        mutate: (pageId: number) =>
+          writeLocalAttachmentFileForRelocate(pageId, 'relocate-write.txt', Buffer.from('new')),
+        changed: async (pageId: number) =>
+          fs.readFile(path.join(tempBase, 'local', String(pageId), 'relocate-write.txt'), 'utf8')
+            .then(() => true)
+            .catch(() => false),
+      },
+      {
+        name: 'relocate remove',
+        arrange: async (pageId: number) => {
+          const dir = path.join(tempBase, 'local', String(pageId));
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(path.join(dir, 'relocate-remove.txt'), 'old');
+        },
+        mutate: (pageId: number) =>
+          removeLocalAttachmentFilesForRelocate(pageId, ['relocate-remove.txt']),
+        changed: async (pageId: number) =>
+          fs.readFile(path.join(tempBase, 'local', String(pageId), 'relocate-remove.txt'))
+            .then(() => false)
+            .catch(() => true),
+      },
+      {
+        name: 'sweep removal',
+        arrange: async (pageId: number) => {
+          const dir = path.join(tempBase, 'local', String(pageId));
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(path.join(dir, 'sweep-remove.txt'), 'old');
+        },
+        mutate: (pageId: number) =>
+          removeLocalAttachmentFileForSweep(pageId, 'sweep-remove.txt'),
+        changed: async (pageId: number) =>
+          fs.readFile(path.join(tempBase, 'local', String(pageId), 'sweep-remove.txt'))
+            .then(() => false)
+            .catch(() => true),
+      },
+      {
+        name: 'directory removal',
+        arrange: async (pageId: number) => {
+          const dir = path.join(tempBase, 'local', String(pageId));
+          await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(path.join(dir, 'directory-remove.txt'), 'old');
+        },
+        mutate: (pageId: number) => removeLocalAttachmentDirectory(pageId),
+        changed: async (pageId: number) =>
+          fs.stat(path.join(tempBase, 'local', String(pageId)))
+            .then(() => false)
+            .catch(() => true),
+      },
+    ])('holds $name behind the backup exclusive lock', async ({ arrange, mutate, changed }) => {
+      const { pageId } = await seedUserAndPage();
+      await arrange(pageId);
+      const snapshot = await exportPostgresSnapshot();
+      const blockerPid = await snapshot.client
+        .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+        .then((result) => result.rows[0]!.pid);
+      let settled = false;
+      const mutation = Promise.resolve(mutate(pageId)).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      const sharedLockWaited = await waitForSharedLockWaiter(blockerPid);
+      const settledWhileSnapshotOpen = settled;
+      const changedWhileSnapshotOpen = await changed(pageId);
+      await snapshot.close();
+      await mutation;
+
+      expect(settledWhileSnapshotOpen).toBe(false);
+      expect(changedWhileSnapshotOpen).toBe(false);
+      expect(await changed(pageId)).toBe(true);
+      expect(sharedLockWaited).toBe(true);
+    });
+    it('keeps relocate cleanup best-effort when acquiring the snapshot lock fails', async () => {
+      const connect = vi
+        .spyOn(getPool(), 'connect')
+        .mockRejectedValueOnce(new Error('snapshot lock connection failed'));
+
+      try {
+        await expect(
+          removeLocalAttachmentFilesForRelocate(42, ['staged.png']),
+        ).resolves.toBeUndefined();
+      } finally {
+        connect.mockRestore();
+      }
     });
   });
 });

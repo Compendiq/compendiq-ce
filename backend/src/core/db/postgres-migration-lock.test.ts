@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { isDbAvailable } from '../../test-db-helper.js';
-import { runMigrations, closePool, getPool, query } from './postgres.js';
+import { maintenancePostgresUrl, workerIdFromEnv } from '../../test-worker-isolation.js';
+import { runMigrations, closePool, query } from './postgres.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,7 +13,8 @@ const dbAvailable = await isDbAvailable();
 
 // Dedicated throwaway database so this test never fights the shared schema
 // used by the rest of the suite (which runs migrations once per file).
-const LOCK_TEST_DB = 'kb_creator_migration_lock_test';
+// Worker-scoped: fileParallelism would otherwise collide on one global name.
+const LOCK_TEST_DB = `kb_creator_migration_lock_w${workerIdFromEnv()}`;
 
 // POSTGRES_URL is set by test-setup.ts before this module loads.
 const baseUrl = process.env.POSTGRES_URL as string;
@@ -23,9 +25,12 @@ function urlForDb(dbName: string): string {
   return url.toString();
 }
 
-/** Run admin DDL (CREATE/DROP DATABASE) on the suite's default database. */
+/** CREATE/DROP DATABASE against the cluster maintenance DB, not a worker DB. */
 async function withAdminClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: baseUrl });
+  const client = new pg.Client({
+    connectionString: maintenancePostgresUrl(baseUrl),
+    connectionTimeoutMillis: 5_000,
+  });
   await client.connect();
   try {
     return await fn(client);
@@ -35,8 +40,6 @@ async function withAdminClient<T>(fn: (client: pg.Client) => Promise<T>): Promis
 }
 
 describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)', () => {
-  let teardownBlocker: pg.PoolClient | undefined;
-
   beforeAll(async () => {
     await withAdminClient(async (client) => {
       await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
@@ -50,17 +53,13 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
 
   afterAll(async () => {
     process.env.POSTGRES_URL = baseUrl;
-    try {
-      // Force the throwaway database down before draining the pool. pool.end()
-      // waits for checked-out clients forever; under a loaded shard that made
-      // this hook time out before it could reach the force-drop operation.
-      await withAdminClient(async (client) => {
-        await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
-      });
-    } finally {
-      teardownBlocker?.release(true);
-      await closePool();
-    }
+    // Drain this file's pool before DROP. DROP DATABASE checkpoints the
+    // cluster (measured 15s+ under CI load). Doing it while a pool client
+    // is still checked out waits on that backend as well (#1497).
+    await closePool();
+    await withAdminClient(async (client) => {
+      await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
+    });
   }, 60_000);
 
   // Must mirror MIGRATIONS_ADVISORY_LOCK_ID in postgres.ts — used to simulate
@@ -161,10 +160,4 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
     );
   });
 
-  it('teardown force-closes checked-out connections to the throwaway database', async () => {
-    teardownBlocker = await getPool().connect();
-    teardownBlocker.on('error', () => {
-      // DROP DATABASE ... WITH (FORCE) intentionally terminates this client.
-    });
-  });
 });

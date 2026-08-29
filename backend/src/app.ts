@@ -22,6 +22,8 @@ import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
 import { adminIpAllowlistRoutes } from './routes/foundation/admin-ip-allowlist.js';
+import { adminBackupRoutes } from './routes/foundation/admin-backup.js';
+import { backupDownloadRoutes } from './routes/foundation/backup-download.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 // Confluence routes
@@ -445,6 +447,8 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
   await app.register(adminIpAllowlistRoutes, { prefix: '/api' });
+  await app.register(adminBackupRoutes, { prefix: '/api' });
+  await app.register(backupDownloadRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
   await app.register(adminUsersRoutes, { prefix: '/api' });
 

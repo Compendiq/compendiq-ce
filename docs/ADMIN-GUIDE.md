@@ -1525,9 +1525,103 @@ out on purpose); the only time rule is the fixed 24-hour mtime grace. API:
 
 ## Backup Strategy
 
-### PostgreSQL
+### In-app encrypted backup (#1420)
 
-Use `pg_dump` for database backups:
+Settings → **Backup & Recovery** (admin) streams a gzip+AES-256-GCM archive of
+`pg_dump -Fc` plus `ATTACHMENTS_DIR`. Before it enumerates attachment files,
+the exporter opens a read-only repeatable-read PostgreSQL transaction, exports
+its snapshot, and passes that snapshot to `pg_dump`. It keeps the exporting
+transaction open until `pg_dump` has exited, then closes and returns the pooled
+connection. Backup generation remains constant-memory: the backend does not
+buffer a complete dump, attachment, or archive, and it does not report success
+until `pg_dump` closes with exit code `0`.
+
+- **Download:** the authenticated admin request creates a 256-bit Redis ticket
+  with a 30-second TTL, then the browser performs native navigation to the
+  returned same-origin URL. That redemption route is intentionally public
+  because navigation cannot attach the admin access-token header; the random
+  ticket is the bearer capability, is consumed atomically on the first GET,
+  and returns `404` after use or expiry. The ticket contains no backup bytes,
+  never places a passphrase in the URL, and the browser never buffers the
+  archive in a `Blob`. Passphrases must be at least 12 characters and use
+  PBKDF2-SHA256 (600,000 iterations). If `BACKUP_ENCRYPTION_KEY` is set
+  (at least 32 bytes), downloads can omit the passphrase.
+- **S3:** only publicly reachable HTTP(S) S3-compatible endpoints are
+  supported. Loopback, private, link-local/cloud-metadata, internal-hostname,
+  and DNS-to-private destinations are rejected, even if another feature
+  allowlisted the origin; the final path-style or virtual-host request URL is
+  checked again immediately before network I/O. Path-style addressing remains
+  available for public S3-compatible services. Access and secret keys are
+  encrypted at rest with `encryptPat`, and one failed settings write rolls the
+  complete update back. **Test connection** uses the saved configuration, so
+  save S3 edits first.
+- **Schedule:** configure interval hours, keep-last-N, and delete-after-days.
+  One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
+  History refreshes while a run is active.
+
+Restore is an offline, standalone operation: stop Fastify traffic before a
+non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
+checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
+must reach the target database. `ATTACHMENTS_DIR` must identify the real live
+attachment tree; its parent must be writable and on the filesystem that will
+hold the restored tree.
+
+The CLI creates a mode-`0700` `.compendiq-restore-*` directory next to
+`ATTACHMENTS_DIR`. Reserve free space there for the complete decrypted
+`database.dump` and attachment tree **in addition to the existing live data**
+(and account separately for the encrypted input file). Keeping staging beside
+the live tree is required for the rename-based attachment swap.
+
+Prefer `BACKUP_PASSPHRASE` over the compatibility `--passphrase` flag. The
+following Bash example reads without echoing or recording the secret literal
+in shell history, exports it only for the restore process, validates the full
+archive, and then clears it:
+
+```bash
+read -r -s -p 'Backup passphrase: ' BACKUP_PASSPHRASE
+printf '\n'
+export BACKUP_PASSPHRASE
+npx tsx backend/scripts/restore-backup.ts \
+  --file compendiq-backup-YYYYMMDD.enc \
+  --dry-run
+unset BACKUP_PASSPHRASE
+```
+
+Remove `--dry-run` only after validation succeeds and an application outage is
+in place. Without a passphrase, the CLI uses `BACKUP_ENCRYPTION_KEY`. The
+legacy `--passphrase` form remains accepted but exposes the value in process
+listings and often shell history; do not use it for routine operations.
+
+Before any live mutation, restore fully consumes AES-GCM authentication and
+validates safe/unique archive members, a strict closed manifest (bounded to
+1 MiB), the exact SHA-256 checksum set, database size, the
+`PAT_ENCRYPTION_KEY` fingerprint, and that the archive migration is not newer
+than this binary. `--force` overrides **only** the PAT-key fingerprint
+mismatch; it never bypasses authentication, schema, path, member, checksum,
+size, or forward-migration checks. Validation failure and dry-run leave
+PostgreSQL and live attachments unchanged and remove staging.
+
+Commit renames the previous attachment tree aside, installs the staged tree,
+and runs `pg_restore --clean --if-exists --no-owner --no-acl
+--single-transaction`, followed by the shipped database migrations. Before
+reporting success, it changes any `backup_runs` row restored with status
+`running` to `failed`, sets its finish time, and records `Backup interrupted by
+restore`; the live source row is never changed before restore. If `pg_restore`
+fails, the replacement attachment tree is removed and the previous tree is
+restored; the secure staging directory remains beside `ATTACHMENTS_DIR` for
+diagnosis and must be removed after recovery.
+
+**Migration-failure boundary:** `pg_restore` has already committed its single
+transaction and the restored attachments remain live before migrations run.
+Arbitrary migrations cannot be rolled back safely, so a migration failure
+does not attempt a database or attachment rollback. The error reports both
+the retained old-attachment rollback directory and restore staging directory.
+Keep both while diagnosing/recovering the database; remove them manually only
+after the restored state is accepted or another restore has completed.
+
+### Manual PostgreSQL dump
+
+Use `pg_dump` if you are not using the in-app exporter:
 
 ```bash
 # Full backup
@@ -1559,7 +1653,7 @@ docker compose -f docker/docker-compose.yml exec redis redis-cli -a <redis-passw
 
 ### Attachments
 
-If you have synced Confluence attachments, back up the attachments volume:
+In-app backups already include `ATTACHMENTS_DIR`. To copy the volume alone:
 
 ```bash
 docker run --rm -v compendiq_attachments:/data -v $(pwd):/backup alpine tar czf /backup/attachments_backup.tar.gz -C /data .
@@ -1569,8 +1663,9 @@ docker run --rm -v compendiq_attachments:/data -v $(pwd):/backup alpine tar czf 
 
 | Component | Frequency | Retention |
 |-----------|-----------|-----------|
-| PostgreSQL | Daily | 30 days |
-| Attachments | Weekly | 4 weeks |
+| Encrypted in-app backup | Daily (Settings → Backup & Recovery) | Keep last 7 / 30 days |
+| PostgreSQL (manual `pg_dump`) | Daily if not using in-app backup | 30 days |
+| Attachments volume | Covered by in-app backup | 4 weeks if copied separately |
 | `.env` file | After every change | Keep current + previous |
 
 ## Monitoring

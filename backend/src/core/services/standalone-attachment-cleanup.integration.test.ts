@@ -19,10 +19,12 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
-import { query } from '../db/postgres.js';
+import { getPool, query } from '../db/postgres.js';
 import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
 import { purgeExpiredStandalonePages } from './data-retention-service.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
   ATTACHMENT_ROOT_RESERVED_DIRNAMES,
   attachmentsRootNow,
@@ -94,6 +96,27 @@ async function seedConfluencePage(userId: string, confluenceId: string): Promise
     [userId, confluenceId],
   );
   return p.rows[0]!.id;
+}
+
+async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND mode = 'ShareLock'
+            AND NOT granted
+            AND classid = 0
+            AND objid = $1
+            AND $2 = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
+    );
+    if (result.rows[0]?.waiting) return true;
+    await nextEventLoopTurn();
+  }
+  return false;
 }
 
 describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
@@ -313,6 +336,39 @@ describe.skipIf(!dbAvailable)('#1349 standalone attachment cleanup', () => {
       );
       // The page still inside its trash window keeps its files.
       expect(await exists(path.join(tempBase, String(fresh), 'keep.png'))).toBe(true);
+    });
+
+    it('holds the snapshot barrier from the purge DELETE through directory cleanup', async () => {
+      const userId = await seedUser();
+      const expired = await seedStandalonePage(userId, { deletedDaysAgo: 31 });
+      const localFile = await writeFileAt('local', String(expired), 'diagram.png');
+
+      const holder = await getPool().connect();
+      await holder.query('SELECT pg_advisory_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      const blockerPid = await holder
+        .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+        .then((result) => result.rows[0]!.pid);
+      let unlocked = false;
+      try {
+        const pending = purgeExpiredStandalonePages();
+        expect(await waitForAttachmentMutationWaiter(blockerPid)).toBe(true);
+        expect(
+          (await query('SELECT 1 FROM pages WHERE id = $1', [expired])).rowCount,
+        ).toBe(1);
+        await expect(fs.stat(localFile)).resolves.toBeTruthy();
+
+        await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        unlocked = true;
+        expect(await pending).toBe(1);
+
+        expect((await query('SELECT 1 FROM pages WHERE id = $1', [expired])).rowCount).toBe(0);
+        await expect(fs.stat(localFile)).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        if (!unlocked) {
+          await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        }
+        holder.release();
+      }
     });
 
     it('leaves a colliding Confluence cache directory in place', async () => {

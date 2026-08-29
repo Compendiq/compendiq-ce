@@ -32,6 +32,12 @@ vi.mock('./standalone-attachment-cleanup.js', () => ({
   cleanupStandalonePageAttachmentDirs: (...args: unknown[]) => mockCleanupDirs(...args),
 }));
 
+const mutationLockState = { active: false };
+const mockWithAttachmentMutationLock = vi.fn();
+vi.mock('./attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: (...args: unknown[]) => mockWithAttachmentMutationLock(...args),
+}));
+
 import {
   runRetentionCleanup,
   startRetentionWorker,
@@ -52,6 +58,16 @@ import { logAuditEvent as mockLogAuditEvent } from './audit-service.js';
 describe('data-retention-service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWithAttachmentMutationLock.mockImplementation(
+      async (operation: (client: { query: typeof mockPool.query }) => Promise<unknown>) => {
+        mutationLockState.active = true;
+        try {
+          return await operation({ query: mockPool.query });
+        } finally {
+          mutationLockState.active = false;
+        }
+      },
+    );
   });
 
   afterEach(() => {
@@ -287,8 +303,28 @@ describe('data-retention-service', () => {
       expect(results.page_versions).toBe(0);
       // #1349: each purged page's attachment directories were cleaned.
       expect(mockCleanupDirs).toHaveBeenCalledTimes(10_007);
-      expect(mockCleanupDirs).toHaveBeenCalledWith(1);
-      expect(mockCleanupDirs).toHaveBeenCalledWith(20_006);
+      expect(mockCleanupDirs).toHaveBeenCalledWith(1, expect.anything());
+      expect(mockCleanupDirs).toHaveBeenCalledWith(20_006, expect.anything());
+    });
+
+    it('holds the attachment barrier across each purge batch and its directory cleanup', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42 }] })
+        .mockResolvedValueOnce({ rowCount: 0 });
+      mockCleanupDirs.mockImplementationOnce(async (_pageId: number, client: unknown) => {
+        expect(mutationLockState.active).toBe(true);
+        expect(client).toEqual(expect.objectContaining({ query: mockPool.query }));
+      });
+
+      const results = await runRetentionCleanup();
+
+      expect(results.pages_standalone_trash).toBe(1);
+      expect(mockWithAttachmentMutationLock).toHaveBeenCalledTimes(1);
+      expect(mockCleanupDirs).toHaveBeenCalledWith(42, expect.anything());
     });
 
     it('swallows errors inside the standalone trash purge and reports 0', async () => {

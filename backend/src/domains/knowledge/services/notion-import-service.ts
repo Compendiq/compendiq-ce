@@ -15,6 +15,7 @@ import { htmlToText } from '../../../core/services/content-converter.js';
 import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
 import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
+import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError } from './notion-client.js';
 import {
   convertNotionBlocks,
@@ -45,6 +46,10 @@ export interface RunNotionImportInput {
   databaseModes?: Record<string, 'skip'>;
 }
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
+  return withNotionImportLocks(input.pageIds, async () => runLockedNotionImport(input));
+}
+
+async function runLockedNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
@@ -168,68 +173,205 @@ export async function runNotionImport(input: RunNotionImportInput): Promise<Noti
     new Set(toPersist.map((j) => normalizeNotionId(j.id))),
   );
 
+  // Allocate every local ID before converting any final body. Forward mention
+  // rewrites are deterministic, and the enclosing batch lock keeps every
+  // selected page exclusively owned until finalization or cleanup.
   for (const job of ordered) {
-    let localPageId: number | undefined = job.reuseId;
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete && !input.overwriteExisting) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
+    if (existing?.complete && input.overwriteExisting) {
+      job.localPageId = existing.id;
+      job.createdPlaceholder = false;
+      job.reuseComplete = true;
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      continue;
+    }
+
     try {
+      const localPageId = existing?.id ?? await nextPageId();
       const parentLocal = await resolveParentLocalId(
         job.parentNotionId,
         importedPages,
         destination.parentId,
         input.userId,
       );
-      localPageId = job.reuseId ?? (await nextPageId());
-
-      const converted = convertNotionBlocks(job.blocks ?? [], {
-        localPageId,
-        importedPages,
-      });
-      const { wikiProps, bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
-
+      const wikiProps = extractWikiPageProperties(job.page);
       await persistStandalonePage({
         id: localPageId,
-        reuse: Boolean(job.reuseId),
+        reuse: Boolean(existing),
         userId: input.userId,
         title: job.title,
         spaceKey: destination.spaceKey,
         parentId: parentLocal,
         visibility: destination.visibility,
         notionPageId: job.id,
-        bodyHtml: finalHtml,
-        bodyText: finalBodyText,
+        bodyHtml: '',
+        bodyText: '',
         labels: wikiProps.labels,
         author: wikiProps.author,
         verifiedAt: wikiProps.verifiedAt,
       });
-      await storeAttachments(input.client, input.userId, localPageId, converted.attachments);
+      job.localPageId = localPageId;
+      job.createdPlaceholder = !existing;
       importedPages.set(normalizeNotionId(job.id), localPageId);
-      items.set(job.id, {
-        notionPageId: job.id,
-        status: 'success',
-        localPageId,
-        ...(job.reuseComplete ? { updated: true } : {}),
-      });
     } catch (err) {
       if (isUniqueViolation(err)) {
-        const existing = await findImportedPage(input.userId, job.id);
-        if (existing?.complete) {
-          importedPages.set(normalizeNotionId(job.id), existing.id);
-          items.set(job.id, {
-            notionPageId: job.id,
-            status: 'already_imported',
-            localPageId: existing.id,
-          });
+        const concurrent = await findImportedPage(input.userId, job.id);
+        if (concurrent) {
+          job.localPageId = concurrent.id;
+          importedPages.set(normalizeNotionId(job.id), concurrent.id);
+          if (concurrent.complete && !input.overwriteExisting) {
+            items.set(job.id, {
+              notionPageId: job.id,
+              status: 'already_imported',
+              localPageId: concurrent.id,
+            });
+          } else if (concurrent.complete && input.overwriteExisting) {
+            job.createdPlaceholder = false;
+            job.reuseComplete = true;
+          }
           continue;
         }
-      }
-      if (localPageId && !job.reuseComplete) {
-        await abandonPage(localPageId, destination.parentId);
-        importedPages.delete(normalizeNotionId(job.id));
       }
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
     }
   }
 
-  await rewriteImportedMentions(ordered, items, importedPages);
+  // Prepare attachments while every page remains observably incomplete. Failed
+  // pages leave the mention map before any final body is written.
+  for (const job of ordered) {
+    if (!job.localPageId || items.has(job.id)) continue;
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete && !job.reuseComplete) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
+
+    if (existing && existing.id !== job.localPageId) {
+      job.localPageId = existing.id;
+      job.createdPlaceholder = false;
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+    }
+    try {
+      const converted = convertNotionBlocks(job.blocks ?? [], {
+        localPageId: job.localPageId,
+        importedPages,
+      });
+      await storeAttachments(input.client, input.userId, job.localPageId, converted.attachments);
+      job.prepared = true;
+    } catch (err) {
+      if (job.createdPlaceholder) {
+        const placeholder = await findImportedPage(input.userId, job.id);
+        if (placeholder?.id === job.localPageId && !placeholder.complete) {
+          await abandonPage(job.localPageId, destination.parentId);
+        }
+      }
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
+  }
+
+  // The final body write is the completion boundary and remains inside the
+  // batch critical section observed by every completed-page fast path.
+  for (const job of ordered) {
+    if (!job.prepared || !job.localPageId || items.has(job.id)) continue;
+    const existing = await findImportedPage(input.userId, job.id);
+    if (existing?.complete && !job.reuseComplete) {
+      importedPages.set(normalizeNotionId(job.id), existing.id);
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'already_imported',
+        localPageId: existing.id,
+      });
+      alreadyImported.push({
+        notionPageId: job.id,
+        localPageId: existing.id,
+        parentNotionId: job.parentNotionId,
+        page: job.page,
+      });
+      continue;
+    }
+
+    try {
+      if (!existing || existing.id !== job.localPageId) {
+        throw new Error('Notion import placeholder disappeared before finalization');
+      }
+      const converted = convertNotionBlocks(job.blocks ?? [], {
+        localPageId: job.localPageId,
+        importedPages,
+      });
+      const { wikiProps, bodyHtml, bodyText } = wikiConvertedBody(job.page, converted);
+      if (job.reuseComplete) {
+        const parentLocal = await resolveParentLocalId(
+          job.parentNotionId,
+          importedPages,
+          destination.parentId,
+          input.userId,
+        );
+        await persistStandalonePage({
+          id: job.localPageId,
+          reuse: true,
+          userId: input.userId,
+          title: job.title,
+          spaceKey: destination.spaceKey,
+          parentId: parentLocal,
+          visibility: destination.visibility,
+          notionPageId: job.id,
+          bodyHtml,
+          bodyText,
+          labels: wikiProps.labels,
+          author: wikiProps.author,
+          verifiedAt: wikiProps.verifiedAt,
+        });
+      } else {
+        await query(
+          'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
+          [job.localPageId, bodyHtml, bodyText],
+        );
+      }
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'success',
+        localPageId: job.localPageId,
+        ...(job.reuseComplete ? { updated: true } : {}),
+      });
+    } catch (err) {
+      if (job.createdPlaceholder) {
+        const placeholder = await findImportedPage(input.userId, job.id);
+        if (placeholder?.id === job.localPageId && !placeholder.complete) {
+          await abandonPage(job.localPageId, destination.parentId);
+        }
+      }
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    }
+  }
+
   await rehomeAlreadyImported(alreadyImported, importedPages, input.userId);
   return input.pageIds.map((id) => items.get(id) ?? { notionPageId: id, status: 'fail', reason: 'Unknown item' });
 }
@@ -242,6 +384,9 @@ interface ImportJob {
   reuseId?: number;
   reuseComplete?: boolean;
   blocks?: NotionBlock[];
+  localPageId?: number;
+  createdPlaceholder?: boolean;
+  prepared?: boolean;
 }
 
 interface AlreadyImported {
@@ -404,26 +549,7 @@ async function abandonPage(pageId: number, destinationParentId: string | null): 
   await cleanupStandalonePageAttachmentDirs(pageId);
 }
 
-async function rewriteImportedMentions(
-  jobs: ImportJob[],
-  items: Map<string, NotionImportItem>,
-  importedPages: Map<string, number>,
-): Promise<void> {
-  for (const job of jobs) {
-    const current = items.get(job.id);
-    if (current?.status !== 'success' || !current.localPageId || !job.blocks) continue;
-    const converted = convertNotionBlocks(job.blocks, {
-      localPageId: current.localPageId,
-      importedPages,
-    });
-    const { bodyHtml: finalHtml, bodyText: finalBodyText } = wikiConvertedBody(job.page, converted);
 
-    await query(
-      `UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1`,
-      [current.localPageId, finalHtml, finalBodyText],
-    );
-  }
-}
 
 type Classified =
   | { kind: 'page'; page: Record<string, unknown> }

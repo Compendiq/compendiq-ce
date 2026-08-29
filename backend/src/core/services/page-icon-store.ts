@@ -12,9 +12,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { sniffImageFormat } from './image-validator.js';
 import { logger } from '../utils/logger.js';
 import type { ImageFormat } from '@compendiq/contracts';
+import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
 
 /**
  * The reserved entry name this store owns under `ATTACHMENTS_DIR` (#1349).
@@ -61,23 +63,31 @@ const EXT: Record<ImageFormat, string> = {
   gif: 'gif',
 };
 
+/**
+ * Mutators acquire the attachment snapshot barrier when called directly.
+ * A route or service that also changes the owning `pages` row must hold the
+ * barrier at that higher boundary and pass its lock-owning client here.
+ */
 export async function writePageIconImage(
   pageId: number,
   bytes: Buffer,
+  client?: PoolClient,
 ): Promise<{ sha: string; format: ImageFormat }> {
-  if (bytes.length > MAX_ICON_BYTES) {
-    throw new PageIconStoreError('TOO_LARGE', 'Image is larger than 512 KB');
-  }
-  const format = sniffImageFormat(bytes);
-  if (!format || format === 'gif') {
-    throw new PageIconStoreError('UNSUPPORTED', 'Use a PNG, JPEG, or WebP image');
-  }
-  const sha = crypto.createHash('sha256').update(bytes).digest('hex');
-  const dir = pageIconDir(pageId);
-  await fs.rm(dir, { recursive: true, force: true });
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${sha}.${EXT[format]}`), bytes);
-  return { sha, format };
+  return withLocalAttachmentMutationLock(async () => {
+    if (bytes.length > MAX_ICON_BYTES) {
+      throw new PageIconStoreError('TOO_LARGE', 'Image is larger than 512 KB');
+    }
+    const format = sniffImageFormat(bytes);
+    if (!format || format === 'gif') {
+      throw new PageIconStoreError('UNSUPPORTED', 'Use a PNG, JPEG, or WebP image');
+    }
+    const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+    const dir = pageIconDir(pageId);
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sha}.${EXT[format]}`), bytes);
+    return { sha, format };
+  }, client);
 }
 
 export async function readPageIconImage(
@@ -100,8 +110,13 @@ export async function readPageIconImage(
   return null;
 }
 
-export async function deletePageIconImage(pageId: number): Promise<void> {
-  await fs.rm(pageIconDir(pageId), { recursive: true, force: true });
+export async function deletePageIconImage(
+  pageId: number,
+  client?: PoolClient,
+): Promise<void> {
+  await withLocalAttachmentMutationLock(async () => {
+    await fs.rm(pageIconDir(pageId), { recursive: true, force: true });
+  }, client);
 }
 
 /**
@@ -126,9 +141,12 @@ export async function deletePageIconImage(pageId: number): Promise<void> {
  * database work has already committed, and a filesystem hiccup must not fail a
  * request or a sync cycle. The residue is inert bytes.
  */
-export async function discardPageIconForDeletedPage(pageId: number): Promise<void> {
+export async function discardPageIconForDeletedPage(
+  pageId: number,
+  client?: PoolClient,
+): Promise<void> {
   try {
-    await deletePageIconImage(pageId);
+    await deletePageIconImage(pageId, client);
   } catch (err) {
     logger.warn(
       { err, pageId },

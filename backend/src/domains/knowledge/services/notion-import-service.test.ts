@@ -2,6 +2,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { setImmediate } from 'node:timers/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   isDbAvailable,
@@ -9,11 +10,13 @@ import {
   teardownTestDb,
   truncateAllTables,
 } from '../../../test-db-helper.js';
-import { query } from '../../../core/db/postgres.js';
-import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
+import { getPool, query } from '../../../core/db/postgres.js';
+import { NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
+import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
 import { extractWikiPageProperties, runNotionImport } from './notion-import-service.js';
+import { notionImportLockId } from './notion-import-lock.js';
 
 const dbAvailable = await isDbAvailable();
 const TOKEN = 'secret_import_ntn_must_never_appear';
@@ -1071,6 +1074,394 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(leftovers).toEqual([]);
   });
 
+  it('keeps the winner page and files when a same-page waiter has a media failure', async () => {
+    const dashedId = 'a1b2c3d4-e5f6-47a8-90bc-def123456789';
+    const undashedId = 'a1b2c3d4e5f647a890bcdef123456789';
+    const winnerFileRequested = Promise.withResolvers<void>();
+    const releaseWinnerFile = Promise.withResolvers<void>();
+    const winnerServer = await startFakeNotionServer({
+      validToken: TOKEN,
+      pages: {
+        [dashedId]: {
+          object: 'page',
+          id: dashedId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Concurrent'),
+        },
+      },
+      blockChildren: { [dashedId]: [] },
+      files: {
+        '/files/winner.png': { contentType: 'image/png', body: PNG },
+      },
+      beforeFileResponse: async () => {
+        winnerFileRequested.resolve();
+        await releaseWinnerFile.promise;
+      },
+    });
+    server = winnerServer;
+    const waiterServer = await startFakeNotionServer({
+      validToken: TOKEN,
+      pages: {
+        [undashedId]: {
+          object: 'page',
+          id: undashedId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Concurrent'),
+        },
+      },
+      blockChildren: { [undashedId]: [] },
+    });
+    winnerServer.state.blockChildren = {
+      [dashedId]: [{
+        object: 'block',
+        id: 'winner-image',
+        type: 'image',
+        image: {
+          type: 'file',
+          file: { url: `${winnerServer.baseUrl}/files/winner.png` },
+          caption: [],
+        },
+      }],
+    };
+    waiterServer.state.blockChildren = {
+      [undashedId]: [{
+        object: 'block',
+        id: 'waiter-image',
+        type: 'image',
+        image: {
+          type: 'file',
+          file: { url: `${waiterServer.baseUrl}/files/missing.png` },
+          caption: [],
+        },
+      }],
+    };
+
+    const winnerClient = new NotionClient(TOKEN, { baseUrl: winnerServer.baseUrl });
+    const waiterClient = new NotionClient(TOKEN, { baseUrl: waiterServer.baseUrl });
+    try {
+      const winner = runNotionImport({
+        userId,
+        client: winnerClient,
+        pageIds: [dashedId],
+        visibility: 'shared',
+      });
+      await winnerFileRequested.promise;
+
+      const waiter = runNotionImport({
+        userId,
+        client: waiterClient,
+        pageIds: [undashedId],
+        visibility: 'shared',
+      });
+      let waiterSettled = false;
+      void waiter.then(
+        () => { waiterSettled = true; },
+        () => { waiterSettled = true; },
+      );
+      const lockId = notionImportLockId(undashedId);
+      let waiterWasBlocked = false;
+      while (!waiterSettled) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = $1
+              AND objid::bigint = $2
+              AND granted = FALSE`,
+          [NOTION_IMPORT_LOCK_KEY, lockId >>> 0],
+        );
+        if (waiting.rows.length > 0) {
+          waiterWasBlocked = true;
+          break;
+        }
+        await setImmediate();
+      }
+
+      releaseWinnerFile.resolve();
+      const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
+
+      expect(waiterWasBlocked).toBe(true);
+      expect(winnerItems[0]).toMatchObject({ notionPageId: dashedId, status: 'success' });
+      expect(waiterItems[0]).toMatchObject({
+        notionPageId: undashedId,
+        status: 'already_imported',
+        localPageId: winnerItems[0]?.localPageId,
+      });
+      const pages = await query<{ id: number; body_html: string }>(
+        `SELECT id, body_html FROM pages
+          WHERE lower(replace(notion_page_id, '-', '')) = $1`,
+        [undashedId],
+      );
+      expect(pages.rows).toHaveLength(1);
+      expect(pages.rows[0]!.body_html).toContain('/api/local-attachments/');
+      const files = await query<{ filename: string }>(
+        'SELECT filename FROM local_attachments WHERE page_id = $1',
+        [pages.rows[0]!.id],
+      );
+      expect(files.rows).toHaveLength(1);
+      expect(readFileSync(join(attachmentsDir, 'local', String(pages.rows[0]!.id), files.rows[0]!.filename)))
+        .toEqual(PNG);
+    } finally {
+      releaseWinnerFile.resolve();
+      await waiterServer.close();
+    }
+  });
+
+  it('keeps every selected page locked between allocation and attachment preparation', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111';
+    const secondId = '22222222-2222-4222-8222-222222222222';
+    const allocationGateKey = 1_420_098;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        [firstId]: {
+          object: 'page',
+          id: firstId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('First'),
+        },
+        [secondId]: {
+          object: 'page',
+          id: secondId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Second'),
+        },
+      },
+      blockChildren: {
+        [firstId]: [paragraph('first-body', 'First body')],
+        [secondId]: [paragraph('second-body', 'Second body')],
+      },
+    });
+    const gateClient = await getPool().connect();
+    let gateHeld = false;
+    let winner: Promise<NotionImportItem[]> | undefined;
+    let waiter: Promise<NotionImportItem[]> | undefined;
+    try {
+      await gateClient.query('SELECT pg_advisory_lock($1)', [allocationGateKey]);
+      gateHeld = true;
+      await query(`
+        CREATE OR REPLACE FUNCTION delay_second_notion_allocation() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.notion_page_id = '${secondId}' AND NEW.body_html = '' THEN
+            PERFORM pg_advisory_xact_lock(${allocationGateKey});
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await query(`
+        CREATE TRIGGER delay_second_notion_allocation
+        BEFORE INSERT ON pages
+        FOR EACH ROW EXECUTE FUNCTION delay_second_notion_allocation()
+      `);
+
+      winner = runNotionImport({
+        userId,
+        client,
+        pageIds: [firstId, secondId],
+        visibility: 'shared',
+      });
+      let secondAllocationBlocked = false;
+      while (!secondAllocationBlocked) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = 0
+              AND objid::bigint = $1
+              AND granted = FALSE`,
+          [allocationGateKey],
+        );
+        secondAllocationBlocked = waiting.rows.length > 0;
+        if (!secondAllocationBlocked) await setImmediate();
+      }
+
+      const firstPlaceholder = await query(
+        'SELECT 1 FROM pages WHERE notion_page_id = $1 AND body_html = $2',
+        [firstId, ''],
+      );
+      expect(firstPlaceholder.rows).toHaveLength(1);
+
+      waiter = runNotionImport({
+        userId,
+        client,
+        pageIds: [firstId],
+        visibility: 'shared',
+      });
+      let waiterSettled = false;
+      void waiter.then(
+        () => { waiterSettled = true; },
+        () => { waiterSettled = true; },
+      );
+      let waiterBlockedOnFirstPage = false;
+      while (!waiterSettled && !waiterBlockedOnFirstPage) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = $1
+              AND objid::bigint = $2
+              AND granted = FALSE`,
+          [NOTION_IMPORT_LOCK_KEY, notionImportLockId(firstId) >>> 0],
+        );
+        waiterBlockedOnFirstPage = waiting.rows.length > 0;
+        if (!waiterSettled && !waiterBlockedOnFirstPage) await setImmediate();
+      }
+
+      expect(waiterSettled).toBe(false);
+      expect(waiterBlockedOnFirstPage).toBe(true);
+      await gateClient.query('SELECT pg_advisory_unlock($1)', [allocationGateKey]);
+      gateHeld = false;
+
+      const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
+      expect(winnerItems.every((item) => item.status === 'success')).toBe(true);
+      expect(waiterItems[0]).toMatchObject({
+        notionPageId: firstId,
+        status: 'already_imported',
+        localPageId: winnerItems[0]?.localPageId,
+      });
+    } finally {
+      if (gateHeld) {
+        await gateClient.query('SELECT pg_advisory_unlock($1)', [allocationGateKey]);
+      }
+      await Promise.allSettled([winner, waiter].filter((run): run is Promise<NotionImportItem[]> => Boolean(run)));
+      await query('DROP TRIGGER IF EXISTS delay_second_notion_allocation ON pages');
+      await query('DROP FUNCTION IF EXISTS delay_second_notion_allocation()');
+      gateClient.release();
+    }
+  });
+
+  it('does not let a same-page waiter return before the final mention rewrite commits', async () => {
+    const targetId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const hostId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const rewriteGateKey = 1_420_099;
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        [hostId]: {
+          object: 'page',
+          id: hostId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Host'),
+        },
+        [targetId]: {
+          object: 'page',
+          id: targetId,
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Target'),
+        },
+      },
+      blockChildren: {
+        [hostId]: [{
+          object: 'block',
+          id: 'forward-mention',
+          type: 'paragraph',
+          paragraph: {
+            rich_text: [{
+              type: 'mention',
+              mention: { type: 'page', page: { id: targetId } },
+              plain_text: 'Target',
+              href: `https://www.notion.so/${targetId.replace(/-/g, '')}`,
+            }],
+          },
+        }],
+        [targetId]: [paragraph('target-body', 'Target body')],
+      },
+    });
+    const gateClient = await getPool().connect();
+    let gateHeld = false;
+    let winner: Promise<NotionImportItem[]> | undefined;
+    let waiter: Promise<NotionImportItem[]> | undefined;
+    try {
+      await gateClient.query('SELECT pg_advisory_lock($1)', [rewriteGateKey]);
+      gateHeld = true;
+      await query(`
+        CREATE OR REPLACE FUNCTION delay_notion_final_rewrite() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.notion_page_id = '${hostId}' AND NEW.body_html LIKE '%/pages/%' THEN
+            PERFORM pg_advisory_xact_lock(${rewriteGateKey});
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await query(`
+        CREATE TRIGGER delay_notion_final_rewrite
+        BEFORE UPDATE OF body_html ON pages
+        FOR EACH ROW EXECUTE FUNCTION delay_notion_final_rewrite()
+      `);
+
+      winner = runNotionImport({
+        userId,
+        client,
+        pageIds: [hostId, targetId],
+        visibility: 'shared',
+      });
+      let finalRewriteBlocked = false;
+      while (!finalRewriteBlocked) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = 0
+              AND objid::bigint = $1
+              AND granted = FALSE`,
+          [rewriteGateKey],
+        );
+        finalRewriteBlocked = waiting.rows.length > 0;
+        if (!finalRewriteBlocked) await setImmediate();
+      }
+
+      waiter = runNotionImport({
+        userId,
+        client,
+        pageIds: [hostId],
+        visibility: 'shared',
+      });
+      let waiterSettled = false;
+      void waiter.then(
+        () => { waiterSettled = true; },
+        () => { waiterSettled = true; },
+      );
+      let waiterBlockedOnPageLock = false;
+      while (!waiterSettled && !waiterBlockedOnPageLock) {
+        const waiting = await query(
+          `SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid::bigint = $1
+              AND objid::bigint = $2
+              AND granted = FALSE`,
+          [NOTION_IMPORT_LOCK_KEY, notionImportLockId(hostId) >>> 0],
+        );
+        waiterBlockedOnPageLock = waiting.rows.length > 0;
+        if (!waiterSettled && !waiterBlockedOnPageLock) await setImmediate();
+      }
+
+      expect(waiterSettled).toBe(false);
+      expect(waiterBlockedOnPageLock).toBe(true);
+      await gateClient.query('SELECT pg_advisory_unlock($1)', [rewriteGateKey]);
+      gateHeld = false;
+
+      const [winnerItems, waiterItems] = await Promise.all([winner, waiter]);
+      expect(winnerItems.every((item) => item.status === 'success')).toBe(true);
+      expect(waiterItems[0]).toMatchObject({
+        notionPageId: hostId,
+        status: 'already_imported',
+        localPageId: winnerItems[0]?.localPageId,
+      });
+      const host = await query<{ body_html: string }>(
+        'SELECT body_html FROM pages WHERE notion_page_id = $1',
+        [hostId],
+      );
+      expect(host.rows[0]!.body_html).toContain(`/pages/${winnerItems[1]!.localPageId}`);
+      expect(host.rows[0]!.body_html).not.toContain('notion.so');
+    } finally {
+      if (gateHeld) {
+        await gateClient.query('SELECT pg_advisory_unlock($1)', [rewriteGateKey]);
+      }
+      await Promise.allSettled([winner, waiter].filter((run): run is Promise<NotionImportItem[]> => Boolean(run)));
+      await query('DROP TRIGGER IF EXISTS delay_notion_final_rewrite ON pages');
+      await query('DROP FUNCTION IF EXISTS delay_notion_final_rewrite()');
+      gateClient.release();
+    }
+  });
+
   it('does not duplicate on a second run of the same Notion ids', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -1092,6 +1483,63 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(second[0]?.localPageId).toBe(first[0]?.localPageId);
     const count = await query<{ n: string }>('SELECT count(*)::text AS n FROM pages WHERE notion_page_id = $1', ['once']);
     expect(count.rows[0]!.n).toBe('1');
+  });
+
+  it('does not publish attachment references in PostgreSQL before their files exist', async () => {
+    const fileRequested = Promise.withResolvers<void>();
+    const releaseFile = Promise.withResolvers<void>();
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        ordered: {
+          object: 'page',
+          id: 'ordered',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Ordered'),
+        },
+      },
+      files: {
+        '/files/ordered.png': { contentType: 'image/png', body: PNG },
+      },
+      blockChildren: { ordered: [] },
+      beforeFileResponse: async () => {
+        fileRequested.resolve();
+        await releaseFile.promise;
+      },
+    });
+    const imageUrl = `${server.baseUrl}/files/ordered.png`;
+    server.state.blockChildren = {
+      ordered: [{
+        object: 'block',
+        id: 'img-ordered',
+        type: 'image',
+        image: {
+          type: 'file',
+          file: { url: imageUrl },
+          caption: [],
+        },
+      }],
+    };
+
+    const importing = runNotionImport({
+      userId,
+      client,
+      pageIds: ['ordered'],
+      visibility: 'shared',
+    });
+    await fileRequested.promise;
+    const inFlight = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['ordered'],
+    );
+    releaseFile.resolve();
+    await importing;
+    expect(inFlight.rows[0]!.body_html).not.toContain('/api/local-attachments/');
+    const complete = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['ordered'],
+    );
+    expect(complete.rows[0]!.body_html).toContain('/api/local-attachments/');
   });
 
   it('stores image bytes through the local attachment store', async () => {

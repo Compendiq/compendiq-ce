@@ -460,6 +460,22 @@ function registerAllWorkers(): void {
       return typeof result === 'string' ? result : `Backfilled ${result.processed} pages (${result.failed} failed)`;
     },
   });
+
+  // Encrypted S3 backup (#1420). Repeat polls "is it due"; on-demand jobs
+  // pass `force: true` and skip the schedule check. Concurrency 1.
+  registerWorkerDef({
+    queueName: 'backup',
+    concurrency: 1,
+    repeatPattern: { every: 15 * 60 * 1000 },
+    processor: async (job: Job) => {
+      const { processBackupJob, runForcedBackup } = await import('./backup-worker.js');
+      const data = job.data as { force?: boolean; triggeredBy?: string | null };
+      if (data.force === true) {
+        return runForcedBackup(data.triggeredBy ?? null, job.id ?? null);
+      }
+      return processBackupJob(job.id ?? null);
+    },
+  });
 }
 
 // ─── Legacy setInterval fallback ─────────────────────────────────────────────
@@ -473,6 +489,7 @@ async function startLegacyWorkers(): Promise<void> {
   const { startSummaryWorker, triggerSummaryBatch } = await import('../../domains/knowledge/services/summary-worker.js');
   const { startTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { startRetentionWorker } = await import('./data-retention-service.js');
+  const { startBackupLegacyWorker } = await import('./backup-worker.js');
 
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   const summaryInterval = parseInt(
@@ -485,6 +502,7 @@ async function startLegacyWorkers(): Promise<void> {
   startSummaryWorker(summaryInterval);
   startTokenCleanupWorker();
   startRetentionWorker();
+  startBackupLegacyWorker();
 
   // Initial batches after 30s delay. The .catch() prevents a batch failure
   // from becoming an unhandled rejection inside the timer callback (#741).
@@ -507,10 +525,12 @@ async function stopLegacyWorkers(): Promise<void> {
   const { stopSummaryWorker } = await import('../../domains/knowledge/services/summary-worker.js');
   const { stopTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { stopRetentionWorker } = await import('./data-retention-service.js');
+  const { stopBackupLegacyWorker } = await import('./backup-worker.js');
 
   stopSyncWorker();
   stopQualityWorker();
   stopSummaryWorker();
   stopTokenCleanupWorker();
   stopRetentionWorker();
+  stopBackupLegacyWorker();
 }
