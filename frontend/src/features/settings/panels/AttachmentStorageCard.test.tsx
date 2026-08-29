@@ -1418,7 +1418,8 @@ describe('AttachmentStorageCard (#1349)', () => {
       // all 56 cells green while, in production, `figures` froze at its
       // pre-run values for the whole walk and after it, because the kick-time
       // `invalidateQueries` was then the last stats fetch that ever ran.
-      await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
+      const WARMUP_FLOORS = 3;
+      await vi.advanceTimersByTimeAsync(WARMUP_FLOORS * POLL_MS_UNDER_TEST);
       const duringWarmup = getsByRoute();
       expect(duringWarmup.stats, 'the STATS query must keep polling inside the warm-up').toBeGreaterThan(
         afterKick.stats,
@@ -1432,10 +1433,18 @@ describe('AttachmentStorageCard (#1349)', () => {
       // while `pollWhile` returns a literal, and the probe for that mutation
       // (both `return POLL_MS` arms -> `return 1_000`) left all 58 cells
       // passing with the card polling five times faster than its rate-limit
-      // floor. So bound the ticks from ABOVE as well: a window of three floors
-      // admits three ticks per route, plus one for the boundary the kick's own
-      // settle leaves mid-interval. A 1s cadence lands ~15 and reds here.
-      const TICK_BUDGET = 3 + 1;
+      // floor. So bound the ticks from ABOVE as well, per route.
+      //
+      // This window only exercises the WARM-UP arm (`running` stays false the
+      // whole cell), so it can only see a mutation of THAT arm: shrinking
+      // `if (running) return POLL_MS` alone left all 58 cells green. The
+      // `running` arm has its own band cell below, with a wider window.
+      //
+      // Budget: one tick per floor, plus one for the boundary the kick's own
+      // settle leaves mid-interval. Three floors is all this arm gets — the
+      // warm-up expires after four — so it reds a cadence at or below 3s. A 1s
+      // cadence lands 15 here.
+      const TICK_BUDGET = WARMUP_FLOORS + 1;
       expect(
         duringWarmup.stats - afterKick.stats,
         'the STATS query must poll no faster than the floor: 20/min per route is the admin limit',
@@ -1450,6 +1459,68 @@ describe('AttachmentStorageCard (#1349)', () => {
       const settled = getsByRoute();
       await vi.advanceTimersByTimeAsync(3 * POLL_MS_UNDER_TEST);
       expect(getsByRoute(), 'the warm-up must expire for both routes').toEqual(settled);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * #1523, external round 2 — the `running` arm of `pollWhile` needs the same
+   * band as the warm-up arm.
+   *
+   * The cap added above lives in a cell where `running` is false throughout,
+   * so it only ever measures `pollWhile`'s warm-up arm. Shrinking the
+   * `if (running) return POLL_MS` arm to `1_000` on its own left all 58 cells
+   * green — and that arm is the one that governs a real sweep: the warm-up
+   * expires after 20s while a walk over an attachment store runs for minutes,
+   * during which BOTH routes poll on this arm alone. At 1s that is 60 req/min
+   * per route against a 20/min limit, so the poll 429s the card's own
+   * remedy for the state it is reporting.
+   *
+   * Band, not a point: the lower bound says it polls at all while a sweep is
+   * in flight (the card's live figures depend on it), the upper bound says it
+   * does so no faster than the floor. This arm is not fenced in by the 20s
+   * warm-up, so the window can be a full minute of fake time — twelve floors
+   * admit twelve ticks per route, and the budget of thirteen reds anything at
+   * or below ~4.2s rather than only the ≤3s that actually breaches 20/min.
+   * The 3-floor window above cannot be tightened that far: the warm-up it
+   * measures expires after four.
+   */
+  it('polls a running sweep no faster than the rate-limit floor', async () => {
+    vi.useFakeTimers();
+    try {
+      mockApi({
+        stats: { ...STATS, running: true },
+        sweep: { ...SWEEP, running: true },
+      });
+      render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+      await vi.waitFor(() =>
+        expect(screen.getByTestId('attachment-sweep-running')).toBeInTheDocument(),
+      );
+
+      const RUNNING_FLOORS = 12;
+      const TICK_BUDGET = RUNNING_FLOORS + 1;
+      const armed = getsByRoute();
+      await vi.advanceTimersByTimeAsync(RUNNING_FLOORS * POLL_MS_UNDER_TEST);
+      const polled = getsByRoute();
+
+      expect(
+        polled.stats - armed.stats,
+        'the STATS query must keep polling while the payload reports a running sweep',
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        polled.sweep - armed.sweep,
+        'the SWEEP query must keep polling while the payload reports a running sweep',
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        polled.stats - armed.stats,
+        'the STATS query must poll a running sweep no faster than the floor: 20/min per route is the admin limit',
+      ).toBeLessThanOrEqual(TICK_BUDGET);
+      expect(
+        polled.sweep - armed.sweep,
+        'the SWEEP query must poll a running sweep no faster than the floor: 20/min per route is the admin limit',
+      ).toBeLessThanOrEqual(TICK_BUDGET);
     } finally {
       vi.useRealTimers();
     }
