@@ -151,11 +151,24 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
    * The empty-set arms are the pair the caveat actually switches between, and
    * `coverage_unknown` is the arm that exists because health that could not be
    * VERIFIED must not be reported as a verified-empty corpus.
+   *
+   * Every member of `RetrievalHealthCaveat` is listed — the four
+   * `DegradedReason`s plus `coverage_unknown` — because the enumeration IS the
+   * contract here too: the formula reads this field only as null-vs-non-null,
+   * so any future arm that special-cases one member (giving it a number, or
+   * the `image_leg_unavailable` reading that rag-service.ts's call-site
+   * comment calls "deliberate and inert") has to red a row rather than a
+   * reviewer's memory. `image_leg_unavailable` is the one that most invites
+   * such an arm: it is a bypass of the IMAGE leg, not an outage of the index
+   * the answer is grounded in, so "then it should still be measurable" is a
+   * plausible-sounding future change. It is not measurable — there is nothing
+   * to measure in an empty set — and this row is what says so.
    */
   it.each<[RetrievalHealthCaveat, number | null]>([
     ['embedding_failed', null],
     ['no_embeddings', null],
     ['partial_embeddings', null],
+    ['image_leg_unavailable', null],
     ['coverage_unknown', null],
   ])('an empty set under %s scores %s', (caveat, score) => {
     expect(computeRetrievalConfidence([], caveat)).toEqual({ score, basis: 'none' });
