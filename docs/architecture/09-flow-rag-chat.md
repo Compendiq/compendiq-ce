@@ -1884,8 +1884,14 @@ test pins that.
   the variable is still what produced the number (`ragEfSearchFromEnv` on the
   settings payload), since Save sends only the values an admin changed and
   would otherwise have no row to write. A row read that FAILS never falls
-  through to the variable: an unreadable row is not an absent one, and the
-  fall-through would reinstate a retired value for a full cache TTL. Raising
+  through to the variable OVER A VALUE ALREADY RESOLVED: an unreadable row is
+  not an absent one, and the fall-through would reinstate a retired value for a
+  full cache TTL. What it does instead (**#1512**) is hold the last
+  `{value, source}` the reader resolved — or, on a cold resolve with nothing
+  held yet, reach the bootstrap. Falling to the constant 100 there dropped every
+  probe on that pod from the operator's configured floor for a full TTL and,
+  because `ragEfSearchFromEnv` is derived from `source === 'env'`, took the
+  panel's note and its `Keep` remedy with it while the value was wrong. Raising
   the floor is not measured to buy recall, and its measured cost is scan time
   only — 0.39 ms per probe at 100 against 1.74 ms at 1000; index footprint is a
   build-time property and does not move with this setting. See the `ef_search`
