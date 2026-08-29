@@ -4,6 +4,7 @@ import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
+import { apiFetch } from '../../lib/api';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
 import { useAiDockStore } from '../../../stores/ai-dock-store';
@@ -31,6 +32,10 @@ vi.mock('react-router-dom', async () => {
 
 const mockVerifyPage = vi.fn();
 let mockRelocateAllowed = true;
+
+// Feeds `usePageNotes` through the stubbed `apiFetch` below so the collapsed
+// rail's open-notes badge can be exercised at zero and at a real count.
+let mockNotes: Array<{ id: string; parentId: string | null; resolved: boolean }> = [];
 
 vi.mock('sonner', () => ({
   toast: {
@@ -121,6 +126,7 @@ vi.mock('../../lib/api', () => ({
         upstreamDeletion: null,
       };
     }
+    if (url.includes('/comments')) return mockNotes;
     return {};
   }),
 }));
@@ -218,6 +224,7 @@ describe('ArticleRightPane', () => {
     mockRequalityPage.mockReset();
     mockVerifyPage.mockReset().mockResolvedValue(undefined);
     mockRelocateAllowed = true;
+    mockNotes = [];
     resyncIsPending = false;
     reembedIsPending = false;
     requalityIsPending = false;
@@ -823,6 +830,69 @@ describe('ArticleRightPane', () => {
       fireEvent.keyDown(dialog, { key: 'Escape' });
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
       await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+    });
+
+    /**
+     * Open-notes badge on the collapsed rail: geometry, count, and absence.
+     *
+     * 3bfd1aa8 ("shrink and reposition Notes badge in collapsed right rail")
+     * tucked the badge INSIDE the button's corner (`top-0 right-0`) instead of
+     * overhanging it (`-top-1 -right-1`) and shrank it to `h-3.5 min-w-3.5` /
+     * `px-0.5`. Nothing pinned that, so a later refactor could silently undo
+     * it — which is what these two cases exist to prevent.
+     *
+     * `text-[11px]` is asserted DELIBERATELY, and is the one dimension that
+     * must not shrink further: 3bfd1aa8 also took the badge to `text-[10px]`
+     * and ea91c725 ("restore 11px legibility floor on collapsed-rail Notes
+     * badge") put it back, because `src/ui-text-legibility.test.ts` holds an
+     * 11px floor for functional UI text and fails on the source line that
+     * breaks it. So the next person asked to "shrink the badge" fails here
+     * rather than helpfully dropping it to 10px and re-breaking the floor.
+     */
+    it('tucks a sized open-notes badge into the corner of the rail Notes button', async () => {
+      mockNotes = [
+        { id: 'n1', parentId: null, resolved: false },
+        { id: 'n2', parentId: null, resolved: false },
+        // Resolved and threaded notes are not "open" and must not be counted.
+        { id: 'n3', parentId: null, resolved: true },
+        { id: 'n4', parentId: 'n1', resolved: false },
+      ];
+      renderRail();
+
+      // Waiting on the label, not on the badge, is what makes the count
+      // assertion below real: the pre-fetch render also has no badge.
+      const button = await screen.findByLabelText('Notes (2 open)');
+      const badge = button.querySelector('span');
+      expect(badge).not.toBeNull();
+      expect(badge).toHaveTextContent('2');
+      expect(badge).toHaveClass(
+        'absolute',
+        'top-0',
+        'right-0',
+        'h-3.5',
+        'min-w-3.5',
+        'px-0.5',
+        'text-[11px]',
+        'rounded-full',
+        'bg-action',
+        'text-action-foreground',
+      );
+      // The pre-3bfd1aa8 overhanging, larger badge, spelled out so a revert to
+      // it fails on the classes it reintroduces and not only on the ones it drops.
+      expect(badge!.className).not.toMatch(/-top-1|-right-1|\bh-4\b|\bmin-w-4\b|\bpx-1\b/);
+    });
+
+    it('renders no open-notes badge at all when nothing is open', async () => {
+      mockNotes = [];
+      renderRail();
+
+      await waitFor(() =>
+        expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('/comments')),
+      );
+      const button = screen.getByTestId('article-notes-rail-btn');
+      expect(button).toHaveAccessibleName('Notes (0 open)');
+      // A `0` badge is the failure this pins: the count guard, not the count.
+      expect(button.querySelector('span')).toBeNull();
     });
   });
 
