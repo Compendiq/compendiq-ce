@@ -41,7 +41,7 @@ import {
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
   resolveRagEfSearch,
-  invalidateRagEfSearchCache,
+  noteRagEfSearchRowSaved,
 } from '../../core/services/admin-settings-service.js';
 import {
   computeCalibrationStatus,
@@ -579,8 +579,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragConfidenceCalibration,
       // #1285 — the HNSW `ef_search` floor, beside Fetch width on the panel,
       // and whether the deprecated environment variable is what produced it.
-      // A failed read reports `false`: the panel must not offer to pin a
-      // number the server did not resolve from the variable.
+      // This is the resolver's own provenance, never a guess: `env` means the
+      // server is running on the variable — a read that SUCCEEDED on an absent
+      // row (the original #1285 path), or a resolve that threw with no row
+      // read and none written by this process. A read that FAILS over an
+      // already-resolved value reports that value's own source, and one that
+      // fails right after a save reports the written row (#1512). So the panel
+      // offers to pin a number exactly when the server is running on it.
       ragEfSearch: efSearch.value,
       ragEfSearchFromEnv: efSearch.source === 'env',
       collabEditingEnabled: isCollabEditingEnabled(),
@@ -840,11 +845,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ],
       // #1285 — the `ef_search` floor. The moment this row lands, the
       // deprecated `RAG_EF_SEARCH` variable stops being consulted: the reader
-      // falls back to it only for an ABSENT row, so the first save on an
-      // instance is also what retires the environment.
+      // falls back to it only for a row it has read as ABSENT, or for a read
+      // failure on an instance that has never seen one — so the first save on
+      // an instance is also what retires the environment.
+      //
+      // #1512 — which is why this one hands the WRITTEN VALUE over instead of
+      // just dropping the cache. A bare forget leaves the reader unable to tell
+      // "the cache was cleared by this write" from "nothing has ever resolved",
+      // and the panel refetches straight into that window: one blipped SELECT
+      // there used to reinstate the retired variable over the row above and
+      // re-offer `Keep <old env value>`.
       [
         'rag_ef_search',
-        invalidateRagEfSearchCache,
+        () => noteRagEfSearchRowSaved(body.ragEfSearch),
         body.ragEfSearch !== undefined ? String(body.ragEfSearch) : undefined,
       ],
     ];

@@ -1879,13 +1879,27 @@ test pins that.
   load, so the deployment's recall floor could not be changed without a restart
   and was invisible on the panel that owns every other retrieval number; that
   variable is now a bootstrap fallback consulted
-  only while no row exists, and reported as deprecated at startup — with the
+  only while no row has been read, and reported as deprecated at startup — with the
   panel offering a one-key `Keep <value>` write on exactly the instances where
   the variable is still what produced the number (`ragEfSearchFromEnv` on the
   settings payload), since Save sends only the values an admin changed and
   would otherwise have no row to write. A row read that FAILS never falls
-  through to the variable: an unreadable row is not an absent one, and the
-  fall-through would reinstate a retired value for a full cache TTL. Raising
+  through to the variable OVER A VALUE ALREADY RESOLVED: an unreadable row is
+  not an absent one, and the fall-through would reinstate a retired value for a
+  full cache TTL. What it does instead (**#1512**) is hold the last
+  `{value, source}` the reader resolved — or, when the admin PUT has just
+  cleared that cache, the row that PUT wrote, which `noteRagEfSearchRowSaved`
+  hands over for exactly this window, and which is held for a read that
+  SUCCEEDED on the pre-INSERT snapshot as much as for one that failed (nothing
+  deletes the row, so an absent-row read there is a raced snapshot) — and only a
+  cold resolve holding neither
+  reaches the bootstrap. Both memories are per-process, so "cold" also covers a
+  pod that restarts with the variable still set and any pod that did not serve
+  the write: a failed first read there reaches the bootstrap, and re-holds it
+  each TTL until one of that pod's reads succeeds. Falling to the constant 100 there dropped every
+  probe on that pod from the operator's configured floor for a full TTL and,
+  because `ragEfSearchFromEnv` is derived from `source === 'env'`, took the
+  panel's note and its `Keep` remedy with it while the value was wrong. Raising
   the floor is not measured to buy recall, and its measured cost is scan time
   only — 0.39 ms per probe at 100 against 1.74 ms at 1000; index footprint is a
   build-time property and does not move with this setting. See the `ef_search`

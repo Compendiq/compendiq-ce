@@ -280,7 +280,7 @@ provider rows:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDING_MODEL` | `bge-m3` | **Bootstrap-only / inert** — see the deprecated table above. Assign the Embedding use case under Settings → AI Models. |
-| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; the first save retires it permanently. Setting it logs a startup notice. |
+| `RAG_EF_SEARCH` | `100` | **Deprecated (#1285)** — the HNSW `ef_search` floor is now `admin_settings.rag_ef_search`, set in `Settings → AI Models → Retrieval`. Nothing seeds that row, so this variable is still read on an instance that has never saved the panel; from the first save on it is ignored on every successful read. A settings read that FAILS keeps whatever the server last resolved — or the row a save has just written, which is also what a read that succeeded on a pre-save snapshot keeps — rather than dropping the floor to 100 for a minute (#1512); both of those memories are per-process, so a process that has read neither — a fresh pod, a restart, a pod of the deployment that did not serve the write — and whose first settings read fails will read this variable again, and keep reading it (re-held each 60 s TTL) until one of its settings reads succeeds, and the panel can then re-offer its **Keep <value>** button — whose press writes THIS value as the saved one, over anything the panel had saved before. Unset it once the panel is saved. Setting it logs a startup notice. |
 
 ### Background Workers
 
@@ -564,14 +564,41 @@ per probe at 100 against 1.74 ms at 1000 on that corpus — and nothing else:
 `hnsw.ef_search` is a query-time setting, so the index footprint the re-embed
 runbook tells you to watch is fixed by how the index was built and is identical
 at every value here. It was `RAG_EF_SEARCH` before #1285 — env-only, read once
-at startup — and that variable is now a bootstrap fallback consulted only while
-no `rag_ef_search` row exists. On an instance that is still running on it the
+at startup — and that variable is now a bootstrap fallback consulted while no
+`rag_ef_search` row has been read. On an instance that is still running on it the
 panel says so above the control and offers a **Keep <value>** button, because
 Save only sends values you changed and the number shown already matches what
-the server resolved — pressing it writes the row and the variable is never read
-again. A value outside pgvector's `[1, 1000]` is ignored rather than clamped
+the server resolved — pressing it writes the row, and every successful read from
+then on ignores the variable (see the read-failure exception below).
+A value outside pgvector's `[1, 1000]` is ignored rather than clamped
 (the pre-#1285 reader accepted up to 10000), and the startup log says so by
 name.
+
+**A settings read that fails does not change the floor (#1512).** The reader is
+cached for 60 seconds; when that cache expires and the `admin_settings` SELECT
+then fails — pool pressure, a statement timeout — it keeps the value and the
+provenance it last resolved. Saving the panel clears that cache, so in the
+window right after a save what it keeps is the row the save just wrote — and so
+does a read that SUCCEEDS in that window but whose snapshot predates the save,
+since nothing deletes that row and an absent-row read there is a raced snapshot
+rather than evidence; only a resolve holding neither — nothing resolved and no
+row written by that process
+since boot — keeps this variable. Both memories are per-process, so a pod that
+restarts with the variable still set, or a second pod that never served the
+write, still falls back to it if its own first settings read fails, and keeps
+falling back to it — re-held each TTL — until one of its reads succeeds. It used to fall to the constant 100, which dropped every
+kNN probe on that pod to 100 for a full minute and made `Settings → AI Models →
+Retrieval` report the depth as 100 with no environment note and no **Keep**
+button — losing the remedy exactly while the number was wrong. Saving the panel
+still takes effect immediately on the pod that served the write. **Unset
+`RAG_EF_SEARCH` once the panel is saved.** While that fallback stands the panel
+shows the environment note and its **Keep <value>** button again, and pressing
+**Keep** writes the *variable's* number as the saved value — over the number an
+admin saved earlier, which that pod could not read. The note now says so where
+the button is ("if a value was saved before and this server could not read it,
+saving here replaces it"), but it cannot tell you the value it could not read,
+so the variable — unset once the panel is saved — is where that risk is
+actually removed.
 
 **Fuzzy title matching is fixed at similarity 0.3 and is deliberately not a
 setting (#1285).** The typo-tolerant title lookup in search uses `pg_trgm`'s

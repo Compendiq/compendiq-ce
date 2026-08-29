@@ -976,6 +976,82 @@ describe('PUT /api/admin/settings — the ef_search floor (#1285)', () => {
     await expect(getRagEfSearch()).resolves.toBe(120);
   });
 
+  it('keeps the saved row when the refetch blips — one save retires the env for good (ADR-021, #1512)', async () => {
+    // The test above proves the env var loses to a row on the HAPPY path. The
+    // path it does not walk is the one the panel actually runs: the client
+    // refetches `/api/admin/settings` the instant the PUT resolves, and the
+    // handler has just dropped this knob's cache, so that read is a cold one —
+    // under the pool pressure #1512 is about, it is the read that throws.
+    //
+    // Gating the cold `RAG_EF_SEARCH` bootstrap on an empty cache made that
+    // window reinstate the retired variable OVER the saved row and report
+    // `ragEfSearchFromEnv: true`, which re-renders the `Keep 900` button whose
+    // press PUTs 900 back over the admin's 150.
+    process.env.RAG_EF_SEARCH = '900';
+    const before = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(before.json()).ragEfSearchFromEnv).toBe(true);
+
+    await put({ ragEfSearch: 150 });
+
+    const live = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (/SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ef_search'/.test(sql)) {
+        throw new Error('statement timeout');
+      }
+      return live(sql, params);
+    });
+    const after = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    mockQuery.mockImplementation(live);
+
+    const parsed = AdminSettingsSchema.parse(after.json());
+    expect(parsed.ragEfSearch).toBe(150);
+    expect(parsed.ragEfSearchFromEnv).toBe(false);
+  });
+
+  it('re-offers the variable to a pod that could not read the saved row — and the press overwrites it (#1512, disclosed)', async () => {
+    // The DELIBERATE trade-off of the cold-failure bootstrap, pinned so a
+    // later edit can tell it from a regression. It is not a defect: it is
+    // what docs/ADMIN-GUIDE.md states in the `RAG_EF_SEARCH` row and the
+    // read-failure paragraph — "pressing **Keep** writes the *variable's*
+    // number as the saved value — over the number an admin saved earlier,
+    // which that pod could not read. … it cannot tell you the value it could
+    // not read, so the variable — unset once the panel is saved — is where
+    // that risk is actually removed."
+    //
+    // A cold resolve genuinely cannot distinguish "never saved" (the standard
+    // upgrade state, where honouring the variable is the whole point of
+    // #1285) from "saved, row unreadable", so this is the price of not
+    // dropping every kNN probe to 100 on the upgrade state. Both memories are
+    // per process, so `invalidateRagEfSearchCache()` here models a RESTARTED
+    // pod / a pod of the deployment that never served the write.
+    process.env.RAG_EF_SEARCH = '900';
+    await put({ ragEfSearch: 150 });
+    expect(rows.rag_ef_search).toBe('150');
+
+    invalidateRagEfSearchCache();
+    const live = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (/SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_ef_search'/.test(sql)) {
+        throw new Error('statement timeout');
+      }
+      return live(sql, params);
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    const parsed = AdminSettingsSchema.parse(res.json());
+    // The row says 150; this pod reports the variable, and the panel therefore
+    // renders the note and its `Keep 900` button.
+    expect(parsed.ragEfSearch).toBe(900);
+    expect(parsed.ragEfSearchFromEnv).toBe(true);
+
+    // And that button's press writes 900 over the admin's 150 — the cost the
+    // panel's own note names ("if a value was saved before and this server
+    // could not read it, saving here replaces it") and ADMIN-GUIDE removes by
+    // telling the operator to unset the variable.
+    await put({ ragEfSearch: parsed.ragEfSearch });
+    mockQuery.mockImplementation(live);
+    expect(rows.rag_ef_search).toBe('900');
+  });
+
   it('rejects a value outside pgvector’s own bound, rather than saving a lie', async () => {
     for (const body of [
       { ragEfSearch: 0 },

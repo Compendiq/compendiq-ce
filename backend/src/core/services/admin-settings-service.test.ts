@@ -48,6 +48,7 @@ import {
   getRagEfSearch,
   resolveRagEfSearch,
   invalidateRagEfSearchCache,
+  noteRagEfSearchRowSaved,
   warnIfRagEfSearchEnvSet,
   RAG_EF_SEARCH_DEFAULT,
 } from './admin-settings-service.js';
@@ -650,15 +651,25 @@ describe('rag_ef_search (#1285)', () => {
     }
   });
 
-  it('never reinstates RAG_EF_SEARCH when the row read THREW', async () => {
-    // Review r1. A failed read is not evidence that no row exists, and the
-    // difference matters on exactly the instance the deprecation story is
-    // written for: one that saved the panel and still carries a stale
-    // variable. Falling through to the env there would put a value four
-    // documents call retired back in force — and cache it for a full TTL.
-    process.env.RAG_EF_SEARCH = '900';
-    mockQuery.mockRejectedValue(new Error('connection reset'));
-    expect(await getRagEfSearch()).toBe(RAG_EF_SEARCH_DEFAULT);
+  it('never reinstates RAG_EF_SEARCH over a value the server actually read', async () => {
+    // Review r1's concern, narrowed by #1512 to the instance it is actually
+    // about: one that SAVED the panel and still carries a stale variable. A
+    // failed read is not evidence that the row vanished, so what stands is the
+    // value the server last resolved FROM that row — and a retired variable is
+    // never reinstated over it.
+    vi.useFakeTimers();
+    try {
+      mockQuery.mockResolvedValue({ rows: [{ setting_value: '150' }] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+
+      // TTL expires; the settings SELECT blips with the variable set.
+      vi.advanceTimersByTime(61_000);
+      process.env.RAG_EF_SEARCH = '900';
+      mockQuery.mockRejectedValue(new Error('connection reset'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+    } finally {
+      vi.useRealTimers();
+    }
 
     // …and the bootstrap is still reached when the read SUCCEEDS and the row
     // is genuinely absent, which is the case it exists for.
@@ -666,6 +677,159 @@ describe('rag_ef_search (#1285)', () => {
     mockQuery.mockReset();
     mockQuery.mockResolvedValue({ rows: [] });
     expect(await getRagEfSearch()).toBe(900);
+  });
+
+  it('holds an env-configured floor across a transient read failure (#1512)', async () => {
+    // The standard upgrade state: `RAG_EF_SEARCH` set, no row. At cache expiry
+    // ONE pool-pressure or statement-timeout failure used to resolve
+    // `{100, 'default'}` and cache it for a full TTL — every kNN probe on that
+    // pod dropped from a 400 floor to 100, and `GET /api/admin/settings`
+    // reported `ragEfSearchFromEnv: false`, so the panel lost the env note AND
+    // its one-key `Keep` remedy exactly while the value was wrong. Fail toward
+    // the operator's last known setting, the direction
+    // `getRagContextCharsPerPage` already takes.
+    vi.useFakeTimers();
+    try {
+      process.env.RAG_EF_SEARCH = '400';
+      mockQuery.mockResolvedValue({ rows: [] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('statement timeout'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reaches the bootstrap on a COLD resolve that threw (#1512)', async () => {
+    // Nothing has resolved yet, so there is no last-known value to hold — and
+    // the JSDoc, `.env.example`, ADMIN-GUIDE and the startup notice all promise
+    // this instance is still running on the variable. A first read that blipped
+    // is not the moment to retire it behind the operator's back.
+    process.env.RAG_EF_SEARCH = '400';
+    mockQuery.mockRejectedValue(new Error('pool exhausted'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+  });
+
+  it('does not reinstate RAG_EF_SEARCH in the window right after a save (#1512)', async () => {
+    // Review r1 of #1512. The first shape of this fix gated the cold bootstrap
+    // on an EMPTY CACHE — and the admin PUT empties the cache on every save, so
+    // the panel's own refetch ran straight into a window where one blipped
+    // SELECT reinstated the retired variable OVER the row just written, called
+    // it `source: 'env'`, and re-offered `Keep 900` — a one-click overwrite of
+    // the admin's 150, on the very instance ADR-021 says the environment is
+    // inert on. The write hands its value over instead of dropping it, so what
+    // stands under a failed read is the row, as a row.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockResolvedValue({ rows: [{ setting_value: '120' }] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 120, source: 'row' });
+
+    // Exactly what the PUT handler runs when the `rag_ef_search` row lands.
+    noteRagEfSearchRowSaved(150);
+    mockQuery.mockRejectedValue(new Error('statement timeout'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+  });
+
+  it('holds a FIRST save across a blipped read, so one save really does retire the variable (#1512)', async () => {
+    // The upgrade instance, which is the one the whole deprecation story is
+    // about: running on the variable, no row, admin saves once. Nothing has
+    // ever been READ from the row here, so only the write itself can tell the
+    // reader a row now exists.
+    process.env.RAG_EF_SEARCH = '900';
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await resolveRagEfSearch()).toEqual({ value: 900, source: 'env' });
+
+    noteRagEfSearchRowSaved(150);
+    mockQuery.mockRejectedValue(new Error('pool exhausted'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+  });
+
+  it('holds a save that lands while the failing read is in flight (#1512, review r2)', async () => {
+    // The window the two branches above do not cover on their own: the PUT
+    // does not wait for readers, so `noteRagEfSearchRowSaved` can land BETWEEN
+    // a reader's expiry check and its SELECT rejecting. The reader captured the
+    // pre-save cache before awaiting, so holding that capture discards the save
+    // — and re-caches the RETIRED variable as `source: 'env'` over the row the
+    // admin just wrote, which is the one-click `Keep 900` overwrite this whole
+    // fix exists to remove. Worse than one call: that poisoned entry becomes
+    // the next reader's last resolution, and the written row is only ever
+    // consulted with an empty cache, so it stays shadowed until a read
+    // succeeds.
+    vi.useFakeTimers();
+    try {
+      process.env.RAG_EF_SEARCH = '900';
+      mockQuery.mockResolvedValue({ rows: [] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 900, source: 'env' });
+
+      vi.advanceTimersByTime(61_000);
+      const held = Promise.withResolvers<{ rows: Array<{ setting_value: string }> }>();
+      mockQuery.mockImplementationOnce(() => held.promise);
+      const inFlight = resolveRagEfSearch();
+      await Promise.resolve();
+      // Exactly what the admin PUT runs, mid-read.
+      noteRagEfSearchRowSaved(150);
+      held.reject(new Error('statement timeout'));
+      expect(await inFlight).toEqual({ value: 150, source: 'row' });
+
+      // …and the next reader, still failing, holds the row rather than a
+      // resolution the save had already invalidated.
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('statement timeout'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds a save that lands while a SUCCEEDING read is in flight (#1512, review r3)', async () => {
+    // The same window as above, reached through the SUCCESS door. The PUT does
+    // not wait for readers, so a SELECT issued on the pre-INSERT snapshot
+    // returns `rows: []` — a successful read of an absent row — after
+    // `noteRagEfSearchRowSaved` has already landed. Nothing in production
+    // deletes this row, so a post-save absent-row read is always that raced
+    // snapshot and never evidence the row is gone; consulting only the cache
+    // there reinstated the RETIRED variable as `source: 'env'` over the row the
+    // admin had just written, which is the one-click `Keep 900` overwrite the
+    // whole fix exists to remove — and, because the written row was consulted
+    // only on a FAILED read, that poisoned entry then shadowed the save across
+    // subsequent failures too.
+    vi.useFakeTimers();
+    try {
+      process.env.RAG_EF_SEARCH = '900';
+      mockQuery.mockResolvedValue({ rows: [] });
+      expect(await resolveRagEfSearch()).toEqual({ value: 900, source: 'env' });
+
+      vi.advanceTimersByTime(61_000);
+      const held = Promise.withResolvers<{ rows: Array<{ setting_value: string }> }>();
+      mockQuery.mockImplementationOnce(() => held.promise);
+      const inFlight = resolveRagEfSearch();
+      await Promise.resolve();
+      // Exactly what the admin PUT runs, mid-read.
+      noteRagEfSearchRowSaved(150);
+      // The pre-INSERT snapshot: the read SUCCEEDS and sees no row.
+      held.resolve({ rows: [] });
+      expect(await inFlight).toEqual({ value: 150, source: 'row' });
+
+      // …and the next reader, now failing, holds the row rather than the
+      // variable the save retired.
+      vi.advanceTimersByTime(61_000);
+      mockQuery.mockRejectedValue(new Error('statement timeout'));
+      expect(await resolveRagEfSearch()).toEqual({ value: 150, source: 'row' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-validates the saved value rather than holding a number the reader would reject', async () => {
+    // The row evidence is served as `source: 'row'`, so it must clear the same
+    // bar the reader's own parse does — otherwise a bad write would be held as
+    // if the reader had produced it. The route's schema already bounds this;
+    // the reader does not get to assume that.
+    process.env.RAG_EF_SEARCH = '400';
+    noteRagEfSearchRowSaved(1001);
+    mockQuery.mockRejectedValue(new Error('down'));
+    expect(await resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
   });
 
   it('reports where the floor came from, for the panel that has to offer a remedy', async () => {
@@ -684,12 +848,14 @@ describe('rag_ef_search (#1285)', () => {
     delete process.env.RAG_EF_SEARCH;
     expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
 
-    // A failed read is 'default', never 'env': the panel must not offer to pin
-    // a value the server did not resolve from the variable.
+    // A failed COLD read reaches the variable, and reports it as `env`
+    // (#1512): `default` is what strips the panel's note and its `Keep`
+    // remedy, and it would do so on exactly the instance the deprecation
+    // story promises is still running on the variable.
     invalidateRagEfSearchCache();
     process.env.RAG_EF_SEARCH = '250';
     mockQuery.mockRejectedValue(new Error('down'));
-    expect(await resolveRagEfSearch()).toEqual({ value: 100, source: 'default' });
+    expect(await resolveRagEfSearch()).toEqual({ value: 250, source: 'env' });
   });
 
   it('is cached, so four kNN callsites cost no round-trip inside the TTL', async () => {
@@ -732,6 +898,11 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
     expect(message).toContain('RAG_EF_SEARCH is deprecated');
     expect(message).toContain('rag_ef_search');
     expect(message).toContain('Settings → AI Models → Retrieval');
+    // #1512 narrowed this branch from "row exists" to "row has been READ", the
+    // way the out-of-range branch below is already pinned: a row whose first
+    // read threw has not retired the variable yet, so "exists" is the one word
+    // the notice cannot use.
+    expect(message).toContain('while no `rag_ef_search` row has been read');
   });
 
   it('says the value is IGNORED when it is outside pgvector’s bound', async () => {
@@ -752,7 +923,10 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
     // stated flatly is false on every instance that HAS saved the panel: with
     // `RAG_EF_SEARCH=2000` and a saved row of 300 every probe runs at 300
     // while boot claims 100.
-    expect(message).toContain('while no `rag_ef_search` row exists');
+    // #1512 narrowed both branches from "exists" to "has been read": a row
+    // whose first read threw has not retired the variable yet, so "exists" is
+    // the one word the notice cannot use.
+    expect(message).toContain('while no `rag_ef_search` row has been read');
     // …and it is still resolved that way, which is what the notice claims.
     invalidateRagEfSearchCache();
     mockQuery.mockReset();
@@ -785,5 +959,75 @@ describe('warnIfRagEfSearchEnvSet (#1285)', () => {
       expect(migrations).toBeGreaterThanOrEqual(0);
       expect(warn).toBeGreaterThan(migrations);
     });
+  });
+});
+
+/**
+ * The `RAG_EF_SEARCH` bootstrap's own log line (#1512, review r2). It is the
+ * only user-visible output of the `reason` parameter, and it is emitted once
+ * per PROCESS — which the suites above have already spent — so these cases
+ * need a fresh module instance, `llm-config.test.ts`' pattern.
+ */
+describe('the RAG_EF_SEARCH bootstrap notice (#1512, review r2)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mockQuery.mockReset();
+    delete process.env.RAG_EF_SEARCH;
+  });
+
+  afterEach(() => {
+    delete process.env.RAG_EF_SEARCH;
+  });
+
+  // Dynamic on purpose: a static import is bound once, and what these cases
+  // exercise is module LOAD — the one-shot flags a fresh process starts with.
+  // The logger is re-imported the same way so the assertions read whichever
+  // instance the reset registry handed the service.
+  async function freshService() {
+    const service = await import('./admin-settings-service.js');
+    const { logger: freshLogger } = await import('../utils/logger.js');
+    const info = vi.mocked(freshLogger.info);
+    info.mockClear();
+    return {
+      service,
+      messages: () => info.mock.calls.map(([, message]) => message as string),
+    };
+  }
+
+  it('names the read failure on a read-failed bootstrap, and still reports an absent row afterwards', async () => {
+    const { service, messages } = await freshService();
+
+    // A cold resolve whose SELECT threw: "no row" is not established here, and
+    // an operator debugging a floor drop who reads it concludes their save
+    // never landed (review r1).
+    process.env.RAG_EF_SEARCH = '400';
+    mockQuery.mockRejectedValue(new Error('pool exhausted'));
+    expect(await service.resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+    expect(messages()).toHaveLength(1);
+    expect(messages()[0]).toContain('Could not read the rag_ef_search row');
+    expect(messages()[0]).not.toContain('No rag_ef_search row —');
+
+    // …and the accurate diagnosis still gets said. One one-shot flag for both
+    // reasons let the hedged line swallow it for the process lifetime, so the
+    // instance that really has no row only ever saw "could not read" — the
+    // inverse of the confusion the `reason` split was added to prevent.
+    service.invalidateRagEfSearchCache();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ rows: [] });
+    expect(await service.resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+    expect(messages()).toHaveLength(2);
+    expect(messages()[1]).toContain('No rag_ef_search row —');
+  });
+
+  it('says each reason once, not once per resolve', async () => {
+    // Why the flags exist at all: this runs on every kNN probe's cache miss.
+    const { service, messages } = await freshService();
+    process.env.RAG_EF_SEARCH = '400';
+    mockQuery.mockResolvedValue({ rows: [] });
+    for (let i = 0; i < 3; i++) {
+      service.invalidateRagEfSearchCache();
+      expect(await service.resolveRagEfSearch()).toEqual({ value: 400, source: 'env' });
+    }
+    expect(messages()).toHaveLength(1);
   });
 });
