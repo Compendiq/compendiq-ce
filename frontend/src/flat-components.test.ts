@@ -158,8 +158,38 @@ function stringBodies(text: string): string[] {
 }
 
 /**
+ * The `${…}` regions of a template body, as index pairs, with BALANCED braces.
+ *
+ * A regex cannot do this: `\$\{[^{}]*\}` stops at the first `}`, so any
+ * interpolation holding an object literal, a nested template or a second
+ * interpolation is mis-cut and its tail is left inline in the class-list text,
+ * where it reads as neither a class list nor prose.
+ */
+function interpolations(body: string): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (let i = 0; i < body.length - 1; i += 1) {
+    if (body[i] !== '$' || body[i + 1] !== '{') continue;
+    let depth = 0;
+    for (let j = i + 1; j < body.length; j += 1) {
+      const c = body[j]!;
+      if (c === '{') depth += 1;
+      else if (c === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          out.push({ start: i, end: j + 1 });
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * The candidate CLASS LISTS in a file: a quoted body cut at every `${…}`
- * interpolation, every newline, and every `"` or backtick inside it.
+ * interpolation, every newline, and every `"` or backtick inside it — plus, for
+ * each interpolation, the class lists nested INSIDE it.
  *
  * A rule that exempts has to judge the SEGMENT its match sits in, never the
  * whole body — `clsx` calls, template literals and any residual desync put
@@ -170,15 +200,41 @@ function stringBodies(text: string): string[] {
  * `` `p-2 ${size} shadow-lg` `` is a class list with a hole in the middle, and
  * the hole is not a Tailwind token.
  *
+ * Cutting is not DISCARDING, and the version before this one discarded: `${…}`
+ * was a split DELIMITER, so
+ * `` className={`px-3 ${on ? 'bg-action shadow-lg' : 'text-muted'}`} `` — the
+ * dominant shape for a conditional class in this tree — lost both of its nested
+ * class lists before any rule ran, and `stringBodies` never recovered them,
+ * because a `'` inside a backtick body is plain content. Measured on this tree,
+ * 27 live class lists across 12 files were invisible that way, and the pattern
+ * this rule replaces saw every one of them (as part of the merged backtick
+ * body), so discarding made the guard strictly WEAKER than its predecessor. An
+ * interpolation is CODE: it is scanned as code, and the string literals inside
+ * it are class lists in their own right.
+ *
  * `'` is deliberately NOT a cut: it is legal inside a class list, in
  * `before:content-['']`, and cutting there splits a real attribute in half.
  */
 function classSegments(text: string): string[] {
   const out: string[] = [];
-  for (const body of stringBodies(text)) {
-    for (const chunk of body.split(/\$\{[^{}]*\}|[\n"`]/)) out.push(chunk);
-  }
+  collectSegments(text, out);
   return out;
+}
+
+function collectSegments(code: string, out: string[]): void {
+  for (const body of stringBodies(code)) {
+    let cut = 0;
+    for (const { start, end } of interpolations(body)) {
+      pushChunks(body.slice(cut, start), out);
+      collectSegments(body.slice(start + 2, end - 1), out);
+      cut = end;
+    }
+    pushChunks(body.slice(cut), out);
+  }
+}
+
+function pushChunks(chunk: string, out: string[]): void {
+  for (const piece of chunk.split(/[\n"`]/)) out.push(piece);
 }
 
 const PALETTE =
@@ -192,7 +248,7 @@ const PALETTE =
  * child variants (`*:mt-0`) and the BEM-ish project classes that live in the same
  * attributes (`drawio-nodeview__btn--edit`).
  *
- * Two cases to keep in mind when touching this, both of which turn a real class
+ * Three cases to keep in mind when touching this, all of which turn a real class
  * list into "prose" and so exempt every banned utility standing in it:
  *   - `p-1.5` carries a `.`, so the obvious "letters, digits and hyphens" token
  *     test rejects it and a bare `shadow` in that same list walks out through
@@ -202,15 +258,61 @@ const PALETTE =
  *     are live class lists here, and a `\[[^\]]*\]` bracket stops at the first
  *     inner `]`. Both lists were being read as prose, which exempted all twelve
  *     shadow spellings the pre-v4 pattern caught in them.
+ *   - third-party classes are not all lowercase. `ProseMirror` (tiptap),
+ *     `Toastify__toast` and `mermaid` render targets sit in the same attributes
+ *     as utilities, and a lowercase-only bare token rejected them — so
+ *     `"ProseMirror p-1.5 shadow-lg"` was prose and the `shadow-lg` was exempt.
+ *     `PROSE_WORD` is matched case-insensitively for exactly this reason, so a
+ *     capitalised sentence keeps the verdict it had when capitals were rejected
+ *     outright — accepting capitals only ever ADDS class lists, never prose.
  *
- * The bracket sub-grammar is spelled out to a fixed depth rather than made
- * recursive because JS regexes have no recursion. Each level's alternatives are
- * disjoint on their first character, so there is no ambiguity to backtrack over.
+ * Bracket and paren groups are MASKED by a balanced scan rather than spelled out
+ * as a fixed-depth regex sub-grammar. JS regexes have no recursion, so the
+ * version before this one enumerated three levels — and a fourth-level nest
+ * (`[&_pre:not([data-x[y[z]]])]:p-4` is legal Tailwind) fell off the end and
+ * silently made the whole list prose. A scan has no depth to run out of.
  */
-const BRACKET_D1 = String.raw`\[[^\[\]]*\]`;
-const BRACKET_D2 = String.raw`\[(?:[^\[\]]|${BRACKET_D1})*\]`;
-const BRACKET = String.raw`\[(?:[^\[\]]|${BRACKET_D2})*\]`;
-const TOKEN_PART = String.raw`(?:[a-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|${BRACKET}|\((?:--)?[^)]*\))`;
+const GROUP_MARK = '\u0001';
+
+/**
+ * Every balanced `[…]` / `(…)` group in a token replaced by one placeholder, so
+ * the shape test below can be a flat regex at any nesting depth. `null` when the
+ * brackets do not balance: an unbalanced bracket is not a token shape, and it is
+ * part of what tells prose (`the shadow (see below)`) from a class list.
+ *
+ * Each opener counts only its OWN kind, so an unbalanced paren inside an
+ * arbitrary value — legal, `[a)b]` — still masks as one group.
+ */
+function maskGroups(token: string): string | null {
+  let out = '';
+  let i = 0;
+  while (i < token.length) {
+    const c = token[i]!;
+    if (c === ']' || c === ')') return null;
+    if (c !== '[' && c !== '(') {
+      out += c;
+      i += 1;
+      continue;
+    }
+    const close = c === '[' ? ']' : ')';
+    let depth = 0;
+    let j = i;
+    for (; j < token.length; j += 1) {
+      const d = token[j]!;
+      if (d === c) depth += 1;
+      else if (d === close) {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    if (j === token.length) return null;
+    out += GROUP_MARK;
+    i = j + 1;
+  }
+  return out;
+}
+
+const TOKEN_PART = String.raw`(?:[A-Za-z0-9_]+(?:\.[a-z0-9]+)?|\*{1,2}|${GROUP_MARK})`;
 const TAILWIND_TOKEN = new RegExp(`^!?@?-{0,2}${TOKEN_PART}(?:[-:/]{1,2}${TOKEN_PART})*!?$`);
 
 /**
@@ -223,10 +325,11 @@ const TAILWIND_TOKEN = new RegExp(`^!?@?-{0,2}${TOKEN_PART}(?:[-:/]{1,2}${TOKEN_
  * hyphen, a colon or a bracket and so is never tested against this list.
  */
 const PROSE_WORD =
-  /^(?:a|an|the|and|or|but|nor|so|yet|if|then|else|than|that|this|these|those|it|its|they|them|their|we|our|us|you|your|he|she|his|her|i|me|my|is|are|was|were|be|been|being|am|has|have|had|having|do|does|did|done|will|would|shall|should|can|could|may|might|must|ought|of|to|in|into|on|onto|at|by|for|with|without|within|from|as|about|above|below|under|underneath|over|across|through|during|before|after|since|until|unless|while|when|where|which|who|whom|whose|what|why|how|because|although|though|however|therefore|thus|hence|instead|due|via|per|versus|vs|plus|minus|not|no|never|always|still|already|again|also|just|only|even|ever|too|very|more|most|less|least|many|much|few|several|some|any|all|each|every|both|either|neither|none|one|two|three|other|others|another|same|such|own|here|there|now|once|yes|ok|okay|change|changes|changed|means|meant)$/;
+  /^(?:a|an|the|and|or|but|nor|so|yet|if|then|else|than|that|this|these|those|it|its|they|them|their|we|our|us|you|your|he|she|his|her|i|me|my|is|are|was|were|be|been|being|am|has|have|had|having|do|does|did|done|will|would|shall|should|can|could|may|might|must|ought|of|to|in|into|on|onto|at|by|for|with|without|within|from|as|about|above|below|under|underneath|over|across|through|during|before|after|since|until|unless|while|when|where|which|who|whom|whose|what|why|how|because|although|though|however|therefore|thus|hence|instead|due|via|per|versus|vs|plus|minus|not|no|never|always|still|already|again|also|just|only|even|ever|too|very|more|most|less|least|many|much|few|several|some|any|all|each|every|both|either|neither|none|one|two|three|other|others|another|same|such|own|here|there|now|once|yes|ok|okay|change|changes|changed|means|meant)$/i;
 
 function isTailwindToken(token: string): boolean {
-  if (!TAILWIND_TOKEN.test(token)) return false;
+  const masked = maskGroups(token);
+  if (masked === null || !TAILWIND_TOKEN.test(masked)) return false;
   return !PROSE_WORD.test(token);
 }
 
@@ -248,21 +351,36 @@ function isClassList(segment: string): boolean {
  * `(--custom-prop)` shorthand, a theme shadow by name, and coloured shadows with
  * or without an alpha. `shadow-none` is deliberately absent: it paints nothing.
  *
- * There are four families, not two. The range this repo pins — `tailwindcss
+ * There are more than two families. The range this repo pins — `tailwindcss
  * ^4.2.1`, 4.3.0 resolved — ships `--text-shadow-*` (v4.1) and `--inset-shadow-*`
  * (v4.0) theme keys alongside `--shadow-*` and `--drop-shadow-*`,
  * so `text-shadow-lg` and `inset-shadow-sm` are live spellings of the thing this
  * rule bans. The pre-v4 pattern caught both of them incidentally, through its
  * leading `\b`; an anchored `^(?:drop-)?shadow` does not, and dropping them
  * would have made this rule WEAKER than the one it replaces on 26 token shapes.
+ *
+ * That `\b` in fact accepts ANY hyphenated prefix, so the enumerated list was
+ * still 532 token shapes short — every `box-shadow…` and `ring-shadow…`
+ * spelling, including the raw CSS property `box-shadow` that ADR-010 bans by the
+ * same clause. The prefix is therefore open: any hyphen-separated head, which is
+ * exactly what the pattern this replaces matched. No Tailwind utility and no
+ * project class in this tree ends in `-shadow` for another reason, and the
+ * enumerated families stay in the comment above because they are the ones with
+ * theme keys behind them.
+ *
+ * Arbitrary values are matched to the LAST bracket rather than by a depth-limited
+ * sub-grammar, for the same reason the token shape is masked by a scan: the
+ * pattern this replaces caught `shadow-[` at any nesting depth, so anything
+ * bounded is a regression.
  */
-const SHADOW_FAMILY = 'drop-|text-|inset-';
+const SHADOW_FAMILY = String.raw`(?:[A-Za-z0-9]+-)*`;
 const SHADOW_ROLE =
   'black|white|current|transparent|inherit|primary|secondary|accent|muted|card|popover|border|input|ring|foreground|background|destructive|success|warning|info|action';
+const ARBITRARY = String.raw`\[\S*\]`;
 const SHADOW_UTILITY = new RegExp(
-  `^(?:${SHADOW_FAMILY})?shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|inner)|-${BRACKET}|-\\((?:--)?[^)]*\\)` +
+  `^${SHADOW_FAMILY}shadow(?:-(?:2xs|xs|sm|md|lg|xl|2xl|inner)|-${ARBITRARY}|-\\([^\\s]*\\)` +
     `|-(?:${PALETTE})-\\d{2,3}|-(?:${SHADOW_ROLE})|-overlay(?:-sm)?)?` +
-    `(?:\\/(?:${BRACKET}|\\d{1,3}(?:\\.\\d+)?))?$`,
+    `(?:\\/(?:${ARBITRARY}|\\d{1,3}(?:\\.\\d+)?))?$`,
 );
 
 /**
@@ -642,6 +760,15 @@ describe('the shadow guard is itself under test', () => {
     // The premise the two superset cells rest on. A real class list read as
     // prose is exempt from every rule in this file, so this has to be measured
     // against something other than the predicate under test.
+    //
+    // The oracle's bar — two independently-recognised utilities — leaves a blind
+    // region: 1157 of this tree's 4865 static `className` attributes are short
+    // enough that the oracle cannot see them either, and a grammar misjudgement
+    // inside one of them would be silent here. So the second half of this cell
+    // drops the oracle entirely: a static `className="…"` attribute IS a class
+    // list, by definition, whatever it contains. That sample needs no predicate
+    // and no scanner, and it is what makes `ProseMirror`-style capitals and
+    // fourth-level bracket nests loud instead of latent.
     const misjudged: string[] = [];
     let seen = 0;
     for (const file of FILES) {
@@ -651,9 +778,19 @@ describe('the shadow guard is itself under test', () => {
         if (!isClassList(segment)) misjudged.push(`${file.path}: ${segment.trim().slice(0, 90)}`);
       }
     }
+    let attributes = 0;
+    for (const file of FILES) {
+      for (const attr of file.text.matchAll(/className="([^"]*)"/g)) {
+        const value = attr[1]!.trim();
+        if (value === '') continue;
+        attributes += 1;
+        if (!isClassList(value)) misjudged.push(`${file.path}: attr "${value.slice(0, 90)}"`);
+      }
+    }
     expect(seen, 'the oracle matched nothing — the sweep or the oracle is broken').toBeGreaterThan(2000);
+    expect(attributes, 'no static className attributes found — the walk broke').toBeGreaterThan(4000);
     expect(
-      misjudged,
+      misjudged.slice(0, 12),
       'these are class lists by any reading, and the token grammar calls them ' +
         'prose — every banned utility in them is exempt',
     ).toEqual([]);
@@ -779,13 +916,32 @@ describe('the shadow guard is itself under test', () => {
     // never merged into a body that has prose in it: one merged body lets a
     // single prose sentence exempt every class list beside it. Before the
     // newline resync this cell reported 152 across 8 files.
+    //
+    // The sample has to come from the RAW FILE TEXT, and the version before this
+    // one drew half of it from `className="…"` attributes alone. That is the one
+    // shape the scanner cannot lose, so the cell was structurally incapable of
+    // failing on the scanner's actual live failure mode: a class list inside a
+    // `${…}` interpolation is not an attribute, so when `classSegments` was
+    // discarding interpolations, 27 real class lists across 12 files vanished
+    // from the segment stream and this cell stayed green with `invisible === 0`.
+    // The oracle-filtered quoted literals below are drawn from the text with no
+    // reference to `stringBodies` or `classSegments`, so a segment the scanner
+    // never emits is still in the sample.
     const invisible: string[] = [];
+    let checked = 0;
     for (const file of FILES) {
       const segments = new Set(file.segments);
-      for (const attr of file.text.matchAll(/className="([^"]*)"/g)) {
-        if (!segments.has(attr[1]!)) invisible.push(`${file.path}: ${attr[1]!.slice(0, 70)}`);
+      const candidates: string[] = [];
+      for (const attr of file.text.matchAll(/className="([^"]*)"/g)) candidates.push(attr[1]!);
+      for (const literal of file.text.matchAll(/(['"])([^'"\n\\]*)\1/g)) {
+        if (looksLikeClassList(literal[2]!)) candidates.push(literal[2]!);
+      }
+      for (const candidate of candidates) {
+        checked += 1;
+        if (!segments.has(candidate)) invisible.push(`${file.path}: ${candidate.slice(0, 70)}`);
       }
     }
+    expect(checked, 'the sample is empty — the enumeration broke').toBeGreaterThan(4000);
     expect(
       invisible.length,
       `${invisible.length} class lists are invisible to the sweep as their own ` +
@@ -828,5 +984,80 @@ describe('the shadow guard is itself under test', () => {
   it('sees a class list that has an interpolation in the middle of it', () => {
     // The fixture is a single-quoted string on purpose: the `${…}` is the hole.
     expect(flagged('const cls = `p-2 ${size} shadow-lg`;')).toEqual(['shadow-lg']);
+  });
+
+  it('sees the class lists INSIDE an interpolation, not just the text around it', () => {
+    // The dominant shape for a conditional class in this tree, and the hole that
+    // made the first version of this rule strictly weaker than the pattern it
+    // replaces: `${…}` was a split DELIMITER, so both branches of the ternary
+    // were deleted before any rule ran. Verbatim from CustomRoleEditor.tsx, with
+    // a shadow added to the active branch.
+    const conditional = [
+      '                className={`rounded-md px-3 py-1.5 text-sm transition-colors ${',
+      "                  activeSection === 'edit'",
+      "                    ? 'bg-action/15 text-action font-medium shadow-lg'",
+      "                    : 'text-muted-foreground hover:bg-foreground/5'",
+      '                }`}',
+    ].join('\n');
+    expect(classSegments(conditional)).toContain('bg-action/15 text-action font-medium shadow-lg');
+    expect(flagged(conditional)).toEqual(['shadow-lg']);
+  });
+
+  it('cuts an interpolation at its own closing brace, not at the first one', () => {
+    // `\$\{[^{}]*\}` stops at the first `}`, so an interpolation carrying an
+    // object literal was mis-cut and its tail was left inline in the class-list
+    // text — where it is neither a class list nor prose, and so exempt.
+    const braced = "const cls = `p-2 ${cn({ 'shadow-lg': on })} rounded-md`;";
+    expect(flagged(braced)).toEqual(['shadow-lg']);
+  });
+
+  it('reads an uppercase third-party class as a class, not as prose', () => {
+    // tiptap renders into `.ProseMirror`, react-toastify into `.Toastify__toast`,
+    // and both spellings share attributes with utilities. A lowercase-only bare
+    // token made `"ProseMirror p-1.5 shadow-lg"` prose, which exempted the
+    // shadow — the same hole as `p-1.5`, one case class further out.
+    expect(isTailwindToken('ProseMirror')).toBe(true);
+    expect(flagged(`<div className="ProseMirror ${THEME_SWATCH} shadow-lg" />`)).toEqual([
+      'shadow-lg',
+    ]);
+    // And prose stays prose when it is capitalised, which is what `PROSE_WORD`'s
+    // case-insensitivity buys: accepting capitals must only ever ADD class lists,
+    // so a token that used to be prose BECAUSE capitals were rejected has to
+    // still be prose now that they are accepted. `Every` is the whole fixture:
+    // it is a function word and nothing else in the fragment is one.
+    expect(isClassList('The shadow migration changed underneath it')).toBe(false);
+    expect(isClassList('Every Shadow Removed')).toBe(false);
+  });
+
+  it('reads an arbitrary selector nested past three brackets as a class', () => {
+    // The bracket sub-grammar used to be spelled out to a fixed depth, and a
+    // legal fourth level fell off the end and made the whole list prose.
+    const deep = '[&_pre:not([data-x[y[z]]])]:p-4';
+    expect(isTailwindToken(deep)).toBe(true);
+    expect(flagged(`<div className="${deep} p-1.5 shadow-lg" />`)).toEqual(['shadow-lg']);
+    // Unbalanced brackets are still not a token shape — that is what keeps
+    // `the shadow (see below)` prose.
+    expect(isTailwindToken('(see')).toBe(false);
+    expect(isClassList('a shadow (see below) under the card')).toBe(false);
+  });
+
+  it('catches the raw `box-shadow` property, which the pre-v4 pattern also caught', () => {
+    // The pre-v4 pattern's `\b` accepted ANY hyphenated prefix, so an enumerated
+    // family list was 532 token shapes short. `box-shadow` is not a Tailwind
+    // utility — it is the CSS property ADR-010 bans by the same clause — and
+    // dropping it would have been a regression against the rule this replaces.
+    for (const form of ['box-shadow', 'ring-shadow-lg', 'inset-shadow-sm', 'text-shadow-lg']) {
+      expect(PRE_V4_PATTERN.test(form), `${form} was caught before`).toBe(true);
+      expect(flagged(`<div className="${THEME_SWATCH} ${form}" />`), form).toEqual([form]);
+    }
+  });
+
+  it('flags an arbitrary shadow value nested past three brackets', () => {
+    // The pre-v4 pattern caught `shadow-[` at any depth; a depth-limited
+    // sub-grammar in the shadow pattern itself would have been the same
+    // regression one layer down.
+    const form = 'shadow-[0_0_8px_var(--x,rgb(0_0_0/[0.3]))]';
+    expect(PRE_V4_PATTERN.test(form)).toBe(true);
+    expect(flagged(`<div className="${THEME_SWATCH} ${form}" />`)).toEqual([form]);
   });
 });
