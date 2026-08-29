@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { PagesPage } from './PagesPage';
 import { FIND_LABEL, FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
+import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 
 // No <Toaster/> is mounted in these unit tests (it lives at the app root,
 // main.tsx), so a real `toast()` call renders nothing this suite can query.
@@ -180,7 +181,20 @@ const mockPinnedResponse = {
 
 const emptyPinnedResponse = { items: [], total: 0 };
 
-function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
+/**
+ * Settings for a user whose Confluence really is connected — a PAT plus at
+ * least one selected space.
+ *
+ * #1402 phase 3 branches the browse-empty state on exactly that pair, so the
+ * `{}` default below now means "nothing connected at all" and the tests that
+ * assert the *other* branch's copy must say so.
+ */
+const mockConnectedSettings = { hasConfluencePat: true, selectedSpaces: ['DEV'] };
+
+function mockFetchWithPages(
+  pagesResponse: ReturnType<typeof makeManyPages>,
+  settings: Record<string, unknown> = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     if (url.includes('/embeddings/status')) {
@@ -209,7 +223,7 @@ function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
       });
     }
     if (url.includes('/settings')) {
-      return new Response(JSON.stringify({}), {
+      return new Response(JSON.stringify(settings), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -690,19 +704,31 @@ describe('PagesPage', () => {
   describe('empty state (no pages)', () => {
     const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 
+    // Confluence is connected in both of these: the "no spaces connected"
+    // branch below is a different diagnosis and carries different copy.
     it('renders EmptyState with "No pages found" title', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
     });
 
     it('shows "Go to Settings" action button when no search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
       expect(screen.getByText('Create a Page')).toBeInTheDocument();
+    });
+
+    it('keeps the corpus-empty copy verbatim once spaces are connected', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, mockConnectedSettings);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText('Create a page, or connect a Confluence space to fill this list'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
     });
 
     it('shows "Try a different search term" when search is active', async () => {
@@ -799,6 +825,138 @@ describe('PagesPage', () => {
         fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
 
         expect(await screen.findByText(/and 1 more/)).toBeInTheDocument();
+      });
+    });
+
+    // --- "No spaces connected" is a different diagnosis (#1402 phase 3) ---
+    //
+    // One generic block used to answer two unrelated questions. A user who
+    // has never entered a PAT was told to "create a page, or connect a
+    // Confluence space" and handed a `Go to Settings` button that landed on
+    // the settings root, leaving them to find the Confluence panel themselves
+    // — while a user with three spaces synced and genuinely zero local pages
+    // read the same sentence and was sent to a screen they had already
+    // finished with. Both branches read from the `settings` this component
+    // already fetches; neither adds a request.
+    describe('when no Confluence spaces are connected', () => {
+      /** Renders the current path so the CTA's destination can be read. */
+      function PathProbe() {
+        const location = useLocation();
+        return <span data-testid="path-probe">{location.pathname}</span>;
+      }
+
+      function renderWithProbe() {
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        return render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/']}>
+              <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+                <PathProbe />
+                <PagesPage />
+              </div>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      }
+
+      it('names the missing connection instead of blaming an empty corpus', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: false,
+          selectedSpaces: [],
+        });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+          'No Confluence spaces connected',
+        );
+        expect(
+          screen.getByText(
+            "Connect your Confluence Data Center instance to sync your team's documentation and knowledge bases.",
+          ),
+        ).toBeInTheDocument();
+        // The old sentence is the other branch's, and must not double up.
+        expect(
+          screen.queryByText('Create a page, or connect a Confluence space to fill this list'),
+        ).not.toBeInTheDocument();
+      });
+
+      it('offers "Connect Confluence" rather than a bare "Go to Settings"', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: false,
+          selectedSpaces: [],
+        });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        expect(await screen.findByText('Connect Confluence')).toBeInTheDocument();
+        expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+        // Creating a local page is still the escape hatch for someone who
+        // never intends to connect Confluence at all.
+        expect(screen.getByText('Create a Page')).toBeInTheDocument();
+      });
+
+      it('lands the CTA on the Confluence panel, not the settings root', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: false,
+          selectedSpaces: [],
+        });
+        renderWithProbe();
+
+        fireEvent.click(await screen.findByText('Connect Confluence'));
+
+        await waitFor(() =>
+          expect(screen.getByTestId('path-probe')).toHaveTextContent(CONFLUENCE_SETTINGS_PATH),
+        );
+      });
+
+      // A PAT with nothing selected syncs nothing, so the library is empty for
+      // the same reason and the same remedy applies.
+      it('still points at Confluence when a PAT exists but no space is selected', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: true,
+          selectedSpaces: [],
+        });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+          'No Confluence spaces connected',
+        );
+      });
+
+      it('does not blame the connection when the user\'s own filter emptied the list', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: false,
+          selectedSpaces: [],
+        });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText(/No pages match Freshness: Stale/)).toBeInTheDocument();
+        expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+        expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
+      });
+
+      it('does not blame the connection when a search returned nothing', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>, {
+          hasConfluencePat: false,
+          selectedSpaces: [],
+        });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+          target: { value: 'nonexistent' },
+        });
+
+        expect(await screen.findByText('Try a different search term')).toBeInTheDocument();
+        expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+        expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
       });
     });
   });

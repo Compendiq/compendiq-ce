@@ -36,6 +36,7 @@ import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { SanitizedHtml } from '../../shared/components/SanitizedHtml';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 import { OnboardingChecklistCard } from '../onboarding/OnboardingChecklistCard';
 import { NotionImportDialog } from './notion-import/NotionImportDialog';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
@@ -696,6 +697,26 @@ export function PagesPage() {
   }, [spaceKey, selectedSpace, author, labels, freshness, embeddingStatus, qualityFilter, dateFrom, dateTo, sourceFilter]);
 
   const activeFilterCount = activeFilters.length;
+
+  /**
+   * Why the browse list is empty — three answers, not one (#1402 phase 3).
+   *
+   * A filter or a search term emptying the list is the user's own doing and
+   * already says which. What was left undiagnosed is the unfiltered case: it
+   * used to read "create a page, or connect a Confluence space" and offer a
+   * `Go to Settings` button to the settings ROOT, whether the user had three
+   * spaces synced and genuinely no local pages, or had never entered a PAT and
+   * so had no corpus at all. The second reader was told to go find the right
+   * panel themselves; the first was sent back to a screen they had finished
+   * with.
+   *
+   * Both halves read the `settings` this component already fetches for its
+   * KPIs — `hasConfluencePat` and `selectedSpaces` are on `GET /settings`, and
+   * a PAT with nothing selected syncs nothing, so it is the same dead end.
+   */
+  const unfilteredEmpty = activeFilterCount === 0 && !search;
+  const promptConfluenceConnect =
+    unfilteredEmpty && (!settings?.hasConfluencePat || settings.selectedSpaces.length === 0);
 
   // #1351: Space stopped being one of the filters semantic/hybrid ignore —
   // vectorSearch/hybridSearch now apply an explicit space_key predicate
@@ -1921,21 +1942,25 @@ export function PagesPage() {
             <EmptyState
               icon={FolderOpen}
               className="border-0 bg-transparent"
-              title="No pages found"
+              title={promptConfluenceConnect ? 'No Confluence spaces connected' : 'No pages found'}
               description={
-                activeFilterCount > 0
-                  ? (search
-                      ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
-                      : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                  : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
+                promptConfluenceConnect
+                  ? "Connect your Confluence Data Center instance to sync your team's documentation and knowledge bases."
+                  : activeFilterCount > 0
+                    ? (search
+                        ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
+                        : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
+                    : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
-                activeFilterCount > 0
-                  ? { label: 'Clear filters', onClick: clearAllFilters }
-                  : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+                promptConfluenceConnect
+                  ? { label: 'Connect Confluence', onClick: () => navigate(CONFLUENCE_SETTINGS_PATH) }
+                  : activeFilterCount > 0
+                    ? { label: 'Clear filters', onClick: clearAllFilters }
+                    : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
               }
               secondaryAction={
-                activeFilterCount === 0 && !search
+                unfilteredEmpty
                   ? { label: 'Create a Page', onClick: () => navigate('/pages/new') }
                   : undefined
               }
