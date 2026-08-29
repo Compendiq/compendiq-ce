@@ -1768,7 +1768,7 @@ export function PagesPage() {
                                 className="nm-focus-ring flex min-w-0 flex-1 items-center gap-3 text-left max-sm:flex-wrap max-sm:gap-y-1 rounded-sm"
                               >
                                 <div className="min-w-0 flex-1 text-left max-sm:basis-auto max-sm:max-w-[calc(100%-30px)]">
-                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
+                                  <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground">
                                     {item.icon && <PageIcon icon={item.icon} pageId={itemId} size="row" />}
                                     <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                                   </p>
@@ -1780,15 +1780,22 @@ export function PagesPage() {
                                       className="mt-0.5 line-clamp-2 text-xs text-muted-foreground leading-relaxed max-sm:[contain:inline-size] [&_mark]:rounded-[2px] [&_mark]:bg-action/15 [&_mark]:font-medium [&_mark]:text-foreground"
                                     />
                                   )}
-                                {item.spaceKey && (
-                                  <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                                    {item.spaceKey !== '__local__' ? (
+                                  {item.spaceKey && item.spaceKey !== '__local__' && (
+                                    <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                                      <span title={item.spaceKey}>{spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}</span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="hidden shrink-0 items-center gap-2 sm:flex">
+                                  {item.spaceKey && (
+                                    item.spaceKey !== '__local__' ? (
                                       <span
                                         className={cn('shrink-0', neutralChipClass)}
                                         data-testid="badge-confluence"
                                         data-source-badge={item.id}
                                       >
-                                        {spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}
+                                        Confluence
                                       </span>
                                     ) : (
                                       <span
@@ -1798,22 +1805,21 @@ export function PagesPage() {
                                       >
                                         Local
                                       </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                                    )
+                                  )}
+                                </div>
 
-                              {/* Similarity only — renderable cosine distance percentage */}
-                              {item.similarity !== null && item.similarity > 0 && (
-                                <span
-                                  title="Semantic similarity to your query"
-                                  className="shrink-0 rounded bg-muted/80 px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/50"
-                                >
-                                  {(item.similarity * 100).toFixed(0)}%
-                                </span>
-                              )}
-                            </button>
-                          </div>
+                                {/* Similarity only — renderable cosine distance percentage */}
+                                {item.similarity !== null && item.similarity > 0 && (
+                                  <span
+                                    title="Semantic similarity to your query"
+                                    className="shrink-0 rounded bg-muted/80 px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground border border-border/50"
+                                  >
+                                    {(item.similarity * 100).toFixed(0)}%
+                                  </span>
+                                )}
+                              </button>
+                            </div>
                         </m.div>
                       );
                     })}
