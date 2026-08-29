@@ -1953,7 +1953,7 @@ describe('PagesPage', () => {
     it('Private badge uses the neutral tint, not amber/primary/warning', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-private');
+      const badge = (await screen.findAllByTestId('badge-private'))[0];
       expect(badge).toHaveTextContent('Private');
       expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
       expect(badge.className).toContain('bg-foreground/10');

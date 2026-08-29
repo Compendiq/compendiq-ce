@@ -162,21 +162,38 @@ describe('PagesPage row: mobile title layout', () => {
     expect(title.className).not.toContain('max-sm:w-full');
   });
 
-  it('keeps the source/visibility badges in the title row wrap container', async () => {
+  it('sets browse titles at text-sm, not 13px', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const title = await findTitle();
+    const line = titleLine(title);
+    expect(line.className).toContain('text-sm');
+    expect(line.className).not.toContain('text-[13px]');
+  });
+
+
+  it('keeps source/visibility badges in the title wrap on mobile and on the right rail at sm+', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const title = await findTitle();
     const titleRow = titleLine(title).parentElement as HTMLElement;
-    // The badges land under the title only if they live in the SAME wrap
-    // container. A refactor that moves them out (say, into the trailing
-    // cluster) would strand them off-screen or hide them on mobile.
-    const local = screen.getAllByTestId('badge-local')[0];
-    const shared = screen.getAllByTestId('badge-shared')[0];
-    expect(local.parentElement).toBe(titleRow);
-    expect(shared.parentElement).toBe(titleRow);
-    // shrink-0 stays: on a shared line the badges hold their width and the
-    // title is the element that truncates — that contract is unchanged.
-    expect(local.className).toContain('shrink-0');
-    expect(shared.className).toContain('shrink-0');
+    const button = title.closest('button') as HTMLElement;
+    const local = screen.getAllByTestId('badge-local');
+    const shared = screen.getAllByTestId('badge-shared');
+    const mobileLocal = local.find((el) => el.className.includes('sm:hidden'));
+    const mobileShared = shared.find((el) => el.className.includes('sm:hidden'));
+    const desktopLocal = local.find((el) => !el.className.includes('sm:hidden'));
+    const desktopShared = shared.find((el) => !el.className.includes('sm:hidden'));
+    expect(mobileLocal).toBeDefined();
+    expect(mobileShared).toBeDefined();
+    expect(desktopLocal).toBeDefined();
+    expect(desktopShared).toBeDefined();
+    expect(mobileLocal!.parentElement).toBe(titleRow);
+    expect(mobileShared!.parentElement).toBe(titleRow);
+    expect(titleRow.contains(desktopLocal!)).toBe(false);
+    expect(titleRow.contains(desktopShared!)).toBe(false);
+    expect(button.contains(desktopLocal!)).toBe(true);
+    expect(button.contains(desktopShared!)).toBe(true);
+    expect(mobileLocal!.className).toContain('shrink-0');
+    expect(mobileShared!.className).toContain('shrink-0');
   });
 
   it('hides idle Not indexed at rest so the list is titles, not pipeline noise', async () => {
@@ -276,12 +293,16 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
    * as PagesPage.test.tsx's #1117 mock does: the chip these tests locate must
    * come from the enhanced leg, as in production.
    */
-  function mockFetchWithSearch() {
+  function mockFetchWithSearch(overrides: {
+    id?: string;
+    title?: string;
+    spaceKey?: string;
+  } = {}) {
     // `mapItems` in use-search.ts reads `snippet` into the row's excerpt.
     const item = {
-      id: 'sr-1',
-      title: searchTitle,
-      spaceKey: 'DEV',
+      id: overrides.id ?? 'sr-1',
+      title: overrides.title ?? searchTitle,
+      spaceKey: overrides.spaceKey ?? 'DEV',
       snippet: searchExcerpt,
       rank: 0.0328,
       similarity: 0.74,
@@ -394,5 +415,24 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     // Classes only — the accessible name must still be the visible text.
     expect(button).not.toHaveAttribute('aria-label');
     expect(button.textContent).toContain(searchTitle);
+  });
+
+  it('keeps a Local source chip visible below sm', async () => {
+    vi.restoreAllMocks();
+    restoreRects = installVirtualizerRectShim();
+    const localTitle = 'Local draft: connection pool notes';
+    mockFetchWithSearch({ id: 'sr-local', title: localTitle, spaceKey: '__local__' });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+      target: { value: 'postgres' },
+    });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+    await screen.findByText(localTitle, undefined, { timeout: 2000 });
+
+    const locals = screen.getAllByTestId('badge-local');
+    expect(locals.some((el) => el.className.includes('sm:hidden'))).toBe(true);
+    expect(locals.some((el) => !el.className.includes('sm:hidden'))).toBe(true);
   });
 });

@@ -10,7 +10,7 @@ export const SEARCH_MODE_LABELS = {
 } as const;
 
 export const SEARCH_MODE_DESCRIPTIONS = {
-  hybrid: 'Combines meaning and keyword signals. Space applies; advanced filters require Keyword.',
-  keyword: 'Matches terms and applies Space plus every advanced filter.',
-  semantic: 'Matches meaning similarity. Space applies; advanced filters require Keyword.',
+  hybrid: 'Hybrid (Recommended): Combines meaning and keyword matching. Space applies; advanced filters require Keyword.',
+  keyword: 'Keyword: Matches exact terms and applies all advanced filters (author, labels, freshness, quality, date, embedding, source).',
+  semantic: 'Semantic: Matches concepts and meaning. Space applies; advanced filters require Keyword.',
 } as const;

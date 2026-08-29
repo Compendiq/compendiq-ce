@@ -79,6 +79,21 @@ describe('PinnedArticlesSection', () => {
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
 
+  it('sets pinned titles at text-sm, not 13px', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      return new Response(JSON.stringify(mockPinnedResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    render(<PinnedArticlesSection />, { wrapper: createWrapper() });
+    const title = await screen.findByText('Getting Started Guide');
+    const line = title.closest('p');
+    expect(line?.className).toContain('text-sm');
+    expect(line?.className).not.toContain('text-[13px]');
+  });
+
+
   it('renders nothing when no pins exist', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
       return new Response(JSON.stringify(emptyPinnedResponse), {

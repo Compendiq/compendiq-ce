@@ -120,7 +120,7 @@ export function PinnedArticlesSection() {
                 }}
                 className="nm-focus-ring min-w-0 flex-1 text-foreground no-underline"
               >
-                <p className="flex min-w-0 items-center gap-1.5 truncate text-[13px] font-medium">
+                <p className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium">
                   {item.icon && <PageIcon icon={item.icon} pageId={item.id} size="row" />}
                   <span className="min-w-0 truncate" title={item.title}>{item.title}</span>
                 </p>
