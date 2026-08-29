@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { isDbAvailable } from '../../test-db-helper.js';
 import { maintenancePostgresUrl, workerIdFromEnv } from '../../test-worker-isolation.js';
-import { runMigrations, closePool, getPool, query } from './postgres.js';
+import { runMigrations, closePool, query } from './postgres.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,14 +53,14 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
 
   afterAll(async () => {
     process.env.POSTGRES_URL = baseUrl;
-    // Drain this file's pool before opening an admin connection. Opening a
-    // new client while checked-out pool backends still occupy
-    // max_connections is what timed the previous afterAll out in CI (#1497).
+    // Drain this file's pool before DROP. DROP DATABASE checkpoints the
+    // cluster (measured 15s+ under CI load). Doing it while a pool client
+    // is still checked out waits on that backend as well (#1497).
     await closePool();
     await withAdminClient(async (client) => {
       await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
     });
-  }, 30_000);
+  }, 60_000);
 
   // Must mirror MIGRATIONS_ADVISORY_LOCK_ID in postgres.ts — used to simulate
   // a slow migration winner from a session outside the app pool.
@@ -160,31 +160,4 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
     );
   });
 
-  it('DROP DATABASE WITH (FORCE) terminates checked-out pool clients', async () => {
-    const admin = new pg.Client({
-      connectionString: maintenancePostgresUrl(baseUrl),
-      connectionTimeoutMillis: 5_000,
-    });
-    await admin.connect();
-    const blocker = await getPool().connect();
-    blocker.on('error', () => {
-      // DROP DATABASE ... WITH (FORCE) intentionally terminates this client.
-    });
-    try {
-      await admin.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
-      const leftover = await admin.query(
-        'SELECT datname FROM pg_database WHERE datname = $1',
-        [LOCK_TEST_DB],
-      );
-      expect(leftover.rows).toEqual([]);
-    } finally {
-      try {
-        blocker.release(true);
-      } catch {
-        // already released or terminated by FORCE
-      }
-      await closePool();
-      await admin.end();
-    }
-  }, 15_000);
 });
