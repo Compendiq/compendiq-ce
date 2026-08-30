@@ -163,6 +163,25 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    * until it is dismissed or a new comparison replaces it.
    */
   const [endedNotice, setEndedNotice] = useState(false);
+  /**
+   * The ending is reported one status round trip BEFORE `status` can show it:
+   * `post()` warns the moment the lifecycle POST returns 200, and `refresh()`
+   * below swallows a failing GET and keeps the last known state — so
+   * `migration.phase` can still read `ready` while the swap has already closed
+   * the migration window server-side and the compare route answers 409
+   * (`llm-embedding-shadow.ts`: `status.phase !== 'ready'`). Deriving the
+   * strip's second sentence from that stale phase alone made it prescribe a
+   * comparison the server refuses, in the same instant as a toast saying
+   * comparing is unavailable — the two surfaces contradicting each other on the
+   * primary path (review r1 of #1533).
+   *
+   * Every path that reports an ending has closed the window server-side, so the
+   * fact is already known here: hold it until a status observation NEWER than
+   * the ending arrives, and word the strip from the fact rather than from a
+   * phase that has not caught up. Cleared in `refresh()`, so a later migration
+   * that genuinely reaches `ready` gets the prescription back.
+   */
+  const [endedWindowUnconfirmed, setEndedWindowUnconfirmed] = useState(false);
   const onCompareRunInFlightChange = useCallback((runId: string | null) => {
     compareRunInFlight.current = runId;
     // A run already reported ended is not "running" for either surface, even
@@ -179,6 +198,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     compareRunInFlight.current = null;
     setCompareRunning(false);
     setEndedNotice(true);
+    setEndedWindowUnconfirmed(true);
     toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
   }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
@@ -186,9 +206,16 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   onActiveChangeRef.current = onActiveChange;
 
   const refresh = useCallback(async () => {
+    // Snapshotted BEFORE the request: an ending reported while this GET was in
+    // flight makes its answer OLDER than the ending, and `warnedFor` changes on
+    // exactly that event (it latches per run id, so two endings cannot share a
+    // value). The 5s poll is in flight across a lifecycle POST often enough to
+    // matter, and its pre-swap `ready` must not be taken for confirmation.
+    const knownEnding = warnedFor.current;
     try {
       const s = await apiFetch<ShadowStatus>('/admin/embedding/shadow-migration');
       setStatus(s);
+      if (warnedFor.current === knownEnding) setEndedWindowUnconfirmed(false);
     } catch {
       // transient — keep the last known state
     }
@@ -389,7 +416,11 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   // the second sentence cannot disagree with what is actually on screen: the
   // `ready` branch is the only one that mounts `EmbeddingShadowCompareSection`
   // and therefore the only one where a new comparison can be started (#1533).
-  const compareControlMounted = migration?.phase === 'ready';
+  // `endedWindowUnconfirmed` covers the one case that phase cannot answer for
+  // itself — the round trip (or the run of failing GETs) in which it is the
+  // PRE-ending phase, where the section is still mounted but the route behind
+  // its Run button already refuses (r1).
+  const compareControlMounted = migration?.phase === 'ready' && !endedWindowUnconfirmed;
 
   // Rendered by EVERY branch below, because the branch is exactly what changes
   // underneath a comparison. Amber, not destructive: the lifecycle action the

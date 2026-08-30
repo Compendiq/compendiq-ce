@@ -949,6 +949,139 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(strip.textContent).not.toMatch(/not available now/i);
       vi.useRealTimers();
     });
+
+    /**
+     * The phase the wording is derived from is not the server's — it is the
+     * last SUCCESSFUL status GET, while the ending is reported the moment the
+     * lifecycle POST returns 200, one round trip earlier (`post()` warns before
+     * it awaits `refresh()`). These three cells pin that window, where
+     * `migration.phase` still reads `ready` although the swap has already
+     * closed the migration window server-side and the compare route answers
+     * 409 (`llm-embedding-shadow.ts`, `status.phase !== 'ready'`).
+     */
+    function mockGatedSwap(statusFor: () => Status) {
+      /** Status GETs held open, each released with a body of the caller's choosing. */
+      const parked: Array<(body: Status | null) => void> = [];
+      const gate = { park: false, fail: false };
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+          return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+        }
+        if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+        if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+        if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+        if (url.includes('/shadow-migration') && method === 'GET') {
+          if (gate.fail) return json({ message: 'status unavailable' }, 500);
+          if (gate.park) {
+            return new Promise<Response>((res) => parked.push((body) => res(json(body ?? statusFor()))));
+          }
+          return json(statusFor());
+        }
+        return json({});
+      });
+      return { parked, gate };
+    }
+
+    it('never prescribes a comparison the swap has already made impossible (r1)', async () => {
+      let phase: 'ready' | 'swapped' = 'ready';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => ({ active: true, migration: { ...MIGRATION, phase } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+
+      // Every status GET from here on hangs, which is what makes the render
+      // between the swap's 200 and the status that reflects it observable.
+      gate.park = true;
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalled());
+
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      // The card is still rendering the PRE-swap branch — this is exactly the
+      // state in which the phase the wording derives from is stale.
+      expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/not available now/i);
+      // …and it says what the toast announcing the same ending says.
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+        expect.not.stringMatching(/start a new comparison/i),
+      );
+
+      // React keeps this region across the ready → swapped transition, so the
+      // text must not mutate either: a polite region whose content changes
+      // announces a SECOND time, and the first announcement would have been
+      // the prescription this cell just ruled out.
+      const announced = strip.textContent;
+      phase = 'swapped';
+      gate.park = false;
+      await act(async () => {
+        parked.splice(0).forEach((release) => release(null));
+      });
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(screen.queryByTestId('shadow-compare-section')).toBeNull());
+      expect(screen.getByTestId('shadow-compare-ended')).toBe(strip);
+      expect(strip.textContent).toBe(announced);
+      vi.useRealTimers();
+    });
+
+    it('keeps naming the condition while the status GET that would confirm the swap fails (r1)', async () => {
+      // `refresh()` swallows a failing status GET and keeps the last known
+      // state, so a stale `ready` outlives the POST's busy window — the wording
+      // may not depend on the confirming request ever landing.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate } = mockGatedSwap(() => ({ active: true, migration: { ...MIGRATION } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      gate.fail = true;
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(12_000);
+
+      // Past the busy window and two polls, still showing the last good status.
+      expect(screen.getByRole('button', { name: /swap to the new model/i })).toBeEnabled();
+      expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
+      const strip = screen.getByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/not available now/i);
+      vi.useRealTimers();
+    });
+
+    it('does not let a status GET that predates the ending restore the prescription (r1)', async () => {
+      // The 5s poll can be in flight when the swap lands, and its response
+      // describes the migration BEFORE it: releasing the hold on ANY
+      // subsequent success would hand that stale `ready` back to the wording.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => ({ active: true, migration: { ...MIGRATION } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      gate.park = true;
+      await vi.advanceTimersByTimeAsync(5_000); // the poll fires and parks, pre-swap
+      expect(parked).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalled());
+      // The pre-swap poll answers only now, AFTER the ending was reported.
+      await act(async () => {
+        parked[0](null);
+      });
+
+      const strip = screen.getByTestId('shadow-compare-ended');
+      expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/not available now/i);
+      vi.useRealTimers();
+    });
   });
 
   describe('the backfilling note asks the server, not this session (r1)', () => {
