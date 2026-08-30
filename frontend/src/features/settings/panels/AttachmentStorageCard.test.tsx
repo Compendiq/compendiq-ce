@@ -1196,7 +1196,9 @@ describe('AttachmentStorageCard (#1349)', () => {
     });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
-    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-dry-run')).not.toHaveAttribute('aria-disabled'),
+    );
     fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
 
     await waitFor(() =>
@@ -1230,7 +1232,9 @@ describe('AttachmentStorageCard (#1349)', () => {
     });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
-    await waitFor(() => expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-delete')).not.toHaveAttribute('aria-disabled'),
+    );
     fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
     fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
 
@@ -1266,7 +1270,9 @@ describe('AttachmentStorageCard (#1349)', () => {
     });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
-    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-dry-run')).not.toHaveAttribute('aria-disabled'),
+    );
     fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
 
     const region = screen.getByTestId('attachment-sweep-announcement');
@@ -1279,7 +1285,9 @@ describe('AttachmentStorageCard (#1349)', () => {
     });
     observer.observe(region, { childList: true, characterData: true, subtree: true });
 
-    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-dry-run')).not.toHaveAttribute('aria-disabled'),
+    );
     fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
 
     await waitFor(() => expect(mutations).toBeGreaterThan(0));
@@ -1300,8 +1308,10 @@ describe('AttachmentStorageCard (#1349)', () => {
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-storage-error');
-    await waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
-    expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByTestId('attachment-sweep-dry-run')).not.toHaveAttribute('aria-disabled'),
+    );
+    expect(screen.getByTestId('attachment-sweep-delete')).not.toHaveAttribute('aria-disabled');
   });
 
   it('marks the card busy while a sweep is running', async () => {
@@ -1310,6 +1320,122 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     await screen.findByTestId('attachment-sweep-running');
     expect(screen.getByTestId('attachment-storage-card')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  /**
+   * #1532. The sweep walks both stores and takes MINUTES on a large corpus,
+   * and for that whole window `actionsDisabled` landed on both buttons as a
+   * native `disabled`. Per the HTML focus fixup rule a control that stops
+   * being focusable is blurred and leaves the tab order, so the operator who
+   * pressed the button was dropped to `<body>` at the top of a ~30-stop
+   * settings panel for the duration — and `nm-button-ghost`'s and
+   * `nm-button-destructive`'s `:disabled` rule adds `pointer-events: none` on
+   * top. CLAUDE.md's Retrieval-panel ruling states the recipe: `aria-disabled`
+   * (announced as disabled by NVDA, JAWS and VoiceOver, so nothing is lost on
+   * that channel) plus a handler that refuses, because `aria-disabled` blocks
+   * no events. `ImageIndexCard` — this card's own named pattern of record — is
+   * converted in the same change.
+   *
+   * jsdom implements none of the fixup, which is why the suite could not see
+   * it: `document.activeElement` stays on a disabled button here. So the
+   * load-bearing cells are the two refusals below and the attribute pair in
+   * `holds both actions with aria-disabled…` at the end of this file; the
+   * retained-focus cell is a regression pin whose real proof is the browser
+   * pass.
+   */
+  it('refuses Dry run while a sweep runs instead of relying on the attribute', async () => {
+    mockApi({ stats: { ...STATS, running: true }, sweep: { ...SWEEP, running: true } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-sweep-running');
+    fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
+
+    await flushAnnouncerPublish();
+    expect(postedBodies).toHaveLength(0);
+  });
+
+  it('refuses Delete orphans while a sweep runs — the dialog never even opens', async () => {
+    // Refusing the POST alone would not be enough: this button opens the
+    // confirm dialog, so a live handler under the busy flag would hand the
+    // operator a dialog whose Confirm then fires the destructive run.
+    mockApi({ stats: { ...STATS, running: true }, sweep: { ...SWEEP, running: true } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-sweep-running');
+    fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
+
+    await flushAnnouncerPublish();
+    expect(screen.queryByTestId('confirm-dialog')).toBeNull();
+    expect(postedBodies).toHaveLength(0);
+  });
+
+  /**
+   * The regression pin. It cannot FAIL in jsdom for the browser reason (no
+   * focus fixup here), so it is not the proof — it is what reds if someone
+   * unmounts, hides or reorders the button under the busy flag.
+   */
+  it('keeps the pressed button focused across the flip into running', async () => {
+    mockApi({ sweepAfterPost: { running: true, lastRun: COMPLETED_RUN } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const dryRun = screen.getByTestId('attachment-sweep-dry-run');
+    dryRun.focus();
+    expect(document.activeElement).toBe(dryRun);
+
+    fireEvent.click(dryRun);
+    await screen.findByTestId('attachment-sweep-running');
+
+    expect(document.activeElement).toBe(screen.getByTestId('attachment-sweep-dry-run'));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  /**
+   * #1531 × #1532, the interaction neither issue proves alone, and the one the
+   * serial browser pass drives: press **Delete orphans**, confirm, and the
+   * button that opened the dialog is BOTH the focus target of
+   * `ConfirmDialog`'s restore AND the control the confirmed run immediately
+   * marks busy.
+   *
+   * Unlike its sibling above this cell is NOT vacuous in jsdom. jsdom does
+   * implement the one half that matters here: `HTMLElement.focus()` on a
+   * natively `disabled` element is a no-op, so had this button kept
+   * `disabled={actionsDisabled}` the restore would land on nothing and focus
+   * would sit on `<body>` — which is exactly what the serial browser pass
+   * measured on the then-unconverted `sync-overview-force-resync-all`
+   * (checklist items 3 and 11 FAIL) and what `SyncTab.test.tsx`'s own
+   * "returns focus to the trigger after confirming" cell now pins there too.
+   * Both halves of the fix are therefore load-bearing: revert the restore and
+   * this reds, revert the attribute and this reds.
+   */
+  it('returns focus to Delete orphans after its own confirm, and holds it through the run', async () => {
+    mockApi({ sweepAfterPost: { running: true, lastRun: COMPLETED_RUN } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const del = screen.getByTestId('attachment-sweep-delete');
+    del.focus();
+    fireEvent.click(del);
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
+
+    // Radix's FocusScope dispatches close-auto-focus from a `setTimeout(…, 0)`
+    // in its effect cleanup, so the restore lands one macrotask after the
+    // unmount commit — asserting sooner reads the window where `<body>` is
+    // legitimately still focused.
+    await flushAnnouncerPublish();
+    await screen.findByTestId('attachment-sweep-running');
+
+    const after = screen.getByTestId('attachment-sweep-delete');
+    // Order is load-bearing (review r2): the FOCUS assertions come first so
+    // that re-adding native `disabled` reds on the fact this cell exists to
+    // pin. With the attribute assertions first, that mutation stopped at
+    // `aria-disabled` — a red the sibling "holds both actions with
+    // aria-disabled…" cell already owns — and the focus half was never
+    // reached, so the quoted mutation proved the wrong thing.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(after);
+    expect(after).toHaveAttribute('aria-disabled', 'true');
+    expect(after).not.toHaveAttribute('disabled');
   });
 
   /**
@@ -1406,7 +1532,9 @@ describe('AttachmentStorageCard (#1349)', () => {
       mockApi({});
       render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
-      await vi.waitFor(() => expect(screen.getByTestId('attachment-sweep-dry-run')).toBeEnabled());
+      await vi.waitFor(() =>
+        expect(screen.getByTestId('attachment-sweep-dry-run')).not.toHaveAttribute('aria-disabled'),
+      );
       fireEvent.click(screen.getByTestId('attachment-sweep-dry-run'));
       // Settle the POST and the two invalidations it fires.
       await vi.advanceTimersByTimeAsync(50);
@@ -1572,14 +1700,18 @@ describe('AttachmentStorageCard (#1349)', () => {
       expect(
         screen.getByTestId('attachment-sweep-dry-run'),
         'the error copy names Dry run as the remedy — it must be pressable',
-      ).toBeEnabled();
-      expect(screen.getByTestId('attachment-sweep-delete')).toBeEnabled();
+      ).not.toHaveAttribute('aria-disabled');
+      expect(screen.getByTestId('attachment-sweep-delete')).not.toHaveAttribute('aria-disabled');
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('disables both actions while a sweep is running', async () => {
+  it('holds both actions with aria-disabled, never native disabled, while a sweep is running', async () => {
+    // #1532 — see the group doc comment on `refuses Dry run while a sweep runs`.
+    // This cell used to read `toBeDisabled()`, which is exactly the shape the
+    // issue is about: native `disabled` blurs the operator's focus and drops
+    // the control out of the tab order for the minutes the walk lasts.
     mockApi({
       stats: { ...STATS, running: true },
       sweep: { ...SWEEP, running: true },
@@ -1587,7 +1719,32 @@ describe('AttachmentStorageCard (#1349)', () => {
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-sweep-running');
-    expect(screen.getByTestId('attachment-sweep-dry-run')).toBeDisabled();
-    expect(screen.getByTestId('attachment-sweep-delete')).toBeDisabled();
+    for (const testId of ['attachment-sweep-dry-run', 'attachment-sweep-delete']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      expect(btn).not.toHaveAttribute('disabled');
+      // Review r1: element `opacity` composites the label, the fill and the 1px
+      // operable border toward the card, so the recipe's 70 put the filled
+      // variant's label at 3.90 (Graphite) / 3.32 (Paper) — under 4.5:1 — and
+      // the ghost variant's border at 2.47 / 2.35 — under 1.4.11's 3:1. At 90
+      // they measure 5.69 / 4.74 and 3.27 / 3.18. Asserted as a FLOOR, like
+      // `RetrievalTab`'s, so a retune upward is free and only a regression
+      // fails. jsdom computes no contrast; the numbers come from the tokens.
+      const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
+      expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
+      // Review r1: both recipes paint a pressed background on `:active`, which
+      // the `:disabled` rule this conversion removed made unreachable. A
+      // keyboard hold matches `:active` with NO `:hover`, so the hover pin
+      // beside it cannot cover the keyboard operator this issue exists for, and
+      // a press the handler refuses would paint as accepted. Ghost holds
+      // transparent; the filled variant holds its resting fill, because its
+      // press is a darkening of that fill.
+      expect(btn.className, testId).toContain(
+        testId === 'attachment-sweep-delete'
+          ? 'aria-disabled:active:bg-destructive'
+          : 'aria-disabled:active:bg-transparent',
+      );
+    }
   });
 });

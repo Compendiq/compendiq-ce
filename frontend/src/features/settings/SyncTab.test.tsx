@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SyncTab } from './panels/SyncTab';
 
@@ -76,6 +76,29 @@ const mockSummaryStatus = {
   isProcessing: false,
 };
 
+/**
+ * Holds `POST /api/pages/bulk/sync` open, so the force re-sync stays PENDING
+ * for the length of an assertion — the multi-minute run #1532 is about,
+ * expressed in a test. `null` (the default, reset in `beforeEach`) resolves
+ * immediately, exactly as the mock behaved before.
+ */
+let bulkSyncGate: Promise<void> | null = null;
+
+/**
+ * Radix's FocusScope dispatches close-auto-focus from a `setTimeout(…, 0)` in
+ * its effect cleanup, so `ConfirmDialog`'s restore (#1531) lands one macrotask
+ * after the closing commit. Asserting focus without this flush reads the
+ * window in which `<body>` legitimately still holds the keyboard — a cell that
+ * would pass fixed and broken alike.
+ */
+async function flushCloseAutoFocus() {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 0);
+    await promise;
+  });
+}
+
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -91,6 +114,7 @@ describe('Settings SyncTab', () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(globalThis, 'fetch');
+    bulkSyncGate = null;
     authState = { user: { role: 'user' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
   });
 
@@ -147,6 +171,7 @@ describe('Settings SyncTab', () => {
       }
 
       if (path.includes('/api/pages/bulk/sync') && options?.method === 'POST') {
+        if (bulkSyncGate) await bulkSyncGate;
         return new Response(JSON.stringify({ succeeded: 2, failed: 0, errors: [] }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -334,6 +359,111 @@ describe('Settings SyncTab', () => {
         expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
       });
       expect(bulkSyncCalls()).toHaveLength(0);
+    });
+
+    /**
+     * #1532 on the panel's THIRD action control, added after the serial
+     * browser pass on `a820e9b7` returned checklist items 3 and 11 FAIL.
+     * `onConfirm` runs `runForceResyncAll()` synchronously, so
+     * `forceResyncMutation.isPending` lands in the very commit that closes the
+     * `ConfirmDialog`; as a native `disabled` that commit removes the trigger
+     * from the focusable set BEFORE Radix dispatches close-auto-focus, and
+     * #1531's restore then aims `focus()` at a control that cannot take it.
+     *
+     * The load-bearing red at the unfixed head is the pair below:
+     * `not.toHaveAttribute('disabled')`, and the end-to-end focus cell — jsdom
+     * has no focus fixup, but it DOES refuse `focus()` on a natively-disabled
+     * control, which is the exact mechanism the browser proved.
+     */
+    it('holds the trigger with aria-disabled, never native disabled, while the re-sync runs', async () => {
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      const gate = Promise.withResolvers<void>();
+      bulkSyncGate = gate.promise;
+      mockFetchResponses();
+      render(<SyncTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
+      });
+      const trigger = screen.getByTestId('sync-overview-force-resync-all');
+
+      fireEvent.click(trigger);
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(trigger).toHaveAttribute('aria-disabled', 'true');
+      });
+      expect(trigger).not.toHaveAttribute('disabled');
+      expect(trigger).toHaveTextContent('Re-syncing...');
+
+      gate.resolve();
+      await waitFor(() => {
+        expect(trigger).not.toHaveAttribute('aria-disabled');
+      });
+    });
+
+    it('refuses a second Force Re-sync All while one is already running', async () => {
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      const gate = Promise.withResolvers<void>();
+      bulkSyncGate = gate.promise;
+      mockFetchResponses();
+      render(<SyncTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
+      });
+      const trigger = screen.getByTestId('sync-overview-force-resync-all');
+
+      fireEvent.click(trigger);
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+
+      await waitFor(() => {
+        expect(trigger).toHaveAttribute('aria-disabled', 'true');
+      });
+      // The refusal `aria-disabled` cannot perform: it blocks no events, so
+      // without the handler's early return this press re-opens the dialog and
+      // a confirm fires a second KB-wide re-fetch against a running one.
+      fireEvent.click(trigger);
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      expect(bulkSyncCalls()).toHaveLength(1);
+
+      gate.resolve();
+      await waitFor(() => {
+        expect(trigger).not.toHaveAttribute('aria-disabled');
+      });
+    });
+
+    it('returns focus to the trigger after confirming, not to <body>', async () => {
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      const gate = Promise.withResolvers<void>();
+      bulkSyncGate = gate.promise;
+      mockFetchResponses();
+      render(<SyncTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-force-resync-all')).toBeInTheDocument();
+      });
+      const trigger = screen.getByTestId('sync-overview-force-resync-all');
+
+      // Keyboard shape: the trigger holds focus when the dialog opens, which is
+      // what `ConfirmDialog` captures in `onOpenAutoFocus`.
+      trigger.focus();
+      fireEvent.click(trigger);
+      await screen.findByTestId('confirm-dialog');
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+      });
+      await flushCloseAutoFocus();
+
+      expect(document.activeElement).toBe(trigger);
+
+      gate.resolve();
+      await waitFor(() => {
+        expect(trigger).not.toHaveAttribute('aria-disabled');
+      });
     });
   });
 });

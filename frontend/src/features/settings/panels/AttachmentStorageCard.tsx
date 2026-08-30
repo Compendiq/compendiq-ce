@@ -358,7 +358,18 @@ export function AttachmentStorageCard() {
   }, [pendingAnnouncement]);
   // The actions stay live on a failed READ — Dry run is the remedy that
   // refreshes the very record the failed GET could not deliver. Only the
-  // pending paint (nothing known yet) and a running sweep disable them.
+  // pending paint (nothing known yet) and a running sweep hold them.
+  //
+  // #1532: rendered as `aria-disabled` plus a REFUSING handler, never as a
+  // native `disabled`. The sweep walks both stores and takes minutes on a
+  // large corpus, and per the HTML focus fixup rule a control that stops being
+  // focusable is blurred and removed from the tab order — so the operator who
+  // pressed Dry run was dropped to `<body>` at the top of a ~30-stop settings
+  // panel for the whole run, and after the confirm dialog `ConfirmDialog`'s
+  // restore aimed at a button that had already gone inert. CLAUDE.md's
+  // Retrieval-panel ruling is the recipe, and `ImageIndexCard` — this card's
+  // own named pattern of record — is converted in the same change so the two
+  // do not end up with two busy behaviours.
   const actionsDisabled = isPending || running || trigger.isPending;
 
   return (
@@ -830,9 +841,37 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-dry-run"
-          className="nm-button-ghost"
-          disabled={actionsDisabled}
-          onClick={() => trigger.mutate(true)}
+          // `opacity-90`, not the `:disabled` rule's 45 — WCAG's
+          // inactive-component exemption does not cover a control that keeps
+          // its focus and refuses in its HANDLER (the `RetrievalTab` recipe),
+          // and `:disabled` also carried `pointer-events: none`, which is the
+          // half that made the dim unhoverable rather than merely quiet.
+          //
+          // 90 and not the recipe's 70 because element `opacity` composites the
+          // BORDER toward the card too, and this button keeps a 1px operable
+          // boundary (CLAUDE.md's WCAG 1.4.11 rule, `--color-border-interactive`
+          // measured >=3:1 at rest). Computed from the tokens, border-vs-card:
+          // 3.74 at rest, 3.27 (Graphite) / 3.18 (Paper) at 90, but only
+          // 2.47 / 2.35 at 70 — under the floor for the whole multi-minute run
+          // (review r1). `RetrievalTab` asserts 70 as a FLOOR precisely so an
+          // upward retune like this one is free.
+          //
+          // `active:` as well as `hover:` (review r1): the recipe paints a
+          // pressed background on `:active`, and the `:disabled` rule this
+          // conversion removed made that state unreachable (a disabled control
+          // cannot be focused or activated). Without the pin, holding Space on
+          // the focused button — the exact operator #1532 exists for, since
+          // keyboard `:active` matches with no `:hover` to let the hover pin
+          // win — flashes the pressed paint for a press the handler above
+          // silently refused.
+          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            // The refusal `aria-disabled` cannot perform — it blocks no
+            // events. A second Dry run against a held lock is a wasted walk.
+            if (actionsDisabled) return;
+            trigger.mutate(true);
+          }}
           aria-describedby="attachment-sweep-note"
         >
           <Search size={14} aria-hidden="true" />
@@ -841,9 +880,31 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-delete"
-          className="nm-button-destructive"
-          disabled={actionsDisabled}
-          onClick={() => setConfirmDeleteOpen(true)}
+          // The filled variant's own hover is a DARKENING, so the ghost
+          // sibling's `hover:bg-transparent` would strip the fill instead of
+          // holding it: this one pins the resting destructive background.
+          //
+          // The filled recipe needs the same 90 for a different reason: element
+          // `opacity` composites the label AND its own fill toward the card, so
+          // the label-vs-fill ratio degrades with the dim — 6.78 / 5.55 at rest,
+          // 5.69 (Graphite) / 4.74 (Paper) at 90, and only 3.90 / 3.32 at 70,
+          // i.e. under the 4.5:1 floor for exactly the run this state exists to
+          // make legible (review r1; the 70 measurement on record was the ghost
+          // recipe's foreground-on-card, which passes comfortably).
+          //
+          // Its `:active` darkens further, so it is pinned the same way as the
+          // ghost sibling and for the same reason (review r1): a keyboard press
+          // the handler refuses must not paint as accepted.
+          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-destructive aria-disabled:active:bg-destructive"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            // Refusing the POST alone would not be enough: this button opens
+            // the confirm dialog, so a live handler under the busy flag hands
+            // the operator a dialog whose Confirm fires the destructive run
+            // over a sweep already holding the lock.
+            if (actionsDisabled) return;
+            setConfirmDeleteOpen(true);
+          }}
           aria-describedby="attachment-sweep-note"
         >
           <Trash2 size={14} aria-hidden="true" />

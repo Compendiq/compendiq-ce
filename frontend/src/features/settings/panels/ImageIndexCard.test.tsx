@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { ImageIndexStatus } from '@compendiq/contracts';
@@ -100,6 +100,40 @@ function mockApiFailingStatus(capture?: Array<{ url: string; method: string }>) 
 }
 
 /**
+ * The status GET answers ONCE, then every later GET fails.
+ *
+ * `mockApiFailingStatus` fails from the first read, so `data` is `undefined`
+ * and nothing about the RETAINED-payload path is exercised. TanStack keeps
+ * `data` across a failed refetch, which is the outage that begins while a scan
+ * is already running — the shape `AttachmentStorageCard` guards.
+ */
+function mockApiOutageAfterFirstRead(
+  first: ImageIndexStatus,
+  capture?: Array<{ url: string; method: string }>,
+) {
+  let reads = 0;
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      if (reads++ === 0) {
+        return new Response(JSON.stringify(first), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ marked: 120, started: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/**
  * Wait for the STATUS to have arrived, not merely for the card to exist.
  *
  * Every element here renders on the first paint, so a bare `findByTestId`
@@ -113,6 +147,24 @@ async function awaitLoaded(): Promise<void> {
   await waitFor(() =>
     expect(screen.getByTestId('image-index-counters').textContent).not.toContain('—'),
   );
+}
+
+/**
+ * Settle the click: a POST that WAS fired lands within a macrotask, so a
+ * "fired nothing" assertion must be made after this flush.
+ *
+ * `waitFor(() => expect(posted).toBe(false))` cannot do the job — it is
+ * satisfied on its first synchronous attempt, before any fetch could have been
+ * recorded, so it passes whether the handler refused or not. Mutation-checked:
+ * with this flush, deleting the handlers' early return reds the two refusal
+ * cells; with `waitFor` it did not.
+ */
+async function flushClick(): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 0);
+    await promise;
+  });
 }
 
 beforeEach(() => {
@@ -217,26 +269,119 @@ describe('ImageIndexCard (#1115 P2)', () => {
     );
   });
 
-  it('disables both actions while the leg is unassigned', async () => {
+  /**
+   * #1532. `actionsDisabled` mixes the multi-minute busy state with two
+   * non-busy inert conditions, and it landed on both buttons as a native
+   * `disabled`. Per the HTML focus fixup rule a control that stops being
+   * focusable is blurred and leaves the tab order, so an operator who pressed
+   * Process now was dropped to `<body>` for the whole scan; jsdom implements
+   * none of that, which is why these cells asserted `.disabled` and saw
+   * nothing. The recipe is CLAUDE.md's Retrieval-panel ruling —
+   * `aria-disabled` (announced as disabled by NVDA, JAWS and VoiceOver) plus a
+   * handler that refuses, since `aria-disabled` blocks no events — and the
+   * WHOLE flag converts, because the fixup fires wherever native `disabled`
+   * lands on a focused control, and the inert half is preserved by the refusal.
+   *
+   * `AttachmentStorageCard` is swept in the same change: the two cards are
+   * each other's pattern of record and must not end up with two busy
+   * behaviours.
+   */
+  it('marks both actions aria-disabled — never natively disabled — while the leg is unassigned', async () => {
     // Neither does anything: the worker's own fast path answers "unassigned"
     // and clears nothing, so a live button would be a control that reports
-    // success for work that never starts.
-    mockApi({ ...ASSIGNED, assigned: false, identity: null });
+    // success for work that never starts. The REFUSAL is what carries that
+    // now, not the attribute.
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, assigned: false, identity: null }, calls);
     renderCard();
     await awaitLoaded();
-    expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId('image-index-rescan') as HTMLButtonElement).disabled).toBe(true);
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      expect(btn).not.toHaveAttribute('disabled');
+      fireEvent.click(btn);
+    }
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
   it('enables both actions once the leg IS assigned', async () => {
     // The pin that keeps the previous test honest: every control on this card
-    // renders disabled on the pre-fetch paint, so "disabled when unassigned"
+    // renders inert on the pre-fetch paint, so "inert when unassigned"
     // passes against a card that is permanently dead.
     mockApi(ASSIGNED);
     renderCard();
     await awaitLoaded();
-    expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTestId('image-index-rescan') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('image-index-rescan')).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('marks both actions aria-disabled, never natively disabled, while a scan runs', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      // The whole point: a genuinely disabled control cannot keep the focus
+      // the flag exists to hold, for the minutes the scan lasts.
+      expect(btn).not.toHaveAttribute('disabled');
+      // Review r1: element `opacity` composites the 1px operable border toward
+      // the card, so the recipe's 70 left it at 2.47 (Graphite) / 2.35 (Paper)
+      // against CLAUDE.md's WCAG 1.4.11 floor of 3:1; at 90 it measures
+      // 3.27 / 3.18. Asserted as a FLOOR, like `RetrievalTab`'s, and identical
+      // to `AttachmentStorageCard`'s so the two cards' busy states match.
+      const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
+      expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
+      // Review r1: `nm-button-ghost` paints a pressed background on `:active`,
+      // and the `:disabled` rule this conversion removed made that state
+      // unreachable. Keyboard `:active` matches with no `:hover`, so the hover
+      // pin cannot cover it and a refused press would otherwise paint as
+      // accepted. Only the browser can watch the flash; the pin is asserted
+      // here so it cannot be dropped silently.
+      expect(btn.className, testId).toContain('aria-disabled:active:bg-transparent');
+    }
+  });
+
+  it('refuses both actions while a scan runs instead of relying on the attribute', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: true }, calls);
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    fireEvent.click(screen.getByTestId('image-index-rescan'));
+
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('marks the card busy while a scan runs, matching AttachmentStorageCard', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  /**
+   * The regression pin. It cannot FAIL in jsdom for the browser reason (no
+   * focus fixup here), so it is not the proof — it is what reds if someone
+   * unmounts, hides or reorders the button under the busy flag. The proof is
+   * the serial browser pass.
+   */
+  it('keeps the pressed button focused across the flip into running', async () => {
+    mockApi(ASSIGNED, undefined, [ASSIGNED, { ...ASSIGNED, running: true }]);
+    renderCard();
+    await awaitLoaded();
+    const process = screen.getByTestId('image-index-process');
+    process.focus();
+    expect(document.activeElement).toBe(process);
+
+    fireEvent.click(process);
+    await screen.findByTestId('image-index-running');
+
+    expect(document.activeElement).toBe(screen.getByTestId('image-index-process'));
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it('polls while a run is in progress and stops once it finishes', async () => {
@@ -355,11 +500,66 @@ describe('ImageIndexCard (#1115 P2)', () => {
         expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
       );
 
-      expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(false);
+      // #1532 converted this card off native `disabled` entirely, so a
+      // `HTMLButtonElement.disabled` read here would be unconditionally
+      // `false` — vacuous. The live-ness this cell guards now lives in the
+      // absence of `aria-disabled`, the same attribute its six siblings read.
+      expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
       fireEvent.click(screen.getByTestId('image-index-process'));
       await waitFor(() =>
         expect(
           calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process')),
+        ).toBe(true),
+      );
+    });
+
+    /**
+     * The same half-fix `AttachmentStorageCard` closed one file over (fixer
+     * r1, its `running` guard) — and the reason the two cards' busy states
+     * were NOT identical in the branch that matters most (review r2).
+     *
+     * The cell above fails the FIRST read, so `data` is `undefined` and
+     * `running` is trivially false. When the outage begins while a scan is in
+     * flight TanStack retains the payload, so this card read `running: true`
+     * off a record it could no longer observe: `aria-busy="true"` and the
+     * "Scanning…" chip asserted a scan as fact, and `busy` — which is inside
+     * `actionsDisabled` — refused BOTH buttons, the very remedy the error copy
+     * one line above names. No reachable affordance until the backend came
+     * back.
+     */
+    it('stops claiming a scan it can no longer see, and leaves both remedies reachable', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const calls: Array<{ url: string; method: string }> = [];
+      mockApiOutageAfterFirstRead({ ...ASSIGNED, running: true }, calls);
+      renderCard();
+      await waitFor(() => expect(screen.getByTestId('image-index-running')).toBeInTheDocument());
+
+      // One whole 5s poll interval later the GET is 500ing while the retained
+      // payload still says `running: true` (the card's POLL_MS is private —
+      // the sibling poll cell above advances by the same literal).
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+
+      expect(
+        screen.queryByTestId('image-index-running'),
+        'the card must not announce a scan it cannot observe',
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'false');
+      for (const testId of ['image-index-process', 'image-index-rescan']) {
+        expect(
+          screen.getByTestId(testId),
+          'the error copy names both buttons as the recovery — they must be pressable',
+        ).not.toHaveAttribute('aria-disabled');
+      }
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+      await waitFor(() =>
+        expect(
+          calls.some(
+            (c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process'),
+          ),
         ).toBe(true),
       );
     });
