@@ -111,4 +111,93 @@ describe('NotionClient (fake Notion HTTP)', () => {
     await client.probe();
     expect(server.requests[0]?.url).toBe('/v1/users/me');
   });
+
+  it('retries a 429 after Retry-After and returns the page', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      transientFailures: [{ status: 429, retryAfter: '0' }],
+      pages: {
+        'page-1': { object: 'page', id: 'page-1', url: 'https://www.notion.so/page-1' },
+      },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    const page = await client.getPage('page-1');
+
+    expect(page.id).toBe('page-1');
+    expect(server.requests.filter((r) => r.url.startsWith('/v1/pages/page-1'))).toHaveLength(2);
+  });
+
+  it('retries a 529 and a GET 500 the same way as a 429', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      transientFailures: [{ status: 529, retryAfter: '0' }, { status: 500, retryAfter: '0' }],
+      pages: {
+        'page-1': { object: 'page', id: 'page-1' },
+      },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    const page = await client.getPage('page-1');
+
+    expect(page.id).toBe('page-1');
+    expect(server.requests.filter((r) => r.url.startsWith('/v1/pages/page-1'))).toHaveLength(3);
+  });
+
+  it('retries POST search on 429 but not on 500', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      transientFailures: [{ status: 429, retryAfter: '0' }],
+      searchResults: [{ object: 'page', id: 'p1' }],
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    const first = await client.search();
+    expect(first.results).toEqual([{ object: 'page', id: 'p1' }]);
+    expect(server.requests.filter((r) => r.url === '/v1/search')).toHaveLength(2);
+
+    server.state.transientFailures = [{ status: 500 }];
+    await expect(client.search()).rejects.toMatchObject({ statusCode: 500 });
+    expect(server.requests.filter((r) => r.url === '/v1/search')).toHaveLength(3);
+  });
+
+  it('does not retry 401', async () => {
+    server = await startFakeNotionServer({ validToken: 'other-token' });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    await expect(client.probe()).rejects.toMatchObject({ statusCode: 401, message: 'Invalid Notion token' });
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it('throws after six persistent 429s', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      pages: {
+        'page-1': { object: 'page', id: 'page-1' },
+      },
+      pageErrors: { 'page-1': 429 },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    await expect(client.getPage('page-1')).rejects.toMatchObject({
+      statusCode: 429,
+      message: 'Notion API error: HTTP 429',
+    });
+    expect(server.requests.filter((r) => r.url.startsWith('/v1/pages/page-1'))).toHaveLength(6);
+  });
+
+  it('retries fetchMedia after a 429', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      transientFailures: [{ status: 429, retryAfter: '0' }],
+      files: { '/files/img.png': { contentType: 'image/png', body: 'img' } },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+
+    const media = await client.fetchMedia(`${server.baseUrl}/files/img.png`);
+
+    expect(media.contentType).toBe('image/png');
+    expect(media.bytes.toString()).toBe('img');
+    expect(server.requests.filter((r) => r.url.startsWith('/files/img.png'))).toHaveLength(2);
+  });
 });

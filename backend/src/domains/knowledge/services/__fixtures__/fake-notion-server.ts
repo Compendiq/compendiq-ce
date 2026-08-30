@@ -43,6 +43,12 @@ export interface FakeNotionState {
   /** Pause GET page/database/block lookups so tests can observe in-flight concurrency. */
   lookupDelayMs?: number;
   beforeFileResponse?: (path: string) => Promise<void>;
+  /**
+   * Consume-once failures applied after auth, before routing. Used to
+   * exercise Notion 429/529 retries without permanently breaking the
+   * resource.
+   */
+  transientFailures?: Array<{ status: number; retryAfter?: string }>;
 }
 
 export interface FakeNotionServer {
@@ -62,9 +68,24 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function send(res: { statusCode: number; setHeader: (k: string, v: string) => void; end: (b: string) => void }, status: number, payload: unknown): void {
+function send(
+  res: { statusCode: number; setHeader: (k: string, v: string) => void; end: (b: string) => void },
+  status: number,
+  payload: unknown,
+  extraHeaders?: Record<string, string>,
+): void {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
+  const retryable = status === 429 || status === 529 || status === 500 || status === 502 || status === 503 || status === 504;
+  if (retryable) {
+    res.setHeader('Retry-After', extraHeaders?.['Retry-After'] ?? '0');
+  }
+  if (extraHeaders) {
+    for (const [key, value] of Object.entries(extraHeaders)) {
+      if (key === 'Retry-After' && retryable) continue;
+      res.setHeader(key, value);
+    }
+  }
   res.end(JSON.stringify(payload));
 }
 
@@ -106,6 +127,23 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
 
     if (authorization !== `Bearer ${state.validToken}`) {
       send(res, 401, unauthorized());
+      return;
+    }
+
+    const transient = state.transientFailures?.shift();
+    if (transient) {
+      const status = transient.status;
+      send(
+        res,
+        status,
+        {
+          object: 'error',
+          status,
+          code: status === 529 ? 'service_overload' : status >= 500 ? 'internal_server_error' : 'rate_limited',
+          message: 'upstream',
+        },
+        transient.retryAfter !== undefined ? { 'Retry-After': transient.retryAfter } : undefined,
+      );
       return;
     }
 

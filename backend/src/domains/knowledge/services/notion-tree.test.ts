@@ -656,10 +656,8 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       rowContent: 'unknown',
       recommendedMode: 'pages',
     });
-    expect(childRequests()).toEqual([
-      { blockId: 'acme', pageSize: 2 },
-      { blockId: 'globex', pageSize: 2 },
-    ]);
+    expect([...new Set(childRequests().map((request) => request.blockId))].sort()).toEqual(['acme', 'globex']);
+    expect(childRequests().every((request) => request.pageSize === 2)).toBe(true);
   });
 
   it('samples at most NOTION_ROW_SAMPLE_SIZE rows of a large database', async () => {

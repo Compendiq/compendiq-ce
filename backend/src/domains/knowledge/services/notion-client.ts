@@ -19,6 +19,16 @@ import { createTlsDispatcher } from '../../../core/utils/tls-config.js';
 export const DEFAULT_NOTION_API_BASE_URL = 'https://api.notion.com';
 /** Notion-Version header. See module doc. */
 export const NOTION_VERSION = '2022-06-28';
+/**
+ * Notion request-limits: retry 429/529 (and idempotent 5xx) this many
+ * times including the first attempt.
+ * @see https://developers.notion.com/reference/request-limits
+ */
+export const NOTION_RATE_LIMIT_MAX_ATTEMPTS = 6;
+/** ~3 requests/second — Notion's documented per-connection average. */
+const NOTION_MIN_INTERVAL_MS = 334;
+const NOTION_RETRY_STATUSES = new Set([429, 529]);
+const NOTION_IDEMPOTENT_RETRY_STATUSES = new Set([500, 502, 503, 504]);
 
 const notionDispatcher = createTlsDispatcher();
 
@@ -74,6 +84,41 @@ function redact(text: string, secret: string): string {
   return text.split(secret).join('[redacted]');
 }
 
+function headerValue(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0];
+  return typeof raw === 'string' ? raw : undefined;
+}
+
+/** Notion Retry-After is an integer number of seconds. */
+function parseRetryAfterMs(header: string | undefined): number | undefined {
+  if (header == null || header === '') return undefined;
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  return seconds * 1000;
+}
+
+function isRetryableStatus(status: number, method: string): boolean {
+  if (NOTION_RETRY_STATUSES.has(status)) return true;
+  return (method === 'GET' || method === 'DELETE') && NOTION_IDEMPOTENT_RETRY_STATUSES.has(status);
+}
+
+function retryDelayMs(attempt: number, retryAfterHeader: string | undefined): number {
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+  if (retryAfterMs != null) {
+    return retryAfterMs === 0 ? 0 : retryAfterMs + Math.random() * 250;
+  }
+  return Math.min(2 ** attempt, 30) * 1000 + Math.random() * 250;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Walk cursor pagination until `has_more` is false. Caps pages so a
  * stuck cursor cannot loop forever. Used by later import PRs.
@@ -97,14 +142,40 @@ export async function paginateAll<T>(
 export class NotionClient {
   private readonly token: string;
   private readonly baseUrl: string;
+  private readonly minIntervalMs: number;
+  private queue: Promise<void> = Promise.resolve();
+  private nextSlotAt = 0;
 
-  constructor(token: string, options: { baseUrl?: string } = {}) {
+  constructor(token: string, options: { baseUrl?: string; minIntervalMs?: number } = {}) {
     this.token = token;
     this.baseUrl = (options.baseUrl ?? resolveNotionApiBaseUrl()).replace(/\/+$/, '');
     addAllowedBaseUrl(this.baseUrl);
+    this.minIntervalMs = options.minIntervalMs ?? (
+      this.baseUrl === DEFAULT_NOTION_API_BASE_URL ? NOTION_MIN_INTERVAL_MS : 0
+    );
+  }
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn);
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async waitForSlot(): Promise<void> {
+    const now = Date.now();
+    const start = Math.max(now, this.nextSlotAt);
+    this.nextSlotAt = start + this.minIntervalMs;
+    await sleep(start - now);
   }
 
   private async fetchJson<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+    return this.enqueue(() => this.fetchJsonWithRetry(path, init));
+  }
+
+  private async fetchJsonWithRetry<T>(
+    path: string,
+    init: { method?: string; body?: unknown } = {},
+  ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     validateUrl(url);
 
@@ -118,41 +189,59 @@ export class NotionClient {
       headers['Content-Type'] = 'application/json';
     }
 
-    const { statusCode, body: responseBody } = await request(url, {
-      method,
-      headers,
-      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
-      signal: AbortSignal.timeout(30_000),
-      dispatcher: notionDispatcher,
-    });
+    let lastError: NotionError | undefined;
+    for (let attempt = 0; attempt < NOTION_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
+      await this.waitForSlot();
+      const { statusCode, headers: resHeaders, body: responseBody } = await request(url, {
+        method,
+        headers,
+        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        signal: AbortSignal.timeout(30_000),
+        dispatcher: notionDispatcher,
+      });
 
-    const text = await responseBody.text();
-    const safeExcerpt = redact(text.slice(0, 500), this.token);
+      const text = await responseBody.text();
+      const safeExcerpt = redact(text.slice(0, 500), this.token);
 
-    if (statusCode === 401) {
-      throw new NotionError('Invalid Notion token', 401);
-    }
-    if (statusCode === 403) {
-      throw new NotionError('Notion access denied', 403);
-    }
-    if (statusCode === 404) {
-      throw new NotionError('Notion resource not found', 404);
-    }
-    if (statusCode >= 400) {
-      logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API error');
-      throw new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
-    }
+      if (statusCode === 401) {
+        throw new NotionError('Invalid Notion token', 401);
+      }
+      if (statusCode === 403) {
+        throw new NotionError('Notion access denied', 403);
+      }
+      if (statusCode === 404) {
+        throw new NotionError('Notion resource not found', 404);
+      }
+      if (statusCode >= 400) {
+        lastError = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+        const retryable = isRetryableStatus(statusCode, method);
+        const isLast = attempt === NOTION_RATE_LIMIT_MAX_ATTEMPTS - 1;
+        if (!retryable || isLast) {
+          logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API error');
+          throw lastError;
+        }
+        const delayMs = retryDelayMs(attempt, headerValue(resHeaders, 'retry-after'));
+        this.nextSlotAt = Date.now() + delayMs;
+        logger.warn(
+          { statusCode, path, attempt: attempt + 1, delayMs: Math.round(delayMs) },
+          'Notion API transient error, retrying',
+        );
+        await sleep(delayMs);
+        continue;
+      }
 
-    if (text.trim() === '') {
-      return undefined as T;
-    }
+      if (text.trim() === '') {
+        return undefined as T;
+      }
 
-    try {
-      return JSON.parse(text) as T;
-    } catch {
-      logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API returned non-JSON');
-      throw new NotionError(`Notion API returned non-JSON response (HTTP ${statusCode})`, statusCode);
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API returned non-JSON');
+        throw new NotionError(`Notion API returned non-JSON response (HTTP ${statusCode})`, statusCode);
+      }
     }
+    throw lastError ?? new NotionError('Notion API error', 0);
   }
 
   async probe(): Promise<NotionBotUser> {
@@ -245,24 +334,46 @@ export class NotionClient {
    * External file URLs are fetched without the secret.
    */
   async fetchMedia(url: string): Promise<{ bytes: Buffer; contentType: string }> {
+    return this.enqueue(() => this.fetchMediaWithRetry(url));
+  }
+
+  private async fetchMediaWithRetry(url: string): Promise<{ bytes: Buffer; contentType: string }> {
     validateUrl(url);
     const headers: Record<string, string> = { Accept: '*/*' };
     if (url.startsWith(`${this.baseUrl}/`) || url === this.baseUrl) {
       headers.Authorization = `Bearer ${this.token}`;
       headers['Notion-Version'] = NOTION_VERSION;
     }
-    const { statusCode, headers: resHeaders, body } = await request(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(30_000),
-      dispatcher: notionDispatcher,
-    });
-    const bytes = Buffer.from(await body.arrayBuffer());
-    if (statusCode >= 400) {
-      throw new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+
+    let lastError: NotionError | undefined;
+    for (let attempt = 0; attempt < NOTION_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
+      await this.waitForSlot();
+      const { statusCode, headers: resHeaders, body } = await request(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(30_000),
+        dispatcher: notionDispatcher,
+      });
+      const bytes = Buffer.from(await body.arrayBuffer());
+      if (statusCode < 400) {
+        const rawType = resHeaders['content-type'];
+        const contentType = typeof rawType === 'string' ? rawType.split(';')[0]!.trim() : 'application/octet-stream';
+        return { bytes, contentType };
+      }
+      lastError = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+      const retryable = isRetryableStatus(statusCode, 'GET');
+      const isLast = attempt === NOTION_RATE_LIMIT_MAX_ATTEMPTS - 1;
+      if (!retryable || isLast) {
+        throw lastError;
+      }
+      const delayMs = retryDelayMs(attempt, headerValue(resHeaders, 'retry-after'));
+      this.nextSlotAt = Date.now() + delayMs;
+      logger.warn(
+        { statusCode, url: redact(url, this.token), attempt: attempt + 1, delayMs: Math.round(delayMs) },
+        'Notion API transient error, retrying',
+      );
+      await sleep(delayMs);
     }
-    const rawType = resHeaders['content-type'];
-    const contentType = typeof rawType === 'string' ? rawType.split(';')[0]!.trim() : 'application/octet-stream';
-    return { bytes, contentType };
+    throw lastError ?? new NotionError('Notion API error', 0);
   }
 }
