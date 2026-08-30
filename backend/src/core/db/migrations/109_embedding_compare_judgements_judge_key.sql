@@ -25,10 +25,14 @@
 -- The old constraint's name is the 63-byte (NAMEDATALEN) truncation Postgres
 -- generated for the inline UNIQUE in 101 — verified against a live database
 -- and re-derived by replaying 101's CREATE TABLE on PG 17.11, not guessed.
--- The drop is therefore NAME-dependent. A `DO $$` block reading the name out
--- of `pg_constraint` by column list IS available in this directory — 011,
--- 023, 038, 040, 054, 074 and 083 all use one, and 074 (a unique-constraint
--- repair) is the closest precedent — but it is not worth the opacity here.
+-- The drop is therefore NAME-dependent. A `DO $$` block would let it read the
+-- name out of `pg_constraint` by column list instead, and `DO $$` itself is
+-- an established idiom here (011, 023, 038, 040, 054, 074, 083), so that is
+-- not a new pattern — but no migration in this directory has ever queried
+-- `pg_constraint`, and 074, the nearest thing to a precedent, only wraps an
+-- ADD CONSTRAINT of an EXPLICITLY named key in `EXCEPTION WHEN
+-- duplicate_object`. Introducing a catalogue lookup is not worth the opacity
+-- for the reasons below.
 -- Plain DDL cannot drop a constraint by column list, Postgres generates the
 -- name deterministically from table+columns, and pg_dump/pg_restore preserves
 -- it verbatim, so only a hand-run `ALTER ... RENAME CONSTRAINT` can diverge;

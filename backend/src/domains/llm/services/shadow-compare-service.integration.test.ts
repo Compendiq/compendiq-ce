@@ -1273,6 +1273,57 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(view.judgements).toEqual({ 'query-1': 'live' });
     });
 
+    /** The tie-break leg is the PRIMARY KEY, so a test of it has to own the
+     *  ids: they are `gen_random_uuid()` defaults, and which of two random
+     *  uuids is the greater decides the trial. Rewriting them is safe —
+     *  nothing references `embedding_compare_judgements.id`. */
+    async function stampId(judgedBy: string, id: string): Promise<void> {
+      await query(`UPDATE embedding_compare_judgements SET id = $2::uuid WHERE judged_by = $1`, [
+        judgedBy,
+        id,
+      ]);
+    }
+
+    it('breaks a created_at TIE on the id, so no unordered scan decides the trial', async () => {
+      // `id DESC` is the ORDER BY's only total-ordering leg. Two admins
+      // judging one query inside the same microsecond — or a restored dump
+      // that flattened the stamps — otherwise leave the trial to whatever
+      // row the scan happens to yield first, and the trial is a WHOLE row:
+      // the judged side AND the page-id arrays the Recall/MRR expected set
+      // and the McNemar discordance are drawn from. Both rows carry ONE
+      // timestamp here, so only the id can decide.
+      await seedSecondAdmin();
+      const runA = await completedRun();
+      await recordShadowCompareJudgement(runA, 'query-1', 'live', ADMIN);
+      const runB = await completedRunFor(SECOND_ADMIN);
+      await recordShadowCompareJudgement(runB, 'query-1', 'candidate', SECOND_ADMIN);
+
+      const TIED = '2024-03-01T00:00:00Z';
+      await stampJudgement(ADMIN, TIED);
+      await stampJudgement(SECOND_ADMIN, TIED);
+
+      // ADMIN holds the GREATER id → ADMIN's row is the trial.
+      await stampId(ADMIN, '00000000-0000-4000-8000-0000000000a2');
+      await stampId(SECOND_ADMIN, '00000000-0000-4000-8000-0000000000a1');
+      let view = await getShadowCompareJudgements(runA, ADMIN);
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.verdict.liveBetter).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(0);
+      expect(view.judgements).toEqual({ 'query-1': 'live' });
+
+      // Swap the ids under the same tied timestamp and the trial swaps with
+      // them. BOTH directions are asserted on purpose: with the leg deleted
+      // the scan yields one fixed row, which is right in one direction and
+      // wrong in the other, so a single direction would be a coin flip.
+      await stampId(ADMIN, '00000000-0000-4000-8000-0000000000b1');
+      await stampId(SECOND_ADMIN, '00000000-0000-4000-8000-0000000000b2');
+      view = await getShadowCompareJudgements(runA, ADMIN);
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(1);
+      expect(view.verdict.liveBetter).toBe(0);
+      expect(view.judgements).toEqual({ 'query-1': 'candidate' });
+    });
+
     it('a re-judge wins the collapse back — `created_at = NOW()` IS the judged-at stamp', async () => {
       // The guard on the upsert's `created_at = NOW()`. The test above stamps
       // BOTH rows after the writes, so it cannot see whether a re-judge bumps
