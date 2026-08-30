@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
-import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
+import {
+  NOTION_RATE_LIMIT_MAX_ATTEMPTS,
+  NotionClient,
+  setNotionApiBaseUrlForTests,
+} from './notion-client.js';
 import {
   NOTION_INLINE_DATABASE_REASON,
   NOTION_ROW_SAMPLE_SIZE,
@@ -656,10 +660,10 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       rowContent: 'unknown',
       recommendedMode: 'pages',
     });
-    expect(childRequests()).toEqual([
-      { blockId: 'acme', pageSize: 2 },
-      { blockId: 'globex', pageSize: 2 },
-    ]);
+    // Both rows are sampled, each climbing the full retry ladder for its 500.
+    expect([...new Set(childRequests().map((request) => request.blockId))].sort()).toEqual(['acme', 'globex']);
+    expect(childRequests().every((request) => request.pageSize === 2)).toBe(true);
+    expect(childRequests()).toHaveLength(2 * NOTION_RATE_LIMIT_MAX_ATTEMPTS);
   });
 
   it('samples at most NOTION_ROW_SAMPLE_SIZE rows of a large database', async () => {
@@ -1021,6 +1025,8 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
+    // Pacing must not collapse the pLimit to one lane (#1553).
+    expect(server!.peakConcurrentLookups).toBeGreaterThan(1);
     expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('nested-'))).toHaveLength(8);
   });
 
@@ -1049,6 +1055,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
+    expect(server!.peakConcurrentLookups).toBeGreaterThan(1);
     expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('child-'))).toHaveLength(8);
   });
 });
