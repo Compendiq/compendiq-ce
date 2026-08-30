@@ -23,8 +23,19 @@
 -- backfill, no dedup, no data loss.
 --
 -- The old constraint's name is the 63-byte (NAMEDATALEN) truncation Postgres
--- generated for the inline UNIQUE in 101 — verified against a live database,
--- not guessed.
+-- generated for the inline UNIQUE in 101 — verified against a live database
+-- and re-derived by replaying 101's CREATE TABLE on PG 17.11, not guessed.
+-- The drop is therefore NAME-dependent, and deliberately so: there is no
+-- `DO $$` block anywhere in this directory, and plain DDL cannot drop a
+-- constraint by column list. Postgres generates the name deterministically
+-- from table+columns and pg_dump/pg_restore preserves it verbatim, so only a
+-- hand-run `ALTER ... RENAME CONSTRAINT` can diverge; in that state this
+-- statement drops nothing, the OLD five-column key survives beside the new
+-- one, and the next second-judge upsert fails with 23505 ("duplicate key
+-- value violates unique constraint ..._li_key") — not the 42P10 you would
+-- get if the new index were missing. The 109 shape test (no unique key on
+-- this table may lack `judged_by`) is the guard, and it reds on exactly that
+-- state.
 ALTER TABLE embedding_compare_judgements
   DROP CONSTRAINT IF EXISTS embedding_compare_judgements_query_hash_live_provider_id_li_key;
 

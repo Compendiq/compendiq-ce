@@ -495,7 +495,13 @@ export const MIN_JUDGEMENTS_FOR_P = 20;
 const JUDGEMENT_SCORE_DEPTH = 20;
 
 export interface JudgedVerdict {
-  /** Every judgement recorded for this model pair, all four sides. */
+  /**
+   * DISTINCT judged queries for this model pair, all four sides — one per
+   * `query_hash` since #1527, NOT the number of rows on disk, which is higher
+   * whenever several admins judged the same query (109 keys per judge; the
+   * collapse in `judgementsForReport` reads only the newest row per query).
+   * One query is one McNemar trial, so this is also the test's N.
+   */
   judgementCount: number;
   /** The 'live'/'candidate' picks — the only ones the p-value is computed from. */
   scoredJudgementCount: number;
