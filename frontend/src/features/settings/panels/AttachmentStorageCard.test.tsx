@@ -606,6 +606,19 @@ describe('AttachmentStorageCard (#1349)', () => {
    * nothing references at all, which an operator reads as "nothing on a live
    * page" — the opposite. Recoverable (Confluence re-serves the bytes), but
    * this is the sentence whose job is to name the cost.
+   *
+   * #1534 rewrote the description around this cell rather than through it.
+   * Two assertions moved with the copy and one went:
+   *
+   *  - the cost and its recovery are pinned by CLAIM now, not by the r1
+   *    phrasing, because the trim rewrote the sentence and a cell that pins
+   *    a wording rather than a meaning turns every copy edit into a failure;
+   *  - `/page icons/` is gone. "Uploaded page icons are a separate store and
+   *    are never swept" is a reassurance about a store this sweep never walks,
+   *    not a cost — omitting it cannot mislead an operator about what the
+   *    button does, and it was part of the ~340 characters of never-touched
+   *    inventory #1534 moved out of the dialog. The cost claims above are the
+   *    half that must survive, and they do.
    */
   it('the confirm dialog names the cached-Confluence-image case', async () => {
     mockApi({});
@@ -616,11 +629,58 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const dialog = await screen.findByTestId('confirm-dialog-confirm');
     const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
-    expect(text).toMatch(/cached Confluence images that no page body embeds are removed too/i);
-    expect(text).toMatch(/re-fetched from Confluence/i);
+    // The cost: a cached image under a live page, embedded by no body, goes.
+    expect(text).toMatch(/cached Confluence images that no page body embeds/i);
+    // The recovery: Confluence still has the bytes, so this costs a re-fetch.
+    expect(text).toMatch(/Confluence re-serves them/i);
     // The claims it already made must still be there.
     expect(text).toMatch(/cannot be undone/i);
-    expect(text).toMatch(/page icons/i);
+  });
+
+  /**
+   * #1534. The confirm is the last surface before an irreversible delete, and
+   * it had grown to 613 characters — 2.8x the next-longest `ConfirmDialog`
+   * description in the app (`VersionHistory` at 217; `PageViewPage` 177,
+   * `SpacesTab` 165, `SyncTab` 159) — with the one actionable instruction,
+   * "run a dry run first", at character 558 of 613. It read as one
+   * undifferentiated muted run, and most of it restated
+   * `attachment-sweep-note`, which is already on screen at rest behind the
+   * dialog.
+   *
+   * The bound is 260: the next-longest callsite measured 217, so 260 leaves
+   * this dialog room to be the longest in the app without being a different
+   * KIND of object. Both halves matter — a description that is short but
+   * buries the cost is the same defect — so the cost and the recovery must
+   * also LEAD, not trail.
+   */
+  it('the confirm dialog opens with the cost and the recovery, and stays scannable', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
+
+    const confirm = await screen.findByTestId('confirm-dialog-confirm');
+    const dialog = confirm.closest('[role="dialog"]');
+    // `ConfirmDialog` renders `description` into one `Dialog.Description`,
+    // which Radix wires to the content's `aria-describedby`. Resolving it that
+    // way measures the string the operator is actually given, not the dialog's
+    // whole `textContent` (title + description + two button labels).
+    const describedBy = dialog?.getAttribute('aria-describedby') ?? '';
+    const description = describedBy ? document.getElementById(describedBy) : null;
+    expect(description, 'the dialog must describe itself with the description text').not.toBeNull();
+    const text = (description?.textContent ?? '').trim();
+
+    expect(text.length, `the description is ${text.length} chars; the bound is 260 (next-longest callsite: 217)`)
+      .toBeLessThanOrEqual(260);
+    // It OPENS with the permanent-delete claim...
+    expect(text).toMatch(/^This permanently deletes files older than 24 hours that nothing references\./);
+    // ...and the irreversibility plus the recovery arrive in the first breath,
+    // not after two hundred characters of inventory.
+    const undone = text.search(/cannot be undone/i);
+    expect(undone, 'the irreversibility must be readable before the operator stops reading').toBeGreaterThanOrEqual(0);
+    expect(undone, `"cannot be undone" sits at character ${undone}`).toBeLessThan(150);
+    expect(text.slice(0, 150)).toMatch(/run a dry run first/i);
   });
 
   it('an already-running trigger reports neutrally, names the remedy, and promises no outcome', async () => {
@@ -949,44 +1009,95 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  /**
-   * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`). The scroller
-   * above holds about ten of up to 100 rows and every descendant is a
-   * `<span>`, so with no `tabindex` there is no keyboard path past row ten in
-   * Chromium or WebKit — on the one surface that says WHICH files a live run
-   * will destroy, and which the confirm dialog instructs the operator to
-   * read. The name matters as much as the stop: a focusable region with no
-   * accessible name announces nothing when focus lands on it.
-   */
-  it('the candidate scroller is a keyboard-reachable, named region', async () => {
+  /** N single-file candidates — enough rows to drive the overflow gate. */
+  function sampleOf(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      store: 'confluence' as const,
+      key: String(10_000 + i),
+      filename: `row-${i}.png`,
+      bytes: 1024,
+      reason: 'orphan_file' as const,
+    }));
+  }
+
+  function renderWithCandidates(n: number) {
     mockApi({
       sweep: {
         running: false,
-        lastRun: {
-          ...COMPLETED_RUN,
-          candidatesTotal: 1,
-          candidateSample: [
-            { store: 'confluence', key: '55555', filename: null, bytes: 4096, reason: 'orphan_directory' },
-          ],
-        },
+        lastRun: { ...COMPLETED_RUN, candidatesTotal: n, candidateSample: sampleOf(n) },
       },
     });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    return screen.findByTestId('attachment-sweep-candidate-list');
+  }
 
-    const list = await screen.findByTestId('attachment-sweep-candidate-list');
-    expect(list.getAttribute('tabindex'), 'a scroll container must be reachable by keyboard').toBe(
-      '0',
-    );
+  /**
+   * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`) as amended by
+   * #1535. The scroller holds about ten of up to 100 rows and every descendant
+   * is a `<span>`, so once it overflows there is no keyboard path past the
+   * visible rows in Chromium or WebKit — on the one surface that says WHICH
+   * files a live run will destroy. But axe's rule requires focusability of a
+   * region that ACTUALLY scrolls: with a two-candidate sample the box cannot
+   * overflow, and the stop was reachable and announced ("list, 2 items") with
+   * nothing to scroll, sitting between the disclosure and Dry run.
+   *
+   * So the STOP is gated on the sample and the NAME is not: a screen reader
+   * announcing the list is useful at any size, and an unnamed focusable
+   * region announces nothing.
+   */
+  it('a candidate list that cannot overflow is named but is not a tab stop', async () => {
+    const list = await renderWithCandidates(2);
+
+    expect(
+      list.getAttribute('tabindex'),
+      'a box that cannot scroll must not take a tab stop away from Dry run',
+    ).toBeNull();
+    expect(list.tagName).toBe('UL');
     expect(
       list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
-      'a focusable region needs an accessible name',
+      'the list keeps its accessible name at every size',
     ).toBeTruthy();
     // The same focus recipe the disclosure summary carries — a real outline,
-    // never a box-shadow ring; see the summary's cell below for why.
+    // never a box-shadow ring; see the summary's cell below for why. It stays
+    // on the element unconditionally: the class is inert without a tab stop
+    // and the alternative is two class strings to keep in step.
     expect(list.className.split(/\s+/)).toContain('nm-focus-ring');
     for (const cls of ['focus-visible:ring-2', 'focus-visible:outline-none']) {
       expect(list.className.split(/\s+/), `a ring is stripped by forced-colors: ${cls}`).not.toContain(cls);
     }
+  });
+
+  /**
+   * The gate's boundary, computed rather than eyeballed. `max-h-56` is 224px;
+   * `p-2` and the 1px border leave 206px of content. A row is `text-xs`
+   * (16px line box) and `space-y-1` adds 4px between rows, so n single-line
+   * rows measure `20n - 4` and overflow at n = 11 — but a row whose filename
+   * wraps to two lines measures 36n - 4 and overflows at n = 6. The gate is
+   * therefore set at "more than five", the largest sample that cannot scroll
+   * even when every row wraps: it never withholds the stop from a box that
+   * scrolls, and over-provisions only between six and ten single-line rows.
+   */
+  it('gates the tab stop at the first sample size that can overflow', async () => {
+    const five = await renderWithCandidates(5);
+    expect(five.getAttribute('tabindex'), 'five rows fit even fully wrapped').toBeNull();
+  });
+
+  it('the candidate scroller is a keyboard-reachable, named region once it can scroll', async () => {
+    const six = await renderWithCandidates(6);
+    expect(
+      six.getAttribute('tabindex'),
+      'a scroll container must be reachable by keyboard',
+    ).toBe('0');
+    expect(
+      six.getAttribute('aria-label') ?? six.getAttribute('aria-labelledby'),
+      'a focusable region needs an accessible name',
+    ).toBeTruthy();
+    expect(six.className.split(/\s+/)).toContain('nm-focus-ring');
+  });
+
+  it('keeps the tab stop on a full 100-row sample', async () => {
+    const full = await renderWithCandidates(100);
+    expect(full.getAttribute('tabindex')).toBe('0');
   });
 
   it('says the sample is bounded when the run found more candidates than it kept', async () => {

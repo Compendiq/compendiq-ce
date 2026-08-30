@@ -89,6 +89,20 @@ export const POLL_MS = 5_000;
  * still fetches the finished record on that path.
  */
 const KICK_WARMUP_MS = 20_000;
+/**
+ * The largest candidate sample the `max-h-56` scroller cannot scroll, and so
+ * the size above which it takes a tab stop (#1535).
+ *
+ * Measured from the classes rather than guessed: `max-h-56` is 224px, `p-2`
+ * and the 1px border leave 206px of content, a row is `text-xs` (16px line
+ * box) and `space-y-1` puts 4px between rows. n single-line rows measure
+ * `20n - 4` and first overflow at n = 11; a row whose filename wraps to two
+ * lines measures `36n - 4` and first overflows at n = 6. Five is therefore the
+ * largest sample that cannot scroll even when EVERY row wraps — the gate never
+ * withholds the stop from a box that scrolls, and over-provisions only between
+ * six and ten single-line rows.
+ */
+const CANDIDATE_ROWS_ALWAYS_FIT = 5;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -714,6 +728,18 @@ export function AttachmentStorageCard() {
             `nm-focus-ring`, a real outline, for the forced-colors reason
             spelled out there.
 
+            The stop is GATED on the sample (#1535), because that axe rule
+            only requires focusability of a region that actually scrolls. On a
+            healthy instance the sample is a handful of rows, the box does not
+            overflow, and the unconditional stop sat between the disclosure and
+            Dry run announcing "list, 2 items" with nothing to scroll — a stop
+            that costs a keystroke on the way to the destructive controls and
+            buys nothing. `CANDIDATE_ROWS_ALWAYS_FIT` carries the arithmetic;
+            it is the largest sample that cannot scroll even when every row
+            wraps, so the gate errs toward keeping the stop. The NAME is
+            deliberately NOT gated: the `list` announcement is useful at every
+            size and costs no focus order.
+
             Its NAME follows the same dry-run rule as the summary above it
             (fixer r1). The r2 ruling — "candidate" is a claim about pending
             work, so say it only for a dry run — was applied to the visible
@@ -724,7 +750,7 @@ export function AttachmentStorageCard() {
             attribute value).
           */}
           <ul
-            tabIndex={0}
+            tabIndex={lastRun.candidateSample.length > CANDIDATE_ROWS_ALWAYS_FIT ? 0 : undefined}
             aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
             className="nm-focus-ring border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
             data-testid="attachment-sweep-candidate-list"
@@ -931,10 +957,29 @@ export function AttachmentStorageCard() {
         Confluence re-serves it the next time it is viewed.
       </p>
 
+      {/*
+        #1534. This description was 613 characters — 2.8x the next-longest
+        `ConfirmDialog` in the app (`VersionHistory`, 217) — and roughly 340 of
+        them restated `attachment-sweep-note` directly above, which is on
+        screen at rest before the dialog ever opens. It rendered as one
+        undifferentiated muted run with "run a dry run first" at character 558,
+        the same shape CLAUDE.md's RetrievalTab ruling rejected. Trimmed to the
+        cost, the irreversibility and the recovery, in that order; the
+        never-touched inventory (which reference kinds count, the re-check, the
+        image-index prune, the page-icon store) stays with the note.
+
+        The cached-Confluence-image sentence is NOT inventory and does not go:
+        review r1 put it here because "files nothing references" reads to an
+        operator as "nothing on a live page", and this sweep really does remove
+        a cached image sitting under a live page that no body embeds. Dropping
+        it would make the dialog shorter by making it wrong. `description` is a
+        single string in one `Dialog.Description`, so this is one paragraph and
+        not two.
+      */}
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete orphaned attachment files?"
-        description="This permanently removes files that no page, draft, retained version, pending sync version, template, comment or saved AI answer references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. Cached Confluence images that no page body embeds are removed too — they are re-fetched from Confluence the next time they are viewed. Uploaded page icons are a separate store and are never swept. This cannot be undone — run a dry run first if you have not."
+        description="This permanently deletes files older than 24 hours that nothing references. It cannot be undone — run a dry run first if you have not. Cached Confluence images that no page body embeds count as unreferenced; Confluence re-serves them when next viewed."
         confirmLabel="Delete orphans"
         destructive
         onConfirm={() => {

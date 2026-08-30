@@ -1475,8 +1475,17 @@ partial view), and **Dry run** is how you refresh them.
 
 **What is deleted:** only files that (a) sit in a directory whose key matches
 no page row at all — including soft-deleted/trashed pages and folders, which
-all count as owners — or (b) are image-like files referenced by **no body
-text anywhere**: every page's `body_html`, draft and storage format (live and
+all count as owners — or (b) survive their store's per-file test. That test
+differs by store. In the **Confluence cache** a per-file candidate must be an
+*image-like* file referenced by **no body text anywhere**; a non-image cached
+attachment there is skipped on type before anything else is checked. In the
+**local store** there is no type filter: a per-file candidate is any file with
+no `local_attachments` row that is also referenced by no body text anywhere.
+In practice the row is what protects local files of every type — every writer
+of the local store pairs the file with its row — so the two rules land in the
+same place, but the local one is a row check, not a type check.
+"Referenced by no body text anywhere" means the same thing in both stores:
+every page's `body_html`, draft and storage format (live and
 trashed), every retained version, every pending sync version, every template,
 every comment and every saved AI conversation (#1361 persists a matched
 image's URL per assistant turn) feed one global keep-set per store, because
@@ -1490,8 +1499,10 @@ name that is not a plain file — a nested tree, a symlink — is something the 
 cannot measure, and the card reports it instead. Nothing younger than **24 hours** is ever
 a candidate (paste and sync both write files before the referencing row
 exists); the card says how many candidates are waiting out that window, so a
-freshly-emptied store does not read as a clean one. Non-image cached attachments (PDFs and other lazily fetched files)
-are never touched.
+freshly-emptied store does not read as a clean one. Non-image attachments
+cached from Confluence (PDFs and other lazily fetched files) are never
+touched; that exemption is the Confluence cache's type filter and does not
+extend to the local store, where a row-less file of any type is judged.
 
 **An image attached to a live Confluence page but embedded in no body is
 treated as cache** and may be removed — the attachments macro and the article

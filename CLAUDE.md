@@ -115,7 +115,7 @@ a NARROWING beside it, not the guarantee: `ORDER BY` is ASC and therefore
 NULLS LAST, so such a row cannot displace a scored one under the LIMIT — no
 test can make that clause fail, and its comment must not claim a fetch-budget
 effect it does not have. A transient failure costs its own query
-(`failedQueries` on the report), never the 46 comparisons already paid for;
+(`failedQueries` on the report), never the comparisons already paid for;
 only a majority of failures fails the run. Mode 2 judgements accumulate in
 `embedding_compare_judgements` (101) keyed by **provider AND model on each
 side** — the same name behind a different provider is a different index — and
