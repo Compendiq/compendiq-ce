@@ -1074,8 +1074,18 @@ describe('AttachmentStorageCard (#1349)', () => {
    * So the STOP is gated on measured overflow and the NAME is not: a screen
    * reader announcing the list is useful at any size, and an unnamed focusable
    * region announces nothing.
+   *
+   * The ungated emission is `tabindex="-1"`, not a MISSING attribute (review
+   * r2). A `<ul>` with no `tabindex` is not a focusable area, so WITHDRAWING
+   * the attribute from a list the operator is standing in — page zoom-out,
+   * window resize, any reflow that stops the box overflowing, all of which the
+   * card's `ResizeObserver` reports — runs HTML's focus fixup rule and drops
+   * focus to `<body>` with nothing rehoming it. `-1` keeps the element a
+   * focusable area (so the unfocusing steps never run) while keeping it out of
+   * the tab order, which is all #1535 asked for, and is this panel family's
+   * existing shape (`EmbeddingShadowCompareSection`, `SubTabs`).
    */
-  it('a candidate list that does not overflow is named but is not a tab stop', async () => {
+  it('a candidate list that does not overflow is named but takes no tab stop', async () => {
     const restore = stubListBox({ scrollHeight: 176, clientHeight: 206 });
     try {
       const list = await renderWithCandidates(2);
@@ -1083,7 +1093,7 @@ describe('AttachmentStorageCard (#1349)', () => {
       expect(
         list.getAttribute('tabindex'),
         'a box that cannot scroll must not take a tab stop away from Dry run',
-      ).toBeNull();
+      ).toBe('-1');
       expect(list.tagName).toBe('UL');
       expect(
         list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
@@ -1138,7 +1148,7 @@ describe('AttachmentStorageCard (#1349)', () => {
     const restore = stubListBox({ scrollHeight: 206, clientHeight: 206 });
     try {
       const full = await renderWithCandidates(100);
-      expect(full.getAttribute('tabindex')).toBeNull();
+      expect(full.getAttribute('tabindex')).toBe('-1');
     } finally {
       restore();
     }
@@ -1154,7 +1164,7 @@ describe('AttachmentStorageCard (#1349)', () => {
     const restore = stubListBox(box);
     try {
       const list = await renderWithCandidates(8);
-      expect(list.getAttribute('tabindex'), 'closed: no box, no stop').toBeNull();
+      expect(list.getAttribute('tabindex'), 'closed: no box, no stop').toBe('-1');
 
       box.scrollHeight = 300;
       box.clientHeight = 206;
@@ -1167,6 +1177,118 @@ describe('AttachmentStorageCard (#1349)', () => {
       );
 
       expect(list.getAttribute('tabindex'), 'opened and overflowing: a stop').toBe('0');
+    } finally {
+      restore();
+    }
+  });
+
+  /**
+   * The RESIZE signal, pinned on its own (review r2). `src/test-setup.ts`'s
+   * `MockResizeObserver` fires its callback once from `observe()` and never
+   * again, so it silently substitutes for the mount measurement: with only the
+   * cells above, DELETING the observer left the whole file green, and so did
+   * deleting the mount measurement — the suite could not tell "measured on
+   * resize" from "measured once at mount", while the width/zoom case is the
+   * entire reason this gate measures instead of counting rows.
+   *
+   * So this cell swaps in an observer that captures its callback (the recipe
+   * `EditorToolbar.test.tsx` uses) and fires a pure WIDTH change: the sample is
+   * identical and no `toggle` fires, so nothing but the observer can see it.
+   * Rows rewrap, the box starts scrolling, the stop must appear.
+   */
+  it('re-measures when the box resizes, with the sample unchanged', async () => {
+    const box = { scrollHeight: 176, clientHeight: 206 };
+    const restore = stubListBox(box);
+    const realResizeObserver = globalThis.ResizeObserver;
+    const callbacks: ResizeObserverCallback[] = [];
+    class CapturingResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        callbacks.push(callback);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = CapturingResizeObserver as unknown as typeof ResizeObserver;
+    try {
+      const list = await renderWithCandidates(4);
+      expect(list.getAttribute('tabindex'), 'fits at mount: no stop').toBe('-1');
+      expect(callbacks.length, 'the card must observe the list for resizes').toBeGreaterThan(0);
+
+      box.scrollHeight = 300;
+      await act(async () => {
+        for (const callback of callbacks) callback([], {} as ResizeObserver);
+      });
+
+      expect(
+        list.getAttribute('tabindex'),
+        'a reflow that starts the box scrolling must grant the stop',
+      ).toBe('0');
+    } finally {
+      globalThis.ResizeObserver = realResizeObserver;
+      restore();
+    }
+  });
+
+  /**
+   * The MOUNT measurement, pinned on its own (review r2). The spec has
+   * `observe()` deliver an initial observation, so with a `ResizeObserver`
+   * present the direct call is belt and braces — which is why deleting it left
+   * every other cell green. Where it is the ONLY measurement is the fallback
+   * the effect guards for: no `ResizeObserver` at all. That also pins the
+   * `typeof ResizeObserver === 'undefined'` guard, since without it the
+   * constructor call throws here.
+   */
+  it('measures at mount where there is no ResizeObserver to lean on', async () => {
+    const restore = stubListBox({ scrollHeight: 300, clientHeight: 206 });
+    const realResizeObserver = globalThis.ResizeObserver;
+    // @ts-expect-error — deleting the global is the environment under test.
+    delete globalThis.ResizeObserver;
+    try {
+      const list = await renderWithCandidates(8);
+      expect(
+        list.getAttribute('tabindex'),
+        'an overflowing box must take the stop even with no observer available',
+      ).toBe('0');
+    } finally {
+      globalThis.ResizeObserver = realResizeObserver;
+      restore();
+    }
+  });
+
+  /**
+   * The gate must never WITHDRAW focusability from a live element (review r2).
+   * A `<ul>` whose `tabindex` is removed stops being a focusable area, and the
+   * transition 0 -> absent is one page zoom-out away — the `ResizeObserver`
+   * pinned above reports exactly that. HTML's focus fixup rule then runs the
+   * unfocusing steps and focus lands on `<body>` while the list is still on
+   * screen, which is the failure mode `RetrievalTab.tsx` and CLAUDE.md's
+   * busy-state ruling exist to forbid. jsdom does not implement the unfocusing
+   * steps (same file records it), so `document.activeElement` cannot show the
+   * consequence here: what jsdom CAN see, and what the fix turns on, is that
+   * the element keeps a `tabindex` — `-1`, not nothing — across the flip.
+   */
+  it('keeps the scroller focusable when a re-measure says it no longer scrolls', async () => {
+    const box = { scrollHeight: 256, clientHeight: 206 };
+    const restore = stubListBox(box);
+    try {
+      const list = await renderWithCandidates(5);
+      expect(list.getAttribute('tabindex'), 'overflowing: a real stop').toBe('0');
+      (list as HTMLElement).focus();
+      expect(document.activeElement).toBe(list);
+
+      // A zoom-out: the same rows now fit, so the stop is given up.
+      box.scrollHeight = 176;
+      fireEvent(
+        screen.getByTestId('attachment-sweep-candidates'),
+        new Event('toggle', { bubbles: false, cancelable: false }),
+      );
+
+      expect(
+        list.hasAttribute('tabindex'),
+        'dropping the stop must not stop the element being a focusable area',
+      ).toBe(true);
+      expect(list.getAttribute('tabindex')).toBe('-1');
     } finally {
       restore();
     }

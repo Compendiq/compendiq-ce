@@ -385,6 +385,11 @@ export function AttachmentStorageCard() {
    * `ResizeObserver` is the same recipe `useElementWidth` in `EditorToolbar`
    * uses. Re-measured when the sample changes, when the box is resized, and
    * (belt and braces, see the `<details>` below) when the disclosure opens.
+   * The direct call below is what measures where there is no `ResizeObserver`
+   * to observe with; with one, its initial observation covers the same ground.
+   * Each of the three signals has its own cell (review r2): with the shared
+   * `MockResizeObserver` firing once from `observe()`, the suite could not
+   * tell any of them apart and deleting the observer left it green.
    */
   const candidateListRef = useRef<HTMLUListElement | null>(null);
   const [candidateListScrolls, setCandidateListScrolls] = useState(false);
@@ -771,9 +776,24 @@ export function AttachmentStorageCard() {
             three-line rows — so a five-row gate withheld the stop from a box
             that really scrolls, which is the failure the stop exists for.
             `scrollHeight > clientHeight` is the property axe itself tests.
-            A closed disclosure has no box, so both are 0 and no stop is
-            emitted — matching the browser, which does not let focus into
-            hidden `<details>` content either.
+            A closed disclosure has no box, so both are 0 and the list stays
+            out of the tab order — matching the browser, which does not let
+            focus into hidden `<details>` content either.
+
+            Ungated the attribute is `-1`, never ABSENT (review r2). A `<ul>`
+            with no `tabindex` is not a focusable area, so removing it from a
+            list the operator is standing in — page zoom-out, window resize,
+            any reflow that stops the box overflowing, all of which the
+            observer above reports — runs HTML's focus fixup rule: the
+            unfocusing steps drop focus to `<body>` with the list still on
+            screen and nothing rehoming it, the exact failure CLAUDE.md's
+            Retrieval-panel ruling and `RetrievalTab.tsx` forbid, and the one
+            PR #1550 just converted these buttons away from. `-1` keeps the
+            element a focusable area (no unfocusing steps) and out of the tab
+            order, which is all #1535 asked for; it is also the shape
+            `EmbeddingShadowCompareSection` and `SubTabs` already use. jsdom
+            does not implement the unfocusing steps, so the cell pins the
+            attribute.
 
             The NAME is deliberately NOT gated: the `list` announcement is
             useful at every size and costs no focus order.
@@ -789,7 +809,7 @@ export function AttachmentStorageCard() {
           */}
           <ul
             ref={candidateListRef}
-            tabIndex={candidateListScrolls ? 0 : undefined}
+            tabIndex={candidateListScrolls ? 0 : -1}
             aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
             className="nm-focus-ring border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
             data-testid="attachment-sweep-candidate-list"
