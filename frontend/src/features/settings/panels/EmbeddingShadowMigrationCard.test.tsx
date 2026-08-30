@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
@@ -941,6 +941,66 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
       expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
       vi.useRealTimers();
+    });
+
+    it('does not adopt the PREVIOUS migration\'s comparison across the same model name (#1526)', async () => {
+      // This card COMPOSES the re-attachment cache key that both halves read
+      // (`compareCacheKey`, handed to the section as `candidateKey`), so the
+      // migration window has to be in it here: the app's QueryClient keeps an
+      // unobserved entry for five minutes, and an admin who aborted migration A
+      // and started migration B on the SAME model name inside that window
+      // remounts into this branch onto A's cached run — told a comparison of B
+      // "is still running" for as long as the round trip lasts, and holding a
+      // slot id from a migration that is gone. The section's own remount cases
+      // cannot see this: the section is HANDED the key, and this is where it is
+      // built.
+      const shared = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      let startedAt = MIGRATION.startedAt;
+      let holdLatest = false;
+      const neverResolves = new Promise<void>(() => {});
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+        if (url.endsWith('/compare') && method === 'GET') {
+          if (holdLatest) await neverResolves;
+          return json({ run: { id: 'run-a', status: 'running', progressDone: 7, progressTotal: 16 } });
+        }
+        if (url.includes('/shadow-migration') && method === 'GET') {
+          return json({ active: true, migration: { ...MIGRATION, startedAt } });
+        }
+        return json({});
+      });
+
+      const first = render(
+        <QueryClientProvider client={shared}>
+          <EmbeddingShadowMigrationCard pending={null} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(/still running/i),
+      );
+      first.unmount();
+
+      // Migration B, same model name, new window — and its own lookup is still
+      // in flight, which is the window the cache is read in.
+      startedAt = '2026-08-09T11:00:00.000Z';
+      holdLatest = true;
+      render(
+        <QueryClientProvider client={shared}>
+          <EmbeddingShadowMigrationCard pending={null} />
+        </QueryClientProvider>,
+      );
+      // Let the mount SETTLE before asserting: a cache-served run reaches the
+      // note one effect later, so an assertion that resolves on the first
+      // synchronous poll passes no matter which key was used.
+      const settled = Promise.withResolvers<void>();
+      setTimeout(settled.resolve, 50);
+      await act(() => settled.promise);
+      expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(
+        /unlocks when the backfill completes/i,
+      );
     });
   });
 });
