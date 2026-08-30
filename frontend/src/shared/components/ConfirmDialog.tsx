@@ -199,19 +199,26 @@ export function ConfirmDialog({
             // Deliberately no `preventDefault()`: Radix's initial focus into
             // the content is the focus-trap entry this dialog wants.
           }}
-          onCloseAutoFocus={(event) => {
+          onCloseAutoFocus={() => {
             const invoker = invokerRef.current;
+            // A release, not a guard: nothing else reads it, and a closed
+            // dialog that keeps the reference pins a possibly-detached subtree
+            // until its next open. No cell can red for it and none is claimed
+            // (see the mutation table in the PR) — every open dispatches
+            // `onOpenAutoFocus` and overwrites it, so there is no
+            // stale-invoker path left to observe.
             invokerRef.current = null;
+            // `Invoker | null` narrowing rather than a behaviour branch: `tsc`
+            // is what reds for it ("'invoker' is possibly 'null'").
             if (!invoker) return;
-            // Keeps this component the only focus authority in the composed
-            // chain: `composeEventHandlers` runs THIS handler first and skips
-            // `DialogContentModal`'s once the event is default-prevented, so
-            // the `triggerRef.current?.focus()` that this trigger-less dialog
-            // can never populate is never even reached. No cell can red for
-            // this line and that is expected, not an oversight — deleting it
-            // leaves the suite 21/21 green (mutation M6, external round),
-            // because the handler it suppresses is itself a no-op here.
-            event.preventDefault();
+            // No `preventDefault()` here, deliberately (external round). This
+            // dialog renders no `Dialog.Trigger`, so `DialogContentModal`'s
+            // composed handler — `event.preventDefault();
+            // context.triggerRef.current?.focus()` — prevents the default
+            // either way and then focuses a ref that is permanently `null`.
+            // Suppressing it suppressed a no-op: no cell could red for the
+            // line, so it is gone rather than defended in a comment.
+            //
             // See the header: one attempt, on the post-confirm DOM, and only
             // while nothing else holds the keyboard. `focus()` on a control
             // that cannot take it is a no-op, which is the intended outcome —

@@ -1,9 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
-import { useEffect, useState } from 'react';
+import { StrictMode, useEffect, useState } from 'react';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConfirmDialogProps } from './ConfirmDialog';
+
+/**
+ * A `data-testid` carrying the two characters a quoted attribute selector
+ * cannot hold raw: an unescaped `[data-testid="…"]` built from this is a
+ * `SyntaxError` thrown out of Radix's close-auto-focus dispatch, not a missed
+ * restore. Identities in this app are author-written today, but they are
+ * frequently interpolated from data (`id={`space-${space.key}`}`), which is
+ * why the restore escapes rather than trusts them.
+ */
+const HOSTILE_TESTID = 'remove-space-"weird\\key"';
 
 function renderDialog(overrides: Partial<ConfirmDialogProps> = {}) {
   const onConfirm = vi.fn();
@@ -161,7 +171,7 @@ function ReplacedTriggerHarness({
 }
 
 /**
- * The two identity paths every harness above hides, because all of them label
+ * The identity paths every harness above hides, because all of them label
  * their trigger `data-testid="trigger"` — which made both branches provably
  * zero-red (review r1: deleting either left the suite 21/21 green).
  *
@@ -174,8 +184,15 @@ function ReplacedTriggerHarness({
  *   output, which a re-mount regenerates) and re-mounted by the confirmed
  *   commit, so the captured node is detached and only the `id` half of
  *   `identitySelector` can find the control again.
+ * - `kind="hostile-testid"` — the same re-mount, with an identity that contains
+ *   the two characters a quoted attribute selector cannot carry raw. This is
+ *   the only cell that reds for `cssString`; without it that helper was a
+ *   hand-rolled escape nobody could falsify (external round). `CSS.escape` is
+ *   NOT an alternative here: it is present in jsdom but produces the
+ *   identifier form, and nwsapi does not match it — probed, `querySelector`
+ *   returned `null` for the element it was built from.
  */
-function IdentityHarness({ kind }: { kind: 'anonymous' | 'id' }) {
+function IdentityHarness({ kind }: { kind: 'anonymous' | 'id' | 'hostile-testid' }) {
   const [open, setOpen] = useState(false);
   const [generation, setGeneration] = useState(0);
   return (
@@ -184,6 +201,7 @@ function IdentityHarness({ kind }: { kind: 'anonymous' | 'id' }) {
         key={generation}
         type="button"
         id={kind === 'id' ? 'remove-space-confluence' : undefined}
+        data-testid={kind === 'hostile-testid' ? HOSTILE_TESTID : undefined}
         onClick={() => setOpen(true)}
       >
         Remove space
@@ -735,5 +753,55 @@ describe('ConfirmDialog', () => {
     expect(focusLog).toContain(originalNode);
     expect(focusLog).not.toContain(remounted);
     expect(document.activeElement).toBe(document.body);
+  });
+
+  /**
+   * The re-arm inside the `aliveRef` effect, which was zero-red until this cell
+   * (external round). React runs mount effects TWICE under `StrictMode` —
+   * effect, cleanup, effect — and `main.tsx:60` wraps the whole app in it, so
+   * in development the cleanup that marks the dialog dead runs while the dialog
+   * is very much alive. Without `aliveRef.current = true` at the top of the
+   * effect the guard latches false on the first mount and NO callsite ever gets
+   * its focus back in dev. `AppLayout.test.tsx:2` is the precedent for driving
+   * `StrictMode` from a cell.
+   */
+  it('still restores focus under StrictMode double-invoked effects', async () => {
+    render(
+      <StrictMode>
+        <TriggerHarness />
+      </StrictMode>,
+    );
+    const trigger = openFromTrigger();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await flushCloseAutoFocus();
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  /**
+   * The cell that reds for `cssString`, the last helper with no falsifier
+   * (external round). The re-mount forces the restore down the identity path,
+   * and the identity carries a `"` and a `\`: unescaped, the selector this
+   * builds is invalid and `querySelector` throws a `SyntaxError` out of Radix's
+   * close-auto-focus dispatch — an unhandled error inside a `setTimeout`, not a
+   * quiet missed restore.
+   */
+  it('returns focus by an identity that has to be escaped into a selector', async () => {
+    render(<IdentityHarness kind="hostile-testid" />);
+    const originalNode = openFromNamedTrigger();
+    // Premise: the identity really is the hostile one, and it is the only
+    // identity this trigger has.
+    expect(originalNode).toHaveAttribute('data-testid', HOSTILE_TESTID);
+    expect(originalNode.id).toBe('');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await flushCloseAutoFocus();
+
+    const remounted = screen.getByRole('button', { name: 'Remove space' });
+    expect(remounted).not.toBe(originalNode);
+    expect(document.contains(originalNode)).toBe(false);
+    expect(document.activeElement).toBe(remounted);
   });
 });
