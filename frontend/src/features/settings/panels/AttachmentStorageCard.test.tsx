@@ -620,7 +620,20 @@ describe('AttachmentStorageCard (#1349)', () => {
    *    catch. Verified by mutation at the r1 head: the whole file stayed
    *    green on "are never touched; Confluence re-serves them if you delete
    *    them yourself". The verb is back, as an alternation, so the meaning
-   *    is pinned and the wording is not;
+   *    is pinned and the wording is not.
+   *
+   *    External round 4 closed the rest of that hole. The verb alone still
+   *    let the claim be RE-LIMITED: probed at `660fce64`, a description
+   *    reading "…count as unreferenced ONCE THE PAGE IS GONE; Confluence
+   *    re-serves them" (256 chars, inside the 260 bound, so the length cell
+   *    did not catch it either) kept all 65 cells green — while stating the
+   *    very thing the paragraph above says an operator already wrongly
+   *    assumes, and the opposite of what `walkConfluenceTree` does on a
+   *    KNOWN key. The assertion therefore also requires the verb phrase to
+   *    END its clause, so a condition trailing it reds. That reds on a
+   *    reshaped claim as well as on a wrong one, deliberately: this is the
+   *    sentence whose whole job is the cost, and a copy edit that changes
+   *    its shape should have to be re-read, not silently absorbed;
    *  - `/page icons/` is gone, and gone from the CARD, not relocated to the
    *    note (fixer r1 — the note has never mentioned page icons). "Uploaded
    *    page icons are a separate store and are never swept" is a reassurance
@@ -639,11 +652,13 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const dialog = await screen.findByTestId('confirm-dialog-confirm');
     const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
-    // The cost: a cached image under a live page, embedded by no body, GOES.
-    // The verb is what carries that, so it is asserted; the alternation keeps
-    // the cell agnostic about which way the copy phrases it.
+    // The cost: a cached image under a live page, embedded by no body, GOES,
+    // and goes UNCONDITIONALLY. The verb carries the polarity and the clause
+    // boundary carries the absence of a condition (the docblock's probe:
+    // "unreferenced once the page is gone" passed before the lookahead). The
+    // alternation keeps the cell agnostic about which verb the copy picks.
     expect(text).toMatch(
-      /cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted))/i,
+      /cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted)( too)?)(?=\s*[;.,—]|\s*$)/i,
     );
     // The recovery: Confluence still has the bytes, so this costs a re-fetch.
     expect(text).toMatch(/Confluence re-serves them/i);
