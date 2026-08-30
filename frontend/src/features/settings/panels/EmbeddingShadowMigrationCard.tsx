@@ -109,10 +109,21 @@ const COMPARISON_ENDED = 'The comparison in progress ended — the migration cha
  * every path that fires the toast has ended the migration window server-side —
  * including the one case no strip can cover, a rollback that takes the whole
  * card away.
+ *
+ * The condition it names is the WHOLE of the compare route's own gate — phase
+ * `ready`, i.e. `stragglerPages === 0 && indexReady` on a window that is
+ * neither swapped nor aborting (`shadow-migration-service`: `phase:
+ * stragglerPages === 0 && indexReady ? 'ready' : 'backfilling'`). Naming the
+ * finished BACKFILL alone was a condition the card on screen could already
+ * satisfy while the route still answered 409 (review r1): an `aborting`
+ * migration with zero stragglers, a built index and no swap behind it read as
+ * "it needs a finished backfill that has not been swapped yet" — which it
+ * had — and the same held for a zero-straggler `backfilling` one whose shadow
+ * index is not built. That is exactly where #1533 asks it to be true.
  */
 const COMPARISON_RESTARTABLE = 'Start a new comparison from the current migration.';
 const COMPARISON_UNAVAILABLE =
-  'Comparing on real queries is not available now — it needs a finished backfill that has not been swapped yet.';
+  'Comparing on real queries is not available now — it needs a completed backfill and index on a migration still waiting at the swap.';
 
 export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onActiveChange }: Props) {
   const queryClient = useQueryClient();
@@ -205,6 +216,24 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const onActiveChangeRef = useRef(onActiveChange);
   onActiveChangeRef.current = onActiveChange;
 
+  /**
+   * Status requests are numbered, and a body OLDER than one already rendered
+   * is dropped (review r1 of r2's fix). The `warnedFor` snapshot below cannot
+   * carry this on its own: it changes only when a COMPARISON ends, so a
+   * lifecycle POST that ends no run — a swap with nothing comparing — leaves
+   * both answers stamped with the same ending and hands the older one straight
+   * to `setStatus`. Under a strip that outlived its own migration that is
+   * #1533 again: the pre-swap branch (compare section, enabled Swap) comes
+   * back over a server that answers 409, and the per-render sentence
+   * re-derives to the prescription and is re-announced with it.
+   *
+   * Keyed on what was APPLIED, not on the newest request in flight: an older
+   * response is still the freshest thing this card knows until a newer one
+   * lands, and dropping it then would trade staleness for blindness.
+   */
+  const requestSeq = useRef(0);
+  const appliedSeq = useRef(0);
+
   const refresh = useCallback(async () => {
     // Snapshotted BEFORE the request: an ending reported while this GET was in
     // flight makes its answer OLDER than the ending, and `warnedFor` changes on
@@ -218,9 +247,12 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     // the prescription comes back with it once the hold is legitimately
     // released by the newer answer (review r2 of #1533).
     const knownEnding = warnedFor.current;
+    const seq = ++requestSeq.current;
     try {
       const s = await apiFetch<ShadowStatus>('/admin/embedding/shadow-migration');
       if (warnedFor.current !== knownEnding) return;
+      if (seq < appliedSeq.current) return;
+      appliedSeq.current = seq;
       setStatus(s);
       setEndedWindowUnconfirmed(false);
     } catch {
@@ -428,6 +460,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   // PRE-ending phase, where the section is still mounted but the route behind
   // its Run button already refuses (r1).
   const compareControlMounted = migration?.phase === 'ready' && !endedWindowUnconfirmed;
+  // …and the third arm on that same phase: `backfilling` already owns the
+  // availability fact, in the muted `shadow-compare-locked` note printed one
+  // line above the strip ("unlocks when the backfill completes", or the run
+  // still holding the slot). Repeating it here said the same thing twice in a
+  // row, the second time escalated to the hue ADR-010 reserves for a real
+  // consequence — so in that branch the strip carries the ending alone and
+  // lets the note say what comparing is waiting for (review r1).
+  const availabilityStatedByBranch = migration?.phase === 'backfilling';
+  const endedRecovery = compareControlMounted
+    ? COMPARISON_RESTARTABLE
+    : availabilityStatedByBranch
+      ? null
+      : COMPARISON_UNAVAILABLE;
 
   // Rendered by EVERY branch below, because the branch is exactly what changes
   // underneath a comparison. Amber, not destructive: the lifecycle action the
@@ -445,10 +490,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       className="mt-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
       data-testid="shadow-compare-ended"
     >
-      <p className="flex-1">
-        {COMPARISON_ENDED}{' '}
-        {compareControlMounted ? COMPARISON_RESTARTABLE : COMPARISON_UNAVAILABLE}
-      </p>
+      <p className="flex-1">{endedRecovery ? `${COMPARISON_ENDED} ${endedRecovery}` : COMPARISON_ENDED}</p>
       <button
         type="button"
         className="shrink-0 underline"
