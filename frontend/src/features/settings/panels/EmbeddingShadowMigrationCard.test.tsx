@@ -1003,4 +1003,136 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       );
     });
   });
+
+  it('HANDS the ready branch\'s section that same migration-scoped key (#1526 r1)', async () => {
+    // The composition at `compareCacheKey` and the hand-off to the section are
+    // two separate surfaces, and only the hand-off carries the data-integrity
+    // half of #1526. The card's own re-attachment lookup is enabled ONLY in
+    // `backfilling`, so in `ready` the sole reader of that key is the prop —
+    // and `ready` is the branch that renders the disagreement rows and their
+    // LIVE judgement radios. A pick made in that window POSTs against the
+    // adopted run's id, which `recordShadowCompareJudgement` keys to the OLD
+    // migration's candidate pair: the judgement lands in migration A's
+    // evidence while the admin believes they judged B. The test above pins how
+    // the key is BUILT; this one pins that the section is given it.
+    const REPORT = {
+      kind: 'shadow-compare',
+      generatedAt: '2026-08-06T10:30:00.000Z',
+      topK: 10,
+      queryCount: 1,
+      live: { providerId: 'p1', model: 'bge-m3' },
+      candidate: { providerId: 'p2', model: 'qwen3-embedding:4b' },
+      agreement: {
+        queryCount: 1,
+        top1ChangedQueries: 1,
+        top1ChangeRate: 1,
+        meanJaccard: 0.5,
+        meanRbo: 0.4,
+        disagreementCount: 1,
+      },
+      queries: [
+        {
+          id: 'query-1',
+          query: 'how to configure sync',
+          top1Changed: true,
+          jaccard: 0.5,
+          rbo: 0.4,
+          live: { pageIds: [1], pages: [{ pageId: 1, title: 'Sync setup', spaceKey: null }] },
+          candidate: {
+            pageIds: [2],
+            pages: [{ pageId: 2, title: 'Sync troubleshooting', spaceKey: null }],
+          },
+        },
+      ],
+    };
+    const EMPTY_VERDICT = {
+      judgementCount: 0,
+      scoredJudgementCount: 0,
+      liveBetter: 0,
+      candidateBetter: 0,
+      both: 0,
+      neither: 0,
+      mcnemar: null,
+      recall: null,
+      mrr: null,
+      minJudgementsForP: 20,
+    };
+    const READY = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+
+    let startedAt = READY.startedAt;
+    let holdLatest = false;
+    const neverResolves = new Promise<void>(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method = init?.method ?? 'GET';
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/judgements')) return json({ judgements: {}, verdict: EMPTY_VERDICT });
+      if (url.includes('/compare/') && method === 'GET') {
+        return json({
+          id: 'run-a',
+          status: 'completed',
+          progressDone: 1,
+          progressTotal: 1,
+          error: null,
+          result: REPORT,
+        });
+      }
+      if (url.endsWith('/compare') && method === 'GET') {
+        // Migration B's own lookup answers `{run: null}` (the server's pair
+        // predicate refuses A's run) — but only after a round trip, and that
+        // round trip is the whole window a stale cache entry fills.
+        if (holdLatest) await neverResolves;
+        return json({ run: { id: 'run-a', status: 'completed', progressDone: 1, progressTotal: 1 } });
+      }
+      if (url.includes('/shadow-migration') && method === 'GET') {
+        return json({ active: true, migration: { ...READY, startedAt } });
+      }
+      return json({});
+    });
+
+    const shared = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowMigrationCard pending={null} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('shadow-compare-basis')).toHaveTextContent(
+        REPORT.candidate.model,
+      ),
+    );
+    expect(screen.getAllByRole('radio')).toHaveLength(4);
+    first.unmount();
+
+    // Migration B: same model NAME, a new window, inside the five-minute
+    // gcTime that still holds A's entry.
+    startedAt = '2026-08-09T11:00:00.000Z';
+    holdLatest = true;
+    render(
+      <QueryClientProvider client={shared}>
+        <EmbeddingShadowMigrationCard pending={null} />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId('shadow-compare-section');
+    // Settle before asserting absence: a cache-served run reaches the report
+    // an effect and a poll later, so an assertion resolving on the first
+    // synchronous tick passes no matter which key the prop carried.
+    const settled = Promise.withResolvers<void>();
+    setTimeout(settled.resolve, 50);
+    await act(() => settled.promise);
+    expect(screen.queryByTestId('shadow-compare-result')).toBeNull();
+    expect(screen.queryByTestId('shadow-compare-basis')).toBeNull();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+  });
 });
