@@ -108,12 +108,13 @@ function stripComments(text: string): string {
  * cannot contain a raw newline, so a scanner that is still "inside" one when it
  * reaches end of line has DESYNCED — on an apostrophe in JSX copy, almost
  * always. Carrying that state forward swallowed the rest of the file into one
- * enormous body: measured on this tree, 152 live class lists across 8 files
- * (ScimSettingsPage, OidcSettingsPage, ComplianceReportsTab, MermaidDiagram,
- * DiagramMode, EmbeddingShadowCompareSection, PagesPage, KeyboardShortcutsModal)
- * were not visible as their own body, and six files ended inside an unclosed
- * quote, which dropped their tails from the sweep entirely — 75 class lists that
- * could carry any banned utility without the guard ever seeing it.
+ * enormous body: re-measured at this head by deleting the resync below, 160 live
+ * class lists across 7 files (ComplianceReportsTab, OidcSettingsPage,
+ * ScimSettingsPage, DiagramMode, PagesPage, MermaidDiagram,
+ * KeyboardShortcutsModal) were not visible as their own body, and six files
+ * ended inside an unclosed quote, which dropped their tails from the sweep
+ * entirely — class lists that could carry any banned utility without the guard
+ * ever seeing it.
  *
  * The old comment here called a desync harmless: "it costs at most a spurious
  * finding, never a missed one". That was true only while every rule was a naked
@@ -121,15 +122,16 @@ function stripComments(text: string): string {
  * has to, or it flags English — a merged body is a hole: one prose sentence
  * exempts every class list merged in beside it.
  *
- * The resync has one cost, and it is LOUD rather than silent: a static
- * `className="…"` attribute wrapped across lines — legal JSX, and absent from
- * this tree today — is cut at the newline, and its closing `"` then reads as an
- * OPENER, so the continuation lines never become a segment. That is a missed
- * class list, so it does not go unnoticed: `sees every class list in the tree
- * as its own segment` draws its sample from the raw text and fails on exactly
- * that shape, and its message names this cause. The alternative — carrying the
- * quote across the newline — is the swallow-the-file bug above, and a scanner
- * cannot tell a wrapped attribute from an apostrophe in copy.
+ * The resync has one cost: a static `className="…"` attribute wrapped across
+ * lines — legal JSX, and absent from this tree today — is cut at the newline,
+ * and its closing `"` then reads as an OPENER, so the continuation lines never
+ * become a segment from here. The alternative, carrying the quote across the
+ * newline, is the swallow-the-file bug above, and a scanner cannot tell a
+ * wrapped attribute from an apostrophe in copy. So the shape is recovered
+ * OUTSIDE the scanner instead, by `attributeSegments`, which needs no scanner
+ * state: a double-quoted attribute value cannot contain a `"`. The pattern this
+ * rule replaces carried the quote across the newline and saw such an attribute
+ * whole, so leaving it lost would have been a regression rather than a tradeoff.
  */
 function stringBodies(text: string): string[] {
   const out: string[] = [];
@@ -215,10 +217,11 @@ function interpolations(body: string): { start: number; end: number }[] {
  * `` className={`px-3 ${on ? 'bg-action shadow-lg' : 'text-muted'}`} `` — the
  * dominant shape for a conditional class in this tree — lost both of its nested
  * class lists before any rule ran, and `stringBodies` never recovered them,
- * because a `'` inside a backtick body is plain content. Measured on this tree,
- * 27 live class lists across 12 files were invisible that way, and the pattern
- * this rule replaces saw every one of them (as part of the merged backtick
- * body), so discarding made the guard strictly WEAKER than its predecessor. An
+ * because a `'` inside a backtick body is plain content. Delete the recursive
+ * descent below and 21 live class lists across 8 files go invisible that way, and
+ * the pattern this rule replaces saw every one of them (as part of the merged
+ * backtick body), so discarding made the guard strictly WEAKER than its
+ * predecessor. An
  * interpolation is CODE: it is scanned as code, and the string literals inside
  * it are class lists in their own right.
  *
@@ -230,23 +233,72 @@ function interpolations(body: string): { start: number; end: number }[] {
  * legal Tailwind 4, and cutting there split the list into `bg-[url(` and
  * `)] shadow-lg`. Neither half is a token shape — one opens on a closer — so
  * both read as prose and every shadow in the list was exempt, silently.
+ *
+ * An interpolation inside a balanced group is not a cut either, for the same
+ * reason and with the same consequences. `` `w-[${w}px] p-1.5 shadow-lg` `` is
+ * how this codebase — and every React codebase — spells a dynamic arbitrary
+ * value, and cutting at the `${…}` split it into `w-[` and `px] p-1.5
+ * shadow-lg`: one half opens a bracket it never closes, the other opens on a
+ * closer, so neither is a token shape, both read as prose, and every shadow in
+ * the list was exempt. The pattern this rule replaces caught all of them. So a
+ * PROTECTED interpolation — one standing inside a balanced `[…]` or `(…)` — is
+ * replaced by a placeholder that keeps the group balanced instead of ending the
+ * segment; it is still descended into, because the code inside it may hold class
+ * lists of its own. An interpolation OUTSIDE any group stays a cut: there
+ * `` `p-2 ${size} shadow-lg` `` really is a class list with a hole in it.
  */
 function classSegments(text: string): string[] {
   const out: string[] = [];
   collectSegments(text, out);
+  // Plus the one shape the quote scanner cannot keep: see `attributeSegments`.
+  out.push(...attributeSegments(text));
   return out;
 }
 
+/**
+ * A protected interpolation reduced to one character, so the arbitrary value it
+ * sits in still balances and the token it belongs to still has a shape. It is
+ * deliberately NOT a legal `TOKEN_PART` character on its own: if a placeholder
+ * ever escapes its group the token is rejected and the segment reads as prose,
+ * which is exactly what the cut it replaces produced — so the substitution can
+ * only ever add catches, never remove one.
+ */
+const INTERP_MARK = '\u0002';
+
 function collectSegments(code: string, out: string[]): void {
   for (const body of stringBodies(code)) {
+    const spans = interpolations(body);
+    // Group structure is read off the body with the interpolations BLANKED, not
+    // off the raw body: `${cn({ a: ']' })}` carries brackets of its own, and
+    // counting those decides protection by the contents of the hole rather than
+    // by the class list around it. The blank is index-aligned so the positions
+    // still address `body`.
+    const inGroup = groupInterior(blankSpans(body, spans));
+    let held = '';
     let cut = 0;
-    for (const { start, end } of interpolations(body)) {
-      pushChunks(body.slice(cut, start), out);
+    for (const { start, end } of spans) {
+      if (inGroup[start]) {
+        held += body.slice(cut, start) + INTERP_MARK;
+      } else {
+        pushChunks(held + body.slice(cut, start), out);
+        held = '';
+      }
       collectSegments(body.slice(start + 2, end - 1), out);
       cut = end;
     }
-    pushChunks(body.slice(cut), out);
+    pushChunks(held + body.slice(cut), out);
   }
+}
+
+/** `body` with every span replaced by the same NUMBER of placeholder characters. */
+function blankSpans(body: string, spans: { start: number; end: number }[]): string {
+  let out = '';
+  let at = 0;
+  for (const { start, end } of spans) {
+    out += body.slice(at, start) + INTERP_MARK.repeat(end - start);
+    at = end;
+  }
+  return out + body.slice(at);
 }
 
 /**
@@ -289,6 +341,33 @@ function pushChunks(chunk: string, out: string[]): void {
     start = i + 1;
   }
   out.push(chunk.slice(start));
+}
+
+/**
+ * The value of every static `name="…"` attribute that spans more than one line.
+ *
+ * A JSX attribute value is not a JS string literal: it MAY carry a raw newline,
+ * and `className="flex p-1.5\n  shadow-lg"` is legal, prettier-produced JSX.
+ * `stringBodies` has to resync at every newline inside a `"` body — that is what
+ * stops one apostrophe in JSX copy swallowing the rest of the file — so it cuts
+ * such an attribute in half and reads its closing quote as an OPENER, losing the
+ * continuation lines. The pattern this rule replaces carried the quote across
+ * the newline and saw the whole value, so losing it is a regression.
+ *
+ * Recovering it needs no scanner state, because a double-quoted attribute value
+ * cannot contain a `"`: the value is whatever stands between the `="` and the
+ * next `"`. This is deliberately ADDITIVE — an extra segment beside the ones
+ * `classSegments` produces, restricted to the multi-line shape that is the only
+ * one the resync loses. A spurious match (an `=` inside a string, say) can only
+ * ADD a segment, and an added segment is judged on its own like every other, so
+ * the worst case is a finding to look at rather than one to miss.
+ */
+function attributeSegments(text: string): string[] {
+  const out: string[] = [];
+  for (const attr of text.matchAll(/[A-Za-z_$][\w$]*\s*=\s*"([^"]*)"/g)) {
+    if (attr[1]!.includes('\n')) out.push(attr[1]!);
+  }
+  return out;
 }
 
 const PALETTE =
@@ -459,15 +538,25 @@ const SHADOW_UTILITY = new RegExp(
  * which is what this cell used to do, exempts every other shadow standing next
  * to it.
  *
- * `--shadow-overlay-sm` is allowed with it. It is the same `@theme` block's
+ * `--shadow-overlay-sm` is allowed with it in the two spellings the pattern this
+ * rule replaces never matched — `shadow-overlay-sm` and
+ * `shadow-(--shadow-overlay-sm)`, both of which that pattern's
+ * `(-\[|(?=["'\s]|$))` tail rejects outright. It is the same `@theme` block's
  * shallow sibling (index.css, under "The one shadow family in the system"),
  * documented there as the Library search surface's exception, so a call site
- * spelling it is using the system shadow rather than reaching past it. Nothing
- * spells it today; this is the one place the rule is deliberately wider than
- * the pattern it replaces, whose allowance covered only `--shadow-overlay`.
+ * spelling it is using the system shadow rather than reaching past it.
+ *
+ * `shadow-[var(--shadow-overlay-sm)]` is NOT allowed, and the asymmetry is
+ * deliberate: the pattern this replaces DID catch that spelling — its allowance
+ * named `--shadow-overlay` only, and `shadow-[` matches — so exempting it would
+ * be the one case in this file where the new rule is weaker than the old one,
+ * and "weaker on any case" is what the three earlier attempts died of. Nothing
+ * in the tree spells `--shadow-overlay-sm` at all (`grep -rn 'shadow-overlay-sm'
+ * frontend/src --include=*.tsx` is empty), so the narrow reading costs nothing
+ * today and the `@theme`-backed spellings above stay available.
  */
 const SYSTEM_SHADOW =
-  /^shadow-(?:overlay(?:-sm)?|\[var\(--shadow-overlay(?:-sm)?\)\]|\(--shadow-overlay(?:-sm)?\))$/;
+  /^shadow-(?:overlay(?:-sm)?|\[var\(--shadow-overlay\)\]|\(--shadow-overlay(?:-sm)?\))$/;
 
 /**
  * The utility a token names, with its variants removed.
@@ -748,6 +837,53 @@ describe('the shadow guard is itself under test', () => {
    * stated hole and opened a new one.
    */
   const PRE_V4_PATTERN = /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/;
+
+  /**
+   * The SCANNER the shadow cell used before this rule: `stringBodies` without the
+   * newline resync, so a quote is carried across a line break exactly as it was.
+   *
+   * The superset cells below compare the new rule against `PRE_V4_PATTERN`, which
+   * settles the token grammar but says nothing about the two collaborating parts
+   * that decide what the pattern ever SEES. Every one of the shapes that made an
+   * earlier version of this rule weaker than its predecessor was a scanner or
+   * segmenter loss, not a pattern loss, and a pattern-only comparison cannot fail
+   * on one by construction. So the pipeline it replaces is reproduced here, and
+   * the fixtures whose source FORM is the point are compared against that.
+   */
+  const preV4Bodies = (text: string): string[] => {
+    const out: string[] = [];
+    let quote: string | null = null;
+    let start = 0;
+    let i = 0;
+    while (i < text.length) {
+      const c = text[i]!;
+      if (quote) {
+        if (c === '\\') {
+          i += 2;
+          continue;
+        }
+        if (c === quote) {
+          out.push(text.slice(start, i));
+          quote = null;
+        }
+        i += 1;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === '`') {
+        quote = c;
+        start = i + 1;
+      }
+      i += 1;
+    }
+    return out;
+  };
+
+  /** The pre-v4 shadow cell's whole verdict on a source snippet, allowance included. */
+  const preV4Catches = (source: string): boolean =>
+    preV4Bodies(stripComments(source)).some(
+      (body) =>
+        PRE_V4_PATTERN.test(body) && !/\bshadow-\[var\(--shadow-overlay\)\]/.test(body),
+    );
 
   const flagged = (text: string): string[] =>
     shadowOffenders(classSegments(text)).map((hit) => hit.token);
@@ -1045,8 +1181,8 @@ describe('the shadow guard is itself under test', () => {
   it('leaves the system shadow alone, in every spelling Tailwind 4 allows', () => {
     const SYSTEM = [
       'shadow-[var(--shadow-overlay)]',
-      'shadow-[var(--shadow-overlay-sm)]',
       'shadow-(--shadow-overlay)',
+      'shadow-(--shadow-overlay-sm)',
       'shadow-overlay',
       'shadow-overlay-sm',
     ];
@@ -1054,20 +1190,30 @@ describe('the shadow guard is itself under test', () => {
       (form) => flagged(`<div className="${THEME_SWATCH} ${form}" />`).length > 0,
     );
     expect(rejected, '`--shadow-overlay` IS the system shadow — ADR-010 v0.6').toEqual([]);
+    // And the one spelling the allowance deliberately does NOT cover, because the
+    // pattern this rule replaces caught it: its allowance named `--shadow-overlay`
+    // alone, and `shadow-[` matches. Exempting it would make this rule weaker
+    // than the one it replaces on exactly one token, which is the failure the
+    // revert clause exists for. Nothing in the tree spells it.
+    const shallowArbitrary = 'shadow-[var(--shadow-overlay-sm)]';
+    expect(PRE_V4_PATTERN.test(shallowArbitrary)).toBe(true);
+    expect(flagged(`<div className="${THEME_SWATCH} ${shallowArbitrary}" />`)).toEqual([
+      shallowArbitrary,
+    ]);
   });
 
   it('sees every class list in the tree as its own segment', () => {
     // The scanner half. A prose exemption is only safe if a real class list is
     // never merged into a body that has prose in it: one merged body lets a
-    // single prose sentence exempt every class list beside it. Before the
-    // newline resync this cell reported 152 across 8 files.
+    // single prose sentence exempt every class list beside it. Delete the newline
+    // resync in `stringBodies` and this cell reports 160 across 7 files.
     //
     // The sample has to come from the RAW FILE TEXT, and the version before this
     // one drew half of it from `className="…"` attributes alone. That is the one
     // shape the scanner cannot lose, so the cell was structurally incapable of
     // failing on the scanner's actual live failure mode: a class list inside a
     // `${…}` interpolation is not an attribute, so when `classSegments` was
-    // discarding interpolations, 27 real class lists across 12 files vanished
+    // discarding interpolations, 21 real class lists across 8 files vanished
     // from the segment stream and this cell stayed green with `invisible === 0`.
     // The oracle-filtered quoted literals below are drawn from the text with no
     // reference to `stringBodies` or `classSegments`, so a segment the scanner
@@ -1083,7 +1229,16 @@ describe('the shadow guard is itself under test', () => {
       }
       for (const candidate of candidates) {
         checked += 1;
-        if (!segments.has(candidate)) invisible.push(`${file.path}: ${candidate.slice(0, 70)}`);
+        if (segments.has(candidate)) continue;
+        // The shadows standing in the lost class list, named in the message. An
+        // invisible segment is only a problem because of what it hides, and the
+        // operator reading a failure here needs to know whether a banned utility
+        // went with it or the sweep merely lost a harmless list.
+        const hiding = shadowUtilities(candidate);
+        invisible.push(
+          `${file.path}: ${candidate.replace(/\s+/g, ' ').slice(0, 70)}` +
+            (hiding.length > 0 ? `  <-- HIDES ${hiding.join(' ')}` : ''),
+        );
       }
     }
     expect(checked, 'the sample is empty — the enumeration broke').toBeGreaterThan(4000);
@@ -1091,13 +1246,12 @@ describe('the shadow guard is itself under test', () => {
       invisible.length,
       `${invisible.length} class lists are invisible to the sweep as their own ` +
         `segment, so a prose exemption beside them exempts them too.\n` +
-        `If the class list below spans more than one line inside a static ` +
-        `className="…" attribute, that is the known cause: \`stringBodies\` ` +
-        `resyncs at every newline inside a "/' body — which is what stops one ` +
-        `apostrophe in JSX copy swallowing the rest of the file — so the ` +
-        `attribute's closing quote reads as an OPENER and the continuation ` +
-        `lines are lost. Put the class list on one line, or in a backtick, ` +
-        `which is not resynced.\n` +
+        `\`stringBodies\` resyncs at every newline inside a "/' body — which is ` +
+        `what stops one apostrophe in JSX copy swallowing the rest of the file — ` +
+        `so a static className="…" wrapped across lines is cut there and its ` +
+        `closing quote reads as an OPENER. \`attributeSegments\` is what puts ` +
+        `that shape back; if a wrapped attribute is listed below, that recovery ` +
+        `stopped matching it.\n` +
         invisible.slice(0, 12).join('\n'),
     ).toBe(0);
   });
@@ -1304,5 +1458,109 @@ describe('the shadow guard is itself under test', () => {
     expect(classSegments('doesn\'t tilt <div className="p-1.5 shadow" />')).toContain(
       'p-1.5 shadow',
     );
+  });
+
+  /**
+   * Legal source SHAPES this tree does not happen to spell today.
+   *
+   * `LATENT_SHAPES` above is a token table, and a token table can only test the
+   * grammar. Every hole that made a version of this rule weaker than the pattern
+   * it replaces was in the two parts BEFORE the grammar — the quote scanner and
+   * the segmenter — and those are decided by the shape of the SOURCE, not by the
+   * spelling of a class. So the fixtures below are source snippets, they are all
+   * absent from the tree (`grep -rn '\[\${' frontend/src --include=*.tsx` is
+   * empty, and no static `className="…"` in the tree is wrapped across lines),
+   * and the cell under them checks each is a case the PIPELINE this rule replaces
+   * caught — otherwise the table proves nothing.
+   */
+  const LATENT_SOURCES: { name: string; source: string; token: string }[] = [
+    // A `${…}` inside an arbitrary value — how React spells a dynamic length.
+    // `collectSegments` used to cut at every interpolation, which split
+    // `h-[${h}px]` into `h-[` and `px]`: one half never closes its bracket, the
+    // other opens on a closer, so both read as prose and the shadow was exempt.
+    // Delete the `inGroup[start]` branch in `collectSegments` and these red.
+    {
+      name: 'a dynamic length in an arbitrary value',
+      source: 'const cls = `h-[${h}px] p-1.5 shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    {
+      name: 'a dynamic percentage in an arbitrary value',
+      source: 'const cls = `w-[${pct}%] p-1.5 shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    // The hole is two groups deep, so the protection cannot be a `[…]` special
+    // case: `groupInterior` has to be the same balanced scan the rest uses.
+    {
+      name: 'a dynamic count inside a nested group',
+      source: 'const cls = `grid-cols-[repeat(${n},1fr)] p-1.5 shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    {
+      name: 'a dynamic custom property name',
+      source: 'const cls = `bg-[var(--${role})] p-1.5 shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    // An interpolation AND a `"` in the same arbitrary value: the two cuts that
+    // have to agree about what a balanced group is.
+    {
+      name: 'a dynamic url with a quote around it',
+      source: 'const cls = `p-1.5 bg-[url("${u}")] shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    // Not an attribute at all. Every tree-derived sample in this file is drawn
+    // from `className` attributes or oracle-recognised literals, so a class list
+    // returned by a helper is in none of them.
+    {
+      name: 'a class list built by a helper rather than written as an attribute',
+      source: 'const swatch = (w: number) => `flex w-[${w}px] shadow-md`;',
+      token: 'shadow-md',
+    },
+    // A multi-line backtick body whose prose and class list are separate LINES,
+    // with no interpolation and no `"` anywhere — so the newline cut in
+    // `pushChunks` is the only thing that keeps the prose line from making the
+    // class-list line prose too. Remove `c !== '\n'` from that cut and this reds;
+    // every other fixture in the file survives it, which is why it is here.
+    {
+      name: 'a prose line above a class-list line in one backtick body',
+      source: [
+        'const help = `',
+        '  Compendiq does not tilt cards under the cursor',
+        '  flex p-1.5 shadow-lg',
+        '`;',
+      ].join('\n'),
+      token: 'shadow-lg',
+    },
+    // A static `className="…"` wrapped across lines: legal, prettier-produced
+    // JSX that `stringBodies` must cut at the newline and `attributeSegments`
+    // therefore has to recover. Delete the `attributeSegments` call in
+    // `classSegments` and this reds.
+    {
+      name: 'a static className attribute wrapped across lines',
+      source: '<div className="flex w-12 shrink-0 flex-col gap-1\n  rounded-md p-1.5 shadow" />',
+      token: 'shadow',
+    },
+  ];
+
+  it('catches a shadow in every source shape this tree does not spell yet', () => {
+    const escaped = LATENT_SOURCES.filter(({ source, token }) => !flagged(source).includes(token));
+    expect(
+      escaped.map((fixture) => fixture.name),
+      'the scanner or the segmenter lost the class list, so the shadow standing ' +
+        'in it was never handed to any rule',
+    ).toEqual([]);
+  });
+
+  it('every latent source fixture is a case the pre-v4 PIPELINE caught', () => {
+    // Non-vacuity, and the whole superset argument for the cell above: a fixture
+    // the rule this replaces did not catch either proves nothing about being a
+    // superset of it. The comparison is against the pipeline — its scanner and
+    // its allowance, not just its pattern — because every shape in the table is
+    // a scanner or segmenter case and a pattern-only comparison cannot see one.
+    const vacuous = LATENT_SOURCES.filter(({ source }) => !preV4Catches(source));
+    expect(
+      vacuous.map((fixture) => fixture.name),
+      'this fixture is not a regression against anything — either fix it or drop it',
+    ).toEqual([]);
   });
 });
