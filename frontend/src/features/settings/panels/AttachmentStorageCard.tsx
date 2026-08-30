@@ -719,16 +719,22 @@ export function AttachmentStorageCard() {
             `max-h-56` is 224px; less the 1px border and `p-2` that is a
             206px content box. A row is `text-xs`, a 16px line box, and
             `space-y-1` adds 4px between rows, so ten one-line rows measure
-            196px and FIT while eleven measure 216px and scroll. At the WCAG
-            1.4.10 reflow width the `break-all` path wraps and pushes the meta
-            span onto a third line, 48px a row: four such rows fit, five
-            measure 256px and scroll. So below five rows the box cannot scroll
-            at any width, and there the stop is announced as "list, 2 items"
-            with nothing to scroll — one keystroke on the way to the
-            destructive controls, which is exactly the cost #1535 names.
+            196px and FIT while eleven measure 216px and scroll. Narrow the
+            card and the `break-all` path wraps, pushing the meta span onto a
+            further line: at two path lines a row is 48px, so four rows fit
+            (204px) and five scroll (256px). No lower row count is SAFE,
+            though (fixer r1): the `<li>` has no vertical gap and neither the
+            row nor the path span carries `truncate`, `line-clamp` or a
+            `max-w`, so a row is 16px times its line-box count and nothing
+            bounds that count — a long enough attachment filename scrolls the
+            box at two rows. The redundancy #1535 reports is therefore the
+            case where the sample is short AND the paths are short: the stop
+            is announced as "list, 2 items" with nothing to scroll — one
+            keystroke on the way to the destructive controls, which is
+            exactly the cost #1535 names.
 
-            Gating it costs more than it saves. A gate has to track WIDTH
-            rather than row count, so it needs a live measurement; and
+            Gating it costs more than it saves. A gate has to track rendered
+            HEIGHT, not row count, so it needs a live measurement; and
             withdrawing `tabindex` from a list the operator is standing in —
             one zoom-out at four rows — runs HTML's focus fixup rule, whose
             unfocusing steps drop focus to `<body>` with the list still on

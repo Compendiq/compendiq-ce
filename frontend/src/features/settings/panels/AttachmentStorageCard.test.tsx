@@ -622,18 +622,31 @@ describe('AttachmentStorageCard (#1349)', () => {
    *    them yourself". The verb is back, as an alternation, so the meaning
    *    is pinned and the wording is not.
    *
-   *    External round 4 closed the rest of that hole. The verb alone still
-   *    let the claim be RE-LIMITED: probed at `660fce64`, a description
-   *    reading "…count as unreferenced ONCE THE PAGE IS GONE; Confluence
-   *    re-serves them" (256 chars, inside the 260 bound, so the length cell
-   *    did not catch it either) kept all 65 cells green — while stating the
-   *    very thing the paragraph above says an operator already wrongly
-   *    assumes, and the opposite of what `walkConfluenceTree` does on a
-   *    KNOWN key. The assertion therefore also requires the verb phrase to
-   *    END its clause, so a condition trailing it reds. That reds on a
-   *    reshaped claim as well as on a wrong one, deliberately: this is the
-   *    sentence whose whole job is the cost, and a copy edit that changes
-   *    its shape should have to be re-read, not silently absorbed;
+   *    External round 4 aimed at the rest of that hole and missed it; fixer
+   *    r1 closes it. The verb alone still let the claim be RE-LIMITED:
+   *    probed at `660fce64`, a description reading "…count as unreferenced
+   *    ONCE THE PAGE IS GONE; Confluence re-serves them" (256 chars, inside
+   *    the 260 bound, so the length cell did not catch it either) kept all
+   *    65 cells green — while stating the very thing the paragraph above
+   *    says an operator already wrongly assumes, and the opposite of what
+   *    `walkConfluenceTree` does on a KNOWN key. Round 4 answered with a
+   *    lookahead for a clause boundary, `(?=\s*[;.,—]|\s*$)`, which only
+   *    refused the UNPUNCTUATED form of that probe: punctuate the same
+   *    re-limit and it passed again. Measured at `48856cd1`, all inside the
+   *    260 bound, all 65 cells green: "…count as unreferenced, once the page
+   *    is gone;" (259), "…are deleted — but only on deleted pages;" (256),
+   *    "…count as unreferenced, but are kept;" (250 — an outright inversion),
+   *    and "Once a page is gone, cached Confluence images…" (257). The guard
+   *    now requires the cost clause to OPEN its sentence and its recovery
+   *    clause to follow it IMMEDIATELY, so nothing can be spliced in on
+   *    either side to narrow it; all four red. That reds on a reshaped claim
+   *    as well as on a wrong one, deliberately: this is the sentence whose
+   *    whole job is the cost, and a copy edit that changes its shape should
+   *    have to be re-read, not silently absorbed. What it still cannot
+   *    refuse is a contradiction added as a SEPARATE sentence — measured
+   *    green at 257 chars: "…count as unreferenced; Confluence re-serves
+   *    them. Only on deleted pages." — because no substring assertion can;
+   *    the 260-char bound is what limits how much room there is for one;
    *  - `/page icons/` is gone, and gone from the CARD, not relocated to the
    *    note (fixer r1 — the note has never mentioned page icons). "Uploaded
    *    page icons are a separate store and are never swept" is a reassurance
@@ -653,15 +666,23 @@ describe('AttachmentStorageCard (#1349)', () => {
     const dialog = await screen.findByTestId('confirm-dialog-confirm');
     const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
     // The cost: a cached image under a live page, embedded by no body, GOES,
-    // and goes UNCONDITIONALLY. The verb carries the polarity and the clause
-    // boundary carries the absence of a condition (the docblock's probe:
-    // "unreferenced once the page is gone" passed before the lookahead). The
-    // alternation keeps the cell agnostic about which verb the copy picks.
-    expect(text).toMatch(
-      /cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted)( too)?)(?=\s*[;.,—]|\s*$)/i,
+    // and goes UNCONDITIONALLY. The verb carries the polarity; the sentence
+    // boundary before it and the recovery clause welded to the end of it
+    // carry the absence of a condition, because a qualifier has to attach on
+    // one side or the other (the docblock lists the four punctuated
+    // re-limits that passed while only a trailing boundary was required).
+    // The alternation keeps the cell agnostic about which verb the copy
+    // picks and which mark hands over to the recovery; "when next viewed"
+    // and every other tail stay unpinned.
+    expect(
+      text,
+      'the cost claim must open its sentence and hand straight over to the recovery, with no qualifier spliced in on either side',
+    ).toMatch(
+      /(?:^|[.;]\s*)cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted)( too| as well)?)\s*[;.,—]\s*Confluence re-serves them/i,
     );
-    // The recovery: Confluence still has the bytes, so this costs a re-fetch.
-    expect(text).toMatch(/Confluence re-serves them/i);
+    // The recovery — Confluence still has the bytes, so this costs a
+    // re-fetch — used to have its own `expect`; the pattern above now
+    // contains it literally, so a separate assertion could not fail alone.
     // The claims it already made must still be there.
     expect(text).toMatch(/cannot be undone/i);
   });
@@ -1070,12 +1091,15 @@ describe('AttachmentStorageCard (#1349)', () => {
    * less the 1px border and `p-2`, so the content box is 206px. A row is
    * `text-xs` — 12px type on a `calc(1/0.75)` line box, 16px — and rows are
    * separated by `space-y-1`, 4px. So ten one-line rows measure
-   * 10x16 + 9x4 = 196px and FIT; eleven measure 216px and scroll. At the WCAG
-   * 1.4.10 reflow width the `break-all` path wraps and pushes the meta span
-   * onto a third line, 48px a row: four such rows measure 204px and fit, five
-   * measure 256px and scroll. Below five rows the box therefore cannot scroll
-   * at any width, and up to ten it does not scroll at the width this card is
-   * normally read at — which is the regime #1535 reports: a stop announced as
+   * 10x16 + 9x4 = 196px and FIT; eleven measure 216px and scroll. Narrow the
+   * card and the `break-all` path wraps, pushing the meta span onto a further
+   * line: at two path lines a row is 48px, so four rows measure 204px and
+   * fit while five measure 256px and scroll. No lower row count is SAFE,
+   * though (fixer r1): the `<li>` has no vertical gap and neither it nor the
+   * path span carries `truncate`, `line-clamp` or a `max-w`, so a row is 16px
+   * times its line-box count and nothing bounds that count — a long enough
+   * attachment filename scrolls the box at two rows. The regime #1535
+   * reports is a short sample with short paths: a stop announced as
    * "list, 2 items" with nothing to scroll, sitting between the disclosure
    * and Dry run.
    *
@@ -1088,10 +1112,10 @@ describe('AttachmentStorageCard (#1349)', () => {
    * lands on `<body>` with the list still on screen, which is the failure
    * `RetrievalTab.tsx` and CLAUDE.md's busy-state ruling forbid and the one
    * PR #1550 just converted this card's buttons away from. Second, the gate
-   * only pays for itself if it tracks WIDTH, and no cell here can falsify
-   * that signal: jsdom has no layout and the shared resize-observer mock in
-   * `src/test-setup.ts` fires once from `observe()`, so a resize-driven
-   * re-measure passes whether the observer exists or not.
+   * only pays for itself if it tracks rendered HEIGHT, and no cell here can
+   * falsify that signal: jsdom has no layout and the shared resize-observer
+   * mock in `src/test-setup.ts` fires once from `observe()`, so a
+   * resize-driven re-measure passes whether the observer exists or not.
    *
    * The NAME matters as much as the stop: a focusable region with no
    * accessible name announces nothing when focus lands on it.
