@@ -31,7 +31,6 @@ import { query } from '../../core/db/postgres.js';
 import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
 import { setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
-import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
 import { buildKnowledgeTestApp, insertUser } from './pages.test-helpers.js';
 import { notionRoutes } from './notion.js';
 
@@ -263,7 +262,7 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
     }
   });
 
-  it('returns pages and databases with skip labels; GET body never includes the token', async () => {
+  it('returns pages and selectable databases with import hints; GET body never includes the token', async () => {
     const instance = await app();
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
@@ -276,7 +275,17 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
           type: string;
           selectable: boolean;
           skipReason?: string;
-          children: Array<{ id: string; type: string; selectable: boolean; skipReason?: string }>;
+          children: Array<{
+            id: string;
+            type: string;
+            selectable: boolean;
+            skipReason?: string;
+            recommendedMode?: string;
+            rowContent?: string;
+            isWiki?: boolean;
+            rowCount?: number;
+            columns?: string[];
+          }>;
         }>;
       };
       expect(Object.keys(body).sort()).toEqual(['nodes']);
@@ -286,9 +295,10 @@ describe.skipIf(!dbAvailable)('GET /api/notion/tree (#1463)', () => {
       const nested = handbook?.children.find((c) => c.id === 'nested');
       expect(crm).toMatchObject({
         type: 'database',
-        selectable: false,
-        skipReason: NOTION_UNSUPPORTED_LABEL,
+        selectable: true,
+        isWiki: false,
       });
+      expect(crm?.skipReason).toBeUndefined();
       expect(nested).toMatchObject({ type: 'page', selectable: true });
       expect(JSON.stringify(body)).not.toContain('row-only-via-query');
     } finally {
@@ -443,7 +453,8 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
 
   afterEach(() => {
     expect(JSON.stringify(server.requests.map((r) => r.url))).not.toContain('api.notion.com');
-    expect(server.requests.some((r) => r.method === 'POST' && /\/v1\/databases\/.+\/query/.test(r.url))).toBe(false);
+    // Row enumeration via POST /v1/databases/:id/query is deliberate now: a
+    // database imported as a table has to read every row.
   });
 
   async function app() {
@@ -467,25 +478,38 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     }
   });
 
-  it('imports selected pages, skips databases, and never returns the token', async () => {
+  it('imports a selected database as one table beside a page, and never returns the token', async () => {
     const instance = await app();
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
       const res = await instance.inject({
         method: 'POST',
         url: '/api/notion/import',
-        payload: { pageIds: ['crm', 'notes'], visibility: 'private' },
+        payload: { pageIds: ['crm', 'notes'], visibility: 'private', databaseModes: { crm: 'table' } },
       });
       expect(res.statusCode).toBe(200);
       expect(res.body).not.toContain(TOKEN);
       const body = res.json() as {
-        items: Array<{ notionPageId: string; status: string; localPageId?: number; reason?: string }>;
+        items: Array<{
+          notionPageId: string;
+          status: string;
+          localPageId?: number;
+          reason?: string;
+          importedAs?: string;
+        }>;
       };
       expect(Object.keys(body).sort()).toEqual(['items']);
       const byId = Object.fromEntries(body.items.map((i) => [i.notionPageId, i]));
-      expect(byId.crm).toMatchObject({ status: 'skip', reason: NOTION_UNSUPPORTED_LABEL });
+      expect(byId.crm).toMatchObject({ status: 'success', importedAs: 'table' });
       expect(byId.notes).toMatchObject({ status: 'success' });
       expect(typeof byId.notes?.localPageId).toBe('number');
+
+      const dbPage = await query<{ notion_page_id: string | null; body_html: string }>(
+        'SELECT notion_page_id, body_html FROM pages WHERE id = $1',
+        [byId.crm!.localPageId],
+      );
+      expect(dbPage.rows[0]!.notion_page_id).toBe('crm');
+      expect(dbPage.rows[0]!.body_html).toContain('<table>');
 
       const page = await query<{ source: string; visibility: string; body_html: string }>(
         'SELECT source, visibility, body_html FROM pages WHERE id = $1',

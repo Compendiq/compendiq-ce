@@ -15,7 +15,12 @@ import { NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
 import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
-import { extractWikiPageProperties, runNotionImport } from './notion-import-service.js';
+import {
+  NOTION_TABLE_DOWNGRADE_REASON,
+  NOTION_TABLE_ROW_SKIP_REASON,
+  extractWikiPageProperties,
+  runNotionImport,
+} from './notion-import-service.js';
 import { notionImportLockId } from './notion-import-lock.js';
 
 const dbAvailable = await isDbAvailable();
@@ -46,6 +51,48 @@ function paragraph(id: string, text: string, extra?: Record<string, unknown>) {
     },
   };
 }
+
+function rowTitleProp(text: string) {
+  return { type: 'title', title: [{ type: 'text', plain_text: text, text: { content: text } }] };
+}
+
+function richTextProp(text: string) {
+  return { type: 'rich_text', rich_text: [{ type: 'text', plain_text: text, text: { content: text } }] };
+}
+
+function selectProp(name: string) {
+  return { type: 'select', select: { name } };
+}
+
+/**
+ * A non-wiki `crm` database whose schema is a title column plus one rich_text
+ * and one select, so a flattened table has non-title columns to carry.
+ */
+function crmDatabase(extra?: Record<string, unknown>) {
+  return {
+    object: 'database',
+    id: 'crm',
+    title: [{ type: 'text', plain_text: 'CRM' }],
+    properties: {
+      Name: { id: 'title', name: 'Name', type: 'title', title: {} },
+      Notes: { id: 'nts', name: 'Notes', type: 'rich_text', rich_text: {} },
+      Stage: { id: 'stg', name: 'Stage', type: 'select', select: {} },
+    },
+    ...extra,
+  };
+}
+
+/** A `crm` row page — usable both as a query result and as a selectable page. */
+function crmRow(id: string, name: string, notes: string, stage: string) {
+  return {
+    object: 'page',
+    id,
+    parent: { type: 'database_id', database_id: 'crm' },
+    properties: { Name: rowTitleProp(name), Notes: richTextProp(notes), Stage: selectProp(stage) },
+  };
+}
+
+const CRM_LEAD = '<p class="text-muted-foreground italic">Imported from the Notion database “CRM”.</p>';
 
 describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
   let server: FakeNotionServer;
@@ -81,7 +128,10 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     setNotionApiBaseUrlForTests(null);
     await server?.close();
     expect(JSON.stringify(server?.requests.map((r) => r.url) ?? [])).not.toContain('api.notion.com');
-    expect(server?.requests.some((r) => r.method === 'POST' && /\/v1\/databases\/.+\/query/.test(r.url))).toBe(false);
+    // A selected database legitimately enumerates its rows now: `table` mode
+    // flattens all of them and inline `child_database` blocks read theirs, so
+    // "no POST /v1/databases/:id/query" is no longer an invariant. Each test
+    // asserts instead that no UNSELECTED row reaches the pages table.
   });
 
   async function start(state: Parameters<typeof startFakeNotionServer>[0]): Promise<NotionClient> {
@@ -510,22 +560,21 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
   });
 
 
-  it('skips databases in the payload without stubbing a page and continues the run', async () => {
+  it('continues the run past a data_source selection that has no local shape', async () => {
     const client = await start({
       validToken: TOKEN,
       pages: {
+        'ds-1': {
+          object: 'data_source',
+          id: 'ds-1',
+          title: [{ type: 'text', plain_text: 'CRM rows' }],
+        },
         notes: {
           object: 'page',
           id: 'notes',
           parent: { type: 'workspace', workspace: true },
           properties: titleProp('Notes'),
         },
-      },
-      databases: {
-        crm: { object: 'database', id: 'crm', title: [{ type: 'text', plain_text: 'CRM' }] },
-      },
-      databaseQueryResults: {
-        crm: [{ object: 'page', id: 'hidden-row', properties: titleProp('Should not appear') }],
       },
       blockChildren: {
         notes: [paragraph('n1', 'Just notes')],
@@ -535,14 +584,16 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     const items = await runNotionImport({
       userId,
       client,
-      pageIds: ['crm', 'notes'],
+      pageIds: ['ds-1', 'notes'],
       visibility: 'shared',
     });
 
-    expect(items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ notionPageId: 'crm', status: 'skip', reason: NOTION_UNSUPPORTED_LABEL }),
-      expect.objectContaining({ notionPageId: 'notes', status: 'success' }),
-    ]));
+    expect(items[0]).toEqual({
+      notionPageId: 'ds-1',
+      status: 'skip',
+      reason: NOTION_UNSUPPORTED_LABEL,
+    });
+    expect(items[1]).toMatchObject({ notionPageId: 'notes', status: 'success' });
     const pages = await query<{ title: string; source: string }>('SELECT title, source FROM pages');
     expect(pages.rows.map((r) => r.title)).toEqual(['Notes']);
     expect(pages.rows[0]!.source).toBe('standalone');
@@ -582,6 +633,375 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     const crmId = pages.rows.find((r) => r.title === 'CRM')!.id;
     const acme = pages.rows.find((r) => r.title === 'Acme Corp')!;
     expect(acme.parent_id).toBe(String(crmId));
+  });
+
+  it('imports a table-mode database as one page and never stubs its rows', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: {
+        crm: [
+          crmRow('row-a', 'Acme Corp', 'First note', 'Won'),
+          crmRow('row-b', 'Globex', 'Second note', 'Lost'),
+        ],
+      },
+      blockChildren: { 'row-a': [], 'row-b': [] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    expect(items).toEqual([
+      { notionPageId: 'crm', status: 'success', localPageId: expect.any(Number), importedAs: 'table' },
+    ]);
+
+    const pages = await query<{
+      id: number;
+      title: string;
+      notion_page_id: string | null;
+      labels: string[];
+      body_html: string;
+    }>('SELECT id, title, notion_page_id, labels, body_html FROM pages');
+    expect(pages.rows).toHaveLength(1);
+    const table = pages.rows[0]!;
+    expect(table.id).toBe(items[0]!.localPageId);
+    expect(table.notion_page_id).toBe('crm');
+    expect(table.title).toBe('CRM');
+    expect(table.labels).toEqual(expect.arrayContaining(['notion-import']));
+    expect(table.body_html).toContain('<table>');
+    expect(table.body_html).toContain('Acme Corp');
+    expect(table.body_html).toContain('Globex');
+
+    const rowPages = await query('SELECT 1 FROM pages WHERE notion_page_id IN ($1, $2)', ['row-a', 'row-b']);
+    expect(rowPages.rows).toHaveLength(0);
+  });
+
+  it('carries non-title row property values and their headers into the flattened table', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [crmRow('row-a', 'Acme Corp', 'First note', 'Won')] },
+      blockChildren: { 'row-a': [] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+    expect(items[0]).toMatchObject({ status: 'success', importedAs: 'table' });
+
+    const stored = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['crm'],
+    );
+    const bodyHtml = stored.rows[0]!.body_html;
+    expect(bodyHtml).toContain('<th>Notes</th>');
+    expect(bodyHtml).toContain('<th>Stage</th>');
+    expect(bodyHtml).toContain('<td>First note</td>');
+    expect(bodyHtml).toContain('<td>Won</td>');
+  });
+
+  it('reports rows folded into a table-mode database as skipped instead of importing them', async () => {
+    const rowA = crmRow('row-a', 'Acme Corp', 'First note', 'Won');
+    const rowB = crmRow('row-b', 'Globex', 'Second note', 'Lost');
+    const client = await start({
+      validToken: TOKEN,
+      pages: { 'row-a': rowA, 'row-b': rowB },
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [rowA, rowB] },
+      blockChildren: { 'row-a': [], 'row-b': [] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm', 'row-a', 'row-b'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    expect(items[0]).toMatchObject({ notionPageId: 'crm', status: 'success', importedAs: 'table' });
+    expect(items[1]).toEqual({
+      notionPageId: 'row-a',
+      status: 'skip',
+      reason: NOTION_TABLE_ROW_SKIP_REASON,
+    });
+    expect(items[2]).toEqual({
+      notionPageId: 'row-b',
+      status: 'skip',
+      reason: NOTION_TABLE_ROW_SKIP_REASON,
+    });
+
+    const pages = await query<{ notion_page_id: string | null }>('SELECT notion_page_id FROM pages');
+    expect(pages.rows.map((r) => r.notion_page_id)).toEqual(['crm']);
+  });
+
+  it('downgrades a table-mode database to a container page when a row carries body content', async () => {
+    const rowA = crmRow('row-a', 'Acme Corp', 'First note', 'Won');
+    const rowB = crmRow('row-b', 'Globex', 'Second note', 'Lost');
+    const client = await start({
+      validToken: TOKEN,
+      pages: { 'row-a': rowA, 'row-b': rowB },
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [rowA, rowB] },
+      blockChildren: {
+        'row-a': [paragraph('ra1', 'Acme meeting notes')],
+        'row-b': [],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm', 'row-a', 'row-b'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    expect(items[0]).toEqual({
+      notionPageId: 'crm',
+      status: 'success',
+      localPageId: expect.any(Number),
+      importedAs: 'page',
+      reason: NOTION_TABLE_DOWNGRADE_REASON,
+    });
+    // Lossless: the table the picker offered is gone, but every row arrives as
+    // its own article under the container instead of vanishing.
+    expect(items[1]).toMatchObject({ notionPageId: 'row-a', status: 'success', importedAs: 'article' });
+    expect(items[2]).toMatchObject({ notionPageId: 'row-b', status: 'success', importedAs: 'article' });
+
+    const containerId = items[0]!.localPageId!;
+    const pages = await query<{
+      id: number;
+      parent_id: string | null;
+      notion_page_id: string | null;
+      body_html: string;
+    }>('SELECT id, parent_id, notion_page_id, body_html FROM pages ORDER BY id');
+    expect(pages.rows).toHaveLength(3);
+    const container = pages.rows.find((r) => r.notion_page_id === 'crm')!;
+    expect(container.id).toBe(containerId);
+    expect(container.body_html).not.toContain('<table>');
+    expect(container.body_html).toContain(CRM_LEAD);
+    const storedRowA = pages.rows.find((r) => r.notion_page_id === 'row-a')!;
+    const storedRowB = pages.rows.find((r) => r.notion_page_id === 'row-b')!;
+    expect(storedRowA.parent_id).toBe(String(containerId));
+    expect(storedRowB.parent_id).toBe(String(containerId));
+    expect(storedRowA.body_html).toContain('Acme meeting notes');
+  });
+
+  it('gives a zero-row table-mode database a container page and no downgrade explanation', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    // Exact shape on purpose: a database with no rows lost nothing, so the
+    // downgrade sentence would be a lie. There must be no `reason` at all.
+    expect(items).toEqual([
+      { notionPageId: 'crm', status: 'success', localPageId: expect.any(Number), importedAs: 'page' },
+    ]);
+
+    const pages = await query<{ notion_page_id: string | null; body_html: string }>(
+      'SELECT notion_page_id, body_html FROM pages',
+    );
+    expect(pages.rows).toHaveLength(1);
+    expect(pages.rows[0]!.notion_page_id).toBe('crm');
+    expect(pages.rows[0]!.body_html).not.toContain('<table>');
+    expect(pages.rows[0]!.body_html).toBe(CRM_LEAD);
+  });
+
+  it('imports a pages-mode database as a container page with its selected rows nested underneath', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        'row-a': crmRow('row-a', 'Acme Corp', 'First note', 'Won'),
+        'row-b': crmRow('row-b', 'Globex', 'Second note', 'Lost'),
+      },
+      databases: {
+        crm: crmDatabase({ description: [{ type: 'text', plain_text: 'Customer pipeline' }] }),
+      },
+      blockChildren: {
+        'row-a': [paragraph('ra1', 'Acme meeting notes')],
+        'row-b': [paragraph('rb1', 'Globex intro call')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm', 'row-a', 'row-b'],
+      visibility: 'shared',
+      databaseModes: { crm: 'pages' },
+    });
+
+    expect(items[0]).toEqual({
+      notionPageId: 'crm',
+      status: 'success',
+      localPageId: expect.any(Number),
+      importedAs: 'page',
+    });
+    expect(items[1]).toMatchObject({ notionPageId: 'row-a', status: 'success', importedAs: 'article' });
+    expect(items[2]).toMatchObject({ notionPageId: 'row-b', status: 'success', importedAs: 'article' });
+
+    const containerId = items[0]!.localPageId!;
+    const pages = await query<{
+      id: number;
+      parent_id: string | null;
+      notion_page_id: string | null;
+      body_html: string;
+    }>('SELECT id, parent_id, notion_page_id, body_html FROM pages ORDER BY id');
+    expect(pages.rows).toHaveLength(3);
+    const container = pages.rows.find((r) => r.notion_page_id === 'crm')!;
+    expect(container.id).toBe(containerId);
+    expect(container.body_html).toBe(`<p>Customer pipeline</p>${CRM_LEAD}`);
+    expect(pages.rows.find((r) => r.notion_page_id === 'row-a')!.parent_id).toBe(String(containerId));
+    expect(pages.rows.find((r) => r.notion_page_id === 'row-b')!.parent_id).toBe(String(containerId));
+  });
+
+  it('writes nothing for a skip-mode database', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'skip' },
+    });
+
+    expect(items).toEqual([
+      { notionPageId: 'crm', status: 'skip', reason: 'Database is excluded from import' },
+    ]);
+    expect((await query('SELECT 1 FROM pages')).rows).toHaveLength(0);
+  });
+
+  it('defaults a wiki database to a container page whose lead says wiki, not database', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: {
+        'team-wiki': {
+          object: 'database',
+          id: 'team-wiki',
+          title: [{ type: 'text', plain_text: 'Team Wiki' }],
+          properties: {
+            Name: { id: 'title', name: 'Name', type: 'title', title: {} },
+            Verification: { id: 'ver', name: 'Verification', type: 'verification', verification: {} },
+          },
+        },
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['team-wiki'],
+      visibility: 'shared',
+    });
+
+    expect(items).toEqual([
+      { notionPageId: 'team-wiki', status: 'success', localPageId: expect.any(Number), importedAs: 'page' },
+    ]);
+
+    const stored = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['team-wiki'],
+    );
+    const bodyHtml = stored.rows[0]!.body_html;
+    expect(bodyHtml).toBe(
+      '<p class="text-muted-foreground italic">Imported from the Notion wiki “Team Wiki”.</p>',
+    );
+    expect(bodyHtml).not.toContain('<table>');
+    expect(bodyHtml).not.toContain('Notion database');
+  });
+
+  it('defaults a non-wiki database with body-less rows to one table', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [crmRow('row-a', 'Acme Corp', 'First note', 'Won')] },
+      blockChildren: { 'row-a': [] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+    });
+
+    expect(items).toEqual([
+      { notionPageId: 'crm', status: 'success', localPageId: expect.any(Number), importedAs: 'table' },
+    ]);
+    const stored = await query<{ body_html: string }>(
+      'SELECT body_html FROM pages WHERE notion_page_id = $1',
+      ['crm'],
+    );
+    expect(stored.rows[0]!.body_html).toContain('<table>');
+  });
+
+  it('re-runs a table-mode database against the same page instead of creating a second one', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [crmRow('row-a', 'Acme Corp', 'First note', 'Won')] },
+      blockChildren: { 'row-a': [] },
+    });
+    const databaseModes = { crm: 'table' } as const;
+
+    const first = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes,
+    });
+    expect(first[0]).toMatchObject({ status: 'success', importedAs: 'table' });
+    const localPageId = first[0]!.localPageId!;
+
+    const second = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes,
+    });
+    expect(second).toEqual([{ notionPageId: 'crm', status: 'already_imported', localPageId }]);
+    expect((await query('SELECT 1 FROM pages')).rows).toHaveLength(1);
+
+    const third = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes,
+      overwriteExisting: true,
+    });
+    expect(third).toEqual([
+      { notionPageId: 'crm', status: 'success', localPageId, importedAs: 'table', updated: true },
+    ]);
+    const pages = await query<{ id: number }>('SELECT id FROM pages');
+    expect(pages.rows).toHaveLength(1);
+    expect(pages.rows[0]!.id).toBe(localPageId);
   });
   it('rewrites mentions of imported pages and leaves skipped ones as Notion URLs', async () => {
     const importedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -1840,12 +2260,15 @@ describe('extractWikiPageProperties', () => {
 });
 
 describe('notion-import-service isolation', () => {
-  it('does not query databases or talk to api.notion.com from source', () => {
+  it('never names api.notion.com or the retired notion page source', () => {
     const src = readFileSync(new URL('./notion-import-service.ts', import.meta.url), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '');
-    expect(src).not.toMatch(/queryDatabase/);
-    expect(src).not.toMatch(/\/v1\/databases\/.*\/query/);
+    // `queryDatabase` used to be forbidden here. It is deliberate now: `table`
+    // mode flattens every row and inline `child_database` blocks enumerate
+    // theirs, so the database query endpoint is a required call. What must stay
+    // absent is any hardcoded api.notion.com host (every request goes through
+    // the injected base URL) and the retired `pages.source = 'notion'` shape.
     expect(src).not.toMatch(/api\.notion\.com/);
     expect(src).not.toMatch(/pages\.source\s*=\s*['"]notion['"]/);
   });
