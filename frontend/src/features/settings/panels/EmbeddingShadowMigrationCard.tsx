@@ -85,6 +85,35 @@ function formatEta(ms: number): string {
   return hours < 10 ? `${hours.toFixed(1)} h` : `${Math.round(hours)} h`;
 }
 
+/**
+ * The ending itself — true in every branch the strip renders in and in the
+ * toast, because the branch is exactly what changed underneath the run.
+ */
+const COMPARISON_ENDED = 'The comparison in progress ended — the migration changed underneath it.';
+/**
+ * What to do about it, and it is TWO sentences because the recovery is not
+ * available everywhere the ending is announced (#1533).
+ *
+ * `EmbeddingShadowCompareSection` — the only surface with a Run control — is
+ * mounted by the `ready` branch alone, while `migrationWindowOpen` below
+ * EXCLUDES `swapped` and `aborting`: the strip is by construction shown where
+ * that control is gone. A single fixed "Start a new comparison…" therefore
+ * named a control the card does not offer in four of its five branches, on the
+ * PRIMARY path every time (swap while a comparison runs) — an instruction the
+ * admin cannot follow is worse than no instruction, because they go looking.
+ *
+ * The unreachable wording names the CONDITION rather than a control, in the
+ * card's own vocabulary, so it composes with whatever the branch's own prose
+ * already says to do next: finish the abort, wait for the backfill, clean up
+ * or roll back, start a re-embed. It is also what the toast carries, because
+ * every path that fires the toast has ended the migration window server-side —
+ * including the one case no strip can cover, a rollback that takes the whole
+ * card away.
+ */
+const COMPARISON_RESTARTABLE = 'Start a new comparison from the current migration.';
+const COMPARISON_UNAVAILABLE =
+  'Comparing on real queries is not available now — it needs a finished backfill that has not been swapped yet.';
+
 export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onActiveChange }: Props) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<ShadowStatus | null>(null);
@@ -142,17 +171,15 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     setCompareRunning(live);
     if (live) setEndedNotice(false);
   }, []);
-  /** The one sentence both endings share — the local action and the remote
-   *  one. Written once so the two paths cannot drift apart. */
+  /** The one ending both arms report — the local action and the remote one.
+   *  Written once so the two paths cannot drift apart. */
   const warnComparisonEnded = useCallback((runId: string) => {
     if (warnedFor.current === runId) return;
     warnedFor.current = runId;
     compareRunInFlight.current = null;
     setCompareRunning(false);
     setEndedNotice(true);
-    toast.warning(
-      'The comparison in progress ended — the migration changed underneath it. Start a new comparison from the current migration.',
-    );
+    toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
   }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
   const onActiveChangeRef = useRef(onActiveChange);
@@ -358,6 +385,12 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet
 
+  // Derived from the same `migration.phase` the branches below switch on, so
+  // the second sentence cannot disagree with what is actually on screen: the
+  // `ready` branch is the only one that mounts `EmbeddingShadowCompareSection`
+  // and therefore the only one where a new comparison can be started (#1533).
+  const compareControlMounted = migration?.phase === 'ready';
+
   // Rendered by EVERY branch below, because the branch is exactly what changes
   // underneath a comparison. Amber, not destructive: the lifecycle action the
   // admin asked for succeeded and the migration is fine — the comparison is the
@@ -370,8 +403,8 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       data-testid="shadow-compare-ended"
     >
       <p className="flex-1">
-        The comparison in progress ended — the migration changed underneath it. Start a new
-        comparison from the current migration.
+        {COMPARISON_ENDED}{' '}
+        {compareControlMounted ? COMPARISON_RESTARTABLE : COMPARISON_UNAVAILABLE}
       </p>
       <button
         type="button"

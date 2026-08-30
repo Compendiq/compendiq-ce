@@ -833,6 +833,124 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     vi.useRealTimers();
   });
 
+  describe('the ending strip prescribes only what its own branch offers (#1533)', () => {
+    // `EmbeddingShadowCompareSection` — the only surface carrying a Run
+    // control — is mounted by the `ready` branch alone, while
+    // `migrationWindowOpen` EXCLUDES `swapped` and `aborting`. So the strip is
+    // by construction shown where that control is gone, and a fixed "Start a
+    // new comparison from the current migration." named a control the card
+    // does not offer on the primary path: swap while a comparison runs.
+    const MIGRATION = {
+      phase: 'ready' as const,
+      model: 'qwen3-embedding:4b',
+      dimensions: 2560,
+      totalPages: 40,
+      backfilledPages: 40,
+      stragglerPages: 0,
+      indexed: true,
+      indexReady: true,
+      startedAt: '2026-08-06T10:00:00.000Z',
+    };
+
+    /** A comparison started in `ready` and still running, over a status the caller moves. */
+    function mockRunning(statusFor: () => Status) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown, init2 = 200) =>
+          new Response(JSON.stringify(body), { status: init2, headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+          return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+        }
+        if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+        if (url.endsWith('/compare') && method === 'GET') return json({ run: null });
+        if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+        if (url.includes('/shadow-migration') && method === 'GET') return json(statusFor());
+        return json({});
+      });
+    }
+
+    it('names the condition, not an absent control, in the swapped branch', async () => {
+      let phase: 'ready' | 'swapped' = 'ready';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockRunning(() => ({ active: true, migration: { ...MIGRATION, phase } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      phase = 'swapped';
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      // The ending itself is true in every branch and still announced.
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      // The control the old second sentence pointed at is not on this card…
+      expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+      expect(screen.getByRole('button', { name: /roll back/i })).toBeInTheDocument();
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      // …so it names what comparing needs instead, which the swapped branch's
+      // own prose (clean up or roll back) composes with.
+      expect(strip.textContent).toMatch(/not available now/i);
+      expect(strip.textContent).toMatch(/finished backfill that has not been swapped/i);
+      // The toast covers the one case the strip cannot — a rollback with no
+      // pending change takes the whole card away — and every path that fires
+      // it has ended the migration window server-side, so it may not
+      // prescribe the comparison either.
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
+        expect.not.stringMatching(/start a new comparison/i),
+      );
+      vi.useRealTimers();
+    });
+
+    it('names the condition in the aborting branch too — the fix is not special-cased to one phase', async () => {
+      let phase: 'ready' | 'aborting' = 'ready';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockRunning(() => ({ active: true, migration: { ...MIGRATION, phase } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      phase = 'aborting';
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(screen.getByRole('button', { name: /retry abort/i })).toBeInTheDocument();
+      expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/finished backfill that has not been swapped/i);
+      vi.useRealTimers();
+    });
+
+    it('keeps the prescription in the one branch that does mount the Run control', async () => {
+      // No contrivance needed to get the strip and the section on screen at
+      // once: another admin rolls the migration back mid-comparison (the card
+      // renders nothing at all then, which is why the toast exists), the
+      // notice is never dismissed, and a fresh re-embed reaches `ready` under
+      // the same card. Here the prescription is TRUE, and pinning it is what
+      // stops the fix from wording the reachable branch as a dead end.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockRunning(() => status);
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      status = { active: false, migration: null };
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalled());
+
+      status = { active: true, migration: { ...MIGRATION, startedAt: '2026-08-07T09:00:00.000Z' } };
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(await screen.findByTestId('shadow-compare-section')).toBeInTheDocument();
+      expect(strip.textContent).toMatch(/start a new comparison from the current migration/i);
+      expect(strip.textContent).not.toMatch(/not available now/i);
+      vi.useRealTimers();
+    });
+  });
+
   describe('the backfilling note asks the server, not this session (r1)', () => {
     const MIGRATION = {
       phase: 'backfilling' as const,
