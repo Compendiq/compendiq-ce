@@ -243,26 +243,50 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const windowClosedAtSeq = useRef(0);
   /**
    * The one take, so the release predicate above has exactly one event to
-   * compare against and the two cannot drift apart again.
+   * compare against and the two cannot drift apart again — and it lives on the
+   * POST path ALONE (`post()` below), which is the only place the close is
+   * genuinely unobservable here. Called from the ending arm too, it stamped
+   * the watermark with the request that had just REPORTED the close, so the
+   * card's own freshest post-close answer counted as pre-close and could
+   * never release the hold it had triggered (review r1 of r3).
    */
   const holdEndedWindow = useCallback(() => {
     setEndedWindowUnconfirmed(true);
     windowClosedAtSeq.current = requestSeq.current;
   }, []);
-  /** The one ending both arms report — the local action and the remote one.
-   *  Written once so the two paths cannot drift apart. */
-  const warnComparisonEnded = useCallback(
-    (runId: string) => {
-      if (warnedFor.current === runId) return;
-      warnedFor.current = runId;
-      compareRunInFlight.current = null;
-      setCompareRunning(false);
-      setEndedNotice(true);
-      holdEndedWindow();
-      toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
-    },
-    [holdEndedWindow],
-  );
+  /**
+   * The one ending both arms report — the local action and the remote one.
+   * Written once so the two paths cannot drift apart.
+   *
+   * It does NOT take the hold above (review r1 of r3). On the POST path the
+   * take is already made, one line before this is called and for every
+   * `endsMigrationWindow` action rather than only the ones that ended a run —
+   * a strict superset. On the POLL path the close is learned FROM the body
+   * `refresh()` has just applied, so there is no stale phase to paper over:
+   * `migration` already reads `swapped`, `aborting` or gone by itself. And on
+   * the one sequence where the take was therefore not merely redundant — the
+   * window IDENTITY moved to a DIFFERENT window that is itself open, another
+   * admin having swapped, cleaned up and re-embedded across one stalled poll
+   * — it printed #1533 in mirror image: comparing "refused until a migration
+   * is waiting at the swap" under a mounted Run control and an enabled Swap,
+   * over a compare route that gates on the phase alone and would have
+   * accepted. Unreleasable by the watermark it had just stamped, that sentence
+   * stood for as long as the status GETs kept failing.
+   *
+   * The TOAST keeps the unconditional wording. It is announced once, at an
+   * instant where this card can vanish entirely (a rollback with no pending
+   * change), and it cannot re-word itself afterwards the way the derived strip
+   * does — so it carries the clause that is true on every path that fires it:
+   * the window this comparison ran in is gone.
+   */
+  const warnComparisonEnded = useCallback((runId: string) => {
+    if (warnedFor.current === runId) return;
+    warnedFor.current = runId;
+    compareRunInFlight.current = null;
+    setCompareRunning(false);
+    setEndedNotice(true);
+    toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
+  }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
   const onActiveChangeRef = useRef(onActiveChange);
   onActiveChangeRef.current = onActiveChange;

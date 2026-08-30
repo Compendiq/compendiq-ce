@@ -153,10 +153,13 @@ committing. The shadow card's **Compare on real queries** section (or
   run's N × 2 embedding calls were spent for nothing. What that strip tells
   you to do is derived from the branch it is rendering in (#1533), never
   fixed: it prescribes a new comparison only where the control is actually
-  mounted (`ready`), says the ending alone in `backfilling` — the muted note
-  one line above already says what comparing is waiting for — and elsewhere
-  names the closed window rather than a control the card does not offer. That
-  includes the round trip between a swap's 200 and the status that reflects
+  mounted (`ready`), says the ending alone in `backfilling` while nothing is
+  comparing — there the muted note one line above is the one saying what
+  comparing is waiting for, and amber does not repeat it — and elsewhere names
+  the closed window rather than a control the card does not offer. That
+  "elsewhere" includes `backfilling` when the same note is reporting a
+  comparison holding the one-active slot instead of stating availability, and
+  the round trip between a swap's 200 and the status that reflects
   it, where the branch on screen is still the pre-swap one: the card words the
   strip from the window it knows is gone, not from the phase that has not
   caught up, and holds it that way until a status answer *newer than the
