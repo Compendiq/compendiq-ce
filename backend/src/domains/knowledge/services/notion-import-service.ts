@@ -32,6 +32,7 @@ import { NotionClient, NotionError } from './notion-client.js';
 import {
   convertNotionBlocks,
   escapeHtml,
+  extractPropertyText,
   formatWikiMetadataCallout,
   renderDatabaseTable,
   type NotionBlock,
@@ -176,6 +177,41 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         tableDatabases,
       }),
     );
+  }
+  // The picker sends only the database id in table mode. If flatten fails,
+  // those rows still have to arrive as articles — otherwise the downgrade
+  // reason is a lie and the bodies vanish.
+  const queuedIds = new Set([
+    ...[...items.keys()].map(normalizeNotionId),
+    ...jobs.map((job) => normalizeNotionId(job.id)),
+  ]);
+  for (const dbJob of databaseJobs) {
+    const normId = normalizeNotionId(dbJob.id);
+    if (tableDatabases.has(normId)) continue;
+    const item = items.get(dbJob.id);
+    if (item?.status !== 'success') continue;
+    const mode: NotionDatabaseMode =
+      dbJob.requestedMode ?? (isWikiDatabase(dbJob.database) ? 'pages' : 'table');
+    if (mode !== 'table') continue;
+    try {
+      const rows = (await input.client.queryDatabaseAll(dbJob.id)).filter((row) => !isTrashed(row));
+      for (const row of rows) {
+        const rowId = typeof row.id === 'string' ? row.id : '';
+        if (!rowId || queuedIds.has(normalizeNotionId(rowId))) continue;
+        queuedIds.add(normalizeNotionId(rowId));
+        jobs.push({
+          id: rowId,
+          page: row,
+          title: extractTitle(row),
+          parentNotionId: dbJob.id,
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        { databaseId: dbJob.id, err: failReason(err) },
+        'notion-import: could not enumerate rows after a table downgrade',
+      );
+    }
   }
   for (const job of jobs) {
     if (job.parentNotionId && tableDatabases.has(normalizeNotionId(job.parentNotionId))) {
@@ -1100,21 +1136,8 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
     if (propType === 'title' || propType === 'status' || propType === 'verification') continue;
     if (lowerKey.includes('owner') || lowerKey.includes('author') || lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label')) continue;
 
-    if (propType === 'number' && typeof prop.number === 'number') {
-      customProperties[key] = String(prop.number);
-    } else if (propType === 'url' && typeof prop.url === 'string' && prop.url.trim()) {
-      customProperties[key] = prop.url.trim();
-    } else if (propType === 'email' && typeof prop.email === 'string' && prop.email.trim()) {
-      customProperties[key] = prop.email.trim();
-    } else if (propType === 'phone_number' && typeof prop.phone_number === 'string' && prop.phone_number.trim()) {
-      customProperties[key] = prop.phone_number.trim();
-    } else if (propType === 'date' && isRecord(prop.date) && typeof prop.date.start === 'string') {
-      customProperties[key] = prop.date.start;
-    } else if (propType === 'checkbox' && typeof prop.checkbox === 'boolean') {
-      customProperties[key] = prop.checkbox ? 'Yes' : 'No';
-    } else if (propType === 'select' && isRecord(prop.select) && typeof prop.select.name === 'string') {
-      customProperties[key] = prop.select.name;
-    }
+    const text = extractPropertyText(prop).trim();
+    if (text) customProperties[key] = text;
   }
 
   return {

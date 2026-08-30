@@ -440,6 +440,11 @@ export function summarizeImport(
         return;
       }
       if (!importing.has(node.id)) return;
+      if (mode === 'table' && (node.rowContent === 'some' || node.rowContent === 'unknown')) {
+        collectionCount += 1;
+        articleCount += node.rowCount;
+        return;
+      }
       if (mode === 'table') tableCount += 1;
       else collectionCount += 1;
       return;

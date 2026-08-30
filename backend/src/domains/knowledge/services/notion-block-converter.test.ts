@@ -278,6 +278,41 @@ describe('convertNotionBlocks', () => {
     expect(result.bodyHtml).toContain('<td>HTTP</td>');
   });
 
+  it('renders formula, rollup, files, people, and dates as plain table cells', () => {
+    const result = convert([
+      {
+        id: 'db-1',
+        type: 'child_database',
+        child_database: { title: 'Inventory' },
+        databaseColumns: ['Name', 'Score', 'Owner', 'Files', 'Updated', 'Related', 'Total'],
+        databaseRows: [
+          {
+            properties: {
+              Name: { type: 'title', title: [{ plain_text: 'Widget' }] },
+              Score: { type: 'formula', formula: { type: 'number', number: 4 } },
+              Owner: { type: 'people', people: [{ name: 'Ada' }] },
+              Files: { type: 'files', files: [{ name: 'spec.pdf' }] },
+              Updated: { type: 'last_edited_time', last_edited_time: '2026-08-15T00:00:00.000Z' },
+              Related: { type: 'relation', relation: [{ id: 'p1' }, { id: 'p2' }] },
+              Total: {
+                type: 'rollup',
+                rollup: { type: 'number', number: 12 },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(result.bodyHtml).toContain('<td>Widget</td>');
+    expect(result.bodyHtml).toContain('<td>4</td>');
+    expect(result.bodyHtml).toContain('<td>Ada</td>');
+    expect(result.bodyHtml).toContain('<td>spec.pdf</td>');
+    expect(result.bodyHtml).toContain('<td>2026-08-15</td>');
+    expect(result.bodyHtml).toContain('<td>2 linked pages</td>');
+    expect(result.bodyHtml).toContain('<td>12</td>');
+  });
+
   it('does not invent a toggle_heading type the Notion API never sends', () => {
     const result = convert([
       block('th1', 'toggle_heading_1', { rich_text: [rich('Advanced Config')] }, {

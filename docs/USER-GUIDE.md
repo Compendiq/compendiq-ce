@@ -98,7 +98,7 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 
 **Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
 
-- Linked database views and data sources — they point at content that lives elsewhere rather than holding it.
+- Data sources — they point at content the pinned Notion API cannot resolve. A linked view of a database Search already returned as the source database is not listed twice.
 - Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
 
 **Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.

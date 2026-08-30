@@ -33,7 +33,7 @@ export const NOTION_UNSUPPORTED_LABEL = 'Not supported — stays in Notion' as c
  *   that has content would drop that content.
  * - `pages` — the database becomes a container page and each row is imported
  *   as an article, nested structure preserved. The wiki shape.
- * - `skip`  — excluded, rows included.
+ * - `skip`  — excluded, rows excluded.
  */
 export const NotionDatabaseModeEnum = z.enum(['skip', 'table', 'pages']);
 export type NotionDatabaseMode = z.infer<typeof NotionDatabaseModeEnum>;

@@ -630,6 +630,33 @@ describe('summarizeImport / formatConfirmCopy', () => {
     );
   });
 
+  it('does not promise a table when the scan already found row bodies', () => {
+    const tree: NotionTreeNode[] = [
+      database('crm', 'CRM', {
+        rowContent: 'some',
+        children: [row('r1', 'Acme'), row('r2', 'Globex')],
+      }),
+    ];
+    const summary = summarizeImport(tree, new Set(['crm']), { crm: 'table' });
+    expect(summary.tableCount).toBe(0);
+    expect(summary.collectionCount).toBe(1);
+    expect(summary.articleCount).toBe(2);
+    expect(formatConfirmCopy(summary)).toBe('2 articles and 1 database page will import.');
+  });
+
+  it('does not promise a table when row content was never checked', () => {
+    const tree: NotionTreeNode[] = [
+      database('crm', 'CRM', {
+        rowContent: 'unknown',
+        children: [row('r1', 'Acme')],
+      }),
+    ];
+    const summary = summarizeImport(tree, new Set(['crm']), { crm: 'table' });
+    expect(summary.tableCount).toBe(0);
+    expect(summary.collectionCount).toBe(1);
+    expect(summary.articleCount).toBe(1);
+  });
+
   it('excludes selected rows of skip-mode databases from importIds', () => {
     const tree = [page('handbook', 'Handbook', [database('crm', 'CRM', { children: [row('row-1', 'Row 1')] })])];
     const summary = summarizeImport(tree, new Set(['handbook', 'crm', 'row-1']), { crm: 'skip' });

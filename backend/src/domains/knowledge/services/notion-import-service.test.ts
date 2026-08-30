@@ -797,6 +797,48 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(storedRowA.body_html).toContain('Acme meeting notes');
   });
 
+  it('still imports row articles when table mode is requested without the row ids', async () => {
+    const rowA = crmRow('row-a', 'Acme Corp', 'First note', 'Won');
+    const rowB = crmRow('row-b', 'Globex', 'Second note', 'Lost');
+    const client = await start({
+      validToken: TOKEN,
+      pages: { 'row-a': rowA, 'row-b': rowB },
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [rowA, rowB] },
+      blockChildren: {
+        'row-a': [paragraph('ra1', 'Acme meeting notes')],
+        'row-b': [],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    expect(items[0]).toMatchObject({
+      notionPageId: 'crm',
+      status: 'success',
+      importedAs: 'page',
+      reason: NOTION_TABLE_DOWNGRADE_REASON,
+    });
+
+    const pages = await query<{
+      parent_id: string | null;
+      notion_page_id: string | null;
+      body_html: string;
+    }>('SELECT parent_id, notion_page_id, body_html FROM pages ORDER BY id');
+    expect(pages.rows.map((r) => r.notion_page_id).sort()).toEqual(['crm', 'row-a', 'row-b']);
+    const container = pages.rows.find((r) => r.notion_page_id === 'crm')!;
+    expect(container.body_html).not.toContain('<table>');
+    const storedRowA = pages.rows.find((r) => r.notion_page_id === 'row-a')!;
+    expect(storedRowA.parent_id).toBe(String(items[0]!.localPageId));
+    expect(storedRowA.body_html).toContain('Acme meeting notes');
+  });
+
   it('gives a zero-row table-mode database a container page and no downgrade explanation', async () => {
     const client = await start({
       validToken: TOKEN,
@@ -2256,6 +2298,24 @@ describe('extractWikiPageProperties', () => {
       },
     });
     expect(extracted.labels).toEqual(['Architecture']);
+  });
+
+  it('carries formula, files, people, and rich_text into custom properties as plain text', () => {
+    const extracted = extractWikiPageProperties({
+      properties: {
+        Name: { type: 'title', title: [{ plain_text: 'Doc' }] },
+        Summary: { type: 'rich_text', rich_text: [{ type: 'text', plain_text: 'Hello' }] },
+        Score: { type: 'formula', formula: { type: 'number', number: 4 } },
+        Attachments: { type: 'files', files: [{ name: 'spec.pdf' }] },
+        Reviewer: { type: 'people', people: [{ name: 'Ada' }] },
+      },
+    });
+    expect(extracted.customProperties).toEqual({
+      Summary: 'Hello',
+      Score: '4',
+      Attachments: 'spec.pdf',
+      Reviewer: 'Ada',
+    });
   });
 });
 
