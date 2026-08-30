@@ -95,32 +95,64 @@ function stripComments(text: string): string {
 }
 
 /**
- * Every string and template-literal body in the file, RESYNCHRONISED at each
- * newline.
+ * Every string and template-literal body in the file.
  *
  * Classes only ever live inside one, so this is what the sweep should look at.
- * The version before this one filtered LINES that contained a quote character,
- * which silently skipped any class on its own line inside a multi-line template.
- * Scanning literal bodies closes that and drops the false positives from bare
- * identifiers at once.
+ * The previous version filtered LINES that contained a quote character, which
+ * silently skipped any class on its own line inside a multi-line template —
+ * a second way to evade the guard without trying. Scanning literal bodies
+ * closes that and drops the false positives from bare identifiers at once.
+ */
+function stringBodies(text: string): string[] {
+  const out: string[] = [];
+  let quote: string | null = null;
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (quote) {
+      if (c === '\\') {
+        i += 2;
+        continue;
+      }
+      if (c === quote) {
+        out.push(text.slice(start, i));
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      start = i + 1;
+    }
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * The same scan, RESYNCHRONISED at each newline and flushed at EOF — the scanner
+ * the SECOND shadow cell's segmenter runs on, and the only consumer it has.
  *
- * The resync is the fix for the second half of that story. A `'` or `"` literal
- * cannot contain a raw newline, so a scanner that is still "inside" one when it
- * reaches end of line has DESYNCED — on an apostrophe in JSX copy, almost
- * always. Carrying that state forward swallowed the rest of the file into one
- * enormous body: re-measured at this head by deleting the resync below, 160 live
+ * A `'` or `"` literal cannot contain a raw newline, so a scanner that is still
+ * "inside" one when it reaches end of line has DESYNCED — on an apostrophe in
+ * JSX copy, almost always. `stringBodies` above carries that state forward, and
+ * measured at this head by running the two side by side, that swallows 160 live
  * class lists across 7 files (ComplianceReportsTab, OidcSettingsPage,
  * ScimSettingsPage, DiagramMode, PagesPage, MermaidDiagram,
- * KeyboardShortcutsModal) were not visible as their own body, and six files
- * ended inside an unclosed quote, which dropped their tails from the sweep
- * entirely — class lists that could carry any banned utility without the guard
- * ever seeing it.
+ * KeyboardShortcutsModal) into a body they do not own, and leaves six files
+ * ending inside an unclosed quote, whose tails are dropped from the sweep
+ * entirely.
  *
- * The old comment here called a desync harmless: "it costs at most a spurious
- * finding, never a missed one". That was true only while every rule was a naked
- * pattern test. The moment a rule EXEMPTS anything — and the shadow rule below
- * has to, or it flags English — a merged body is a hole: one prose sentence
- * exempts every class list merged in beside it.
+ * For the FIRST cell that is harmless in exactly the way its own comment claims:
+ * a merged body costs at most a spurious finding, because that cell's single
+ * exemption names a token nobody writes by accident. It is NOT harmless for a
+ * rule that has to tell a class list from English — and the second cell has to,
+ * or it flags prose — because a merged body lets one prose sentence exempt every
+ * class list merged in beside it. So the second cell gets a scanner that resyncs
+ * and a segmenter on top of it, and the first cell keeps its own scanner
+ * untouched.
  *
  * The resync has one cost: a static `className="…"` attribute wrapped across
  * lines — legal JSX, and absent from this tree today — is cut at the newline,
@@ -129,11 +161,9 @@ function stripComments(text: string): string {
  * newline, is the swallow-the-file bug above, and a scanner cannot tell a
  * wrapped attribute from an apostrophe in copy. So the shape is recovered
  * OUTSIDE the scanner instead, by `attributeSegments`, which needs no scanner
- * state: a double-quoted attribute value cannot contain a `"`. The pattern this
- * rule replaces carried the quote across the newline and saw such an attribute
- * whole, so leaving it lost would have been a regression rather than a tradeoff.
+ * state: a double-quoted attribute value cannot contain a `"`.
  */
-function stringBodies(text: string): string[] {
+function resyncedBodies(text: string): string[] {
   const out: string[] = [];
   let quote: string | null = null;
   let start = 0;
@@ -216,7 +246,7 @@ function interpolations(body: string): { start: number; end: number }[] {
  * was a split DELIMITER, so
  * `` className={`px-3 ${on ? 'bg-action shadow-lg' : 'text-muted'}`} `` — the
  * dominant shape for a conditional class in this tree — lost both of its nested
- * class lists before any rule ran, and `stringBodies` never recovered them,
+ * class lists before any rule ran, and `resyncedBodies` never recovered them,
  * because a `'` inside a backtick body is plain content. Delete the recursive
  * descent below and 21 live class lists across 8 files go invisible that way, and
  * the pattern this rule replaces saw every one of them (as part of the merged
@@ -273,7 +303,7 @@ function classSegments(text: string): string[] {
 const INTERP_MARK = '\u0002';
 
 function collectSegments(code: string, out: string[]): void {
-  for (const body of stringBodies(code)) {
+  for (const body of resyncedBodies(code)) {
     const spans = interpolations(body);
     // Group structure is read off the body with the interpolations BLANKED, not
     // off the raw body: `${cn({ a: ']' })}` carries brackets of its own, and
@@ -355,7 +385,7 @@ function pushChunks(chunk: string, out: string[]): void {
  *
  * A JSX attribute value is not a JS string literal: it MAY carry a raw newline,
  * and `className="flex p-1.5\n  shadow-lg"` is legal, prettier-produced JSX.
- * `stringBodies` has to resync at every newline inside a `"` body — that is what
+ * `resyncedBodies` has to resync at every newline inside a `"` body — that is what
  * stops one apostrophe in JSX copy swallowing the rest of the file — so it cuts
  * such an attribute in half and reads its closing quote as an OPENER, losing the
  * continuation lines. The pattern this rule replaces carried the quote across
@@ -681,15 +711,49 @@ function shadowOffenders(segments: string[]): { token: string; segment: string }
 
 const FILES = sources(SRC).map((f) => {
   const stripped = stripComments(readFileSync(f, 'utf8'));
-  return { path: relative(SRC, f), text: stripped, segments: classSegments(stripped) };
+  return {
+    path: relative(SRC, f),
+    text: stripped,
+    strings: stringBodies(stripped),
+    segments: classSegments(stripped),
+  };
 });
 
-/** Matches inside class-list segments only — never bare identifiers. */
-function callsites(file: { segments: string[] }, pattern: RegExp): string[] {
-  return file.segments
-    .filter((s) => pattern.test(s))
+/**
+ * Matches inside string/template bodies only — never bare identifiers.
+ *
+ * `allow` is applied to the FULL body, before truncation. Applying an allowance
+ * to the shortened display string is a live bug I shipped for one commit: a
+ * legitimate `shadow-[var(--shadow-overlay)]` sitting past column 100 of a long
+ * class list got cut off, the allowance stopped matching, and the guard failed
+ * on the exact call sites it was written to permit.
+ */
+function callsites(
+  file: { strings: string[] },
+  pattern: RegExp,
+  allow?: (body: string) => boolean,
+): string[] {
+  return file.strings
+    .filter((s) => pattern.test(s) && !(allow?.(s) ?? false))
     .map((s) => s.replace(/\s+/g, ' ').trim().slice(0, 100));
 }
+
+/**
+ * The rule this file carried before Tailwind 4, VERBATIM: the pattern and the
+ * allowance from `origin/dev`, hoisted out of the cell below only so the guard's
+ * own suite can compare against the same object rather than against a copy of it
+ * that can drift.
+ *
+ * It stays, unchanged and unconditional, as the first of two shadow assertions.
+ * Three attempts to REPLACE it with a token-shape rule each closed the hole the
+ * issue named and opened a new one somewhere else, because a hand-narrowed
+ * replacement regex is not provably at least as strong as the incumbent. Two
+ * assertions cannot have that failure mode: the guard's catch set is the UNION of
+ * the two, which is a superset of this rule's by construction.
+ */
+const PRE_V4_PATTERN = /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/;
+const preV4Allowance = (body: string): boolean =>
+  /\bshadow-\[var\(--shadow-overlay\)\]/.test(body);
 
 /**
  * The `shadow-xs` call sites Tailwind 4's rename left standing while the guard
@@ -719,6 +783,11 @@ function liveShadowTally(): Record<string, number> {
 
 describe('the component layer is as flat as the token layer', () => {
   it('no Tailwind shadow utility survives — the system has one shadow', () => {
+    // ASSERTION 1 OF 2, and it is `origin/dev`'s rule unchanged. See
+    // `PRE_V4_PATTERN`: this cell is deliberately NOT narrowed, scoped or
+    // rewritten, because the guard's total catch set has to be a superset of it
+    // and the cheapest way to guarantee that is to keep running it.
+    //
     // A guard whose pattern is narrower than the rule it enforces certifies
     // exactly the call sites nobody would have written by accident. The first
     // version matched only `shadow-{sm,md,lg,xl,2xl,inner}` and let five
@@ -729,10 +798,38 @@ describe('the component layer is as flat as the token layer', () => {
     // pointing at `--nm-shadow-out-strong`, a retired token that now resolves to
     // `transparent`, so it rendered nothing while reading as live code.
     //
-    // The second version matched arbitrary values and `drop-shadow` too, and was
-    // still a v3 pattern on a v4 repo: `shadow-xs` — which is what v4 renamed
-    // `shadow-sm` TO — never matched it, and neither did `shadow-2xs`, a
-    // coloured `shadow-cyan-400/40`, or the `shadow-(--custom)` shorthand.
+    // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
+    // arbitrary value, for the overlays that are not `nm-card-elevated`
+    // (two drawers, a round floating button). Allowed by name.
+    const offenders: string[] = [];
+    for (const file of FILES) {
+      const hits = callsites(file, PRE_V4_PATTERN, preV4Allowance);
+      for (const hit of hits) offenders.push(`${file.path}: ${hit}`);
+    }
+    expect(
+      offenders,
+      `Tailwind's shadow scale is not part of this system. An overlay (popover, ` +
+        `dropdown, dialog, palette, toast) uses \`nm-card-elevated\`; an in-page ` +
+        `pane earns emphasis from position, spacing and heading weight.`,
+    ).toEqual([]);
+  });
+
+  it('no Tailwind 4 shadow spelling survives either — by token shape, per segment', () => {
+    // ASSERTION 2 OF 2, and it only ever ADDS offenders: the cell above keeps
+    // running whatever this one decides, so nothing here can exempt anything
+    // there. That is the whole design. It is why this rule is allowed to reason
+    // about prose at all — a rule that EXEMPTS is a rule that can be talked out
+    // of a finding, and three earlier attempts to make the single old cell
+    // exempt-and-extend each shipped a new hole doing it.
+    //
+    // What it adds: the rule above is a v3 pattern on a v4 repo. `shadow-xs` —
+    // which is what Tailwind 4 renamed `shadow-sm` TO, so it is the spelling the
+    // upgrade itself produced — never matched it, and neither did `shadow-2xs`,
+    // a coloured `shadow-cyan-400/40`, the `shadow-(--custom)` variable
+    // shorthand, or `shadow-overlay-sm`. This cell reads every token of every
+    // class-list SEGMENT (never the whole body: see `classSegments`) and decides
+    // per token, so a legitimate overlay shadow no longer exempts the shadows
+    // standing beside it either.
     const budget: Record<string, number> = {};
     for (const debt of V4_SHADOW_DEBT) budget[`${debt.path} ${debt.token}`] = debt.count;
     const offenders: string[] = [];
@@ -748,9 +845,10 @@ describe('the component layer is as flat as the token layer', () => {
     }
     expect(
       offenders,
-      `Tailwind's shadow scale is not part of this system. An overlay (popover, ` +
-        `dropdown, dialog, palette, toast) uses \`nm-card-elevated\`; an in-page ` +
-        `pane earns emphasis from position, spacing and heading weight.`,
+      `Tailwind's shadow scale is not part of this system, in v4's spellings as ` +
+        `much as v3's. An overlay (popover, dropdown, dialog, palette, toast) ` +
+        `uses \`nm-card-elevated\`; an in-page pane earns emphasis from position, ` +
+        `spacing and heading weight.`,
     ).toEqual([]);
   });
 
@@ -892,58 +990,17 @@ describe('the component layer is as flat as the token layer', () => {
  */
 describe('the shadow guard is itself under test', () => {
   /**
-   * The pattern the shadow cell used before Tailwind 4. Kept as a fixture so the
-   * non-regression cell can prove the replacement is a SUPERSET rather than a
-   * differently-shaped guard: three earlier narrowing attempts each closed the
-   * stated hole and opened a new one.
-   */
-  const PRE_V4_PATTERN = /\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))/;
-
-  /**
-   * The SCANNER the shadow cell used before this rule: `stringBodies` without the
-   * newline resync, so a quote is carried across a line break exactly as it was.
+   * The pre-v4 shadow cell's whole verdict on a source snippet — the SHIPPED
+   * one, first cell included: its pattern, its allowance and its scanner, all
+   * three read straight off the module above rather than copied here.
    *
-   * The superset cells below compare the new rule against `PRE_V4_PATTERN`, which
-   * settles the token grammar but says nothing about the two collaborating parts
-   * that decide what the pattern ever SEES. Every one of the shapes that made an
-   * earlier version of this rule weaker than its predecessor was a scanner or
-   * segmenter loss, not a pattern loss, and a pattern-only comparison cannot fail
-   * on one by construction. So the pipeline it replaces is reproduced here, and
-   * the fixtures whose source FORM is the point are compared against that.
+   * The cells below compare the second cell against this pipeline, and a copy of
+   * it would only prove the second cell is a superset of a fixture that has
+   * drifted. It cannot drift now: the first assertion calls the same three names.
    */
-  const preV4Bodies = (text: string): string[] => {
-    const out: string[] = [];
-    let quote: string | null = null;
-    let start = 0;
-    let i = 0;
-    while (i < text.length) {
-      const c = text[i]!;
-      if (quote) {
-        if (c === '\\') {
-          i += 2;
-          continue;
-        }
-        if (c === quote) {
-          out.push(text.slice(start, i));
-          quote = null;
-        }
-        i += 1;
-        continue;
-      }
-      if (c === '"' || c === "'" || c === '`') {
-        quote = c;
-        start = i + 1;
-      }
-      i += 1;
-    }
-    return out;
-  };
-
-  /** The pre-v4 shadow cell's whole verdict on a source snippet, allowance included. */
   const preV4Catches = (source: string): boolean =>
-    preV4Bodies(stripComments(source)).some(
-      (body) =>
-        PRE_V4_PATTERN.test(body) && !/\bshadow-\[var\(--shadow-overlay\)\]/.test(body),
+    stringBodies(stripComments(source)).some(
+      (body) => PRE_V4_PATTERN.test(body) && !preV4Allowance(body),
     );
 
   const flagged = (text: string): string[] =>
@@ -996,6 +1053,44 @@ describe('the shadow guard is itself under test', () => {
       const utility = token.slice(token.lastIndexOf(':') + 1);
       return ORACLE_BARE.test(utility) || ORACLE_PREFIXED.test(utility);
     }).length >= 2;
+
+  it("the first assertion is still dev's rule, spelled the way dev spells it", () => {
+    // The guard is the UNION of two assertions, and the union is a superset of
+    // dev's catch set only while the first assertion IS dev's rule. Hoisting the
+    // literal into a const (so this suite compares against the same object
+    // instead of a copy) is the one liberty taken with it, so the literal is
+    // pinned here: change it and this cell reds with the diff in the message.
+    expect(PRE_V4_PATTERN.source).toBe(
+      String.raw`\b(drop-)?shadow(-(sm|md|lg|xl|2xl|inner))?(-\[|(?=["'\s]|$))`,
+    );
+    expect(PRE_V4_PATTERN.flags).toBe('');
+    expect(preV4Allowance('flex shadow-[var(--shadow-overlay)] p-2')).toBe(true);
+    expect(preV4Allowance('flex shadow-lg p-2')).toBe(false);
+  });
+
+  it('the two assertions read the tree through their own scanners', () => {
+    // `stringBodies` is dev's scanner, byte for byte: no newline resync, no EOF
+    // flush, so one apostrophe swallows everything after it. That is harmless
+    // for a rule with no prose exemption and fatal for one with, which is why
+    // the second assertion gets `resyncedBodies` and the first keeps this.
+    // Give the first assertion the resynced scanner and it stops being dev's
+    // rule; give the second assertion this one and its exemption becomes unsafe.
+    const fixture = `<p>doesn't tilt</p>\n<div className="p-1.5 shadow" />`;
+    expect(stringBodies(fixture)).toEqual([]);
+    expect(resyncedBodies(fixture)).toEqual(["t tilt</p>", 'p-1.5 shadow']);
+    // And the first assertion is not decoration: it fires on a planted shadow,
+    // and the bodies it sweeps are the tree's.
+    const planted = { strings: stringBodies('const cls = "p-1.5 shadow-lg";') };
+    expect(callsites(planted, PRE_V4_PATTERN, preV4Allowance)).toEqual(['p-1.5 shadow-lg']);
+    expect(FILES.reduce((n, f) => n + f.strings.length, 0)).toBeGreaterThan(10000);
+    // Body for body and file for file, what `FILES` hands the first assertion is
+    // what dev's scanner produces. Wire `strings` to `resyncedBodies` — strictly
+    // the better scanner, and still not the one dev's rule is — and this reds.
+    const flat = (perFile: string[][]): string =>
+      perFile.map((bodies) => bodies.join('\u0000')).join('\u0001');
+    expect(flat(FILES.map((f) => f.strings))).toBe(flat(FILES.map((f) => stringBodies(f.text))));
+    expect(flat(FILES.map((f) => f.segments))).toBe(flat(FILES.map((f) => classSegments(f.text))));
+  });
 
   it('flags a bare `shadow` added to a real class list that also contains `p-1.5`', () => {
     expect(flagged(`<div className="${THEME_SWATCH} shadow" />`)).toEqual(['shadow']);
@@ -1200,7 +1295,24 @@ describe('the shadow guard is itself under test', () => {
     // a grammar written for the first silently rejects — which made the token
     // unrecognisable, its whole class list prose, and every shadow in that list
     // exempt.
-    const VARIANT = ['', 'hover:', 'md:', 'group-hover:', 'dark:md:', '!', 'hover:!', 'dark:md:!'];
+    // The last variant carries a mismatched closer inside its arbitrary
+    // selector — legal, and the shape that separates `utilityOf`'s own-kind scan
+    // from one undifferentiated depth counter. The counter goes NEGATIVE on that
+    // `)`, so a colon INSIDE the arbitrary value that follows reads as being at
+    // depth 0: the cut lands there, the utility is thrown away, and the tail
+    // (`0_0_8px_#22d3ee]`) is not a shadow by any pattern. The pre-v4 pattern
+    // caught every one of these through its `\b`.
+    const VARIANT = [
+      '',
+      'hover:',
+      'md:',
+      'group-hover:',
+      'dark:md:',
+      '!',
+      'hover:!',
+      'dark:md:!',
+      '[&[data-x=")"]]:',
+    ];
 
     const missed: string[] = [];
     let compared = 0;
@@ -1278,7 +1390,7 @@ describe('the shadow guard is itself under test', () => {
     // The scanner half. A prose exemption is only safe if a real class list is
     // never merged into a body that has prose in it: one merged body lets a
     // single prose sentence exempt every class list beside it. Delete the newline
-    // resync in `stringBodies` and this cell reports 160 across 7 files.
+    // resync in `resyncedBodies` and this cell reports 160 across 7 files.
     //
     // The sample has to come from the RAW FILE TEXT, and the version before this
     // one drew half of it from `className="…"` attributes alone. That is the one
@@ -1288,7 +1400,7 @@ describe('the shadow guard is itself under test', () => {
     // discarding interpolations, 21 real class lists across 8 files vanished
     // from the segment stream and this cell stayed green with `invisible === 0`.
     // The oracle-filtered quoted literals below are drawn from the text with no
-    // reference to `stringBodies` or `classSegments`, so a segment the scanner
+    // reference to `resyncedBodies` or `classSegments`, so a segment the scanner
     // never emits is still in the sample.
     const invisible: string[] = [];
     let checked = 0;
@@ -1318,7 +1430,7 @@ describe('the shadow guard is itself under test', () => {
       invisible.length,
       `${invisible.length} class lists are invisible to the sweep as their own ` +
         `segment, so a prose exemption beside them exempts them too.\n` +
-        `\`stringBodies\` resyncs at every newline inside a "/' body — which is ` +
+        `\`resyncedBodies\` resyncs at every newline inside a "/' body — which is ` +
         `what stops one apostrophe in JSX copy swallowing the rest of the file — ` +
         `so a static className="…" wrapped across lines is cut there and its ` +
         `closing quote reads as an OPENER. \`attributeSegments\` is what puts ` +
@@ -1474,6 +1586,15 @@ describe('the shadow guard is itself under test', () => {
     const variant = '[&[data-x=")"]]:p-4';
     expect(isTailwindToken(variant)).toBe(true);
     expect(utilityOf('[&[data-x=")"]]:shadow-lg')).toBe('shadow-lg');
+    // And with a colon INSIDE the utility's own arbitrary value as well, which is
+    // where one undifferentiated depth counter actually loses: the stray `)`
+    // drives it to -1, the `[` of the arbitrary value only brings it back to 0,
+    // so `shadow:` reads as a variant boundary and the cut throws the utility
+    // away. The own-kind scan sees the `[shadow:…]` group and cuts at the
+    // variant colon instead.
+    expect(utilityOf('[&[data-x=")"]]:shadow-[shadow:0_0_8px_#22d3ee]')).toBe(
+      'shadow-[shadow:0_0_8px_#22d3ee]',
+    );
     expect(isClassList('p-1.5 [&[data-x=")"]]:shadow-lg')).toBe(true);
     expect(flagged(asSource('p-1.5 [&[data-x=")"]]:shadow-lg'))).toEqual(['shadow-lg']);
     // And the SEGMENT stays whole, which is the same claim one layer out: both
@@ -1714,7 +1835,7 @@ describe('the shadow guard is itself under test', () => {
       token: 'shadow-lg',
     },
     // A static `className="…"` wrapped across lines: legal, prettier-produced
-    // JSX that `stringBodies` must cut at the newline and `attributeSegments`
+    // JSX that `resyncedBodies` must cut at the newline and `attributeSegments`
     // therefore has to recover. Delete the `attributeSegments` call in
     // `classSegments` and this reds.
     {
