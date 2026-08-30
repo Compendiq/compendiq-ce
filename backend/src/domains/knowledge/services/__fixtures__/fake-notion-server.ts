@@ -31,10 +31,13 @@ export interface FakeNotionState {
   /** Status to return for GET /v1/blocks/:id/children instead of a list. */
   blockChildrenErrors?: Record<string, number>;
   /**
-   * Rows returned ONLY if a caller POSTs `/v1/databases/:id/query`.
-   * Child B must never hit this — row-pages are search page objects or they stay skipped.
+   * Row pages served from `POST /v1/databases/:id/query`. The importer reads
+   * these when a database is imported as a table or as row pages, and when it
+   * enumerates an inline `child_database`.
    */
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
+  /** Status to return for the query endpoint instead of a row list. */
+  databaseQueryErrors?: Record<string, number>;
   /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
   files?: Record<string, { contentType: string; body: Buffer | string }>;
   /** Pause GET page/database/block lookups so tests can observe in-flight concurrency. */
@@ -177,11 +180,34 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
     const dbQueryMatch = /^\/v1\/databases\/([^/]+)\/query$/.exec(path);
     if (method === 'POST' && dbQueryMatch) {
       const dbId = dbQueryMatch[1]!;
+      const errorStatus = state.databaseQueryErrors?.[dbId];
+      if (errorStatus) {
+        send(res, errorStatus, {
+          object: 'error',
+          status: errorStatus,
+          code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
+          message: 'upstream',
+        });
+        return;
+      }
+      let payload: { start_cursor?: string; page_size?: number } = {};
+      try {
+        payload = body ? JSON.parse(body) as { start_cursor?: string; page_size?: number } : {};
+      } catch {
+        send(res, 400, { object: 'error', status: 400, code: 'invalid_json', message: 'Invalid JSON' });
+        return;
+      }
+      const all = state.databaseQueryResults?.[dbId] ?? [];
+      const pageSize = Math.min(Math.max(payload.page_size ?? 100, 1), 100);
+      const start = payload.start_cursor ? Number.parseInt(payload.start_cursor, 10) : 0;
+      const slice = all.slice(start, start + pageSize);
+      const next = start + slice.length;
+      const hasMore = next < all.length;
       send(res, 200, {
         object: 'list',
-        results: state.databaseQueryResults?.[dbId] ?? [],
-        next_cursor: null,
-        has_more: false,
+        results: slice,
+        next_cursor: hasMore ? String(next) : null,
+        has_more: hasMore,
       });
       return;
     }

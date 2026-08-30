@@ -436,28 +436,33 @@ function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
   return `<p><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></p>`;
 }
 
-function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
-  const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
-  if (rows.length === 0) {
-    skip(block, ctx);
-    return '';
-  }
+/**
+ * Rows × properties as an HTML table. Shared by the inline `child_database`
+ * block renderer and the top-level database import (`table` mode), so a
+ * database nested in a page and one flattened on its own produce the same
+ * markup.
+ */
+export function renderDatabaseTable(input: {
+  columns: readonly string[];
+  rows: readonly Record<string, unknown>[];
+  title?: string;
+}): string {
+  if (input.rows.length === 0) return '';
 
-  const data = payload(block, 'child_database');
-  const rawTitle = typeof data.title === 'string' && data.title.trim()
-    ? data.title.trim()
-    : (typeof block.title === 'string' && block.title.trim() ? block.title.trim() : '');
+  const rawTitle = typeof input.title === 'string' ? input.title.trim() : '';
   const title = rawTitle === 'New database' || rawTitle === 'Untitled' ? '' : rawTitle;
   const heading = title ? `<h3>${escapeHtml(title)}</h3>` : '';
-  const propKeys: string[] = Array.isArray(block.databaseColumns) && block.databaseColumns.length > 0
-    ? (block.databaseColumns as string[])
-    : Array.from(
-        new Set(
-          rows.flatMap((r) =>
-            isRecord(r) && isRecord(r.properties) ? Object.keys(r.properties) : [],
+
+  const propKeys: string[] =
+    input.columns.length > 0
+      ? [...input.columns]
+      : Array.from(
+          new Set(
+            input.rows.flatMap((r) =>
+              isRecord(r) && isRecord(r.properties) ? Object.keys(r.properties) : [],
+            ),
           ),
-        ),
-      );
+        );
 
   propKeys.sort((a, b) => {
     const aLower = a.toLowerCase();
@@ -472,22 +477,36 @@ function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
   const headerRow = propKeys.map((col) => `<th>${escapeHtml(col)}</th>`).join('');
   const thead = headerRow ? `<thead><tr>${headerRow}</tr></thead>` : '';
 
-  const bodyRows = rows
+  const bodyRows = input.rows
     .map((row) => {
       const props = isRecord(row) && isRecord(row.properties) ? row.properties : {};
       const cells = propKeys
-        .map((col) => {
-          const propValue = props[col];
-          const text = extractPropertyText(propValue);
-          return `<td>${escapeHtml(text)}</td>`;
-        })
+        .map((col) => `<td>${escapeHtml(extractPropertyText(props[col]))}</td>`)
         .join('');
       return `<tr>${cells}</tr>`;
     })
     .join('');
 
-  const tbody = `<tbody>${bodyRows}</tbody>`;
-  return `${heading}<table>${thead}${tbody}</table>`;
+  return `${heading}<table>${thead}<tbody>${bodyRows}</tbody></table>`;
+}
+
+function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
+  const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
+  if (rows.length === 0) {
+    skip(block, ctx);
+    return '';
+  }
+
+  const data = payload(block, 'child_database');
+  const rawTitle = typeof data.title === 'string' && data.title.trim()
+    ? data.title.trim()
+    : (typeof block.title === 'string' && block.title.trim() ? block.title.trim() : '');
+
+  return renderDatabaseTable({
+    columns: Array.isArray(block.databaseColumns) ? (block.databaseColumns as string[]) : [],
+    rows: rows as Record<string, unknown>[],
+    title: rawTitle,
+  });
 }
 
 function extractPropertyText(prop: unknown): string {
@@ -669,7 +688,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
