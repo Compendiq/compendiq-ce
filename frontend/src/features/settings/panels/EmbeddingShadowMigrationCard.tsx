@@ -85,6 +85,49 @@ function formatEta(ms: number): string {
   return hours < 10 ? `${hours.toFixed(1)} h` : `${Math.round(hours)} h`;
 }
 
+/**
+ * The ending itself — true in every branch the strip renders in and in the
+ * toast, because the branch is exactly what changed underneath the run.
+ */
+const COMPARISON_ENDED = 'The comparison in progress ended — the migration changed underneath it.';
+/** The recovery, in the one branch that offers it: `ready`, and only `ready`. */
+const COMPARISON_RESTARTABLE = 'Start a new comparison from the current migration.';
+/**
+ * …and where it does not. `EmbeddingShadowCompareSection` — the only surface
+ * carrying a Run control — is mounted by the `ready` branch alone, while the
+ * ending arm below fires on a migration WINDOW that closed: `swapped`,
+ * `aborting`, or the migration gone from the card entirely. So the strip is by
+ * construction shown where that control is not, and one fixed "Start a new
+ * comparison…" named a control the card does not offer in four of its five
+ * branches — on the PRIMARY path every time (swap while a comparison runs).
+ * An instruction the admin cannot follow is worse than none, because they go
+ * looking for it (#1533).
+ *
+ * It names what comparing NEEDS rather than a control, in the phase vocabulary
+ * the card already speaks, so it composes with whatever the branch's own prose
+ * says to do next: finish the abort, wait for the backfill, clean up or roll
+ * back, start a re-embed. What it names is the route's PHASE gate —
+ * `llm-embedding-shadow.ts` refuses anything but `ready`, and refuses
+ * `swapped`/`aborting` one gate earlier still, on the migration row itself
+ * (`status.status !== 'active'`, which those two phases imply). The shared
+ * benchmark slot is a third, phase-independent 409 that can refuse in `ready`
+ * too — which is why this sentence claims only what comparing NEEDS and never
+ * that the route will accept. Its second clause is checkable from the card on
+ * screen: every branch that renders this sentence renders no Swap control
+ * either.
+ */
+const COMPARISON_UNAVAILABLE =
+  'Comparing on real queries needs a migration waiting at the swap, and this card is not showing one.';
+/**
+ * What the TOAST carries instead. It is announced once, at an instant where
+ * this card can vanish entirely (a rollback with no pending change leaves no
+ * branch to word a sentence from), and it cannot re-word itself afterwards the
+ * way the derived strip does — so it states the fact every path that fires it
+ * has just established server-side rather than pointing at a card that may be
+ * gone or at a control that may not exist.
+ */
+const COMPARISON_WINDOW_CLOSED = 'The window this comparison ran in has closed on the server.';
+
 export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onActiveChange }: Props) {
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<ShadowStatus | null>(null);
@@ -150,9 +193,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     compareRunInFlight.current = null;
     setCompareRunning(false);
     setEndedNotice(true);
-    toast.warning(
-      'The comparison in progress ended — the migration changed underneath it. Start a new comparison from the current migration.',
-    );
+    toast.warning(`${COMPARISON_ENDED} ${COMPARISON_WINDOW_CLOSED}`);
   }, []);
   // Through a ref so an inline arrow prop cannot re-fire the effect each render.
   const onActiveChangeRef = useRef(onActiveChange);
@@ -358,21 +399,41 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet
 
+  /**
+   * The strip's second sentence, derived from the SNAPSHOT this render is
+   * already drawing the branch from — one expression, no ref, no timer, no
+   * counter, no watermark, no memory of an earlier snapshot (review r4). The
+   * `ready` branch is the only one that mounts the Run control, so it is the
+   * only one where the prescription can be followed; every other branch gets
+   * the sentence that is true without it (#1533).
+   *
+   * Pure by design, not by luck. A status answer that was already stale when it
+   * landed therefore yields a strip that AGREES with the branch rendered from
+   * that same answer — both are that one answer's view of the migration — and
+   * the next poll (≤5s) corrects the two together. Wording the strip from
+   * anything other than the answer on screen is what earlier rounds of this fix
+   * tried, and it produced #1533 in mirror image: the unavailable sentence
+   * standing under a mounted Run control and an enabled Swap.
+   */
+  const endedRecovery = migration?.phase === 'ready' ? COMPARISON_RESTARTABLE : COMPARISON_UNAVAILABLE;
+
   // Rendered by EVERY branch below, because the branch is exactly what changes
   // underneath a comparison. Amber, not destructive: the lifecycle action the
   // admin asked for succeeded and the migration is fine — the comparison is the
   // collateral, which is what ADR-010 reserves amber for. It is dismissible so
   // it cannot stand at rest on a card the admin still has to finish using.
+  // The polite region's text is derived per render, so it MUTATES in place when
+  // the branch changes under an undismissed notice — a second announcement, and
+  // deliberately so: what it then says is true of the branch now on screen,
+  // whereas latching the sentence at warn time would keep prescribing a
+  // comparison after the window closed, which is the whole of #1533.
   const endedStrip = endedNotice ? (
     <div
       role="status"
       className="mt-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs"
       data-testid="shadow-compare-ended"
     >
-      <p className="flex-1">
-        The comparison in progress ended — the migration changed underneath it. Start a new
-        comparison from the current migration.
-      </p>
+      <p className="flex-1">{`${COMPARISON_ENDED} ${endedRecovery}`}</p>
       <button
         type="button"
         className="shrink-0 underline"

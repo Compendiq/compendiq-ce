@@ -139,14 +139,36 @@ committing. The shadow card's **Compare on real queries** section (or
   the backfill, not the model. One run at a time, **shared with the Retrieval
   tab's production benchmark**: while either runs the other answers 409
   "already running". A swap/abort/rollback landing mid-run fails the run
-  cleanly with a message naming the migration change; just start a new
-  comparison from the new state. **You are told, and not by the section** —
+  cleanly with a message naming the migration change — and the same action
+  closes the window the run needed, so **there is nothing to restart from the
+  new state**: the route refuses anything but `ready` — `swapped` and
+  `aborting` are refused on the migration row itself, one gate earlier.
+  The next comparison waits for the next `ready` window — after a
+  rollback that means starting the re-embed again and letting it backfill;
+  after a cleanup the cutover is finished and there is nothing left to
+  compare. **You are told, and not by the section** —
   it lives inside the `ready` branch and your own Abort or Swap unmounts it
   within a poll, so the card raises the notice instead — as a toast **and** as
   an amber strip that stays on the card in whatever branch the action moved it
   into, because a toast is gone in seconds and what it reports is that the
-  run's N × 2 embedding calls were spent for nothing. Dismiss it, or start
-  another comparison, and it goes. A migration moved
+  run's N × 2 embedding calls were spent for nothing. What that strip tells
+  you to do is derived from the branch it is rendering in (#1533), never
+  fixed: it prescribes a new comparison only in `ready`, the one branch that
+  mounts the Run control, and everywhere else — `swapped`, `aborting`,
+  `backfilling`, and a card left with only an unsaved model change — it says
+  comparing needs a migration waiting at the swap and that this card is not
+  showing one, which is checkable from the card in front of you (no Swap
+  control on it) and is what the route requires before it will accept a run
+  at all. The sentence is a
+  pure function of the status answer the branch itself was drawn from, so the
+  two always agree; if that answer was already stale when it landed, the strip
+  and the branch are wrong together and the next poll (≤5 s) corrects both.
+  The **toast** says the window this comparison ran in has closed on the
+  server instead, because it is announced once, cannot re-word itself, and
+  covers the one case the strip cannot — a rollback with no pending change
+  takes the whole card away, leaving no branch to word a sentence from.
+  Dismiss the strip, or start another comparison once a migration is waiting
+  at the swap again, and it goes. A migration moved
   **from another tab, or by another admin**, is reported the same way and by
   the same card: its own 5s status poll sees the migration **window** close
   with a comparison still in flight and says so, because the server fails the
