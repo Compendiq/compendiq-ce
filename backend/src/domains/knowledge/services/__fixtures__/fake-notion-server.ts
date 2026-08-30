@@ -12,6 +12,8 @@ export interface FakeNotionRequest {
   authorization: string | undefined;
   notionVersion: string | undefined;
   body: string;
+  /** `Date.now()` when the request reached the server. Pins client pacing. */
+  startedAt: number;
 }
 
 export interface FakeNotionState {
@@ -46,9 +48,10 @@ export interface FakeNotionState {
   /**
    * Consume-once failures applied after auth, before routing. Used to
    * exercise Notion 429/529 retries without permanently breaking the
-   * resource.
+   * resource. `retryAfter` defaults to `'0'` so retries are immediate;
+   * pass `null` to omit the header and exercise the client's own backoff.
    */
-  transientFailures?: Array<{ status: number; retryAfter?: string }>;
+  transientFailures?: Array<{ status: number; retryAfter?: string | null }>;
 }
 
 export interface FakeNotionServer {
@@ -77,12 +80,13 @@ function send(
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
   const retryable = status === 429 || status === 529 || status === 500 || status === 502 || status === 503 || status === 504;
-  if (retryable) {
-    res.setHeader('Retry-After', extraHeaders?.['Retry-After'] ?? '0');
+  // `undefined` headers take the fixture default; an explicit object (even an
+  // empty one) means the caller owns the header set.
+  if (retryable && extraHeaders === undefined) {
+    res.setHeader('Retry-After', '0');
   }
   if (extraHeaders) {
     for (const [key, value] of Object.entries(extraHeaders)) {
-      if (key === 'Retry-After' && retryable) continue;
       res.setHeader(key, value);
     }
   }
@@ -123,7 +127,7 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
     const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined;
     const notionVersion = typeof req.headers['notion-version'] === 'string' ? req.headers['notion-version'] : undefined;
 
-    requests.push({ method, url, authorization, notionVersion, body });
+    requests.push({ method, url, authorization, notionVersion, body, startedAt: Date.now() });
 
     if (authorization !== `Bearer ${state.validToken}`) {
       send(res, 401, unauthorized());
@@ -142,7 +146,12 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
           code: status === 529 ? 'service_overload' : status >= 500 ? 'internal_server_error' : 'rate_limited',
           message: 'upstream',
         },
-        transient.retryAfter !== undefined ? { 'Retry-After': transient.retryAfter } : undefined,
+        // `null` means "send no Retry-After"; `undefined` takes the default '0'.
+        transient.retryAfter === null
+          ? {}
+          : transient.retryAfter !== undefined
+            ? { 'Retry-After': transient.retryAfter }
+            : undefined,
       );
       return;
     }

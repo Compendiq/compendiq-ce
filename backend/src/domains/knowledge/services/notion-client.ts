@@ -8,6 +8,10 @@
  * There is deliberately no `queryDatabase` / data-source query: child B
  * must not invent row-pages by querying a database.
  *
+ * Rate limiting and retries belong to this client, not its callers: it paces
+ * request *starts* against Notion's 3 req/s average and climbs its own retry
+ * ladder. Callers keep their own `pLimit` concurrency (#1553).
+ *
  * Tests bind `baseUrl` to a local fake server. Production talks only to
  * `https://api.notion.com`.
  */
@@ -27,8 +31,24 @@ export const NOTION_VERSION = '2022-06-28';
 export const NOTION_RATE_LIMIT_MAX_ATTEMPTS = 6;
 /** ~3 requests/second — Notion's documented per-connection average. */
 const NOTION_MIN_INTERVAL_MS = 334;
+/** First backoff step when a retryable response carries no `Retry-After`. */
+export const NOTION_BACKOFF_BASE_MS = 1000;
+/**
+ * Ceiling on a single backoff, `Retry-After` included. Notion sends small
+ * values, but this sleep sits outside `AbortSignal.timeout`, so one absurd
+ * header would otherwise park a whole import past every request timeout.
+ */
+export const NOTION_MAX_BACKOFF_MS = 60_000;
+/** Spreads concurrent lanes that came off the same 429. */
+const NOTION_RETRY_JITTER_MS = 250;
 const NOTION_RETRY_STATUSES = new Set([429, 529]);
 const NOTION_IDEMPOTENT_RETRY_STATUSES = new Set([500, 502, 503, 504]);
+/**
+ * POST endpoints that only read. This client issues no writes at all, and a
+ * transient 5xx midway through a paginated search or database walk is exactly
+ * the failure the ladder exists for. A future write POST must stay out.
+ */
+const NOTION_IDEMPOTENT_POST_PATHS = [/^\/v1\/search$/, /^\/v1\/databases\/[^/]+\/query$/];
 
 const notionDispatcher = createTlsDispatcher();
 
@@ -93,7 +113,7 @@ function headerValue(
   return typeof raw === 'string' ? raw : undefined;
 }
 
-/** Notion Retry-After is an integer number of seconds. */
+/** Notion `Retry-After` is an integer number of seconds. */
 function parseRetryAfterMs(header: string | undefined): number | undefined {
   if (header == null || header === '') return undefined;
   const seconds = Number(header);
@@ -101,17 +121,42 @@ function parseRetryAfterMs(header: string | undefined): number | undefined {
   return seconds * 1000;
 }
 
-function isRetryableStatus(status: number, method: string): boolean {
-  if (NOTION_RETRY_STATUSES.has(status)) return true;
-  return (method === 'GET' || method === 'DELETE') && NOTION_IDEMPOTENT_RETRY_STATUSES.has(status);
+function isIdempotent(method: string, path: string): boolean {
+  if (method === 'GET' || method === 'DELETE') return true;
+  if (method !== 'POST') return false;
+  const routePath = path.split('?')[0]!;
+  return NOTION_IDEMPOTENT_POST_PATHS.some((pattern) => pattern.test(routePath));
 }
 
-function retryDelayMs(attempt: number, retryAfterHeader: string | undefined): number {
+function isRetryableStatus(status: number, method: string, path: string): boolean {
+  if (NOTION_RETRY_STATUSES.has(status)) return true;
+  return isIdempotent(method, path) && NOTION_IDEMPOTENT_RETRY_STATUSES.has(status);
+}
+
+/**
+ * `Retry-After` when the server sent one, else exponential backoff. Always
+ * jittered, never shorter than one pacing slot (a proxy answering
+ * `Retry-After: 0` must not turn the ladder into a hot loop) and always
+ * capped at {@link NOTION_MAX_BACKOFF_MS}.
+ */
+export function computeNotionRetryDelayMs(
+  attempt: number,
+  retryAfterHeader: string | undefined,
+  options: { baseMs?: number; floorMs?: number } = {},
+): number {
+  const baseMs = options.baseMs ?? NOTION_BACKOFF_BASE_MS;
   const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
-  if (retryAfterMs != null) {
-    return retryAfterMs === 0 ? 0 : retryAfterMs + Math.random() * 250;
-  }
-  return Math.min(2 ** attempt, 30) * 1000 + Math.random() * 250;
+  const wanted = retryAfterMs ?? baseMs * 2 ** attempt;
+  const floored = Math.max(wanted, options.floorMs ?? 0);
+  return Math.min(floored + Math.random() * NOTION_RETRY_JITTER_MS, NOTION_MAX_BACKOFF_MS);
+}
+
+/** A retryable failure. Anything an attempt throws instead is final. */
+interface NotionRetrySignal {
+  error: NotionError;
+  retryAfter: string | undefined;
+  /** Redacted response excerpt, logged only if the ladder is exhausted. */
+  body?: string;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -143,7 +188,6 @@ export class NotionClient {
   private readonly token: string;
   private readonly baseUrl: string;
   private readonly minIntervalMs: number;
-  private queue: Promise<void> = Promise.resolve();
   private nextSlotAt = 0;
 
   constructor(token: string, options: { baseUrl?: string; minIntervalMs?: number } = {}) {
@@ -155,12 +199,14 @@ export class NotionClient {
     );
   }
 
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn);
-    this.queue = run.then(() => undefined, () => undefined);
-    return run;
-  }
-
+  /**
+   * Reserve the next start slot. This paces *starts*, and the reservation is
+   * synchronous — taken before any `await` — so concurrent callers each get
+   * their own slot and the tree's / importer's `pLimit(5)` still overlaps.
+   * Never serialize on completion instead: that caps the client at
+   * 1/(interval + latency) rather than 1/interval and makes every caller-side
+   * `pLimit` inert.
+   */
   private async waitForSlot(): Promise<void> {
     const now = Date.now();
     const start = Math.max(now, this.nextSlotAt);
@@ -168,14 +214,43 @@ export class NotionClient {
     await sleep(start - now);
   }
 
-  private async fetchJson<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-    return this.enqueue(() => this.fetchJsonWithRetry(path, init));
+  /**
+   * Run `attempt` up to {@link NOTION_RATE_LIMIT_MAX_ATTEMPTS} times. It
+   * returns `{ value }` on success or a {@link NotionRetrySignal}; anything it
+   * throws is final. `paced` is false for URLs outside Notion's request
+   * budget, which must neither take a slot nor push one.
+   */
+  private async withRetry<T>(
+    logContext: Record<string, string>,
+    paced: boolean,
+    attempt: (index: number) => Promise<{ value: T } | NotionRetrySignal>,
+  ): Promise<T> {
+    for (let index = 0; ; index++) {
+      if (paced) await this.waitForSlot();
+      const outcome = await attempt(index);
+      if ('value' in outcome) return outcome.value;
+      if (index === NOTION_RATE_LIMIT_MAX_ATTEMPTS - 1) {
+        logger.warn(
+          { statusCode: outcome.error.statusCode, ...logContext, body: outcome.body },
+          'Notion API error',
+        );
+        throw outcome.error;
+      }
+      const delayMs = computeNotionRetryDelayMs(index, outcome.retryAfter, {
+        floorMs: this.minIntervalMs,
+      });
+      // Raise, never lower: sibling lanes hold later reservations already, and
+      // a 429 is integration-wide, so it has to push all of them out.
+      if (paced) this.nextSlotAt = Math.max(this.nextSlotAt, Date.now() + delayMs);
+      logger.warn(
+        { statusCode: outcome.error.statusCode, ...logContext, attempt: index + 1, delayMs: Math.round(delayMs) },
+        'Notion API transient error, retrying',
+      );
+      await sleep(delayMs);
+    }
   }
 
-  private async fetchJsonWithRetry<T>(
-    path: string,
-    init: { method?: string; body?: unknown } = {},
-  ): Promise<T> {
+  private async fetchJson<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     validateUrl(url);
 
@@ -188,14 +263,13 @@ export class NotionClient {
     if (init.body !== undefined) {
       headers['Content-Type'] = 'application/json';
     }
+    const body = init.body !== undefined ? JSON.stringify(init.body) : undefined;
 
-    let lastError: NotionError | undefined;
-    for (let attempt = 0; attempt < NOTION_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
-      await this.waitForSlot();
+    return this.withRetry<T>({ path }, true, async () => {
       const { statusCode, headers: resHeaders, body: responseBody } = await request(url, {
         method,
         headers,
-        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        body,
         signal: AbortSignal.timeout(30_000),
         dispatcher: notionDispatcher,
       });
@@ -213,35 +287,25 @@ export class NotionClient {
         throw new NotionError('Notion resource not found', 404);
       }
       if (statusCode >= 400) {
-        lastError = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
-        const retryable = isRetryableStatus(statusCode, method);
-        const isLast = attempt === NOTION_RATE_LIMIT_MAX_ATTEMPTS - 1;
-        if (!retryable || isLast) {
+        const error = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+        if (!isRetryableStatus(statusCode, method, path)) {
           logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API error');
-          throw lastError;
+          throw error;
         }
-        const delayMs = retryDelayMs(attempt, headerValue(resHeaders, 'retry-after'));
-        this.nextSlotAt = Date.now() + delayMs;
-        logger.warn(
-          { statusCode, path, attempt: attempt + 1, delayMs: Math.round(delayMs) },
-          'Notion API transient error, retrying',
-        );
-        await sleep(delayMs);
-        continue;
+        return { error, retryAfter: headerValue(resHeaders, 'retry-after'), body: safeExcerpt };
       }
 
       if (text.trim() === '') {
-        return undefined as T;
+        return { value: undefined as T };
       }
 
       try {
-        return JSON.parse(text) as T;
+        return { value: JSON.parse(text) as T };
       } catch {
         logger.warn({ statusCode, path, body: safeExcerpt }, 'Notion API returned non-JSON');
         throw new NotionError(`Notion API returned non-JSON response (HTTP ${statusCode})`, statusCode);
       }
-    }
-    throw lastError ?? new NotionError('Notion API error', 0);
+    });
   }
 
   async probe(): Promise<NotionBotUser> {
@@ -330,50 +394,41 @@ export class NotionClient {
 
   /**
    * Download attachment bytes. Auth is sent only when the URL is on this
-   * client's Notion API origin (fake server files, Notion-hosted media).
-   * External file URLs are fetched without the secret.
+   * client's Notion API origin (fake server files, Notion-hosted media);
+   * external file URLs are fetched without the secret and, because
+   * Notion-hosted media lives on S3 rather than the API, without a pacing
+   * slot — they are not part of the integration's 3 req/s budget.
    */
   async fetchMedia(url: string): Promise<{ bytes: Buffer; contentType: string }> {
-    return this.enqueue(() => this.fetchMediaWithRetry(url));
-  }
-
-  private async fetchMediaWithRetry(url: string): Promise<{ bytes: Buffer; contentType: string }> {
     validateUrl(url);
+    const onNotionApi = url.startsWith(`${this.baseUrl}/`) || url === this.baseUrl;
     const headers: Record<string, string> = { Accept: '*/*' };
-    if (url.startsWith(`${this.baseUrl}/`) || url === this.baseUrl) {
+    if (onNotionApi) {
       headers.Authorization = `Bearer ${this.token}`;
       headers['Notion-Version'] = NOTION_VERSION;
     }
 
-    let lastError: NotionError | undefined;
-    for (let attempt = 0; attempt < NOTION_RATE_LIMIT_MAX_ATTEMPTS; attempt++) {
-      await this.waitForSlot();
-      const { statusCode, headers: resHeaders, body } = await request(url, {
-        method: 'GET',
-        headers,
-        signal: AbortSignal.timeout(30_000),
-        dispatcher: notionDispatcher,
-      });
-      const bytes = Buffer.from(await body.arrayBuffer());
-      if (statusCode < 400) {
-        const rawType = resHeaders['content-type'];
-        const contentType = typeof rawType === 'string' ? rawType.split(';')[0]!.trim() : 'application/octet-stream';
-        return { bytes, contentType };
-      }
-      lastError = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
-      const retryable = isRetryableStatus(statusCode, 'GET');
-      const isLast = attempt === NOTION_RATE_LIMIT_MAX_ATTEMPTS - 1;
-      if (!retryable || isLast) {
-        throw lastError;
-      }
-      const delayMs = retryDelayMs(attempt, headerValue(resHeaders, 'retry-after'));
-      this.nextSlotAt = Date.now() + delayMs;
-      logger.warn(
-        { statusCode, url: redact(url, this.token), attempt: attempt + 1, delayMs: Math.round(delayMs) },
-        'Notion API transient error, retrying',
-      );
-      await sleep(delayMs);
-    }
-    throw lastError ?? new NotionError('Notion API error', 0);
+    return this.withRetry<{ bytes: Buffer; contentType: string }>(
+      { url: redact(url, this.token) },
+      onNotionApi,
+      async () => {
+        const { statusCode, headers: resHeaders, body } = await request(url, {
+          method: 'GET',
+          headers,
+          signal: AbortSignal.timeout(30_000),
+          dispatcher: notionDispatcher,
+        });
+        const bytes = Buffer.from(await body.arrayBuffer());
+        if (statusCode < 400) {
+          const rawType = resHeaders['content-type'];
+          const contentType =
+            typeof rawType === 'string' ? rawType.split(';')[0]!.trim() : 'application/octet-stream';
+          return { value: { bytes, contentType } };
+        }
+        const error = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
+        if (!isRetryableStatus(statusCode, 'GET', url)) throw error;
+        return { error, retryAfter: headerValue(resHeaders, 'retry-after') };
+      },
+    );
   }
 }

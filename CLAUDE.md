@@ -766,6 +766,26 @@ in batches of 50. Selecting a parent atomically selects every selectable descend
 oversized groups are refused rather than partially selected, and a refreshed tree prunes
 selection IDs that are no longer present before enforcing the 200-page cap.
 
+**That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**
+`waitForSlot` reserves the next *start* 334 ms out, and it reserves
+synchronously — before any `await` — so concurrent callers each take their own
+slot and the tree's three `pLimit(5)` waves plus the importer's row-body checks
+still overlap. Never serialize on completion instead: that caps the client at
+1/(interval + latency) rather than 1/interval (≈1.6 req/s at Notion's typical
+latency, half the budget) and silently makes every caller-side `pLimit` inert —
+measured `peakConcurrentLookups` of 1, which is why both tree concurrency tests
+now assert a floor as well as the cap. 429/529 retry on any method; 500/502/503/504
+only on GET/DELETE and on the two POSTs that are reads (`/v1/search`,
+`/v1/databases/:id/query` — a transient 5xx mid-pagination is exactly what the
+ladder is for, and this client issues no writes, so a future write POST must
+stay off that list). Six attempts. `Retry-After` wins over the exponential
+ladder but is floored at one pacing slot (a proxy answering `Retry-After: 0`
+must not turn the ladder into a hot loop) and capped at 60 s, because that sleep
+sits outside `AbortSignal.timeout` and would otherwise park an import past every
+request timeout. Notion-hosted attachment bytes live on S3, which is not part of
+the integration's budget: `fetchMedia` retries them but takes no slot for a URL
+off the API origin.
+
 **Markdown import** on the New Page form is a *conversion*, not a create (#1133).
 `POST /api/pages/import/preview` parses YAML front-matter, runs `markdownToHtml` and
 sanitizes — and persists nothing. The form loads the result into the editor the way
