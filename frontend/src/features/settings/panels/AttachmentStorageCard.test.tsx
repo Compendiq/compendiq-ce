@@ -1731,6 +1731,18 @@ describe('AttachmentStorageCard (#1349)', () => {
       const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
       expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
       expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
+      // Review r1: both recipes paint a pressed background on `:active`, which
+      // the `:disabled` rule this conversion removed made unreachable. A
+      // keyboard hold matches `:active` with NO `:hover`, so the hover pin
+      // beside it cannot cover the keyboard operator this issue exists for, and
+      // a press the handler refuses would paint as accepted. Ghost holds
+      // transparent; the filled variant holds its resting fill, because its
+      // press is a darkening of that fill.
+      expect(btn.className, testId).toContain(
+        testId === 'attachment-sweep-delete'
+          ? 'aria-disabled:active:bg-destructive'
+          : 'aria-disabled:active:bg-transparent',
+      );
     }
   });
 });

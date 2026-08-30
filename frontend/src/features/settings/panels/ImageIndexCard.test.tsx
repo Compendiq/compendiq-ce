@@ -334,6 +334,13 @@ describe('ImageIndexCard (#1115 P2)', () => {
       const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
       expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
       expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
+      // Review r1: `nm-button-ghost` paints a pressed background on `:active`,
+      // and the `:disabled` rule this conversion removed made that state
+      // unreachable. Keyboard `:active` matches with no `:hover`, so the hover
+      // pin cannot cover it and a refused press would otherwise paint as
+      // accepted. Only the browser can watch the flash; the pin is asserted
+      // here so it cannot be dropped silently.
+      expect(btn.className, testId).toContain('aria-disabled:active:bg-transparent');
     }
   });
 

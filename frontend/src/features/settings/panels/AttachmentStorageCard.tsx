@@ -855,7 +855,16 @@ export function AttachmentStorageCard() {
           // 2.47 / 2.35 at 70 — under the floor for the whole multi-minute run
           // (review r1). `RetrievalTab` asserts 70 as a FLOOR precisely so an
           // upward retune like this one is free.
-          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
+          //
+          // `active:` as well as `hover:` (review r1): the recipe paints a
+          // pressed background on `:active`, and the `:disabled` rule this
+          // conversion removed made that state unreachable (a disabled control
+          // cannot be focused or activated). Without the pin, holding Space on
+          // the focused button — the exact operator #1532 exists for, since
+          // keyboard `:active` matches with no `:hover` to let the hover pin
+          // win — flashes the pressed paint for a press the handler above
+          // silently refused.
+          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // The refusal `aria-disabled` cannot perform — it blocks no
@@ -882,7 +891,11 @@ export function AttachmentStorageCard() {
           // i.e. under the 4.5:1 floor for exactly the run this state exists to
           // make legible (review r1; the 70 measurement on record was the ghost
           // recipe's foreground-on-card, which passes comfortably).
-          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-destructive"
+          //
+          // Its `:active` darkens further, so it is pinned the same way as the
+          // ghost sibling and for the same reason (review r1): a keyboard press
+          // the handler refuses must not paint as accepted.
+          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-destructive aria-disabled:active:bg-destructive"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // Refusing the POST alone would not be enough: this button opens

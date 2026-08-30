@@ -95,6 +95,15 @@ function TriggerHarness({ onConfirmRehomes = false }: { onConfirmRehomes?: boole
  *   deleted row's own kebab, `ConversationRowMenu`). Re-resolving by identity
  *   must NOT degrade into grabbing a neighbouring control: this callsite
  *   deliberately wants no restore once the delete succeeds.
+ * - `mode="replaced-late"` — the same re-mount, committed in a LATER task, as
+ *   an `onSuccess` that only bumps its state after an `await` would. The single
+ *   shot then reads the PRE-commit DOM, focuses the node that is about to be
+ *   detached, and the commit drops the keyboard to `<body>`. No callsite has
+ *   this shape today (every ConfirmDialog `onConfirm` commits synchronously),
+ *   and closing it would need the wait the architect ruling removed, so the
+ *   cell below pins `<body>` as the DOCUMENTED terminal state — the same place
+ *   the unfixed dialog left it — rather than claiming a guarantee the
+ *   component does not make (review r1).
  *
  * `finish` settles the in-flight mutation the way the POST's own response does,
  * from outside the dialog. jsdom does not focus on click, so pressing it moves
@@ -104,7 +113,7 @@ function TriggerHarness({ onConfirmRehomes = false }: { onConfirmRehomes?: boole
 function ReplacedTriggerHarness({
   mode,
 }: {
-  mode: 'disabled' | 'aria-busy' | 'replaced' | 'removed';
+  mode: 'disabled' | 'aria-busy' | 'replaced' | 'removed' | 'replaced-late';
 }) {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
@@ -141,12 +150,66 @@ function ReplacedTriggerHarness({
         onConfirm={() => {
           setOpen(false);
           if (mode === 'disabled' || mode === 'aria-busy') setRunning(true);
+          else if (mode === 'replaced-late')
+            setTimeout(() => setGeneration((generationValue) => generationValue + 1), 0);
           else setGeneration((generationValue) => generationValue + 1);
         }}
         onCancel={() => setOpen(false)}
       />
     </>
   );
+}
+
+/**
+ * The two identity paths every harness above hides, because all of them label
+ * their trigger `data-testid="trigger"` — which made both branches provably
+ * zero-red (review r1: deleting either left the suite 21/21 green).
+ *
+ * - `kind="anonymous"` — no `data-testid` and no `id`, which is what MOST real
+ *   ConfirmDialog triggers are: `SpacesTab`'s Remove-space `IconButton` and its
+ *   Save Selection button, `PageViewPage`'s discard and trash buttons,
+ *   `ArticleRightPane`, `DrawioEditor`. `identitySelector` returns `null` for
+ *   all of them, so `resolveInvoker`'s captured-node path is the ENTIRE restore.
+ * - `kind="id"` — identified by an author-written `id` (not Radix `useId()`
+ *   output, which a re-mount regenerates) and re-mounted by the confirmed
+ *   commit, so the captured node is detached and only the `id` half of
+ *   `identitySelector` can find the control again.
+ */
+function IdentityHarness({ kind }: { kind: 'anonymous' | 'id' }) {
+  const [open, setOpen] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  return (
+    <>
+      <button
+        key={generation}
+        type="button"
+        id={kind === 'id' ? 'remove-space-confluence' : undefined}
+        onClick={() => setOpen(true)}
+      >
+        Remove space
+      </button>
+      <ConfirmDialog
+        open={open}
+        title="Remove this space?"
+        description="Its synced pages are deleted."
+        confirmLabel="Remove"
+        onConfirm={() => {
+          setOpen(false);
+          setGeneration((generationValue) => generationValue + 1);
+        }}
+        onCancel={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
+/** Focus and press a trigger identified only by its accessible name. */
+function openFromNamedTrigger(): HTMLElement {
+  const trigger = screen.getByRole('button', { name: 'Remove space' });
+  trigger.focus();
+  fireEvent.click(trigger);
+  expect(screen.getByTestId('confirm-dialog').contains(document.activeElement)).toBe(true);
+  return trigger;
 }
 
 /**
@@ -570,6 +633,107 @@ describe('ConfirmDialog', () => {
     // re-resolves by, and the dialog itself is gone.
     expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     expect(screen.getByTestId('trigger')).not.toBe(trigger);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  /**
+   * The path MOST real callsites take, and the one every other cell here hid
+   * behind `data-testid="trigger"`: a trigger with no `data-testid` and no
+   * `id` (`SpacesTab`'s Remove space and Save Selection, `PageViewPage`'s
+   * discard and trash, `ArticleRightPane`, `DrawioEditor`). `identitySelector`
+   * returns `null` for them, so the captured NODE is the whole restore —
+   * deleting `resolveInvoker`'s node path reds only this cell (review r1).
+   */
+  it('returns focus to a trigger that carries no data-testid and no id', async () => {
+    render(<IdentityHarness kind="anonymous" />);
+    const trigger = openFromNamedTrigger();
+
+    // Premise: there really is no identity to re-resolve by.
+    expect(trigger).not.toHaveAttribute('data-testid');
+    expect(trigger.id).toBe('');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await flushCloseAutoFocus();
+
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  /**
+   * The second identity branch, which was equally zero-red before this cell:
+   * an author-written `id` (not Radix `useId()` output, which a re-mount
+   * regenerates) on a trigger the confirmed commit re-mounts. The captured node
+   * is detached, `data-testid` is absent, and the `id` selector is the only
+   * thing left that can find the control.
+   */
+  it('returns focus by id to a re-mounted trigger that has no data-testid', async () => {
+    render(<IdentityHarness kind="id" />);
+    const originalNode = openFromNamedTrigger();
+    expect(originalNode).not.toHaveAttribute('data-testid');
+    expect(originalNode.id).toBe('remove-space-confluence');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await flushCloseAutoFocus();
+
+    const remounted = screen.getByRole('button', { name: 'Remove space' });
+    expect(remounted).not.toBe(originalNode);
+    expect(document.contains(originalNode)).toBe(false);
+    expect(document.activeElement).toBe(remounted);
+  });
+
+  /**
+   * The precondition the single shot depends on, stated as a test instead of as
+   * a claim in the header (review r1). `onCloseAutoFocus` reads the DOM of every
+   * commit the confirm handler made SYNCHRONOUSLY — which is what all five
+   * callsites do — but a handler that commits in a LATER task (an `onSuccess`
+   * that bumps its state after an `await`) commits after the shot has already
+   * been taken. The shot then lands on the node that is about to be detached
+   * and the commit drops the keyboard to `<body>`.
+   *
+   * Recorded with a capture-phase `focusin` log rather than with
+   * `document.activeElement`, because by the time an `act` flush returns the
+   * deferred commit has already detached the node the shot hit and
+   * `activeElement` has fallen back to `<body>`. The log is what makes this
+   * cell load-bearing: deleting the restore empties it (mutation M1). The
+   * terminal `<body>` is a documented state, not a guard — it is where the
+   * unfixed dialog left focus, and reaching the re-mounted node would need the
+   * wait the ruling removed. A retry chain does not red this cell either,
+   * because its first attempt SUCCEEDS on the doomed node and never re-arms
+   * (executed, review r1), which is precisely why this shape is an open
+   * question and not a bug to patch in the dialog.
+   */
+  it('takes its one shot before a confirm handler that commits in a later task', async () => {
+    render(<ReplacedTriggerHarness mode="replaced-late" />);
+    const originalNode = openFromTrigger();
+
+    const focusLog: Element[] = [];
+    const record = (event: Event) => {
+      if (event.target instanceof Element) focusLog.push(event.target);
+    };
+    document.addEventListener('focusin', record, true);
+    try {
+      fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+      await flushCloseAutoFocus();
+      // Let the deferred commit land, and then some: nothing may act afterwards.
+      await act(async () => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 50);
+        await promise;
+      });
+    } finally {
+      document.removeEventListener('focusin', record, true);
+    }
+
+    const remounted = screen.getByTestId('trigger');
+    // Premise: the commit really did re-mount the control, and the control that
+    // replaced it really can take focus — so the terminal state below is the
+    // ordering, not an unfocusable trigger.
+    expect(remounted).not.toBe(originalNode);
+    expect(remounted).not.toHaveAttribute('disabled');
+
+    // The shot was taken, on the PRE-commit DOM: it hit the node the commit was
+    // about to throw away, and never saw the node that replaced it.
+    expect(focusLog).toContain(originalNode);
+    expect(focusLog).not.toContain(remounted);
     expect(document.activeElement).toBe(document.body);
   });
 });

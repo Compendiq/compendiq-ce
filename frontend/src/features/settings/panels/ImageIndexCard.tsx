@@ -362,7 +362,13 @@ export function ImageIndexCard() {
           // 70 as a FLOOR precisely so an upward retune like this is free, and
           // `AttachmentStorageCard` carries the same 90 so the two cards' busy
           // states stay identical (#1532's per-group rule).
-          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
+          //
+          // `active:` as well as `hover:` (review r1): `nm-button-ghost` paints
+          // a pressed background on `:active`, which the removed `:disabled`
+          // rule made unreachable. A keyboard hold on the focused button
+          // matches `:active` with no `:hover`, so without this pin the press
+          // the handler below refuses would still paint as accepted.
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // The refusal `aria-disabled` cannot perform — it blocks no
@@ -381,7 +387,7 @@ export function ImageIndexCard() {
         <button
           type="button"
           data-testid="image-index-rescan"
-          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             if (actionsDisabled) return;
