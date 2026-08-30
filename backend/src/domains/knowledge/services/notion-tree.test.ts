@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
-import { fetchNotionWorkspaceTree } from './notion-tree.js';
+import {
+  NOTION_INLINE_DATABASE_REASON,
+  NOTION_ROW_SAMPLE_SIZE,
+  fetchNotionWorkspaceTree,
+} from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
 
@@ -12,6 +16,13 @@ type TreeNode = {
   type: string;
   selectable: boolean;
   skipReason?: string;
+  reasonCode?: string;
+  isDatabaseRow?: boolean;
+  recommendedMode?: 'table' | 'pages';
+  rowContent?: 'none' | 'some' | 'unknown';
+  isWiki?: boolean;
+  rowCount?: number;
+  columns?: string[];
   children: TreeNode[];
 };
 
@@ -103,7 +114,28 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     return fetchNotionWorkspaceTree(client);
   }
 
-  it('builds a mixed tree: pages selectable, databases and unsupported not', async () => {
+  /**
+   * Every `GET /v1/blocks/:id/children` the tree issued, sorted by block id
+   * because samples are issued concurrently. Row sampling is the only
+   * legitimate caller, so the shape of this log is the invariant: page bodies
+   * are never walked (`page_size=100`), rows are only peeked at
+   * (`page_size=2`).
+   */
+  function childRequests(): Array<{ blockId: string; pageSize: number | null }> {
+    return server!.requests
+      .filter((request) => request.url.includes('/children'))
+      .map((request) => {
+        const { pathname, searchParams } = new URL(request.url, 'http://127.0.0.1');
+        const size = searchParams.get('page_size');
+        return {
+          blockId: /^\/v1\/blocks\/([^/]+)\/children$/.exec(pathname)?.[1] ?? pathname,
+          pageSize: size === null ? null : Number.parseInt(size, 10),
+        };
+      })
+      .sort((a, b) => a.blockId.localeCompare(b.blockId));
+  }
+
+  it('builds a mixed tree: pages and standalone databases selectable, inline databases and unsupported blocks not', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
       searchResults: mixedSearchResults(),
@@ -166,14 +198,20 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
 
     expect(crm).toMatchObject({
       type: 'database',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
+      selectable: true,
       title: 'CRM',
+      isWiki: false,
+      rowCount: 1,
+      rowContent: 'none',
+      recommendedMode: 'table',
+      columns: [],
     });
+    expect(crm?.skipReason).toBeUndefined();
     expect(linked).toMatchObject({
-      type: 'database',
+      type: 'unsupported',
       selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
+      reasonCode: 'inline_database',
+      skipReason: NOTION_INLINE_DATABASE_REASON,
       title: 'CRM (linked)',
     });
     expect(canvas).toMatchObject({
@@ -358,15 +396,17 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(canonical).toMatchObject({
       id: 'crm',
       type: 'database',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
+      selectable: true,
+      rowCount: 1,
     });
+    expect(canonical?.skipReason).toBeUndefined();
     expect(canonical?.children.map((child) => child.id)).toContain('row-listed');
-    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
+    // Classification peeks at the row; nothing walks a page body.
+    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: 2 }]);
   });
 
 
-  it('does not walk block children of Search-listed database row-pages', async () => {
+  it('samples a Search-listed database row without turning its blocks into nodes', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
       searchResults: [
@@ -402,7 +442,300 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
 
     expect(findById(nodes as TreeNode[], 'should-not-fetch')).toBeUndefined();
-    expect(server!.requests.filter((request) => request.url.includes('/children'))).toEqual([]);
+    expect(findById(nodes as TreeNode[], 'crm')).toMatchObject({
+      rowContent: 'some',
+      recommendedMode: 'pages',
+    });
+    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: 2 }]);
+  });
+
+  it('spends no row sample on a wiki database — its rows are articles by definition', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'linux-wiki',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Linux'),
+          properties: {
+            Name: { id: 'title', type: 'title' },
+            Verification: { id: 'ver%3A', type: 'verification' },
+          },
+        },
+        {
+          object: 'page',
+          id: 'wiki-row',
+          parent: { type: 'database_id', database_id: 'linux-wiki' },
+          properties: titleProp('Ansible Playbooks'),
+        },
+      ],
+      // The row has real content, so a sample would have answered 'some'.
+      blockChildren: {
+        'wiki-row': [
+          {
+            object: 'block',
+            id: 'wiki-row-heading',
+            type: 'heading_2',
+            heading_2: { rich_text: richTitle('Install') },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'linux-wiki')).toMatchObject({
+      type: 'database',
+      selectable: true,
+      isWiki: true,
+      rowCount: 1,
+      rowContent: 'unknown',
+      recommendedMode: 'pages',
+    });
+    expect(childRequests()).toEqual([]);
+  });
+
+  it('recommends a table when every sampled row is empty', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'contacts',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Contacts'),
+        },
+        ...['acme', 'globex'].map((id) => ({
+          object: 'page',
+          id,
+          parent: { type: 'database_id', database_id: 'contacts' },
+          properties: titleProp(id),
+        })),
+      ],
+    });
+
+    expect(findById(nodes as TreeNode[], 'contacts')).toMatchObject({
+      isWiki: false,
+      rowCount: 2,
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+    expect(childRequests()).toEqual([
+      { blockId: 'acme', pageSize: 2 },
+      { blockId: 'globex', pageSize: 2 },
+    ]);
+  });
+
+  it('recommends pages when a single sampled row carries body content', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'projects',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Projects'),
+        },
+        ...['apollo', 'gemini', 'mercury'].map((id) => ({
+          object: 'page',
+          id,
+          parent: { type: 'database_id', database_id: 'projects' },
+          properties: titleProp(id),
+        })),
+      ],
+      blockChildren: {
+        gemini: [
+          {
+            object: 'block',
+            id: 'gemini-heading',
+            type: 'heading_2',
+            heading_2: { rich_text: richTitle('Retrospective') },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'projects')).toMatchObject({
+      rowCount: 3,
+      rowContent: 'some',
+      recommendedMode: 'pages',
+    });
+    expect(childRequests()).toEqual([
+      { blockId: 'apollo', pageSize: 2 },
+      { blockId: 'gemini', pageSize: 2 },
+      { blockId: 'mercury', pageSize: 2 },
+    ]);
+  });
+
+  it('reads a lone blank paragraph as an empty row, and a filled one as content', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'blank-db',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Untouched rows'),
+        },
+        {
+          object: 'page',
+          id: 'blank-row',
+          parent: { type: 'database_id', database_id: 'blank-db' },
+          properties: titleProp('Never opened'),
+        },
+        {
+          object: 'database',
+          id: 'filled-db',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Written rows'),
+        },
+        {
+          object: 'page',
+          id: 'filled-row',
+          parent: { type: 'database_id', database_id: 'filled-db' },
+          properties: titleProp('Has notes'),
+        },
+      ],
+      blockChildren: {
+        // Notion leaves an empty paragraph behind on a row nobody wrote in.
+        'blank-row': [
+          {
+            object: 'block',
+            id: 'blank-row-para',
+            type: 'paragraph',
+            paragraph: { rich_text: [] },
+          },
+        ],
+        'filled-row': [
+          {
+            object: 'block',
+            id: 'filled-row-para',
+            type: 'paragraph',
+            paragraph: { rich_text: richTitle('Signed on Tuesday.') },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'blank-db')).toMatchObject({
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+    expect(findById(nodes as TreeNode[], 'filled-db')).toMatchObject({
+      rowContent: 'some',
+      recommendedMode: 'pages',
+    });
+    expect(childRequests()).toEqual([
+      { blockId: 'blank-row', pageSize: 2 },
+      { blockId: 'filled-row', pageSize: 2 },
+    ]);
+  });
+
+  it('still resolves the tree when every row sample fails', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'contacts',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Contacts'),
+        },
+        ...['acme', 'globex'].map((id) => ({
+          object: 'page',
+          id,
+          parent: { type: 'database_id', database_id: 'contacts' },
+          properties: titleProp(id),
+        })),
+      ],
+      blockChildrenErrors: { acme: 500, globex: 500 },
+    });
+
+    expect(findById(nodes as TreeNode[], 'contacts')).toMatchObject({
+      selectable: true,
+      rowCount: 2,
+      rowContent: 'unknown',
+      recommendedMode: 'pages',
+    });
+    expect(childRequests()).toEqual([
+      { blockId: 'acme', pageSize: 2 },
+      { blockId: 'globex', pageSize: 2 },
+    ]);
+  });
+
+  it('samples at most NOTION_ROW_SAMPLE_SIZE rows of a large database', async () => {
+    const rowIds = Array.from({ length: 12 }, (_, i) => `row-${i}`);
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'inventory',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Inventory'),
+        },
+        ...rowIds.map((id) => ({
+          object: 'page',
+          id,
+          parent: { type: 'database_id', database_id: 'inventory' },
+          properties: titleProp(id),
+        })),
+      ],
+    });
+
+    expect(findById(nodes as TreeNode[], 'inventory')).toMatchObject({
+      rowCount: 12,
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+    const sampled = childRequests();
+    expect(sampled.length).toBeLessThanOrEqual(NOTION_ROW_SAMPLE_SIZE);
+    expect(sampled.length).toBeGreaterThan(0);
+    expect(sampled.filter((request) => request.pageSize === 2 && rowIds.includes(request.blockId))).toEqual(sampled);
+  });
+
+  it('reports columns in schema order and counts only direct row pages', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'catalog',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Catalog'),
+          properties: {
+            Name: { id: 'title', type: 'title' },
+            Status: { id: 'st%40', type: 'status' },
+            Owner: { id: 'ow%40', type: 'people' },
+          },
+        },
+        {
+          object: 'page',
+          id: 'catalog-row',
+          parent: { type: 'database_id', database_id: 'catalog' },
+          properties: titleProp('Acme Corp'),
+        },
+        {
+          // Notion parents this to the database object itself — not a row.
+          object: 'page',
+          id: 'catalog-sidebar',
+          parent: { type: 'page_id', page_id: 'catalog' },
+          properties: titleProp('Catalog notes'),
+        },
+        {
+          object: 'page',
+          id: 'row-subpage',
+          parent: { type: 'page_id', page_id: 'catalog-row' },
+          properties: titleProp('Meeting notes'),
+        },
+      ],
+    });
+
+    const catalog = findById(nodes as TreeNode[], 'catalog');
+    expect(catalog?.columns).toEqual(['Name', 'Status', 'Owner']);
+    expect(catalog?.rowCount).toBe(1);
+    expect(catalog?.children.map((child) => child.id)).toEqual(['catalog-row', 'catalog-sidebar']);
+    expect(findById(nodes as TreeNode[], 'catalog-row')?.children.map((child) => child.id)).toEqual(['row-subpage']);
+    expect(childRequests()).toEqual([{ blockId: 'catalog-row', pageSize: 2 }]);
   });
 
   it('does not fetch children of nested list items — Search already listed the pages', async () => {
