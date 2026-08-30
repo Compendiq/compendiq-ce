@@ -633,10 +633,11 @@ describe('AttachmentStorageCard (#1349)', () => {
    *    lookahead for a clause boundary, `(?=\s*[;.,—]|\s*$)`, which only
    *    refused the UNPUNCTUATED form of that probe: punctuate the same
    *    re-limit and it passed again. Measured at `48856cd1`, all inside the
-   *    260 bound, all 65 cells green: "…count as unreferenced, once the page
-   *    is gone;" (259), "…are deleted — but only on deleted pages;" (256),
-   *    "…count as unreferenced, but are kept;" (250 — an outright inversion),
-   *    and "Once a page is gone, cached Confluence images…" (257). The guard
+   *    260 bound, all 65 cells green (lengths as this cell counts them, i.e.
+   *    `String.length`): "…count as unreferenced, once the page is gone;"
+   *    (257), "…are deleted — but only on deleted pages;" (252), "…count as
+   *    unreferenced, but are kept;" (248 — an outright inversion), and "Once
+   *    a page is gone, cached Confluence images…" (255). The guard
    *    now requires the cost clause to OPEN its sentence and its recovery
    *    clause to follow it IMMEDIATELY, so nothing can be spliced in on
    *    either side to narrow it; all four red. That reds on a reshaped claim
