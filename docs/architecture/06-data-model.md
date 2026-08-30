@@ -660,10 +660,22 @@ together, which matters most for #1114's query-side prefix.
   verdict; a keep-intersecting pageless directory is skipped whole and
   counted as keep-protected), and a
   file only against a GLOBAL per-store keep-set fed from every body text in
-  the system (pages `body_html`/`draft_body_html`/`body_storage` live and
+  the system (pages `body_html`/`draft_body_html`/`body_storage`/
+  `draft_body_storage` live and
   trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`,
   and `llm_conversations.messages` — #1361 persists a matched image's
   `attachmentUrl` per assistant turn),
+  with BOTH page storage-format columns additionally run through
+  `getExpectedAttachmentFilenames` (#1525 — storage format names Confluence
+  attachments by `ri:filename`/`diagramName`, which no `/api/attachments/…`
+  URL regex can match, so the enumerator is the only pass that can see those.
+  Storage format is not URL-free, though: `htmlToConfluence` rewrites only
+  `img[src^="/api/attachments/"]`, so an `/api/local-attachments/…` img
+  survives conversion verbatim and the URL pass over the same column DOES
+  find it — which is why the draft column gets BOTH halves, not just the
+  enumerator. Forward protection either way, since no writer populates
+  `draft_body_storage` today and a draft's diagram already reaches
+  `draft_body_html` as an `/api/attachments/…` URL),
   because attachment URLs are copied verbatim between bodies. A 24h mtime
   grace window covers sync/paste races (both write files before the row that
   references them), only image-like files are per-file candidates in the

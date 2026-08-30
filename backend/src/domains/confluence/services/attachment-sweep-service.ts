@@ -36,15 +36,24 @@
  *     between bodies (templates hand their `body_html` to every page created
  *     from them), and one directory key can belong to two page rows, so a
  *     filename referenced ANYWHERE is kept EVERYWHERE. The keep-set is fed
- *     from every `pages.body_html` / `draft_body_html` / `body_storage`
- *     (live AND trashed), every `page_versions.body_html`, every
+ *     from every `pages.body_html` / `draft_body_html` / `body_storage` /
+ *     `draft_body_storage` (live AND trashed), every
+ *     `page_versions.body_html`, every
  *     `pending_sync_versions.body_html`/`body_storage`, every
  *     `templates.body_html`, every `comments.body_html` and every
  *     `llm_conversations.messages` (#1361 persists an image source's
  *     `attachmentUrl` per assistant turn) — collecting BOTH
  *     `img[src]` and `a[href]`-style references via a raw-string regex
  *     (strictly more inclusive than an attribute parse), plus
- *     `getExpectedAttachmentFilenames` over storage format. In the Confluence
+ *     `getExpectedAttachmentFilenames` over BOTH storage-format columns of a
+ *     page (#1525: storage format names Confluence attachments by
+ *     `ri:filename` / `diagramName`, which no `/api/attachments/…` URL regex
+ *     can match, so the enumerator is the only pass that can see THOSE — it
+ *     is not that storage format is URL-free, see `buildAttachmentKeepSets`.
+ *     A draft's PNG is kept today by the `/api/attachments/…` URL in its
+ *     `draft_body_html`, and giving the draft storage column the same
+ *     two-line treatment is defence-in-depth for whoever starts persisting
+ *     that column). In the Confluence
  *     tree only IMAGE-LIKE files are per-file candidates
  *     (`SUPPORTED_IMAGE_EXTENSIONS` + `external-<hash>` keys): the cache also
  *     holds lazily fetched non-image attachments no enumerator covers — those
@@ -417,6 +426,18 @@ const UUID_CURSOR_START = '00000000-0000-0000-0000-000000000000';
  * Ten rows keeps a tick in the tens of milliseconds and costs one
  * `setImmediate` per ten rows, which is nothing beside a JSDOM parse. It is
  * applied by the shared helper, so the four regex-only sources get it free.
+ *
+ * That 6.95 ms/page is ONE storage column per row. Since #1525 a page also
+ * runs its `draft_body_storage` through the enumerator, so a row carrying an
+ * unpublished draft in storage format costs TWO parses and the ten-row tick
+ * roughly doubles — re-measured in this worktree on the same body shape
+ * (26,300 bytes): 7.44 ms/row one column → 74 ms/tick, 15.92 ms/row two
+ * columns → **159 ms/tick**, which is no longer "tens of milliseconds".
+ * LATENT, not live: no code path writes content into `draft_body_storage`
+ * today (`pages-crud.ts` only SELECTs it, COALESCEs it on publish and NULLs
+ * it), so every row currently takes the false branch and the tick is
+ * unchanged. Whoever lands the writer that populates the column re-measures
+ * this and drops the constant if the tick no longer fits.
  */
 export const KEEP_SET_YIELD_EVERY = 10;
 
@@ -459,13 +480,56 @@ export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void)
  * The global keep-set, one `Set<filename>` per store, fed from every body
  * text in the system — see the module header for the full source list.
  *
- * `body_storage` additionally runs through `getExpectedAttachmentFilenames`
- * (a pure function, recomputed at sweep time — the cached
- * `expected_image_files` column is deliberately not consulted, which removes
- * its NULL-means-uncomputed question), because storage format references
- * attachments by `ri:filename`, not by URL. A parse failure THROWS: an
- * unparseable body means unknown references, and the safe verdict for
- * "unknown" is to fail the run, not to shrink the keep-set.
+ * Both storage-format columns of a page — the published `body_storage` and
+ * the UNPUBLISHED `draft_body_storage` (#1525) — additionally run through
+ * `getExpectedAttachmentFilenames` (a pure function, recomputed at sweep
+ * time — the cached `expected_image_files` column is deliberately not
+ * consulted, which removes its NULL-means-uncomputed question), because
+ * storage format names Confluence attachments by `ri:filename` /
+ * `diagramName`, which no `/api/attachments/…` URL regex can match — the
+ * enumerator is the only pass that can see THOSE.
+ *
+ * Storage format is NOT URL-free, which is why the draft column gets the SAME
+ * two-line treatment rather than the enumerator alone (review r1, probed):
+ * `htmlToConfluence` rewrites only `img[src^="/api/attachments/"]`
+ * (content-converter.ts), so an `/api/local-attachments/<pageId>/<file>` img
+ * — the local store's product spelling, written by `local-attachment-service`
+ * and rewritten onto that prefix by `page-relocate-service` — survives
+ * conversion VERBATIM into storage format, where `collectAttachmentUrlReferences`
+ * finds it and keeps it in the LOCAL store's set, which the confluence-only
+ * enumerator can never do. Pinned by the `draft-storage-url.png` /
+ * `draft-local-url.png` assertions in the integration test.
+ *
+ * What the treatment is NOT: the only protection for a
+ * draft-only draw.io diagram. Every persisting caller of `confluenceToHtml`
+ * passes a pageId (8 of 8 at this head), so the macro is rendered as
+ * `<img src="/api/attachments/<pageId>/<name>.png">` — the `#drawio:<name>`
+ * spelling exists only in the pageId-less fallback — and the editor's save
+ * drain writes that same URL back into `draft_body_html`, which the URL pass
+ * already reads. The draft enumerator is defence-in-depth for whoever starts
+ * persisting storage format into the draft column, and it is the direction
+ * the sweep must err in: too large a keep-set defers a delete, too small a
+ * one deletes bytes.
+ *
+ * The two passes fail DIFFERENTLY, and the earlier wording here ("neither
+ * pass can fail on body CONTENT: both walk JSDOM") was wrong on both halves
+ * (review r2, probed). The URL pass is a raw regex over the text
+ * (`ATTACHMENT_URL_RE` — no parser at all, see
+ * `collectAttachmentUrlReferences`) and cannot throw. The ENUMERATOR is the
+ * only JSDOM consumer — `getExpectedAttachmentFilenames` →
+ * `extractImageReferences` / `extractDrawioDiagramNames`, each
+ * `new JSDOM('<body>' + bodyStorage + '</body>', { contentType: 'text/html' })`
+ * — and HTML parsing is error-recovering, so ordinary bad content does not
+ * throw: truncated storage, raw garbage and a 500-deep nesting all return a
+ * (possibly empty) list, and that row's contribution simply shrinks back to
+ * what the URL pass found. What it does NOT survive is a pathological body:
+ * a ~20k-deep nesting throws `RangeError: Maximum call stack size exceeded`
+ * out of the parser (probed at this head, both storage columns). That throw
+ * is deliberately NOT caught here — it propagates through `executeSweep`,
+ * `runAttachmentSweep` records the run `failed` and NOTHING is deleted, the
+ * same fail-closed verdict as a DB or FS error: a body whose references could
+ * not be read is a body whose references are UNKNOWN, and a keep-set silently
+ * missing that row's names deletes bytes.
  */
 export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
   const keep: AttachmentKeepSets = { confluence: new Set(), local: new Set() };
@@ -475,11 +539,12 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
     body_html: string | null;
     draft_body_html: string | null;
     body_storage: string | null;
+    draft_body_storage: string | null;
     space_key: string | null;
   };
   await forEachBatch<PageRow>(
     (cursor) => ({
-      sql: `SELECT id AS __cursor, body_html, draft_body_html, body_storage, space_key
+      sql: `SELECT id AS __cursor, body_html, draft_body_html, body_storage, draft_body_storage, space_key
               FROM pages WHERE id > $1 ORDER BY id LIMIT ${KEEP_SET_BATCH}`,
       params: [cursor ?? 0],
     }),
@@ -491,6 +556,12 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
         if (row.body_storage) {
           collectAttachmentUrlReferences(row.body_storage, keep);
           for (const name of getExpectedAttachmentFilenames(row.body_storage, row.space_key ?? undefined)) {
+            keep.confluence.add(name);
+          }
+        }
+        if (row.draft_body_storage) {
+          collectAttachmentUrlReferences(row.draft_body_storage, keep);
+          for (const name of getExpectedAttachmentFilenames(row.draft_body_storage, row.space_key ?? undefined)) {
             keep.confluence.add(name);
           }
         }

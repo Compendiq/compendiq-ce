@@ -5,11 +5,9 @@
  * is covered against real Postgres and a temp tree in
  * attachment-sweep-service.integration.test.ts.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
+  buildAttachmentKeepSets,
   collectAttachmentUrlReferences,
   isImageLikeCandidate,
   KEEP_SET_YIELD_EVERY,
@@ -17,7 +15,48 @@ import {
   type AttachmentKeepSets,
 } from './attachment-sweep-service.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
+/**
+ * The two keep-set guards at the bottom drive the REAL
+ * `buildAttachmentKeepSets` with the two boundaries it reads replaced: the
+ * pages `SELECT` hands out one synthetic batch and every other keep-set
+ * `SELECT` comes back empty, and `getExpectedAttachmentFilenames` records
+ * which body it was handed instead of parsing it (and, for the fail-closed
+ * guard, throws for one nominated body — see `throwFor`). Both mocks spread
+ * the real module, so nothing else in the graph is stubbed and no other test
+ * in this file changes meaning: the pure collectors below never reach either
+ * boundary.
+ */
+const keepSetProbe = vi.hoisted(() => ({
+  /** Rows the mocked pages `SELECT` returns, set by the test. */
+  pageRows: [] as Record<string, unknown>[],
+  /** Enumerator bodies and `tick` markers, in the order they happened. */
+  timeline: [] as string[],
+  /**
+   * Body the mocked enumerator THROWS on, standing in for the one content
+   * failure the real parser has: a pathological nesting depth blowing the
+   * JSDOM recursion (`RangeError`, probed in review r2). `null` = never throw.
+   */
+  throwFor: null as string | null,
+}));
+
+vi.mock('../../../core/db/postgres.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../core/db/postgres.js')>()),
+  query: async (sql: string) => ({
+    rows: sql.includes('FROM pages WHERE id >') ? keepSetProbe.pageRows : [],
+    rowCount: 0,
+  }),
+}));
+
+vi.mock('./attachment-handler.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./attachment-handler.js')>()),
+  getExpectedAttachmentFilenames: (body: string) => {
+    keepSetProbe.timeline.push(body);
+    if (keepSetProbe.throwFor !== null && body === keepSetProbe.throwFor) {
+      throw new RangeError('Maximum call stack size exceeded');
+    }
+    return [] as string[];
+  },
+}));
 
 function emptySets(): AttachmentKeepSets {
   return { confluence: new Set<string>(), local: new Set<string>() };
@@ -325,10 +364,148 @@ describe('keep-set event-loop yield', () => {
     expect(seen).toBe(rows.length);
   });
 
-  it('runs the JSDOM body_storage walk through forEachRowYielding', () => {
-    const src = readFileSync(join(here, 'attachment-sweep-service.ts'), 'utf8');
-    expect(src).toMatch(
-      /forEachRowYielding\(rows, \(row\) => \{[\s\S]*?getExpectedAttachmentFilenames\(row\.body_storage/,
-    );
+  /**
+   * Both JSDOM-parsed page columns — `body_storage` and, since #1525,
+   * `draft_body_storage` — must be enumerated for every row, and no
+   * uninterrupted event-loop tick may carry more than one yield window's
+   * worth of those parses. That is a scheduling property, not a source shape.
+   *
+   * Two earlier rounds asserted it as a regex over this service's source
+   * (`forEachRowYielding(rows, (row) => {` … `getExpectedAttachmentFilenames(
+   * row.<column>`, with a negative lookahead on `forEachBatch<`). Such a
+   * match does not prove lexical containment: moving the draft walk out of
+   * the yielding callback into a plain blocking loop over the whole 200-row
+   * batch, in the SAME per-batch callback, interposes no `forEachBatch<` and
+   * left every assertion green — a ~1.6 s uninterrupted tick that the guard
+   * claimed to make impossible (reproduced by three r2 reviewers and again
+   * here before this test replaced it).
+   *
+   * So drive the real function. `yieldToLoop` IS
+   * `timers/promises.setImmediate`, so a self-rescheduling `setImmediate`
+   * ticker interleaves with the walk's yields by ORDERING — never by wall
+   * clock, which is what fileParallelism made unusable for the integration
+   * file's timing gaps. A `tick` marker between two parses means the loop got
+   * a turn there; a stretch of parse markers with no `tick` is one
+   * uninterrupted tick, and the bound is the cost the `KEEP_SET_YIELD_EVERY`
+   * rationale is written against: `KEEP_SET_YIELD_EVERY` rows × the two
+   * storage columns of a page row. Every blocking shape measured here reds on
+   * it — the same-callback hoist and the own-`forEachBatch` hoist at 22 parses
+   * in one tick, a whole-batch blocking loop at 42 — while a second
+   * *yielding* pass over the same rows stays green, because that shape is not
+   * the regression.
+   */
+  it('never parses more than one yield window of page storage columns in a single event-loop tick (#1525)', async () => {
+    const rowCount = KEEP_SET_YIELD_EVERY * 2 + 1;
+    keepSetProbe.pageRows = Array.from({ length: rowCount }, (_, i) => ({
+      __cursor: i + 1,
+      body_html: null,
+      draft_body_html: null,
+      body_storage: `body:${i}`,
+      draft_body_storage: `draft:${i}`,
+      space_key: 'SPACE',
+    }));
+    keepSetProbe.timeline = [];
+
+    let ticking = true;
+    const tick = (): void => {
+      if (!ticking) return;
+      keepSetProbe.timeline.push('tick');
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+    try {
+      await buildAttachmentKeepSets();
+    } finally {
+      ticking = false;
+    }
+
+    const parsed = keepSetProbe.timeline.filter((marker) => marker !== 'tick');
+    const expected = Array.from({ length: rowCount }, (_, i) => [`body:${i}`, `draft:${i}`]).flat();
+    // Every storage column of every row reached the enumerator, exactly once.
+    expect([...parsed].sort()).toEqual([...expected].sort());
+    expect(parsed).toHaveLength(expected.length);
+
+    const STORAGE_COLUMNS_PER_PAGE_ROW = 2;
+    let worstParsesPerTick = 0;
+    let parsesThisTick = 0;
+    for (const marker of keepSetProbe.timeline) {
+      if (marker === 'tick') {
+        worstParsesPerTick = Math.max(worstParsesPerTick, parsesThisTick);
+        parsesThisTick = 0;
+        continue;
+      }
+      parsesThisTick += 1;
+    }
+    worstParsesPerTick = Math.max(worstParsesPerTick, parsesThisTick);
+    expect(worstParsesPerTick).toBeGreaterThan(0);
+    expect(worstParsesPerTick).toBeLessThanOrEqual(KEEP_SET_YIELD_EVERY * STORAGE_COLUMNS_PER_PAGE_ROW);
+  });
+});
+
+describe('keep-set fail-closed on an unreadable body (#1525)', () => {
+  /**
+   * `buildAttachmentKeepSets` documents the direction it must fail in, and
+   * that direction is the whole safety argument of the sweep: a body whose
+   * references could not be READ is a body whose references are UNKNOWN, so
+   * the run must abort rather than continue with a keep-set silently missing
+   * that row's names — the sweep DELETES files, and a too-small keep-set
+   * deletes referenced bytes.
+   *
+   * The claim is reachable: the enumerator is the only JSDOM consumer of a
+   * storage column, HTML parsing is error-recovering for ordinary bad content
+   * (truncated storage, raw garbage and a 500-deep nesting all came back as a
+   * list when probed at this head), but a ~20k-deep nesting throws
+   * `RangeError: Maximum call stack size exceeded` out of the parser. Probed
+   * for real; asserted here through `keepSetProbe.throwFor` instead of a 20k
+   * body, because the actual recursion limit is an engine property and a test
+   * that depends on it would be flaky, not a guard.
+   *
+   * What this pins is the absence of a `try`/`catch` around the enumerator
+   * calls: wrap either storage column's `getExpectedAttachmentFilenames` in
+   * one and this reds.
+   */
+  it('rejects instead of returning a keep-set that lost the row it could not parse', async () => {
+    keepSetProbe.pageRows = [
+      {
+        __cursor: 1,
+        body_html: null,
+        draft_body_html: null,
+        body_storage: null,
+        draft_body_storage: 'draft:unparseable',
+        space_key: 'SPACE',
+      },
+    ];
+    keepSetProbe.timeline = [];
+    keepSetProbe.throwFor = 'draft:unparseable';
+    try {
+      await expect(buildAttachmentKeepSets()).rejects.toThrow(/Maximum call stack size exceeded/);
+    } finally {
+      keepSetProbe.throwFor = null;
+    }
+    // The enumerator really was reached — the rejection is the throw the
+    // parser raised, not a mock that never ran.
+    expect(keepSetProbe.timeline).toContain('draft:unparseable');
+  });
+
+  /** Same shape, published column: both storage passes are uncaught. */
+  it('rejects for the published body_storage column too', async () => {
+    keepSetProbe.pageRows = [
+      {
+        __cursor: 1,
+        body_html: null,
+        draft_body_html: null,
+        body_storage: 'body:unparseable',
+        draft_body_storage: null,
+        space_key: 'SPACE',
+      },
+    ];
+    keepSetProbe.timeline = [];
+    keepSetProbe.throwFor = 'body:unparseable';
+    try {
+      await expect(buildAttachmentKeepSets()).rejects.toThrow(/Maximum call stack size exceeded/);
+    } finally {
+      keepSetProbe.throwFor = null;
+    }
+    expect(keepSetProbe.timeline).toContain('body:unparseable');
   });
 });

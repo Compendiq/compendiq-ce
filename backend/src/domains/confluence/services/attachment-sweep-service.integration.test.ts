@@ -346,6 +346,50 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(keep.confluence.has('bulk-250.png')).toBe(true);
       expect([...keep.confluence].filter((n) => n.startsWith('bulk-'))).toHaveLength(250);
     });
+
+    // #1525 — a draw.io diagram whose macro survives only in the UNPUBLISHED
+    // draft's STORAGE format. Storage format names Confluence attachments by
+    // `ri:filename` / `diagramName`, which no `/api/attachments/…` URL regex
+    // can match, so the URL collector can never see `DraftOnlyArch.png` there
+    // and the storage pass only ran over `body_storage`: the name fell out of
+    // the keep-set entirely.
+    // Scope note (fixer r1): this is forward protection, not the only thing
+    // standing between a real draft diagram and a delete — every persisting
+    // `confluenceToHtml` caller passes a pageId, so the macro reaches
+    // `draft_body_html` as `/api/attachments/<pageId>/<name>.png`, which the
+    // URL pass already keeps. Nothing writes content into
+    // `draft_body_storage` at this head, which is why this test has to seed
+    // the column with a raw INSERT.
+    it('keeps attachments referenced only by an unpublished draft body_storage (#1525)', async () => {
+      await query(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version,
+                            body_html, body_storage, draft_body_html, draft_body_storage)
+         VALUES ('Drafting', 'DEV', '90007', 'confluence', 'page', 1,
+                 '<p><img src="/api/attachments/90007/published.png"></p>',
+                 '<ac:image><ri:attachment ri:filename="published-storage.png"/></ac:image>',
+                 '<p>no image yet</p>',
+                 '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">DraftOnlyArch</ac:parameter></ac:structured-macro>'
+                 || '<p><img src="/api/attachments/90007/draft-storage-url.png"></p>'
+                 || '<p><img src="/api/local-attachments/1/draft-local-url.png"></p>')`,
+      );
+
+      const keep = await buildAttachmentKeepSets();
+
+      // The enumerator half: the macro names `DraftOnlyArch.png`, which no
+      // URL regex can ever find.
+      expect(keep.confluence.has('DraftOnlyArch.png')).toBe(true);
+      // The URL-collector half of the same two-line treatment.
+      expect(keep.confluence.has('draft-storage-url.png')).toBe(true);
+      // ...and the half that only the URL collector can reach: storage format
+      // is NOT URL-free. `htmlToConfluence` rewrites only
+      // `img[src^="/api/attachments/"]`, so an `/api/local-attachments/…` img
+      // survives conversion verbatim into storage format, and the LOCAL store
+      // is a set the confluence-only enumerator cannot feed at all.
+      expect(keep.local.has('draft-local-url.png')).toBe(true);
+      // Control: the published halves were already kept.
+      expect(keep.confluence.has('published.png')).toBe(true);
+      expect(keep.confluence.has('published-storage.png')).toBe(true);
+    });
   });
 
   describe('dry run', () => {
