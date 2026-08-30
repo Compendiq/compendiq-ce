@@ -1391,6 +1391,46 @@ describe('AttachmentStorageCard (#1349)', () => {
   });
 
   /**
+   * #1531 × #1532, the interaction neither issue proves alone, and the one the
+   * serial browser pass drives: press **Delete orphans**, confirm, and the
+   * button that opened the dialog is BOTH the focus target of
+   * `ConfirmDialog`'s restore AND the control the confirmed run immediately
+   * marks busy.
+   *
+   * Unlike its sibling above this cell is NOT vacuous in jsdom. jsdom does
+   * implement the one half that matters here: `HTMLElement.focus()` on a
+   * natively `disabled` element is a no-op, so had this button kept
+   * `disabled={actionsDisabled}` the restore would land on nothing and focus
+   * would sit on `<body>` — exactly what a probe of the unconverted
+   * `sync-overview-force-resync-all` trigger still shows (see the PR body).
+   * Both halves of the fix are therefore load-bearing: revert the restore and
+   * this reds, revert the attribute and this reds.
+   */
+  it('returns focus to Delete orphans after its own confirm, and holds it through the run', async () => {
+    mockApi({ sweepAfterPost: { running: true, lastRun: COMPLETED_RUN } });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    const del = screen.getByTestId('attachment-sweep-delete');
+    del.focus();
+    fireEvent.click(del);
+    fireEvent.click(await screen.findByTestId('confirm-dialog-confirm'));
+
+    // Radix's FocusScope dispatches close-auto-focus from a `setTimeout(…, 0)`
+    // in its effect cleanup, so the restore lands one macrotask after the
+    // unmount commit — asserting sooner reads the window where `<body>` is
+    // legitimately still focused.
+    await flushAnnouncerPublish();
+    await screen.findByTestId('attachment-sweep-running');
+
+    const after = screen.getByTestId('attachment-sweep-delete');
+    expect(after).toHaveAttribute('aria-disabled', 'true');
+    expect(after).not.toHaveAttribute('disabled');
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(after);
+  });
+
+  /**
    * Review r2: this is the card's only keyboard-reachable disclosure and it
    * opens the destructive review list, yet it fell back to the UA outline
    * while both sibling settings disclosures (ChatVisionCapability,

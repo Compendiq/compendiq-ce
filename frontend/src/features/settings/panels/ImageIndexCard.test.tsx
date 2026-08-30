@@ -451,7 +451,11 @@ describe('ImageIndexCard (#1115 P2)', () => {
         expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
       );
 
-      expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(false);
+      // #1532 converted this card off native `disabled` entirely, so a
+      // `HTMLButtonElement.disabled` read here would be unconditionally
+      // `false` — vacuous. The live-ness this cell guards now lives in the
+      // absence of `aria-disabled`, the same attribute its six siblings read.
+      expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
       fireEvent.click(screen.getByTestId('image-index-process'));
       await waitFor(() =>
         expect(
