@@ -95,35 +95,39 @@ const COMPARISON_ENDED = 'The comparison in progress ended — the migration cha
  * available everywhere the ending is announced (#1533).
  *
  * `EmbeddingShadowCompareSection` — the only surface with a Run control — is
- * mounted by the `ready` branch alone, while `migrationWindowOpen` below
- * EXCLUDES `swapped` and `aborting`: the strip is by construction shown where
- * that control is gone. A single fixed "Start a new comparison…" therefore
- * named a control the card does not offer in four of its five branches, on the
- * PRIMARY path every time (swap while a comparison runs) — an instruction the
- * admin cannot follow is worse than no instruction, because they go looking.
+ * mounted by the `ready` branch alone, while the ending arm below fires on a
+ * window that is GONE — `swapped` and `aborting` included: the strip is by
+ * construction shown where that control is gone. A single fixed "Start a new
+ * comparison…" therefore named a control the card does not offer in four of
+ * its five branches, on the PRIMARY path every time (swap while a comparison
+ * runs) — an instruction the admin cannot follow is worse than no
+ * instruction, because they go looking.
  *
- * The unreachable wording names the CONDITION rather than a control, in the
- * card's own vocabulary, so it composes with whatever the branch's own prose
- * already says to do next: finish the abort, wait for the backfill, clean up
- * or roll back, start a re-embed. It is also what the toast carries, because
- * every path that fires the toast has ended the migration window server-side —
+ * The unreachable wording names the EVENT rather than a control, in the card's
+ * own vocabulary, so it composes with whatever the branch's own prose already
+ * says to do next: finish the abort, wait for the backfill, clean up or roll
+ * back, start a re-embed. It is also what the toast carries, because every
+ * path that fires the toast has ended the migration window server-side —
  * including the one case no strip can cover, a rollback that takes the whole
  * card away.
  *
- * The condition it names is the WHOLE of the compare route's own gate — phase
- * `ready`, i.e. `stragglerPages === 0 && indexReady` on a window that is
- * neither swapped nor aborting (`shadow-migration-service`: `phase:
- * stragglerPages === 0 && indexReady ? 'ready' : 'backfilling'`). Naming the
- * finished BACKFILL alone was a condition the card on screen could already
- * satisfy while the route still answered 409 (review r1): an `aborting`
- * migration with zero stragglers, a built index and no swap behind it read as
- * "it needs a finished backfill that has not been swapped yet" — which it
- * had — and the same held for a zero-straggler `backfilling` one whose shadow
- * index is not built. That is exactly where #1533 asks it to be true.
+ * The event, and NOT the compare route's gate restated as conditions (review
+ * r2). Every branch this sentence reaches has closed the window: `swapped`,
+ * `aborting`, a card with no active migration left, and the hold below —
+ * whereas a sentence about what comparing NEEDS names conditions the card on
+ * screen keeps asserting. `stragglerPages === 0 && indexReady` with no swap
+ * behind it (`shadow-migration-service`: `phase: stragglerPages === 0 &&
+ * indexReady ? 'ready' : 'backfilling'`) is true of an `aborting` migration
+ * being torn down, and every clause of it is printed one line above the strip
+ * in the hold's own window — under an enabled Swap button, next to "Backfill
+ * complete … and the new index is built". The admin cannot infer that a
+ * phrase like "still waiting at the swap" excludes what they are looking at;
+ * the closed window is a fact they can act on, and it is the fact the 409
+ * actually turns on. That is exactly where #1533 asks it to be true.
  */
 const COMPARISON_RESTARTABLE = 'Start a new comparison from the current migration.';
 const COMPARISON_UNAVAILABLE =
-  'Comparing on real queries is not available now — it needs a completed backfill and index on a migration still waiting at the swap.';
+  'Comparing on real queries is refused until a migration is waiting at the swap again — the window this comparison ran in has closed on the server.';
 
 export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onActiveChange }: Props) {
   const queryClient = useQueryClient();
@@ -280,13 +284,26 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    */
   async function post(path: string, okMessage: string, opts: { endsMigrationWindow: boolean }, body?: object) {
     setBusy(true);
-    // Read BEFORE the request: `refresh()` below re-renders the card into
-    // another phase branch, which unmounts the compare section and clears
-    // this ref on the way out.
+    // Read BEFORE the request: the ending arms NULL this ref, and the 5s poll
+    // can observe the same ending inside this POST's own window. (The compare
+    // section does NOT clear it on unmount — deliberately, because the unmount
+    // IS the event: `EmbeddingShadowCompareSection`, "Clearing on unmount
+    // would erase the very fact the card needs".)
     const endedComparison = opts.endsMigrationWindow ? compareRunInFlight.current : null;
     try {
       await apiFetch(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
       toast.success(okMessage);
+      // The window is closed server-side the moment this returns 200, whether
+      // or not anything was comparing — so the hold the strip's wording reads
+      // is taken HERE, not inside the ending arm below (review r2 of r2).
+      // Taken on the ending alone, a swap with nothing running left an
+      // undismissed strip from an EARLIER migration prescribing a comparison
+      // over a server whose compare route already answers 409, for as long as
+      // the confirming status GET kept failing — #1533 on the sibling path,
+      // against the r1 standard that the wording may not depend on that
+      // request ever landing. Released by the first status answer newer than
+      // the ending, exactly as `warnComparisonEnded` releases its own.
+      if (opts.endsMigrationWindow) setEndedWindowUnconfirmed(true);
       if (endedComparison) {
         // The action succeeded; the comparison is the collateral, hence
         // `warning` rather than `error` (#1260 r3). The run re-reads the
@@ -431,22 +448,49 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    * never fail the live embed) flips ready → backfilling with the state row
    * untouched. Keyed on the phase, that regression announced an ending to a run
    * that was still going, still holding the one-active slot, and prescribed a
-   * remedy the compare route's own 409 refuses. The window is exactly
-   * `migration === null` (rolled back or cleaned up) or `swapped` / `aborting`;
+   * remedy the compare route's own 409 refuses. The open window is exactly
+   * `migration !== null` and a phase that is neither `swapped` nor `aborting`;
    * `backfilling` KEEPS the id, so the section re-adopts the run when `ready`
    * returns.
+   *
+   * Keyed on the open window's IDENTITY, not on a boolean "is it open" (review
+   * r2 of r2). A boolean makes this a transition observer that has to SEE the
+   * closing answer, and `refresh()` above legitimately drops one: a status GET
+   * stalled across swap → cleanup → new re-embed answers last, so the only
+   * observation in which this card's window is closed is the one that is
+   * dropped for staleness, and the card walks from the run's window straight
+   * into the NEXT one having seen no close at all. The run's N x 2 embedding
+   * calls were then lost with no notice on any surface. A window is identified
+   * exactly as the re-attachment cache is (`compareCacheKey`), because that is
+   * the identity the server's own fingerprint moves on: a DIFFERENT open
+   * window is proof the run's window is gone, and it arrives on the body that
+   * is applied rather than on the one that is dropped — so the arm no longer
+   * depends on response ordering. Rescuing the dropped body instead would fire
+   * this on the mirror sequence too, where the in-flight run belongs to the
+   * NEWER window and a stale closed body says nothing about it.
    *
    * Both arms latch on the run id, so the local POST and this poll cannot
    * report one ending twice.
    */
-  const migrationWindowOpen =
-    migration !== null && migration.phase !== 'swapped' && migration.phase !== 'aborting';
+  const openWindowKey =
+    migration !== null && migration.phase !== 'swapped' && migration.phase !== 'aborting'
+      ? `${migration.model}@${migration.startedAt}`
+      : null;
   const wasOpen = useRef(false);
   useEffect(() => {
+    // The dep array is the change detector: `openWindowKey` is a primitive and
+    // `warnComparisonEnded` is stable, so this body runs only when the window
+    // IDENTITY moved — which is why it no longer has to see a closed one.
     const inFlight = compareRunInFlight.current;
-    if (wasOpen.current && !migrationWindowOpen && inFlight) warnComparisonEnded(inFlight);
-    wasOpen.current = migrationWindowOpen;
-  }, [migrationWindowOpen, warnComparisonEnded]);
+    const hadOpenWindow = wasOpen.current;
+    wasOpen.current = openWindowKey !== null;
+    // Only a window this card WATCHED open can have been the run's: a remount
+    // in `backfilling` adopts a running run from the re-attachment cache in the
+    // same commit that first learns the window (the lookup effect above is
+    // declared earlier), and that is a run still going, not one that ended.
+    if (!hadOpenWindow || inFlight === null) return;
+    warnComparisonEnded(inFlight);
+  }, [openWindowKey, warnComparisonEnded]);
 
   if (!migration && !pending) return null;
   if (status === null) return null; // first poll not resolved yet
@@ -462,12 +506,16 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   const compareControlMounted = migration?.phase === 'ready' && !endedWindowUnconfirmed;
   // …and the third arm on that same phase: `backfilling` already owns the
   // availability fact, in the muted `shadow-compare-locked` note printed one
-  // line above the strip ("unlocks when the backfill completes", or the run
-  // still holding the slot). Repeating it here said the same thing twice in a
-  // row, the second time escalated to the hue ADR-010 reserves for a real
-  // consequence — so in that branch the strip carries the ending alone and
-  // lets the note say what comparing is waiting for (review r1).
-  const availabilityStatedByBranch = migration?.phase === 'backfilling';
+  // line above the strip ("unlocks when the backfill completes"). Repeating it
+  // here said the same thing twice in a row, the second time escalated to the
+  // hue ADR-010 reserves for a real consequence — so in that branch the strip
+  // carries the ending alone and lets the note say what comparing is waiting
+  // for (review r1). Only in the note's OTHER arm, though (review r2): when
+  // the card's own server lookup finds a run holding the one-active slot, the
+  // note reports THAT instead of stating availability, and the strip was then
+  // the ending with no availability sentence left anywhere on the card. Same
+  // flag the note itself reads, so the two cannot drift.
+  const availabilityStatedByBranch = migration?.phase === 'backfilling' && !compareRunning;
   const endedRecovery = compareControlMounted
     ? COMPARISON_RESTARTABLE
     : availabilityStatedByBranch

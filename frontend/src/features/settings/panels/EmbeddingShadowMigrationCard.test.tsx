@@ -890,8 +890,8 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
       // …so it names what comparing needs instead, which the swapped branch's
       // own prose (clean up or roll back) composes with.
-      expect(strip.textContent).toMatch(/not available now/i);
-      expect(strip.textContent).toMatch(/completed backfill and index on a migration still waiting at the swap/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
+      expect(strip.textContent).toMatch(/the window this comparison ran in has closed on the server/i);
       // The toast covers the one case the strip cannot — a rollback with no
       // pending change takes the whole card away — and every path that fires
       // it has ended the migration window server-side, so it may not
@@ -918,15 +918,18 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
       expect(strip.textContent).toMatch(/comparison in progress ended/i);
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
-      expect(strip.textContent).toMatch(/completed backfill and index on a migration still waiting at the swap/i);
+      expect(strip.textContent).toMatch(/the window this comparison ran in has closed on the server/i);
       // …and it may not name a condition THIS migration already satisfies
-      // (r1): `MIGRATION` has zero stragglers and a built index and was never
-      // swapped, so "it needs a finished backfill that has not been swapped
-      // yet" described the card on screen while the compare route answers 409
-      // on the phase (`llm-embedding-shadow.ts`: `status.phase !== 'ready'`).
+      // (r1, re-raised r2): `MIGRATION` has zero stragglers and a built index
+      // and was never swapped, so any sentence about what comparing "needs"
+      // in terms of backfill/index/swap describes the card on screen while
+      // the compare route answers 409 on the phase alone
+      // (`llm-embedding-shadow.ts`: `status.phase !== 'ready'`). The escape is
+      // semantic, not a synonym: name the CLOSED WINDOW, which is the fact.
       expect(MIGRATION.stragglerPages).toBe(0);
       expect(MIGRATION.indexReady).toBe(true);
-      expect(strip.textContent).not.toMatch(/needs a finished backfill/i);
+      expect(strip.textContent).not.toMatch(/needs a (finished|completed) backfill/i);
+      expect(strip.textContent).toMatch(/has closed on the server/i);
       vi.useRealTimers();
     });
 
@@ -971,7 +974,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(strip.textContent).toMatch(/comparison in progress ended/i);
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
       // Not restated in amber: the note above owns it.
-      expect(strip.textContent).not.toMatch(/not available now/i);
+      expect(strip.textContent).not.toMatch(/refused until a migration is waiting at the swap/i);
       expect(strip.textContent).not.toMatch(/comparing on real queries/i);
       vi.useRealTimers();
     });
@@ -1000,7 +1003,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       const strip = await screen.findByTestId('shadow-compare-ended');
       expect(await screen.findByTestId('shadow-compare-section')).toBeInTheDocument();
       expect(strip.textContent).toMatch(/start a new comparison from the current migration/i);
-      expect(strip.textContent).not.toMatch(/not available now/i);
+      expect(strip.textContent).not.toMatch(/refused until a migration is waiting at the swap/i);
       vi.useRealTimers();
     });
 
@@ -1061,7 +1064,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
       expect(strip.textContent).toMatch(/comparison in progress ended/i);
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
-      expect(strip.textContent).toMatch(/not available now/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
       // …and it says what the toast announcing the same ending says.
       expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(
         expect.not.stringMatching(/start a new comparison/i),
@@ -1105,7 +1108,18 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       const strip = screen.getByTestId('shadow-compare-ended');
       expect(strip.textContent).toMatch(/comparison in progress ended/i);
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
-      expect(strip.textContent).toMatch(/not available now/i);
+      // The hold's own window is the one place the sentence may not describe
+      // what comparing NEEDS in terms of backfill/index/swap (r2): one line
+      // above the strip this same card asserts every such clause, and the Swap
+      // button is still enabled, so a "needs …" sentence reads as satisfied.
+      // What is actually known here is the EVENT — the POST returned 200, so
+      // the window is gone server-side however stale the phase looks.
+      const prose = screen.getByTestId('shadow-migration-card').querySelector('p');
+      expect(prose?.textContent).toMatch(/backfill complete/i);
+      expect(prose?.textContent).toMatch(/index is built/i);
+      expect(strip.textContent).not.toMatch(/needs a (finished|completed) backfill/i);
+      expect(strip.textContent).toMatch(/has closed on the server/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
       vi.useRealTimers();
     });
 
@@ -1133,7 +1147,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       const strip = screen.getByTestId('shadow-compare-ended');
       expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
-      expect(strip.textContent).toMatch(/not available now/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
       vi.useRealTimers();
     });
 
@@ -1218,7 +1232,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       // Same node, new text, and no new ending was reported for it.
       expect(screen.getByTestId('shadow-compare-ended')).toBe(strip);
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
-      expect(strip.textContent).toMatch(/not available now/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
       expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1);
       vi.useRealTimers();
     });
@@ -1288,6 +1302,198 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(strip.textContent).not.toMatch(/start a new comparison/i);
       vi.useRealTimers();
     });
+
+    it('holds the prescription for a lifecycle action that ended NO comparison (r2)', async () => {
+      // The hold was taken only where a comparison ended, but the fact it
+      // holds is about the MIGRATION WINDOW, and swap/rollback/cleanup close
+      // that window whether or not anything was comparing. Under a strip that
+      // outlived its own migration the sibling path is #1533 verbatim: the
+      // pre-swap `ready` branch is still on screen (the confirming GET fails),
+      // so the sentence re-derives to the prescription over a server whose
+      // compare route already answers 409 (`llm-embedding-shadow.ts`:
+      // `status.phase !== 'ready'`) — indefinitely, and the r1 standard is
+      // that the wording may not depend on the confirming request landing.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate } = mockGatedSwap(() => status);
+      renderCard(null);
+
+      // Migration A: a comparison runs and another admin rolls it back, so the
+      // ending is reported once and the strip is left undismissed.
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      status = { active: false, migration: null };
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1));
+
+      // Migration B reaches `ready` under that strip, which legitimately gets
+      // the prescription back — nothing is comparing on B.
+      status = { active: true, migration: { ...MIGRATION, startedAt: '2026-08-07T09:00:00.000Z' } };
+      await vi.advanceTimersByTimeAsync(6_000);
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/start a new comparison/i);
+
+      // B is swapped, and every status GET that would confirm it fails.
+      gate.fail = true;
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(12_000);
+
+      // The card really is still in the pre-swap branch, which is what makes
+      // the phase-derived sentence wrong rather than merely early.
+      expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /swap to the new model/i })).toBeEnabled();
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
+      // …and no ending was invented for a comparison that was not running.
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it('reports the ending when the card never observes a CLOSED window (r2)', async () => {
+      // The ending arm is a transition observer, so it has to see the closing
+      // answer — and the request sequence above legitimately DROPS one. The
+      // sequence is server-coherent: A is swapped, cleaned up and a new
+      // re-embed (B) started, so a status GET stalled across all three answers
+      // last and is the ONLY observation in which this card's window is
+      // closed. Keyed on `migrationWindowOpen` alone the card went from A's
+      // open window straight to B's, saw no close, and the run's N x 2
+      // embedding calls were lost with no notice on any surface — a
+      // REGRESSION against the pre-sequence behaviour, which applied that body
+      // (stale branch and all) and warned from it.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => status);
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+
+      // One poll parks while A is still `ready` and still comparing.
+      gate.park = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(parked).toHaveLength(1);
+
+      // Elsewhere: A swapped, A cleaned up, B started. The next answer this
+      // card applies therefore shows an OPEN window again, on a DIFFERENT
+      // migration — the run's window is gone even so.
+      gate.park = false;
+      status = {
+        active: true,
+        migration: {
+          ...MIGRATION,
+          phase: 'backfilling',
+          backfilledPages: 10,
+          stragglerPages: 30,
+          indexed: false,
+          indexReady: false,
+          startedAt: '2026-08-07T09:00:00.000Z',
+        },
+      };
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(screen.getByTestId('shadow-compare-locked')).toBeInTheDocument());
+
+      // The stalled GET answers last, with A swapped.
+      await act(async () => {
+        parked[0]({ active: true, migration: { ...MIGRATION, phase: 'swapped' } });
+      });
+
+      // It stays dropped — the card keeps B's branch, not A's swapped one…
+      expect(screen.getByTestId('shadow-compare-locked')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /clean up/i })).toBeNull();
+      // …and the ending is announced regardless, on both surfaces.
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1));
+      vi.useRealTimers();
+    });
+
+    it('applies an answer overtaken by a request that has not landed yet (r2)', async () => {
+      // The request sequence is keyed on what was APPLIED, not on the newest
+      // request in flight — an older response is still the freshest thing this
+      // card knows until a newer one lands. Keyed on the newest REQUEST, a
+      // first answer overtaken by a poll that never returns leaves the card
+      // rendering nothing at all: staleness traded for blindness, on a surface
+      // whose whole job is to say what the migration is doing.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => ({ active: true, migration: { ...MIGRATION } }));
+      gate.park = true;
+      renderCard(null);
+      await waitFor(() => expect(parked).toHaveLength(1)); // the mount's GET
+      await vi.advanceTimersByTimeAsync(5_000);
+      await waitFor(() => expect(parked).toHaveLength(2)); // the 5s poll, still open
+      expect(screen.queryByTestId('shadow-migration-card')).toBeNull();
+
+      // The FIRST request answers, with the newer one still outstanding.
+      await act(async () => {
+        parked[0](null);
+      });
+      expect(await screen.findByTestId('shadow-migration-card')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /swap to the new model/i })).toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('states the availability fact in backfilling when the note reports a RUN instead (r2)', async () => {
+      // The third arm hands the availability fact to the muted
+      // `shadow-compare-locked` note one line above the strip — but that note
+      // has TWO arms, and when the card's own server lookup finds a run
+      // holding the one-active slot it reports the run instead of stating
+      // availability. The strip then said the ending with no availability
+      // sentence anywhere on the card, which is the premise of the third arm
+      // failing rather than the ending being wrong.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      let latest: unknown = { run: null };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const method = init?.method ?? 'GET';
+        const json = (body: unknown, code = 200) =>
+          new Response(JSON.stringify(body), { status: code, headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/compare/') && method === 'GET' && !url.includes('/judgements')) {
+          return json({ id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16, error: null, result: null });
+        }
+        if (url.endsWith('/compare') && method === 'POST') return json({ runId: 'run-1' }, 202);
+        if (url.endsWith('/compare') && method === 'GET') return json(latest);
+        if (url.includes('/judgements')) return json({ judgements: {}, verdict: null });
+        if (url.includes('/shadow-migration') && method === 'GET') return json(status);
+        return json({});
+      });
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      status = { active: false, migration: null }; // rolled back elsewhere
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1));
+
+      // A fresh re-embed backfills under the undismissed strip, and another
+      // admin's comparison of it is already queued — the card's own lookup
+      // adopts it, which is the note's OTHER arm.
+      latest = { run: { id: 'run-2', status: 'running', progressDone: 1, progressTotal: 16 } };
+      status = {
+        active: true,
+        migration: {
+          ...MIGRATION,
+          phase: 'backfilling',
+          backfilledPages: 10,
+          stragglerPages: 30,
+          indexed: false,
+          indexReady: false,
+          startedAt: '2026-08-07T09:00:00.000Z',
+        },
+      };
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      const note = await screen.findByTestId('shadow-compare-locked');
+      await waitFor(() => expect(note.textContent).toMatch(/still running/i));
+      expect(note.textContent).not.toMatch(/unlocks when the backfill completes/i);
+      const strip = screen.getByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/comparison in progress ended/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
+      // Still one ending: adopting a DIFFERENT run is not a second one.
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
   });
 
   describe('the backfilling note asks the server, not this session (r1)', () => {
@@ -1331,6 +1537,46 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       renderCard(null);
       const note = await screen.findByTestId('shadow-compare-locked');
       await waitFor(() => expect(note.textContent).toMatch(/still running/i));
+    });
+
+    it('a remount that ADOPTS a running run does not report it as ENDED (r2)', async () => {
+      // The ending arm fires on a change of window IDENTITY, so it has to know
+      // whether it ever WATCHED the run's window open. A Settings sub-tab
+      // switch away and back remounts this card with the re-attachment cache
+      // still warm (`staleTime: Infinity`, five-minute gcTime), so the very
+      // commit that first learns the window also adopts the run from that
+      // cache — the lookup effect is declared before the ending arm, so the
+      // arm sees a run in flight the first time it ever runs. Read as "the
+      // window moved under a running comparison" that announces an ending for
+      // a run that is still going, on the exact surface the cell above exists
+      // to keep honest.
+      mockBackfilling(() => ({
+        run: { id: 'run-1', status: 'running', progressDone: 7, progressTotal: 16 },
+      }));
+      const first = renderCard(null);
+      const client = queryClient;
+      await waitFor(() =>
+        expect(screen.getByTestId('shadow-compare-locked').textContent).toMatch(/still running/i),
+      );
+      first.unmount();
+
+      // Same QueryClient — this is one app session, not a reload.
+      render(
+        <QueryClientProvider client={client}>
+          <EmbeddingShadowMigrationCard pending={null} />
+        </QueryClientProvider>,
+      );
+      // Whichever way the adoption commit goes, wait for it to be observable
+      // before judging it: under the defect the strip appears, and the note is
+      // pushed back to the availability sentence by the same warn.
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId('shadow-compare-ended') !== null ||
+            /still running/i.test(screen.getByTestId('shadow-compare-locked').textContent ?? ''),
+        ).toBe(true),
+      );
+      expect(screen.queryByTestId('shadow-compare-ended')).toBeNull();
+      expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
     });
 
     it('stops saying "still running" once the run settles behind the note', async () => {
