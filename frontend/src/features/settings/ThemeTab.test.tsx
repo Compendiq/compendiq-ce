@@ -57,7 +57,7 @@ describe('ThemeTab', () => {
       screen.getByText('Neutral graphite surfaces with one Steel accent'),
     ).toBeInTheDocument();
     expect(
-      screen.getByText('Neutral paper surfaces with one Steel accent'),
+      screen.getByText('Warm paper surfaces with one Steel accent'),
     ).toBeInTheDocument();
   });
 

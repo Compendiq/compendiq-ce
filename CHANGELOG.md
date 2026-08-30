@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Light mode (Paper) is now a warm neutral with pure-white panes (ADR-010 v0.8). Every Paper neutral moved from OKLCH hue ~250–286 to ~68–70 at the same OKLCH lightness — surfaces, fills, borders and ink together, since a cool-black ink on warm paper is what gives away a palette warmed only in its backgrounds — so warmth changed and the measured value ladder did not. Document content, the left navigation pane and the detached context rail are `#FFFFFF`; Canvas (`#F3EEE9`), Chrome (`#F9F4F0`) and Workspace (`#FAF7F3`) carry the warm frame around them. Raised follows Pane to white, so the light `--shadow-overlay` is two points deeper and warm-tinted to keep a white popover legible on a white page. Steel and the semantic hues are unchanged; only `--color-status-inactive` moved with the ramp, being neutral grey by role. Every AA and 1.4.11 ratio was recomputed and is still measured from the tokens (`workspace-themes.test.ts`), which additionally pins the warm ramp so a cool grey cannot drift back one token at a time. Graphite is untouched.
 - GitHub Actions: skip PR jobs and Docker images whose paths did not change, pin the retrieval-eval Ollama image, drop the macOS installer dry-run, and emit SBOM/provenance only on version tags.
 
 ## [0.7.2] - 2026-07-28

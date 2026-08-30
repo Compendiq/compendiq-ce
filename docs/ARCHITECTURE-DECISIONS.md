@@ -835,6 +835,10 @@ no shadow left to fall back on.
 
 ### v0.7 — Steel accent and five-step surface ladder (2026-08-20)
 
+> **Paper's values here are superseded by v0.8 below (2026-08-30):** its ramp is
+> now warm and its Pane is pure white. The roles, Graphite column, and every
+> rule in this section still stand.
+
 **Owner decision.** After comparing four independently contrast-tuned accent
 pairs in a representative workspace mockup, the owner selected **Steel** and
 approved the following Graphite/Paper surface ladder. This amendment supersedes
@@ -937,6 +941,67 @@ survived at least one rebrand:
 The general lesson: a palette guard that reads only the stylesheet certifies the
 part of the brand that was never at risk. Rasters, static SVGs and anything with
 a baked literal need their own tie back to the tokens.
+
+### v0.8 — Paper turns warm, and its panes turn white (2026-08-30)
+
+**Owner decision.** "The background colors are a bit on the blue side. Make it a
+bit warmer, and for the background of the main area, left and right panel I want
+pure white." Light mode only; Graphite is untouched. This amendment supersedes
+v0.7's Paper column and its "Paper stops short of pure white" rationale.
+Everything else in v0.7 — the eight roles, the flatness rules, the single
+shadow, the borders, the semantics, Steel itself — is unchanged.
+
+Two changes, and they are separable:
+
+1. **Pure white panes.** Pane (`--color-card`) is `#FFFFFF`. That token paints
+   the three surfaces named in the decision: route content (`app-content-pane`),
+   the left navigation pane (`app-sidebar`) and the detached context rail
+   (`--app-rail-bg`). Raised follows it to `#FFFFFF` — above white there is no
+   step left to take — so an overlay now separates on its offset shadow and its
+   hairline alone, and the light `--shadow-overlay` recipe was deepened two
+   points to pay for the lost value step.
+2. **A warm neutral ramp.** Every Paper neutral moved from OKLCH hue ~250–286
+   (cool) to ~68–70 (warm) at the **same OKLCH lightness**, so warmth changed
+   and the value ladder did not: every measured ratio below moved by hundredths.
+   Inks moved with the surfaces; a cool-black ink on warm paper is what gives
+   away a palette warmed only in its backgrounds. Steel and the semantic hues
+   (success, warning, AI, destructive, informational) did **not** move — they are
+   brand and meaning, not neutrals. `--color-status-inactive` did, because it is
+   neutral grey by role.
+
+| Role | Production token | Paper v0.7 | Paper v0.8 | Use |
+|---|---|---:|---:|---|
+| Canvas | `--app-chassis` | `#EEEFF0` | `#F3EEE9` | Outer app frame, top app header, and overscroll |
+| Chrome | `--app-header-bg` | `#F5F5F6` | `#F9F4F0` | Internal panel headers and toolbars |
+| Workspace | `--color-background` | `#F7F7F8` | `#FAF7F3` | Navigation and AI/context rails |
+| Pane | `--color-card` | `#FAFAFB` | `#FFFFFF` | Document, route content, left pane, context rail |
+| Raised | `--color-card-elevated` | `#FFFFFF` | `#FFFFFF` | Popovers, dialogs, command palette, toasts |
+| Border | `--color-border` | `#DEDFE3` | `#E4DED8` | Quiet pane separators and prose rules |
+| Interactive border | `--color-border-interactive` | `#7D818B` | `#878078` | Input and operable-surface outlines |
+| Foreground | `--color-foreground` | `#17181A` | `#1A1815` | Body ink |
+| Muted foreground | `--color-muted-foreground` | `#63666D` | `#6B655E` | Secondary labels, counts, hints |
+| Secondary / muted fill | `--color-secondary`, `--color-muted` | `#EEEEF0` | `#F3EDE8` | Quiet field and chip fills |
+| Accent fill | `--color-accent` | `#E8E8EB` | `#EDE7E1` | Hover and selected rows |
+| Code surface | `--color-code-bg` | `#ECEEF1` | `#F2EDE7` | Recessed code blocks |
+
+Measured, from the tokens rather than pinned (`workspace-themes.test.ts`):
+foreground 16.59:1 Workspace / 17.72:1 Pane; muted foreground 5.39 / 5.76;
+Steel `#3F627C` 6.05 / 6.46; every status colour ≥5.08 on both; every syntax
+colour ≥4.90 on the code surface; and the operable edge `#878078` clears the
+1.4.11 3:1 floor on all five Paper grounds — 3.18 accent / 3.36 muted / 3.65
+Workspace / 3.90 Pane / 3.90 Raised, the same headroom the cool value had.
+
+**What the guard learned.** The old test asserted "the Paper pane is not
+`#FFFFFF`", which is a rule, not a measurement, and it is the rule the owner
+overruled. It now pins the three claims that survive an owner's taste: Pane is
+white, Workspace stays below it so the seam is carried by value as well as by
+the hairline, and the light overlay shadow keeps a real Y offset and blur since
+it is the only separation a white popover has on a white page. A fourth check
+pins the warmth itself — red channel above blue on every Paper neutral — because
+a warm ramp is exactly the kind of decision that decays one cool token at a time.
+
+**Still open (inherited from v0.7):** `compendiq-landing` carries neither the
+Steel pair nor this warm ramp. The app remains the source of truth.
 
 ---
 

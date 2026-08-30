@@ -139,7 +139,7 @@ describe('Inset shell utilities', () => {
     const appHeader = extractBlock(css, '@utility app-header {');
     const panelToolbar = extractBlock(css, '@utility panel-toolbar {');
     expect(css).toMatch(/--app-header-bg:\s*#0c0c0d/);
-    expect(css).toMatch(/--app-header-bg:\s*#f5f5f6/);
+    expect(css).toMatch(/--app-header-bg:\s*#f9f4f0/);
     expect(appHeader).toMatch(/background:\s*var\(--app-chassis\)/);
     expect(appHeader).not.toMatch(/background:\s*var\(--app-header-bg\)/);
     expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);

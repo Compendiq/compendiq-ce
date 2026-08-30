@@ -191,7 +191,7 @@ describe('Theme preference follows the OS by default', () => {
   });
 });
 
-describe('Eye-comfort reading surface hierarchy', () => {
+describe('Surface hierarchy — reading comfort in dark, warm paper in light', () => {
   it('lifts the Graphite pane clearly above its near-black workspace', () => {
     const workspace = token(darkBlock, '--color-background');
     const pane = token(darkBlock, '--color-card');
@@ -202,14 +202,64 @@ describe('Eye-comfort reading surface hierarchy', () => {
     expect(luminance(raised)).toBeGreaterThan(luminance(pane));
   });
 
-  it('keeps the Paper pane off pure white while remaining above its workspace', () => {
+  // Paper's Pane is pure white by product decision (2026-08-30): the document,
+  // the left navigation pane and the context rail are #ffffff, and the warm
+  // ramp lives in the frame around them. So the claim here is no longer "the
+  // pane stays off white" — it is that the pane is white, that Workspace stays
+  // BELOW it so the seam survives on value and not only on the hairline, and
+  // that Raised does not try to out-lighten white.
+  it('paints the Paper pane pure white above a warm workspace ground', () => {
     const workspace = token(lightBlock, '--color-background');
     const pane = token(lightBlock, '--color-card');
     const raised = token(lightBlock, '--color-card-elevated');
 
-    expect(pane).not.toBe('#ffffff');
+    expect(pane).toBe('#ffffff');
     expect(luminance(pane)).toBeGreaterThan(luminance(workspace));
-    expect(luminance(pane)).toBeLessThan(luminance(raised));
+    expect(raised).toBe(pane);
+  });
+
+  // Losing the Pane→Raised value step means the overlay shadow is the whole
+  // separation, so it must actually be declared with an offset and a blur —
+  // a flat halo would leave a white popover invisible on a white page.
+  it('carries an offset overlay shadow now that Raised matches Pane in Paper', () => {
+    const m = /--shadow-overlay:\s*([^;]+);/.exec(lightSharedBlock);
+    expect(m, 'the light theme must declare --shadow-overlay').not.toBeNull();
+    expect(m![1]!.trim(), 'the light overlay shadow needs a Y offset and a blur').toMatch(
+      /0 [1-9]\d*px \d+px/,
+    );
+  });
+
+  // Paper is a warm neutral: every surface, fill, border and ink in the block
+  // sits on the warm side of the hue circle. A cool grey slipping back in is
+  // the regression this guards — it is what the palette was before, and one
+  // stray #f7f7f8 reads as a blue patch against the rest.
+  it('keeps every Paper neutral on the warm side of the hue circle', () => {
+    const neutrals = [
+      '--color-background',
+      '--color-foreground',
+      '--color-secondary',
+      '--color-secondary-foreground',
+      '--color-muted',
+      '--color-muted-foreground',
+      '--color-accent',
+      '--color-border',
+      '--color-border-interactive',
+      '--color-action',
+      '--color-action-hover',
+      '--color-code-bg',
+      '--color-status-inactive',
+      '--app-chassis',
+      '--app-header-bg',
+    ];
+    for (const name of neutrals) {
+      const hex = token(lightBlock, name);
+      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
+        number,
+        number,
+        number,
+      ];
+      expect(r, `${name} (${hex}) must be warm: red channel above blue`).toBeGreaterThan(b);
+    }
   });
 });
 
