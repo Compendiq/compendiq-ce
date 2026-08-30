@@ -67,10 +67,15 @@
  * 3. Nothing, if that control is gone (`ConversationRowMenu`'s Delete takes
  *    its own kebab with the row) or cannot take focus. A trigger that holds
  *    itself natively `disabled` for the length of its POST is exactly the
- *    #1532 defect — the HTML focus fixup rule has already blurred the admin to
- *    `<body>` before this dialog is consulted — and the fix for it is
- *    converting the control to `aria-disabled` + a refusing handler, as
- *    `AttachmentStorageCard` and `ImageIndexCard` now are. It is not this
+ *    #1532 defect — in jsdom `focus()` simply no-ops on it, and in a browser
+ *    the HTML focus fixup rule has already blurred the admin to `<body>`
+ *    before this dialog is consulted — and the fix for it is converting the
+ *    control to `aria-disabled` + a refusing handler, as
+ *    `AttachmentStorageCard`, `ImageIndexCard` and `SyncTab`'s Force Re-sync
+ *    All now are. That last one is why this paragraph is not hypothetical: a
+ *    real-browser pass at `a820e9b7` found the restore working on every
+ *    dismiss path and dropping to `<body>` on exactly the one trigger whose
+ *    own confirm disabled it (checklist items 3 and 11). It is not this
  *    component's business to poll the document until someone else's button
  *    comes back.
  */

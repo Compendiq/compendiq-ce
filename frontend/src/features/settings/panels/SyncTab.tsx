@@ -144,7 +144,26 @@ export function SyncTab() {
   // actual succeeded count, so the dialog text deliberately doesn't promise
   // a precise number.
   const totalPages = data.totals.totalPages;
+  /**
+   * #1532's recipe on this panel's third action control (external review
+   * round). Rendered as `aria-disabled` plus the refusing early return below,
+   * never as a native `disabled`: `onConfirm` calls `runForceResyncAll()`
+   * synchronously, so `forceResyncMutation.isPending` lands in the very commit
+   * that closes the `ConfirmDialog`. As a native `disabled` that commit takes
+   * the trigger out of the focusable set BEFORE Radix dispatches
+   * close-auto-focus, so #1531's restore aims `focus()` at a control that
+   * cannot take it and the keyboard restarts the ~28-stop panel walk
+   * (WCAG 2.4.3) — measured in a real browser on `a820e9b7`, checklist items
+   * 3 and 11. `AttachmentStorageCard` and `ImageIndexCard` carry the same
+   * shape, so all three of this panel's busy triggers now behave identically.
+   */
+  const forceResyncDisabled =
+    forceResyncMutation.isPending || data.sync.status === 'syncing' || totalPages === 0;
   const handleForceResyncAll = () => {
+    // The refusal `aria-disabled` cannot perform — it blocks no events. A
+    // second press during a running re-sync would otherwise re-open the
+    // dialog and queue a second KB-wide re-fetch.
+    if (forceResyncDisabled) return;
     if (totalPages > 5000) {
       toast.error(
         `Selection exceeds server cap (${totalPages} > 5000). Re-sync per space instead.`,
@@ -230,12 +249,16 @@ export function SyncTab() {
           {isAdmin && (
             <button
               onClick={handleForceResyncAll}
-              disabled={
-                forceResyncMutation.isPending ||
-                data.sync.status === 'syncing' ||
-                totalPages === 0
-              }
-              className="nm-button-ghost"
+              aria-disabled={forceResyncDisabled || undefined}
+              // The busy palette the removed `:disabled` rule used to paint,
+              // keyed off `aria-disabled` instead — the same class set both
+              // cards on this panel carry, so the three triggers dim, refuse
+              // and hover identically. `active:` as well as `hover:`, because
+              // `nm-button-ghost` paints a pressed background on `:active` and
+              // a keyboard hold on the focused button matches `:active` with
+              // no `:hover`: without the pin the press the handler refuses
+              // would still paint as accepted.
+              className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
               title="Re-fetch every Confluence page even when its version hasn't changed"
               data-testid="sync-overview-force-resync-all"
             >

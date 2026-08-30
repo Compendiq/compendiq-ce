@@ -1401,8 +1401,10 @@ describe('AttachmentStorageCard (#1349)', () => {
    * implement the one half that matters here: `HTMLElement.focus()` on a
    * natively `disabled` element is a no-op, so had this button kept
    * `disabled={actionsDisabled}` the restore would land on nothing and focus
-   * would sit on `<body>` — exactly what a probe of the unconverted
-   * `sync-overview-force-resync-all` trigger still shows (see the PR body).
+   * would sit on `<body>` — which is exactly what the serial browser pass
+   * measured on the then-unconverted `sync-overview-force-resync-all`
+   * (checklist items 3 and 11 FAIL) and what `SyncTab.test.tsx`'s own
+   * "returns focus to the trigger after confirming" cell now pins there too.
    * Both halves of the fix are therefore load-bearing: revert the restore and
    * this reds, revert the attribute and this reds.
    */
