@@ -1481,9 +1481,13 @@ differs by store. In the **Confluence cache** a per-file candidate must be an
 attachment there is skipped on type before anything else is checked. In the
 **local store** there is no type filter: a per-file candidate is any file with
 no `local_attachments` row that is also referenced by no body text anywhere.
-In practice the row is what protects local files of every type — every writer
-of the local store pairs the file with its row — so the two rules land in the
-same place, but the local one is a row check, not a type check.
+In normal operation the row is what protects local files of every type: every
+local writer pairs the file with its row on its success path, so the two rules
+land in the same place. The exception is debris — bytes a Confluence-to-local
+move stages *before* the transaction that inserts their rows, whose
+compensating cleanup is best-effort — and collecting that debris, of any type,
+is precisely what this sweep is for. Either way the local test is a row check,
+not a type check.
 "Referenced by no body text anywhere" means the same thing in both stores:
 every page's `body_html`, draft and storage format (live and
 trashed), every retained version, every pending sync version, every template,

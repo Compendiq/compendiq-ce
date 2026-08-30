@@ -740,11 +740,16 @@ export function AttachmentStorageCard() {
             unfocusing steps drop focus to `<body>` with the list still on
             screen. That is the failure CLAUDE.md's Retrieval-panel ruling
             forbids and the one PR #1550 just converted these buttons away
-            from. The measurement is also unfalsifiable in this suite: jsdom
-            has no layout and the shared resize-observer mock in
-            `src/test-setup.ts` fires once from `observe()`, so no cell can
-            tell a resize-driven re-measure from no observer at all. One rule,
-            always focusable, one redundant stop on short samples.
+            from. And a gate's live measurement is awkward to pin honestly
+            here: jsdom has no layout, and the SHARED resize-observer mock in
+            `src/test-setup.ts` fires once from `observe()`, so under it a
+            resize-driven re-measure cannot be told from no observer at all.
+            A cell can still falsify that signal — `b9ced204`'s "re-measures
+            when the box resizes" cell did, by substituting its own
+            callback-capturing observer and hand-firing it against a stubbed
+            box height (fixer r1: the earlier wording here claimed no cell
+            could, which that cell disproves). One rule, always focusable,
+            one redundant stop on short samples.
 
             The list's NAME follows the same dry-run rule as the summary above
             it (fixer r1). The r2 ruling — "candidate" is a claim about pending

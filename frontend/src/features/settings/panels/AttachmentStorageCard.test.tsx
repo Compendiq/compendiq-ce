@@ -1070,10 +1070,16 @@ describe('AttachmentStorageCard (#1349)', () => {
    * lands on `<body>` with the list still on screen, which is the failure
    * `RetrievalTab.tsx` and CLAUDE.md's busy-state ruling forbid and the one
    * PR #1550 just converted this card's buttons away from. Second, the gate
-   * only pays for itself if it tracks rendered HEIGHT, and no cell here can
-   * falsify that signal: jsdom has no layout and the shared resize-observer
-   * mock in `src/test-setup.ts` fires once from `observe()`, so a
-   * resize-driven re-measure passes whether the observer exists or not.
+   * only pays for itself if it tracks rendered HEIGHT, and this suite pins
+   * that signal only at arm's length: jsdom has no layout and the SHARED
+   * resize-observer mock in `src/test-setup.ts` fires once from `observe()`,
+   * so under it a resize-driven re-measure passes whether the observer exists
+   * or not. A cell that wants to falsify it has to substitute its own
+   * callback-capturing observer and hand-fire it against a stubbed box
+   * height, which `b9ced204`'s "re-measures when the box resizes" cell did
+   * (fixer r1: the earlier wording here said no cell could — that cell is
+   * the counter-example, and deleting the observer half of the effect reds
+   * it with "expected 0 to be greater than 0").
    *
    * The NAME matters as much as the stop: a focusable region with no
    * accessible name announces nothing when focus lands on it.
