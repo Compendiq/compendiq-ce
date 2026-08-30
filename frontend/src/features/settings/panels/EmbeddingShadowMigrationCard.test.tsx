@@ -1350,6 +1350,79 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       vi.useRealTimers();
     });
 
+    it('releases the hold only for an answer newer than the closed window (r3)', async () => {
+      // The RELEASE side of the asymmetry the cell above fixed on the TAKE
+      // side. The hold is taken by any window-closing POST, comparison or no
+      // comparison — but it was released by ANY successful status answer, and
+      // the guard that dropped a stale one keyed on `warnedFor`, which moves
+      // only when a comparison ends. So a swap that ended no run left the poll
+      // already in flight free to answer FIRST — nothing newer had been
+      // applied, so the sequence check passed it — releasing the hold with a
+      // body that describes the migration BEFORE the swap and putting "Start a
+      // new comparison from the current migration." back on a card whose
+      // compare route already answers 409. The same defect as the take side,
+      // one predicate away, against the same r1 standard: the wording may not
+      // depend on the confirming GET ever landing.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => status);
+      renderCard(null);
+
+      // Migration A: a comparison runs and another admin rolls it back, so one
+      // ending is reported and the strip is left undismissed.
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      status = { active: false, migration: null };
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1));
+
+      // Migration B reaches `ready` under that strip, which legitimately gets
+      // the prescription back — nothing is comparing on B.
+      const READY_B: Status = {
+        active: true,
+        migration: { ...MIGRATION, startedAt: '2026-08-07T09:00:00.000Z' },
+      };
+      status = READY_B;
+      await vi.advanceTimersByTimeAsync(6_000);
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/start a new comparison/i);
+
+      // One poll parks carrying B's PRE-swap body…
+      gate.park = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(parked).toHaveLength(1);
+
+      // …and B is swapped with nothing comparing, so no ending is reported and
+      // `warnedFor` is unchanged across that parked request's entire flight.
+      status = {
+        active: true,
+        migration: { ...MIGRATION, phase: 'swapped', startedAt: '2026-08-07T09:00:00.000Z' },
+      };
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
+      await waitFor(() => expect(parked).toHaveLength(2)); // the swap's own confirming GET
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+
+      // The pre-swap answer lands FIRST, before anything newer has been
+      // applied — the ordering the sequence check alone cannot refuse.
+      await act(async () => {
+        parked[0](READY_B);
+      });
+
+      // Same node, same text: the hold survives an answer older than the fact
+      // it holds, so the polite region is not re-announced with a prescription
+      // either.
+      expect(screen.getByTestId('shadow-compare-ended')).toBe(strip);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/refused until a migration is waiting at the swap/i);
+      // The card really is still in the pre-swap branch, which is what makes a
+      // released wording wrong rather than merely early.
+      expect(screen.getByTestId('shadow-compare-section')).toBeInTheDocument();
+      // …and no ending was invented for a comparison that was not running.
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
     it('reports the ending when the card never observes a CLOSED window (r2)', async () => {
       // The ending arm is a transition observer, so it has to see the closing
       // answer — and the request sequence above legitimately DROPS one. The

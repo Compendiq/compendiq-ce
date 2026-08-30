@@ -205,31 +205,10 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     setCompareRunning(live);
     if (live) setEndedNotice(false);
   }, []);
-  /** The one ending both arms report — the local action and the remote one.
-   *  Written once so the two paths cannot drift apart. */
-  const warnComparisonEnded = useCallback((runId: string) => {
-    if (warnedFor.current === runId) return;
-    warnedFor.current = runId;
-    compareRunInFlight.current = null;
-    setCompareRunning(false);
-    setEndedNotice(true);
-    setEndedWindowUnconfirmed(true);
-    toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
-  }, []);
-  // Through a ref so an inline arrow prop cannot re-fire the effect each render.
-  const onActiveChangeRef = useRef(onActiveChange);
-  onActiveChangeRef.current = onActiveChange;
-
   /**
-   * Status requests are numbered, and a body OLDER than one already rendered
-   * is dropped (review r1 of r2's fix). The `warnedFor` snapshot below cannot
-   * carry this on its own: it changes only when a COMPARISON ends, so a
-   * lifecycle POST that ends no run — a swap with nothing comparing — leaves
-   * both answers stamped with the same ending and hands the older one straight
-   * to `setStatus`. Under a strip that outlived its own migration that is
-   * #1533 again: the pre-swap branch (compare section, enabled Swap) comes
-   * back over a server that answers 409, and the per-render sentence
-   * re-derives to the prescription and is re-announced with it.
+   * Status requests are numbered, and a body OLDER than the last one applied
+   * is dropped (review r1 of r2's fix). Declared ABOVE the takes below,
+   * because a take stamps its hold with the number in flight.
    *
    * Keyed on what was APPLIED, not on the newest request in flight: an older
    * response is still the freshest thing this card knows until a newer one
@@ -237,24 +216,70 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
    */
   const requestSeq = useRef(0);
   const appliedSeq = useRef(0);
+  /**
+   * The request number in flight when the migration window was last observed
+   * CLOSED. Every status request at or below it was issued while this card
+   * still believed the window open, so its answer can describe only the
+   * migration BEFORE the close: it is dropped, and — the point of the
+   * watermark — it cannot release the hold either.
+   *
+   * ONE number for both sides, because the take and the release have to turn
+   * on the same condition (review r3). They did not: the hold is taken by any
+   * window-closing POST, whether or not anything was comparing, while the
+   * release was denied only to an answer bracketed by a COMPARISON ending
+   * (`warnedFor`, which moves on exactly that event and nothing else). So a
+   * swap that ended no run left the in-flight pre-swap poll free to answer
+   * FIRST — nothing newer had been applied, so the sequence check passed it —
+   * releasing the hold and handing `ready` back to the wording under a strip
+   * that outlived its own migration: #1533 verbatim, "Start a new comparison
+   * from the current migration." over a server whose compare route already
+   * answers 409, for as long as the confirming GET kept failing.
+   *
+   * It SUBSUMES the `warnedFor` snapshot it replaces rather than sitting
+   * beside it: every ending takes the hold, and a take can only raise the
+   * watermark to at least the number of every request already in flight, so
+   * every answer that snapshot dropped is at or below the watermark too.
+   */
+  const windowClosedAtSeq = useRef(0);
+  /**
+   * The one take, so the release predicate above has exactly one event to
+   * compare against and the two cannot drift apart again.
+   */
+  const holdEndedWindow = useCallback(() => {
+    setEndedWindowUnconfirmed(true);
+    windowClosedAtSeq.current = requestSeq.current;
+  }, []);
+  /** The one ending both arms report — the local action and the remote one.
+   *  Written once so the two paths cannot drift apart. */
+  const warnComparisonEnded = useCallback(
+    (runId: string) => {
+      if (warnedFor.current === runId) return;
+      warnedFor.current = runId;
+      compareRunInFlight.current = null;
+      setCompareRunning(false);
+      setEndedNotice(true);
+      holdEndedWindow();
+      toast.warning(`${COMPARISON_ENDED} ${COMPARISON_UNAVAILABLE}`);
+    },
+    [holdEndedWindow],
+  );
+  // Through a ref so an inline arrow prop cannot re-fire the effect each render.
+  const onActiveChangeRef = useRef(onActiveChange);
+  onActiveChangeRef.current = onActiveChange;
 
   const refresh = useCallback(async () => {
-    // Snapshotted BEFORE the request: an ending reported while this GET was in
-    // flight makes its answer OLDER than the ending, and `warnedFor` changes on
-    // exactly that event (it latches per run id, so two endings cannot share a
-    // value). The 5s poll is in flight across a lifecycle POST often enough to
-    // matter — the comment on `endsMigrationWindow` below says why — and such
-    // an answer must be DROPPED, not merely denied the confirmation: whichever
-    // order the two responses land in, taking a pre-ending body for "the last
-    // known state" puts the whole pre-swap branch (compare section, enabled
-    // Swap) back over a server that has already swapped and answers 409, and
-    // the prescription comes back with it once the hold is legitimately
-    // released by the newer answer (review r2 of #1533).
-    const knownEnding = warnedFor.current;
+    // Numbered BEFORE the request, so the number IS the issue order. The 5s
+    // poll is in flight across a lifecycle POST often enough to matter — the
+    // comment on `endsMigrationWindow` below says why — and whichever order
+    // the two responses land in, taking a pre-close body for "the last known
+    // state" puts the whole pre-swap branch (compare section, enabled Swap)
+    // back over a server that has already swapped and answers 409, with the
+    // prescription on it. So such an answer is DROPPED, not merely denied the
+    // confirmation (review r2/r3 of #1533).
     const seq = ++requestSeq.current;
     try {
       const s = await apiFetch<ShadowStatus>('/admin/embedding/shadow-migration');
-      if (warnedFor.current !== knownEnding) return;
+      if (seq <= windowClosedAtSeq.current) return;
       if (seq < appliedSeq.current) return;
       appliedSeq.current = seq;
       setStatus(s);
@@ -301,9 +326,11 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
       // over a server whose compare route already answers 409, for as long as
       // the confirming status GET kept failing — #1533 on the sibling path,
       // against the r1 standard that the wording may not depend on that
-      // request ever landing. Released by the first status answer newer than
-      // the ending, exactly as `warnComparisonEnded` releases its own.
-      if (opts.endsMigrationWindow) setEndedWindowUnconfirmed(true);
+      // request ever landing. Through the same `holdEndedWindow` the ending
+      // arm uses, so this take carries the watermark that releases it: a hold
+      // taken by a POST no comparison bracketed was otherwise released by the
+      // very pre-swap answer it exists to outlive (review r3).
+      if (opts.endsMigrationWindow) holdEndedWindow();
       if (endedComparison) {
         // The action succeeded; the comparison is the collateral, hence
         // `warning` rather than `error` (#1260 r3). The run re-reads the
