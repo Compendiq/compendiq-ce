@@ -210,12 +210,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     // flight makes its answer OLDER than the ending, and `warnedFor` changes on
     // exactly that event (it latches per run id, so two endings cannot share a
     // value). The 5s poll is in flight across a lifecycle POST often enough to
-    // matter, and its pre-swap `ready` must not be taken for confirmation.
+    // matter — the comment on `endsMigrationWindow` below says why — and such
+    // an answer must be DROPPED, not merely denied the confirmation: whichever
+    // order the two responses land in, taking a pre-ending body for "the last
+    // known state" puts the whole pre-swap branch (compare section, enabled
+    // Swap) back over a server that has already swapped and answers 409, and
+    // the prescription comes back with it once the hold is legitimately
+    // released by the newer answer (review r2 of #1533).
     const knownEnding = warnedFor.current;
     try {
       const s = await apiFetch<ShadowStatus>('/admin/embedding/shadow-migration');
+      if (warnedFor.current !== knownEnding) return;
       setStatus(s);
-      if (warnedFor.current === knownEnding) setEndedWindowUnconfirmed(false);
+      setEndedWindowUnconfirmed(false);
     } catch {
       // transient — keep the last known state
     }
@@ -427,6 +434,11 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
   // admin asked for succeeded and the migration is fine — the comparison is the
   // collateral, which is what ADR-010 reserves amber for. It is dismissible so
   // it cannot stand at rest on a card the admin still has to finish using.
+  // The polite region's text is derived per render, so it MUTATES in place when
+  // the branch changes under an undismissed notice — a second announcement, and
+  // deliberately so (review r2): what it then says is true of the branch now on
+  // screen, whereas latching the sentence at warn time would keep prescribing a
+  // comparison after the window closed, which is the whole of #1533.
   const endedStrip = endedNotice ? (
     <div
       role="status"

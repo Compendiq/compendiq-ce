@@ -1082,6 +1082,92 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       expect(strip.textContent).toMatch(/not available now/i);
       vi.useRealTimers();
     });
+
+    it('drops that stale answer even when it lands AFTER the confirming one (r2)', async () => {
+      // The mirror ordering, and the one the hold alone cannot survive: the
+      // swap's own `refresh()` answers first and legitimately releases the
+      // hold, and only then does the pre-swap poll return. Without ordering
+      // discipline its `setStatus` reinstates `ready` as "the last known
+      // state" — which brings back the prescription AND the whole pre-swap
+      // branch (compare section, enabled Swap) over a server that is swapped
+      // and answers 409. Ordinary latency variance, not an exotic race: the
+      // status GET recomputes `phase` from a live count.
+      let phase: 'ready' | 'swapped' = 'ready';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const { gate, parked } = mockGatedSwap(() => ({ active: true, migration: { ...MIGRATION, phase } }));
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      gate.park = true;
+      await vi.advanceTimersByTimeAsync(5_000); // the poll fires and parks, pre-swap
+      expect(parked).toHaveLength(1);
+
+      // From here every status GET answers normally, with the post-swap truth.
+      gate.park = false;
+      phase = 'swapped';
+      fireEvent.click(screen.getByRole('button', { name: /swap to the new model/i }));
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByTestId('shadow-compare-section')).toBeNull());
+      const strip = screen.getByTestId('shadow-compare-ended');
+      const announced = strip.textContent;
+
+      // Only now does the parked poll answer, describing the migration as it
+      // was BEFORE the swap it never saw.
+      await act(async () => {
+        parked[0]({ active: true, migration: { ...MIGRATION, phase: 'ready' } });
+      });
+
+      // The branch first: a stale answer taken for the last known state puts
+      // the pre-swap card back over a swapped server.
+      expect(screen.queryByTestId('shadow-compare-section')).toBeNull();
+      expect(screen.queryByRole('button', { name: /swap to the new model/i })).toBeNull();
+      // …and the wording with it, re-announced by the retained polite region.
+      expect(screen.getByTestId('shadow-compare-ended')).toBe(strip);
+      expect(strip.textContent).toBe(announced);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      vi.useRealTimers();
+    });
+
+    it('re-words an undismissed strip when a LATER migration closes the window (r2)', async () => {
+      // Deriving the sentence per render made this region's text mutable, so an
+      // undismissed notice that outlives its own migration is re-announced by
+      // the polite region when the NEXT one is swapped — with no new ending
+      // behind it. Pinned deliberately rather than latched at warn time: the
+      // cell above ('keeps the prescription…') needs the sentence re-derived
+      // when a later migration reaches `ready`, and a latch would red it. One
+      // redundant utterance of accurate text beats a stale prescription.
+      let status: Status = { active: true, migration: { ...MIGRATION } };
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockRunning(() => status);
+      renderCard(null);
+
+      fireEvent.click(await screen.findByTestId('shadow-compare-start'));
+      await screen.findByTestId('shadow-compare-progress');
+      status = { active: false, migration: null }; // rolled back elsewhere
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1));
+
+      status = { active: true, migration: { ...MIGRATION, startedAt: '2026-08-07T09:00:00.000Z' } };
+      await vi.advanceTimersByTimeAsync(6_000);
+      const strip = await screen.findByTestId('shadow-compare-ended');
+      expect(strip.textContent).toMatch(/start a new comparison/i);
+
+      // A second migration, swapped with no comparison of its own running.
+      status = {
+        active: true,
+        migration: { ...MIGRATION, phase: 'swapped', startedAt: '2026-08-07T09:00:00.000Z' },
+      };
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() => expect(screen.queryByTestId('shadow-compare-section')).toBeNull());
+
+      // Same node, new text, and no new ending was reported for it.
+      expect(screen.getByTestId('shadow-compare-ended')).toBe(strip);
+      expect(strip.textContent).not.toMatch(/start a new comparison/i);
+      expect(strip.textContent).toMatch(/not available now/i);
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
   });
 
   describe('the backfilling note asks the server, not this session (r1)', () => {
