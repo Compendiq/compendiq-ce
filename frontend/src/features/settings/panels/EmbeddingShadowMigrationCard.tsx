@@ -106,10 +106,15 @@ const COMPARISON_RESTARTABLE = 'Start a new comparison from the current migratio
  * It names what comparing NEEDS rather than a control, in the phase vocabulary
  * the card already speaks, so it composes with whatever the branch's own prose
  * says to do next: finish the abort, wait for the backfill, clean up or roll
- * back, start a re-embed. What it names is exactly what the compare route
- * gates on — `llm-embedding-shadow.ts` 409s on `status.phase !== 'ready'`, the
- * phase alone — and its second clause is checkable from the card on screen:
- * every branch that renders this sentence renders no Swap control either.
+ * back, start a re-embed. What it names is the route's PHASE gate —
+ * `llm-embedding-shadow.ts` refuses anything but `ready`, and refuses
+ * `swapped`/`aborting` one gate earlier still, on the migration row itself
+ * (`status.status !== 'active'`, which those two phases imply). The shared
+ * benchmark slot is a third, phase-independent 409 that can refuse in `ready`
+ * too — which is why this sentence claims only what comparing NEEDS and never
+ * that the route will accept. Its second clause is checkable from the card on
+ * screen: every branch that renders this sentence renders no Swap control
+ * either.
  */
 const COMPARISON_UNAVAILABLE =
   'Comparing on real queries needs a migration waiting at the swap, and this card is not showing one.';

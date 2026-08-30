@@ -844,7 +844,7 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     //
     // One cell per branch the strip can render in — five — plus the one place
     // no sentence is possible at all. The sentence is a pure function of the
-    // snapshot each branch is rendered from (`endedRecoveryFor`), so these
+    // snapshot each branch is rendered from (`endedRecovery`), so these
     // cells ARE its truth table.
     const MIGRATION = {
       phase: 'ready' as const,
@@ -932,9 +932,11 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
       // …and it may not name a condition THIS migration already satisfies:
       // `MIGRATION` has zero stragglers and a built index, so a sentence about
       // a finished backfill or a built index would describe the card on screen
-      // while the compare route answers 409 on the phase alone
-      // (`llm-embedding-shadow.ts`: `status.phase !== 'ready'`). "Waiting at
-      // the swap" is the phase, and this branch offers no Swap control.
+      // while the compare route still refuses it — an `aborting` migration is
+      // refused on the migration row itself (`llm-embedding-shadow.ts`:
+      // `status.status !== 'active'`), one gate before the phase check.
+      // "Waiting at the swap" is the phase, and this branch offers no Swap
+      // control.
       expect(MIGRATION.stragglerPages).toBe(0);
       expect(MIGRATION.indexReady).toBe(true);
       expect(strip.textContent).not.toMatch(/backfill|index/i);

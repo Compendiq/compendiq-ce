@@ -141,8 +141,9 @@ committing. The shadow card's **Compare on real queries** section (or
   "already running". A swap/abort/rollback landing mid-run fails the run
   cleanly with a message naming the migration change — and the same action
   closes the window the run needed, so **there is nothing to restart from the
-  new state**: the route 409s on the phase alone, `swapped` and `aborting`
-  included. The next comparison waits for the next `ready` window — after a
+  new state**: the route refuses anything but `ready` — `swapped` and
+  `aborting` are refused on the migration row itself, one gate earlier.
+  The next comparison waits for the next `ready` window — after a
   rollback that means starting the re-embed again and letting it backfill;
   after a cleanup the cutover is finished and there is nothing left to
   compare. **You are told, and not by the section** —
@@ -157,7 +158,8 @@ committing. The shadow card's **Compare on real queries** section (or
   `backfilling`, and a card left with only an unsaved model change — it says
   comparing needs a migration waiting at the swap and that this card is not
   showing one, which is checkable from the card in front of you (no Swap
-  control on it) and is exactly what the route gates on. The sentence is a
+  control on it) and is what the route requires before it will accept a run
+  at all. The sentence is a
   pure function of the status answer the branch itself was drawn from, so the
   two always agree; if that answer was already stale when it landed, the strip
   and the branch are wrong together and the next poll (≤5 s) corrects both.
