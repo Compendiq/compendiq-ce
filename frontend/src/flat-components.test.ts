@@ -639,6 +639,28 @@ const SYSTEM_SHADOW =
   /^shadow-(?:overlay(?:-sm)?|\[var\(--shadow-overlay\)\]|\(--shadow-overlay(?:-sm)?\))$/;
 
 /**
+ * The shadow spellings that can stand in an English sentence: the family prefix
+ * and nothing after it. `shadow` is a word, and `box-shadow` / `text-shadow` are
+ * CSS property names, so a string that documents one — `'transition: box-shadow
+ * 200ms'` — is prose rather than a call site.
+ *
+ * Every other spelling `SHADOW_UTILITY` matches carries a scale, an arbitrary
+ * value, a custom property, a palette shade or an alpha, and no sentence spells
+ * any of those. Gating them on the prose verdict was a hole in exactly the
+ * capability this rule ADDS: one `PROSE_WORD` token beside a v4-only spelling —
+ * `` `tag ${x} none shadow-xs` `` — made the segment prose, and since the pre-v4
+ * pattern cannot see `shadow-xs` at all, the token escaped BOTH assertions.
+ * Measured on this tree, 5274 segments are judged prose and NONE of them carries
+ * any shadow token, so deciding the suffixed forms without the gate costs
+ * nothing today and closes that hole by construction.
+ *
+ * The bare forms lose nothing by staying gated: assertion 1 has no prose
+ * exemption at all, and its leading `\b` catches every one of them in every body
+ * it sweeps.
+ */
+const BARE_SHADOW = new RegExp(`^${SHADOW_FAMILY}shadow$`);
+
+/**
  * The utility a token names, with its variants removed.
  *
  * The split has to happen at the last colon that is OUTSIDE brackets and
@@ -688,8 +710,13 @@ function shadowUtilities(segment: string): string[] {
 }
 
 /**
- * Every banned shadow in every segment that is a class list, with the segment
- * quoted for the failure message.
+ * Every banned shadow in every segment, with the segment quoted for the failure
+ * message.
+ *
+ * The prose verdict gates the AMBIGUOUS spellings only — see `BARE_SHADOW`. It
+ * used to gate the whole segment, and that made the exemption cover the one
+ * thing this rule exists to add: `shadow-xs` beside a single English word was
+ * exempt here and invisible to assertion 1, so it escaped the guard entirely.
  *
  * The `.slice(0, 100)` is DISPLAY only, and the allowance is decided per token
  * above it. Judging an allowance on the shortened string is a live bug this
@@ -701,8 +728,9 @@ function shadowUtilities(segment: string): string[] {
 function shadowOffenders(segments: string[]): { token: string; segment: string }[] {
   const out: { token: string; segment: string }[] = [];
   for (const segment of segments) {
-    if (!isClassList(segment)) continue;
+    const classList = isClassList(segment);
     for (const token of shadowUtilities(segment)) {
+      if (!classList && BARE_SHADOW.test(token)) continue;
       out.push({ token, segment: segment.replace(/\s+/g, ' ').trim().slice(0, 100) });
     }
   }
@@ -756,6 +784,38 @@ const preV4Allowance = (body: string): boolean =>
   /\bshadow-\[var\(--shadow-overlay\)\]/.test(body);
 
 /**
+ * Dev's rule, EVALUATED over the files handed in — pattern, allowance and
+ * scanner together. Assertion 1's cell is one call to this, and the self-test
+ * below calls the same function over planted fixtures, so the union property has
+ * an executable pin instead of a pinned constant.
+ *
+ * Pinning the pattern LITERAL, which is all the previous version did, pins a
+ * `const` and not the thing that reads the tree. Five ways of quietly degrading
+ * assertion 1 left the suite green at 42/42 — narrowing the pattern AT THE CALL
+ * SITE, widening the allowance by eight characters, lending it assertion 2's
+ * prose exemption, skipping files assertion 2 already reported, and deleting the
+ * loop — and the third of those silenced an offender dev's rule catches, making
+ * the union strictly weaker than dev with nothing red anywhere.
+ *
+ * The parameter is `{ path, strings }` and nothing else on purpose, and the
+ * self-test's fixture carries exactly those two fields: a degradation that wants
+ * another field of `FILES` — the segments, to defer to assertion 2 — throws on
+ * the fixture and reds there. (`frontend/tsconfig.json` excludes `*.test.ts`, so
+ * the narrow type is documentation and the fixture is the enforcement; that
+ * asymmetry was checked, not assumed — the mutation typechecks clean and reds
+ * under vitest.)
+ */
+function preV4Offenders(files: readonly { path: string; strings: string[] }[]): string[] {
+  const offenders: string[] = [];
+  for (const file of files) {
+    for (const hit of callsites(file, PRE_V4_PATTERN, preV4Allowance)) {
+      offenders.push(`${file.path}: ${hit}`);
+    }
+  }
+  return offenders;
+}
+
+/**
  * The `shadow-xs` call sites Tailwind 4's rename left standing while the guard
  * was still written for v3. They are REGISTERED, not exempted: the cell below
  * requires the register to be exact, so removing one of these classes fails the
@@ -801,13 +861,13 @@ describe('the component layer is as flat as the token layer', () => {
     // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
     // arbitrary value, for the overlays that are not `nm-card-elevated`
     // (two drawers, a round floating button). Allowed by name.
-    const offenders: string[] = [];
-    for (const file of FILES) {
-      const hits = callsites(file, PRE_V4_PATTERN, preV4Allowance);
-      for (const hit of hits) offenders.push(`${file.path}: ${hit}`);
-    }
+    //
+    // The body is one call on purpose: `preV4Offenders` is the whole pipeline,
+    // the self-test pins its verdict on planted fixtures, and there is nothing
+    // left in here that can be narrowed, scoped or short-circuited without the
+    // deletion being visible in the diff.
     expect(
-      offenders,
+      preV4Offenders(FILES),
       `Tailwind's shadow scale is not part of this system. An overlay (popover, ` +
         `dropdown, dialog, palette, toast) uses \`nm-card-elevated\`; an in-page ` +
         `pane earns emphasis from position, spacing and heading weight.`,
@@ -1066,6 +1126,53 @@ describe('the shadow guard is itself under test', () => {
     expect(PRE_V4_PATTERN.flags).toBe('');
     expect(preV4Allowance('flex shadow-[var(--shadow-overlay)] p-2')).toBe(true);
     expect(preV4Allowance('flex shadow-lg p-2')).toBe(false);
+    // The allowance had no falsifying probe on the side that matters. Widening it
+    // by eight characters — `--shadow-overlay(?:-sm)?` — left the whole suite
+    // green while exempting a body dev's rule flags, i.e. while making the union
+    // strictly weaker than dev. The second probe closes the wider widening, to
+    // any `shadow-[var(…)]`, which would have exempted the retired
+    // `--nm-shadow-out-strong` token this cell's own history calls the worst
+    // thing the guard ever let through.
+    expect(preV4Allowance('flex shadow-[var(--shadow-overlay-sm)] p-2')).toBe(false);
+    expect(preV4Allowance('flex shadow-[var(--nm-shadow-out-strong)] p-2')).toBe(false);
+  });
+
+  it("the first assertion EVALUATES dev's rule, not just a copy of its literal", () => {
+    // The cell above pins a `const`; this one pins the pipeline that reads the
+    // tree, which is a different thing and the one the union rests on. Without
+    // it, five degradations of assertion 1 passed 42/42: narrowing the pattern at
+    // the CALL SITE, widening the allowance, lending assertion 1 assertion 2's
+    // prose exemption, skipping files assertion 2 reported, and deleting the loop
+    // outright — and the prose-exemption one silenced `'transition: box-shadow
+    // 200ms'`, an offender the shipped guard catches.
+    //
+    // The fixtures are chosen so the expectation dies in every direction: narrow
+    // the pattern and `p-1.5 shadow-lg` drops out, give assertion 1 a prose
+    // exemption and the CSS-property body and `PROSE` drop out, widen the
+    // allowance and the `--shadow-overlay-sm` body drops out, delete the loop and
+    // all four do. The fourth body pins that dev's real allowance still fires.
+    const planted = [
+      {
+        path: 'x.tsx',
+        strings: stringBodies(
+          "const a = 'transition: box-shadow 200ms';\n" +
+            "const b = 'p-1.5 shadow-lg';\n" +
+            `const c = '${PROSE}';\n` +
+            "const d = 'flex shadow-[var(--shadow-overlay)] p-2';\n" +
+            "const e = 'flex shadow-[var(--shadow-overlay-sm)] p-2';",
+        ),
+      },
+    ];
+    expect(planted[0]!.strings).toHaveLength(5);
+    expect(preV4Offenders(planted)).toEqual([
+      'x.tsx: transition: box-shadow 200ms',
+      'x.tsx: p-1.5 shadow-lg',
+      `x.tsx: ${PROSE}`,
+      'x.tsx: flex shadow-[var(--shadow-overlay-sm)] p-2',
+    ]);
+    // No tree call here: the shipped cell is the tree call, and repeating it
+    // would only make one real offender red two cells while adding no mutation
+    // coverage — `preV4Offenders(FILES.filter(…))` is empty either way.
   });
 
   it('the two assertions read the tree through their own scanners', () => {
@@ -1115,6 +1222,32 @@ describe('the shadow guard is itself under test', () => {
     // English words, so shape alone cannot separate them; function words can.
     expect(flagged(`const note = 'a shadow under every card';`)).toEqual([]);
     expect(isClassList('a shadow under every card')).toBe(false);
+  });
+
+  it('flags a Tailwind 4 shadow even where the segment reads as prose', () => {
+    // The hole the prose exemption opened in the capability this rule ADDS, and
+    // the shape the orchestrator warned about: closed the stated hole, opened a
+    // new one. `none` is a `PROSE_WORD`, so the segment is not a class list and
+    // the exemption used to skip the whole thing before any shadow was looked
+    // at; the pre-v4 pattern cannot see `shadow-xs` at all, so assertion 1 was
+    // silent too and the token escaped the entire guard.
+    expect(isClassList('tag none shadow-xs')).toBe(false);
+    expect(PRE_V4_PATTERN.test('tag none shadow-xs')).toBe(false);
+    expect(flagged('const CLS = "tag none shadow-xs";')).toEqual(['shadow-xs']);
+    expect(flagged('const CLS = `tag ${x} none shadow-xs`;')).toEqual(['shadow-xs']);
+    // Every v4-only spelling, in a segment one English word makes prose.
+    const ungated = ['shadow-2xs', 'shadow-(--shadow-glow)', 'shadow-cyan-400/40', 'shadow-primary'];
+    expect(ungated.filter((form) => flagged(`const CLS = 'tag none ${form}';`).length === 0)).toEqual(
+      [],
+    );
+    // The bare word stays gated, and that costs the union nothing: assertion 1
+    // has no prose exemption, so it catches the bare forms in every body.
+    expect(BARE_SHADOW.test('shadow')).toBe(true);
+    expect(BARE_SHADOW.test('box-shadow')).toBe(true);
+    expect(BARE_SHADOW.test('shadow-xs')).toBe(false);
+    expect(flagged(`const note = '${PROSE}';`)).toEqual([]);
+    expect(preV4Catches(`const note = '${PROSE}';`)).toBe(true);
+    expect(preV4Catches(`const note = 'transition: box-shadow 200ms';`)).toBe(true);
   });
 
   it('catches every form the pre-v4 pattern caught', () => {
