@@ -326,6 +326,14 @@ describe('ImageIndexCard (#1115 P2)', () => {
       // The whole point: a genuinely disabled control cannot keep the focus
       // the flag exists to hold, for the minutes the scan lasts.
       expect(btn).not.toHaveAttribute('disabled');
+      // Review r1: element `opacity` composites the 1px operable border toward
+      // the card, so the recipe's 70 left it at 2.47 (Graphite) / 2.35 (Paper)
+      // against CLAUDE.md's WCAG 1.4.11 floor of 3:1; at 90 it measures
+      // 3.27 / 3.18. Asserted as a FLOOR, like `RetrievalTab`'s, and identical
+      // to `AttachmentStorageCard`'s so the two cards' busy states match.
+      const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
+      expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
     }
   });
 

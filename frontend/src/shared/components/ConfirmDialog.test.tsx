@@ -90,12 +90,26 @@ function TriggerHarness({ onConfirmRehomes = false }: { onConfirmRehomes?: boole
  *
  * `finish` re-enables the trigger the way the settling mutation does, from
  * outside the dialog, so the retry window is exercised without a timer race.
- * jsdom does not focus on click, so pressing it moves nothing.
+ * jsdom does not focus on click, so pressing it moves nothing. `settleMs`
+ * settles that same mutation from a real timer instead, which is the only way
+ * to express a POST that answers LATER than a fixed restore window would have
+ * waited (review r1).
  */
-function ReplacedTriggerHarness({ mode }: { mode: 'disabled' | 'replaced' | 'removed' }) {
+function ReplacedTriggerHarness({
+  mode,
+  settleMs,
+}: {
+  mode: 'disabled' | 'replaced' | 'removed';
+  settleMs?: number;
+}) {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [generation, setGeneration] = useState(0);
+  useEffect(() => {
+    if (!running || settleMs === undefined) return;
+    const timer = setTimeout(() => setRunning(false), settleMs);
+    return () => clearTimeout(timer);
+  }, [running, settleMs]);
   return (
     <>
       {(mode !== 'removed' || generation === 0) && (
@@ -125,6 +139,48 @@ function ReplacedTriggerHarness({ mode }: { mode: 'disabled' | 'replaced' | 'rem
           if (mode === 'disabled') setRunning(true);
           else setGeneration((generationValue) => generationValue + 1);
         }}
+        onCancel={() => setOpen(false)}
+      />
+    </>
+  );
+}
+
+/**
+ * The owner unmounts the dialog while it is still `open` — the confirmed action
+ * navigates away (a 401 redirect to the login page, a parent switching to an
+ * error branch) — and the surface that replaces it reuses the same
+ * `data-testid`. Radix dispatches close-auto-focus one macrotask AFTER that
+ * unmount commit, so the restore starts with every cleanup here already run,
+ * and a freshly-mounted screen looks exactly like the state the restore waits
+ * for: `<body>` holding the keyboard.
+ */
+function UnmountOnConfirmHarness() {
+  const [gone, setGone] = useState(false);
+  const [open, setOpen] = useState(false);
+  if (gone) {
+    // A different subtree, so React really unmounts the trigger rather than
+    // reconciling the two buttons into one node: the replacement control is a
+    // new element that happens to carry the identity the restore resolves by.
+    return (
+      <div data-testid="next-screen">
+        <button type="button" data-testid="trigger">
+          A totally different control on the next screen
+        </button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <button type="button" data-testid="trigger" onClick={() => setOpen(true)}>
+        Delete conversation
+      </button>
+      <ConfirmDialog
+        open={open}
+        destructive
+        title="Delete conversation?"
+        description="This can't be undone."
+        confirmLabel="Delete"
+        onConfirm={() => setGone(true)}
         onCancel={() => setOpen(false)}
       />
     </>
@@ -480,5 +536,91 @@ describe('ConfirmDialog', () => {
 
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(kebab);
+  });
+
+  /**
+   * Review r1's executed probe: while the wait ended at a fixed wall-clock
+   * deadline, whether the admin got the keyboard back depended on how fast the
+   * server answered — restored when the POST settled in 200 ms, silently
+   * abandoned when it settled in 700 ms. That is not a hypothetical shape:
+   * three unconverted ConfirmDialog triggers hold themselves natively
+   * `disabled` for exactly one POST (`WorkersTab` Rescan All, `SpacesTab`
+   * Remove space, `BulkActionBar` Move to Trash), and none of them carries a
+   * `data-testid`, so the node-that-cannot-take-focus is all the restore has.
+   * The wait is driven by the mutation that re-enables the control instead, so
+   * this cell reds against a deadline of any length below `settleMs`.
+   */
+  it('returns focus once the confirmed mutation settles, however long it took', async () => {
+    render(<ReplacedTriggerHarness mode="disabled" settleMs={700} />);
+    const trigger = openFromTrigger();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await flushCloseAutoFocus();
+    // Premise: the POST is in flight, its own trigger cannot take focus, and
+    // the old 500 ms window will have expired before it settles.
+    expect(screen.getByTestId('trigger')).toBeDisabled();
+    expect(document.activeElement).toBe(document.body);
+
+    await waitFor(
+      () => {
+        expect(document.activeElement).toBe(trigger);
+      },
+      { timeout: 2000 },
+    );
+  });
+
+  /**
+   * The restore must not outlive the component. Radix dispatches
+   * close-auto-focus one macrotask after the unmount commit, so a dialog whose
+   * OWNER unmounts it while still `open` reaches `onCloseAutoFocus` with every
+   * cleanup already run — and re-resolving the invoker by `data-testid` then
+   * aims at whatever carries that identity on the surface that replaced it.
+   * Deleting the `aliveRef` guard reds this: focus lands on a control the
+   * operator never pressed, on a screen the dialog never belonged to.
+   */
+  it('never restores onto a surface the dialog no longer belongs to', async () => {
+    render(<UnmountOnConfirmHarness />);
+    const trigger = openFromTrigger();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await flushCloseAutoFocus();
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 120);
+      await promise;
+    });
+
+    // Premise: the replacement really does carry the identity the restore
+    // re-resolves by, and the dialog itself is gone.
+    expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('trigger')).not.toBe(trigger);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  /**
+   * The other half of "the admin moved on", which the `<body>` guard cannot
+   * see: a press on something unfocusable leaves `document.activeElement` on
+   * `<body>`, so without the pointer listener the restore would still fire
+   * whenever the mutation happens to settle — now that the wait is no longer
+   * capped at half a second, that could be seconds after the operator's
+   * attention left. Deleting the `pointerdown` listener reds this.
+   */
+  it('abandons the restore once the admin has pressed somewhere unfocusable', async () => {
+    render(<ReplacedTriggerHarness mode="disabled" />);
+    openFromTrigger();
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
+    await flushCloseAutoFocus();
+    expect(document.activeElement).toBe(document.body);
+
+    fireEvent.pointerDown(document.body);
+    fireEvent.click(screen.getByTestId('finish'));
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 120);
+      await promise;
+    });
+
+    expect(document.activeElement).toBe(document.body);
   });
 });

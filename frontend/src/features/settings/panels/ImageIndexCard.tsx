@@ -349,11 +349,20 @@ export function ImageIndexCard() {
         <button
           type="button"
           data-testid="image-index-process"
-          // `opacity-70`, not the `:disabled` rule's 45 — at 45% this 12px
+          // `opacity-90`, not the `:disabled` rule's 45 — at 45% this 12px
           // label falls under the 4.5:1 floor in both themes, and WCAG's
           // inactive-component exemption does not cover a control that keeps
           // its focus and refuses in its HANDLER (the `RetrievalTab` recipe).
-          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          //
+          // 90 rather than that recipe's 70 because element `opacity` composites
+          // the 1px operable BORDER toward the card as well as the label:
+          // border-vs-card measures 3.74 at rest, 3.27 (Graphite) / 3.18 (Paper)
+          // at 90, but 2.47 / 2.35 at 70 — under CLAUDE.md's WCAG 1.4.11 floor
+          // for the whole multi-minute scan (review r1). `RetrievalTab` asserts
+          // 70 as a FLOOR precisely so an upward retune like this is free, and
+          // `AttachmentStorageCard` carries the same 90 so the two cards' busy
+          // states stay identical (#1532's per-group rule).
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // The refusal `aria-disabled` cannot perform — it blocks no
@@ -372,7 +381,7 @@ export function ImageIndexCard() {
         <button
           type="button"
           data-testid="image-index-rescan"
-          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             if (actionsDisabled) return;

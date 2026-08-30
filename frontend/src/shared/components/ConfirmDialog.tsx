@@ -36,7 +36,12 @@
  *    the same commit. A one-shot `focus()` fires into that window and does
  *    nothing. Hence `restoreFocus`: the invoker is re-resolved by identity
  *    (`data-testid`, else `id`) rather than held as a node, and the attempt is
- *    retried for a bounded window until the control can take focus.
+ *    re-made on every DOM mutation that could hand the control its focusability
+ *    back. That wait is event-driven and not a clock: three ConfirmDialog
+ *    triggers hold themselves natively `disabled` for exactly as long as their
+ *    POST takes (`WorkersTab` Rescan All, `SpacesTab` Remove space,
+ *    `BulkActionBar` Move to Trash), so a fixed wall-clock window restored
+ *    focus on a fast server and silently gave up on a slow one (review r1).
  * 2. A dialog opened from a menu item captures the closing menu's portalled
  *    content, never the kebab the admin pressed (`ConversationRowMenu` Delete,
  *    `UserMenu` Sign out). Radix names the owner — menu content carries
@@ -45,9 +50,12 @@
  *    own aria contract, not an ancestor guess.
  *
  * Both paths keep the one rule that makes this safe to put in a shared
- * component: nothing is ever taken from a keyboard that is somewhere else. The
- * restore, first attempt and retries alike, acts only while
- * `document.activeElement` is `<body>`.
+ * component: nothing is ever taken from a keyboard that is somewhere else, and
+ * nothing is taken from an admin who has moved on. The restore — first attempt
+ * and every re-attempt — acts only while `document.activeElement` is `<body>`,
+ * ends at the first pointer press anywhere, and cannot start at all once this
+ * component has been unmounted (Radix dispatches close-auto-focus one
+ * macrotask AFTER the unmount commit, so the cleanup alone cannot stop it).
  */
 
 import { useEffect, useRef } from 'react';
@@ -64,10 +72,24 @@ interface Invoker {
   selector: string | null;
 }
 
-/** How long a trigger gets to become focusable again after the dialog closes. */
-const RESTORE_WINDOW_MS = 500;
-/** Roughly one frame; the browser trace needed three of them. */
-const RESTORE_POLL_MS = 16;
+/**
+ * When a restore the invoker never satisfied is abandoned. Not a latency
+ * budget: the wait is driven by the DOM mutations that make a control
+ * focusable again, so a POST answering in 5 s restores as surely as one
+ * answering in 5 ms. This is only the point past which a trigger that never
+ * came back stops being watched, so no dialog leaves an observer on the
+ * document for a settings panel's lifetime.
+ */
+const RESTORE_CEILING_MS = 10_000;
+
+/**
+ * The attributes that decide whether a control can take focus. A trigger its
+ * own mutation held `disabled` becomes focusable again through one of these; a
+ * trigger the commit re-mounted arrives as a `childList` mutation instead.
+ * `class`/`style` are here because a callsite may hold a control out of the
+ * tab order through CSS rather than through an attribute.
+ */
+const FOCUSABILITY_ATTRS = ['disabled', 'hidden', 'inert', 'tabindex', 'class', 'style'];
 
 const cssString = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
 
@@ -136,38 +158,89 @@ export function ConfirmDialog({
    * mount effect, i.e. after focus has already moved.
    */
   const invokerRef = useRef<Invoker | null>(null);
-  const retryRef = useRef<number | null>(null);
+  /** The live restore, or `null` when none is waiting. */
+  const pendingRef = useRef<{
+    observer: MutationObserver;
+    listeners: AbortController;
+    ceiling: number;
+  } | null>(null);
+  /**
+   * False from the unmount commit onwards. Radix's FocusScope dispatches
+   * close-auto-focus from a `setTimeout(…, 0)` in its own effect cleanup, so an
+   * owner that unmounts a still-OPEN dialog (a 401 redirect to the login page,
+   * a parent switching to an error branch) reaches `onCloseAutoFocus` a
+   * macrotask after every cleanup here has already run: cancelling a pending
+   * restore cannot cancel one that has not started yet. Without this flag the
+   * orphaned restore re-resolves the invoker by `data-testid` against whatever
+   * surface replaced the dialog's own, and a fresh screen looks exactly like
+   * the state the restore waits for — `<body>` holding the keyboard (review
+   * r1, proved by a probe that focused a control on the next route).
+   */
+  const aliveRef = useRef(true);
 
   const cancelRestore = () => {
-    if (retryRef.current === null) return;
-    window.clearTimeout(retryRef.current);
-    retryRef.current = null;
+    const pending = pendingRef.current;
+    if (!pending) return;
+    pendingRef.current = null;
+    pending.observer.disconnect();
+    // Removal by signal, not by handler identity: `cancelRestore` is a fresh
+    // closure on every render, so a later render could not remove the listener
+    // an earlier one added.
+    pending.listeners.abort();
+    window.clearTimeout(pending.ceiling);
   };
 
   /**
-   * One attempt, then retries until the invoker takes focus, something else
-   * claims it, or the window runs out. Anything but `<body>` holding the
-   * keyboard ends the restore: the admin who tabbed on, and the callsite that
-   * rehomed focus during its own commit (`EmbeddingShadowMigrationCard`'s
+   * One attempt; if the invoker cannot take focus yet, re-attempt on every DOM
+   * mutation that could give it its focusability back, until it takes focus,
+   * something else claims the keyboard, the admin presses somewhere, or the
+   * ceiling passes. Anything but `<body>` holding the keyboard ends the
+   * restore: the admin who tabbed on, and the callsite that rehomed focus
+   * during its own commit (`EmbeddingShadowMigrationCard`'s
    * `rehomeAfterDismiss`), have both already put focus somewhere deliberate.
+   * A pointer press ends it too — that admin moved on without moving focus off
+   * `<body>`, which is the one "moved on" the guard above cannot see.
    */
   const restoreFocus = (invoker: Invoker) => {
-    const deadline = Date.now() + RESTORE_WINDOW_MS;
     const attempt = () => {
-      retryRef.current = null;
-      if (document.activeElement !== document.body) return;
+      if (!aliveRef.current) return true;
+      if (document.activeElement !== document.body) return true;
       resolveInvoker(invoker)?.focus();
-      if (document.activeElement !== document.body) return;
-      if (Date.now() >= deadline) return;
-      retryRef.current = window.setTimeout(attempt, RESTORE_POLL_MS);
+      return document.activeElement !== document.body;
     };
-    attempt();
+    if (attempt()) return;
+    const observer = new MutationObserver(() => {
+      if (attempt()) cancelRestore();
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: FOCUSABILITY_ATTRS,
+    });
+    const listeners = new AbortController();
+    window.addEventListener('pointerdown', cancelRestore, {
+      capture: true,
+      signal: listeners.signal,
+    });
+    pendingRef.current = {
+      observer,
+      listeners,
+      ceiling: window.setTimeout(cancelRestore, RESTORE_CEILING_MS),
+    };
   };
 
-  // A pending retry outlives this component otherwise, and would fire against
-  // a torn-down document (the `@radix-ui/react-focus-scope` leak `test-setup`
-  // already works around, #799).
-  useEffect(() => cancelRestore, []);
+  // A pending restore outlives this component otherwise, and would fire
+  // against a torn-down document (the `@radix-ui/react-focus-scope` leak
+  // `test-setup` already works around, #799). `aliveRef` covers the other
+  // order — the restore that starts after this cleanup ran.
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      cancelRestore();
+    };
+  }, []);
 
   return (
     <Dialog.Root

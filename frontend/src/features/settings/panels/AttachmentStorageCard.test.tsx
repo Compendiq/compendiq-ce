@@ -1721,6 +1721,16 @@ describe('AttachmentStorageCard (#1349)', () => {
       const btn = screen.getByTestId(testId);
       expect(btn).toHaveAttribute('aria-disabled', 'true');
       expect(btn).not.toHaveAttribute('disabled');
+      // Review r1: element `opacity` composites the label, the fill and the 1px
+      // operable border toward the card, so the recipe's 70 put the filled
+      // variant's label at 3.90 (Graphite) / 3.32 (Paper) — under 4.5:1 — and
+      // the ghost variant's border at 2.47 / 2.35 — under 1.4.11's 3:1. At 90
+      // they measure 5.69 / 4.74 and 3.27 / 3.18. Asserted as a FLOOR, like
+      // `RetrievalTab`'s, so a retune upward is free and only a regression
+      // fails. jsdom computes no contrast; the numbers come from the tokens.
+      const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
+      expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
     }
   });
 });

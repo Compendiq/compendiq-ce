@@ -841,12 +841,21 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-dry-run"
-          // `opacity-70`, not the `:disabled` rule's 45 — WCAG's
+          // `opacity-90`, not the `:disabled` rule's 45 — WCAG's
           // inactive-component exemption does not cover a control that keeps
           // its focus and refuses in its HANDLER (the `RetrievalTab` recipe),
           // and `:disabled` also carried `pointer-events: none`, which is the
           // half that made the dim unhoverable rather than merely quiet.
-          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          //
+          // 90 and not the recipe's 70 because element `opacity` composites the
+          // BORDER toward the card too, and this button keeps a 1px operable
+          // boundary (CLAUDE.md's WCAG 1.4.11 rule, `--color-border-interactive`
+          // measured >=3:1 at rest). Computed from the tokens, border-vs-card:
+          // 3.74 at rest, 3.27 (Graphite) / 3.18 (Paper) at 90, but only
+          // 2.47 / 2.35 at 70 — under the floor for the whole multi-minute run
+          // (review r1). `RetrievalTab` asserts 70 as a FLOOR precisely so an
+          // upward retune like this one is free.
+          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // The refusal `aria-disabled` cannot perform — it blocks no
@@ -865,7 +874,15 @@ export function AttachmentStorageCard() {
           // The filled variant's own hover is a DARKENING, so the ghost
           // sibling's `hover:bg-transparent` would strip the fill instead of
           // holding it: this one pins the resting destructive background.
-          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-destructive"
+          //
+          // The filled recipe needs the same 90 for a different reason: element
+          // `opacity` composites the label AND its own fill toward the card, so
+          // the label-vs-fill ratio degrades with the dim — 6.78 / 5.55 at rest,
+          // 5.69 (Graphite) / 4.74 (Paper) at 90, and only 3.90 / 3.32 at 70,
+          // i.e. under the 4.5:1 floor for exactly the run this state exists to
+          // make legible (review r1; the 70 measurement on record was the ghost
+          // recipe's foreground-on-card, which passes comfortably).
+          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-destructive"
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             // Refusing the POST alone would not be enough: this button opens
