@@ -5,11 +5,9 @@
  * is covered against real Postgres and a temp tree in
  * attachment-sweep-service.integration.test.ts.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
+  buildAttachmentKeepSets,
   collectAttachmentUrlReferences,
   isImageLikeCandidate,
   KEEP_SET_YIELD_EVERY,
@@ -17,7 +15,38 @@ import {
   type AttachmentKeepSets,
 } from './attachment-sweep-service.js';
 
-const here = dirname(fileURLToPath(import.meta.url));
+/**
+ * The keep-set yield guard at the bottom drives the REAL
+ * `buildAttachmentKeepSets` with the two boundaries it reads replaced: the
+ * pages `SELECT` hands out one synthetic batch and every other keep-set
+ * `SELECT` comes back empty, and `getExpectedAttachmentFilenames` records
+ * which body it was handed instead of parsing it. Both mocks spread the real
+ * module, so nothing else in the graph is stubbed and no other test in this
+ * file changes meaning: the pure collectors below never reach either
+ * boundary.
+ */
+const keepSetProbe = vi.hoisted(() => ({
+  /** Rows the mocked pages `SELECT` returns, set by the test. */
+  pageRows: [] as Record<string, unknown>[],
+  /** Enumerator bodies and `tick` markers, in the order they happened. */
+  timeline: [] as string[],
+}));
+
+vi.mock('../../../core/db/postgres.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../core/db/postgres.js')>()),
+  query: async (sql: string) => ({
+    rows: sql.includes('FROM pages WHERE id >') ? keepSetProbe.pageRows : [],
+    rowCount: 0,
+  }),
+}));
+
+vi.mock('./attachment-handler.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./attachment-handler.js')>()),
+  getExpectedAttachmentFilenames: (body: string) => {
+    keepSetProbe.timeline.push(body);
+    return [] as string[];
+  },
+}));
 
 function emptySets(): AttachmentKeepSets {
   return { confluence: new Set<string>(), local: new Set<string>() };
@@ -325,29 +354,80 @@ describe('keep-set event-loop yield', () => {
     expect(seen).toBe(rows.length);
   });
 
-  it('runs the JSDOM body_storage walk through forEachRowYielding', () => {
-    const src = readFileSync(join(here, 'attachment-sweep-service.ts'), 'utf8');
-    expect(src).toMatch(
-      /forEachRowYielding\(rows, \(row\) => \{[\s\S]*?getExpectedAttachmentFilenames\(row\.body_storage/,
-    );
-  });
-
   /**
-   * #1525 added a SECOND JSDOM parse per page row (`draft_body_storage`), and
-   * the guard above pins only `body_storage` — moving the draft walk into its
-   * own batch with a blocking loop was a fully green regression (fixer r1
-   * reproduced it: 74/74 passed with the draft block hoisted out).
+   * Both JSDOM-parsed page columns — `body_storage` and, since #1525,
+   * `draft_body_storage` — must be enumerated for every row, and no
+   * uninterrupted event-loop tick may carry more than one yield window's
+   * worth of those parses. That is a scheduling property, not a source shape.
    *
-   * The lazy `[\s\S]*?` of the guard above is not enough on its own here: it
-   * happily spans OUT of the callback and into a later `forEachBatch`, so it
-   * still matches the hoisted-out shape. The negative lookahead stops the
-   * span at the next `forEachBatch<`, which is what makes "inside the SAME
-   * callback" actually checkable in source shape.
+   * Two earlier rounds asserted it as a regex over this service's source
+   * (`forEachRowYielding(rows, (row) => {` … `getExpectedAttachmentFilenames(
+   * row.<column>`, with a negative lookahead on `forEachBatch<`). Such a
+   * match does not prove lexical containment: moving the draft walk out of
+   * the yielding callback into a plain blocking loop over the whole 200-row
+   * batch, in the SAME per-batch callback, interposes no `forEachBatch<` and
+   * left every assertion green — a ~1.6 s uninterrupted tick that the guard
+   * claimed to make impossible (reproduced by three r2 reviewers and again
+   * here before this test replaced it).
+   *
+   * So drive the real function. `yieldToLoop` IS
+   * `timers/promises.setImmediate`, so a self-rescheduling `setImmediate`
+   * ticker interleaves with the walk's yields by ORDERING — never by wall
+   * clock, which is what fileParallelism made unusable for the integration
+   * file's timing gaps. A `tick` marker between two parses means the loop got
+   * a turn there; a stretch of parse markers with no `tick` is one
+   * uninterrupted tick, and the bound is the cost the `KEEP_SET_YIELD_EVERY`
+   * rationale is written against: `KEEP_SET_YIELD_EVERY` rows × the two
+   * storage columns of a page row. Every blocking shape measured here reds on
+   * it — the same-callback hoist and the own-`forEachBatch` hoist at 22 parses
+   * in one tick, a whole-batch blocking loop at 42 — while a second
+   * *yielding* pass over the same rows stays green, because that shape is not
+   * the regression.
    */
-  it('runs the draft_body_storage walk through the same forEachRowYielding callback (#1525)', () => {
-    const src = readFileSync(join(here, 'attachment-sweep-service.ts'), 'utf8');
-    expect(src).toMatch(
-      /forEachRowYielding\(rows, \(row\) => \{(?:(?!forEachBatch<)[\s\S])*?getExpectedAttachmentFilenames\(row\.draft_body_storage/,
-    );
+  it('never parses more than one yield window of page storage columns in a single event-loop tick (#1525)', async () => {
+    const rowCount = KEEP_SET_YIELD_EVERY * 2 + 1;
+    keepSetProbe.pageRows = Array.from({ length: rowCount }, (_, i) => ({
+      __cursor: i + 1,
+      body_html: null,
+      draft_body_html: null,
+      body_storage: `body:${i}`,
+      draft_body_storage: `draft:${i}`,
+      space_key: 'SPACE',
+    }));
+    keepSetProbe.timeline = [];
+
+    let ticking = true;
+    const tick = (): void => {
+      if (!ticking) return;
+      keepSetProbe.timeline.push('tick');
+      setImmediate(tick);
+    };
+    setImmediate(tick);
+    try {
+      await buildAttachmentKeepSets();
+    } finally {
+      ticking = false;
+    }
+
+    const parsed = keepSetProbe.timeline.filter((marker) => marker !== 'tick');
+    const expected = Array.from({ length: rowCount }, (_, i) => [`body:${i}`, `draft:${i}`]).flat();
+    // Every storage column of every row reached the enumerator, exactly once.
+    expect([...parsed].sort()).toEqual([...expected].sort());
+    expect(parsed).toHaveLength(expected.length);
+
+    const STORAGE_COLUMNS_PER_PAGE_ROW = 2;
+    let worstParsesPerTick = 0;
+    let parsesThisTick = 0;
+    for (const marker of keepSetProbe.timeline) {
+      if (marker === 'tick') {
+        worstParsesPerTick = Math.max(worstParsesPerTick, parsesThisTick);
+        parsesThisTick = 0;
+        continue;
+      }
+      parsesThisTick += 1;
+    }
+    worstParsesPerTick = Math.max(worstParsesPerTick, parsesThisTick);
+    expect(worstParsesPerTick).toBeGreaterThan(0);
+    expect(worstParsesPerTick).toBeLessThanOrEqual(KEEP_SET_YIELD_EVERY * STORAGE_COLUMNS_PER_PAGE_ROW);
   });
 });
