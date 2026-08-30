@@ -193,8 +193,8 @@ erDiagram
         text judged_side "live | candidate | neither | both"
         int_array live_page_ids "what was on screen when judged"
         int_array candidate_page_ids
-        uuid judged_by FK "SET NULL"
-        timestamptz created_at
+        uuid judged_by FK "SET NULL — part of the unique key since 109 (#1527)"
+        timestamptz created_at "the judged-at stamp; bumped on every re-judge"
     }
 
     comments {
@@ -465,31 +465,41 @@ together, which matters most for #1114's query-side prefix.
   by kind: both runs spend the shared LLM queue, so one at a time is the
   point, and the 092 heartbeat recovery covers both.
 - **`embedding_compare_judgements` is the accumulating fixture (#1260 Mode
-  2).** One row per (normalised query hash, live PAIR, candidate PAIR) —
-  provider id AND model on each side, because the same model name behind a
+  2).** One row per (normalised query hash, live PAIR, candidate PAIR, JUDGE)
+  — provider id AND model on each side, because the same model name behind a
   different provider is a different index whose page-id arrays must not be
   pooled into the earlier migration's verdict, and because re-hosting one
   model would otherwise collapse both sides onto one row. Both are recorded by
   VALUE, with no FK to `llm_providers` and no FK to the run: a judgement must
   survive the run, the migration and the provider row that produced it, which
   is what makes the second evaluation of the same pair cheaper than the first.
-  Re-judging replaces the row (upsert on the unique key); the page-id arrays
-  record what was on screen when the human judged and are deliberately not
-  FK-checked against `pages`.
-  **The key carries no admin dimension, deliberately — on a multi-admin
-  instance the LAST judge of a query wins it, and the verdict pools every
-  judge's rows.** That is the point of a fixture accumulated across sittings
-  and across runs: one query is one trial, and McNemar counts trials, so a
-  per-admin key would let two admins vote the same query twice and inflate
-  both N and the significance drawn from it. The cost is that `live_page_ids`
-  / `candidate_page_ids` reflect the visibility of whoever judged last —
-  `vectorSearch(adminUserId, …)` filters through `visiblePagesPredicate`, so a
-  judge who cannot see a private page judged a shorter list — and `judged_by`
-  records who that was without the verdict reading it. Accepted for the
-  single-evaluator workflow this surface is written for (the runbook's step
-  3b is one operator's go/no-go); a multi-evaluator design would need a
-  per-judge key AND an aggregation rule (majority? first? weighted?), which is
-  a different feature, not a wider index.
+  One admin re-judging their own query replaces their row (upsert on the unique
+  key); the page-id arrays record what was on screen when the human judged and
+  are deliberately not FK-checked against `pages`.
+  **`judged_by` joined the unique key in migration 109 (#1527), and the
+  one-trial-per-query invariant moved to the READ path.** Before 109 the key
+  had no admin dimension, so the last judge of a query physically OVERWROTE the
+  earlier judge's `live_page_ids` / `candidate_page_ids` / `judged_by` —
+  irrecoverably, because those arrays come from `vectorSearch(adminUserId, …)`
+  filtered through `visiblePagesPredicate`, i.e. they are that admin's view and
+  nobody else's. Now every judge's row persists. The reason the key had no
+  judge in the first place still holds — one query is one trial and McNemar
+  counts trials, so reading two rows for one query would inflate both N and the
+  significance drawn from it — so `judgementsForReport` collapses the read to
+  `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC, id DESC`:
+  exactly one row per query, the most recently judged one, taken WHOLE.
+  `created_at` is the judged-at stamp (the upsert bumps it to `NOW()` on every
+  re-judge; there is no `judged_at` column) and `id DESC` totals the order when
+  two judgements share a microsecond. So the verdict reports ONE named judge's
+  visibility scope per trial rather than a per-column blend of two admins'
+  arrays, N stays the count of DISTINCT judged queries, and every other judge's
+  row is retained on disk for audit and simply not read. The index is
+  deliberately DEFAULT (NULLS DISTINCT), never `UNIQUE NULLS NOT DISTINCT`:
+  `judged_by` is `ON DELETE SET NULL`, so under NULLS NOT DISTINCT deleting the
+  second of two admins who judged one query would collide the SET NULL with the
+  first orphan's key and make the admin undeletable. A cross-judge aggregation
+  rule (majority? weighted?) remains a different feature; "newest wins" is the
+  rule this schema implements.
 - **pgvector — the column type is dimension-driven, not one model's shape.**
   `page_embeddings.embedding` always carries a *declared* width — 006 shipped
   `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not

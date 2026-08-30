@@ -36,12 +36,11 @@ describe.skipIf(!dbAvailable)('Migration 101 — embedding_compare_judgements (#
           judged_side, live_page_ids, candidate_page_ids, judged_by)
        VALUES ($1, 'how to configure sync', $4, 'bge-m3', $5, 'qwen3-embedding:4b', $2,
                ARRAY[1,2,3], ARRAY[3,2,4], $3)
-       ON CONFLICT (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model)
+       ON CONFLICT (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model, judged_by)
        DO UPDATE SET query_text = EXCLUDED.query_text,
                      judged_side = EXCLUDED.judged_side,
                      live_page_ids = EXCLUDED.live_page_ids,
                      candidate_page_ids = EXCLUDED.candidate_page_ids,
-                     judged_by = EXCLUDED.judged_by,
                      created_at = NOW()`,
       [hash, side, USER, pair.liveProvider ?? 'p1', pair.candidateProvider ?? 'p2'],
     );

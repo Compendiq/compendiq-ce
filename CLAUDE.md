@@ -121,11 +121,19 @@ only a majority of failures fails the run. Mode 2 judgements accumulate in
 side** — the same name behind a different provider is a different index — and
 quote a McNemar p only from 20 **live-or-candidate PICKS**, never from a total
 that ties inflate (fourteen ties plus six picks published `p = 0.031` from six
-clicks). That key carries **no admin dimension on purpose** — one query is one
-McNemar trial, so a per-judge key would let two admins vote it twice and
-inflate N and the p drawn from it; the cost, stated in 101's header and in
-`06-data-model.md`, is that on a multi-admin instance the last judge of a
-query wins it and the stored page-id arrays carry THAT judge's visibility.
+clicks). Since migration 109 (#1527) **`judged_by` is the sixth key column**:
+the stored page-id arrays are retrieved under the judging admin's
+`visiblePagesPredicate`, so a key without the judge let one admin's click
+physically overwrite another admin's evidence. One query is still ONE McNemar
+trial, and that invariant now lives in the READ path: `judgementsForReport`
+collapses to `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC,
+id DESC` — the most recently judged row per query, taken WHOLE, so the verdict
+carries ONE named judge's visibility scope per trial (never a blend of two),
+N stays the count of DISTINCT judged queries, and every other judge's row
+survives on disk for audit. `created_at` IS the judged-at stamp (the upsert
+bumps it on every re-judge; there is no `judged_at` column). The unique index
+is deliberately DEFAULT NULLS DISTINCT — `judged_by` is `ON DELETE SET NULL`,
+and `NULLS NOT DISTINCT` would make the second judge of a query undeletable.
 Runs reuse `retrieval_benchmark_runs`
 (`config.kind = 'shadow-compare'`), so a comparison and the production
 benchmark exclude each other — deliberately, both spend the shared LLM queue —
