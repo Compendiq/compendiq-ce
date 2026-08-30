@@ -599,93 +599,58 @@ describe('AttachmentStorageCard (#1349)', () => {
   });
 
   /**
-   * Review r1. The sweep DOES delete images attached to a live Confluence page
-   * that no body embeds (`walkConfluenceTree` emits `orphan_file` for a known
-   * key's unreferenced image-like files). The ADMIN-GUIDE says so; the last
-   * surface before the irreversible act framed deletion as limited to files
-   * nothing references at all, which an operator reads as "nothing on a live
-   * page" — the opposite. Recoverable (Confluence re-serves the bytes), but
-   * this is the sentence whose job is to name the cost.
+   * Review r1, as settled by the external round-5 ruling. The sweep DOES
+   * delete images attached to a live Confluence page that no body embeds
+   * (`walkConfluenceTree` emits `orphan_file` for a known key's unreferenced
+   * image-like files). This is the last surface before the irreversible act,
+   * so the sentence that names that cost is the one that must not drift.
    *
-   * #1534 rewrote the description around this cell rather than through it.
-   * Two assertions moved with the copy and one went:
+   * Four rounds tried to pin it with a pattern — first the verb, then the
+   * verb plus a trailing clause-boundary lookahead `(?=\s*[;.,—]|\s*$)`,
+   * then an opening sentence boundary welded to the recovery clause. Each
+   * round found prose the previous pattern admitted: at `660fce64` a
+   * description reading "…count as unreferenced ONCE THE PAGE IS GONE;
+   * Confluence re-serves them" (256 chars, inside the 260 bound) kept the
+   * whole file green; at `48856cd1` four punctuated re-limits did the same,
+   * including the outright inversion "…count as unreferenced, but are kept;"
+   * (248). And no substring pattern can ever refuse a contradiction added as
+   * a SEPARATE sentence. That is the general shape: a regex over prose states
+   * what must be PRESENT, and prose that re-limits the claim can always add
+   * the qualifier somewhere the pattern does not look.
    *
-   *  - the cost and its recovery are pinned by CLAIM now, not by the r1
-   *    phrasing, because the trim rewrote the sentence and a cell that pins
-   *    a wording rather than a meaning turns every copy edit into a failure.
-   *    The claim's POLARITY is still pinned, though: the first rewrite kept
-   *    only the subject clause ("…that no page body embeds"), which a
-   *    description reading "are never touched" satisfies just as well as one
-   *    reading "count as unreferenced" — the inversion this cell exists to
-   *    catch. Verified by mutation at the r1 head: the whole file stayed
-   *    green on "are never touched; Confluence re-serves them if you delete
-   *    them yourself". The verb is back, as an alternation, so the meaning
-   *    is pinned and the wording is not.
+   * So the copy is pinned by EXACT STRING EQUALITY against the shipped
+   * sentence instead. It reds on anything: a polarity inversion, a
+   * re-limiting comma clause, an appended contradicting sentence, a
+   * re-lengthening, a typo. A copy edit that is meant re-states the literal
+   * here and is read as a diff; a copy edit that is not meant fails.
    *
-   *    External round 4 aimed at the rest of that hole and missed it; fixer
-   *    r1 closes it. The verb alone still let the claim be RE-LIMITED:
-   *    probed at `660fce64`, a description reading "…count as unreferenced
-   *    ONCE THE PAGE IS GONE; Confluence re-serves them" (256 chars, inside
-   *    the 260 bound, so the length cell did not catch it either) kept all
-   *    65 cells green — while stating the very thing the paragraph above
-   *    says an operator already wrongly assumes, and the opposite of what
-   *    `walkConfluenceTree` does on a KNOWN key. Round 4 answered with a
-   *    lookahead for a clause boundary, `(?=\s*[;.,—]|\s*$)`, which only
-   *    refused the UNPUNCTUATED form of that probe: punctuate the same
-   *    re-limit and it passed again. Measured at `48856cd1`, all inside the
-   *    260 bound, all 65 cells green (lengths as this cell counts them, i.e.
-   *    `String.length`): "…count as unreferenced, once the page is gone;"
-   *    (257), "…are deleted — but only on deleted pages;" (252), "…count as
-   *    unreferenced, but are kept;" (248 — an outright inversion), and "Once
-   *    a page is gone, cached Confluence images…" (255). The guard
-   *    now requires the cost clause to OPEN its sentence and its recovery
-   *    clause to follow it IMMEDIATELY, so nothing can be spliced in on
-   *    either side to narrow it; all four red. That reds on a reshaped claim
-   *    as well as on a wrong one, deliberately: this is the sentence whose
-   *    whole job is the cost, and a copy edit that changes its shape should
-   *    have to be re-read, not silently absorbed. What it still cannot
-   *    refuse is a contradiction added as a SEPARATE sentence — measured
-   *    green at 257 chars: "…count as unreferenced; Confluence re-serves
-   *    them. Only on deleted pages." — because no substring assertion can;
-   *    the 260-char bound is what limits how much room there is for one;
-   *  - `/page icons/` is gone, and gone from the CARD, not relocated to the
-   *    note (fixer r1 — the note has never mentioned page icons). "Uploaded
-   *    page icons are a separate store and are never swept" is a reassurance
-   *    about a store this sweep never walks, not a cost, so omitting it cannot
-   *    mislead an operator about what the button does; `docs/ADMIN-GUIDE.md`
-   *    documents the `page-icons/<page id>/<sha>.<ext>` store for anyone who
-   *    needs the fact. The cost claims above are the half that must survive,
-   *    and they do.
+   * The literal is spelled out in the assertion rather than shared with the
+   * component or hoisted into a constant: a pin that imports the value it
+   * pins cannot fail.
    */
-  it('the confirm dialog names the cached-Confluence-image case', async () => {
+  it('the confirm description is exactly the shipped copy', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-storage-counters');
     fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
 
-    const dialog = await screen.findByTestId('confirm-dialog-confirm');
-    const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
-    // The cost: a cached image under a live page, embedded by no body, GOES,
-    // and goes UNCONDITIONALLY. The verb carries the polarity; the sentence
-    // boundary before it and the recovery clause welded to the end of it
-    // carry the absence of a condition, because a qualifier has to attach on
-    // one side or the other (the docblock lists the four punctuated
-    // re-limits that passed while only a trailing boundary was required).
-    // The alternation keeps the cell agnostic about which verb the copy
-    // picks and which mark hands over to the recovery; "when next viewed"
-    // and every other tail stay unpinned.
-    expect(
-      text,
-      'the cost claim must open its sentence and hand straight over to the recovery, with no qualifier spliced in on either side',
-    ).toMatch(
-      /(?:^|[.;]\s*)cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted)( too| as well)?)\s*[;.,—]\s*Confluence re-serves them/i,
+    const confirm = await screen.findByTestId('confirm-dialog-confirm');
+    const dialog = confirm.closest('[role="dialog"]');
+    // `ConfirmDialog` renders `description` into one `Dialog.Description`,
+    // which Radix wires to the content's `aria-describedby`. Resolving it that
+    // way reads the string the operator is actually given, not the dialog's
+    // whole `textContent` (title + description + two button labels).
+    const describedBy = dialog?.getAttribute('aria-describedby') ?? '';
+    const description = describedBy ? document.getElementById(describedBy) : null;
+    expect(description, 'the dialog must describe itself with the description text').not.toBeNull();
+
+    expect((description?.textContent ?? '').trim()).toBe(
+      'This permanently deletes files older than 24 hours that nothing references. ' +
+        'It cannot be undone — run a dry run first if you have not. ' +
+        'Cached Confluence images that no page body embeds count as unreferenced; ' +
+        'Confluence re-serves them when next viewed.',
     );
-    // The recovery — Confluence still has the bytes, so this costs a
-    // re-fetch — used to have its own `expect`; the pattern above now
-    // contains it literally, so a separate assertion could not fail alone.
-    // The claims it already made must still be there.
-    expect(text).toMatch(/cannot be undone/i);
   });
 
   /**
@@ -700,11 +665,15 @@ describe('AttachmentStorageCard (#1349)', () => {
    *
    * The bound is 260: the next-longest callsite measured 217, so 260 leaves
    * this dialog room to be the longest in the app without being a different
-   * KIND of object. Both halves matter — a description that is short but
-   * buries the cost is the same defect — so the cost and the recovery must
-   * also LEAD, not trail.
+   * KIND of object.
+   *
+   * The cell above already pins today's 251-character string exactly, so this
+   * bound is not a second check on today's copy — it is the invariant that
+   * survives the next intended copy edit. That edit re-states the literal
+   * above, which is how an intended change passes; the bound is what stops it
+   * from re-growing to 613 while it does.
    */
-  it('the confirm dialog opens with the cost and the recovery, and stays scannable', async () => {
+  it('the confirm description stays scannable', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
@@ -713,10 +682,6 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const confirm = await screen.findByTestId('confirm-dialog-confirm');
     const dialog = confirm.closest('[role="dialog"]');
-    // `ConfirmDialog` renders `description` into one `Dialog.Description`,
-    // which Radix wires to the content's `aria-describedby`. Resolving it that
-    // way measures the string the operator is actually given, not the dialog's
-    // whole `textContent` (title + description + two button labels).
     const describedBy = dialog?.getAttribute('aria-describedby') ?? '';
     const description = describedBy ? document.getElementById(describedBy) : null;
     expect(description, 'the dialog must describe itself with the description text').not.toBeNull();
@@ -724,14 +689,6 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     expect(text.length, `the description is ${text.length} chars; the bound is 260 (next-longest callsite: 217)`)
       .toBeLessThanOrEqual(260);
-    // It OPENS with the permanent-delete claim...
-    expect(text).toMatch(/^This permanently deletes files older than 24 hours that nothing references\./);
-    // ...and the irreversibility plus the recovery arrive in the first breath,
-    // not after two hundred characters of inventory.
-    const undone = text.search(/cannot be undone/i);
-    expect(undone, 'the irreversibility must be readable before the operator stops reading').toBeGreaterThanOrEqual(0);
-    expect(undone, `"cannot be undone" sits at character ${undone}`).toBeLessThan(150);
-    expect(text.slice(0, 150)).toMatch(/run a dry run first/i);
   });
 
   it('an already-running trigger reports neutrally, names the remedy, and promises no outcome', async () => {
