@@ -3,11 +3,20 @@ name: compendiq
 # =============================================================================
 # Production hardening (issue #1050)
 #
-# This file carries `build:` sections — it is the build-and-run source, so the
-# images are tagged `:dev`. Production deployments that DON'T build (they pull
-# a published image) MUST pin an immutable reference — a version tag such as
-# `:0.6.2` or, ideally, a `@sha256:...` digest — so the running artifact can
-# never be silently repointed. See docs/architecture/05-deployment.md.
+# This file is pull-only. `docker compose pull && docker compose up -d`
+# fetches ghcr.io/compendiq/compendiq-ce-*:${COMPENDIQ_VERSION:-dev}.
+# Pin a release with COMPENDIQ_VERSION=0.6.2 (or a @sha256 digest in image:).
+# Mutable tags (dev/latest) can be silently repointed — see
+# docs/architecture/05-deployment.md.
+#
+# To build from this checkout instead of pulling:
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.build.yml up --build
+#
+# `:dev` / `:latest` images are linux/amd64 only — CI publishes arm64 only
+# for `v*` tags. The four Compendiq services pin `platform: linux/amd64` so
+# `docker compose pull` on Apple Silicon requests the amd64 manifest
+# (Rosetta) instead of 404ing. postgres/redis stay unpinned (multi-arch).
 #
 # Every service runs with least privilege: `cap_drop: [ALL]`,
 # `no-new-privileges:true`, and non-swarm resource limits
@@ -19,13 +28,8 @@ name: compendiq
 
 services:
   frontend:
-    image: ghcr.io/compendiq/compendiq-ce-frontend:dev
-    build:
-      context: ..
-      dockerfile: frontend/Dockerfile
-      args:
-        VITE_LOGIN_VARIANT: ${LOGIN_PAGE_VARIANT:-local-loop}
-        VITE_LOGIN_VARIANT_PICKER: ${LOGIN_PAGE_VARIANT_PICKER:-false}
+    image: ghcr.io/compendiq/compendiq-ce-frontend:${COMPENDIQ_VERSION:-dev}
+    platform: linux/amd64
     ports:
       - "${FRONTEND_PORT:-8081}:8081"
     depends_on:
@@ -50,10 +54,8 @@ services:
     networks: [frontend-net]
 
   backend:
-    image: ghcr.io/compendiq/compendiq-ce-backend:dev
-    build:
-      context: ..
-      dockerfile: backend/Dockerfile
+    image: ghcr.io/compendiq/compendiq-ce-backend:${COMPENDIQ_VERSION:-dev}
+    platform: linux/amd64
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # No host port mapping on purpose: the backend is only reachable through
@@ -154,10 +156,8 @@ services:
     networks: [data-net]
 
   mcp-docs:
-    image: ghcr.io/compendiq/compendiq-ce-mcp-docs:dev
-    build:
-      context: ..
-      dockerfile: mcp-docs/Dockerfile
+    image: ghcr.io/compendiq/compendiq-ce-mcp-docs:${COMPENDIQ_VERSION:-dev}
+    platform: linux/amd64
     environment:
       NODE_ENV: production
       PORT: "3100"
@@ -192,10 +192,8 @@ services:
     networks: [backend-net]
 
   searxng:
-    image: ghcr.io/compendiq/compendiq-ce-searxng:dev
-    build:
-      context: ./searxng
-      dockerfile: Dockerfile
+    image: ghcr.io/compendiq/compendiq-ce-searxng:${COMPENDIQ_VERSION:-dev}
+    platform: linux/amd64
     environment:
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://localhost:8080}
       SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}

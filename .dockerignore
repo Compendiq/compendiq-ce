@@ -23,9 +23,9 @@ tmp
 temp
 .claude
 # #1115: the VL embedding shim is a Python tool, so following its README puts a
-# multi-GB venv (mlx/torch wheels) inside the checkout. Every compose service
+# multi-GB venv (mlx/torch wheels) inside the checkout. docker-compose.build.yml
 # builds with `context: ..`, so without these the wheels are tarred up and
-# streamed to the daemon on every local build. Mirrors the .gitignore block.
+# streamed to the daemon on every local source build. Mirrors the .gitignore block.
 **/.venv
 **/__pycache__
 **/.pytest_cache

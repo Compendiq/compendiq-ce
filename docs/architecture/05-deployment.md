@@ -148,12 +148,32 @@ compose in `scripts/install.sh`):
 
 ### Image pinning
 
-`docker/docker-compose.yml` carries `build:` sections and therefore tags
-images `:dev` — it is the build-and-run source, not a shipped artifact.
-Production deployments that **pull** rather than build MUST pin an immutable
-reference: a version tag (e.g. `:0.6.2`) or, ideally, a `@sha256:...` digest,
-so the running image can never be silently repointed. The installer warns
-when the effective tag is a mutable `latest`/`dev`.
+`docker/docker-compose.yml` is **pull-only**. `docker compose pull &&
+docker compose up -d` fetches
+`ghcr.io/compendiq/compendiq-ce-*:${COMPENDIQ_VERSION:-dev}`. Pin an
+immutable reference for production: `COMPENDIQ_VERSION=0.6.2`, or a
+`@sha256:...` digest on `image:`, so the running artifact can never be
+silently repointed. The installer warns when the effective tag is a mutable
+`latest`/`dev`.
+
+To compile images from this checkout instead of pulling, merge the
+source-build override:
+
+```bash
+docker compose -f docker/docker-compose.yml \
+               -f docker/docker-compose.build.yml up --build
+```
+
+That override is the only compose file that carries `build:` sections.
+
+
+Branch tags (`:dev`, `:latest`) are **linux/amd64 only** — the Docker
+workflow publishes `linux/arm64` solely for `v*` release tags. The four
+Compendiq services (`frontend`, `backend`, `mcp-docs`, `searxng`) therefore
+set `platform: linux/amd64` so `docker compose pull` on Apple Silicon
+requests the amd64 manifest and runs it under Rosetta, instead of 404ing
+on a missing arm64 index. `postgres` and `redis` stay unpinned: they are
+multi-arch and should run native.
 
 ### MCP sidecar authentication
 
