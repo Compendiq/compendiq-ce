@@ -948,9 +948,10 @@ a baked literal need their own tie back to the tokens.
 are a bit on the blue side. Make it a bit warmer, and for the background of the
 main area, left and right panel I want pure white."* Then, on seeing it: *"Set the
 colour of the nav rail, the border around the main area and header to 249/248/247"*
-and *"the other colors we made warmer — it was a bit too warm."* Finally: *"Set the
-app-chassis and hover effect and selected effect to #FDFDFD."* Light mode only;
-Graphite is untouched. This amendment supersedes v0.7's Paper column, its "Paper
+and *"the other colors we made warmer — it was a bit too warm."* Then: *"Set the
+app-chassis and hover effect and selected effect to #FDFDFD."* Finally, on seeing
+that: *"Make it slightly darker — the grey. Also adjust the other colours to fit with
+that colour and the white main space."* Light mode only; Graphite is untouched. This amendment supersedes v0.7's Paper column, its "Paper
 stops short of pure white" rationale, and its Canvas-is-darkest ladder.
 Everything else in v0.7 — the eight roles, the flatness rules, the single
 shadow, the borders, the semantics, Steel itself — is unchanged.
@@ -986,51 +987,53 @@ Three changes, and they are separable:
 
 | Role | Production token | Paper v0.7 | Paper v0.8 | Use |
 |---|---|---:|---:|---|
-| Canvas | `--app-chassis` | `#EEEFF0` | `#FDFDFD` | Outer frame, left destination rail, top app header, overscroll |
-| Chrome | `--app-header-bg` | `#F5F5F6` | `#F6F5F3` | Internal panel headers and toolbars |
-| Workspace | `--color-background` | `#F7F7F8` | `#F9F7F6` | Workspace card ground, `bg-background` fills |
+| Canvas | `--app-chassis` | `#EEEFF0` | `#FAFAF9` | Outer frame, left destination rail, top app header, overscroll |
+| Chrome | `--app-header-bg` | `#F5F5F6` | `#F5F5F4` | Internal panel headers and toolbars |
+| Workspace | `--color-background` | `#F7F7F8` | `#F8F8F7` | Workspace card ground, `bg-background` fills |
 | Pane | `--color-card` | `#FAFAFB` | `#FFFFFF` | Document, route content, left pane, context rail |
 | Raised | `--color-card-elevated` | `#FFFFFF` | `#FFFFFF` | Popovers, dialogs, command palette, toasts |
-| Border | `--color-border` | `#DEDFE3` | `#E1DFDC` | Quiet pane separators and prose rules |
-| Interactive border | `--color-border-interactive` | `#7D818B` | `#84817D` | Input and operable-surface outlines |
-| Foreground | `--color-foreground` | `#17181A` | `#191817` | Body ink |
-| Muted foreground | `--color-muted-foreground` | `#63666D` | `#686663` | Secondary labels, counts, hints |
-| Secondary / muted fill | `--color-secondary`, `--color-muted` | `#EEEEF0` | `#F0EEEC` | Quiet field and chip fills |
-| Accent fill | `--color-accent` | `#E8E8EB` | `#FDFDFD` | Hover and selected rows (owner-pinned; see below) |
-| Code surface | `--color-code-bg` | `#ECEEF1` | `#F0EDEB` | Recessed code blocks |
+| Border | `--color-border` | `#DEDFE3` | `#E4E4E2` | Quiet pane separators and prose rules |
+| Interactive border | `--color-border-interactive` | `#7D818B` | `#838281` | Input and operable-surface outlines |
+| Foreground | `--color-foreground` | `#17181A` | `#191918` | Body ink |
+| Muted foreground | `--color-muted-foreground` | `#63666D` | `#6A6A68` | Secondary labels, counts, hints |
+| Secondary / muted fill | `--color-secondary`, `--color-muted` | `#EEEEF0` | `#EBEBEA` | Pressed state, quiet field and chip fills |
+| Accent fill | `--color-accent` | `#E8E8EB` | `#F2F2F1` | Hover and selected rows |
+| Code surface | `--color-code-bg` | `#ECEEF1` | `#F1F1EF` | Recessed code blocks |
 
 Measured, from the tokens rather than pinned (`workspace-themes.test.ts`):
-foreground 16.60:1 Workspace / 17.73:1 Pane; muted foreground 5.36 / 5.72;
-Steel `#3F627C` 6.05 / 6.46; every status colour ≥5.08 on both; every syntax
-colour ≥4.89 on the code surface; and the operable edge `#84817D` clears the
-1.4.11 3:1 floor on all five Paper grounds — 3.35 muted / 3.63 Workspace / 3.81
-accent / 3.88 Pane / 3.88 Raised, the same headroom the cool value had. `muted`,
-the quiet field fill, is the binding ground now that `accent` is near-white.
+foreground 16.56:1 Workspace / 17.59:1 Pane; muted foreground 5.10 / 5.42;
+Steel `#3F627C` 6.08 / 6.46; every status colour ≥5.10 on both; every syntax
+colour ≥4.80 on the code surface; and the operable edge `#838281` clears the
+1.4.11 3:1 floor on every Paper ground — 3.22 muted / 3.42 accent / 3.52 Chrome /
+3.61 Workspace / 3.67 Canvas / 3.84 Pane / 3.84 Raised. The state fills separate
+from the white Pane at 1.12:1 (hover/selected) and 1.19:1 (pressed), and the four
+surfaces form an ordered ladder: Chrome 0.913 → Workspace 0.938 → Canvas 0.955 →
+Pane 1.000 in relative luminance.
 
-**Two tokens sit outside the ramp, pinned to `#FDFDFD`.** The owner set both
-`--app-chassis` and `--color-accent` to that pure neutral, and the second one has
-a consequence worth recording rather than discovering later. `--color-accent` is
+**The #FDFDFD round, and why the palette was refitted after it.** The owner pinned
+both `--app-chassis` and `--color-accent` to that pure neutral. `--color-accent` is
 the hover **and** selected fill — one token serving `nav-selection`,
 `nm-card-hover`, `nm-card-interactive:hover` and 23 `hover:bg-accent` callsites —
-and at `#FDFDFD` it measures **1.02:1 on the white Pane**. The fill is therefore
-no longer what communicates either state:
+and at `#FDFDFD` it measured **1.02:1 on the white Pane**: a state no user can
+see. Canvas measured the same against the panes, leaving the workspace card's
+boundary to its hairline alone. The next round ("slightly darker — the grey…
+adjust the other colours to fit") resolved both:
 
-- **Selection still reads.** `nav-selection` carries a 1px `--color-border-interactive`
-  outline (3.81:1 on the fill), full-strength ink and weight 500. This is also the
-  only part that survives `forced-colors: active`, which is why it was already
-  there.
-- **An interactive card's hover still reads**, because `nm-card-interactive:hover`
-  also switches its border to the interactive token.
-- **A bare `hover:bg-accent` row does not.** Sidebar tree rows and menu items that
-  rely on the fill alone now have a near-invisible hover on a white pane. That is
-  the accepted cost of the pinned value, not an oversight; the remedy, if it is
-  ever wanted, is a hairline or an ink shift on those rows rather than re-darkening
-  the fill.
+- **Canvas `#FAFAF9`** — three 8-bit steps darker, 1.04:1 on Pane. Quiet, but the
+  frame and the card boundary exist again.
+- **Every other neutral refitted to that grey and to white**, not to the earlier
+  beige ramp. The family is a whisper — one to three 8-bit steps of red over blue
+  — and the surfaces are spaced so each step is a step.
+- **The state fills got their own steps back:** hover/selected `#F2F2F1` (1.12:1
+  on Pane), pressed/field `#EBEBEA` (1.19:1), press deeper than hover by
+  construction. `workspace-themes.test.ts` now holds a 1.10 floor under both, so
+  the invisible-state failure cannot recur silently.
 
-Canvas at `#FDFDFD` is likewise 1.02:1 against the panes, so the workspace card is
-separated by its `--color-border` hairline and its radius alone. The left
-destination rail is unaffected either way: it marks hover and selection with ink
-and a Steel indicator line, never a fill.
+Selection is still reinforced by `nav-selection`'s 1px `--color-border-interactive`
+outline, ink and weight 500 — the only part that survives `forced-colors: active`
+— and an interactive card's hover still switches its border to the same token. The
+left destination rail is unaffected by any of this: it marks hover and selection
+with ink and a Steel indicator line, never a fill.
 
 **What the guards learned.** Two of them pinned rules rather than measurements,
 and both rules were the ones the owner overruled. `workspace-themes.test.ts`
@@ -1038,11 +1041,12 @@ asserted "the Paper pane is not `#FFFFFF`"; it now pins Pane is white, Workspace
 stays below it, the light overlay shadow keeps a real Y offset and blur (a white
 popover on a white page has nothing else), and — new — the warmth itself, red
 channel above blue on every Paper neutral *under the ramp*, because a warm ramp is
-exactly the kind of decision that decays one cool token at a time. The two
-owner-pinned neutrals are excluded from that check and get a stricter one: their
-exact values, which catches drift in either direction, plus an assertion that the
-interactive edge still clears 3:1 on the near-white hover fill and that
-`nav-selection` keeps the outline that is now the whole selected state.
+exactly the kind of decision that decays one cool token at a time. `--app-chassis` is excluded from that check as the one owner-pinned value and gets a
+stricter one — its exact value, catching drift in either direction. Three further
+assertions encode the #FDFDFD lesson: the state fills must clear 1.10:1 against the
+white Pane with press deeper than hover, the four surfaces must form an ordered
+luminance ladder, and the interactive edge must still clear 3:1 on the hover fill
+while `nav-selection` keeps its outline.
 `app-shell-layout.test.ts` asserted "the light chassis is darker than the shell
 ground"; it now asserts what survives a near-white frame — Canvas stays below
 Pane in both themes, and Canvas stays the darkest step in Graphite.

@@ -229,23 +229,23 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  // Paper is a warm neutral: every surface, fill, border and ink under the ramp
-  // sits on the warm side of the hue circle. A cool grey slipping back in is
+  // Paper is a near-neutral warm ramp: every surface, fill, border and ink under
+  // it sits on the warm side of the hue circle. A cool grey slipping back in is
   // the regression this guards — it is what the palette was before, and one
   // stray #f7f7f8 reads as a blue patch against the rest.
   //
-  // Two tokens are NOT under the ramp. The owner pinned --app-chassis (frame,
-  // left destination rail, top app header) and --color-accent (hover AND
-  // selected fill) to #fdfdfd, a pure neutral, so asserting warmth on them
-  // would assert the ramp over the owner's own values. They get the stricter
-  // check instead — an exact value — which catches a drift in EITHER direction,
-  // warm or cool, rather than trading one unguarded token for another.
+  // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
+  // destination rail, top app header) three times, landing on #fafaf9, so
+  // asserting a hue rule on it would assert the ramp over the owner's own value.
+  // It gets the stricter check instead — its exact value — which catches drift
+  // in EITHER direction rather than trading one unguarded token for another.
+  // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
+  // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#fdfdfd',
-    '--color-accent': '#fdfdfd',
+    '--app-chassis': '#fafaf9',
   } as const;
 
-  it('keeps the owner-pinned Paper neutrals at their exact values', () => {
+  it('keeps the owner-pinned Paper neutral at its exact value', () => {
     for (const [name, value] of Object.entries(OWNER_PINNED)) {
       expect(token(lightBlock, name), `${name} is owner-pinned`).toBe(value);
     }
@@ -259,6 +259,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-secondary-foreground',
       '--color-muted',
       '--color-muted-foreground',
+      '--color-accent',
       '--color-border',
       '--color-border-interactive',
       '--color-action',
@@ -279,15 +280,47 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // The hover/selected fill no longer separates from the white pane on value
-  // (1.02:1), so the interactive border IS the selected state. If that edge
-  // ever drops below 1.4.11's 3:1 on this fill, a selected row stops being
-  // identifiable at all rather than merely looking flat.
-  it('keeps the interactive edge legible on the near-white hover fill', () => {
+  // The lesson of the #fdfdfd pass, encoded. With Pane pure white, a state fill
+  // that sits within ~1.05:1 of it is not a state a user can see, and hover on
+  // rows that carry no border is ONLY that fill. 1.10 is the floor this palette
+  // is tuned above (hover 1.12, pressed 1.19), not a value it barely clears.
+  it('keeps the hover and pressed fills separable from the white pane', () => {
+    const pane = token(lightBlock, '--color-card');
+    for (const [role, name] of [
+      ['hover/selected', '--color-accent'],
+      ['pressed/field', '--color-secondary'],
+    ] as const) {
+      const fill = token(lightBlock, name);
+      const ratio = contrast(fill, pane);
+      expect(
+        ratio,
+        `${role} fill ${fill} must separate from Pane ${pane} (measured ${ratio.toFixed(3)}:1)`,
+      ).toBeGreaterThanOrEqual(1.1);
+    }
+    // Press must read as deeper than hover, not land on the same value.
+    expect(luminance(token(lightBlock, '--color-secondary'))).toBeLessThan(
+      luminance(token(lightBlock, '--color-accent')),
+    );
+  });
+
+  // Paper's surfaces must be four distinct steps, in this order. Chrome is the
+  // deepest band, the frame sits just under the document, and Pane is brightest.
+  it('spaces the four Paper surfaces as an ordered ladder', () => {
+    const ys = (['--app-header-bg', '--color-background', '--app-chassis', '--color-card'] as const).map(
+      (name) => luminance(token(lightBlock, name)),
+    );
+    for (let i = 1; i < ys.length; i++) {
+      expect(ys[i]!, `surface ${i} must sit above surface ${i - 1}`).toBeGreaterThan(ys[i - 1]!);
+    }
+  });
+
+  // Selection survived the near-invisible-fill era on this edge plus weight, and
+  // that is still how a selected row is identified at these fill values.
+  it('keeps the interactive edge legible on the hover fill', () => {
     expectContrast(
-      'border-interactive on the owner-pinned accent fill',
+      'border-interactive on the accent fill',
       token(lightBlock, '--color-border-interactive'),
-      OWNER_PINNED['--color-accent'],
+      token(lightBlock, '--color-accent'),
       3,
     );
     const navSelection = extractBlock(css, '@utility nav-selection {');
