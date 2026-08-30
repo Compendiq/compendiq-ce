@@ -613,12 +613,14 @@ describe('AttachmentStorageCard (#1349)', () => {
    *  - the cost and its recovery are pinned by CLAIM now, not by the r1
    *    phrasing, because the trim rewrote the sentence and a cell that pins
    *    a wording rather than a meaning turns every copy edit into a failure;
-   *  - `/page icons/` is gone. "Uploaded page icons are a separate store and
-   *    are never swept" is a reassurance about a store this sweep never walks,
-   *    not a cost — omitting it cannot mislead an operator about what the
-   *    button does, and it was part of the ~340 characters of never-touched
-   *    inventory #1534 moved out of the dialog. The cost claims above are the
-   *    half that must survive, and they do.
+   *  - `/page icons/` is gone, and gone from the CARD, not relocated to the
+   *    note (fixer r1 — the note has never mentioned page icons). "Uploaded
+   *    page icons are a separate store and are never swept" is a reassurance
+   *    about a store this sweep never walks, not a cost, so omitting it cannot
+   *    mislead an operator about what the button does; `docs/ADMIN-GUIDE.md`
+   *    documents the `page-icons/<page id>/<sha>.<ext>` store for anyone who
+   *    needs the fact. The cost claims above are the half that must survive,
+   *    and they do.
    */
   it('the confirm dialog names the cached-Confluence-image case', async () => {
     mockApi({});
@@ -1009,7 +1011,7 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  /** N single-file candidates — enough rows to drive the overflow gate. */
+  /** N single-file candidates — enough rows to fill the scroller. */
   function sampleOf(n: number) {
     return Array.from({ length: n }, (_, i) => ({
       store: 'confluence' as const,
@@ -1032,6 +1034,34 @@ describe('AttachmentStorageCard (#1349)', () => {
   }
 
   /**
+   * jsdom has no layout: every element reports `scrollHeight` 0 and
+   * `clientHeight` 0, so the card's gate would read "cannot scroll" for every
+   * sample and the box geometry has to be supplied. Shadowing the two
+   * accessors on `HTMLUListElement.prototype` (jsdom defines them on
+   * `Element.prototype`) scopes the stub to `<ul>` elements, and installing it
+   * before `render` means the mount measurement already sees it. `box` is
+   * mutable so a cell can change the geometry and re-measure.
+   *
+   * Supplying the box is the POINT of the fix, not a workaround for it. A row
+   * is `flex flex-wrap` around a `break-all` path plus a meta span, so its
+   * height is a function of viewport width: at the WCAG 1.4.10 reflow width
+   * the path wraps to two lines and pushes the meta span to a third, and five
+   * such rows measure 5·48 + 4·4 = 256px inside a 206px content box
+   * (`max-h-56` 224px less `p-2` and the 1px border). A sample-size threshold
+   * cannot see that; `scrollHeight > clientHeight` — the property axe's
+   * `scrollable-region-focusable` itself tests — can.
+   */
+  function stubListBox(box: { scrollHeight: number; clientHeight: number }) {
+    const proto = HTMLUListElement.prototype;
+    Object.defineProperty(proto, 'scrollHeight', { configurable: true, get: () => box.scrollHeight });
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, get: () => box.clientHeight });
+    return () => {
+      Reflect.deleteProperty(proto, 'scrollHeight');
+      Reflect.deleteProperty(proto, 'clientHeight');
+    };
+  }
+
+  /**
    * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`) as amended by
    * #1535. The scroller holds about ten of up to 100 rows and every descendant
    * is a `<span>`, so once it overflows there is no keyboard path past the
@@ -1041,63 +1071,105 @@ describe('AttachmentStorageCard (#1349)', () => {
    * overflow, and the stop was reachable and announced ("list, 2 items") with
    * nothing to scroll, sitting between the disclosure and Dry run.
    *
-   * So the STOP is gated on the sample and the NAME is not: a screen reader
-   * announcing the list is useful at any size, and an unnamed focusable
+   * So the STOP is gated on measured overflow and the NAME is not: a screen
+   * reader announcing the list is useful at any size, and an unnamed focusable
    * region announces nothing.
    */
-  it('a candidate list that cannot overflow is named but is not a tab stop', async () => {
-    const list = await renderWithCandidates(2);
+  it('a candidate list that does not overflow is named but is not a tab stop', async () => {
+    const restore = stubListBox({ scrollHeight: 176, clientHeight: 206 });
+    try {
+      const list = await renderWithCandidates(2);
 
-    expect(
-      list.getAttribute('tabindex'),
-      'a box that cannot scroll must not take a tab stop away from Dry run',
-    ).toBeNull();
-    expect(list.tagName).toBe('UL');
-    expect(
-      list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
-      'the list keeps its accessible name at every size',
-    ).toBeTruthy();
-    // The same focus recipe the disclosure summary carries — a real outline,
-    // never a box-shadow ring; see the summary's cell below for why. It stays
-    // on the element unconditionally: the class is inert without a tab stop
-    // and the alternative is two class strings to keep in step.
-    expect(list.className.split(/\s+/)).toContain('nm-focus-ring');
-    for (const cls of ['focus-visible:ring-2', 'focus-visible:outline-none']) {
-      expect(list.className.split(/\s+/), `a ring is stripped by forced-colors: ${cls}`).not.toContain(cls);
+      expect(
+        list.getAttribute('tabindex'),
+        'a box that cannot scroll must not take a tab stop away from Dry run',
+      ).toBeNull();
+      expect(list.tagName).toBe('UL');
+      expect(
+        list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
+        'the list keeps its accessible name at every size',
+      ).toBeTruthy();
+      // The same focus recipe the disclosure summary carries — a real outline,
+      // never a box-shadow ring; see the summary's cell below for why. It stays
+      // on the element unconditionally: the class is inert without a tab stop
+      // and the alternative is two class strings to keep in step.
+      expect(list.className.split(/\s+/)).toContain('nm-focus-ring');
+      for (const cls of ['focus-visible:ring-2', 'focus-visible:outline-none']) {
+        expect(list.className.split(/\s+/), `a ring is stripped by forced-colors: ${cls}`).not.toContain(cls);
+      }
+    } finally {
+      restore();
     }
   });
 
   /**
-   * The gate's boundary, computed rather than eyeballed. `max-h-56` is 224px;
-   * `p-2` and the 1px border leave 206px of content. A row is `text-xs`
-   * (16px line box) and `space-y-1` adds 4px between rows, so n single-line
-   * rows measure `20n - 4` and overflow at n = 11 — but a row whose filename
-   * wraps to two lines measures 36n - 4 and overflows at n = 6. The gate is
-   * therefore set at "more than five", the largest sample that cannot scroll
-   * even when every row wraps: it never withholds the stop from a box that
-   * scrolls, and over-provisions only between six and ten single-line rows.
+   * The case a row-count gate gets wrong, and the reason this gate measures
+   * (fixer r1). FIVE rows is a sample any threshold computed from single- or
+   * double-line rows calls safe, but at reflow width each row is three line
+   * boxes and the box scrolls — and a scroller with no tab stop is the exact
+   * WCAG 2.1.1 failure the stop was added for, on the one in-product view of
+   * what a live run destroys.
    */
-  it('gates the tab stop at the first sample size that can overflow', async () => {
-    const five = await renderWithCandidates(5);
-    expect(five.getAttribute('tabindex'), 'five rows fit even fully wrapped').toBeNull();
+  it('takes the tab stop whenever the box scrolls, even at five rows', async () => {
+    const restore = stubListBox({ scrollHeight: 256, clientHeight: 206 });
+    try {
+      const five = await renderWithCandidates(5);
+      expect(
+        five.getAttribute('tabindex'),
+        'a scroll container must be reachable by keyboard',
+      ).toBe('0');
+      expect(
+        five.getAttribute('aria-label') ?? five.getAttribute('aria-labelledby'),
+        'a focusable region needs an accessible name',
+      ).toBeTruthy();
+      expect(five.className.split(/\s+/)).toContain('nm-focus-ring');
+    } finally {
+      restore();
+    }
   });
 
-  it('the candidate scroller is a keyboard-reachable, named region once it can scroll', async () => {
-    const six = await renderWithCandidates(6);
-    expect(
-      six.getAttribute('tabindex'),
-      'a scroll container must be reachable by keyboard',
-    ).toBe('0');
-    expect(
-      six.getAttribute('aria-label') ?? six.getAttribute('aria-labelledby'),
-      'a focusable region needs an accessible name',
-    ).toBeTruthy();
-    expect(six.className.split(/\s+/)).toContain('nm-focus-ring');
+  /**
+   * The mirror case: a hundred rows that happen to fit — a shorter row, a
+   * wider viewport, a lifted `max-h` — take no stop. Together with the cell
+   * above this pins the gate to the BOX and not to the sample length in
+   * either direction.
+   */
+  it('takes no tab stop on a full 100-row sample that does not overflow', async () => {
+    const restore = stubListBox({ scrollHeight: 206, clientHeight: 206 });
+    try {
+      const full = await renderWithCandidates(100);
+      expect(full.getAttribute('tabindex')).toBeNull();
+    } finally {
+      restore();
+    }
   });
 
-  it('keeps the tab stop on a full 100-row sample', async () => {
-    const full = await renderWithCandidates(100);
-    expect(full.getAttribute('tabindex')).toBe('0');
+  /**
+   * Opening the disclosure is when the list first gets a box, and the card
+   * re-measures on `toggle` rather than trusting `ResizeObserver` to report
+   * the transition out of hidden `<details>` content.
+   */
+  it('re-measures the scroller when the disclosure is opened', async () => {
+    const box = { scrollHeight: 0, clientHeight: 0 };
+    const restore = stubListBox(box);
+    try {
+      const list = await renderWithCandidates(8);
+      expect(list.getAttribute('tabindex'), 'closed: no box, no stop').toBeNull();
+
+      box.scrollHeight = 300;
+      box.clientHeight = 206;
+      // `fireEvent.toggle` is not in this version's event map; `toggle` is a
+      // non-delegated event React attaches to the element itself, so a plain
+      // dispatch reaches `onToggle`.
+      fireEvent(
+        screen.getByTestId('attachment-sweep-candidates'),
+        new Event('toggle', { bubbles: false, cancelable: false }),
+      );
+
+      expect(list.getAttribute('tabindex'), 'opened and overflowing: a stop').toBe('0');
+    } finally {
+      restore();
+    }
   });
 
   it('says the sample is bounded when the run found more candidates than it kept', async () => {

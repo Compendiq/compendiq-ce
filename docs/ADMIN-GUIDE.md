@@ -1475,7 +1475,7 @@ partial view), and **Dry run** is how you refresh them.
 
 **What is deleted:** only files that (a) sit in a directory whose key matches
 no page row at all — including soft-deleted/trashed pages and folders, which
-all count as owners — or (b) survive their store's per-file test. That test
+all count as owners — or (b) *meet* their store's per-file test. That test
 differs by store. In the **Confluence cache** a per-file candidate must be an
 *image-like* file referenced by **no body text anywhere**; a non-image cached
 attachment there is skipped on type before anything else is checked. In the
@@ -1501,8 +1501,12 @@ a candidate (paste and sync both write files before the referencing row
 exists); the card says how many candidates are waiting out that window, so a
 freshly-emptied store does not read as a clean one. Non-image attachments
 cached from Confluence (PDFs and other lazily fetched files) are never
-touched; that exemption is the Confluence cache's type filter and does not
-extend to the local store, where a row-less file of any type is judged.
+*per-file* candidates: the Confluence cache's type filter skips them before
+anything else is checked. That exemption is per-file only, and it belongs to
+one store. It does **not** override rule (a) — a directory whose key matches
+no page row is judged and removed **whole**, taking any non-image file inside
+it — and it does not extend to the local store, where a row-less file of any
+type is judged.
 
 **An image attached to a live Confluence page but embedded in no body is
 treated as cache** and may be removed — the attachments macro and the article
@@ -1510,9 +1514,10 @@ view fetch attachments lazily through `GET /api/attachments/:pageId/:filename`,
 which caches whatever filename it was asked for, and nothing in the corpus
 references those files. Removing one costs a re-fetch from Confluence the next
 time it is viewed, not the file: Confluence remains the copy of record.
-(Non-image attachments on the same path are excluded by the rule above, so a
-cached PDF is left alone either way.) Locally uploaded images are a different
-matter and are protected by their `local_attachments` row.
+(A non-image attachment on that same path sits under that same live page, so
+the per-file type filter excludes it and a cached PDF is left alone.) Locally
+uploaded images are a different matter and are protected by their
+`local_attachments` row.
 
 `local_attachments` rows whose file is missing on disk are
 **counted, never deleted** — a mis-mounted `ATTACHMENTS_DIR` must not wipe the

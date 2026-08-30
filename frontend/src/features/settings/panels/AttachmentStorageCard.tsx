@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertTriangle, Loader2, Search, Trash2 } from 'lucide-react';
@@ -89,20 +89,6 @@ export const POLL_MS = 5_000;
  * still fetches the finished record on that path.
  */
 const KICK_WARMUP_MS = 20_000;
-/**
- * The largest candidate sample the `max-h-56` scroller cannot scroll, and so
- * the size above which it takes a tab stop (#1535).
- *
- * Measured from the classes rather than guessed: `max-h-56` is 224px, `p-2`
- * and the 1px border leave 206px of content, a row is `text-xs` (16px line
- * box) and `space-y-1` puts 4px between rows. n single-line rows measure
- * `20n - 4` and first overflow at n = 11; a row whose filename wraps to two
- * lines measures `36n - 4` and first overflows at n = 6. Five is therefore the
- * largest sample that cannot scroll even when EVERY row wraps — the gate never
- * withholds the stop from a box that scrolls, and over-provisions only between
- * six and ten single-line rows.
- */
-const CANDIDATE_ROWS_ALWAYS_FIT = 5;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -385,6 +371,38 @@ export function AttachmentStorageCard() {
   // own named pattern of record — is converted in the same change so the two
   // do not end up with two busy behaviours.
   const actionsDisabled = isPending || running || trigger.isPending;
+
+  /**
+   * Does the candidate scroller actually scroll? (#1535, fixer r1.)
+   *
+   * The tab stop below is gated on this rather than on the sample size: the
+   * row is `flex flex-wrap` around a `break-all` path, so its height is a
+   * function of viewport width, and any row-count threshold either withholds
+   * the stop from a box that scrolls at reflow widths or hands it out to one
+   * that never will. `scrollHeight > clientHeight` is the property axe's
+   * `scrollable-region-focusable` tests, measured on the element itself.
+   *
+   * `ResizeObserver` is the same recipe `useElementWidth` in `EditorToolbar`
+   * uses. Re-measured when the sample changes, when the box is resized, and
+   * (belt and braces, see the `<details>` below) when the disclosure opens.
+   */
+  const candidateListRef = useRef<HTMLUListElement | null>(null);
+  const [candidateListScrolls, setCandidateListScrolls] = useState(false);
+  const measureCandidateList = useCallback(() => {
+    const el = candidateListRef.current;
+    // A closed disclosure gives the list no box: 0 > 0 is false, which is the
+    // right answer — hidden content takes no focus in any browser either.
+    setCandidateListScrolls(el !== null && el.scrollHeight > el.clientHeight);
+  }, []);
+  const candidateSample = lastRun?.candidateSample;
+  useEffect(() => {
+    measureCandidateList();
+    const el = candidateListRef.current;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => measureCandidateList());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measureCandidateList, candidateSample]);
 
   return (
     <div
@@ -675,7 +693,15 @@ export function AttachmentStorageCard() {
         measurement, and the destructive act has its own confirm.
       */}
       {lastRun && lastRun.candidateSample.length > 0 && (
-        <details className="text-xs" data-testid="attachment-sweep-candidates">
+        <details
+          className="text-xs"
+          data-testid="attachment-sweep-candidates"
+          // Opening the disclosure is when the list first gets a box. A
+          // `ResizeObserver` does report that transition, but this does not
+          // have to rely on it: the toggle is the one moment the answer is
+          // guaranteed to change.
+          onToggle={measureCandidateList}
+        >
           {/*
             `index.css` has no universal `:focus-visible` rule outside
             `.prose`, so without an explicit recipe the card's only
@@ -728,17 +754,29 @@ export function AttachmentStorageCard() {
             `nm-focus-ring`, a real outline, for the forced-colors reason
             spelled out there.
 
-            The stop is GATED on the sample (#1535), because that axe rule
-            only requires focusability of a region that actually scrolls. On a
-            healthy instance the sample is a handful of rows, the box does not
-            overflow, and the unconditional stop sat between the disclosure and
-            Dry run announcing "list, 2 items" with nothing to scroll — a stop
-            that costs a keystroke on the way to the destructive controls and
-            buys nothing. `CANDIDATE_ROWS_ALWAYS_FIT` carries the arithmetic;
-            it is the largest sample that cannot scroll even when every row
-            wraps, so the gate errs toward keeping the stop. The NAME is
-            deliberately NOT gated: the `list` announcement is useful at every
-            size and costs no focus order.
+            The stop is GATED on MEASURED overflow (#1535), because that axe
+            rule only requires focusability of a region that actually scrolls.
+            On a healthy instance the sample is a handful of rows, the box
+            does not overflow, and the unconditional stop sat between the
+            disclosure and Dry run announcing "list, 2 items" with nothing to
+            scroll — a stop that costs a keystroke on the way to the
+            destructive controls and buys nothing.
+
+            Measured, not counted from the sample (fixer r1). A row count is
+            width-blind and this row is not one line tall: the `<li>` is
+            `flex flex-wrap` around a `break-all` mono path and a meta span,
+            so at reflow widths (WCAG 1.4.10, 320px, and page zoom) the path
+            wraps to two lines and pushes the meta span to a third. 206px of
+            content box holds ten 16px rows plus `space-y-1`, but only four
+            three-line rows — so a five-row gate withheld the stop from a box
+            that really scrolls, which is the failure the stop exists for.
+            `scrollHeight > clientHeight` is the property axe itself tests.
+            A closed disclosure has no box, so both are 0 and no stop is
+            emitted — matching the browser, which does not let focus into
+            hidden `<details>` content either.
+
+            The NAME is deliberately NOT gated: the `list` announcement is
+            useful at every size and costs no focus order.
 
             Its NAME follows the same dry-run rule as the summary above it
             (fixer r1). The r2 ruling — "candidate" is a claim about pending
@@ -750,7 +788,8 @@ export function AttachmentStorageCard() {
             attribute value).
           */}
           <ul
-            tabIndex={lastRun.candidateSample.length > CANDIDATE_ROWS_ALWAYS_FIT ? 0 : undefined}
+            ref={candidateListRef}
+            tabIndex={candidateListScrolls ? 0 : undefined}
             aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
             className="nm-focus-ring border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
             data-testid="attachment-sweep-candidate-list"
@@ -964,9 +1003,22 @@ export function AttachmentStorageCard() {
         screen at rest before the dialog ever opens. It rendered as one
         undifferentiated muted run with "run a dry run first" at character 558,
         the same shape CLAUDE.md's RetrievalTab ruling rejected. Trimmed to the
-        cost, the irreversibility and the recovery, in that order; the
-        never-touched inventory (which reference kinds count, the re-check, the
-        image-index prune, the page-icon store) stays with the note.
+        cost, the irreversibility and the recovery, in that order. Most of the
+        never-touched inventory stays with the note above, which already
+        carries the reference kinds, the 24-hour window, the delete-time
+        re-check and the image-index prune.
+
+        TWO claims left the card altogether, and this comment says so rather
+        than implying they moved (fixer r1 — the earlier wording claimed the
+        page-icon store "stays with the note", which never mentioned it):
+        "uploaded page icons are a separate store and are never swept" and
+        "affected pages are re-queued for image indexing". Neither is a cost
+        an operator weighs before pressing Delete orphans — the first is a
+        reassurance about a store this sweep never walks, the second a
+        consequence of the prune the note already names — and both survive
+        where the mechanism is documented: `docs/ADMIN-GUIDE.md` (the
+        `page-icons/<page id>/<sha>.<ext>` store, and the re-queue in the
+        sweep section) and `docs/architecture/06-data-model.md`.
 
         The cached-Confluence-image sentence is NOT inventory and does not go:
         review r1 put it here because "files nothing references" reads to an
