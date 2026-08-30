@@ -21,9 +21,10 @@
 -- OVERWROTE the earlier judge's row — including page-id arrays retrieved
 -- under a different admin's visibility. One query is still ONE McNemar trial:
 -- that invariant lives in the READ path now, where `judgementsForReport`
--- collapses to `DISTINCT ON (query_hash) … ORDER BY created_at DESC, id DESC`
--- — the most recently judged row per query, taken WHOLE, so the verdict never
--- blends two admins' arrays and N stays the count of distinct judged queries.
+-- collapses to `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at
+-- DESC, id DESC` — the most recently judged row per query, taken WHOLE, so
+-- the verdict never blends two admins' arrays and N stays the count of
+-- distinct judged queries.
 -- Page-id arrays record what was ON SCREEN when the human judged — they are
 -- historical evidence, deliberately not FK-checked against pages that may be
 -- deleted later, and they carry the VISIBILITY of the judge who wrote them

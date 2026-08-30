@@ -1272,5 +1272,41 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(view.verdict.candidateBetter).toBe(0);
       expect(view.judgements).toEqual({ 'query-1': 'live' });
     });
+
+    it('a re-judge wins the collapse back — `created_at = NOW()` IS the judged-at stamp', async () => {
+      // The guard on the upsert's `created_at = NOW()`. The test above stamps
+      // BOTH rows after the writes, so it cannot see whether a re-judge bumps
+      // the stamp — and without the bump an admin who re-judges a query a
+      // colleague judged more recently has their click stored and then
+      // IGNORED by the report. Deterministic without stamping the final row:
+      // the re-judge's NOW() is necessarily later than both past timestamps.
+      await seedSecondAdmin();
+      const runA = await completedRun();
+      await recordShadowCompareJudgement(runA, 'query-1', 'live', ADMIN);
+      const runB = await completedRunFor(SECOND_ADMIN);
+      await recordShadowCompareJudgement(runB, 'query-1', 'candidate', SECOND_ADMIN);
+
+      // Push both existing rows into the past, the colleague's the newer.
+      await stampJudgement(ADMIN, '2024-01-01T00:00:00Z');
+      await stampJudgement(SECOND_ADMIN, '2024-06-01T00:00:00Z');
+
+      // ADMIN re-judges AFTER the colleague, so their row must win again.
+      const view = await recordShadowCompareJudgement(runA, 'query-1', 'both', ADMIN);
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.judgements).toEqual({ 'query-1': 'both' });
+      expect(view.verdict.both).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(0);
+      expect(view.verdict.liveBetter).toBe(0);
+
+      // In place, not a third row: the re-judge is an UPDATE on the judge's
+      // own key, so the recency cannot have come from a fresh INSERT.
+      const stored = await query<{ n: string }>(
+        `SELECT COUNT(*) AS n FROM embedding_compare_judgements`,
+      );
+      expect(Number(stored.rows[0]!.n)).toBe(2);
+
+      const readBack = await getShadowCompareJudgements(runB, SECOND_ADMIN);
+      expect(readBack.judgements).toEqual({ 'query-1': 'both' });
+    });
   });
 });
