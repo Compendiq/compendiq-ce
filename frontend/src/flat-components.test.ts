@@ -252,6 +252,13 @@ function classSegments(text: string): string[] {
   collectSegments(text, out);
   // Plus the one shape the quote scanner cannot keep: see `attributeSegments`.
   out.push(...attributeSegments(text));
+  // Plus, for a segment that is a FRAGMENT of a class list, its interior: see
+  // `fragmentInterior`. Read off `out` after both producers have run, so a
+  // recovered attribute value gets the same treatment as a scanned body.
+  for (const segment of [...out]) {
+    const interior = fragmentInterior(segment);
+    if (interior !== null) out.push(interior);
+  }
   return out;
 }
 
@@ -368,6 +375,49 @@ function attributeSegments(text: string): string[] {
     if (attr[1]!.includes('\n')) out.push(attr[1]!);
   }
   return out;
+}
+
+/**
+ * A segment stripped of the two edge tokens that a CUT through the middle of a
+ * class list leaves behind — or `null` when it has neither.
+ *
+ * A class list can be assembled by string surgery straight through an arbitrary
+ * value, and then no scanner sees it whole. Both halves of
+ * `` `w-[${'8px] shadow-lg bg-['}] p-1.5` `` are real: at runtime that renders
+ * `w-[8px] shadow-lg bg-[] p-1.5`, a class list carrying a live `shadow-lg`. The
+ * inner literal reaches the grammar as `8px] shadow-lg bg-[`, whose first token
+ * OPENS on a closer and whose last token never closes its opener, so
+ * `maskGroups` rejects both, one rejected token makes the segment prose, and
+ * every shadow in it was exempt. `const a = 'grid-cols-['; const b = '1fr]
+ * shadow-lg';` is the same shape with no interpolation anywhere, so this is a
+ * property of cutting rather than of `INTERP_MARK`. The pattern this rule
+ * replaces caught both, which made them the last two shapes on which this rule
+ * was weaker than its predecessor.
+ *
+ * Only the FIRST and LAST tokens are dropped, and only when the brackets in
+ * them do not balance: those are exactly the tokens a cut can bisect, and an
+ * interior token is whole by construction. Trimming cannot manufacture a class
+ * list out of prose, because prose is rejected by `PROSE_WORD` on the function
+ * words in its MIDDLE, which trimming never touches — `the shadow (see below)
+ * under the card` keeps `shadow`, `under` and `the` and stays prose.
+ *
+ * Like `attributeSegments` this is ADDITIVE: the interior is an extra segment
+ * beside the untrimmed one, never a replacement, so no existing verdict moves
+ * and the worst case is a finding to look at rather than one to miss. Measured
+ * over this tree it adds 63 segments to 20137 (0.3%), two of which read as class
+ * lists (`current` and `proposed`, single tokens from an apostrophe desync) and
+ * neither carries a shadow — so the recovery is free here and the tree's offender
+ * set is unchanged at the six registered `shadow-xs` call sites.
+ */
+function fragmentInterior(segment: string): string | null {
+  const tokens = segment.split(/\s+/).filter((t) => t !== '');
+  let lo = 0;
+  let hi = tokens.length;
+  if (hi > 1 && maskGroups(tokens[0]!) === null) lo += 1;
+  if (hi > 1 && maskGroups(tokens[hi - 1]!) === null) hi -= 1;
+  if (lo === 0 && hi === tokens.length) return null;
+  if (hi <= lo) return null;
+  return tokens.slice(lo, hi).join(' ');
 }
 
 const PALETTE =
@@ -563,19 +613,30 @@ const SYSTEM_SHADOW =
  *
  * The split has to happen at the last colon that is OUTSIDE brackets and
  * parentheses. A colon is legal inside an arbitrary value — `shadow-[color:…]`,
- * `shadow-[shadow:…]` — and cutting at the last colon in the whole token throws
- * the utility away and keeps the tail of the value, which is not a shadow by any
- * pattern. The pre-v4 rule caught those on `shadow-[`, so cutting naively is a
- * hole rather than a cosmetic detail.
+ * `shadow-[shadow:…]`, and v4's `shadow-(color:--x)` shorthand — and cutting at
+ * the last colon in the whole token throws the utility away and keeps the tail
+ * of the value, which is not a shadow by any pattern. The pre-v4 rule caught
+ * those on `shadow-[`, so cutting naively is a hole rather than a cosmetic
+ * detail.
+ *
+ * "Outside" is decided by `groupInterior` — the same OWN-KIND scan `maskGroups`
+ * and `collectSegments` use — and never by one undifferentiated depth counter.
+ * A counter that increments on `[` and `(` alike and decrements on `]` and `)`
+ * alike goes NEGATIVE on the mismatched closer that is legal inside an
+ * arbitrary value: `[&[data-x=")"]]:shadow-lg` is a legal Tailwind 4 variant,
+ * the stray `)` drove the depth below zero, so no colon was ever seen at depth
+ * 0, no variant was stripped, and the anchored shadow pattern never saw a
+ * shadow. `isClassList` — which already used the own-kind scan — called that
+ * segment a class list, so no exemption was involved and no prose tradeoff:
+ * the token was simply not recognised, and the pattern this rule replaces
+ * caught it through its `\b`. Three functions reading the same brackets three
+ * different ways is the whole shape of that bug.
  */
 function utilityOf(token: string): string {
-  let depth = 0;
+  const inside = groupInterior(token);
   let cut = -1;
   for (let i = 0; i < token.length; i += 1) {
-    const c = token[i]!;
-    if (c === '[' || c === '(') depth += 1;
-    else if (c === ']' || c === ')') depth -= 1;
-    else if (c === ':' && depth === 0) cut = i;
+    if (token[i] === ':' && !inside[i]) cut = i;
   }
   return token.slice(cut + 1);
 }
@@ -974,7 +1035,7 @@ describe('the shadow guard is itself under test', () => {
     // against something other than the predicate under test.
     //
     // The oracle's bar — two independently-recognised utilities — leaves a blind
-    // region: 1157 of this tree's 4865 static `className` attributes are short
+    // region: 1156 of this tree's 4864 static `className` attributes are short
     // enough that the oracle cannot see them either, and a grammar misjudgement
     // inside one of them would be silent here. So the second half of this cell
     // drops the oracle entirely: a static `className="…"` attribute IS a class
@@ -1167,8 +1228,19 @@ describe('the shadow guard is itself under test', () => {
       'shadow-xs',
       'drop-shadow-xs',
       'shadow-(--shadow-glow)',
+      // The same shorthand with a TYPE hint, which is where v4 puts a colon
+      // outside an arbitrary value. `utilityOf` has to treat that colon as
+      // content: count only `[…]` for the variant split and the cut lands
+      // inside the parens, throwing the utility away and keeping `--x)`, which
+      // is not a shadow by any pattern. The pre-v4 pattern could not see this
+      // spelling at all, so it is a v4 form rather than a superset case.
+      'shadow-(color:--shadow-glow)',
       'shadow-cyan-400/40',
       'shadow-black/20',
+      // A theme shadow by ROLE rather than by palette shade. `--shadow-primary`
+      // is a legal `@theme` key, so this is a live spelling; collapse
+      // `SHADOW_ROLE` to its palette-ish head and it stops being recognised.
+      'shadow-primary',
       'md:shadow-xs',
       'group-hover:drop-shadow-xs',
     ];
@@ -1309,6 +1381,38 @@ describe('the shadow guard is itself under test', () => {
     expect(flagged(conditional)).toEqual(['shadow-lg']);
   });
 
+  it('reads group structure off the body with its interpolation holes blanked', () => {
+    // Whether an interpolation is a CUT or a protected placeholder is decided by
+    // the brackets of the class list around it, never by the brackets the hole
+    // happens to carry, and the blank that hides the hole has to be
+    // INDEX-ALIGNED — one placeholder character per source character — because
+    // the positions it produces are used to address the RAW body.
+    //
+    // Both halves of that are catch-neutral once `fragmentInterior` is in
+    // place: a cut through an arbitrary value leaves the shadow in a fragment
+    // whose bad edges get trimmed, so the token is still flagged either way.
+    // What breaks is the SEGMENT — the class list stops being visible as itself,
+    // which is the invariant a prose exemption rests on and the one the
+    // tree-wide `sees every class list … as its own segment` cell enforces. So
+    // this cell asserts the segment, not the verdict.
+    const whole = (source: string): string[] =>
+      classSegments(source).filter((s) => s.includes('w-[') && s.includes('shadow-lg'));
+    // Collapse the blank to a single character and every position after the
+    // first hole is shifted, so `inGroup[start]` reads a character that is not
+    // the one the span begins at: the arbitrary value's own interpolation stops
+    // being protected and the list is cut in half.
+    const shifted = 'const cls = `${variantClasses} w-[${w}px] p-1.5 shadow-lg`;';
+    expect(whole(shifted)).toHaveLength(1);
+    expect(flagged(shifted)).toEqual(['shadow-lg']);
+    // And the hole's OWN brackets decide nothing: read the raw body instead of
+    // the blanked one and the `[`/`]` assembled inside these holes look like a
+    // group around the class list, so neither interpolation is a cut and the
+    // shadow lands in a segment beginning mid-token.
+    const carried = "const cls = `${'['}p-1.5${']'} shadow-lg`;";
+    expect(classSegments(carried)).toContain(' shadow-lg');
+    expect(flagged(carried)).toEqual(['shadow-lg']);
+  });
+
   it('cuts an interpolation at its own closing brace, not at the first one', () => {
     // `\$\{[^{}]*\}` stops at the first `}`, so an interpolation carrying an
     // object literal is mis-cut and its tail — `)} shadow-lg` — is left inline
@@ -1354,6 +1458,35 @@ describe('the shadow guard is itself under test', () => {
     // `the shadow (see below)` prose.
     expect(isTailwindToken('(see')).toBe(false);
     expect(isClassList('a shadow (see below) under the card')).toBe(false);
+  });
+
+  it('reads a mismatched closer inside an arbitrary value as content, not as structure', () => {
+    // `[a)b]` is legal inside an arbitrary value, and three separate functions
+    // in this file have to agree about it: `maskGroups` on a token,
+    // `groupInterior` on a chunk, and `utilityOf` on the variant split. Two of
+    // them matched each closer against an opener of its OWN kind and the third
+    // counted `[`, `]`, `(` and `)` in one undifferentiated depth — so the stray
+    // `)` below drove that depth negative, no colon was ever seen at depth 0,
+    // the variant was never stripped, and the anchored shadow pattern never saw
+    // the shadow. `isClassList` called the segment a class list all the while,
+    // so no exemption and no prose tradeoff was involved: the token was simply
+    // unrecognised, and the pattern this rule replaces caught it.
+    const variant = '[&[data-x=")"]]:p-4';
+    expect(isTailwindToken(variant)).toBe(true);
+    expect(utilityOf('[&[data-x=")"]]:shadow-lg')).toBe('shadow-lg');
+    expect(isClassList('p-1.5 [&[data-x=")"]]:shadow-lg')).toBe(true);
+    expect(flagged(asSource('p-1.5 [&[data-x=")"]]:shadow-lg'))).toEqual(['shadow-lg']);
+    // And the SEGMENT stays whole, which is the same claim one layer out: both
+    // `"` characters below sit inside a balanced `[…]`, so the `"` cut must not
+    // fire between them. Match the stray closer to the nearest opener of any
+    // kind and the group ends early, the second `"` becomes a boundary, and the
+    // list is cut in half.
+    const list = 'p-1.5 content-[")"] shadow-lg';
+    expect(classSegments(asSource(list))).toContain(list);
+    expect(flagged(asSource(list))).toEqual(['shadow-lg']);
+    // Non-vacuity: the pattern this replaces caught both through its `\b`.
+    expect(PRE_V4_PATTERN.test('[&[data-x=")"]]:shadow-lg')).toBe(true);
+    expect(PRE_V4_PATTERN.test(list)).toBe(true);
   });
 
   it('catches the raw `box-shadow` property, which the pre-v4 pattern also caught', () => {
@@ -1469,9 +1602,14 @@ describe('the shadow guard is itself under test', () => {
    * the segmenter — and those are decided by the shape of the SOURCE, not by the
    * spelling of a class. So the fixtures below are source snippets, they are all
    * absent from the tree (`grep -rn '\[\${' frontend/src --include=*.tsx` is
-   * empty, and no static `className="…"` in the tree is wrapped across lines),
-   * and the cell under them checks each is a case the PIPELINE this rule replaces
-   * caught — otherwise the table proves nothing.
+   * empty, no static `className="…"` in the tree is wrapped across lines, and no
+   * class list here is assembled by cutting a literal across a bracket: the same
+   * grep covers the interpolated form, and of the three literals in the tree
+   * that end on an opener or begin on a closer, all three are apostrophe-desync
+   * fragments of English prose — `…'s post-save \`invalidateQueries([` and its
+   * two siblings — not class lists), and the cell under them checks each is a
+   * case the PIPELINE this rule replaces caught — otherwise the table proves
+   * nothing.
    */
   const LATENT_SOURCES: { name: string; source: string; token: string }[] = [
     // A `${…}` inside an arbitrary value — how React spells a dynamic length.
@@ -1506,6 +1644,50 @@ describe('the shadow guard is itself under test', () => {
     {
       name: 'a dynamic url with a quote around it',
       source: 'const cls = `p-1.5 bg-[url("${u}")] shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    // Group structure has to be read off the body with the interpolations
+    // BLANKED, and the blank has to be INDEX-ALIGNED — `blankSpans`. Read the
+    // raw body instead and the brackets a hole carries decide protection: the
+    // second fixture's holes hold `[` and `]` of their own, so the raw body
+    // looks balanced around a class list that is not in a group at all, the
+    // interpolations stop being cuts, and the shadow lands in a segment nobody
+    // judges. Collapse the blank to ONE character instead of `end - start` of
+    // them and the positions no longer address `body`, so `inGroup[start]` reads
+    // the wrong index: the first fixture's leading hole shifts every later one.
+    // Both are cases the pipeline this rule replaces caught.
+    {
+      name: 'an interpolation standing before the one inside an arbitrary value',
+      source: 'const cls = `${variantClasses} w-[${w}px] p-1.5 shadow-lg`;',
+      token: 'shadow-lg',
+    },
+    {
+      name: 'brackets that live inside the interpolation, not around it',
+      source: "const cls = `${'['}p-1.5${']'} shadow-lg`;",
+      token: 'shadow-lg',
+    },
+    {
+      name: 'a bracket assembled inside the hole of an arbitrary value',
+      source: "const cls = `w-[${'['}] shadow-md p-1.5`;",
+      token: 'shadow-md',
+    },
+    // A class list assembled by string surgery straight THROUGH an arbitrary
+    // value. At runtime the first renders `w-[8px] shadow-lg bg-[] p-1.5`, a
+    // real class list with a real shadow in it; the second is the same shape
+    // with no interpolation anywhere, which is what shows this is a property of
+    // cutting rather than of `INTERP_MARK`. Both reach the grammar as a fragment
+    // whose first token opens on a closer and whose last never closes its
+    // opener, so `maskGroups` rejects both edges, one rejected token makes the
+    // segment prose, and every shadow in it was exempt. `fragmentInterior` is
+    // what recovers them; delete its call in `classSegments` and these red.
+    {
+      name: 'a class list assembled by string surgery across an arbitrary value',
+      source: "const a = <div className={`w-[${'8px] shadow-lg bg-['}] p-1.5`} />;",
+      token: 'shadow-lg',
+    },
+    {
+      name: 'a class list fragment assembled in two separate literals',
+      source: "const a = 'grid-cols-['; const b = '1fr] shadow-lg';",
       token: 'shadow-lg',
     },
     // Not an attribute at all. Every tree-derived sample in this file is drawn
