@@ -348,12 +348,17 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     });
 
     // #1525 — a draw.io diagram whose macro survives only in the UNPUBLISHED
-    // draft. `draft_body_storage` fed no keep-set source, and the macro never
-    // renders as an `/api/attachments/…` URL (the editor emits
-    // `img.src = '#drawio:<name>'`), so neither the URL collector over
-    // `draft_body_html` nor the storage pass over `body_storage` could see it:
-    // the sweep deleted the PNG out from under a draft the author had not
-    // published yet.
+    // draft's STORAGE format. Storage format names attachments by
+    // `ri:filename` / `diagramName` and carries no URL, so the URL collector
+    // can never see `DraftOnlyArch.png` there and the storage pass only ran
+    // over `body_storage`: the name fell out of the keep-set entirely.
+    // Scope note (fixer r1): this is forward protection, not the only thing
+    // standing between a real draft diagram and a delete — every persisting
+    // `confluenceToHtml` caller passes a pageId, so the macro reaches
+    // `draft_body_html` as `/api/attachments/<pageId>/<name>.png`, which the
+    // URL pass already keeps. Nothing writes content into
+    // `draft_body_storage` at this head, which is why this test has to seed
+    // the column with a raw INSERT.
     it('keeps attachments referenced only by an unpublished draft body_storage (#1525)', async () => {
       await query(
         `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version,

@@ -666,9 +666,11 @@ together, which matters most for #1114's query-side prefix.
   and `llm_conversations.messages` — #1361 persists a matched image's
   `attachmentUrl` per assistant turn),
   with BOTH page storage-format columns additionally run through
-  `getExpectedAttachmentFilenames` (#1525 — a draw.io macro is named by
-  `diagramName`, never by a URL, so a diagram inserted into an unpublished
-  draft is protected only by the draft's storage format),
+  `getExpectedAttachmentFilenames` (#1525 — storage format names attachments
+  by `ri:filename`/`diagramName` and carries no URL, so the URL pass cannot
+  cover `draft_body_storage`; forward protection, since no writer populates
+  that column today and a draft's diagram already reaches `draft_body_html`
+  as an `/api/attachments/…` URL),
   because attachment URLs are copied verbatim between bodies. A 24h mtime
   grace window covers sync/paste races (both write files before the row that
   references them), only image-like files are per-file candidates in the

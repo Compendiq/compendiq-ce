@@ -331,4 +331,23 @@ describe('keep-set event-loop yield', () => {
       /forEachRowYielding\(rows, \(row\) => \{[\s\S]*?getExpectedAttachmentFilenames\(row\.body_storage/,
     );
   });
+
+  /**
+   * #1525 added a SECOND JSDOM parse per page row (`draft_body_storage`), and
+   * the guard above pins only `body_storage` — moving the draft walk into its
+   * own batch with a blocking loop was a fully green regression (fixer r1
+   * reproduced it: 74/74 passed with the draft block hoisted out).
+   *
+   * The lazy `[\s\S]*?` of the guard above is not enough on its own here: it
+   * happily spans OUT of the callback and into a later `forEachBatch`, so it
+   * still matches the hoisted-out shape. The negative lookahead stops the
+   * span at the next `forEachBatch<`, which is what makes "inside the SAME
+   * callback" actually checkable in source shape.
+   */
+  it('runs the draft_body_storage walk through the same forEachRowYielding callback (#1525)', () => {
+    const src = readFileSync(join(here, 'attachment-sweep-service.ts'), 'utf8');
+    expect(src).toMatch(
+      /forEachRowYielding\(rows, \(row\) => \{(?:(?!forEachBatch<)[\s\S])*?getExpectedAttachmentFilenames\(row\.draft_body_storage/,
+    );
+  });
 });

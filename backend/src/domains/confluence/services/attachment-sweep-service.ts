@@ -46,9 +46,12 @@
  *     `img[src]` and `a[href]`-style references via a raw-string regex
  *     (strictly more inclusive than an attribute parse), plus
  *     `getExpectedAttachmentFilenames` over BOTH storage-format columns of a
- *     page (#1525: a draw.io macro living only in an unpublished draft is
- *     named by no URL anywhere, so the draft's storage format is the only
- *     thing that can protect its PNG). In the Confluence
+ *     page (#1525: storage format names attachments by `ri:filename` /
+ *     `diagramName` and carries no URL at all, so the URL pass cannot cover
+ *     `draft_body_storage` — a draft's PNG is kept today by the
+ *     `/api/attachments/…` URL in its `draft_body_html`, and giving the draft
+ *     storage column the enumerator too is defence-in-depth for whoever
+ *     starts persisting that column). In the Confluence
  *     tree only IMAGE-LIKE files are per-file candidates
  *     (`SUPPORTED_IMAGE_EXTENSIONS` + `external-<hash>` keys): the cache also
  *     holds lazily fetched non-image attachments no enumerator covers — those
@@ -421,6 +424,18 @@ const UUID_CURSOR_START = '00000000-0000-0000-0000-000000000000';
  * Ten rows keeps a tick in the tens of milliseconds and costs one
  * `setImmediate` per ten rows, which is nothing beside a JSDOM parse. It is
  * applied by the shared helper, so the four regex-only sources get it free.
+ *
+ * That 6.95 ms/page is ONE storage column per row. Since #1525 a page also
+ * runs its `draft_body_storage` through the enumerator, so a row carrying an
+ * unpublished draft in storage format costs TWO parses and the ten-row tick
+ * roughly doubles — re-measured in this worktree on the same body shape
+ * (26,300 bytes): 7.44 ms/row one column → 74 ms/tick, 15.92 ms/row two
+ * columns → **159 ms/tick**, which is no longer "tens of milliseconds".
+ * LATENT, not live: no code path writes content into `draft_body_storage`
+ * today (`pages-crud.ts` only SELECTs it, COALESCEs it on publish and NULLs
+ * it), so every row currently takes the false branch and the tick is
+ * unchanged. Whoever lands the writer that populates the column re-measures
+ * this and drops the constant if the tick no longer fits.
  */
 export const KEEP_SET_YIELD_EVERY = 10;
 
@@ -468,14 +483,28 @@ export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void)
  * `getExpectedAttachmentFilenames` (a pure function, recomputed at sweep
  * time — the cached `expected_image_files` column is deliberately not
  * consulted, which removes its NULL-means-uncomputed question), because
- * storage format references attachments by `ri:filename`, not by URL. The
- * draft needs the SAME treatment and not just the URL pass over
- * `draft_body_html`: a draw.io macro renders as `img.src = '#drawio:<name>'`,
- * never an `/api/attachments/…` URL, so a diagram inserted into a draft and
- * not yet published has no URL anywhere and only the enumerator can name it.
- * A parse failure THROWS: an unparseable body means unknown references, and
- * the safe verdict for "unknown" is to fail the run, not to shrink the
- * keep-set.
+ * storage format references attachments by `ri:filename` / `diagramName` and
+ * contains no URL at all, which is exactly why the URL pass cannot cover
+ * `draft_body_storage` either and the draft column gets the SAME two-line
+ * treatment (#1525). What that treatment is NOT: the only protection for a
+ * draft-only draw.io diagram. Every persisting caller of `confluenceToHtml`
+ * passes a pageId (8 of 8 at this head), so the macro is rendered as
+ * `<img src="/api/attachments/<pageId>/<name>.png">` — the `#drawio:<name>`
+ * spelling exists only in the pageId-less fallback — and the editor's save
+ * drain writes that same URL back into `draft_body_html`, which the URL pass
+ * already reads. The draft enumerator is defence-in-depth for whoever starts
+ * persisting storage format into the draft column, and it is the direction
+ * the sweep must err in: too large a keep-set defers a delete, too small a
+ * one deletes bytes.
+ *
+ * Neither pass can fail on body CONTENT: both walk
+ * `new JSDOM('<body>' + body + '</body>', { contentType: 'text/html' })`, and
+ * HTML parsing is error-recovering — truncated storage, raw garbage and a
+ * 500-deep nesting all return a (possibly empty) list rather than throwing,
+ * so a body the enumerator cannot read shrinks that row's contribution back
+ * to the URL pass instead of failing the run. The run fails on a DB or FS
+ * error, which is the case where references really are unknown and the safe
+ * verdict is to abort rather than delete.
  */
 export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
   const keep: AttachmentKeepSets = { confluence: new Set(), local: new Set() };
