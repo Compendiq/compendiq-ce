@@ -462,7 +462,14 @@ export async function vectorSearch(
           // `space_key` is NULL for locally-created (standalone) pages, same as
           // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
           metadata: { page_title: string; section_title: string; space_key: string | null };
-          distance: number;
+          // Nullable BY DECLARATION, not by accident: `pe.<column> <=> $2` is
+          // NULL whenever the vector is (a #1116 swap window on the live
+          // column, an unfilled `embedding_next`), and `1 - null` is 1 in JS —
+          // a perfect match. Typing this `number` made the filter below read
+          // as an impossible comparison a strict-lint pass or a tidy-up could
+          // delete; typing it `number | null` makes the guard load-bearing to
+          // the compiler as well as at runtime (#1529).
+          distance: number | null;
         }>(
           `SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
                   pe.${column} <=> $2 AS distance
@@ -491,7 +498,17 @@ export async function vectorSearch(
             // could not fill would otherwise score `1 - null` = 1 — a perfect
             // match — on the ordinary chat path. A JS filter costs nothing and
             // leaves every query plan untouched.
-            .filter((row) => row.distance !== null && row.distance !== undefined)
+            // The explicit `row is … & { distance: number }` predicate is what
+            // carries the narrowing to `1 - row.distance` below: TypeScript
+            // infers a filter predicate only for the PARAMETER, never for a
+            // property of it, so without the annotation the nullable
+            // declaration above would not typecheck. The runtime test is
+            // byte-identical; the annotation is what makes deleting this line
+            // a typecheck failure rather than a silent 1.0 similarity (#1529).
+            .filter(
+              (row): row is typeof row & { distance: number } =>
+                row.distance !== null && row.distance !== undefined,
+            )
             .map((row) => ({
               pageId: row.page_id,
               confluenceId: row.confluence_id,
