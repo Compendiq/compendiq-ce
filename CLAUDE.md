@@ -130,7 +130,9 @@ Runs reuse `retrieval_benchmark_runs`
 (`config.kind = 'shadow-compare'`), so a comparison and the production
 benchmark exclude each other — deliberately, both spend the shared LLM queue —
 **and BOTH 409s are worded by the run that HOLDS the slot** (`slotBusyMessage`,
-beside `staleRunError`; a route may not import another route) **while the
+in `eval/benchmark-run-lifecycle.ts` because both routes call it and a route may
+not import another route; the stale-sweep copy beside it is private to that
+module's own sweep, its only writer) **while the
 holder's id is withheld unless it is the caller's OWN run of the caller's own
 kind** — `activeBenchmarkRun` reports `requestedBy` for that decision alone, and
 both `:id` reads are scoped by kind AND by `requested_by`, so a foreign id is a
