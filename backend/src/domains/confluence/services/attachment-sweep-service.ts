@@ -511,14 +511,25 @@ export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void)
  * the sweep must err in: too large a keep-set defers a delete, too small a
  * one deletes bytes.
  *
- * Neither pass can fail on body CONTENT: both walk
- * `new JSDOM('<body>' + body + '</body>', { contentType: 'text/html' })`, and
- * HTML parsing is error-recovering — truncated storage, raw garbage and a
- * 500-deep nesting all return a (possibly empty) list rather than throwing,
- * so a body the enumerator cannot read shrinks that row's contribution back
- * to the URL pass instead of failing the run. The run fails on a DB or FS
- * error, which is the case where references really are unknown and the safe
- * verdict is to abort rather than delete.
+ * The two passes fail DIFFERENTLY, and the earlier wording here ("neither
+ * pass can fail on body CONTENT: both walk JSDOM") was wrong on both halves
+ * (review r2, probed). The URL pass is a raw regex over the text
+ * (`ATTACHMENT_URL_RE` — no parser at all, see
+ * `collectAttachmentUrlReferences`) and cannot throw. The ENUMERATOR is the
+ * only JSDOM consumer — `getExpectedAttachmentFilenames` →
+ * `extractImageReferences` / `extractDrawioDiagramNames`, each
+ * `new JSDOM('<body>' + bodyStorage + '</body>', { contentType: 'text/html' })`
+ * — and HTML parsing is error-recovering, so ordinary bad content does not
+ * throw: truncated storage, raw garbage and a 500-deep nesting all return a
+ * (possibly empty) list, and that row's contribution simply shrinks back to
+ * what the URL pass found. What it does NOT survive is a pathological body:
+ * a ~20k-deep nesting throws `RangeError: Maximum call stack size exceeded`
+ * out of the parser (probed at this head, both storage columns). That throw
+ * is deliberately NOT caught here — it propagates through `executeSweep`,
+ * `runAttachmentSweep` records the run `failed` and NOTHING is deleted, the
+ * same fail-closed verdict as a DB or FS error: a body whose references could
+ * not be read is a body whose references are UNKNOWN, and a keep-set silently
+ * missing that row's names deletes bytes.
  */
 export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
   const keep: AttachmentKeepSets = { confluence: new Set(), local: new Set() };

@@ -16,13 +16,14 @@ import {
 } from './attachment-sweep-service.js';
 
 /**
- * The keep-set yield guard at the bottom drives the REAL
+ * The two keep-set guards at the bottom drive the REAL
  * `buildAttachmentKeepSets` with the two boundaries it reads replaced: the
  * pages `SELECT` hands out one synthetic batch and every other keep-set
  * `SELECT` comes back empty, and `getExpectedAttachmentFilenames` records
- * which body it was handed instead of parsing it. Both mocks spread the real
- * module, so nothing else in the graph is stubbed and no other test in this
- * file changes meaning: the pure collectors below never reach either
+ * which body it was handed instead of parsing it (and, for the fail-closed
+ * guard, throws for one nominated body — see `throwFor`). Both mocks spread
+ * the real module, so nothing else in the graph is stubbed and no other test
+ * in this file changes meaning: the pure collectors below never reach either
  * boundary.
  */
 const keepSetProbe = vi.hoisted(() => ({
@@ -30,6 +31,12 @@ const keepSetProbe = vi.hoisted(() => ({
   pageRows: [] as Record<string, unknown>[],
   /** Enumerator bodies and `tick` markers, in the order they happened. */
   timeline: [] as string[],
+  /**
+   * Body the mocked enumerator THROWS on, standing in for the one content
+   * failure the real parser has: a pathological nesting depth blowing the
+   * JSDOM recursion (`RangeError`, probed in review r2). `null` = never throw.
+   */
+  throwFor: null as string | null,
 }));
 
 vi.mock('../../../core/db/postgres.js', async (importOriginal) => ({
@@ -44,6 +51,9 @@ vi.mock('./attachment-handler.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./attachment-handler.js')>()),
   getExpectedAttachmentFilenames: (body: string) => {
     keepSetProbe.timeline.push(body);
+    if (keepSetProbe.throwFor !== null && body === keepSetProbe.throwFor) {
+      throw new RangeError('Maximum call stack size exceeded');
+    }
     return [] as string[];
   },
 }));
@@ -429,5 +439,73 @@ describe('keep-set event-loop yield', () => {
     worstParsesPerTick = Math.max(worstParsesPerTick, parsesThisTick);
     expect(worstParsesPerTick).toBeGreaterThan(0);
     expect(worstParsesPerTick).toBeLessThanOrEqual(KEEP_SET_YIELD_EVERY * STORAGE_COLUMNS_PER_PAGE_ROW);
+  });
+});
+
+describe('keep-set fail-closed on an unreadable body (#1525)', () => {
+  /**
+   * `buildAttachmentKeepSets` documents the direction it must fail in, and
+   * that direction is the whole safety argument of the sweep: a body whose
+   * references could not be READ is a body whose references are UNKNOWN, so
+   * the run must abort rather than continue with a keep-set silently missing
+   * that row's names — the sweep DELETES files, and a too-small keep-set
+   * deletes referenced bytes.
+   *
+   * The claim is reachable: the enumerator is the only JSDOM consumer of a
+   * storage column, HTML parsing is error-recovering for ordinary bad content
+   * (truncated storage, raw garbage and a 500-deep nesting all came back as a
+   * list when probed at this head), but a ~20k-deep nesting throws
+   * `RangeError: Maximum call stack size exceeded` out of the parser. Probed
+   * for real; asserted here through `keepSetProbe.throwFor` instead of a 20k
+   * body, because the actual recursion limit is an engine property and a test
+   * that depends on it would be flaky, not a guard.
+   *
+   * What this pins is the absence of a `try`/`catch` around the enumerator
+   * calls: wrap either storage column's `getExpectedAttachmentFilenames` in
+   * one and this reds.
+   */
+  it('rejects instead of returning a keep-set that lost the row it could not parse', async () => {
+    keepSetProbe.pageRows = [
+      {
+        __cursor: 1,
+        body_html: null,
+        draft_body_html: null,
+        body_storage: null,
+        draft_body_storage: 'draft:unparseable',
+        space_key: 'SPACE',
+      },
+    ];
+    keepSetProbe.timeline = [];
+    keepSetProbe.throwFor = 'draft:unparseable';
+    try {
+      await expect(buildAttachmentKeepSets()).rejects.toThrow(/Maximum call stack size exceeded/);
+    } finally {
+      keepSetProbe.throwFor = null;
+    }
+    // The enumerator really was reached — the rejection is the throw the
+    // parser raised, not a mock that never ran.
+    expect(keepSetProbe.timeline).toContain('draft:unparseable');
+  });
+
+  /** Same shape, published column: both storage passes are uncaught. */
+  it('rejects for the published body_storage column too', async () => {
+    keepSetProbe.pageRows = [
+      {
+        __cursor: 1,
+        body_html: null,
+        draft_body_html: null,
+        body_storage: 'body:unparseable',
+        draft_body_storage: null,
+        space_key: 'SPACE',
+      },
+    ];
+    keepSetProbe.timeline = [];
+    keepSetProbe.throwFor = 'body:unparseable';
+    try {
+      await expect(buildAttachmentKeepSets()).rejects.toThrow(/Maximum call stack size exceeded/);
+    } finally {
+      keepSetProbe.throwFor = null;
+    }
+    expect(keepSetProbe.timeline).toContain('body:unparseable');
   });
 });
