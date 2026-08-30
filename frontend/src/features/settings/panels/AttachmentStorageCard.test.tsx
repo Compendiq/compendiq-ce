@@ -612,7 +612,15 @@ describe('AttachmentStorageCard (#1349)', () => {
    *
    *  - the cost and its recovery are pinned by CLAIM now, not by the r1
    *    phrasing, because the trim rewrote the sentence and a cell that pins
-   *    a wording rather than a meaning turns every copy edit into a failure;
+   *    a wording rather than a meaning turns every copy edit into a failure.
+   *    The claim's POLARITY is still pinned, though: the first rewrite kept
+   *    only the subject clause ("…that no page body embeds"), which a
+   *    description reading "are never touched" satisfies just as well as one
+   *    reading "count as unreferenced" — the inversion this cell exists to
+   *    catch. Verified by mutation at the r1 head: the whole file stayed
+   *    green on "are never touched; Confluence re-serves them if you delete
+   *    them yourself". The verb is back, as an alternation, so the meaning
+   *    is pinned and the wording is not;
    *  - `/page icons/` is gone, and gone from the CARD, not relocated to the
    *    note (fixer r1 — the note has never mentioned page icons). "Uploaded
    *    page icons are a separate store and are never swept" is a reassurance
@@ -631,8 +639,12 @@ describe('AttachmentStorageCard (#1349)', () => {
 
     const dialog = await screen.findByTestId('confirm-dialog-confirm');
     const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
-    // The cost: a cached image under a live page, embedded by no body, goes.
-    expect(text).toMatch(/cached Confluence images that no page body embeds/i);
+    // The cost: a cached image under a live page, embedded by no body, GOES.
+    // The verb is what carries that, so it is asserted; the alternation keeps
+    // the cell agnostic about which way the copy phrases it.
+    expect(text).toMatch(
+      /cached Confluence images that no page body embeds (count as unreferenced|are (removed|deleted))/i,
+    );
     // The recovery: Confluence still has the bytes, so this costs a re-fetch.
     expect(text).toMatch(/Confluence re-serves them/i);
     // The claims it already made must still be there.
