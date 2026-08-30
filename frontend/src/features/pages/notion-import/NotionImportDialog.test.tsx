@@ -3,12 +3,22 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { NOTION_UNSUPPORTED_LABEL } from '@compendiq/contracts';
+import {
+  NOTION_UNSUPPORTED_LABEL,
+  type NotionImportItem,
+  type NotionTreeDatabaseNode,
+  type NotionTreeNode,
+  type NotionTreePageNode,
+  type NotionTreeSkippedNode,
+} from '@compendiq/contracts';
 import { useAuthStore } from '../../../stores/auth-store';
 import { NotionImportDialog, NotionImportPickFooter } from './NotionImportDialog';
 import { NOTION_IMPORT_MAX_PAGES, shouldCommitImportResult } from './notion-import-selection';
 
 const TOKEN = 'ntn_dummy_secret_do_not_echo';
+
+/** Deliberately not `NOTION_UNSUPPORTED_LABEL`: the row must read the node. */
+const BOARD_SKIP = 'Whiteboards have no local shape yet';
 
 const { mockToastSuccess, mockToastError } = vi.hoisted(() => ({
   mockToastSuccess: vi.fn(),
@@ -69,48 +79,79 @@ function deferResponse(): {
   return { promise, resolve };
 }
 
+function pageNode(id: string, title: string, children: NotionTreeNode[] = []): NotionTreePageNode {
+  return { id, title, type: 'page', selectable: true, children };
+}
+
+function rowNode(id: string, title: string): NotionTreePageNode {
+  return { id, title, type: 'page', selectable: true, isDatabaseRow: true, children: [] };
+}
+
+type DatabaseOverrides = Partial<
+  Pick<
+    NotionTreeDatabaseNode,
+    'recommendedMode' | 'rowContent' | 'isWiki' | 'rowCount' | 'columns' | 'children'
+  >
+>;
+
+function dbNode(id: string, title: string, overrides: DatabaseOverrides = {}): NotionTreeDatabaseNode {
+  const children = overrides.children ?? [];
+  return {
+    id,
+    title,
+    type: 'database',
+    selectable: true,
+    recommendedMode: 'table',
+    rowContent: 'none',
+    isWiki: false,
+    rowCount: children.length,
+    columns: ['Name', 'Stage'],
+    ...overrides,
+    children,
+  };
+}
+
+function wikiNode(id: string, title: string, overrides: DatabaseOverrides = {}): NotionTreeDatabaseNode {
+  return dbNode(id, title, {
+    isWiki: true,
+    recommendedMode: 'pages',
+    rowContent: 'some',
+    ...overrides,
+  });
+}
+
+function unsupportedNode(
+  id: string,
+  title: string,
+  overrides: Partial<Pick<NotionTreeSkippedNode, 'skipReason' | 'reasonCode' | 'children'>> = {},
+): NotionTreeSkippedNode {
+  return {
+    id,
+    title,
+    type: 'unsupported',
+    selectable: false,
+    skipReason: BOARD_SKIP,
+    children: [],
+    ...overrides,
+  };
+}
+
 const MIXED_TREE = {
   nodes: [
-    {
-      id: 'handbook',
-      title: 'Handbook',
-      type: 'page',
-      selectable: true,
-      children: [
-        {
-          id: 'onboarding',
-          title: 'Onboarding',
-          type: 'page',
-          selectable: true,
-          children: [
-            { id: 'nested', title: 'Nested notes', type: 'page', selectable: true, children: [] },
-          ],
-        },
-        {
-          id: 'crm',
-          title: 'CRM',
-          type: 'database',
-          selectable: false,
-          skipReason: NOTION_UNSUPPORTED_LABEL,
-          children: [],
-        },
-        {
-          id: 'board',
-          title: 'Whiteboard',
-          type: 'unsupported',
-          selectable: false,
-          skipReason: NOTION_UNSUPPORTED_LABEL,
-          children: [],
-        },
-      ],
-    },
-    {
-      id: 'row-listed',
-      title: 'Customer Acme',
-      type: 'page',
-      selectable: true,
-      children: [],
-    },
+    pageNode('handbook', 'Handbook', [
+      pageNode('onboarding', 'Onboarding', [pageNode('nested', 'Nested notes')]),
+      dbNode('crm', 'CRM', { rowCount: 0 }),
+      unsupportedNode('board', 'Whiteboard', { reasonCode: 'canvas' }),
+    ]),
+    pageNode('row-listed', 'Customer Acme'),
+  ],
+};
+
+/** One database, two rows: the three-way mode switch under test. */
+const DB_TREE = {
+  nodes: [
+    pageNode('handbook', 'Handbook'),
+    dbNode('crm', 'CRM', { children: [rowNode('row-1', 'Acme'), rowNode('row-2', 'Globex')] }),
   ],
 };
 
@@ -129,7 +170,7 @@ const LOCAL_SPACES = [
 
 let connected = false;
 
-function givenHappyPath(opts: { tree?: unknown; importItems?: unknown[] } = {}) {
+function givenHappyPath(opts: { tree?: unknown; importItems?: NotionImportItem[] } = {}) {
   connected = false;
   routes = [
     {
@@ -204,6 +245,23 @@ async function connectWithDummyToken() {
   });
 }
 
+/** The mode switch of one database. */
+function modeControl(databaseId: string): HTMLElement {
+  return screen.getByTestId(`notion-db-mode-${databaseId}`);
+}
+
+function modeButton(databaseId: string, label: string): HTMLElement {
+  return within(modeControl(databaseId)).getByRole('button', { name: label });
+}
+
+function actionOf(nodeId: string): HTMLElement {
+  return screen.getByTestId(`notion-node-action-${nodeId}`);
+}
+
+function kindOf(nodeId: string): HTMLElement {
+  return screen.getByTestId(`notion-node-kind-${nodeId}`);
+}
+
 beforeEach(() => {
   mockToastSuccess.mockReset();
   mockToastError.mockReset();
@@ -217,23 +275,67 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('NotionImportDialog picker skip rules', () => {
-  it('labels databases and unsupported nodes and refuses to select them', async () => {
+describe('NotionImportDialog row outcomes', () => {
+  it('states the Notion kind and the local outcome of every row', async () => {
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(
+      screen.getByText('One-shot migrate into a local space. Every row says what it becomes.'),
+    ).toBeInTheDocument();
+
+    expect(kindOf('handbook')).toHaveTextContent('Page');
+    expect(actionOf('handbook')).toHaveTextContent('Imports as a page');
+    expect(kindOf('row-listed')).toHaveTextContent('Page');
+    expect(actionOf('row-listed')).toHaveTextContent('Imports as a page');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
+
+    expect(kindOf('onboarding')).toHaveTextContent('Page');
+    expect(actionOf('onboarding')).toHaveTextContent('Imports as a page');
+    expect(kindOf('crm')).toHaveTextContent('Database');
+    expect(actionOf('crm')).toHaveTextContent('Imports as one table · 0 rows');
+    expect(kindOf('board')).toHaveTextContent('Canvas');
+
+    expect(screen.getByTestId('notion-node-handbook')).toHaveAttribute('data-supported', 'true');
+    expect(screen.getByTestId('notion-node-crm')).toHaveAttribute('data-supported', 'true');
+  });
+
+  it('refuses to pick an unsupported row and prints the scan’s own reason', async () => {
     renderDialog();
     await connectWithDummyToken();
     fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
 
-    const crm = screen.getByTestId('notion-node-crm');
-    expect(crm).toHaveTextContent(NOTION_UNSUPPORTED_LABEL);
-    expect(within(crm).queryByRole('checkbox')).toBeNull();
-
     const board = screen.getByTestId('notion-node-board');
-    expect(board).toHaveTextContent(NOTION_UNSUPPORTED_LABEL);
+    expect(board).toHaveAttribute('data-supported', 'false');
     expect(within(board).queryByRole('checkbox')).toBeNull();
+    expect(actionOf('board')).toHaveTextContent(BOARD_SKIP);
+    expect(board.textContent).not.toContain(NOTION_UNSUPPORTED_LABEL);
+    expect(screen.queryByRole('checkbox', { name: 'Whiteboard' })).toBeNull();
+  });
 
-    fireEvent.click(crm);
-    expect(screen.queryByRole('checkbox', { name: 'CRM' })).toBeNull();
-    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
+  it('lets an unsupported parent select the importable rows beneath it', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          unsupportedNode('linked:crm', 'CRM (linked view)', {
+            reasonCode: 'linked_database',
+            skipReason: 'Linked views point at a database elsewhere',
+            children: [pageNode('p1', 'Architecture'), pageNode('p2', 'Runbook')],
+          }),
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(kindOf('linked:crm')).toHaveTextContent('Linked view');
+    expect(actionOf('linked:crm')).toHaveTextContent('Linked views point at a database elsewhere');
+
+    const group = screen.getByRole('checkbox', { name: 'Select all 2 items in CRM (linked view)' });
+    fireEvent.click(group);
+    expect(group).toBeChecked();
+    expect(screen.getByText(/2 pages selected/)).toBeInTheDocument();
   });
 
   it('groups descendants behind expandable parent rows', async () => {
@@ -261,7 +363,9 @@ describe('NotionImportDialog picker skip rules', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(/3 pages will import/i);
+    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(
+      '3 pages and 1 table will import.',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
@@ -269,39 +373,202 @@ describe('NotionImportDialog picker skip rules', () => {
     expect(screen.getByRole('checkbox', { name: 'Handbook' })).toBePartiallyChecked();
   });
 
-  it('shows group checkbox and badge on a database with child pages', async () => {
+  it('picks a wiki database and its rows with one checkbox', async () => {
     givenHappyPath({
       tree: {
         nodes: [
-          {
-            id: 'wiki-db',
-            title: 'Kubernetes Wiki',
-            type: 'database',
-            selectable: false,
-            skipReason: NOTION_UNSUPPORTED_LABEL,
-            reasonCode: 'database',
-            children: [
-              { id: 'p1', title: 'AOWD', type: 'page', selectable: true, children: [] },
-              { id: 'p2', title: 'Redis Cheatsheet', type: 'page', selectable: true, children: [] },
-            ],
-          },
+          wikiNode('wiki-db', 'Kubernetes Wiki', {
+            children: [rowNode('p1', 'AOWD'), rowNode('p2', 'Redis Cheatsheet')],
+          }),
         ],
       },
     });
     renderDialog();
     await connectWithDummyToken();
 
-    const wikiNode = screen.getByTestId('notion-node-wiki-db');
-    expect(wikiNode).toHaveTextContent('Kubernetes Wiki');
-    expect(wikiNode).toHaveTextContent('Database');
-    expect(wikiNode).toHaveTextContent(/2 pages can be imported/i);
+    expect(kindOf('wiki-db')).toHaveTextContent('Wiki');
+    expect(actionOf('wiki-db')).toHaveTextContent('Imports as one page with 2 articles');
 
-    const groupCheckbox = within(wikiNode).getByRole('checkbox', { name: /Select all 2 pages in Kubernetes Wiki/i });
+    const groupCheckbox = screen.getByRole('checkbox', { name: 'Kubernetes Wiki' });
     expect(groupCheckbox).not.toBeChecked();
 
     fireEvent.click(groupCheckbox);
+    expect(groupCheckbox).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(/2 pages will import/i);
+    expect(await screen.findByTestId('notion-import-confirm-copy')).toHaveTextContent(
+      '2 articles and 1 database page will import.',
+    );
+  });
+});
+
+describe('NotionImportDialog database mode switch', () => {
+  it('offers one pressable button per available mode, with the recommendation pressed', async () => {
+    givenHappyPath({ tree: DB_TREE });
+    renderDialog();
+    await connectWithDummyToken();
+
+    const control = modeControl('crm');
+    expect(control).toHaveAttribute('role', 'group');
+    expect(control).toHaveAttribute('aria-label', 'Import CRM as');
+    expect(screen.getByRole('group', { name: 'Import CRM as' })).toBe(control);
+
+    const buttons = within(control).getAllByRole('button');
+    expect(buttons.map((button) => button.textContent)).toEqual(['Table', 'Pages', 'Skip']);
+    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual([
+      'true',
+      'false',
+      'false',
+    ]);
+  });
+
+  it('never offers Table for a wiki, whose rows carry bodies', async () => {
+    givenHappyPath({
+      tree: { nodes: [wikiNode('wiki-db', 'Engineering Wiki', { children: [rowNode('w1', 'Runbook')] })] },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    const control = modeControl('wiki-db');
+    expect(within(control).queryByRole('button', { name: 'Table' })).toBeNull();
+    expect(within(control).getAllByRole('button').map((b) => b.textContent)).toEqual(['Pages', 'Skip']);
+    expect(modeButton('wiki-db', 'Pages')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('rewrites the database and every row it governs when the mode changes', async () => {
+    givenHappyPath({ tree: DB_TREE });
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand CRM' }));
+
+    expect(actionOf('crm')).toHaveTextContent('Imports as one table · 2 rows');
+    expect(kindOf('row-1')).toHaveTextContent('Database row');
+    expect(actionOf('row-1')).toHaveTextContent('Included in the table above');
+    expect(actionOf('row-2')).toHaveTextContent('Included in the table above');
+    expect(screen.queryByRole('checkbox', { name: 'Acme' })).toBeNull();
+
+    fireEvent.click(modeButton('crm', 'Pages'));
+    expect(modeButton('crm', 'Pages')).toHaveAttribute('aria-pressed', 'true');
+    expect(modeButton('crm', 'Table')).toHaveAttribute('aria-pressed', 'false');
+    expect(actionOf('crm')).toHaveTextContent('Imports as one page with 2 articles');
+    expect(actionOf('row-1')).toHaveTextContent('Imports as an article');
+    expect(actionOf('row-2')).toHaveTextContent('Imports as an article');
+    expect(screen.getByRole('checkbox', { name: 'Acme' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Globex' })).toBeInTheDocument();
+
+    fireEvent.click(modeButton('crm', 'Skip'));
+    expect(modeButton('crm', 'Skip')).toHaveAttribute('aria-pressed', 'true');
+    expect(actionOf('crm')).toHaveTextContent('Excluded — stays in Notion');
+    expect(actionOf('row-1')).toHaveTextContent('Excluded — stays in Notion');
+    expect(actionOf('row-2')).toHaveTextContent('Excluded — stays in Notion');
+    expect(within(screen.getByTestId('notion-node-crm')).queryByRole('checkbox')).toBeNull();
+
+    fireEvent.click(modeButton('crm', 'Table'));
+    expect(actionOf('crm')).toHaveTextContent('Imports as one table · 2 rows');
+    expect(actionOf('row-1')).toHaveTextContent('Included in the table above');
+    expect(screen.getByRole('checkbox', { name: 'CRM' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Acme' })).toBeNull();
+  });
+
+  it('cautions when a table override would flatten rows that have content', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          dbNode('crm', 'CRM', {
+            recommendedMode: 'pages',
+            rowContent: 'some',
+            children: [rowNode('row-1', 'Acme'), rowNode('row-2', 'Globex')],
+          }),
+        ],
+      },
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    expect(screen.queryByTestId('notion-node-caution-crm')).toBeNull();
+
+    fireEvent.click(modeButton('crm', 'Table'));
+    expect(screen.getByTestId('notion-node-caution-crm')).toHaveTextContent(/page content/i);
+  });
+
+  it('drops a skipped database and its rows from the selection count', async () => {
+    givenHappyPath({ tree: DB_TREE });
+    renderDialog();
+    await connectWithDummyToken();
+
+    fireEvent.click(modeButton('crm', 'Pages'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'CRM' }));
+    expect(screen.getByText(/4 pages selected/)).toBeInTheDocument();
+
+    fireEvent.click(modeButton('crm', 'Skip'));
+    expect(screen.getByText(/1 page selected/)).toBeInTheDocument();
+    expect(screen.queryByText(/4 pages selected/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  });
+
+  it('ticks a pages-mode database and all its rows in one click', async () => {
+    // Regression: the checkbox must toggle the group the CURRENT mode governs,
+    // not the recommended one, or a pages override lands half-selected.
+    givenHappyPath({ tree: DB_TREE });
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand CRM' }));
+    fireEvent.click(modeButton('crm', 'Pages'));
+
+    const dbCheckbox = screen.getByRole('checkbox', { name: 'CRM' });
+    fireEvent.click(dbCheckbox);
+
+    expect(dbCheckbox).toBeChecked();
+    expect(dbCheckbox).not.toBePartiallyChecked();
+    expect(screen.getByRole('checkbox', { name: 'Acme' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Globex' })).toBeChecked();
+    expect(screen.getByText(/3 pages selected/)).toBeInTheDocument();
+
+    fireEvent.click(dbCheckbox);
+    expect(dbCheckbox).not.toBeChecked();
+    expect(dbCheckbox).not.toBePartiallyChecked();
+    expect(screen.getByRole('checkbox', { name: 'Acme' })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  });
+
+  it('sends the effective mode of every selected database, and omits skipped ones', async () => {
+    givenHappyPath({
+      tree: {
+        nodes: [
+          pageNode('handbook', 'Handbook'),
+          dbNode('crm', 'CRM', { children: [rowNode('row-1', 'Acme'), rowNode('row-2', 'Globex')] }),
+          wikiNode('playbooks', 'Playbooks', { children: [rowNode('play-1', 'Runbook')] }),
+          dbNode('archive', 'Archive', { rowCount: 9 }),
+        ],
+      },
+      importItems: [{ notionPageId: 'handbook', status: 'success', localPageId: 11, importedAs: 'page' }],
+    });
+    renderDialog();
+    await connectWithDummyToken();
+
+    fireEvent.click(modeButton('archive', 'Skip'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+
+    const confirm = await screen.findByTestId('notion-import-confirm-copy');
+    expect(confirm).toHaveTextContent(
+      '1 page, 1 article, 1 table and 1 database page will import. 1 database is excluded.',
+    );
+
+    const reSyncCheckbox = screen.getByLabelText(/update existing pages/i);
+    expect(reSyncCheckbox).not.toBeChecked();
+    fireEvent.click(reSyncCheckbox);
+
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+    await screen.findByTestId('notion-import-result');
+
+    const post = calls.find((c) => c.method === 'POST' && /\/notion\/import$/.test(c.url));
+    const body = JSON.parse(post!.body ?? '{}') as Record<string, unknown>;
+    expect(body.pageIds).toEqual(['handbook', 'crm', 'playbooks', 'play-1']);
+    expect(body.databaseModes).toEqual({ crm: 'table', playbooks: 'pages' });
+    expect(body.databaseModes).not.toHaveProperty('archive');
+    expect(body.overwriteExisting).toBe(true);
   });
 });
 
@@ -309,13 +576,7 @@ describe('NotionImportDialog large workspace rendering', () => {
   it('renders root groups in bounded batches and exposes the remainder', async () => {
     givenHappyPath({
       tree: {
-        nodes: Array.from({ length: 51 }, (_, index) => ({
-          id: `root-${index}`,
-          title: `Root page ${index}`,
-          type: 'page',
-          selectable: true,
-          children: [],
-        })),
+        nodes: Array.from({ length: 51 }, (_, index) => pageNode(`root-${index}`, `Root page ${index}`)),
       },
     });
     renderDialog();
@@ -332,28 +593,22 @@ describe('NotionImportDialog large workspace rendering', () => {
   it('drops stale selections before enforcing the page cap after a tree refresh', async () => {
     givenHappyPath({
       tree: {
-        nodes: [{
-          id: 'old-parent',
-          title: 'Old parent',
-          type: 'page',
-          selectable: true,
-          children: Array.from({ length: NOTION_IMPORT_MAX_PAGES - 1 }, (_, index) => ({
-            id: `old-child-${index}`,
-            title: `Old child ${index}`,
-            type: 'page',
-            selectable: true,
-            children: [],
-          })),
-        }],
+        nodes: [
+          pageNode(
+            'old-parent',
+            'Old parent',
+            Array.from({ length: NOTION_IMPORT_MAX_PAGES - 1 }, (_, index) =>
+              pageNode(`old-child-${index}`, `Old child ${index}`),
+            ),
+          ),
+        ],
       },
     });
     const { queryClient } = renderDialog();
     await connectWithDummyToken();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Old parent' }));
 
-    queryClient.setQueryData(['notion', 'tree'], {
-      nodes: [{ id: 'fresh', title: 'Fresh page', type: 'page', selectable: true, children: [] }],
-    });
+    queryClient.setQueryData(['notion', 'tree'], { nodes: [pageNode('fresh', 'Fresh page')] });
     const fresh = await screen.findByRole('checkbox', { name: 'Fresh page' });
     fireEvent.click(fresh);
 
@@ -364,17 +619,15 @@ describe('NotionImportDialog large workspace rendering', () => {
 });
 
 describe('NotionImportDialog confirm copy', () => {
-  it('states skipped databases include their rows', async () => {
+  it('names every shape that imports and what stays in Notion', async () => {
     renderDialog();
     await connectWithDummyToken();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
 
     const confirm = await screen.findByTestId('notion-import-confirm-copy');
-    expect(confirm).toHaveTextContent(/3 pages will import/);
-    expect(confirm).toHaveTextContent(/database skipped/i);
-    expect(confirm).toHaveTextContent(/including its rows|including their rows/);
-    expect(confirm).toHaveTextContent(/stay in Notion/i);
+    expect(confirm).toHaveTextContent('3 pages and 1 table will import.');
+    expect(confirm).toHaveTextContent('1 item cannot be imported and stay in Notion.');
     expect(confirm.textContent).not.toContain(TOKEN);
   });
 
@@ -394,7 +647,8 @@ describe('NotionImportDialog confirm copy', () => {
     });
     const post = calls.find((c) => c.method === 'POST' && /\/notion\/import$/.test(c.url));
     const body = JSON.parse(post!.body ?? '{}') as Record<string, unknown>;
-    expect(body.pageIds).toEqual(['handbook', 'onboarding', 'nested']);
+    expect(body.pageIds).toEqual(['handbook', 'onboarding', 'nested', 'crm']);
+    expect(body.databaseModes).toEqual({ crm: 'table' });
     expect(body.spaceKey).toBe('notes');
     expect(body.visibility).toBe('shared');
     expect(body).not.toHaveProperty('token');
@@ -672,6 +926,31 @@ describe('NotionImportDialog destination and lock', () => {
     expect(within(result).getByRole('link', { name: 'Handbook' })).toHaveAttribute('href', '/pages/11');
   });
 
+  it('reads each result row as the shape it actually landed in', async () => {
+    givenHappyPath({
+      importItems: [
+        { notionPageId: 'handbook', status: 'success', localPageId: 11, importedAs: 'page' },
+        { notionPageId: 'crm', status: 'success', localPageId: 12, importedAs: 'table' },
+        { notionPageId: 'nested', status: 'success', localPageId: 13, importedAs: 'article' },
+      ],
+    });
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+
+    const result = await screen.findByTestId('notion-import-result');
+    const rows = within(result)
+      .getAllByRole('listitem')
+      .map((item) => item.textContent ?? '');
+    expect(rows[0]).toMatch(/^Handbook\s*imported$/);
+    expect(rows[1]).toMatch(/^CRM\s*imported as a table$/);
+    expect(rows[2]).toMatch(/^Nested notes\s*imported as an article$/);
+  });
+
   it('does not commit an in-flight POST after the wizard leaves confirm', () => {
     expect(shouldCommitImportResult('confirm', true)).toBe(true);
     expect(shouldCommitImportResult('pick', true)).toBe(false);
@@ -716,14 +995,20 @@ describe('NotionImportDialog destination and lock', () => {
     expect(JSON.stringify(queryClient.getQueryData(['notion', 'tree']) ?? {})).not.toContain(TOKEN);
   });
 
-  it('renders the unsupported label from node.skipReason', () => {
-    const src = readFileSync(
+  it('derives every row label from the node, never from a hard-coded constant', () => {
+    const selection = readFileSync(
+      path.join(process.cwd(), 'src/features/pages/notion-import/notion-import-selection.ts'),
+      'utf8',
+    );
+    expect(selection).toMatch(/action: node\.skipReason/);
+
+    const dialog = readFileSync(
       path.join(process.cwd(), 'src/features/pages/notion-import/NotionImportDialog.tsx'),
       'utf8',
     );
-    expect(src).toMatch(/node\.skipReason/);
-    expect(src).toMatch(/<NotionImportPickFooter/);
-    expect(src).toMatch(/importCount=\{summary\.importCount\}/);
+    expect(dialog).not.toContain('NOTION_UNSUPPORTED_LABEL');
+    expect(dialog).toMatch(/<NotionImportPickFooter/);
+    expect(dialog).toMatch(/importCount=\{summary\.importCount\}/);
   });
 });
 
@@ -739,11 +1024,7 @@ describe('NotionImportDialog tree cache and empty retry', () => {
     expect(queryClient.getQueryData(['notion', 'tree'])).toBeUndefined();
 
     const held = deferResponse();
-    givenHappyPath({
-      tree: {
-        nodes: [{ id: 'other', title: 'Other space', type: 'page', selectable: true, children: [] }],
-      },
-    });
+    givenHappyPath({ tree: { nodes: [pageNode('other', 'Other space')] } });
     routes = routes.map((route) =>
       route.match.test('/notion/tree') ? { ...route, respond: () => held.promise } : route,
     );
@@ -756,11 +1037,7 @@ describe('NotionImportDialog tree cache and empty retry', () => {
     expect(screen.getByText(/loading workspace/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled();
 
-    held.resolve({
-      body: {
-        nodes: [{ id: 'other', title: 'Other space', type: 'page', selectable: true, children: [] }],
-      },
-    });
+    held.resolve({ body: { nodes: [pageNode('other', 'Other space')] } });
     expect(await screen.findByRole('checkbox', { name: 'Other space' })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'Handbook' })).toBeNull();
   });
@@ -848,23 +1125,8 @@ describe('NotionImportDialog picker cap and a11y', () => {
     givenHappyPath({
       tree: {
         nodes: [
-          {
-            id: 'p-imported',
-            title: 'Imported Guide',
-            type: 'page',
-            selectable: true,
-            alreadyImported: true,
-            localPageId: 42,
-            children: [],
-          },
-          {
-            id: 'p-new',
-            title: 'New Article',
-            type: 'page',
-            selectable: true,
-            alreadyImported: false,
-            children: [],
-          },
+          { ...pageNode('p-imported', 'Imported Guide'), alreadyImported: true, localPageId: 42 },
+          { ...pageNode('p-new', 'New Article'), alreadyImported: false },
         ],
       },
     });
@@ -881,35 +1143,12 @@ describe('NotionImportDialog picker cap and a11y', () => {
     expect(screen.getByText('New Article')).toBeInTheDocument();
   });
 
-  it('supports Pages only selection and excluding database rows', async () => {
+  it('supports Pages only selection and keeps the database when its rows are excluded', async () => {
     givenHappyPath({
       tree: {
         nodes: [
-          {
-            id: 'p-doc',
-            title: 'Architecture Doc',
-            type: 'page',
-            selectable: true,
-            isDatabaseRow: false,
-            children: [],
-          },
-          {
-            id: 'db-1',
-            title: 'Commands DB',
-            type: 'database',
-            selectable: false,
-            skipReason: NOTION_UNSUPPORTED_LABEL,
-            children: [
-              {
-                id: 'p-row',
-                title: 'nslookup',
-                type: 'page',
-                selectable: true,
-                isDatabaseRow: true,
-                children: [],
-              },
-            ],
-          },
+          { ...pageNode('p-doc', 'Architecture Doc'), isDatabaseRow: false },
+          dbNode('db-1', 'Commands DB', { children: [rowNode('p-row', 'nslookup')] }),
         ],
       },
     });
@@ -918,10 +1157,15 @@ describe('NotionImportDialog picker cap and a11y', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /pages only/i }));
     expect(screen.getByRole('checkbox', { name: 'Architecture Doc' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /select all 1 pages in commands db/i })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Commands DB' })).not.toBeChecked();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Commands DB' }));
+    expect(screen.getByText('nslookup')).toBeInTheDocument();
+
+    // A database imports in its own right, so hiding rows hides the rows only.
     fireEvent.click(screen.getByLabelText(/exclude database rows/i));
-    expect(screen.queryByText('Commands DB')).not.toBeInTheDocument();
+    expect(screen.queryByText('nslookup')).not.toBeInTheDocument();
+    expect(screen.getByTestId('notion-node-db-1')).toBeInTheDocument();
     expect(screen.getByText('Architecture Doc')).toBeInTheDocument();
   });
 
@@ -934,61 +1178,6 @@ describe('NotionImportDialog picker cap and a11y', () => {
 
     expect(screen.getByRole('checkbox', { name: 'Nested notes' })).toBeInTheDocument();
     expect(screen.queryByText('CRM')).not.toBeInTheDocument();
-  });
-
-  it('renders a skip control per database and sends overwriteExisting and skip modes on import', async () => {
-    givenHappyPath({
-      tree: {
-        nodes: [
-          {
-            id: 'handbook',
-            title: 'Handbook',
-            type: 'page',
-            selectable: true,
-            children: [
-              {
-                id: 'crm',
-                title: 'CRM',
-                type: 'database',
-                selectable: false,
-                skipReason: NOTION_UNSUPPORTED_LABEL,
-                children: [{ id: 'row-1', title: 'Row 1', type: 'page', selectable: true, children: [] }],
-              },
-            ],
-          },
-        ],
-      },
-    });
-    renderDialog();
-    await connectWithDummyToken();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Expand Handbook' }));
-    const crmNode = screen.getByTestId('notion-node-crm');
-    expect(within(crmNode).queryByRole('button', { name: 'Table' })).not.toBeInTheDocument();
-    expect(within(crmNode).queryByRole('button', { name: 'Articles' })).not.toBeInTheDocument();
-    const skipBtn = within(crmNode).getByRole('button', { name: 'Skip' });
-
-    fireEvent.click(skipBtn);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Handbook' }));
-    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
-
-    await screen.findByTestId('notion-import-confirm-copy');
-    expect(screen.getByTestId('notion-import-confirm-copy')).toHaveTextContent('1 page will import');
-    const reSyncCheckbox = screen.getByLabelText(/update existing pages/i);
-    expect(reSyncCheckbox).not.toBeChecked();
-    fireEvent.click(reSyncCheckbox);
-    expect(reSyncCheckbox).toBeChecked();
-
-    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
-    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
-
-    await screen.findByTestId('notion-import-result');
-    const importCall = calls.find((c) => c.url.includes('/notion/import'));
-    expect(importCall).toBeDefined();
-    const body = JSON.parse(importCall!.body!);
-    expect(body.overwriteExisting).toBe(true);
-    expect(body.databaseModes).toEqual({ crm: 'skip' });
-    expect(body.pageIds).toEqual(['handbook']);
   });
 
   it('clears search when the dialog closes', async () => {
@@ -1010,6 +1199,29 @@ describe('NotionImportDialog picker cap and a11y', () => {
     await screen.findByRole('heading', { name: 'Choose pages' });
     expect(screen.getByRole('searchbox', { name: /search pages and databases/i })).toHaveValue('');
   });
+
+  it('forgets database mode overrides when the dialog closes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onClose = vi.fn();
+    givenHappyPath({ tree: DB_TREE });
+    const ui = (open: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <NotionImportDialog open={open} onClose={onClose} />
+      </QueryClientProvider>
+    );
+    const view = render(ui(true));
+    await connectWithDummyToken();
+
+    fireEvent.click(modeButton('crm', 'Skip'));
+    expect(actionOf('crm')).toHaveTextContent('Excluded — stays in Notion');
+
+    view.rerender(ui(false));
+    view.rerender(ui(true));
+    await screen.findByRole('heading', { name: 'Choose pages' });
+    expect(actionOf('crm')).toHaveTextContent('Imports as one table · 2 rows');
+    expect(modeButton('crm', 'Table')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('rehomes focus to the result heading after a successful Import', async () => {
     renderDialog();
     await connectWithDummyToken();
