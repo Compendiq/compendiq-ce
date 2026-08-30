@@ -944,14 +944,17 @@ a baked literal need their own tie back to the tokens.
 
 ### v0.8 — Paper turns warm, and its panes turn white (2026-08-30)
 
-**Owner decision.** "The background colors are a bit on the blue side. Make it a
-bit warmer, and for the background of the main area, left and right panel I want
-pure white." Light mode only; Graphite is untouched. This amendment supersedes
-v0.7's Paper column and its "Paper stops short of pure white" rationale.
+**Owner decision, in two rounds on the same day.** First: *"The background colors
+are a bit on the blue side. Make it a bit warmer, and for the background of the
+main area, left and right panel I want pure white."* Then, on seeing it: *"Set the
+colour of the nav rail, the border around the main area and header to 249/248/247"*
+and *"the other colors we made warmer — it was a bit too warm."* Light mode only;
+Graphite is untouched. This amendment supersedes v0.7's Paper column, its "Paper
+stops short of pure white" rationale, and its Canvas-is-darkest ladder.
 Everything else in v0.7 — the eight roles, the flatness rules, the single
 shadow, the borders, the semantics, Steel itself — is unchanged.
 
-Two changes, and they are separable:
+Three changes, and they are separable:
 
 1. **Pure white panes.** Pane (`--color-card`) is `#FFFFFF`. That token paints
    the three surfaces named in the decision: route content (`app-content-pane`),
@@ -960,45 +963,58 @@ Two changes, and they are separable:
    step left to take — so an overlay now separates on its offset shadow and its
    hairline alone, and the light `--shadow-overlay` recipe was deepened two
    points to pay for the lost value step.
-2. **A warm neutral ramp.** Every Paper neutral moved from OKLCH hue ~250–286
-   (cool) to ~68–70 (warm) at the **same OKLCH lightness**, so warmth changed
-   and the value ladder did not: every measured ratio below moved by hundredths.
-   Inks moved with the surfaces; a cool-black ink on warm paper is what gives
-   away a palette warmed only in its backgrounds. Steel and the semantic hues
-   (success, warning, AI, destructive, informational) did **not** move — they are
-   brand and meaning, not neutrals. `--color-status-inactive` did, because it is
-   neutral grey by role.
+2. **A warm neutral ramp, quietly.** Every Paper neutral moved from OKLCH hue
+   ~250–286 (cool) to ~68–70 (warm) at the **same OKLCH lightness**, so warmth
+   changed and the value ladder did not: every measured ratio below moved by
+   hundredths. The first pass overshot at chroma 0.006–0.011, which read as
+   beige; the second cut surfaces to 0.002–0.005 and mid-tone greys and inks to
+   0.003–0.007, calibrated against the owner's own Canvas value (`#F9F8F7` is
+   chroma 0.0017 — one 8-bit step per channel). Hue and lightness were untouched
+   by that second pass, so it moved no ratio by more than 0.03. Inks move with
+   the surfaces; a cool-black ink on warm paper is what gives away a palette
+   warmed only in its backgrounds. Steel and the semantic hues (success, warning,
+   AI, destructive, informational) did **not** move — they are brand and meaning,
+   not neutrals. `--color-status-inactive` did, being neutral grey by role.
+3. **The frame is near-white, and Canvas is no longer the darkest step.** The
+   owner set the gutter around the main area, the left destination rail and the
+   top app header — all three are `--app-chassis` — to `#F9F8F7`. Paper's order
+   is now Chrome → Workspace → Canvas → Pane. The document is still the
+   brightest surface, which is the part that was load-bearing; the workspace
+   card is now read off its `--color-border` hairline rather than off a value
+   step against the gutter.
 
 | Role | Production token | Paper v0.7 | Paper v0.8 | Use |
 |---|---|---:|---:|---|
-| Canvas | `--app-chassis` | `#EEEFF0` | `#F3EEE9` | Outer app frame, top app header, and overscroll |
-| Chrome | `--app-header-bg` | `#F5F5F6` | `#F9F4F0` | Internal panel headers and toolbars |
-| Workspace | `--color-background` | `#F7F7F8` | `#FAF7F3` | Navigation and AI/context rails |
+| Canvas | `--app-chassis` | `#EEEFF0` | `#F9F8F7` | Outer frame, left destination rail, top app header, overscroll |
+| Chrome | `--app-header-bg` | `#F5F5F6` | `#F6F5F3` | Internal panel headers and toolbars |
+| Workspace | `--color-background` | `#F7F7F8` | `#F9F7F6` | Workspace card ground, `bg-background` fills |
 | Pane | `--color-card` | `#FAFAFB` | `#FFFFFF` | Document, route content, left pane, context rail |
 | Raised | `--color-card-elevated` | `#FFFFFF` | `#FFFFFF` | Popovers, dialogs, command palette, toasts |
-| Border | `--color-border` | `#DEDFE3` | `#E4DED8` | Quiet pane separators and prose rules |
-| Interactive border | `--color-border-interactive` | `#7D818B` | `#878078` | Input and operable-surface outlines |
-| Foreground | `--color-foreground` | `#17181A` | `#1A1815` | Body ink |
-| Muted foreground | `--color-muted-foreground` | `#63666D` | `#6B655E` | Secondary labels, counts, hints |
-| Secondary / muted fill | `--color-secondary`, `--color-muted` | `#EEEEF0` | `#F3EDE8` | Quiet field and chip fills |
-| Accent fill | `--color-accent` | `#E8E8EB` | `#EDE7E1` | Hover and selected rows |
-| Code surface | `--color-code-bg` | `#ECEEF1` | `#F2EDE7` | Recessed code blocks |
+| Border | `--color-border` | `#DEDFE3` | `#E1DFDC` | Quiet pane separators and prose rules |
+| Interactive border | `--color-border-interactive` | `#7D818B` | `#84817D` | Input and operable-surface outlines |
+| Foreground | `--color-foreground` | `#17181A` | `#191817` | Body ink |
+| Muted foreground | `--color-muted-foreground` | `#63666D` | `#686663` | Secondary labels, counts, hints |
+| Secondary / muted fill | `--color-secondary`, `--color-muted` | `#EEEEF0` | `#F0EEEC` | Quiet field and chip fills |
+| Accent fill | `--color-accent` | `#E8E8EB` | `#EAE8E5` | Hover and selected rows |
+| Code surface | `--color-code-bg` | `#ECEEF1` | `#F0EDEB` | Recessed code blocks |
 
 Measured, from the tokens rather than pinned (`workspace-themes.test.ts`):
-foreground 16.59:1 Workspace / 17.72:1 Pane; muted foreground 5.39 / 5.76;
+foreground 16.60:1 Workspace / 17.73:1 Pane; muted foreground 5.36 / 5.72;
 Steel `#3F627C` 6.05 / 6.46; every status colour ≥5.08 on both; every syntax
-colour ≥4.90 on the code surface; and the operable edge `#878078` clears the
-1.4.11 3:1 floor on all five Paper grounds — 3.18 accent / 3.36 muted / 3.65
-Workspace / 3.90 Pane / 3.90 Raised, the same headroom the cool value had.
+colour ≥4.89 on the code surface; and the operable edge `#84817D` clears the
+1.4.11 3:1 floor on all five Paper grounds — 3.17 accent / 3.35 muted / 3.63
+Workspace / 3.88 Pane / 3.88 Raised, the same headroom the cool value had.
 
-**What the guard learned.** The old test asserted "the Paper pane is not
-`#FFFFFF`", which is a rule, not a measurement, and it is the rule the owner
-overruled. It now pins the three claims that survive an owner's taste: Pane is
-white, Workspace stays below it so the seam is carried by value as well as by
-the hairline, and the light overlay shadow keeps a real Y offset and blur since
-it is the only separation a white popover has on a white page. A fourth check
-pins the warmth itself — red channel above blue on every Paper neutral — because
-a warm ramp is exactly the kind of decision that decays one cool token at a time.
+**What the guards learned.** Two of them pinned rules rather than measurements,
+and both rules were the ones the owner overruled. `workspace-themes.test.ts`
+asserted "the Paper pane is not `#FFFFFF`"; it now pins Pane is white, Workspace
+stays below it, the light overlay shadow keeps a real Y offset and blur (a white
+popover on a white page has nothing else), and — new — the warmth itself, red
+channel above blue on every Paper neutral, because a warm ramp is exactly the
+kind of decision that decays one cool token at a time.
+`app-shell-layout.test.ts` asserted "the light chassis is darker than the shell
+ground"; it now asserts what survives a near-white frame — Canvas stays below
+Pane in both themes, and Canvas stays the darkest step in Graphite.
 
 **Still open (inherited from v0.7):** `compendiq-landing` carries neither the
 Steel pair nor this warm ramp. The app remains the source of truth.

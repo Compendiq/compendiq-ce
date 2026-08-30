@@ -108,10 +108,13 @@ benchmark numbers, no named reference customers. Future work must not invent the
   Paper — with the desaturated Steel pair (`#86AEC8` dark / `#3F627C` light) as the
   single brand and interaction accent. Violet remains AI, amber warning, green success,
   and red failure; these semantic colors are not alternate accents. Graphite's document
-  pane stays off near-black to reduce long-session glare. **Paper is a warm neutral and
-  its panes are pure white** (owner decision, 2026-08-30): document, left navigation and
-  context rail are `#FFFFFF`, and the warmth lives in the frame, fills, borders and ink
-  around them. The earlier "avoid pure white" rule no longer applies to light mode.
+  pane stays off near-black to reduce long-session glare. **Paper is a quietly warm neutral with white
+  panes and a near-white frame** (owner decision, 2026-08-30): document, left navigation
+  and context rail are `#FFFFFF`; the frame — gutter, left destination rail, top app
+  header — is `#F9F8F7`, and the remaining warmth lives in Chrome, Workspace, the fills,
+  the borders and the ink at chroma 0.002–0.007, where the hue is felt and not seen. The
+  earlier "avoid pure white" rule no longer applies to light mode, and Canvas is no longer
+  light mode's darkest step.
 - A separate marketing site (`compendiq-landing`) exists and is currently on a retired
   palette; cross-surface parity is a known open item, not a constraint on this work.
 

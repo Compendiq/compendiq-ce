@@ -606,18 +606,19 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      near-white ground a large soft shadow reads as smudge rather than lift,
      so this leans on a crisper short-range blur plus the overlay's hairline.
 
-     Two notes on the values. The tint is warm-black (26,21,14), not the cool
+     Two notes on the values. The tint is warm-black (24, 22, 19), not the cool
      15,18,24 it replaced: a blue-black shadow on warm paper is the tell that
-     gives away a palette warmed only in its surfaces. And it is two points
-     deeper than before, because Pane is now pure white — an overlay no longer
-     gains a value step over the page it floats on, so the offset shadow plus
-     the hairline carry that separation alone. */
+     gives away a palette warmed only in its surfaces — but it is only barely
+     warm, matching the second pass that cut the ramp's chroma. And it is two
+     points deeper than before, because Pane is now pure white — an overlay no
+     longer gains a value step over the page it floats on, so the offset shadow
+     plus the hairline carry that separation alone. */
   --shadow-overlay:
-    0 6px 16px -4px rgba(26, 21, 14, 0.16),
-    0 2px 5px -2px rgba(26, 21, 14, 0.12);
+    0 6px 16px -4px rgba(24, 22, 19, 0.16),
+    0 2px 5px -2px rgba(24, 22, 19, 0.12);
   --shadow-overlay-sm:
-    0 3px 8px -3px rgba(26, 21, 14, 0.14),
-    0 1px 2px -1px rgba(26, 21, 14, 0.10);
+    0 3px 8px -3px rgba(24, 22, 19, 0.14),
+    0 1px 2px -1px rgba(24, 22, 19, 0.10);
 
   /* Flat surfaces, light. See the dark block for the reasoning; it applies
      with more force here, because a vertical fall on a near-white pane is
@@ -626,11 +627,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --surface-card: var(--color-card);
   --surface-card-elevated: var(--color-card-elevated);
 
-  /* Dropdown chevron — warm mineral stroke (#6b655e, URL-escaped to
-     %236b655e), matching the light theme's --color-muted-foreground. The
-     :root default is the dark-theme value and washes out on paper. */
-  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b655e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b655e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  /* Dropdown chevron — mineral stroke (#686663, URL-escaped to %23686663),
+     matching the light theme's --color-muted-foreground. The :root default is
+     the dark-theme value and washes out on paper. */
+  --nm-select-chevron-12: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23686663' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  --nm-select-chevron-14: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23686663' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
 }
 
 /* ---- Theme: Paper — the light half of the workspace system ----
@@ -639,27 +640,39 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    surface, ink and status hue is the counterpart of the dark token above it,
    which is what lets both themes share one set of shell utilities.
 
-   Paper is a WARM neutral (2026-08-30). Every grey here used to sit at OKLCH
-   hue ~250-286 — a cool blue cast that read as screen-grey beside the steel
-   accent. The ramp is now hue ~68-70 at the same OKLCH lightness as the value
-   it replaces, so warmth changed and the measured value ladder did not: every
-   contrast ratio below moved by hundredths, not steps. Inks are warmed with
-   it; a cool-black ink on warm paper is the tell that gives away a palette
-   warmed only in its surfaces. */
+   Paper is a WARM neutral, tuned twice on 2026-08-30. Every grey here used to
+   sit at OKLCH hue ~250-286 — a cool blue cast that read as screen-grey beside
+   the steel accent. The ramp is hue ~68-70 at the same OKLCH lightness as the
+   value it replaces, so warmth changed and the measured value ladder did not:
+   every contrast ratio below moved by hundredths, not steps. Inks are warmed
+   with it; a cool-black ink on warm paper is the tell that gives away a palette
+   warmed only in its surfaces.
+
+   The SECOND pass cut the amount. The first landed surfaces at chroma
+   0.006-0.011, which read as beige rather than as warm neutral. The owner's own
+   Canvas value — #f9f8f7, chroma 0.0017, one 8-bit step per channel — is the
+   calibration: surfaces now sit at 0.002-0.005 and mid-tone greys and inks at
+   0.003-0.007, where the hue is felt and not seen. Hue and lightness were left
+   alone, so this pass moved no contrast ratio by more than 0.03. */
 [data-theme="paper"] {
   /* Pane is PURE WHITE by explicit product decision (2026-08-30): the document,
      the left navigation pane and the detached context rail — every surface a
-     user reads or works in — are #ffffff, and the warm ramp lives in the frame
-     around them (Canvas, Chrome, Workspace) plus the fills and borders on top.
-     This retires the earlier "reading panes avoid pure white" rule for light
-     mode; Graphite still avoids near-black on its side, which is where the
-     long-session glare argument actually has teeth.
-     Workspace stays below Pane, so the seam between the white card and its
-     ground survives on value as well as on the hairline. */
-  --color-background: #faf7f3;          /* Workspace — navigation and AI rail */
-  --color-foreground: #1a1815;          /* warm ink */
+     user reads or works in — are #ffffff, and the (quiet) warm ramp lives in the
+     frame around them (Canvas, Chrome, Workspace) plus the fills and borders on
+     top. This retires the earlier "reading panes avoid pure white" rule for
+     light mode; Graphite still avoids near-black on its side, which is where
+     the long-session glare argument actually has teeth.
+
+     Canvas is ABOVE Workspace in value since the owner set the frame to
+     #f9f8f7 (2026-08-30), so Paper's order is Chrome → Workspace → Canvas →
+     Pane rather than v0.7's Canvas-is-darkest. The document is still the
+     brightest surface, which is the part that was load-bearing; the workspace
+     card is read off its `--color-border` hairline rather than off a value
+     step against the gutter. */
+  --color-background: #f9f7f6;          /* Workspace — navigation and AI rail */
+  --color-foreground: #191817;          /* warm ink, quietly */
   --color-card: #ffffff;                /* Pane — document, left pane, context rail */
-  --color-card-foreground: #1a1815;
+  --color-card-foreground: #191817;
   /* Raised matches Pane rather than out-lightening it: above white there is no
      step left to take. An overlay separates on its offset shadow and its
      hairline, both of which the light --shadow-overlay recipe was deepened for. */
@@ -676,17 +689,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --color-primary-ink: #3f627c;
   /* Action ink — the neutral affordance for non-accent buttons. Deep ink on
      paper, mirroring dark's inverted pair; leaves Steel free for "primary". */
-  --color-action: #1a1815;             /* matches --color-foreground */
+  --color-action: #191817;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
-  --color-action-hover: #2f2b27;
-  --color-secondary: #f3ede8;
-  --color-secondary-foreground: #3a3632;
-  --color-muted: #f3ede8;
+  --color-action-hover: #2d2b2a;
+  --color-secondary: #f0eeec;
+  --color-secondary-foreground: #383635;
+  --color-muted: #f0eeec;
   /* Measured against the WORST surface it lands on — white Pane and Raised
-     (5.76:1), not the warm chassis. */
-  --color-muted-foreground: #6b655e;
-  --color-accent: #ede7e1;
-  --color-accent-foreground: #1a1815;
+     (5.72:1), not the chassis. */
+  --color-muted-foreground: #686663;
+  --color-accent: #eae8e5;
+  --color-accent-foreground: #191817;
   /* Semantic aliases — var() references, exactly as in the dark block. The
      re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
      the root element, so the :root alias already substitutes against this
@@ -702,14 +715,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      value step, so it has to remain visible without reading like a control.
      It is still a separator, NOT an operable edge — that stays
      --color-border-interactive, which the 3:1 test measures. */
-  --color-border: #e4ded8;
-  /* Darkened twice under the cool ramp, and the warm value keeps that hard-won
-     headroom rather than restarting the argument: an operable edge is at its
-     most load-bearing exactly when the pointer is on it, so `accent` — the
-     hover fill — is the ground that sets this value, not the chassis.
+  --color-border: #e1dfdc;
+  /* Darkened twice under the cool ramp, and every warm retune keeps that
+     hard-won headroom rather than restarting the argument: an operable edge is
+     at its most load-bearing exactly when the pointer is on it, so `accent` —
+     the hover fill — is the ground that sets this value, not the chassis.
      All five Paper surfaces are measured by workspace-themes.test.ts:
-     3.18 accent / 3.90 Pane / 3.90 Raised / 3.65 Workspace / 3.36 muted. */
-  --color-border-interactive: #878078;
+     3.17 accent / 3.88 Pane / 3.88 Raised / 3.63 Workspace / 3.35 muted. */
+  --color-border-interactive: #84817d;
   --color-ring: #3f627c;
   --color-success: var(--color-status-connected);
   --color-warning: var(--color-status-syncing);
@@ -725,33 +738,36 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --color-status-embedding: #3f627c;
   --color-status-ai: #7041a8;
   --color-status-disconnected: #c03434;
-  --color-status-inactive: #6b655e;
+  --color-status-inactive: #686663;
 
-  /* Code colors — matched against --color-code-bg #f2ede7, a warm tint one step
+  /* Code colors — matched against --color-code-bg #f0edeb, a warm tint one step
      below Chrome so a code block reads as recessed against the white pane. */
-  --color-code-bg: #f2ede7;
+  --color-code-bg: #f0edeb;
   --color-code-keyword: #7041a8;
   --color-code-string: #18754a;
   --color-code-function: #2959a4;
-  --color-code-comment: #6b635c;   /* neutral by role — warms with the ramp */
+  --color-code-comment: #676461;   /* neutral by role — warms with the ramp */
   --color-code-number: #8a5a00;
   --color-code-type: #0b6878;
-  --color-code-meta: #a3195b;      /* pink,   6.34:1 */
+  --color-code-meta: #a3195b;      /* pink,   6.33:1 */
 
   /* Inherits --nm-* and the gradient chassis from the
      [data-theme-type="light"] block above; no overrides. */
 
   --inline-code-color: #7041a8;
 
-  /* Canvas is the warm-grey gutter around the white workspace card. It carries
-     the deepest step of the ramp, which is what makes the panes read as white
-     rather than as "the background". */
-  --app-chassis: #f3eee9;
-  /* Warm Chrome for internal panel headers and toolbars. This stays a token
-     because the same chrome appears above navigation, trees, settings, and the
-     article inspector. The top app header remains Canvas so the outer frame
-     has one colour on all four sides. */
-  --app-header-bg: #f9f4f0;
+  /* Canvas is the gutter around the white workspace card, and it also paints the
+     left destination rail and the top app header — the three surfaces the owner
+     set to 249/248/247 (2026-08-30). It is one 8-bit step of warmth per channel,
+     and it is the reference the rest of this ramp's chroma is calibrated to.
+     It sits ABOVE Workspace in value now: the frame is near-white and the panes
+     are white, so the card is read off its hairline, not off the gutter. */
+  --app-chassis: #f9f8f7;
+  /* Chrome for internal panel headers and toolbars — the deepest step of the
+     light ramp. This stays a token because the same chrome appears above
+     navigation, trees, settings, and the article inspector. The top app header
+     remains Canvas so the outer frame has one colour on all four sides. */
+  --app-header-bg: #f6f5f3;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
 }

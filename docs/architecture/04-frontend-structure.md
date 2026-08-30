@@ -566,7 +566,7 @@ the backend side.
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
   **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
-  (light, warm: `#FAF7F3` workspace / `#FFFFFF` pane / `#F3EEE9` canvas) — a neutral flat system
+  (light, warm: `#F9F7F6` workspace / `#FFFFFF` pane / `#F9F8F7` canvas) — a neutral flat system
   carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
   interaction colour, amber reserved for warning/attention, and violet for AI
   ornament (operable things stay Steel). Surfaces are **flat
@@ -574,8 +574,9 @@ the backend side.
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
   palette is designed out. Paper's panes — document, left navigation, context
-  rail — are pure white, and its neutrals sit on the warm side of the hue
-  circle (ADR-010 v0.8). See ADR-010 v0.7 for the roles and the Graphite
+  rail — are pure white, its neutrals sit quietly on the warm side of the hue
+  circle, and its frame (gutter, left destination rail, top app header) is
+  near-white `#F9F8F7`, so Canvas is no longer the darkest step (ADR-010 v0.8). See ADR-010 v0.7 for the roles and the Graphite
   values, v0.8 for Paper's;
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic

@@ -73,13 +73,26 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('dark chassis is darker than the shell; light chassis is darker than paper', () => {
+  // Graphite keeps Canvas as its darkest step. Paper does NOT: the owner set the
+  // frame — gutter, left destination rail and top app header — to #f9f8f7
+  // (2026-08-30), which sits just above Workspace. The claim that still matters
+  // in both themes is that the document Pane is the brightest surface and the
+  // frame is not the same value as it, since that is what makes the workspace
+  // card read as a card. Asserting "Canvas is darkest" here would be pinning
+  // v0.7's ladder over the owner's own value.
+  it('keeps the chassis below the pane in both themes, and darkest in Graphite', () => {
     expect(luminance(tokenHex(darkBlock, '--app-chassis'))).toBeLessThan(
       luminance(tokenHex(darkBlock, '--color-background')),
     );
-    expect(luminance(tokenHex(lightBlock, '--app-chassis'))).toBeLessThan(
-      luminance(tokenHex(lightBlock, '--color-background')),
-    );
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      expect(
+        luminance(tokenHex(block, '--app-chassis')),
+        `${theme} frame must stay below the document pane`,
+      ).toBeLessThan(luminance(tokenHex(block, '--color-card')));
+    }
   });
 
   it('the context rail matches the central pane and stays off the chassis', () => {
@@ -139,7 +152,7 @@ describe('Inset shell utilities', () => {
     const appHeader = extractBlock(css, '@utility app-header {');
     const panelToolbar = extractBlock(css, '@utility panel-toolbar {');
     expect(css).toMatch(/--app-header-bg:\s*#0c0c0d/);
-    expect(css).toMatch(/--app-header-bg:\s*#f9f4f0/);
+    expect(css).toMatch(/--app-header-bg:\s*#f6f5f3/);
     expect(appHeader).toMatch(/background:\s*var\(--app-chassis\)/);
     expect(appHeader).not.toMatch(/background:\s*var\(--app-header-bg\)/);
     expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
