@@ -358,7 +358,18 @@ export function AttachmentStorageCard() {
   }, [pendingAnnouncement]);
   // The actions stay live on a failed READ — Dry run is the remedy that
   // refreshes the very record the failed GET could not deliver. Only the
-  // pending paint (nothing known yet) and a running sweep disable them.
+  // pending paint (nothing known yet) and a running sweep hold them.
+  //
+  // #1532: rendered as `aria-disabled` plus a REFUSING handler, never as a
+  // native `disabled`. The sweep walks both stores and takes minutes on a
+  // large corpus, and per the HTML focus fixup rule a control that stops being
+  // focusable is blurred and removed from the tab order — so the operator who
+  // pressed Dry run was dropped to `<body>` at the top of a ~30-stop settings
+  // panel for the whole run, and after the confirm dialog `ConfirmDialog`'s
+  // restore aimed at a button that had already gone inert. CLAUDE.md's
+  // Retrieval-panel ruling is the recipe, and `ImageIndexCard` — this card's
+  // own named pattern of record — is converted in the same change so the two
+  // do not end up with two busy behaviours.
   const actionsDisabled = isPending || running || trigger.isPending;
 
   return (
@@ -830,9 +841,19 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-dry-run"
-          className="nm-button-ghost"
-          disabled={actionsDisabled}
-          onClick={() => trigger.mutate(true)}
+          // `opacity-70`, not the `:disabled` rule's 45 — WCAG's
+          // inactive-component exemption does not cover a control that keeps
+          // its focus and refuses in its HANDLER (the `RetrievalTab` recipe),
+          // and `:disabled` also carried `pointer-events: none`, which is the
+          // half that made the dim unhoverable rather than merely quiet.
+          className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            // The refusal `aria-disabled` cannot perform — it blocks no
+            // events. A second Dry run against a held lock is a wasted walk.
+            if (actionsDisabled) return;
+            trigger.mutate(true);
+          }}
           aria-describedby="attachment-sweep-note"
         >
           <Search size={14} aria-hidden="true" />
@@ -841,9 +862,19 @@ export function AttachmentStorageCard() {
         <button
           type="button"
           data-testid="attachment-sweep-delete"
-          className="nm-button-destructive"
-          disabled={actionsDisabled}
-          onClick={() => setConfirmDeleteOpen(true)}
+          // The filled variant's own hover is a DARKENING, so the ghost
+          // sibling's `hover:bg-transparent` would strip the fill instead of
+          // holding it: this one pins the resting destructive background.
+          className="nm-button-destructive aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-destructive"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            // Refusing the POST alone would not be enough: this button opens
+            // the confirm dialog, so a live handler under the busy flag hands
+            // the operator a dialog whose Confirm fires the destructive run
+            // over a sweep already holding the lock.
+            if (actionsDisabled) return;
+            setConfirmDeleteOpen(true);
+          }}
           aria-describedby="attachment-sweep-note"
         >
           <Trash2 size={14} aria-hidden="true" />

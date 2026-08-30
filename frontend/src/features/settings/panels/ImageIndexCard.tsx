@@ -166,14 +166,36 @@ export function ImageIndexCard() {
   // Live whenever the leg is known to be assigned, and ALSO when the status
   // could not be read: the buttons are the remedy, and a card that hides them
   // because its own GET 500'd removes the recovery from the surface that
-  // exists to provide it. Only the pending paint disables them, where nothing
+  // exists to provide it. Only the pending paint holds them, where nothing
   // is known yet and a press would be a guess.
+  //
+  // #1532: rendered as `aria-disabled` plus a REFUSING handler, never as a
+  // native `disabled`. A scan takes minutes on a real corpus, and per the HTML
+  // focus fixup rule a control that stops being focusable is blurred and
+  // removed from the tab order, so the operator who pressed Process now was
+  // dropped to `<body>` at the top of a ~30-stop settings panel for the whole
+  // run — CLAUDE.md's Retrieval-panel ruling, whose recipe this is. The WHOLE
+  // flag converts, busy half and inert half alike: the fixup fires wherever
+  // native `disabled` lands on a focused control, and "both actions are inert
+  // without an assignment" is carried by the refusal instead of the attribute.
+  // `aria-disabled="true"` is mapped to the disabled state and announced by
+  // NVDA, JAWS and VoiceOver, so nothing is lost on that channel.
   const actionsDisabled = busy || isPending || (!isError && !assigned);
   /** A number the server has not sent yet is `—`, never a claimed zero. */
   const num = (n: number | undefined): string => (isPending || isError ? '—' : String(n ?? 0));
 
   return (
-    <div className="nm-card border-status-embedding/30 space-y-3 p-3 text-sm" data-testid="image-index-card">
+    <div
+      className="nm-card border-status-embedding/30 space-y-3 p-3 text-sm"
+      data-testid="image-index-card"
+      // #1532: the same card-root busy signal `AttachmentStorageCard` carries,
+      // off the same fact — the run the "Scanning…" chip reports. The counters
+      // and the last-run block below change underneath the operator as the
+      // poll lands, which is exactly what ARIA 1.2 scopes `aria-busy` to; it
+      // is deliberately NOT on the buttons, where it reaches no assistive
+      // tech and would withhold their own label updates.
+      aria-busy={data?.running ?? false}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-medium">Image index</h3>
         {data?.running && (
@@ -307,12 +329,22 @@ export function ImageIndexCard() {
         <button
           type="button"
           data-testid="image-index-process"
-          className="nm-button-ghost px-2.5 py-1 text-xs"
-          // Both actions are inert without an assignment: the worker's own
-          // fast path answers "unassigned" and clears nothing, so a live
-          // button would report success for work that never starts.
-          disabled={actionsDisabled}
-          onClick={() => kick.mutate('process')}
+          // `opacity-70`, not the `:disabled` rule's 45 — at 45% this 12px
+          // label falls under the 4.5:1 floor in both themes, and WCAG's
+          // inactive-component exemption does not cover a control that keeps
+          // its focus and refuses in its HANDLER (the `RetrievalTab` recipe).
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            // The refusal `aria-disabled` cannot perform — it blocks no
+            // events. Both actions are inert without an assignment (the
+            // worker's own fast path answers "unassigned" and clears
+            // nothing, so a live press would report success for work that
+            // never starts), and a second press during a scan is a wasted
+            // POST against a held lock.
+            if (actionsDisabled) return;
+            kick.mutate('process');
+          }}
         >
           <Play size={12} aria-hidden="true" />
           Process now
@@ -320,9 +352,12 @@ export function ImageIndexCard() {
         <button
           type="button"
           data-testid="image-index-rescan"
-          className="nm-button-ghost px-2.5 py-1 text-xs"
-          disabled={actionsDisabled}
-          onClick={() => kick.mutate('rescan')}
+          className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-70 aria-disabled:hover:bg-transparent"
+          aria-disabled={actionsDisabled || undefined}
+          onClick={() => {
+            if (actionsDisabled) return;
+            kick.mutate('rescan');
+          }}
           aria-describedby="image-index-rescan-note"
         >
           <RefreshCw size={12} aria-hidden="true" />

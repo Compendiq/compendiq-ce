@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { ImageIndexStatus } from '@compendiq/contracts';
@@ -115,6 +115,24 @@ async function awaitLoaded(): Promise<void> {
   );
 }
 
+/**
+ * Settle the click: a POST that WAS fired lands within a macrotask, so a
+ * "fired nothing" assertion must be made after this flush.
+ *
+ * `waitFor(() => expect(posted).toBe(false))` cannot do the job — it is
+ * satisfied on its first synchronous attempt, before any fetch could have been
+ * recorded, so it passes whether the handler refused or not. Mutation-checked:
+ * with this flush, deleting the handlers' early return reds the two refusal
+ * cells; with `waitFor` it did not.
+ */
+async function flushClick(): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 0);
+    await promise;
+  });
+}
+
 beforeEach(() => {
   // The `sonner` mock is module-level, so its call history outlives a test and
   // a "did not toast X" assertion would pass or fail on what ran before it.
@@ -217,26 +235,104 @@ describe('ImageIndexCard (#1115 P2)', () => {
     );
   });
 
-  it('disables both actions while the leg is unassigned', async () => {
+  /**
+   * #1532. `actionsDisabled` mixes the multi-minute busy state with two
+   * non-busy inert conditions, and it landed on both buttons as a native
+   * `disabled`. Per the HTML focus fixup rule a control that stops being
+   * focusable is blurred and leaves the tab order, so an operator who pressed
+   * Process now was dropped to `<body>` for the whole scan; jsdom implements
+   * none of that, which is why these cells asserted `.disabled` and saw
+   * nothing. The recipe is CLAUDE.md's Retrieval-panel ruling —
+   * `aria-disabled` (announced as disabled by NVDA, JAWS and VoiceOver) plus a
+   * handler that refuses, since `aria-disabled` blocks no events — and the
+   * WHOLE flag converts, because the fixup fires wherever native `disabled`
+   * lands on a focused control, and the inert half is preserved by the refusal.
+   *
+   * `AttachmentStorageCard` is swept in the same change: the two cards are
+   * each other's pattern of record and must not end up with two busy
+   * behaviours.
+   */
+  it('marks both actions aria-disabled — never natively disabled — while the leg is unassigned', async () => {
     // Neither does anything: the worker's own fast path answers "unassigned"
     // and clears nothing, so a live button would be a control that reports
-    // success for work that never starts.
-    mockApi({ ...ASSIGNED, assigned: false, identity: null });
+    // success for work that never starts. The REFUSAL is what carries that
+    // now, not the attribute.
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, assigned: false, identity: null }, calls);
     renderCard();
     await awaitLoaded();
-    expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId('image-index-rescan') as HTMLButtonElement).disabled).toBe(true);
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      expect(btn).not.toHaveAttribute('disabled');
+      fireEvent.click(btn);
+    }
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
   });
 
   it('enables both actions once the leg IS assigned', async () => {
     // The pin that keeps the previous test honest: every control on this card
-    // renders disabled on the pre-fetch paint, so "disabled when unassigned"
+    // renders inert on the pre-fetch paint, so "inert when unassigned"
     // passes against a card that is permanently dead.
     mockApi(ASSIGNED);
     renderCard();
     await awaitLoaded();
-    expect((screen.getByTestId('image-index-process') as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTestId('image-index-rescan') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('image-index-rescan')).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('marks both actions aria-disabled, never natively disabled, while a scan runs', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      // The whole point: a genuinely disabled control cannot keep the focus
+      // the flag exists to hold, for the minutes the scan lasts.
+      expect(btn).not.toHaveAttribute('disabled');
+    }
+  });
+
+  it('refuses both actions while a scan runs instead of relying on the attribute', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: true }, calls);
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    fireEvent.click(screen.getByTestId('image-index-rescan'));
+
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('marks the card busy while a scan runs, matching AttachmentStorageCard', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  /**
+   * The regression pin. It cannot FAIL in jsdom for the browser reason (no
+   * focus fixup here), so it is not the proof — it is what reds if someone
+   * unmounts, hides or reorders the button under the busy flag. The proof is
+   * the serial browser pass.
+   */
+  it('keeps the pressed button focused across the flip into running', async () => {
+    mockApi(ASSIGNED, undefined, [ASSIGNED, { ...ASSIGNED, running: true }]);
+    renderCard();
+    await awaitLoaded();
+    const process = screen.getByTestId('image-index-process');
+    process.focus();
+    expect(document.activeElement).toBe(process);
+
+    fireEvent.click(process);
+    await screen.findByTestId('image-index-running');
+
+    expect(document.activeElement).toBe(screen.getByTestId('image-index-process'));
+    expect(document.activeElement).not.toBe(document.body);
   });
 
   it('polls while a run is in progress and stops once it finishes', async () => {
