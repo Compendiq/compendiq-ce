@@ -346,6 +346,37 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(keep.confluence.has('bulk-250.png')).toBe(true);
       expect([...keep.confluence].filter((n) => n.startsWith('bulk-'))).toHaveLength(250);
     });
+
+    // #1525 — a draw.io diagram whose macro survives only in the UNPUBLISHED
+    // draft. `draft_body_storage` fed no keep-set source, and the macro never
+    // renders as an `/api/attachments/…` URL (the editor emits
+    // `img.src = '#drawio:<name>'`), so neither the URL collector over
+    // `draft_body_html` nor the storage pass over `body_storage` could see it:
+    // the sweep deleted the PNG out from under a draft the author had not
+    // published yet.
+    it('keeps attachments referenced only by an unpublished draft body_storage (#1525)', async () => {
+      await query(
+        `INSERT INTO pages (title, space_key, confluence_id, source, page_type, version,
+                            body_html, body_storage, draft_body_html, draft_body_storage)
+         VALUES ('Drafting', 'DEV', '90007', 'confluence', 'page', 1,
+                 '<p><img src="/api/attachments/90007/published.png"></p>',
+                 '<ac:image><ri:attachment ri:filename="published-storage.png"/></ac:image>',
+                 '<p>no image yet</p>',
+                 '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">DraftOnlyArch</ac:parameter></ac:structured-macro>'
+                 || '<p><img src="/api/attachments/90007/draft-storage-url.png"></p>')`,
+      );
+
+      const keep = await buildAttachmentKeepSets();
+
+      // The enumerator half: the macro names `DraftOnlyArch.png`, which no
+      // URL regex can ever find.
+      expect(keep.confluence.has('DraftOnlyArch.png')).toBe(true);
+      // The URL-collector half of the same two-line treatment.
+      expect(keep.confluence.has('draft-storage-url.png')).toBe(true);
+      // Control: the published halves were already kept.
+      expect(keep.confluence.has('published.png')).toBe(true);
+      expect(keep.confluence.has('published-storage.png')).toBe(true);
+    });
   });
 
   describe('dry run', () => {

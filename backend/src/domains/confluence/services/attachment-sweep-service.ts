@@ -36,15 +36,19 @@
  *     between bodies (templates hand their `body_html` to every page created
  *     from them), and one directory key can belong to two page rows, so a
  *     filename referenced ANYWHERE is kept EVERYWHERE. The keep-set is fed
- *     from every `pages.body_html` / `draft_body_html` / `body_storage`
- *     (live AND trashed), every `page_versions.body_html`, every
+ *     from every `pages.body_html` / `draft_body_html` / `body_storage` /
+ *     `draft_body_storage` (live AND trashed), every
+ *     `page_versions.body_html`, every
  *     `pending_sync_versions.body_html`/`body_storage`, every
  *     `templates.body_html`, every `comments.body_html` and every
  *     `llm_conversations.messages` (#1361 persists an image source's
  *     `attachmentUrl` per assistant turn) — collecting BOTH
  *     `img[src]` and `a[href]`-style references via a raw-string regex
  *     (strictly more inclusive than an attribute parse), plus
- *     `getExpectedAttachmentFilenames` over storage format. In the Confluence
+ *     `getExpectedAttachmentFilenames` over BOTH storage-format columns of a
+ *     page (#1525: a draw.io macro living only in an unpublished draft is
+ *     named by no URL anywhere, so the draft's storage format is the only
+ *     thing that can protect its PNG). In the Confluence
  *     tree only IMAGE-LIKE files are per-file candidates
  *     (`SUPPORTED_IMAGE_EXTENSIONS` + `external-<hash>` keys): the cache also
  *     holds lazily fetched non-image attachments no enumerator covers — those
@@ -459,13 +463,19 @@ export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void)
  * The global keep-set, one `Set<filename>` per store, fed from every body
  * text in the system — see the module header for the full source list.
  *
- * `body_storage` additionally runs through `getExpectedAttachmentFilenames`
- * (a pure function, recomputed at sweep time — the cached
- * `expected_image_files` column is deliberately not consulted, which removes
- * its NULL-means-uncomputed question), because storage format references
- * attachments by `ri:filename`, not by URL. A parse failure THROWS: an
- * unparseable body means unknown references, and the safe verdict for
- * "unknown" is to fail the run, not to shrink the keep-set.
+ * Both storage-format columns of a page — the published `body_storage` and
+ * the UNPUBLISHED `draft_body_storage` (#1525) — additionally run through
+ * `getExpectedAttachmentFilenames` (a pure function, recomputed at sweep
+ * time — the cached `expected_image_files` column is deliberately not
+ * consulted, which removes its NULL-means-uncomputed question), because
+ * storage format references attachments by `ri:filename`, not by URL. The
+ * draft needs the SAME treatment and not just the URL pass over
+ * `draft_body_html`: a draw.io macro renders as `img.src = '#drawio:<name>'`,
+ * never an `/api/attachments/…` URL, so a diagram inserted into a draft and
+ * not yet published has no URL anywhere and only the enumerator can name it.
+ * A parse failure THROWS: an unparseable body means unknown references, and
+ * the safe verdict for "unknown" is to fail the run, not to shrink the
+ * keep-set.
  */
 export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
   const keep: AttachmentKeepSets = { confluence: new Set(), local: new Set() };
@@ -475,11 +485,12 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
     body_html: string | null;
     draft_body_html: string | null;
     body_storage: string | null;
+    draft_body_storage: string | null;
     space_key: string | null;
   };
   await forEachBatch<PageRow>(
     (cursor) => ({
-      sql: `SELECT id AS __cursor, body_html, draft_body_html, body_storage, space_key
+      sql: `SELECT id AS __cursor, body_html, draft_body_html, body_storage, draft_body_storage, space_key
               FROM pages WHERE id > $1 ORDER BY id LIMIT ${KEEP_SET_BATCH}`,
       params: [cursor ?? 0],
     }),
@@ -491,6 +502,12 @@ export async function buildAttachmentKeepSets(): Promise<AttachmentKeepSets> {
         if (row.body_storage) {
           collectAttachmentUrlReferences(row.body_storage, keep);
           for (const name of getExpectedAttachmentFilenames(row.body_storage, row.space_key ?? undefined)) {
+            keep.confluence.add(name);
+          }
+        }
+        if (row.draft_body_storage) {
+          collectAttachmentUrlReferences(row.draft_body_storage, keep);
+          for (const name of getExpectedAttachmentFilenames(row.draft_body_storage, row.space_key ?? undefined)) {
             keep.confluence.add(name);
           }
         }

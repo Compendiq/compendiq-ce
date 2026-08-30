@@ -420,8 +420,9 @@ which is the event-driven half (a standalone hard delete or purge drops
 `<pk>/` only when no page claims that `confluence_id` and the directory has
 aged past a 5-minute grace, consulting no keep-set). What stayed in
 `domains/confluence` is the *sweep*: `attachment-sweep-service.ts` needs
-`getExpectedAttachmentFilenames` for the `body_storage` half of its global
-keep-set, which is a Confluence-format parser, so composing it in the domain is
+`getExpectedAttachmentFilenames` for the storage-format half of its global
+keep-set — both `pages.body_storage` and, since #1525, the unpublished
+`pages.draft_body_storage` — which is a Confluence-format parser, so composing it in the domain is
 the only legal direction. `routes/confluence/attachments-sweep.ts` is the
 operator surface (`requireAdmin`, dry-run first); the card is Settings →
 Knowledge → Spaces & Sync. Its rules are stated once in that module's header,
