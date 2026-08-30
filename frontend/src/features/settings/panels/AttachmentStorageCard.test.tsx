@@ -599,28 +599,96 @@ describe('AttachmentStorageCard (#1349)', () => {
   });
 
   /**
-   * Review r1. The sweep DOES delete images attached to a live Confluence page
-   * that no body embeds (`walkConfluenceTree` emits `orphan_file` for a known
-   * key's unreferenced image-like files). The ADMIN-GUIDE says so; the last
-   * surface before the irreversible act framed deletion as limited to files
-   * nothing references at all, which an operator reads as "nothing on a live
-   * page" — the opposite. Recoverable (Confluence re-serves the bytes), but
-   * this is the sentence whose job is to name the cost.
+   * Review r1, as settled by the external round-5 ruling. The sweep DOES
+   * delete images attached to a live Confluence page that no body embeds
+   * (`walkConfluenceTree` emits `orphan_file` for a known key's unreferenced
+   * image-like files). This is the last surface before the irreversible act,
+   * so the sentence that names that cost is the one that must not drift.
+   *
+   * Four rounds tried to pin it with a pattern — first the verb, then the
+   * verb plus a trailing clause-boundary lookahead `(?=\s*[;.,—]|\s*$)`,
+   * then an opening sentence boundary welded to the recovery clause. Each
+   * round found prose the previous pattern admitted: at `660fce64` a
+   * description reading "…count as unreferenced ONCE THE PAGE IS GONE;
+   * Confluence re-serves them" (256 chars, inside the 260 bound) kept the
+   * whole file green; at `48856cd1` four punctuated re-limits did the same,
+   * including the outright inversion "…count as unreferenced, but are kept;"
+   * (248). And no substring pattern can ever refuse a contradiction added as
+   * a SEPARATE sentence. That is the general shape: a regex over prose states
+   * what must be PRESENT, and prose that re-limits the claim can always add
+   * the qualifier somewhere the pattern does not look.
+   *
+   * So the copy is pinned by EXACT STRING EQUALITY against the shipped
+   * sentence instead. It reds on anything: a polarity inversion, a
+   * re-limiting comma clause, an appended contradicting sentence, a
+   * re-lengthening, a typo. A copy edit that is meant re-states the literal
+   * here and is read as a diff; a copy edit that is not meant fails.
+   *
+   * The literal is spelled out in the assertion rather than shared with the
+   * component or hoisted into a constant: a pin that imports the value it
+   * pins cannot fail.
    */
-  it('the confirm dialog names the cached-Confluence-image case', async () => {
+  it('the confirm description is exactly the shipped copy', async () => {
     mockApi({});
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
 
     await screen.findByTestId('attachment-storage-counters');
     fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
 
-    const dialog = await screen.findByTestId('confirm-dialog-confirm');
-    const text = dialog.closest('[role="dialog"]')?.textContent ?? document.body.textContent ?? '';
-    expect(text).toMatch(/cached Confluence images that no page body embeds are removed too/i);
-    expect(text).toMatch(/re-fetched from Confluence/i);
-    // The claims it already made must still be there.
-    expect(text).toMatch(/cannot be undone/i);
-    expect(text).toMatch(/page icons/i);
+    const confirm = await screen.findByTestId('confirm-dialog-confirm');
+    const dialog = confirm.closest('[role="dialog"]');
+    // `ConfirmDialog` renders `description` into one `Dialog.Description`,
+    // which Radix wires to the content's `aria-describedby`. Resolving it that
+    // way reads the string the operator is actually given, not the dialog's
+    // whole `textContent` (title + description + two button labels).
+    const describedBy = dialog?.getAttribute('aria-describedby') ?? '';
+    const description = describedBy ? document.getElementById(describedBy) : null;
+    expect(description, 'the dialog must describe itself with the description text').not.toBeNull();
+
+    expect((description?.textContent ?? '').trim()).toBe(
+      'This permanently deletes files older than 24 hours that nothing references. ' +
+        'It cannot be undone — run a dry run first if you have not. ' +
+        'Cached Confluence images that no page body embeds count as unreferenced; ' +
+        'Confluence re-serves them when next viewed.',
+    );
+  });
+
+  /**
+   * #1534. The confirm is the last surface before an irreversible delete, and
+   * it had grown to 613 characters — 2.8x the next-longest `ConfirmDialog`
+   * description in the app (`VersionHistory` at 217; `PageViewPage` 177,
+   * `SpacesTab` 165, `SyncTab` 159) — with the one actionable instruction,
+   * "run a dry run first", at character 558 of 613. It read as one
+   * undifferentiated muted run, and most of it restated
+   * `attachment-sweep-note`, which is already on screen at rest behind the
+   * dialog.
+   *
+   * The bound is 260: the next-longest callsite measured 217, so 260 leaves
+   * this dialog room to be the longest in the app without being a different
+   * KIND of object.
+   *
+   * The cell above already pins today's 251-character string exactly, so this
+   * bound is not a second check on today's copy — it is the invariant that
+   * survives the next intended copy edit. That edit re-states the literal
+   * above, which is how an intended change passes; the bound is what stops it
+   * from re-growing to 613 while it does.
+   */
+  it('the confirm description stays scannable', async () => {
+    mockApi({});
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    await screen.findByTestId('attachment-storage-counters');
+    fireEvent.click(screen.getByTestId('attachment-sweep-delete'));
+
+    const confirm = await screen.findByTestId('confirm-dialog-confirm');
+    const dialog = confirm.closest('[role="dialog"]');
+    const describedBy = dialog?.getAttribute('aria-describedby') ?? '';
+    const description = describedBy ? document.getElementById(describedBy) : null;
+    expect(description, 'the dialog must describe itself with the description text').not.toBeNull();
+    const text = (description?.textContent ?? '').trim();
+
+    expect(text.length, `the description is ${text.length} chars; the bound is 260 (next-longest callsite: 217)`)
+      .toBeLessThanOrEqual(260);
   });
 
   it('an already-running trigger reports neutrally, names the remedy, and promises no outcome', async () => {
@@ -949,34 +1017,79 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(list.className).toContain('overflow-y-auto');
   });
 
-  /**
-   * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`). The scroller
-   * above holds about ten of up to 100 rows and every descendant is a
-   * `<span>`, so with no `tabindex` there is no keyboard path past row ten in
-   * Chromium or WebKit — on the one surface that says WHICH files a live run
-   * will destroy, and which the confirm dialog instructs the operator to
-   * read. The name matters as much as the stop: a focusable region with no
-   * accessible name announces nothing when focus lands on it.
-   */
-  it('the candidate scroller is a keyboard-reachable, named region', async () => {
+  /** N single-file candidates — enough rows to fill the scroller. */
+  function sampleOf(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      store: 'confluence' as const,
+      key: String(10_000 + i),
+      filename: `row-${i}.png`,
+      bytes: 1024,
+      reason: 'orphan_file' as const,
+    }));
+  }
+
+  function renderWithCandidates(n: number) {
     mockApi({
       sweep: {
         running: false,
-        lastRun: {
-          ...COMPLETED_RUN,
-          candidatesTotal: 1,
-          candidateSample: [
-            { store: 'confluence', key: '55555', filename: null, bytes: 4096, reason: 'orphan_directory' },
-          ],
-        },
+        lastRun: { ...COMPLETED_RUN, candidatesTotal: n, candidateSample: sampleOf(n) },
       },
     });
     render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+    return screen.findByTestId('attachment-sweep-candidate-list');
+  }
 
-    const list = await screen.findByTestId('attachment-sweep-candidate-list');
+  /**
+   * Review r1 (WCAG 2.1.1, axe `scrollable-region-focusable`) as amended by
+   * #1535, which asked whether the stop should be WITHDRAWN when the box
+   * cannot overflow. Ruling (external round 3): it should not. The stop is
+   * unconditional and the redundancy is accepted, measured.
+   *
+   * The measurement, from the classes on the element: `max-h-56` is 224px,
+   * less the 1px border and `p-2`, so the content box is 206px. A row is
+   * `text-xs` — 12px type on a `calc(1/0.75)` line box, 16px — and rows are
+   * separated by `space-y-1`, 4px. So ten one-line rows measure
+   * 10x16 + 9x4 = 196px and FIT; eleven measure 216px and scroll. Narrow the
+   * card and the `break-all` path wraps, pushing the meta span onto a further
+   * line: at two path lines a row is 48px, so four rows measure 204px and
+   * fit while five measure 256px and scroll. No lower row count is SAFE,
+   * though (fixer r1): the `<li>` has no vertical gap and neither it nor the
+   * path span carries `truncate`, `line-clamp` or a `max-w`, so a row is 16px
+   * times its line-box count and nothing bounds that count — a long enough
+   * attachment filename scrolls the box at two rows. The regime #1535
+   * reports is a short sample with short paths: a stop announced as
+   * "list, 2 items" with nothing to scroll, sitting between the disclosure
+   * and Dry run.
+   *
+   * Accepting that stop is the better trade, for two reasons. A scroll
+   * container must stay keyboard-operable at the sizes where it DOES scroll —
+   * Up/Down have to move the list, not the page — and the gate's failure mode
+   * is worse than the redundancy: it withdraws `tabindex` from an element the
+   * operator may be standing in. At four rows one zoom-out flips overflow
+   * off; HTML's focus fixup rule then runs the unfocusing steps and focus
+   * lands on `<body>` with the list still on screen, which is the failure
+   * `RetrievalTab.tsx` and CLAUDE.md's busy-state ruling forbid and the one
+   * PR #1550 just converted this card's buttons away from. Second, the gate
+   * only pays for itself if it tracks rendered HEIGHT, and this suite pins
+   * that signal only at arm's length: jsdom has no layout and the SHARED
+   * resize-observer mock in `src/test-setup.ts` fires once from `observe()`,
+   * so under it a resize-driven re-measure passes whether the observer exists
+   * or not. A cell that wants to falsify it has to substitute its own
+   * callback-capturing observer and hand-fire it against a stubbed box
+   * height, which `b9ced204`'s "re-measures when the box resizes" cell did
+   * (fixer r1: the earlier wording here said no cell could — that cell is
+   * the counter-example, and deleting the observer half of the effect reds
+   * it with "expected 0 to be greater than 0").
+   *
+   * The NAME matters as much as the stop: a focusable region with no
+   * accessible name announces nothing when focus lands on it.
+   */
+  it('the candidate scroller is a keyboard-reachable, named region at every sample size', async () => {
+    const list = await renderWithCandidates(2);
     expect(list.getAttribute('tabindex'), 'a scroll container must be reachable by keyboard').toBe(
       '0',
     );
+    expect(list.tagName, 'the implicit list role is what announces the item count').toBe('UL');
     expect(
       list.getAttribute('aria-label') ?? list.getAttribute('aria-labelledby'),
       'a focusable region needs an accessible name',
@@ -987,6 +1100,18 @@ describe('AttachmentStorageCard (#1349)', () => {
     for (const cls of ['focus-visible:ring-2', 'focus-visible:outline-none']) {
       expect(list.className.split(/\s+/), `a ring is stripped by forced-colors: ${cls}`).not.toContain(cls);
     }
+  });
+
+  /**
+   * The same at a full sample. One rule, both ends: the attribute is a
+   * constant, so nothing about the stop can depend on layout, on a resize
+   * signal, or on the sample length.
+   */
+  it('keeps the candidate scroller a tab stop on a full 100-row sample', async () => {
+    const list = await renderWithCandidates(100);
+    expect(list.getAttribute('tabindex')).toBe('0');
+    expect(list.className).toContain('max-h-56');
+    expect(list.className).toContain('overflow-y-auto');
   });
 
   it('says the sample is bounded when the run found more candidates than it kept', async () => {

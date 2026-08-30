@@ -714,8 +714,45 @@ export function AttachmentStorageCard() {
             `nm-focus-ring`, a real outline, for the forced-colors reason
             spelled out there.
 
-            Its NAME follows the same dry-run rule as the summary above it
-            (fixer r1). The r2 ruling — "candidate" is a claim about pending
+            The stop is UNCONDITIONAL, and the redundancy #1535 reports is
+            ACCEPTED rather than gated (external round 3, measured).
+            `max-h-56` is 224px; less the 1px border and `p-2` that is a
+            206px content box. A row is `text-xs`, a 16px line box, and
+            `space-y-1` adds 4px between rows, so ten one-line rows measure
+            196px and FIT while eleven measure 216px and scroll. Narrow the
+            card and the `break-all` path wraps, pushing the meta span onto a
+            further line: at two path lines a row is 48px, so four rows fit
+            (204px) and five scroll (256px). No lower row count is SAFE,
+            though (fixer r1): the `<li>` has no vertical gap and neither the
+            row nor the path span carries `truncate`, `line-clamp` or a
+            `max-w`, so a row is 16px times its line-box count and nothing
+            bounds that count — a long enough attachment filename scrolls the
+            box at two rows. The redundancy #1535 reports is therefore the
+            case where the sample is short AND the paths are short: the stop
+            is announced as "list, 2 items" with nothing to scroll — one
+            keystroke on the way to the destructive controls, which is
+            exactly the cost #1535 names.
+
+            Gating it costs more than it saves. A gate has to track rendered
+            HEIGHT, not row count, so it needs a live measurement; and
+            withdrawing `tabindex` from a list the operator is standing in —
+            one zoom-out at four rows — runs HTML's focus fixup rule, whose
+            unfocusing steps drop focus to `<body>` with the list still on
+            screen. That is the failure CLAUDE.md's Retrieval-panel ruling
+            forbids and the one PR #1550 just converted these buttons away
+            from. And a gate's live measurement is awkward to pin honestly
+            here: jsdom has no layout, and the SHARED resize-observer mock in
+            `src/test-setup.ts` fires once from `observe()`, so under it a
+            resize-driven re-measure cannot be told from no observer at all.
+            A cell can still falsify that signal — `b9ced204`'s "re-measures
+            when the box resizes" cell did, by substituting its own
+            callback-capturing observer and hand-firing it against a stubbed
+            box height (fixer r1: the earlier wording here claimed no cell
+            could, which that cell disproves). One rule, always focusable,
+            one redundant stop on short samples.
+
+            The list's NAME follows the same dry-run rule as the summary above
+            it (fixer r1). The r2 ruling — "candidate" is a claim about pending
             work, so say it only for a dry run — was applied to the visible
             copy and not to the accessible name, so after a live run a screen
             reader still announced the region as "Orphan candidates": exactly
@@ -931,10 +968,42 @@ export function AttachmentStorageCard() {
         Confluence re-serves it the next time it is viewed.
       </p>
 
+      {/*
+        #1534. This description was 613 characters — 2.8x the next-longest
+        `ConfirmDialog` in the app (`VersionHistory`, 217) — and roughly 340 of
+        them restated `attachment-sweep-note` directly above, which is on
+        screen at rest before the dialog ever opens. It rendered as one
+        undifferentiated muted run with "run a dry run first" at character 558,
+        the same shape CLAUDE.md's RetrievalTab ruling rejected. Trimmed to the
+        cost, the irreversibility and the recovery, in that order. Most of the
+        never-touched inventory stays with the note above, which already
+        carries the reference kinds, the 24-hour window, the delete-time
+        re-check and the image-index prune.
+
+        TWO claims left the card altogether, and this comment says so rather
+        than implying they moved (fixer r1 — the earlier wording claimed the
+        page-icon store "stays with the note", which never mentioned it):
+        "uploaded page icons are a separate store and are never swept" and
+        "affected pages are re-queued for image indexing". Neither is a cost
+        an operator weighs before pressing Delete orphans — the first is a
+        reassurance about a store this sweep never walks, the second a
+        consequence of the prune the note already names — and both survive
+        where the mechanism is documented: `docs/ADMIN-GUIDE.md` (the
+        `page-icons/<page id>/<sha>.<ext>` store, and the re-queue in the
+        sweep section) and `docs/architecture/06-data-model.md`.
+
+        The cached-Confluence-image sentence is NOT inventory and does not go:
+        review r1 put it here because "files nothing references" reads to an
+        operator as "nothing on a live page", and this sweep really does remove
+        a cached image sitting under a live page that no body embeds. Dropping
+        it would make the dialog shorter by making it wrong. `description` is a
+        single string in one `Dialog.Description`, so this is one paragraph and
+        not two.
+      */}
       <ConfirmDialog
         open={confirmDeleteOpen}
         title="Delete orphaned attachment files?"
-        description="This permanently removes files that no page, draft, retained version, pending sync version, template, comment or saved AI answer references and that are older than 24 hours. Every candidate is re-checked at delete time, matching image-index rows are pruned, and affected pages are re-queued for image indexing. Files referenced anywhere are never touched. Cached Confluence images that no page body embeds are removed too — they are re-fetched from Confluence the next time they are viewed. Uploaded page icons are a separate store and are never swept. This cannot be undone — run a dry run first if you have not."
+        description="This permanently deletes files older than 24 hours that nothing references. It cannot be undone — run a dry run first if you have not. Cached Confluence images that no page body embeds count as unreferenced; Confluence re-serves them when next viewed."
         confirmLabel="Delete orphans"
         destructive
         onConfirm={() => {
