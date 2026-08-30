@@ -1424,10 +1424,16 @@ describe('AttachmentStorageCard (#1349)', () => {
     await screen.findByTestId('attachment-sweep-running');
 
     const after = screen.getByTestId('attachment-sweep-delete');
-    expect(after).toHaveAttribute('aria-disabled', 'true');
-    expect(after).not.toHaveAttribute('disabled');
+    // Order is load-bearing (review r2): the FOCUS assertions come first so
+    // that re-adding native `disabled` reds on the fact this cell exists to
+    // pin. With the attribute assertions first, that mutation stopped at
+    // `aria-disabled` — a red the sibling "holds both actions with
+    // aria-disabled…" cell already owns — and the focus half was never
+    // reached, so the quoted mutation proved the wrong thing.
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(after);
+    expect(after).toHaveAttribute('aria-disabled', 'true');
+    expect(after).not.toHaveAttribute('disabled');
   });
 
   /**

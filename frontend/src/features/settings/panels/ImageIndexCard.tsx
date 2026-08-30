@@ -162,7 +162,27 @@ export function ImageIndexCard() {
   });
 
   const assigned = data?.assigned ?? false;
-  const busy = kick.isPending || (data?.running ?? false);
+  /**
+   * The scan the SERVER last confirmed, not the one a stale record remembers
+   * (review r2) — the guard `AttachmentStorageCard.tsx` carries on its own
+   * `running`, so the two cards' busy states are identical in the outage
+   * branch too, per #1532's per-group rule.
+   *
+   * TanStack retains `data` through a failed REFETCH, so an outage that begins
+   * while a scan is in flight left this reading `running: true` off a payload
+   * the card could no longer observe. It feeds `aria-busy`, the "Scanning…"
+   * chip and (through `busy`) `actionsDisabled`, so the card simultaneously
+   * asserted a scan as fact and refused Process now and Re-scan all — the
+   * remedy its own error copy names four paragraphs below, and the affordance
+   * the comment beneath this one promises stays live. A record read through a
+   * failed GET claims nothing.
+   *
+   * Polling is unaffected: `refetchInterval` reads the query's own retained
+   * data, so the card keeps asking and heals itself the moment the route
+   * answers again.
+   */
+  const serverRunning = !isError && (data?.running ?? false);
+  const busy = kick.isPending || serverRunning;
   // Live whenever the leg is known to be assigned, and ALSO when the status
   // could not be read: the buttons are the remedy, and a card that hides them
   // because its own GET 500'd removes the recovery from the surface that
@@ -194,11 +214,11 @@ export function ImageIndexCard() {
       // poll lands, which is exactly what ARIA 1.2 scopes `aria-busy` to; it
       // is deliberately NOT on the buttons, where it reaches no assistive
       // tech and would withhold their own label updates.
-      aria-busy={data?.running ?? false}
+      aria-busy={serverRunning}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-medium">Image index</h3>
-        {data?.running && (
+        {serverRunning && (
           <span
             data-testid="image-index-running"
             className="text-muted-foreground inline-flex items-center gap-1.5 text-xs"

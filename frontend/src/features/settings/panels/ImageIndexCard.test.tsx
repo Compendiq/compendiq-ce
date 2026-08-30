@@ -100,6 +100,40 @@ function mockApiFailingStatus(capture?: Array<{ url: string; method: string }>) 
 }
 
 /**
+ * The status GET answers ONCE, then every later GET fails.
+ *
+ * `mockApiFailingStatus` fails from the first read, so `data` is `undefined`
+ * and nothing about the RETAINED-payload path is exercised. TanStack keeps
+ * `data` across a failed refetch, which is the outage that begins while a scan
+ * is already running — the shape `AttachmentStorageCard` guards.
+ */
+function mockApiOutageAfterFirstRead(
+  first: ImageIndexStatus,
+  capture?: Array<{ url: string; method: string }>,
+) {
+  let reads = 0;
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      if (reads++ === 0) {
+        return new Response(JSON.stringify(first), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ marked: 120, started: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/**
  * Wait for the STATUS to have arrived, not merely for the card to exist.
  *
  * Every element here renders on the first paint, so a bare `findByTestId`
@@ -460,6 +494,57 @@ describe('ImageIndexCard (#1115 P2)', () => {
       await waitFor(() =>
         expect(
           calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process')),
+        ).toBe(true),
+      );
+    });
+
+    /**
+     * The same half-fix `AttachmentStorageCard` closed one file over (fixer
+     * r1, its `running` guard) — and the reason the two cards' busy states
+     * were NOT identical in the branch that matters most (review r2).
+     *
+     * The cell above fails the FIRST read, so `data` is `undefined` and
+     * `running` is trivially false. When the outage begins while a scan is in
+     * flight TanStack retains the payload, so this card read `running: true`
+     * off a record it could no longer observe: `aria-busy="true"` and the
+     * "Scanning…" chip asserted a scan as fact, and `busy` — which is inside
+     * `actionsDisabled` — refused BOTH buttons, the very remedy the error copy
+     * one line above names. No reachable affordance until the backend came
+     * back.
+     */
+    it('stops claiming a scan it can no longer see, and leaves both remedies reachable', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const calls: Array<{ url: string; method: string }> = [];
+      mockApiOutageAfterFirstRead({ ...ASSIGNED, running: true }, calls);
+      renderCard();
+      await waitFor(() => expect(screen.getByTestId('image-index-running')).toBeInTheDocument());
+
+      // One whole 5s poll interval later the GET is 500ing while the retained
+      // payload still says `running: true` (the card's POLL_MS is private —
+      // the sibling poll cell above advances by the same literal).
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+
+      expect(
+        screen.queryByTestId('image-index-running'),
+        'the card must not announce a scan it cannot observe',
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'false');
+      for (const testId of ['image-index-process', 'image-index-rescan']) {
+        expect(
+          screen.getByTestId(testId),
+          'the error copy names both buttons as the recovery — they must be pressable',
+        ).not.toHaveAttribute('aria-disabled');
+      }
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+      await waitFor(() =>
+        expect(
+          calls.some(
+            (c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process'),
+          ),
         ).toBe(true),
       );
     });
