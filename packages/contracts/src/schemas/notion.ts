@@ -18,8 +18,25 @@ export const NotionConnectionResponseSchema = z
   .strict();
 export type NotionConnectionResponse = z.infer<typeof NotionConnectionResponseSchema>;
 
-/** Picker copy for unsupported Notion types (databases, linked views, canvases, …). */
+/**
+ * Picker copy for Notion object types this importer cannot represent locally
+ * (linked views, data sources, canvases, …). Databases are NOT in this set
+ * anymore — see `NotionTreeDatabaseNode` (#1459 follow-up).
+ */
 export const NOTION_UNSUPPORTED_LABEL = 'Not supported — stays in Notion' as const;
+
+/**
+ * How a selected Notion database is imported.
+ *
+ * - `table` — one local page whose body is the rows × properties table. Only
+ *   offered when every sampled row page is body-less, because flattening a row
+ *   that has content would drop that content.
+ * - `pages` — the database becomes a container page and each row is imported
+ *   as an article, nested structure preserved. The wiki shape.
+ * - `skip`  — excluded, rows excluded.
+ */
+export const NotionDatabaseModeEnum = z.enum(['skip', 'table', 'pages']);
+export type NotionDatabaseMode = z.infer<typeof NotionDatabaseModeEnum>;
 
 export type NotionTreePageNode = {
   id: string;
@@ -33,10 +50,41 @@ export type NotionTreePageNode = {
   children: NotionTreeNode[];
 };
 
+/**
+ * A database the importer CAN take.
+ *
+ * `recommendedMode` is the workspace scan's verdict and the picker's default;
+ * the picker may override it. The scan is a bounded sample, so it is advisory —
+ * the import re-checks every row before it flattens anything into a table.
+ */
+export type NotionTreeDatabaseNode = {
+  id: string;
+  title: string;
+  type: 'database';
+  selectable: true;
+  recommendedMode: 'table' | 'pages';
+  /**
+   * Whether the sampled row pages carried body content. `unknown` means the
+   * scan could not tell (nothing sampled, or every sample failed).
+   */
+  rowContent: 'none' | 'some' | 'unknown';
+  /** Notion wiki database — its row pages carry a `verification` property. */
+  isWiki: boolean;
+  /** Row pages visible to the integration. */
+  rowCount: number;
+  /** Property names, in the database's own order. */
+  columns: string[];
+  alreadyImported?: boolean;
+  localPageId?: number;
+  url?: string;
+  children: NotionTreeNode[];
+};
+
+/** An object type with no local representation. Never a database. */
 export type NotionTreeSkippedNode = {
   id: string;
   title: string;
-  type: 'database' | 'unsupported';
+  type: 'unsupported';
   selectable: false;
   skipReason: string;
   reasonCode?: string;
@@ -46,7 +94,7 @@ export type NotionTreeSkippedNode = {
   children: NotionTreeNode[];
 };
 
-export type NotionTreeNode = NotionTreePageNode | NotionTreeSkippedNode;
+export type NotionTreeNode = NotionTreePageNode | NotionTreeDatabaseNode | NotionTreeSkippedNode;
 
 export const NotionTreeNodeSchema: z.ZodType<NotionTreeNode> = z.lazy(() =>
   z.union([
@@ -67,7 +115,24 @@ export const NotionTreeNodeSchema: z.ZodType<NotionTreeNode> = z.lazy(() =>
       .object({
         id: z.string().min(1),
         title: z.string(),
-        type: z.enum(['database', 'unsupported']),
+        type: z.literal('database'),
+        selectable: z.literal(true),
+        recommendedMode: z.enum(['table', 'pages']),
+        rowContent: z.enum(['none', 'some', 'unknown']),
+        isWiki: z.boolean(),
+        rowCount: z.number().int().nonnegative(),
+        columns: z.array(z.string()),
+        alreadyImported: z.boolean().optional(),
+        localPageId: z.number().int().positive().optional(),
+        url: z.string().optional(),
+        children: z.array(NotionTreeNodeSchema),
+      })
+      .strict(),
+    z
+      .object({
+        id: z.string().min(1),
+        title: z.string(),
+        type: z.literal('unsupported'),
         selectable: z.literal(false),
         skipReason: z.string().min(1),
         reasonCode: z.string().min(1).optional(),
@@ -85,9 +150,6 @@ export const NotionTreeResponseSchema = z
   })
   .strict();
 export type NotionTreeResponse = z.infer<typeof NotionTreeResponseSchema>;
-
-export const NotionDatabaseModeEnum = z.literal('skip');
-export type NotionDatabaseMode = z.infer<typeof NotionDatabaseModeEnum>;
 
 /** Confirmed selection + local destination for a one-shot Notion import (#1465). */
 export const NotionImportRequestSchema = z
@@ -112,6 +174,11 @@ export const NotionImportItemSchema = z
     localPageId: z.number().int().positive().optional(),
     reason: z.string().optional(),
     updated: z.boolean().optional(),
+    /**
+     * What the row actually became. `table` marks a database flattened into one
+     * page; `article` marks a wiki row carrying its property metadata.
+     */
+    importedAs: z.enum(['page', 'article', 'table']).optional(),
   })
   .strict();
 export type NotionImportItem = z.infer<typeof NotionImportItemSchema>;

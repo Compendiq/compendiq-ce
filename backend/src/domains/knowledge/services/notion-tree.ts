@@ -8,18 +8,37 @@
  *
  * There is no database query. A row is present only when Search returned it as
  * a page object.
+ *
+ * Databases ARE importable and say so. Each one is classified into the shape it
+ * would take locally — one table, or a page per row — from its own property
+ * schema plus a bounded sample of its row pages. The sample is advisory copy for
+ * the picker; `notion-import-service` re-checks every row before it flattens a
+ * database into a table, so a wrong guess here costs a recommendation, never
+ * content.
  */
 import pLimit from 'p-limit';
 import {
   NOTION_UNSUPPORTED_LABEL,
+  type NotionTreeDatabaseNode,
   type NotionTreeNode,
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
-import { NotionClient, NotionError } from './notion-client.js';
+import { NotionClient, NotionError, type NotionListResponse } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
 
+/**
+ * An inline database is already rendered as a table in its host page's body by
+ * `notion-block-converter`, so offering it as a separate selection would import
+ * the same rows twice.
+ */
+export const NOTION_INLINE_DATABASE_REASON = 'Imports inside its page as a table' as const;
+
 const NOTION_LOOKUP_CONCURRENCY = 5;
+/** Row pages sampled per database to guess whether rows carry body content. */
+export const NOTION_ROW_SAMPLE_SIZE = 5;
+/** Ceiling on row samples per tree build, so a database-heavy workspace still renders. */
+export const NOTION_ROW_SAMPLE_BUDGET = 60;
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -119,6 +138,18 @@ export function extractParentRelationId(item: Record<string, unknown>): string |
   return null;
 }
 
+/**
+ * Notion adds a `verification` property to the row pages of a wiki database and
+ * nowhere else, so its presence in the schema identifies a wiki.
+ * https://developers.notion.com/guides/data-apis/working-with-databases#wiki-databases
+ */
+export function isWikiDatabase(item: Record<string, unknown>): boolean {
+  const props = item.properties;
+  if (!props || typeof props !== 'object') return false;
+  return Object.values(props).some(
+    (prop) => Boolean(prop) && typeof prop === 'object' && 'type' in prop && prop.type === 'verification',
+  );
+}
 
 function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   if (typeof item.id !== 'string' || item.id.length === 0) return null;
@@ -138,26 +169,45 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
       children: [],
     };
   }
-  if (
-    item.object === 'database' ||
-    item.object === 'data_source' ||
-    (item.object === 'block' && item.type === 'child_database')
-  ) {
-    let reasonCode = 'database';
-    if (item.object === 'data_source') {
-      reasonCode = 'data_source';
-    } else if (item.is_inline === true) {
-      reasonCode = 'inline_database';
-    } else if (item.object === 'block' && item.type === 'child_database') {
-      reasonCode = 'child_database';
-    }
+  if (item.object === 'data_source') {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+      reasonCode: 'data_source',
+      ...extras,
+      children: [],
+    };
+  }
+  // A `child_database` block is a database nested in a page body, which the
+  // host page's own conversion already renders as a table.
+  if (item.is_inline === true || (item.object === 'block' && item.type === 'child_database')) {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_INLINE_DATABASE_REASON,
+      reasonCode: item.object === 'block' ? 'child_database' : 'inline_database',
+      ...extras,
+      children: [],
+    };
+  }
+  if (item.object === 'database') {
+    const props = item.properties;
     return {
       id: item.id,
       title,
       type: 'database',
-      selectable: false,
-      skipReason: NOTION_UNSUPPORTED_LABEL,
-      reasonCode,
+      selectable: true,
+      // Provisional. `classifyDatabases` settles these once rows are attached.
+      recommendedMode: 'pages',
+      rowContent: 'unknown',
+      isWiki: isWikiDatabase(item),
+      rowCount: 0,
+      columns: props && typeof props === 'object' ? Object.keys(props) : [],
       ...extras,
       children: [],
     };
@@ -358,6 +408,9 @@ export async function fetchNotionWorkspaceTree(
       attach(parent, node, attached);
     }
   }
+
+  await classifyDatabases(client, nodes);
+
   if (options.userId) {
     try {
       const existing = await query<{ id: number; notion_page_id: string }>(
@@ -373,7 +426,7 @@ export async function fetchNotionWorkspaceTree(
         existingByNotionId.set(row.notion_page_id, row.id);
       }
       for (const [key, node] of nodes) {
-        if (node.type === 'page' && existingByNotionId.has(key)) {
+        if ((node.type === 'page' || node.type === 'database') && existingByNotionId.has(key)) {
           node.alreadyImported = true;
           node.localPageId = existingByNotionId.get(key);
         }
@@ -383,6 +436,89 @@ export async function fetchNotionWorkspaceTree(
     }
   }
 
-
   return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
+}
+
+/**
+ * A row page counts as empty when it has no blocks at all, or only blank
+ * paragraphs — Notion leaves one behind on a row nobody ever opened. More
+ * blocks than the sample window reads as content, which is the safe direction:
+ * it recommends articles rather than a table that would drop them.
+ */
+export function rowHasBodyContent(list: NotionListResponse<Record<string, unknown>>): boolean {
+  for (const block of list.results) {
+    if (block.type !== 'paragraph') return true;
+    const paragraph = block.paragraph;
+    if (!paragraph || typeof paragraph !== 'object' || !('rich_text' in paragraph)) continue;
+    if (Array.isArray(paragraph.rich_text) && paragraph.rich_text.length > 0) return true;
+  }
+  return list.has_more;
+}
+
+/**
+ * Settles every database node's import shape.
+ *
+ * `columns` and `isWiki` came free off the database object. The open question —
+ * do the rows carry page content? — costs a request per row, so it is sampled
+ * and capped. The answer only picks the picker's default: `notion-import-service`
+ * re-reads every row before it flattens one into a table, so an unlucky sample
+ * costs a recommendation and never content. Probe failures are swallowed for the
+ * same reason; a picker that 500s over advisory copy is worse than one that
+ * recommends articles.
+ */
+async function classifyDatabases(client: NotionClient, nodes: Map<string, NotionTreeNode>): Promise<void> {
+  const databases: NotionTreeDatabaseNode[] = [];
+  for (const node of nodes.values()) {
+    if (node.type === 'database') databases.push(node);
+  }
+  if (databases.length === 0) return;
+
+  const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+  const pending: Array<Promise<void>> = [];
+  let budget = NOTION_ROW_SAMPLE_BUDGET;
+
+  for (const database of databases) {
+    const rows = database.children.filter(
+      (child) => child.type === 'page' && child.isDatabaseRow === true,
+    );
+    database.rowCount = rows.length;
+    database.recommendedMode = 'pages';
+
+    // A wiki's rows are articles by definition, so nothing a sample could say
+    // would turn one into a table. Spend no requests on it.
+    if (database.isWiki || rows.length === 0 || budget === 0) {
+      database.rowContent = 'unknown';
+      continue;
+    }
+
+    const sample = rows.slice(0, Math.min(NOTION_ROW_SAMPLE_SIZE, budget));
+    budget -= sample.length;
+    pending.push(
+      (async () => {
+        const verdicts = await Promise.all(
+          sample.map((row) =>
+            limit(async () => {
+              try {
+                return rowHasBodyContent(await client.getBlockChildren(row.id, { pageSize: 2 }))
+                  ? 'content'
+                  : 'empty';
+              } catch {
+                return 'unreadable';
+              }
+            }),
+          ),
+        );
+        if (verdicts.includes('content')) {
+          database.rowContent = 'some';
+        } else if (verdicts.includes('empty')) {
+          database.rowContent = 'none';
+          database.recommendedMode = 'table';
+        } else {
+          database.rowContent = 'unknown';
+        }
+      })(),
+    );
+  }
+
+  await Promise.all(pending);
 }

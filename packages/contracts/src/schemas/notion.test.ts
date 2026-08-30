@@ -47,6 +47,19 @@ describe('NotionTreeResponseSchema', () => {
     children: [],
   };
 
+  const database = {
+    id: 'db-1',
+    title: 'Filesystem Hierarchy',
+    type: 'database' as const,
+    selectable: true as const,
+    recommendedMode: 'table' as const,
+    rowContent: 'none' as const,
+    isWiki: false,
+    rowCount: 12,
+    columns: ['Name', 'Purpose'],
+    children: [],
+  };
+
   it('uses the exact skip label on non-selectable nodes', () => {
     expect(NOTION_UNSUPPORTED_LABEL).toBe('Not supported — stays in Notion');
     const tree = NotionTreeResponseSchema.parse({
@@ -55,11 +68,12 @@ describe('NotionTreeResponseSchema', () => {
           ...page,
           children: [
             {
-              id: 'db-1',
-              title: 'CRM',
-              type: 'database',
+              id: 'canvas-1',
+              title: 'Sketches',
+              type: 'unsupported',
               selectable: false,
               skipReason: NOTION_UNSUPPORTED_LABEL,
+              reasonCode: 'canvas',
               children: [],
             },
           ],
@@ -67,25 +81,32 @@ describe('NotionTreeResponseSchema', () => {
       ],
     });
     const skipped = tree.nodes[0]!.children[0]!;
-    expect(skipped.type).toBe('database');
+    expect(skipped.type).toBe('unsupported');
     expect(skipped.selectable).toBe(false);
     if (skipped.selectable) throw new Error('expected skipped node');
     expect(skipped.skipReason).toBe(NOTION_UNSUPPORTED_LABEL);
   });
 
-  it('rejects a selectable database and a page carrying skipReason', () => {
+  it('accepts a selectable database carrying its import shape', () => {
+    const tree = NotionTreeResponseSchema.parse({ nodes: [database] });
+    const node = tree.nodes[0]!;
+    expect(node.type).toBe('database');
+    if (!node.selectable || node.type !== 'database') throw new Error('expected database node');
+    expect(node.recommendedMode).toBe('table');
+    expect(node.rowContent).toBe('none');
+    expect(node.isWiki).toBe(false);
+    expect(node.rowCount).toBe(12);
+    expect(node.columns).toEqual(['Name', 'Purpose']);
+  });
+
+  it('rejects a database missing its import shape, and a page carrying skipReason', () => {
     expect(() =>
       NotionTreeResponseSchema.parse({
-        nodes: [
-          {
-            id: 'db-1',
-            title: 'CRM',
-            type: 'database',
-            selectable: true,
-            children: [],
-          },
-        ],
+        nodes: [{ id: 'db-1', title: 'CRM', type: 'database', selectable: true, children: [] }],
       }),
+    ).toThrow();
+    expect(() =>
+      NotionTreeResponseSchema.parse({ nodes: [{ ...database, recommendedMode: 'skip' }] }),
     ).toThrow();
     expect(() =>
       NotionTreeResponseSchema.parse({
@@ -118,9 +139,10 @@ describe('NotionTreeResponseSchema', () => {
         {
           id: 'linked:handbook:db-1',
           title: 'CRM',
-          type: 'database',
+          type: 'unsupported',
           selectable: false,
           skipReason: NOTION_UNSUPPORTED_LABEL,
+          reasonCode: 'linked_database',
           linkedFromId: 'db-1',
           children: [],
         },
@@ -164,27 +186,27 @@ describe('NotionImportRequestSchema', () => {
     ).toThrow();
   });
 
-  it('accepts overwriteExisting and skip-only databaseModes', () => {
+  it('accepts overwriteExisting and every implemented databaseMode', () => {
     expect(
       NotionImportRequestSchema.parse({
         pageIds: ['page-1'],
         overwriteExisting: true,
-        databaseModes: { 'db-1': 'skip' },
+        databaseModes: { 'db-1': 'skip', 'db-2': 'table', 'db-3': 'pages' },
       }),
     ).toEqual({
       pageIds: ['page-1'],
       visibility: 'shared',
       overwriteExisting: true,
-      databaseModes: { 'db-1': 'skip' },
+      databaseModes: { 'db-1': 'skip', 'db-2': 'table', 'db-3': 'pages' },
     });
   });
 
-  it('rejects unimplemented table and articles database modes', () => {
-    expect(() =>
-      NotionImportRequestSchema.parse({ pageIds: ['page-1'], databaseModes: { crm: 'table' } }),
-    ).toThrow();
+  it('rejects a database mode outside skip/table/pages', () => {
     expect(() =>
       NotionImportRequestSchema.parse({ pageIds: ['page-1'], databaseModes: { crm: 'articles' } }),
+    ).toThrow();
+    expect(() =>
+      NotionImportRequestSchema.parse({ pageIds: ['page-1'], databaseModes: { crm: 'collection' } }),
     ).toThrow();
   });
 });

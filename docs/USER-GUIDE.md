@@ -87,14 +87,25 @@ You can also start a page from a template (e.g. Meeting Notes, Incident Report, 
 This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
 
 1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
-2. Pick pages in the grouped workspace tree. Parent groups start collapsed; expand them to inspect descendants. Selecting a parent selects every supported page below it, while databases and other unsupported items remain unselected. Expand a group and clear individual branches when you need a smaller set.
+2. Pick what to import in the grouped workspace tree. Parent groups start collapsed; expand them to inspect descendants. Every row states what it becomes: a type badge — **Page**, **Database row**, **Wiki**, **Database**, **Linked view** or **Inline database** — and an action sentence, one of *Imports as a page*, *Imports as an article*, *Imports as one table · N rows*, or *Imports as one page with N articles*. Selecting a parent selects every importable item below it, so selecting a wiki brings the database, its pages and their sub-pages in one click with the structure preserved. Expand a group and clear individual branches when you need a smaller set. Every database also carries its own **Table | Pages | Skip** control:
+   - **Table** — for a database whose rows only hold attributes (a link list, an inventory, a glossary of one-line entries). The whole database becomes **one** page holding the table.
+   - **Pages** — for a wiki, or for any database whose rows have real content. You get one page per row, nested under a page for the database itself. A wiki offers only *Pages* or *Skip*, because flattening it would drop the article bodies.
+   - **Skip** — leave the database in Notion.
+
+   Rows beneath a *Table* database read **Included in the table above** and are not separately selectable. Everything beneath a *Skip* database reads **Excluded — stays in Notion**. If you force *Table* on a database whose scan found row content, the picker shows an amber caution: *Some rows have page content — the whole database imports as pages instead*.
 3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
 4. Run the import. Pages that already exist locally are reported as already imported rather than duplicated.
 
 **Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
 
-- Databases (full, linked, every view) **including their rows**. A row is imported only if it appears as its own page in the tree and you selected it.
-- Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases, database properties / relations / rollups / formulas.
+- Data sources — they point at content the pinned Notion API cannot resolve. A linked view of a database Search already returned as the source database is not listed twice.
+- Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
+
+**Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.
+
+**Inline databases.** A database embedded in the body of a page, rather than standing on its own, is not selectable by itself: it reads *Imports inside its page as a table*, and it arrives as a table in its host page’s body. Importing the host page is all you need to do.
+
+**Nothing is dropped to make a table.** If a database cannot be safely flattened — a row holds page content, or a row cannot be read — it imports as pages instead of losing anything, and the result screen says so. Result rows read *imported as a table*, *imported as an article*, or *imported*.
 
 Skipped and unselected Notion items keep their Notion URLs in imported page bodies. Markdown import on New Page is unchanged: it still loads one `.md` file into the editor and does not create pages until you press Create.
 

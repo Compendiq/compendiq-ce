@@ -436,28 +436,33 @@ function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
   return `<p><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></p>`;
 }
 
-function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
-  const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
-  if (rows.length === 0) {
-    skip(block, ctx);
-    return '';
-  }
+/**
+ * Rows × properties as an HTML table. Shared by the inline `child_database`
+ * block renderer and the top-level database import (`table` mode), so a
+ * database nested in a page and one flattened on its own produce the same
+ * markup.
+ */
+export function renderDatabaseTable(input: {
+  columns: readonly string[];
+  rows: readonly Record<string, unknown>[];
+  title?: string;
+}): string {
+  if (input.rows.length === 0) return '';
 
-  const data = payload(block, 'child_database');
-  const rawTitle = typeof data.title === 'string' && data.title.trim()
-    ? data.title.trim()
-    : (typeof block.title === 'string' && block.title.trim() ? block.title.trim() : '');
+  const rawTitle = typeof input.title === 'string' ? input.title.trim() : '';
   const title = rawTitle === 'New database' || rawTitle === 'Untitled' ? '' : rawTitle;
   const heading = title ? `<h3>${escapeHtml(title)}</h3>` : '';
-  const propKeys: string[] = Array.isArray(block.databaseColumns) && block.databaseColumns.length > 0
-    ? (block.databaseColumns as string[])
-    : Array.from(
-        new Set(
-          rows.flatMap((r) =>
-            isRecord(r) && isRecord(r.properties) ? Object.keys(r.properties) : [],
+
+  const propKeys: string[] =
+    input.columns.length > 0
+      ? [...input.columns]
+      : Array.from(
+          new Set(
+            input.rows.flatMap((r) =>
+              isRecord(r) && isRecord(r.properties) ? Object.keys(r.properties) : [],
+            ),
           ),
-        ),
-      );
+        );
 
   propKeys.sort((a, b) => {
     const aLower = a.toLowerCase();
@@ -472,25 +477,39 @@ function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
   const headerRow = propKeys.map((col) => `<th>${escapeHtml(col)}</th>`).join('');
   const thead = headerRow ? `<thead><tr>${headerRow}</tr></thead>` : '';
 
-  const bodyRows = rows
+  const bodyRows = input.rows
     .map((row) => {
       const props = isRecord(row) && isRecord(row.properties) ? row.properties : {};
       const cells = propKeys
-        .map((col) => {
-          const propValue = props[col];
-          const text = extractPropertyText(propValue);
-          return `<td>${escapeHtml(text)}</td>`;
-        })
+        .map((col) => `<td>${escapeHtml(extractPropertyText(props[col]))}</td>`)
         .join('');
       return `<tr>${cells}</tr>`;
     })
     .join('');
 
-  const tbody = `<tbody>${bodyRows}</tbody>`;
-  return `${heading}<table>${thead}${tbody}</table>`;
+  return `${heading}<table>${thead}<tbody>${bodyRows}</tbody></table>`;
 }
 
-function extractPropertyText(prop: unknown): string {
+function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
+  const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
+  if (rows.length === 0) {
+    skip(block, ctx);
+    return '';
+  }
+
+  const data = payload(block, 'child_database');
+  const rawTitle = typeof data.title === 'string' && data.title.trim()
+    ? data.title.trim()
+    : (typeof block.title === 'string' && block.title.trim() ? block.title.trim() : '');
+
+  return renderDatabaseTable({
+    columns: Array.isArray(block.databaseColumns) ? (block.databaseColumns as string[]) : [],
+    rows: rows as Record<string, unknown>[],
+    title: rawTitle,
+  });
+}
+
+export function extractPropertyText(prop: unknown): string {
   if (!prop || typeof prop !== 'object') return '';
   const p = prop as Record<string, unknown>;
   const propType = typeof p.type === 'string' ? p.type : '';
@@ -531,7 +550,61 @@ function extractPropertyText(prop: unknown): string {
   if (propType === 'date' && isRecord(p.date) && typeof p.date.start === 'string') {
     return p.date.start;
   }
+  if (propType === 'formula' && isRecord(p.formula)) {
+    return formulaOrRollupPlain(p.formula);
+  }
+  if (propType === 'rollup' && isRecord(p.rollup)) {
+    return formulaOrRollupPlain(p.rollup);
+  }
+  if (propType === 'files' && Array.isArray(p.files)) {
+    return p.files
+      .map((item) => (isRecord(item) && typeof item.name === 'string' ? item.name : ''))
+      .filter(Boolean)
+      .join(', ');
+  }
+  if (propType === 'people' && Array.isArray(p.people)) {
+    return p.people
+      .map((item) => (isRecord(item) && typeof item.name === 'string' ? item.name : ''))
+      .filter(Boolean)
+      .join(', ');
+  }
+  if (propType === 'created_by' && isRecord(p.created_by) && typeof p.created_by.name === 'string') {
+    return p.created_by.name;
+  }
+  if (propType === 'last_edited_by' && isRecord(p.last_edited_by) && typeof p.last_edited_by.name === 'string') {
+    return p.last_edited_by.name;
+  }
+  if (propType === 'created_time' && typeof p.created_time === 'string') {
+    return p.created_time.slice(0, 10);
+  }
+  if (propType === 'last_edited_time' && typeof p.last_edited_time === 'string') {
+    return p.last_edited_time.slice(0, 10);
+  }
+  if (propType === 'relation' && Array.isArray(p.relation)) {
+    const n = p.relation.length;
+    if (n === 0) return '';
+    return n === 1 ? '1 linked page' : `${n} linked pages`;
+  }
+  if (propType === 'unique_id' && isRecord(p.unique_id)) {
+    const prefix = typeof p.unique_id.prefix === 'string' ? p.unique_id.prefix : '';
+    const number = typeof p.unique_id.number === 'number' ? String(p.unique_id.number) : '';
+    return [prefix, number].filter(Boolean).join('-');
+  }
 
+  return '';
+}
+
+function formulaOrRollupPlain(value: Record<string, unknown>): string {
+  const kind = typeof value.type === 'string' ? value.type : '';
+  if (kind === 'string' && typeof value.string === 'string') return value.string;
+  if (kind === 'number' && typeof value.number === 'number') return String(value.number);
+  if (kind === 'boolean' && typeof value.boolean === 'boolean') return value.boolean ? 'Yes' : 'No';
+  if (kind === 'date' && isRecord(value.date) && typeof value.date.start === 'string') {
+    return value.date.start.slice(0, 10);
+  }
+  if (kind === 'array' && Array.isArray(value.array)) {
+    return value.array.map((item) => extractPropertyText(item)).filter(Boolean).join(', ');
+  }
   return '';
 }
 
@@ -669,7 +742,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

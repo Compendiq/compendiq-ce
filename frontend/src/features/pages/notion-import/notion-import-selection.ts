@@ -1,4 +1,9 @@
-import type { NotionTreeNode, NotionTreePageNode } from '@compendiq/contracts';
+import type {
+  NotionDatabaseMode,
+  NotionTreeDatabaseNode,
+  NotionTreeNode,
+  NotionTreePageNode,
+} from '@compendiq/contracts';
 
 /** Matches `NotionImportRequestSchema.pageIds.max(200)`. */
 export const NOTION_IMPORT_MAX_PAGES = 200;
@@ -31,32 +36,101 @@ export function chunkPageIds(pageIds: string[], batchSize = NOTION_IMPORT_MAX_PA
   }
   return chunks;
 }
+export type DatabaseModes = Record<string, NotionDatabaseMode>;
+
 export type ImportSummary = {
   importCount: number;
   importIds: string[];
+  /** Ordinary pages. */
+  pageCount: number;
+  /** Database rows, which carry their properties as a metadata callout. */
+  articleCount: number;
+  /** Databases flattening into one table page. */
+  tableCount: number;
+  /** Databases becoming a container page for their rows. */
+  collectionCount: number;
   skippedDatabaseCount: number;
-  skippedUnsupportedCount: number;
+  unsupportedCount: number;
 };
 
 export function isSelectablePage(node: NotionTreeNode): node is NotionTreePageNode {
   return node.type === 'page' && node.selectable === true;
 }
 
+export function isDatabaseNode(node: NotionTreeNode): node is NotionTreeDatabaseNode {
+  return node.type === 'database';
+}
+
+/** The mode in force for a database: the operator's override, else the scan's. */
+export function effectiveDatabaseMode(
+  node: NotionTreeDatabaseNode,
+  modes?: DatabaseModes,
+): NotionDatabaseMode {
+  return modes?.[node.id] ?? node.recommendedMode;
+}
+
+/**
+ * `table` flattens a database's rows into cells, so offering it for a wiki would
+ * invite dropping article bodies. Every other database may take either shape.
+ */
+export function availableDatabaseModes(node: NotionTreeDatabaseNode): NotionDatabaseMode[] {
+  return node.isWiki ? ['pages', 'skip'] : ['table', 'pages', 'skip'];
+}
+
+/**
+ * What an ancestor database has already decided for everything under it.
+ * `table` folds descendants into that database's table; `skip` leaves them in
+ * Notion. Either way the descendant is no longer a choice of its own.
+ */
+export type InheritedFold = 'table' | 'skip' | undefined;
+
+/** The fold in force for a node's children, given the fold it inherited itself. */
+export function foldForChildren(
+  node: NotionTreeNode,
+  modes?: DatabaseModes,
+  inherited?: InheritedFold,
+): InheritedFold {
+  if (inherited) return inherited;
+  if (!isDatabaseNode(node)) return undefined;
+  const mode = effectiveDatabaseMode(node, modes);
+  return mode === 'table' || mode === 'skip' ? mode : undefined;
+}
+
 export type GroupSelectionState = 'none' | 'some' | 'all';
 
-export function selectableIdsInGroup(node: NotionTreeNode): string[] {
+/**
+ * Ids the checkbox on this node governs.
+ *
+ * A database in `table` mode governs only itself: its rows ARE the table, so
+ * selecting them as pages too would import the same content twice. A skipped
+ * database governs nothing.
+ */
+export function selectableIdsInGroup(node: NotionTreeNode, modes?: DatabaseModes): string[] {
   const ids: string[] = [];
-  walk([node], (candidate) => {
-    if (isSelectablePage(candidate)) ids.push(candidate.id);
-  });
+  collectImportIds([node], modes, ids);
   return ids;
+}
+
+function collectImportIds(nodes: NotionTreeNode[], modes: DatabaseModes | undefined, out: string[]): void {
+  for (const node of nodes) {
+    if (isDatabaseNode(node)) {
+      const mode = effectiveDatabaseMode(node, modes);
+      if (mode === 'skip') continue;
+      out.push(node.id);
+      if (mode === 'table') continue;
+    } else if (isSelectablePage(node)) {
+      out.push(node.id);
+    }
+    collectImportIds(node.children, modes, out);
+  }
 }
 
 export function groupSelectionState(
   node: NotionTreeNode,
   selected: ReadonlySet<string>,
+  modes?: DatabaseModes,
 ): GroupSelectionState {
-  const ids = selectableIdsInGroup(node);
+  const ids = selectableIdsInGroup(node, modes);
   if (ids.length === 0) return 'none';
   const selectedCount = ids.reduce((count, id) => count + Number(selected.has(id)), 0);
   if (selectedCount === 0) return 'none';
@@ -66,9 +140,10 @@ export function groupSelectionState(
 export function toggleSelectedPageGroup(
   selected: ReadonlySet<string>,
   node: NotionTreeNode,
+  modes?: DatabaseModes,
 ): { selected: Set<string>; limitExceeded: boolean } {
   const next = new Set(selected);
-  const groupIds = selectableIdsInGroup(node);
+  const groupIds = selectableIdsInGroup(node, modes);
   if (groupIds.length === 0) return { selected: next, limitExceeded: false };
 
   const allSelected = groupIds.every((id) => next.has(id));
@@ -80,23 +155,84 @@ export function toggleSelectedPageGroup(
   groupIds.forEach((id) => next.add(id));
   return { selected: next, limitExceeded: false };
 }
-/** Formats a concise badge label describing the Notion object type for skipped nodes. */
-export function formatNodeBadge(node: NotionTreeNode): string | null {
-  if (node.type === 'page') return null;
-  if (node.reasonCode === 'linked_database' || ('linkedFromId' in node && Boolean(node.linkedFromId))) {
-    return 'Linked View';
-  }
-  if (node.reasonCode === 'data_source') return 'Data Source';
-  if (node.reasonCode === 'inline_database') return 'Inline Database';
-  if (node.reasonCode === 'child_database' || node.type === 'database') return 'Database';
-  if (node.reasonCode === 'canvas') return 'Canvas';
-  if (node.reasonCode === 'table') return 'Table';
+
+/** The Notion object type, named the way Notion names it. */
+export function formatNodeBadge(node: NotionTreeNode): string {
+  if (node.type === 'page') return node.isDatabaseRow === true ? 'Database row' : 'Page';
+  if (node.type === 'database') return node.isWiki ? 'Wiki' : 'Database';
+  if (node.reasonCode === 'linked_database' || Boolean(node.linkedFromId)) return 'Linked view';
+  if (node.reasonCode === 'data_source') return 'Data source';
+  if (node.reasonCode === 'inline_database') return 'Inline database';
+  if (node.reasonCode === 'child_database') return 'Nested database';
   if (node.reasonCode && node.reasonCode !== 'unsupported') {
-    return node.reasonCode
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+    return node.reasonCode.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
   }
-  return 'Database';
+  return 'Unsupported';
+}
+
+/**
+ * What the picker states about one row: whether the importer can take it, the
+ * Notion object type, and the shape it will land in. Every row gets one, so no
+ * node can render without saying what happens to it.
+ */
+export type NodeSupport = {
+  supported: boolean;
+  badge: string;
+  action: string;
+  /** A consequence of an override the scan would not have recommended. */
+  caution?: string;
+};
+
+export function describeNode(
+  node: NotionTreeNode,
+  modes?: DatabaseModes,
+  inherited?: InheritedFold,
+): NodeSupport {
+  const badge = formatNodeBadge(node);
+
+  if (node.type === 'unsupported') {
+    return { supported: false, badge, action: node.skipReason };
+  }
+  // An ancestor database already answered for this node, so it must not claim a
+  // shape of its own — a row folded into a table is not importing as an article.
+  if (inherited === 'table') {
+    return { supported: true, badge, action: 'Included in the table above' };
+  }
+  if (inherited === 'skip') {
+    return { supported: true, badge, action: 'Excluded — stays in Notion' };
+  }
+  if (node.type === 'page') {
+    return {
+      supported: true,
+      badge,
+      action: node.isDatabaseRow === true ? 'Imports as an article' : 'Imports as a page',
+    };
+  }
+
+  const mode = effectiveDatabaseMode(node, modes);
+  if (mode === 'skip') {
+    return { supported: true, badge, action: 'Excluded — stays in Notion' };
+  }
+  if (mode === 'table') {
+    return {
+      supported: true,
+      badge,
+      action: `Imports as one table · ${node.rowCount} ${node.rowCount === 1 ? 'row' : 'rows'}`,
+      ...(node.rowContent === 'some'
+        ? { caution: 'Some rows have page content — the whole database imports as pages instead' }
+        : node.rowContent === 'unknown'
+          ? { caution: 'Row content was not checked — a row with a page body sends the whole database to pages' }
+          : {}),
+    };
+  }
+  return {
+    supported: true,
+    badge,
+    action:
+      node.rowCount === 0
+        ? 'Imports as one page'
+        : `Imports as one page with ${node.rowCount} ${node.rowCount === 1 ? 'article' : 'articles'}`,
+  };
 }
 
 function walk(nodes: NotionTreeNode[], visit: (node: NotionTreeNode) => void): void {
@@ -106,27 +242,60 @@ function walk(nodes: NotionTreeNode[], visit: (node: NotionTreeNode) => void): v
   }
 }
 
-export function selectablePageIds(nodes: NotionTreeNode[], selected: ReadonlySet<string>): string[] {
+/** Every id the import request may carry under the current modes. */
+export function allImportIds(nodes: NotionTreeNode[], modes?: DatabaseModes): string[] {
   const ids: string[] = [];
-  walk(nodes, (node) => {
-    if (isSelectablePage(node) && selected.has(node.id)) ids.push(node.id);
-  });
+  collectImportIds(nodes, modes, ids);
   return ids;
 }
-export function unimportedPageIds(nodes: NotionTreeNode[]): string[] {
+
+/**
+ * The confirmed selection, pruned to what the modes allow. Switching a database
+ * to `table` after ticking its rows must not still send those rows.
+ */
+export function selectedImportIds(
+  nodes: NotionTreeNode[],
+  selected: ReadonlySet<string>,
+  modes?: DatabaseModes,
+): string[] {
+  return allImportIds(nodes, modes).filter((id) => selected.has(id));
+}
+
+/**
+ * The mode to send for every database in the request. Explicit beats implicit:
+ * without it the server re-derives a default from the database alone and can
+ * land on a different shape than the row the operator just read.
+ */
+export function requestDatabaseModes(
+  nodes: NotionTreeNode[],
+  selected: ReadonlySet<string>,
+  modes?: DatabaseModes,
+): DatabaseModes {
+  const out: DatabaseModes = {};
+  walk(nodes, (node) => {
+    if (isDatabaseNode(node) && selected.has(node.id)) {
+      out[node.id] = effectiveDatabaseMode(node, modes);
+    }
+  });
+  return out;
+}
+
+export function unimportedPageIds(nodes: NotionTreeNode[], modes?: DatabaseModes): string[] {
+  const importable = new Set(allImportIds(nodes, modes));
   const ids: string[] = [];
   walk(nodes, (node) => {
-    if (isSelectablePage(node) && node.alreadyImported !== true) {
+    if (importable.has(node.id) && node.type !== 'unsupported' && node.alreadyImported !== true) {
       ids.push(node.id);
     }
   });
   return ids;
 }
 
-export function importedPageIds(nodes: NotionTreeNode[]): string[] {
+export function importedPageIds(nodes: NotionTreeNode[], modes?: DatabaseModes): string[] {
+  const importable = new Set(allImportIds(nodes, modes));
   const ids: string[] = [];
   walk(nodes, (node) => {
-    if (isSelectablePage(node) && node.alreadyImported === true) {
+    if (importable.has(node.id) && node.type !== 'unsupported' && node.alreadyImported === true) {
       ids.push(node.id);
     }
   });
@@ -191,7 +360,9 @@ export function filterTreeNodes(
         return null;
       }
     }
-    if (node.type !== 'page' && filteredChildren.length === 0) {
+    // A database is importable in its own right, so an empty child list is no
+    // reason to hide it. Only an unsupported node with nothing under it is noise.
+    if (node.type === 'unsupported' && filteredChildren.length === 0) {
       if (hideDatabaseRows || (hideImported && selectableIdsInGroup(node).length > 0)) {
         return null;
       }
@@ -245,34 +416,53 @@ export function searchTreeNodes(
 export function summarizeImport(
   nodes: NotionTreeNode[],
   selected: ReadonlySet<string>,
-  databaseModes?: Record<string, 'skip'>,
+  databaseModes?: DatabaseModes,
 ): ImportSummary {
-  const skippedRowIds = new Set<string>();
-  if (databaseModes) {
-    const collect = (node: NotionTreeNode, parentSkipped: boolean): void => {
-      const selfSkip =
-        node.type === 'database' &&
-        (databaseModes[node.id] === 'skip' ||
-          (typeof node.linkedFromId === 'string' && databaseModes[node.linkedFromId] === 'skip'));
-      const skipped = parentSkipped || selfSkip;
-      if (skipped && isSelectablePage(node)) skippedRowIds.add(node.id);
-      for (const child of node.children) collect(child, skipped);
-    };
-    for (const node of nodes) collect(node, false);
-  }
-  const importIds = selectablePageIds(nodes, selected).filter((id) => !skippedRowIds.has(id));
-  const skippedDatabases = new Set<string>();
-  let skippedUnsupportedCount = 0;
+  const importIds = selectedImportIds(nodes, selected, databaseModes);
+  const importing = new Set(importIds);
+
+  let pageCount = 0;
+  let articleCount = 0;
+  let tableCount = 0;
+  let collectionCount = 0;
+  let skippedDatabaseCount = 0;
+  let unsupportedCount = 0;
+
   walk(nodes, (node) => {
-    if (isSelectablePage(node)) return;
-    if (node.type === 'database') skippedDatabases.add(node.linkedFromId ?? node.id);
-    else skippedUnsupportedCount += 1;
+    if (node.type === 'unsupported') {
+      unsupportedCount += 1;
+      return;
+    }
+    if (isDatabaseNode(node)) {
+      const mode = effectiveDatabaseMode(node, databaseModes);
+      if (mode === 'skip') {
+        skippedDatabaseCount += 1;
+        return;
+      }
+      if (!importing.has(node.id)) return;
+      if (mode === 'table' && (node.rowContent === 'some' || node.rowContent === 'unknown')) {
+        collectionCount += 1;
+        articleCount += node.rowCount;
+        return;
+      }
+      if (mode === 'table') tableCount += 1;
+      else collectionCount += 1;
+      return;
+    }
+    if (!importing.has(node.id)) return;
+    if (node.isDatabaseRow === true) articleCount += 1;
+    else pageCount += 1;
   });
+
   return {
     importCount: importIds.length,
     importIds,
-    skippedDatabaseCount: skippedDatabases.size,
-    skippedUnsupportedCount,
+    pageCount,
+    articleCount,
+    tableCount,
+    collectionCount,
+    skippedDatabaseCount,
+    unsupportedCount,
   };
 }
 
@@ -284,16 +474,56 @@ export function notionTitleById(nodes: NotionTreeNode[]): Map<string, string> {
   return titles;
 }
 
-export function formatConfirmCopy(summary: Pick<ImportSummary, 'importCount' | 'skippedDatabaseCount'>): string {
+/** Plain-language list of what confirming will produce, and what it will not. */
+export function formatConfirmCopy(
+  summary: Pick<
+    ImportSummary,
+    | 'importCount'
+    | 'pageCount'
+    | 'articleCount'
+    | 'tableCount'
+    | 'collectionCount'
+    | 'skippedDatabaseCount'
+    | 'unsupportedCount'
+  >,
+): string {
+  if (summary.importCount === 0) return 'Nothing is selected.';
+
+  const parts: string[] = [];
+  if (summary.pageCount > 0) {
+    parts.push(`${summary.pageCount} ${summary.pageCount === 1 ? 'page' : 'pages'}`);
+  }
+  if (summary.articleCount > 0) {
+    parts.push(`${summary.articleCount} ${summary.articleCount === 1 ? 'article' : 'articles'}`);
+  }
+  if (summary.tableCount > 0) {
+    parts.push(`${summary.tableCount} ${summary.tableCount === 1 ? 'table' : 'tables'}`);
+  }
+  if (summary.collectionCount > 0) {
+    parts.push(
+      `${summary.collectionCount} ${summary.collectionCount === 1 ? 'database page' : 'database pages'}`,
+    );
+  }
+  const listed =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+
   const batchCount = calculateBatchCount(summary.importCount);
-  const batchText = batchCount > 1 ? ` in ${batchCount} batches (${NOTION_IMPORT_MAX_PAGES} pages/batch)` : '';
-  const pages =
-    summary.importCount === 1 ? '1 page will import' : `${summary.importCount} pages will import${batchText}`;
-  const databases =
-    summary.skippedDatabaseCount === 0
-      ? 'no databases in this tree will be imported'
-      : summary.skippedDatabaseCount === 1
-        ? '1 database skipped (including its rows)'
-        : `${summary.skippedDatabaseCount} databases skipped (including their rows)`;
-  return `${pages}, ${databases}. Database rows stay in Notion unless they appear as their own page in this tree and you selected them.`;
+  const batchText =
+    batchCount > 1 ? ` in ${batchCount} batches (${NOTION_IMPORT_MAX_PAGES} items/batch)` : '';
+
+  const tail: string[] = [];
+  if (summary.skippedDatabaseCount > 0) {
+    tail.push(
+      `${summary.skippedDatabaseCount} ${summary.skippedDatabaseCount === 1 ? 'database is' : 'databases are'} excluded`,
+    );
+  }
+  if (summary.unsupportedCount > 0) {
+    tail.push(
+      `${summary.unsupportedCount} ${summary.unsupportedCount === 1 ? 'item' : 'items'} cannot be imported and stay in Notion`,
+    );
+  }
+
+  return `${listed} will import${batchText}.${tail.length > 0 ? ` ${tail.join(', ')}.` : ''}`;
 }

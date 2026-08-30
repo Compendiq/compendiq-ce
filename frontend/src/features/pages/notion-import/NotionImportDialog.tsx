@@ -1,40 +1,52 @@
 /**
  * One-shot Notion import wizard (#1466 / #1459).
  *
- * Connects with an internal integration token (never echoed), picks pages
- * from B’s tree (databases stay labelled and unselectable), confirms skip
- * of databases including their rows, and creates standalone pages via D.
+ * Connects with an internal integration token (never echoed), picks what to
+ * bring over, confirms, and creates standalone pages.
+ *
+ * Every row states its own outcome: the Notion object type, and the local shape
+ * it will land in — a page, an article, one table, or nothing because the type
+ * has no local representation. A database picks between `Table` and `Pages`
+ * here; the recommendation comes from the workspace scan and the import
+ * re-checks it before flattening anything.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { AlertTriangle, Check, ChevronDown, ChevronRight, ExternalLink, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import type { NotionImportItem, NotionTreeNode } from '@compendiq/contracts';
+import type { NotionDatabaseMode, NotionImportItem, NotionTreeNode } from '@compendiq/contracts';
 import { ApiError } from '../../../shared/lib/api';
 import { cn } from '../../../shared/lib/cn';
 import { LocationPicker, type LocationSelection } from '../../../shared/components/LocationPicker';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import {
+  allImportIds,
+  availableDatabaseModes,
   calculateBatchCount,
   canContinueNotionPick,
   chunkPageIds,
+  describeNode,
   documentPageIds,
+  effectiveDatabaseMode,
   exceedsImportPageCap,
   filterTreeNodes,
+  foldForChildren,
   formatConfirmCopy,
-  formatNodeBadge,
   groupSelectionState,
-  isSelectablePage,
+  isDatabaseNode,
   NOTION_IMPORT_MAX_PAGES,
+  notionTitleById,
+  requestDatabaseModes,
   searchTreeNodes,
   selectableIdsInGroup,
-  selectablePageIds,
-  notionTitleById,
+  selectedImportIds,
   shouldCommitImportResult,
   summarizeImport,
   toggleSelectedPageGroup,
   unimportedPageIds,
+  type DatabaseModes,
+  type InheritedFold,
   type NotionImportStep,
 } from './notion-import-selection';
 import {
@@ -117,10 +129,64 @@ function TreeRetryButton({ inFlight, onRetry }: { inFlight: boolean; onRetry: ()
   );
 }
 
-function resultStatusLabel(status: NotionImportItem['status']): string {
-  if (status === 'already_imported') return 'already imported';
-  if (status === 'success') return 'imported';
-  return status;
+function resultStatusLabel(item: NotionImportItem): string {
+  if (item.status === 'already_imported') return 'already imported';
+  if (item.status !== 'success') return item.status;
+  if (item.importedAs === 'table') return 'imported as a table';
+  if (item.importedAs === 'article') return 'imported as an article';
+  return 'imported';
+}
+
+const DATABASE_MODE_LABEL: Record<NotionDatabaseMode, string> = {
+  table: 'Table',
+  pages: 'Pages',
+  skip: 'Skip',
+};
+
+const DATABASE_MODE_HINT: Record<NotionDatabaseMode, string> = {
+  table: 'One page holding every row as a table. For databases whose rows are only attributes.',
+  pages: 'One page per row, nested under the database. For wikis and databases whose rows have content.',
+  skip: 'Leave this database in Notion.',
+};
+
+function DatabaseModeControl({
+  node,
+  mode,
+  locked,
+  onSetMode,
+}: {
+  node: NotionTreeNode & { type: 'database' };
+  mode: NotionDatabaseMode;
+  locked: boolean;
+  onSetMode: (databaseId: string, mode: NotionDatabaseMode) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={`Import ${node.title} as`}
+      data-testid={`notion-db-mode-${node.id}`}
+      className="ml-auto flex shrink-0 items-center gap-0.5 rounded-md border border-border/70 p-0.5"
+    >
+      {availableDatabaseModes(node).map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-pressed={mode === option}
+          disabled={locked}
+          title={DATABASE_MODE_HINT[option]}
+          className={cn(
+            'rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
+            mode === option
+              ? 'bg-primary text-primary-foreground shadow-xs'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+          onClick={() => onSetMode(node.id, option)}
+        >
+          {DATABASE_MODE_LABEL[option]}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function TreeNodeRow({
@@ -133,6 +199,7 @@ function TreeNodeRow({
   onToggleExpanded,
   databaseModes,
   onSetDatabaseMode,
+  inheritedFold,
 }: {
   node: NotionTreeNode;
   selected: ReadonlySet<string>;
@@ -141,17 +208,20 @@ function TreeNodeRow({
   locked: boolean;
   expandedIds: ReadonlySet<string>;
   onToggleExpanded: (id: string) => void;
-  databaseModes?: Record<string, 'skip'>;
-  onSetDatabaseMode?: (databaseId: string) => void;
+  databaseModes?: DatabaseModes;
+  onSetDatabaseMode?: (databaseId: string, mode: NotionDatabaseMode) => void;
+  /** Set when an ancestor database already decided this node's fate. */
+  inheritedFold?: InheritedFold;
 }) {
-  const selectable = isSelectablePage(node);
-  const groupIds = selectableIdsInGroup(node);
-  const selectableCount = groupIds.length;
+  const support = describeNode(node, databaseModes, inheritedFold);
+  // A folded node is not a choice: its ancestor database governs it.
+  const groupIds = inheritedFold ? [] : selectableIdsInGroup(node, databaseModes);
+  const governsSelf = groupIds.includes(node.id);
+  const childFold = foldForChildren(node, databaseModes, inheritedFold);
   const hasChildren = node.children.length > 0;
   const isExpanded = hasChildren && expandedIds.has(node.id);
-  const selectionState = groupSelectionState(node, selected);
+  const selectionState = groupSelectionState(node, selected, databaseModes);
   const checkboxRef = useRef<HTMLInputElement | null>(null);
-  const badgeLabel = formatNodeBadge(node);
 
   useEffect(() => {
     if (checkboxRef.current) checkboxRef.current.indeterminate = selectionState === 'some';
@@ -168,8 +238,52 @@ function TreeNodeRow({
     }
   };
 
+  const label = (
+    <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <span
+        className={cn(
+          'min-w-0 break-words',
+          support.supported ? 'text-foreground' : 'text-muted-foreground',
+          governsSelf && node.type === 'database' ? 'font-medium' : '',
+        )}
+      >
+        {node.title}
+      </span>
+      <span
+        data-testid={`notion-node-kind-${node.id}`}
+        className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+      >
+        {support.badge}
+      </span>
+      <span
+        data-testid={`notion-node-action-${node.id}`}
+        className={cn('text-xs', support.supported ? 'text-muted-foreground' : 'text-warning')}
+      >
+        {support.action}
+      </span>
+      {node.type !== 'unsupported' && node.alreadyImported ? (
+        <span
+          data-testid={`notion-imported-badge-${node.id}`}
+          className="inline-flex items-center gap-0.5 rounded border border-success/30 bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
+        >
+          <Check size={11} aria-hidden />
+          Imported
+        </span>
+      ) : null}
+      {support.caution ? (
+        <span
+          data-testid={`notion-node-caution-${node.id}`}
+          className="flex w-full items-start gap-1 text-xs text-warning"
+        >
+          <AlertTriangle size={11} className="mt-0.5 shrink-0" aria-hidden />
+          {support.caution}
+        </span>
+      ) : null}
+    </div>
+  );
+
   return (
-    <li data-testid={`notion-node-${node.id}`}>
+    <li data-testid={`notion-node-${node.id}`} data-supported={support.supported}>
       <div
         className="relative flex min-h-7 items-start gap-2 rounded-md py-1 pr-2 text-[13px] hover:bg-accent"
         style={{ paddingLeft: depth * 12 + 28 }}
@@ -186,7 +300,7 @@ function TreeNodeRow({
             {isExpanded ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
           </button>
         ) : null}
-        {selectable ? (
+        {groupIds.length > 0 ? (
           <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
             <input
               ref={checkboxRef}
@@ -196,82 +310,23 @@ function TreeNodeRow({
               disabled={locked}
               onChange={() => onToggle(node)}
               onKeyDown={handleTreeKeyDown}
-              aria-label={node.title}
+              aria-label={
+                governsSelf ? node.title : `Select all ${groupIds.length} items in ${node.title}`
+              }
             />
-            <span className="min-w-0 break-words text-foreground">{node.title}</span>
-            {node.isDatabaseRow ? (
-              <span
-                className="inline-flex items-center rounded border border-border/40 bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground"
-                title="Row in a Notion database"
-              >
-                Row
-              </span>
-            ) : null}
-            {node.alreadyImported ? (
-              <span
-                data-testid={`notion-imported-badge-${node.id}`}
-                className="inline-flex items-center gap-0.5 rounded border border-success/30 bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
-              >
-                <Check size={11} aria-hidden />
-                Imported
-              </span>
-            ) : null}
-          </label>
-        ) : selectableCount > 0 ? (
-          <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2">
-            <input
-              ref={checkboxRef}
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 rounded border-border-interactive accent-primary"
-              checked={selectionState === 'all'}
-              disabled={locked}
-              onChange={() => onToggle(node)}
-              onKeyDown={handleTreeKeyDown}
-              aria-label={`Select all ${selectableCount} pages in ${node.title}`}
-            />
-            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <span className="min-w-0 break-words font-medium text-foreground">{node.title}</span>
-              {badgeLabel ? (
-                <span className="inline-flex items-center rounded border border-border/70 bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                  {badgeLabel}
-                </span>
-              ) : null}
-              <span className="text-xs text-muted-foreground">
-                Database stays in Notion · {selectableCount} page{selectableCount === 1 ? '' : 's'} can be imported
-              </span>
-            </div>
-            {node.type === 'database' && onSetDatabaseMode ? (
-              <button
-                type="button"
-                className={cn(
-                  'ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors',
-                  databaseModes?.[node.id] === 'skip'
-                    ? 'bg-destructive text-destructive-foreground shadow-xs'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-                aria-pressed={databaseModes?.[node.id] === 'skip'}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onSetDatabaseMode(node.id);
-                }}
-                title="Exclude this database from import"
-              >
-                Skip
-              </button>
-            ) : null}
+            {label}
           </label>
         ) : (
-          <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-muted-foreground">{node.title}</span>
-            {badgeLabel ? (
-              <span className="inline-flex items-center rounded border border-border/50 bg-muted/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                {badgeLabel}
-              </span>
-            ) : null}
-            <span className="text-xs text-muted-foreground">{node.skipReason}</span>
-          </div>
+          <div className="flex min-w-0 flex-1 items-start gap-2 pl-6">{label}</div>
         )}
+        {isDatabaseNode(node) && onSetDatabaseMode && !inheritedFold ? (
+          <DatabaseModeControl
+            node={node}
+            mode={effectiveDatabaseMode(node, databaseModes)}
+            locked={locked}
+            onSetMode={onSetDatabaseMode}
+          />
+        ) : null}
       </div>
       {hasChildren && isExpanded ? (
         <ul className="list-none p-0">
@@ -287,6 +342,7 @@ function TreeNodeRow({
               onToggleExpanded={onToggleExpanded}
               databaseModes={databaseModes}
               onSetDatabaseMode={onSetDatabaseMode}
+              inheritedFold={childFold}
             />
           ))}
         </ul>
@@ -322,7 +378,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const [hideImported, setHideImported] = useState(false);
   const [hideDatabaseRows, setHideDatabaseRows] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [databaseModes, setDatabaseModes] = useState<Record<string, 'skip'>>({});
+  const [databaseModes, setDatabaseModes] = useState<DatabaseModes>({});
   const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
@@ -381,11 +437,11 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const titlesById = useMemo(() => notionTitleById(nodes), [nodes]);
   useEffect(() => {
     setSelected((current) => {
-      const validSelection = selectablePageIds(nodes, current);
+      const validSelection = selectedImportIds(nodes, current, databaseModes);
       return validSelection.length === current.size ? current : new Set(validSelection);
     });
     setSelectionLimitMessage(null);
-  }, [nodes]);
+  }, [nodes, databaseModes]);
   const summary = useMemo(() => summarizeImport(nodes, selected, databaseModes), [nodes, selected, databaseModes]);
   const confirmCopy = formatConfirmCopy(summary);
   const { filtered: searchFilteredNodes, matchedIds } = useMemo(
@@ -426,7 +482,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const handleToggle = useCallback(
     (node: NotionTreeNode) => {
       if (runImport.isPending) return;
-      const result = toggleSelectedPageGroup(selected, node);
+      const result = toggleSelectedPageGroup(selected, node, databaseModes);
       setSelected(result.selected);
       setSelectionLimitMessage(
         result.limitExceeded
@@ -434,7 +490,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           : null,
       );
     },
-    [runImport.isPending, selected],
+    [runImport.isPending, selected, databaseModes],
   );
 
   const handleToggleExpanded = useCallback((id: string) => {
@@ -501,7 +557,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           parentId,
           visibility,
           overwriteExisting,
-          databaseModes,
+          databaseModes: requestDatabaseModes(nodes, selected, databaseModes),
         });
 
         allItems.push(...response.items);
@@ -523,21 +579,13 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     }
   };
 
-  const handleSetDatabaseMode = useCallback((databaseId: string) => {
-    setDatabaseModes((prev) => {
-      if (prev[databaseId] === 'skip') {
-        const next = { ...prev };
-        delete next[databaseId];
-        return next;
-      }
-      return { ...prev, [databaseId]: 'skip' };
-    });
+  const handleSetDatabaseMode = useCallback((databaseId: string, mode: NotionDatabaseMode) => {
+    setDatabaseModes((prev) => ({ ...prev, [databaseId]: mode }));
   }, []);
 
   const handleSelectPagesOnly = useCallback(() => {
     if (runImport.isPending) return;
-    const docIds = documentPageIds(nodes, hideImported);
-    setSelected(new Set(docIds));
+    setSelected(new Set(documentPageIds(nodes, hideImported)));
   }, [nodes, hideImported, runImport.isPending]);
 
   const handleSelectAll = useCallback(() => {
@@ -545,16 +593,15 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
     const allIds = hideDatabaseRows
       ? documentPageIds(nodes, hideImported)
       : hideImported
-        ? unimportedPageIds(nodes)
-        : selectablePageIds(nodes, new Set(nodes.map((n) => n.id)));
+        ? unimportedPageIds(nodes, databaseModes)
+        : allImportIds(nodes, databaseModes);
     setSelected(new Set(allIds));
-  }, [nodes, hideImported, hideDatabaseRows, runImport.isPending]);
+  }, [nodes, hideImported, hideDatabaseRows, databaseModes, runImport.isPending]);
 
   const handleSelectUnimported = useCallback(() => {
     if (runImport.isPending) return;
-    const unimported = unimportedPageIds(nodes);
-    setSelected(new Set(unimported));
-  }, [nodes, runImport.isPending]);
+    setSelected(new Set(unimportedPageIds(nodes, databaseModes)));
+  }, [nodes, databaseModes, runImport.isPending]);
 
   const handleClearSelection = useCallback(() => {
     if (runImport.isPending) return;
@@ -641,7 +688,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 {title}
               </Dialog.Title>
               <Dialog.Description className="mt-1 text-xs text-muted-foreground">
-                One-shot migrate into a local space. Databases stay in Notion.
+                One-shot migrate into a local space. Every row says what it becomes.
               </Dialog.Description>
             </div>
             <button
@@ -936,13 +983,6 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     </div>
                   </label>
                 </div>
-                {summary.skippedUnsupportedCount > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    {summary.skippedUnsupportedCount === 1
-                      ? '1 other unsupported item is labelled and will stay in Notion.'
-                      : `${summary.skippedUnsupportedCount} other unsupported items are labelled and will stay in Notion.`}
-                  </p>
-                )}
 
                 <div className="space-y-3">
                   <div>
@@ -1103,7 +1143,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                         <span className="font-medium text-foreground">{pageTitle}</span>
                       )}
                       <span className="text-muted-foreground">
-                        {resultStatusLabel(item.status)}
+                        {resultStatusLabel(item)}
                         {item.reason ? ` — ${item.reason}` : ''}
                       </span>
                     </li>

@@ -1,15 +1,27 @@
 /**
  * One-shot Notion → standalone page import (#1465 / #1459).
  *
- * Creates `source = 'standalone'` rows under a local destination. Databases
- * and other unsupported types are skipped (no stub). A stored
+ * Creates `source = 'standalone'` rows under a local destination. A stored
  * `notion_page_id` makes a re-run report `already_imported` instead of
- * duplicating. There is no `pages.source = 'notion'` and no database query.
+ * duplicating. There is no `pages.source = 'notion'` and no live sync.
+ *
+ * A selected database takes one of two local shapes:
+ *
+ * - `table` — one page whose body is the rows × properties table. Offered only
+ *   for a database whose row pages are all body-less, and VERIFIED here over
+ *   every row rather than trusted from the picker's sample: flattening a row
+ *   that has a body would drop that body, so a database that turns out to have
+ *   one is imported as pages instead and says so on its result row.
+ * - `pages` — a container page for the database, with the row pages imported as
+ *   articles beneath it. The wiki shape. Which rows come along is the picker's
+ *   selection, so the tree the operator confirmed is the tree they get.
  */
 import {
   NOTION_UNSUPPORTED_LABEL,
+  type NotionDatabaseMode,
   type NotionImportItem,
 } from '@compendiq/contracts';
+import pLimit from 'p-limit';
 import { query } from '../../../core/db/postgres.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
@@ -19,11 +31,21 @@ import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError } from './notion-client.js';
 import {
   convertNotionBlocks,
+  escapeHtml,
+  extractPropertyText,
   formatWikiMetadataCallout,
+  renderDatabaseTable,
   type NotionBlock,
 } from './notion-block-converter.js';
-import { extractParentRelationId } from './notion-tree.js';
+import { extractParentRelationId, isWikiDatabase, rowHasBodyContent } from './notion-tree.js';
+
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
+/** Row-body checks run concurrently against Notion's per-integration rate limit. */
+const NOTION_ROW_CHECK_CONCURRENCY = 5;
+
+export const NOTION_TABLE_ROW_SKIP_REASON = 'Included in the database table' as const;
+export const NOTION_TABLE_DOWNGRADE_REASON =
+  'Rows have page content — imported as pages instead of one table' as const;
 
 export class NotionImportError extends Error {
   constructor(
@@ -43,7 +65,7 @@ export interface RunNotionImportInput {
   parentId?: string;
   visibility: 'private' | 'shared';
   overwriteExisting?: boolean;
-  databaseModes?: Record<string, 'skip'>;
+  databaseModes?: Record<string, NotionDatabaseMode>;
 }
 export async function runNotionImport(input: RunNotionImportInput): Promise<NotionImportItem[]> {
   return withNotionImportLocks(input.pageIds, async () => runLockedNotionImport(input));
@@ -53,6 +75,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   const destination = await resolveDestination(input);
   const items = new Map<string, NotionImportItem>();
   const jobs: ImportJob[] = [];
+  const databaseJobs: DatabaseJob[] = [];
   const alreadyImported: AlreadyImported[] = [];
   const skippedDatabases = new Set(
     Object.entries(input.databaseModes ?? {})
@@ -99,6 +122,17 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       items.set(rawId, { notionPageId: rawId, status: 'fail', reason: classified.reason });
       continue;
     }
+    if (classified.kind === 'database') {
+      databaseJobs.push({
+        id: rawId,
+        database: classified.database,
+        title: extractTitle(classified.database) || 'Database',
+        requestedMode: input.databaseModes?.[rawId],
+        reuseId: existing?.id,
+        reuseComplete: existing?.complete === true,
+      });
+      continue;
+    }
 
     const parentNotionId = parentPageIdOf(classified.page);
     if (isSkippedDatabase(parentNotionId)) {
@@ -124,6 +158,68 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   for (const item of items.values()) {
     if (item.status === 'already_imported' && item.localPageId) {
       importedPages.set(normalizeNotionId(item.notionPageId), item.localPageId);
+    }
+  }
+
+  // Databases resolve to their local shape first: a row selected alongside its
+  // database must find the container page already placed, and a row belonging to
+  // a database that became one table must not also arrive as its own page.
+  const tableDatabases = new Set<string>();
+  for (const dbJob of databaseJobs) {
+    items.set(
+      dbJob.id,
+      await importDatabase({
+        client: input.client,
+        userId: input.userId,
+        job: dbJob,
+        destination,
+        importedPages,
+        tableDatabases,
+      }),
+    );
+  }
+  // The picker sends only the database id in table mode. If flatten fails,
+  // those rows still have to arrive as articles — otherwise the downgrade
+  // reason is a lie and the bodies vanish.
+  const queuedIds = new Set([
+    ...[...items.keys()].map(normalizeNotionId),
+    ...jobs.map((job) => normalizeNotionId(job.id)),
+  ]);
+  for (const dbJob of databaseJobs) {
+    const normId = normalizeNotionId(dbJob.id);
+    if (tableDatabases.has(normId)) continue;
+    const item = items.get(dbJob.id);
+    if (item?.status !== 'success') continue;
+    const mode: NotionDatabaseMode =
+      dbJob.requestedMode ?? (isWikiDatabase(dbJob.database) ? 'pages' : 'table');
+    if (mode !== 'table') continue;
+    try {
+      const rows = (await input.client.queryDatabaseAll(dbJob.id)).filter((row) => !isTrashed(row));
+      for (const row of rows) {
+        const rowId = typeof row.id === 'string' ? row.id : '';
+        if (!rowId || queuedIds.has(normalizeNotionId(rowId))) continue;
+        queuedIds.add(normalizeNotionId(rowId));
+        jobs.push({
+          id: rowId,
+          page: row,
+          title: extractTitle(row),
+          parentNotionId: dbJob.id,
+        });
+      }
+    } catch (err) {
+      logger.warn(
+        { databaseId: dbJob.id, err: failReason(err) },
+        'notion-import: could not enumerate rows after a table downgrade',
+      );
+    }
+  }
+  for (const job of jobs) {
+    if (job.parentNotionId && tableDatabases.has(normalizeNotionId(job.parentNotionId))) {
+      items.set(job.id, {
+        notionPageId: job.id,
+        status: 'skip',
+        reason: NOTION_TABLE_ROW_SKIP_REASON,
+      });
     }
   }
 
@@ -354,10 +450,15 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           [job.localPageId, bodyHtml, bodyText],
         );
       }
+      // A row page carries its properties as a metadata callout, which is what
+      // makes it an article rather than a bare page.
+      const rowParent = isRecord(job.page.parent) ? job.page.parent : null;
+      const isRow = rowParent?.type === 'database_id' || rowParent?.type === 'data_source_id';
       items.set(job.id, {
         notionPageId: job.id,
         status: 'success',
         localPageId: job.localPageId,
+        importedAs: isRow ? 'article' : 'page',
         ...(job.reuseComplete ? { updated: true } : {}),
       });
     } catch (err) {
@@ -387,6 +488,16 @@ interface ImportJob {
   localPageId?: number;
   createdPlaceholder?: boolean;
   prepared?: boolean;
+}
+
+interface DatabaseJob {
+  id: string;
+  database: Record<string, unknown>;
+  title: string;
+  /** Mode the picker asked for. Absent falls back to the database's own shape. */
+  requestedMode?: NotionDatabaseMode;
+  reuseId?: number;
+  reuseComplete?: boolean;
 }
 
 interface AlreadyImported {
@@ -553,21 +664,26 @@ async function abandonPage(pageId: number, destinationParentId: string | null): 
 
 type Classified =
   | { kind: 'page'; page: Record<string, unknown> }
+  | { kind: 'database'; database: Record<string, unknown> }
   | { kind: 'skip'; reason: string }
   | { kind: 'fail'; reason: string };
 
 async function classifySelection(client: NotionClient, id: string): Promise<Classified> {
   try {
     const page = await client.getPage(id);
-    if (page.object === 'database' || page.object === 'data_source') {
+    // A data source is the 2025 wire split of a database and has no counterpart
+    // on the pinned API version, so it stays in Notion.
+    if (page.object === 'data_source') {
       return { kind: 'skip', reason: NOTION_UNSUPPORTED_LABEL };
+    }
+    if (page.object === 'database') {
+      return { kind: 'database', database: page };
     }
     return { kind: 'page', page };
   } catch (err) {
     if (isMissing(err)) {
       try {
-        await client.getDatabase(id);
-        return { kind: 'skip', reason: NOTION_UNSUPPORTED_LABEL };
+        return { kind: 'database', database: await client.getDatabase(id) };
       } catch (dbErr) {
         return { kind: 'fail', reason: failReason(dbErr) };
       }
@@ -583,29 +699,29 @@ async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<N
     if (!isRecord(item) || typeof item.type !== 'string') continue;
     const block = item as NotionBlock;
     if (block.type === 'child_database' && typeof block.id === 'string') {
+      // Query the database directly. Filtering a workspace-wide `search` by
+      // `parent.database_id` read only the FIRST page of results, so any inline
+      // table with rows past that window silently lost them.
       try {
-        const searchRes = await client.search({
-          filter: { property: 'object', value: 'page' },
-        });
-        const rows = searchRes.results.filter(
-          (it) =>
-            it.parent &&
-            typeof it.parent === 'object' &&
-            (it.parent as { database_id?: string }).database_id === block.id,
+        block.databaseRows = (await client.queryDatabaseAll(block.id)).filter(
+          (row) => !isTrashed(row),
         );
-        try {
-          const dbDef = await client.getDatabase(block.id);
-          if (dbDef && isRecord(dbDef.properties)) {
-            block.databaseColumns = Object.keys(dbDef.properties);
-          }
-        } catch {
-          // ignore
-        }
-        block.databaseRows = rows;
       } catch {
-        // ignore
+        // An inline table nobody shared renders as skipped, not as a failure.
       }
-    } else if (block.has_children === true && typeof block.id === 'string' && !NO_RECURSE_TYPES.has(block.type)) {
+      try {
+        const dbDef = await client.getDatabase(block.id);
+        if (dbDef && isRecord(dbDef.properties)) {
+          block.databaseColumns = Object.keys(dbDef.properties);
+        }
+      } catch {
+        // Columns fall back to the union of row property keys.
+      }
+    } else if (
+      block.has_children === true &&
+      typeof block.id === 'string' &&
+      !NO_RECURSE_TYPES.has(block.type)
+    ) {
       block.children = await fetchBlocksDeep(client, block.id);
     }
     out.push(block);
@@ -694,6 +810,28 @@ function parentPageIdOf(page: Record<string, unknown>): string | null {
   return null;
 }
 
+/**
+ * Lead copy for a database's own page. A container page must carry a body:
+ * `findImportedPage` reads an empty `body_html` as an unfinished import, so a
+ * description-less database would be re-created on every run.
+ */
+function databaseContainerBody(
+  database: Record<string, unknown>,
+  title: string,
+): { bodyHtml: string; bodyText: string } {
+  const description = richTextToPlain(database.description).trim();
+  const lead = `Imported from the Notion ${isWikiDatabase(database) ? 'wiki' : 'database'} “${title}”.`;
+  const descriptionHtml = description ? `<p>${escapeHtml(description)}</p>` : '';
+  return {
+    bodyHtml: `${descriptionHtml}<p class="text-muted-foreground italic">${escapeHtml(lead)}</p>`,
+    bodyText: description ? `${description}\n\n${lead}` : lead,
+  };
+}
+
+/**
+ * Container page for a database that was never selected itself — it is only the
+ * parent of a selected row, and the row needs somewhere to hang.
+ */
 async function ensureDatabaseContainerPage(opts: {
   client: NotionClient;
   userId: string;
@@ -731,8 +869,7 @@ async function ensureDatabaseContainerPage(opts: {
       parentId: opts.destination.parentId,
       visibility: opts.destination.visibility,
       notionPageId: opts.databaseId,
-      bodyHtml: `<p class="text-muted-foreground italic">Notion database collection</p>`,
-      bodyText: `Notion database collection: ${title}`,
+      ...databaseContainerBody(db, title),
       labels: ['notion-import', 'database'],
       author: null,
       verifiedAt: null,
@@ -747,6 +884,146 @@ async function ensureDatabaseContainerPage(opts: {
     );
     return null;
   }
+}
+
+/**
+ * Why a database may not be flattened. `empty` and `row-bodies` are distinct on
+ * purpose: only the second one lost a candidate table, so only the second one
+ * earns the downgrade explanation on the result row.
+ */
+type FlattenAttempt =
+  | { kind: 'table'; columns: string[]; rows: Array<Record<string, unknown>> }
+  | { kind: 'empty' }
+  | { kind: 'row-bodies' };
+
+/**
+ * Every row of the database, but only when NOT ONE of them carries a page body.
+ * An unreadable row counts as carrying one, because an import that cannot prove
+ * a row is empty must not drop it.
+ */
+async function readFlattenableRows(
+  client: NotionClient,
+  database: Record<string, unknown>,
+): Promise<FlattenAttempt> {
+  const databaseId = typeof database.id === 'string' ? database.id : '';
+  if (!databaseId) return { kind: 'empty' };
+  const rows = (await client.queryDatabaseAll(databaseId)).filter((row) => !isTrashed(row));
+  // Nothing to tabulate. The container page is the honest result.
+  if (rows.length === 0) return { kind: 'empty' };
+
+  const limit = pLimit(NOTION_ROW_CHECK_CONCURRENCY);
+  const carriesBody = await Promise.all(
+    rows.map((row) =>
+      limit(async () => {
+        const rowId = typeof row.id === 'string' ? row.id : '';
+        if (!rowId) return true;
+        try {
+          return rowHasBodyContent(await client.getBlockChildren(rowId, { pageSize: 2 }));
+        } catch {
+          return true;
+        }
+      }),
+    ),
+  );
+  if (carriesBody.includes(true)) return { kind: 'row-bodies' };
+
+  const props = database.properties;
+  return {
+    kind: 'table',
+    columns: props && typeof props === 'object' ? Object.keys(props) : [],
+    rows,
+  };
+}
+
+/**
+ * Places a selected database and reports the shape it took.
+ *
+ * `table` is re-verified over every row here rather than trusted from the
+ * picker, whose recommendation came from a bounded sample. A database that fails
+ * that check becomes a container page instead — lossless — and says so on its
+ * result row.
+ */
+async function importDatabase(opts: {
+  client: NotionClient;
+  userId: string;
+  job: DatabaseJob;
+  destination: Destination;
+  importedPages: Map<string, number>;
+  tableDatabases: Set<string>;
+}): Promise<NotionImportItem> {
+  const { job } = opts;
+  const normId = normalizeNotionId(job.id);
+  const mode: NotionDatabaseMode =
+    job.requestedMode ?? (isWikiDatabase(job.database) ? 'pages' : 'table');
+  if (mode === 'skip') {
+    return { notionPageId: job.id, status: 'skip', reason: 'Database is excluded from import' };
+  }
+  const updated = job.reuseComplete ? { updated: true } : {};
+
+  let downgraded = false;
+  if (mode === 'table') {
+    let attempt: FlattenAttempt;
+    try {
+      attempt = await readFlattenableRows(opts.client, job.database);
+    } catch (err) {
+      return { notionPageId: job.id, status: 'fail', reason: failReason(err) };
+    }
+    if (attempt.kind === 'table') {
+      try {
+        const pageId = job.reuseId ?? (await nextPageId());
+        const lead = databaseContainerBody(job.database, job.title);
+        const tableHtml = renderDatabaseTable({ columns: attempt.columns, rows: attempt.rows });
+        await persistStandalonePage({
+          id: pageId,
+          reuse: Boolean(job.reuseId),
+          userId: opts.userId,
+          title: job.title,
+          spaceKey: opts.destination.spaceKey,
+          parentId: opts.destination.parentId,
+          visibility: opts.destination.visibility,
+          notionPageId: job.id,
+          bodyHtml: `${tableHtml}${lead.bodyHtml}`,
+          bodyText: `${htmlToText(tableHtml)}\n\n${lead.bodyText}`,
+          labels: ['notion-import', 'database'],
+          author: null,
+          verifiedAt: null,
+        });
+        opts.importedPages.set(normId, pageId);
+        opts.tableDatabases.add(normId);
+        return {
+          notionPageId: job.id,
+          status: 'success',
+          localPageId: pageId,
+          importedAs: 'table',
+          ...updated,
+        };
+      } catch (err) {
+        return { notionPageId: job.id, status: 'fail', reason: failReason(err) };
+      }
+    }
+    // Only a row body lost a table that was otherwise on offer. A database with
+    // no rows at all lost nothing, so it gets no downgrade explanation.
+    downgraded = attempt.kind === 'row-bodies';
+  }
+
+  const pageId = await ensureDatabaseContainerPage({
+    client: opts.client,
+    userId: opts.userId,
+    databaseId: job.id,
+    destination: opts.destination,
+    importedPages: opts.importedPages,
+  });
+  if (pageId === null) {
+    return { notionPageId: job.id, status: 'fail', reason: 'Could not create a page for this database' };
+  }
+  return {
+    notionPageId: job.id,
+    status: 'success',
+    localPageId: pageId,
+    importedAs: 'page',
+    ...(downgraded ? { reason: NOTION_TABLE_DOWNGRADE_REASON } : {}),
+    ...updated,
+  };
 }
 
 function isTrashed(item: Record<string, unknown>): boolean {
@@ -859,21 +1136,8 @@ export function extractWikiPageProperties(page: Record<string, unknown>): Extrac
     if (propType === 'title' || propType === 'status' || propType === 'verification') continue;
     if (lowerKey.includes('owner') || lowerKey.includes('author') || lowerKey.includes('tag') || lowerKey.includes('category') || lowerKey.includes('label')) continue;
 
-    if (propType === 'number' && typeof prop.number === 'number') {
-      customProperties[key] = String(prop.number);
-    } else if (propType === 'url' && typeof prop.url === 'string' && prop.url.trim()) {
-      customProperties[key] = prop.url.trim();
-    } else if (propType === 'email' && typeof prop.email === 'string' && prop.email.trim()) {
-      customProperties[key] = prop.email.trim();
-    } else if (propType === 'phone_number' && typeof prop.phone_number === 'string' && prop.phone_number.trim()) {
-      customProperties[key] = prop.phone_number.trim();
-    } else if (propType === 'date' && isRecord(prop.date) && typeof prop.date.start === 'string') {
-      customProperties[key] = prop.date.start;
-    } else if (propType === 'checkbox' && typeof prop.checkbox === 'boolean') {
-      customProperties[key] = prop.checkbox ? 'Yes' : 'No';
-    } else if (propType === 'select' && isRecord(prop.select) && typeof prop.select.name === 'string') {
-      customProperties[key] = prop.select.name;
-    }
+    const text = extractPropertyText(prop).trim();
+    if (text) customProperties[key] = text;
   }
 
   return {

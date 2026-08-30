@@ -193,6 +193,30 @@ export class NotionClient {
     return this.fetchJson(`/v1/databases/${encodeURIComponent(databaseId)}`);
   }
 
+  async queryDatabase(
+    databaseId: string,
+    params: { startCursor?: string; pageSize?: number } = {},
+  ): Promise<NotionListResponse<Record<string, unknown>>> {
+    const body: Record<string, unknown> = {};
+    if (params.startCursor !== undefined) body.start_cursor = params.startCursor;
+    if (params.pageSize !== undefined) body.page_size = params.pageSize;
+    return this.fetchJson(`/v1/databases/${encodeURIComponent(databaseId)}/query`, {
+      method: 'POST',
+      body,
+    });
+  }
+
+  /**
+   * Every row page of a database. Valid on the pinned `2022-06-28`
+   * Notion-Version — this endpoint is deprecated only for `2025-09-03` and
+   * later, where data sources replace it.
+   */
+  async queryDatabaseAll(databaseId: string): Promise<Array<Record<string, unknown>>> {
+    return paginateAll((cursor) =>
+      this.queryDatabase(databaseId, { startCursor: cursor ?? undefined, pageSize: 100 }),
+    );
+  }
+
   async getBlock(blockId: string): Promise<Record<string, unknown>> {
     return this.fetchJson(`/v1/blocks/${encodeURIComponent(blockId)}`);
   }

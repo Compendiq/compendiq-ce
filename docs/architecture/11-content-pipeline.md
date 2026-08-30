@@ -13,7 +13,7 @@ representations that flow through the rest of the system.
 | **Plain text** | `pages.body_text` | FTS (`tsvector`), snippets, coverage probe |
 | **Markdown** | no page column — derived per call; **persisted as `page_embeddings.chunk_text`** for embedded pages since #1265 | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`); chunk_text reaches RAG context, citations and (flattened) search snippets |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
-| **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text` and local-attachment intents; never a live sync and never `pages.source = 'notion'` |
+| **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text` and local-attachment intents; a `table`-mode database's `body_html` is built by `renderDatabaseTable()` instead, since there are no blocks to convert. Never a live sync and never `pages.source = 'notion'` |
 | **Yjs BYTEA** | `page_collaborative_docs.doc_state` | Live collab CRDT. Full `Y.encodeStateAsUpdate`. Not Redis. |
 
 ## Collaborative snapshot vs commit (#1445)
@@ -491,13 +491,44 @@ already serves:
 | `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
 | `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
 | `child_page`, `link_to_page`, page mentions | `<a href="/pages/{id}">` when that Notion page id is in this run's imported set; otherwise the Notion URL. `link_to_page` databases always stay Notion URLs |
-| `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside a column is still skipped |
-| `child_database`, `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
+| `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside one is enumerated and rendered like any other |
+| `child_database` (inline database) | `<table>` built by `renderDatabaseTable()` from the rows `fetchBlocksDeep()` queried for that block, with an `<h3>` title unless it is `New database` / `Untitled`. Columns come from the database schema, falling back to the union of row property keys. A database whose rows could not be read (or that has none) renders nothing and is listed in `skips` |
+| `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
 
 Rich-text annotations map to `<strong>` / `<em>` / `<del>` / `<code>` / `<a>`.
 HTML is sanitized with `isomorphic-dompurify` at the same XSS bar as Markdown
 import (script tags and `javascript:` URLs stripped). A skipped or unselected
 Notion item is never rewritten to an internal page link.
+
+### Two database shapes (#1465)
+
+A Notion database reaches Compendiq as one of two shapes, chosen per database
+by `databaseModes` on the import request (`skip` writes nothing at all):
+
+- **`table`** — the database becomes **one** page whose `notion_page_id` is the
+  database id. `readFlattenableRows()` pages every row and
+  `renderDatabaseTable()` builds the `<table>` into `body_html` ahead of the
+  lead paragraph; the selected row pages are then re-marked `skip` with
+  `Included in the database table`, so a database that became one table never
+  also arrives as its own pages.
+- **`pages`** — the database becomes a container page
+  (`ensureDatabaseContainerPage()`) and each selected row becomes an article
+  nested under it, its properties rendered as the metadata callout. This is the
+  default for a wiki (`isWikiDatabase()`), and it is also the fallback whenever
+  a row turns out to hold page content or cannot be read — `table` mode is
+  verified over every row, not over the tree's sample, so flattening can never
+  silently drop a body.
+
+`renderDatabaseTable()` is the **single** table builder. The inline
+`child_database` block renderer and the top-level `table`-mode import both call
+it, so a database nested in a page body and one flattened on its own produce
+identical markup.
+
+Rows are enumerated with `client.queryDatabaseAll()`
+(`POST /v1/databases/{id}/query`, valid on the pinned `2022-06-28` version and
+paginated to exhaustion). It replaced a workspace-wide `search()` filtered by
+`parent.database_id`, which read only the **first** page of results: any row
+past the first 100 search hits was silently dropped from the rendered table.
 
 ## Why store three forms?
 
