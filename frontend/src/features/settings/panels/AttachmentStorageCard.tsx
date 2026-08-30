@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertTriangle, Loader2, Search, Trash2 } from 'lucide-react';
@@ -372,43 +372,6 @@ export function AttachmentStorageCard() {
   // do not end up with two busy behaviours.
   const actionsDisabled = isPending || running || trigger.isPending;
 
-  /**
-   * Does the candidate scroller actually scroll? (#1535, fixer r1.)
-   *
-   * The tab stop below is gated on this rather than on the sample size: the
-   * row is `flex flex-wrap` around a `break-all` path, so its height is a
-   * function of viewport width, and any row-count threshold either withholds
-   * the stop from a box that scrolls at reflow widths or hands it out to one
-   * that never will. `scrollHeight > clientHeight` is the property axe's
-   * `scrollable-region-focusable` tests, measured on the element itself.
-   *
-   * `ResizeObserver` is the same recipe `useElementWidth` in `EditorToolbar`
-   * uses. Re-measured when the sample changes, when the box is resized, and
-   * (belt and braces, see the `<details>` below) when the disclosure opens.
-   * The direct call below is what measures where there is no `ResizeObserver`
-   * to observe with; with one, its initial observation covers the same ground.
-   * Each of the three signals has its own cell (review r2): with the shared
-   * `MockResizeObserver` firing once from `observe()`, the suite could not
-   * tell any of them apart and deleting the observer left it green.
-   */
-  const candidateListRef = useRef<HTMLUListElement | null>(null);
-  const [candidateListScrolls, setCandidateListScrolls] = useState(false);
-  const measureCandidateList = useCallback(() => {
-    const el = candidateListRef.current;
-    // A closed disclosure gives the list no box: 0 > 0 is false, which is the
-    // right answer — hidden content takes no focus in any browser either.
-    setCandidateListScrolls(el !== null && el.scrollHeight > el.clientHeight);
-  }, []);
-  const candidateSample = lastRun?.candidateSample;
-  useEffect(() => {
-    measureCandidateList();
-    const el = candidateListRef.current;
-    if (el === null || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => measureCandidateList());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [measureCandidateList, candidateSample]);
-
   return (
     <div
       className="nm-card space-y-3 p-3 text-sm"
@@ -698,15 +661,7 @@ export function AttachmentStorageCard() {
         measurement, and the destructive act has its own confirm.
       */}
       {lastRun && lastRun.candidateSample.length > 0 && (
-        <details
-          className="text-xs"
-          data-testid="attachment-sweep-candidates"
-          // Opening the disclosure is when the list first gets a box. A
-          // `ResizeObserver` does report that transition, but this does not
-          // have to rely on it: the toggle is the one moment the answer is
-          // guaranteed to change.
-          onToggle={measureCandidateList}
-        >
+        <details className="text-xs" data-testid="attachment-sweep-candidates">
           {/*
             `index.css` has no universal `:focus-visible` rule outside
             `.prose`, so without an explicit recipe the card's only
@@ -759,47 +714,34 @@ export function AttachmentStorageCard() {
             `nm-focus-ring`, a real outline, for the forced-colors reason
             spelled out there.
 
-            The stop is GATED on MEASURED overflow (#1535), because that axe
-            rule only requires focusability of a region that actually scrolls.
-            On a healthy instance the sample is a handful of rows, the box
-            does not overflow, and the unconditional stop sat between the
-            disclosure and Dry run announcing "list, 2 items" with nothing to
-            scroll — a stop that costs a keystroke on the way to the
-            destructive controls and buys nothing.
+            The stop is UNCONDITIONAL, and the redundancy #1535 reports is
+            ACCEPTED rather than gated (external round 3, measured).
+            `max-h-56` is 224px; less the 1px border and `p-2` that is a
+            206px content box. A row is `text-xs`, a 16px line box, and
+            `space-y-1` adds 4px between rows, so ten one-line rows measure
+            196px and FIT while eleven measure 216px and scroll. At the WCAG
+            1.4.10 reflow width the `break-all` path wraps and pushes the meta
+            span onto a third line, 48px a row: four such rows fit, five
+            measure 256px and scroll. So below five rows the box cannot scroll
+            at any width, and there the stop is announced as "list, 2 items"
+            with nothing to scroll — one keystroke on the way to the
+            destructive controls, which is exactly the cost #1535 names.
 
-            Measured, not counted from the sample (fixer r1). A row count is
-            width-blind and this row is not one line tall: the `<li>` is
-            `flex flex-wrap` around a `break-all` mono path and a meta span,
-            so at reflow widths (WCAG 1.4.10, 320px, and page zoom) the path
-            wraps to two lines and pushes the meta span to a third. 206px of
-            content box holds ten 16px rows plus `space-y-1`, but only four
-            three-line rows — so a five-row gate withheld the stop from a box
-            that really scrolls, which is the failure the stop exists for.
-            `scrollHeight > clientHeight` is the property axe itself tests.
-            A closed disclosure has no box, so both are 0 and the list stays
-            out of the tab order — matching the browser, which does not let
-            focus into hidden `<details>` content either.
-
-            Ungated the attribute is `-1`, never ABSENT (review r2). A `<ul>`
-            with no `tabindex` is not a focusable area, so removing it from a
-            list the operator is standing in — page zoom-out, window resize,
-            any reflow that stops the box overflowing, all of which the
-            observer above reports — runs HTML's focus fixup rule: the
+            Gating it costs more than it saves. A gate has to track WIDTH
+            rather than row count, so it needs a live measurement; and
+            withdrawing `tabindex` from a list the operator is standing in —
+            one zoom-out at four rows — runs HTML's focus fixup rule, whose
             unfocusing steps drop focus to `<body>` with the list still on
-            screen and nothing rehoming it, the exact failure CLAUDE.md's
-            Retrieval-panel ruling and `RetrievalTab.tsx` forbid, and the one
-            PR #1550 just converted these buttons away from. `-1` keeps the
-            element a focusable area (no unfocusing steps) and out of the tab
-            order, which is all #1535 asked for; it is also the shape
-            `EmbeddingShadowCompareSection` and `SubTabs` already use. jsdom
-            does not implement the unfocusing steps, so the cell pins the
-            attribute.
+            screen. That is the failure CLAUDE.md's Retrieval-panel ruling
+            forbids and the one PR #1550 just converted these buttons away
+            from. The measurement is also unfalsifiable in this suite: jsdom
+            has no layout and the shared resize-observer mock in
+            `src/test-setup.ts` fires once from `observe()`, so no cell can
+            tell a resize-driven re-measure from no observer at all. One rule,
+            always focusable, one redundant stop on short samples.
 
-            The NAME is deliberately NOT gated: the `list` announcement is
-            useful at every size and costs no focus order.
-
-            Its NAME follows the same dry-run rule as the summary above it
-            (fixer r1). The r2 ruling — "candidate" is a claim about pending
+            The list's NAME follows the same dry-run rule as the summary above
+            it (fixer r1). The r2 ruling — "candidate" is a claim about pending
             work, so say it only for a dry run — was applied to the visible
             copy and not to the accessible name, so after a live run a screen
             reader still announced the region as "Orphan candidates": exactly
@@ -808,8 +750,7 @@ export function AttachmentStorageCard() {
             attribute value).
           */}
           <ul
-            ref={candidateListRef}
-            tabIndex={candidateListScrolls ? 0 : -1}
+            tabIndex={0}
             aria-label={lastRun.dryRun ? 'Orphan candidates' : 'What the sweep found'}
             className="nm-focus-ring border-border mt-2 max-h-56 space-y-1 overflow-y-auto rounded-md border p-2"
             data-testid="attachment-sweep-candidate-list"
