@@ -23,39 +23,44 @@
  * ref is permanently `null`. The suppression stood, the replacement focused
  * nothing, and Cancel, Escape and Confirm each dropped the keyboard to
  * `<body>` at the top of a ~30-stop settings panel (WCAG 2.4.3). So the pair
- * of Radix hooks below saves the element that was focused when the dialog
+ * of Radix hooks below saves the control that was focused when the dialog
  * opened and returns focus to it on close.
  *
- * Saving the NODE is not enough, which the browser pass proved on two shapes
- * where the invoker does not survive the dialog (fixer, external round):
+ * The restore is a SINGLE deterministic step, resolved by identity rather than
+ * by waiting (architect ruling, external round). Two earlier shapes are gone
+ * for the same reason: a 500 ms restore window, and the DOM-mutation retry
+ * chain that replaced it. Both were attempts to out-wait a trigger that could
+ * not take focus, and neither can be reasoned about at a callsite — the window
+ * restored focus on a fast server and silently gave up on a slow one, and the
+ * retry chain left a document-wide `MutationObserver` running past the
+ * dialog's own life to fix what is an identity problem, not a timing one.
+ * `onCloseAutoFocus` fires one macrotask after the closing commit, so the DOM
+ * it reads is already the post-confirm DOM; there is nothing left to wait for.
  *
- * 1. The confirmed action takes its own trigger out from under the restore —
- *    `SyncTab`'s Force re-sync all is `disabled` 7 ms after the click and
- *    focusable again by 48 ms, i.e. unfocusable across exactly Radix's
- *    `setTimeout(…, 0)`; other callsites re-mount the trigger as a NEW node in
- *    the same commit. A one-shot `focus()` fires into that window and does
- *    nothing. Hence `restoreFocus`: the invoker is re-resolved by identity
- *    (`data-testid`, else `id`) rather than held as a node, and the attempt is
- *    re-made on every DOM mutation that could hand the control its focusability
- *    back. That wait is event-driven and not a clock: three ConfirmDialog
- *    triggers hold themselves natively `disabled` for exactly as long as their
- *    POST takes (`WorkersTab` Rescan All, `SpacesTab` Remove space,
- *    `BulkActionBar` Move to Trash), so a fixed wall-clock window restored
- *    focus on a fast server and silently gave up on a slow one (review r1).
- * 2. A dialog opened from a menu item captures the closing menu's portalled
- *    content, never the kebab the admin pressed (`ConversationRowMenu` Delete,
- *    `UserMenu` Sign out). Radix names the owner — menu content carries
- *    `aria-labelledby={triggerId}` and the trigger carries that `id` — so
- *    `menuOwner` resolves the real invoker at capture time. That is Radix's
- *    own aria contract, not an ancestor guess.
+ * What the one step resolves, in order:
  *
- * Both paths keep the one rule that makes this safe to put in a shared
- * component: nothing is ever taken from a keyboard that is somewhere else, and
- * nothing is taken from an admin who has moved on. The restore — first attempt
- * and every re-attempt — acts only while `document.activeElement` is `<body>`,
- * ends at the first pointer press anywhere, and cannot start at all once this
- * component has been unmounted (Radix dispatches close-auto-focus one
- * macrotask AFTER the unmount commit, so the cleanup alone cannot stop it).
+ * 1. Nothing at all, if the keyboard is not on `<body>`. The admin who tabbed
+ *    on, and the callsite that rehomed focus during its own commit
+ *    (`EmbeddingShadowMigrationCard`'s `rehomeAfterDismiss`), have both put
+ *    focus somewhere deliberate; a shared dialog never takes it back.
+ * 2. The invoker, re-resolved by IDENTITY (`data-testid`, else `id`) and not
+ *    held as a node: several callsites re-mount the trigger as a new DOM node
+ *    in the confirmed commit (a re-keyed row, a list that re-renders), so the
+ *    captured node is detached by close time while the control the admin
+ *    pressed is still on screen. A dialog opened from a menu item captures the
+ *    closing menu's portalled content instead of the kebab, so `menuOwner`
+ *    maps that back through Radix's own aria contract (menu content carries
+ *    `aria-labelledby={triggerId}`, the trigger carries that `id`) at capture
+ *    time.
+ * 3. Nothing, if that control is gone (`ConversationRowMenu`'s Delete takes
+ *    its own kebab with the row) or cannot take focus. A trigger that holds
+ *    itself natively `disabled` for the length of its POST is exactly the
+ *    #1532 defect — the HTML focus fixup rule has already blurred the admin to
+ *    `<body>` before this dialog is consulted — and the fix for it is
+ *    converting the control to `aria-disabled` + a refusing handler, as
+ *    `AttachmentStorageCard` and `ImageIndexCard` now are. It is not this
+ *    component's business to poll the document until someone else's button
+ *    comes back.
  */
 
 import { useEffect, useRef } from 'react';
@@ -71,25 +76,6 @@ interface Invoker {
   node: HTMLElement;
   selector: string | null;
 }
-
-/**
- * When a restore the invoker never satisfied is abandoned. Not a latency
- * budget: the wait is driven by the DOM mutations that make a control
- * focusable again, so a POST answering in 5 s restores as surely as one
- * answering in 5 ms. This is only the point past which a trigger that never
- * came back stops being watched, so no dialog leaves an observer on the
- * document for a settings panel's lifetime.
- */
-const RESTORE_CEILING_MS = 10_000;
-
-/**
- * The attributes that decide whether a control can take focus. A trigger its
- * own mutation held `disabled` becomes focusable again through one of these; a
- * trigger the commit re-mounted arrives as a `childList` mutation instead.
- * `class`/`style` are here because a callsite may hold a control out of the
- * tab order through CSS rather than through an attribute.
- */
-const FOCUSABILITY_ATTRS = ['disabled', 'hidden', 'inert', 'tabindex', 'class', 'style'];
 
 const cssString = (value: string) => `"${value.replace(/["\\]/g, '\\$&')}"`;
 
@@ -158,87 +144,23 @@ export function ConfirmDialog({
    * mount effect, i.e. after focus has already moved.
    */
   const invokerRef = useRef<Invoker | null>(null);
-  /** The live restore, or `null` when none is waiting. */
-  const pendingRef = useRef<{
-    observer: MutationObserver;
-    listeners: AbortController;
-    ceiling: number;
-  } | null>(null);
   /**
    * False from the unmount commit onwards. Radix's FocusScope dispatches
    * close-auto-focus from a `setTimeout(…, 0)` in its own effect cleanup, so an
    * owner that unmounts a still-OPEN dialog (a 401 redirect to the login page,
    * a parent switching to an error branch) reaches `onCloseAutoFocus` a
-   * macrotask after every cleanup here has already run: cancelling a pending
-   * restore cannot cancel one that has not started yet. Without this flag the
-   * orphaned restore re-resolves the invoker by `data-testid` against whatever
-   * surface replaced the dialog's own, and a fresh screen looks exactly like
-   * the state the restore waits for — `<body>` holding the keyboard (review
-   * r1, proved by a probe that focused a control on the next route).
+   * macrotask after every cleanup here has already run. Without this flag the
+   * restore re-resolves the invoker by `data-testid` against whatever surface
+   * replaced the dialog's own, and a fresh screen looks exactly like the state
+   * the restore acts on — `<body>` holding the keyboard (review r1, proved by a
+   * probe that focused a control on the next route).
    */
   const aliveRef = useRef(true);
 
-  const cancelRestore = () => {
-    const pending = pendingRef.current;
-    if (!pending) return;
-    pendingRef.current = null;
-    pending.observer.disconnect();
-    // Removal by signal, not by handler identity: `cancelRestore` is a fresh
-    // closure on every render, so a later render could not remove the listener
-    // an earlier one added.
-    pending.listeners.abort();
-    window.clearTimeout(pending.ceiling);
-  };
-
-  /**
-   * One attempt; if the invoker cannot take focus yet, re-attempt on every DOM
-   * mutation that could give it its focusability back, until it takes focus,
-   * something else claims the keyboard, the admin presses somewhere, or the
-   * ceiling passes. Anything but `<body>` holding the keyboard ends the
-   * restore: the admin who tabbed on, and the callsite that rehomed focus
-   * during its own commit (`EmbeddingShadowMigrationCard`'s
-   * `rehomeAfterDismiss`), have both already put focus somewhere deliberate.
-   * A pointer press ends it too — that admin moved on without moving focus off
-   * `<body>`, which is the one "moved on" the guard above cannot see.
-   */
-  const restoreFocus = (invoker: Invoker) => {
-    const attempt = () => {
-      if (!aliveRef.current) return true;
-      if (document.activeElement !== document.body) return true;
-      resolveInvoker(invoker)?.focus();
-      return document.activeElement !== document.body;
-    };
-    if (attempt()) return;
-    const observer = new MutationObserver(() => {
-      if (attempt()) cancelRestore();
-    });
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: FOCUSABILITY_ATTRS,
-    });
-    const listeners = new AbortController();
-    window.addEventListener('pointerdown', cancelRestore, {
-      capture: true,
-      signal: listeners.signal,
-    });
-    pendingRef.current = {
-      observer,
-      listeners,
-      ceiling: window.setTimeout(cancelRestore, RESTORE_CEILING_MS),
-    };
-  };
-
-  // A pending restore outlives this component otherwise, and would fire
-  // against a torn-down document (the `@radix-ui/react-focus-scope` leak
-  // `test-setup` already works around, #799). `aliveRef` covers the other
-  // order — the restore that starts after this cleanup ran.
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
-      cancelRestore();
     };
   }, []);
 
@@ -258,7 +180,6 @@ export function ConfirmDialog({
           className="nm-card fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 p-6 outline-none"
           data-testid="confirm-dialog"
           onOpenAutoFocus={() => {
-            cancelRestore();
             invokerRef.current = captureInvoker(document.activeElement);
             // Deliberately no `preventDefault()`: Radix's initial focus into
             // the content is the focus-trap entry this dialog wants.
@@ -266,18 +187,23 @@ export function ConfirmDialog({
           onCloseAutoFocus={(event) => {
             const invoker = invokerRef.current;
             invokerRef.current = null;
-            cancelRestore();
             if (!invoker) return;
-            // Suppresses `DialogContentModal`'s composed handler, which would
-            // otherwise `preventDefault()` FocusScope's restore and focus a
-            // `triggerRef` this trigger-less dialog never populates. Safe to
-            // do unconditionally: that handler focuses a permanently-`null`
-            // ref, so suppressing it changes nothing even on the paths where
-            // `restoreFocus` declines to act (proved by deleting the
-            // `<body>` guard in `restoreFocus` — with it gone the rehome cell
-            // reds, and nothing reds for this line).
+            // Keeps this component the only focus authority in the composed
+            // chain: `composeEventHandlers` runs THIS handler first and skips
+            // `DialogContentModal`'s once the event is default-prevented, so
+            // the `triggerRef.current?.focus()` that this trigger-less dialog
+            // can never populate is never even reached. No cell can red for
+            // this line and that is expected, not an oversight — deleting it
+            // leaves the suite 21/21 green (mutation M6, external round),
+            // because the handler it suppresses is itself a no-op here.
             event.preventDefault();
-            restoreFocus(invoker);
+            // See the header: one attempt, on the post-confirm DOM, and only
+            // while nothing else holds the keyboard. `focus()` on a control
+            // that cannot take it is a no-op, which is the intended outcome —
+            // not a state to wait out.
+            if (!aliveRef.current) return;
+            if (document.activeElement !== document.body) return;
+            resolveInvoker(invoker)?.focus();
           }}
         >
           <Dialog.Title className="text-base font-semibold text-foreground">
