@@ -200,6 +200,23 @@ export function ImageIndexCard() {
   // without an assignment" is carried by the refusal instead of the attribute.
   // `aria-disabled="true"` is mapped to the disabled state and announced by
   // NVDA, JAWS and VoiceOver, so nothing is lost on that channel.
+  //
+  // Accepted, measured trade-off on the SIGHTED channel (review r1), recorded
+  // here rather than left implicit. The removed `:disabled` rule dimmed to 45;
+  // this recipe dims to 90, because element `opacity` composites the 1px
+  // operable border too (see the button comments below), and for the inert
+  // half — `isPending`, and `!isError && !assigned` — there is no "Scanning…"
+  // chip and no label swap to carry the state either. Reviewer proposed
+  // `aria-disabled:text-muted-foreground` as an ink-only lever; REJECTED on
+  // the numbers: under the 90 the fix keeps, muted ink composites to 4.43:1
+  // on Pane / 4.36:1 on Workspace in Paper, under the 4.5:1 floor this card's
+  // own contrast argument is built on, and on `AttachmentStorageCard`'s FILLED
+  // `nm-button-destructive` sibling the same ink measures 1.11:1 (Graphite) /
+  // 1.03:1 (Paper) against the composited fill — no muted value works there,
+  // so a ghost-only ink change would split the two buttons on one card, which
+  // is exactly what #1532's per-group rule forbids. A perceptible held state
+  // needs a `forced-colors`/`[aria-disabled]` rule in `index.css`, which is
+  // codebase-wide (23 callsites) and outside this lane — open questions 6/20.
   const actionsDisabled = busy || isPending || (!isError && !assigned);
   /** A number the server has not sent yet is `—`, never a claimed zero. */
   const num = (n: number | undefined): string => (isPending || isError ? '—' : String(n ?? 0));

@@ -154,8 +154,19 @@ export function SyncTab() {
    * close-auto-focus, so #1531's restore aims `focus()` at a control that
    * cannot take it and the keyboard restarts the ~28-stop panel walk
    * (WCAG 2.4.3) — measured in a real browser on `a820e9b7`, checklist items
-   * 3 and 11. `AttachmentStorageCard` and `ImageIndexCard` carry the same
-   * shape, so all three of this panel's busy triggers now behave identically.
+   * 3 and 11.
+   *
+   * Scope, stated exactly (review r1): the five controls this PR converts —
+   * this trigger plus `attachment-sweep-dry-run`, `attachment-sweep-delete`,
+   * `image-index-process` and `image-index-rescan` — carry the same shape and
+   * behave identically. That is NOT panel-wide. `sync-overview-sync-now`
+   * below still holds a native `disabled` over the very same
+   * `data.sync.status === 'syncing'` window, so a keyboard operator standing
+   * on it when a sync starts is still blurred to `<body>`: #1532's defect on
+   * a control outside this PR's scope, recorded as an open question rather
+   * than converted here. Probe at this head, overview forced to `syncing`:
+   * force `{native:false, aria:"true", keepsFocus:true}`,
+   * syncNow `{native:true, aria:null, keepsFocus:false}`.
    */
   const forceResyncDisabled =
     forceResyncMutation.isPending || data.sync.status === 'syncing' || totalPages === 0;
@@ -251,9 +262,12 @@ export function SyncTab() {
               onClick={handleForceResyncAll}
               aria-disabled={forceResyncDisabled || undefined}
               // The busy palette the removed `:disabled` rule used to paint,
-              // keyed off `aria-disabled` instead — the same class set both
-              // cards on this panel carry, so the three triggers dim, refuse
-              // and hover identically. `active:` as well as `hover:`, because
+              // keyed off `aria-disabled` instead — the same class set the
+              // four converted card buttons carry, so all five converted
+              // controls dim, refuse and hover identically (the adjacent
+              // `sync-overview-sync-now` is NOT one of them; see the scope
+              // note above `forceResyncDisabled`).
+              // `active:` as well as `hover:`, because
               // `nm-button-ghost` paints a pressed background on `:active` and
               // a keyboard hold on the focused button matches `:active` with
               // no `:hover`: without the pin the press the handler refuses
