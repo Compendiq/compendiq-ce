@@ -465,12 +465,18 @@ function publicErrorMessage(err: unknown): string {
 //
 // Where Mode 1 shows a disagreement, the admin can record which side
 // answered better. Judgements live in `embedding_compare_judgements` (101),
-// keyed by (normalised query hash, live PAIR, candidate PAIR) — NOT by run —
-// so the fixture accumulates across runs and even across migrations of the
-// same pair, and re-judging a query replaces its row instead of stacking
-// votes. The PROVIDER is half of each key: "the same model name behind a
-// different provider" is a different index, so pooling those judgements would
-// score one migration's evidence into another migration's verdict.
+// keyed by (normalised query hash, live PAIR, candidate PAIR, JUDGE) — NOT by
+// run — so the fixture accumulates across runs and even across migrations of
+// the same pair, and one admin re-judging a query replaces their own row
+// instead of stacking votes. The PROVIDER is half of each key: "the same model
+// name behind a different provider" is a different index, so pooling those
+// judgements would score one migration's evidence into another migration's
+// verdict. The JUDGE is the sixth column since #1527: the page-id arrays are
+// retrieved under the judging admin's `visiblePagesPredicate`, so a key
+// without it let one admin's click physically destroy another's evidence.
+// One query is still ONE McNemar trial — that invariant lives in the READ
+// path now, where `judgementsForReport` collapses to the most recently judged
+// row per query.
 
 /**
  * No p-value is quoted below this many SCORED judgements for the pair.
@@ -542,12 +548,11 @@ export async function recordShadowCompareJudgement(
        (query_hash, query_text, live_provider_id, live_model, candidate_provider_id, candidate_model,
         judged_side, live_page_ids, candidate_page_ids, judged_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model)
+     ON CONFLICT (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model, judged_by)
      DO UPDATE SET query_text = EXCLUDED.query_text,
                    judged_side = EXCLUDED.judged_side,
                    live_page_ids = EXCLUDED.live_page_ids,
                    candidate_page_ids = EXCLUDED.candidate_page_ids,
-                   judged_by = EXCLUDED.judged_by,
                    created_at = NOW()`,
     [
       queryHash(row.query),
@@ -595,11 +600,23 @@ async function judgementsForReport(
   // Both PAIRS, not both model names: 101's identity is the provider beside
   // the model, and reading by name alone would pool a different provider's
   // migration into this verdict — page-id arrays from a different index.
+  //
+  // ONE trial per query (#1527). 109 keys the table per JUDGE, so two admins
+  // who judged the same query hold two rows — both retained for audit, and
+  // each carrying the page-id arrays its own author saw under their
+  // `visiblePagesPredicate`. One query is one McNemar trial, so reading both
+  // would double N and the evidence behind the p drawn from it. `DISTINCT ON`
+  // keeps exactly the most recently judged row per query, WHOLE: the trial's
+  // expected set and discordance therefore come from one named judge's
+  // visibility scope, never from a blend of two. `created_at` is the judged-at
+  // stamp — the upsert above bumps it to NOW() on every re-judge — and
+  // `id DESC` makes the order total when two judgements share a microsecond.
   const stored = await query<JudgementRow>(
-    `SELECT query_hash, judged_side, live_page_ids, candidate_page_ids
+    `SELECT DISTINCT ON (query_hash) query_hash, judged_side, live_page_ids, candidate_page_ids
      FROM embedding_compare_judgements
      WHERE live_provider_id = $1 AND live_model = $2
-       AND candidate_provider_id = $3 AND candidate_model = $4`,
+       AND candidate_provider_id = $3 AND candidate_model = $4
+     ORDER BY query_hash, created_at DESC, id DESC`,
     [report.live.providerId, report.live.model, report.candidate.providerId, report.candidate.model],
   );
   const byHash = new Map(stored.rows.map((row) => [row.query_hash, row]));

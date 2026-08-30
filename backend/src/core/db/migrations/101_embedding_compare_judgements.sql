@@ -8,26 +8,28 @@
 -- llm_providers, no FK to retrieval_benchmark_runs), so the SECOND model
 -- change is cheaper to evaluate than the first.
 --
--- One judgement per (normalised query, live PAIR, candidate PAIR): judging
--- the same query again replaces the verdict rather than stacking votes. The
--- PROVIDER is half of each key, not decoration — "the same model name behind
--- a different provider" is a different index producing different page ids, so
--- keying on the names alone would pool one migration's judgements into a
--- later migration's verdict, and would collapse both sides onto one row when
--- a model is re-hosted (live_model = candidate_model).
--- The key carries NO admin dimension, and that is deliberate: one query is
--- one McNemar trial, so keying per judge would let two admins vote the same
--- query twice and inflate both N and the p drawn from it. The consequence on
--- a multi-admin instance is that the LAST judge of a query wins it and the
--- verdict pools every judge's rows. Page-id arrays record what was ON SCREEN
--- when the human judged — they are historical evidence, deliberately not
--- FK-checked against pages that may be deleted later, and they carry the
--- VISIBILITY of the judge who wrote them (the report's retrieval runs through
--- `visiblePagesPredicate` scoped to the admin who started the run), which is
--- why `judged_by` is recorded even though no read filters on it. Accepted for
--- the single-evaluator go/no-go this surface is written for; a multi-
--- evaluator design needs a per-judge key AND an aggregation rule, which is a
--- different feature rather than a wider index. `query_text` is real user data: it stays inside the
+-- One judgement per (normalised query, live PAIR, candidate PAIR, JUDGE):
+-- the same admin judging the same query again replaces their own verdict
+-- rather than stacking votes. The PROVIDER is half of each key, not
+-- decoration — "the same model name behind a different provider" is a
+-- different index producing different page ids, so keying on the names alone
+-- would pool one migration's judgements into a later migration's verdict, and
+-- would collapse both sides onto one row when a model is re-hosted
+-- (live_model = candidate_model).
+-- `judged_by` joined the key in 109 (#1527); it was absent here, and the
+-- consequence was that on a multi-admin instance the last judge of a query
+-- OVERWROTE the earlier judge's row — including page-id arrays retrieved
+-- under a different admin's visibility. One query is still ONE McNemar trial:
+-- that invariant lives in the READ path now, where `judgementsForReport`
+-- collapses to `DISTINCT ON (query_hash) … ORDER BY created_at DESC, id DESC`
+-- — the most recently judged row per query, taken WHOLE, so the verdict never
+-- blends two admins' arrays and N stays the count of distinct judged queries.
+-- Page-id arrays record what was ON SCREEN when the human judged — they are
+-- historical evidence, deliberately not FK-checked against pages that may be
+-- deleted later, and they carry the VISIBILITY of the judge who wrote them
+-- (the report's retrieval runs through `visiblePagesPredicate` scoped to the
+-- admin who started the run), which is why `judged_by` is recorded and, since
+-- 109, keyed. `query_text` is real user data: it stays inside the
 -- instance, on admin-only routes.
 CREATE TABLE embedding_compare_judgements (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,9 +48,13 @@ CREATE TABLE embedding_compare_judgements (
   -- The fixture outlives its author.
   judged_by UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- SUPERSEDED by 109, which drops this and creates
+  -- `embedding_compare_judgements_judge_key` with `judged_by` appended. Left
+  -- verbatim: migrations are history, and the runner tracks them by filename.
   UNIQUE (query_hash, live_provider_id, live_model, candidate_provider_id, candidate_model)
 );
 
--- The verdict reads every judgement for one live/candidate pair.
+-- The verdict reads one judgement per query for one live/candidate pair
+-- (`DISTINCT ON (query_hash)` since 109); this is the index it scans.
 CREATE INDEX embedding_compare_judgements_pair_idx
   ON embedding_compare_judgements (live_provider_id, live_model, candidate_provider_id, candidate_model);

@@ -1177,5 +1177,100 @@ describe.skipIf(!dbAvailable)('#1260 shadow-compare service', () => {
       expect(verdict.candidateBetter).toBe(1);
       expect(verdict.liveBetter).toBe(0);
     });
+
+    // ── #1527 — per-judge key, one trial per query ───────────────────────
+    //
+    // 109 keys the table per judge so one admin can no longer destroy
+    // another's evidence. The one-query-one-McNemar-trial invariant therefore
+    // moves to the READ path: `judgementsForReport` collapses to the newest
+    // judgement per `query_hash`.
+    const SECOND_ADMIN = 'aaaaaaaa-1527-4000-8000-00000000000b';
+
+    async function seedSecondAdmin(): Promise<void> {
+      await query(
+        `INSERT INTO users (id, username, email, role, password_hash)
+         VALUES ($1::uuid, 'admin-1527', 'admin-1527@t', 'admin', 'x')
+         ON CONFLICT (id) DO NOTHING`,
+        [SECOND_ADMIN],
+      );
+    }
+
+    /** `getShadowCompareRun` is scoped to the admin who STARTED the run, so a
+     *  second admin cannot judge the first admin's run — they need their OWN
+     *  completed compare of the same live/candidate pair. A completed run
+     *  frees the shared one-active slot, and the same query text yields the
+     *  same `query_hash`, so both judgements land on one key. */
+    async function completedRunFor(admin: string): Promise<string> {
+      const runId = await createShadowCompareRun(admin, {
+        kind: 'shadow-compare',
+        days: 30,
+        limit: 50,
+        topK: 3,
+      });
+      await runShadowCompare(runId, admin);
+      expect((await getShadowCompareRun(runId, admin))?.status).toBe('completed');
+      return runId;
+    }
+
+    /** Recency is asserted, so it is SET, never left to the wall clock between
+     *  two round-trips. `created_at` is the judged-at stamp: the upsert bumps
+     *  it on every re-judge. */
+    async function stampJudgement(judgedBy: string, iso: string): Promise<void> {
+      await query(
+        `UPDATE embedding_compare_judgements SET created_at = $2::timestamptz WHERE judged_by = $1`,
+        [judgedBy, iso],
+      );
+    }
+
+    it('two admins judging one query keep both rows but count as ONE McNemar trial', async () => {
+      await seedSecondAdmin();
+      const runA = await completedRun();
+      await recordShadowCompareJudgement(runA, 'query-1', 'candidate', ADMIN);
+      const runB = await completedRunFor(SECOND_ADMIN);
+      const view = await recordShadowCompareJudgement(runB, 'query-1', 'candidate', SECOND_ADMIN);
+
+      // Both rows survive on disk — each with its own judge and its own
+      // visibility-scoped page-id arrays. That is the ACL fix.
+      const stored = await query<{ n: string }>(
+        `SELECT COUNT(*) AS n FROM embedding_compare_judgements`,
+      );
+      expect(Number(stored.rows[0]!.n)).toBe(2);
+
+      // …and the report is still ONE trial for that query: a per-judge key
+      // that inflated N would double the evidence behind the p-value.
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.verdict.scoredJudgementCount).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(1);
+      expect(view.judgements).toEqual({ 'query-1': 'candidate' });
+      const readBack = await getShadowCompareJudgements(runA, ADMIN);
+      expect(readBack.verdict.judgementCount).toBe(1);
+      expect(readBack.judgements).toEqual({ 'query-1': 'candidate' });
+    });
+
+    it('the NEWEST judgement wins the collapse, whole row and all', async () => {
+      await seedSecondAdmin();
+      const runA = await completedRun();
+      await recordShadowCompareJudgement(runA, 'query-1', 'live', ADMIN);
+      const runB = await completedRunFor(SECOND_ADMIN);
+      await recordShadowCompareJudgement(runB, 'query-1', 'candidate', SECOND_ADMIN);
+
+      // Second admin judged most recently → their 'candidate' is the trial.
+      await stampJudgement(ADMIN, '2024-01-01T00:00:00Z');
+      await stampJudgement(SECOND_ADMIN, '2024-06-01T00:00:00Z');
+      let view = await getShadowCompareJudgements(runA, ADMIN);
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(1);
+      expect(view.verdict.liveBetter).toBe(0);
+      expect(view.judgements).toEqual({ 'query-1': 'candidate' });
+
+      // Invert the recency and the reported side flips with it.
+      await stampJudgement(SECOND_ADMIN, '2024-01-01T00:00:00Z');
+      await stampJudgement(ADMIN, '2024-06-01T00:00:00Z');
+      view = await getShadowCompareJudgements(runA, ADMIN);
+      expect(view.verdict.judgementCount).toBe(1);
+      expect(view.verdict.liveBetter).toBe(1);
+      expect(view.verdict.candidateBetter).toBe(0);
+      expect(view.judgements).toEqual({ 'query-1': 'live' });
+    });
   });
 });

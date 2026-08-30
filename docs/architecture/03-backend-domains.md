@@ -253,7 +253,13 @@ complete, fail, the kind-aware stale sweep and the kind-guarded fetch, one
 copy for both kinds. A comparison and a production benchmark exclude each
 other on the 091 one-active index. Mode 2 judgements persist in
 `embedding_compare_judgements` (migration 101), keyed by provider AND model on
-each side, and the verdict is computed from `eval/metrics.ts`
+each side AND by the JUDGE (`judged_by`, migration 109 / #1527 — the stored
+page-id arrays carry the judging admin's visibility, so a key without it let
+one admin overwrite another's evidence). The read collapses to ONE judgement
+per query — `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC,
+id DESC`, the newest judgement, taken whole — so one query stays one McNemar
+trial while every judge's row survives on disk. The verdict is computed from
+`eval/metrics.ts`
 (`pairedSignificance`, `recallAtK`, `meanReciprocalRank`) — never re-derived;
 the p-value floor counts the live/candidate PICKS, not ties. The admin surface
 is five more routes on `routes/llm/llm-embedding-shadow.ts`

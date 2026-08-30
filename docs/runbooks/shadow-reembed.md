@@ -111,11 +111,21 @@ committing. The shadow card's **Compare on real queries** section (or
 - **Mode 2 — judge the disagreements.** Each disagreement row offers
   Live / Candidate / Neither / Both. Judgements persist in
   `embedding_compare_judgements` keyed by (query, live provider+model,
-  candidate provider+model) — they survive the run, the migration, even the
-  provider row — so the fixture accumulates and the SECOND evaluation of a
+  candidate provider+model, JUDGE) — they survive the run, the migration, even
+  the provider row — so the fixture accumulates and the SECOND evaluation of a
   pair starts warm. Re-hosting the same model behind a different provider is
   a different pair on purpose: it is a different index, and its judgements
-  belong to their own verdict. The verdict quotes Recall/MRR per side and an
+  belong to their own verdict.
+  **If two of you judge (migration 109, #1527).** Each admin's judgement is
+  its own row now, so a second operator no longer overwrites the first
+  operator's clicks — the page lists behind a judgement are the ones THAT
+  admin could see, and they used to be destroyed silently. The report still
+  counts one query as ONE trial, and it shows the **newest** judgement for that
+  query: if you re-judge a query your colleague already judged, your verdict
+  and your page lists are what the Recall/MRR/McNemar numbers use. Their row
+  is kept for audit, not read. So agree who judges what, or accept
+  last-word-wins per query.
+  The verdict quotes Recall/MRR per side and an
   exact McNemar p **only once 20 LIVE-OR-CANDIDATE PICKS** exist for the pair;
   `Neither` and `Both` are declared ties, count toward nothing, and do not
   bring the p forward. Below the floor the line says how many picks are still
