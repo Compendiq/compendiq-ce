@@ -66,6 +66,14 @@ const STALE_RUN_AFTER = '30 minutes';
  * The stale-sweep copy, per kind. It is persisted as the run's `error` and
  * rendered verbatim by whichever card owns that kind, so it must name the
  * thing the admin actually started.
+ *
+ * Private, and written only by the sweep below (#1530). It used to be fronted
+ * by an exported `staleRunError(kind)` that nothing ever called: the sweep is
+ * the only writer of this text and it needs BOTH strings at once inside one
+ * statement, so it indexes the record directly; every reader gets the string
+ * back out of the row's `error` column and never re-derives it. Unlike
+ * `slotBusyMessage` below, no route is a caller, so an export had nothing to
+ * serve.
  */
 const STALE_RUN_ERROR: Record<'shadow-compare' | 'benchmark', string> = {
   benchmark: 'The benchmark worker stopped before the run completed. Start a new benchmark.',
@@ -73,16 +81,13 @@ const STALE_RUN_ERROR: Record<'shadow-compare' | 'benchmark', string> = {
     'The comparison worker stopped before the run completed. Start a new comparison.',
 };
 
-export function staleRunError(kind: BenchmarkRunKind): string {
-  return kind === 'shadow-compare' ? STALE_RUN_ERROR['shadow-compare'] : STALE_RUN_ERROR.benchmark;
-}
-
 /**
  * The 409 both routes send when the shared slot is taken, worded by the kind
  * of the run that actually HOLDS it — never by the route that was asked.
  *
- * It lives here, beside `staleRunError`, because both routes need it and a
- * route may not import another route (the `routes/llm` boundary). It used to
+ * It lives here, in the module that owns the run row, because BOTH routes call
+ * it — `llm-admin.ts` and `llm-embedding-shadow.ts` — and a route may not
+ * import another route (the `routes/llm` boundary). It used to
  * live in the compare route alone, so the exclusion was honest in one
  * direction and false in the other: a benchmark refused by a running
  * comparison was told "A production retrieval benchmark is already running" —
