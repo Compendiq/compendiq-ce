@@ -273,6 +273,71 @@ describe('docker/docker-compose.yml container hardening (#1050)', () => {
   );
 });
 
+describe('docker/docker-compose.yml CE image platform', () => {
+  // `:dev` / `:latest` images are linux/amd64 only (arm64 ships on v* tags).
+  // Without an explicit platform, `docker compose pull` on Apple Silicon
+  // requests arm64 and 404s — searxng was the first to fail because its
+  // local cache was already a different digest.
+  it.each(['frontend', 'backend', 'mcp-docs', 'searxng'])(
+    'pins %s to linux/amd64 so :dev pulls succeed on Apple Silicon',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).toMatch(
+        /^\s+platform:\s*linux\/amd64\s*$/m,
+      );
+    },
+  );
+});
+
+describe('docker/docker-compose.yml is a GHCR pull file', () => {
+  const imageServices = ['frontend', 'backend', 'mcp-docs', 'searxng'] as const;
+
+  it.each(imageServices)(
+    'does not declare build: on %s (source builds live in docker-compose.build.yml)',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).not.toMatch(/^\s+build:/m);
+    },
+  );
+
+  it.each(imageServices)(
+    'pins %s to ghcr.io with COMPENDIQ_VERSION (default dev)',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).toMatch(
+        new RegExp(
+          `^\\s+image:\\s*ghcr\\.io/compendiq/compendiq-ce-${service}:\\$\\{COMPENDIQ_VERSION:-dev\\}\\s*$`,
+          'm',
+        ),
+      );
+    },
+  );
+});
+
+describe('docker/docker-compose.build.yml source-build override', () => {
+  const buildComposePath = join(repoRoot, 'docker', 'docker-compose.build.yml');
+
+  it('exists next to docker-compose.yml', () => {
+    expect(existsSync(buildComposePath)).toBe(true);
+  });
+
+  it.each([
+    ['frontend', '..', 'frontend/Dockerfile'],
+    ['backend', '..', 'backend/Dockerfile'],
+    ['mcp-docs', '..', 'mcp-docs/Dockerfile'],
+    ['searxng', './searxng', 'Dockerfile'],
+  ] as const)('builds %s from context %s dockerfile %s', (service, context, dockerfile) => {
+    const composeBuild = readFileSync(buildComposePath, 'utf8');
+    const block = extractServiceBlock(composeBuild, service);
+    expect(block).toMatch(/^\s+build:/m);
+    expect(block).toContain(`context: ${context}`);
+    expect(block).toContain(`dockerfile: ${dockerfile}`);
+  });
+
+  it('passes login-page build args to the frontend image', () => {
+    const frontend = extractServiceBlock(readFileSync(buildComposePath, 'utf8'), 'frontend');
+    expect(frontend).toContain('VITE_LOGIN_VARIANT');
+    expect(frontend).toContain('VITE_LOGIN_VARIANT_PICKER');
+  });
+});
+
 describe('docker/docker-compose.dev.yml security invariants', () => {
   it('publishes data-tier ports on loopback only', () => {
     const hostIps = [...composeDev.matchAll(/host_ip:\s*(\S+)/g)].map((m) => m[1]);
@@ -455,10 +520,10 @@ describe('.dockerignore excludes nested env secrets from build contexts', () => 
   it('ignores the Python tool venv and bytecode .gitignore also excludes (#1115)', () => {
     // `tools/vl-embedding-shim/` is a Python tool, so its README has every
     // developer create a venv holding mlx/torch wheels measured in gigabytes
-    // INSIDE the checkout. Every service above builds with `context: ..`, so
-    // without these the wheels are tarred up and streamed to the daemon on
-    // every local build. .gitignore carries the same block, and a repo can
-    // easily carry one half and not the other — this is the other half.
+    // INSIDE the checkout. docker-compose.build.yml builds with `context: ..`,
+    // so without these the wheels are tarred up and streamed to the daemon on
+    // every local source build. .gitignore carries the same block, and a repo
+    // can easily carry one half and not the other — this is the other half.
     const patterns = dockerignore.split('\n').map((line) => line.trim());
     for (const pattern of ['**/.venv', '**/__pycache__', '**/.pytest_cache', '**/*.egg-info']) {
       expect(patterns).toContain(pattern);

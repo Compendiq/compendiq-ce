@@ -31,7 +31,7 @@ npm test                            # all suites
 npm test -w backend                 # one workspace
 cd backend && npx vitest run <file> # single file
 npx playwright test                 # E2E (needs backend + frontend running)
-docker compose -f docker/docker-compose.yml up -d   # needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
+docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
 
 ## Architecture

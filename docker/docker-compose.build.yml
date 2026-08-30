@@ -1,0 +1,35 @@
+# Source-build override for docker/docker-compose.yml.
+#
+# The main compose file is pull-only (GHCR). Merge this file when you want to
+# compile images from this checkout instead of pulling:
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.build.yml up --build
+#
+# Contexts are relative to this file (docker/), same as before the split.
+# frontend/backend/mcp-docs send the repo root (`..`); searxng builds from
+# ./searxng.
+
+services:
+  frontend:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_LOGIN_VARIANT: ${LOGIN_PAGE_VARIANT:-local-loop}
+        VITE_LOGIN_VARIANT_PICKER: ${LOGIN_PAGE_VARIANT_PICKER:-false}
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+
+  mcp-docs:
+    build:
+      context: ..
+      dockerfile: mcp-docs/Dockerfile
+
+  searxng:
+    build:
+      context: ./searxng
+      dockerfile: Dockerfile
