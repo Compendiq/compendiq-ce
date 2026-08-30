@@ -111,7 +111,7 @@ benchmark numbers, no named reference customers. Future work must not invent the
   pane stays off near-black to reduce long-session glare. **Paper is a quietly warm neutral with white
   panes and a near-white frame** (owner decision, 2026-08-30): document, left navigation
   and context rail are `#FFFFFF`; the frame — gutter, left destination rail, top app
-  header — is `#F9F8F7`, and the remaining warmth lives in Chrome, Workspace, the fills,
+  header — is `#FDFDFD`, as is the hover/selected fill, and the remaining warmth lives in Chrome, Workspace, the fills,
   the borders and the ink at chroma 0.002–0.007, where the hue is felt and not seen. The
   earlier "avoid pure white" rule no longer applies to light mode, and Canvas is no longer
   light mode's darkest step.

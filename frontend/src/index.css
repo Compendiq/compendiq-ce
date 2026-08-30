@@ -650,10 +650,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
    The SECOND pass cut the amount. The first landed surfaces at chroma
    0.006-0.011, which read as beige rather than as warm neutral. The owner's own
-   Canvas value — #f9f8f7, chroma 0.0017, one 8-bit step per channel — is the
+   Canvas value — #f9f8f7, chroma 0.0017, one 8-bit step per channel — was the
    calibration: surfaces now sit at 0.002-0.005 and mid-tone greys and inks at
    0.003-0.007, where the hue is felt and not seen. Hue and lightness were left
-   alone, so this pass moved no contrast ratio by more than 0.03. */
+   alone, so this pass moved no contrast ratio by more than 0.03.
+
+   TWO TOKENS ARE OUTSIDE THE RAMP, both owner-pinned to #FDFDFD, a pure
+   neutral: --app-chassis (frame, left destination rail, top app header) and
+   --color-accent (hover AND selected fill). They are not drift and they are not
+   a cool relapse; workspace-themes.test.ts pins their exact values so neither a
+   warm retune nor a cool one can move them silently. Each carries a note at its
+   declaration about what it costs. */
 [data-theme="paper"] {
   /* Pane is PURE WHITE by explicit product decision (2026-08-30): the document,
      the left navigation pane and the detached context rail — every surface a
@@ -663,12 +670,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is ABOVE Workspace in value since the owner set the frame to
-     #f9f8f7 (2026-08-30), so Paper's order is Chrome → Workspace → Canvas →
-     Pane rather than v0.7's Canvas-is-darkest. The document is still the
-     brightest surface, which is the part that was load-bearing; the workspace
-     card is read off its `--color-border` hairline rather than off a value
-     step against the gutter. */
+     Canvas is ABOVE Workspace in value since the owner set the frame — first
+     #f9f8f7, then #fdfdfd (both 2026-08-30) — so Paper's order is Chrome →
+     Workspace → Canvas → Pane rather than v0.7's Canvas-is-darkest. The
+     document is still the brightest surface, which is the part that was
+     load-bearing; the workspace card is read off its `--color-border` hairline
+     rather than off a value step against the gutter, and at #fdfdfd that
+     hairline is the ONLY thing separating the frame from the panes. */
   --color-background: #f9f7f6;          /* Workspace — navigation and AI rail */
   --color-foreground: #191817;          /* warm ink, quietly */
   --color-card: #ffffff;                /* Pane — document, left pane, context rail */
@@ -698,7 +706,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   /* Measured against the WORST surface it lands on — white Pane and Raised
      (5.72:1), not the chassis. */
   --color-muted-foreground: #686663;
-  --color-accent: #eae8e5;
+  /* Hover AND selected fill, both, because one token serves both states:
+     `nav-selection`, `nm-card-hover`, `nm-card-interactive:hover`, and 23
+     `hover:bg-accent` callsites. Owner-pinned to #FDFDFD (2026-08-30), which is
+     a pure neutral — not part of the warm ramp — and measures 1.02:1 on the
+     white Pane. The fill is therefore no longer what communicates either state:
+     selection is carried by `nav-selection`'s 1px --color-border-interactive
+     outline (3.81:1 on this fill) plus full-strength ink and weight 500, and an
+     interactive card's hover is carried by its border switching to the same
+     interactive token. A bare `hover:bg-accent` row on a white pane has only
+     this fill, so its hover is now a near-invisible tint by construction. */
+  --color-accent: #fdfdfd;
   --color-accent-foreground: #191817;
   /* Semantic aliases — var() references, exactly as in the dark block. The
      re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
@@ -716,12 +734,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      It is still a separator, NOT an operable edge — that stays
      --color-border-interactive, which the 3:1 test measures. */
   --color-border: #e1dfdc;
-  /* Darkened twice under the cool ramp, and every warm retune keeps that
-     hard-won headroom rather than restarting the argument: an operable edge is
-     at its most load-bearing exactly when the pointer is on it, so `accent` —
-     the hover fill — is the ground that sets this value, not the chassis.
-     All five Paper surfaces are measured by workspace-themes.test.ts:
-     3.17 accent / 3.88 Pane / 3.88 Raised / 3.63 Workspace / 3.35 muted. */
+  /* Darkened twice under the cool ramp, and every retune since keeps that
+     hard-won headroom rather than restarting the argument. It is now doing MORE
+     work than it was designed for: with the hover/selected fill at #FDFDFD this
+     edge is the only thing that marks a selected row, so it must not be
+     softened. The binding ground is `muted` (the quiet field fill) now that
+     `accent` is near-white. All five Paper surfaces are measured by
+     workspace-themes.test.ts:
+     3.35 muted / 3.63 Workspace / 3.81 accent / 3.88 Pane / 3.88 Raised. */
   --color-border-interactive: #84817d;
   --color-ring: #3f627c;
   --color-success: var(--color-status-connected);
@@ -757,12 +777,15 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --inline-code-color: #7041a8;
 
   /* Canvas is the gutter around the white workspace card, and it also paints the
-     left destination rail and the top app header — the three surfaces the owner
-     set to 249/248/247 (2026-08-30). It is one 8-bit step of warmth per channel,
-     and it is the reference the rest of this ramp's chroma is calibrated to.
-     It sits ABOVE Workspace in value now: the frame is near-white and the panes
-     are white, so the card is read off its hairline, not off the gutter. */
-  --app-chassis: #f9f8f7;
+     left destination rail and the top app header. Owner-pinned twice on
+     2026-08-30: 249/248/247, then #FDFDFD. It is a PURE NEUTRAL — deliberately
+     outside the warm ramp — and at 1.02:1 against the white Pane the frame is
+     now all but continuous with the panes it surrounds. What still separates
+     them is the workspace card's --color-border hairline (1.31:1 here) and the
+     card radius; there is no value step left to rely on.
+     The rail's destinations are unaffected: they carry hover and selection with
+     ink and a Steel marker line, never a fill. */
+  --app-chassis: #fdfdfd;
   /* Chrome for internal panel headers and toolbars — the deepest step of the
      light ramp. This stays a token because the same chrome appears above
      navigation, trees, settings, and the article inspector. The top app header

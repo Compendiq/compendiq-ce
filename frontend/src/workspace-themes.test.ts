@@ -229,11 +229,29 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  // Paper is a warm neutral: every surface, fill, border and ink in the block
+  // Paper is a warm neutral: every surface, fill, border and ink under the ramp
   // sits on the warm side of the hue circle. A cool grey slipping back in is
   // the regression this guards — it is what the palette was before, and one
   // stray #f7f7f8 reads as a blue patch against the rest.
-  it('keeps every Paper neutral on the warm side of the hue circle', () => {
+  //
+  // Two tokens are NOT under the ramp. The owner pinned --app-chassis (frame,
+  // left destination rail, top app header) and --color-accent (hover AND
+  // selected fill) to #fdfdfd, a pure neutral, so asserting warmth on them
+  // would assert the ramp over the owner's own values. They get the stricter
+  // check instead — an exact value — which catches a drift in EITHER direction,
+  // warm or cool, rather than trading one unguarded token for another.
+  const OWNER_PINNED = {
+    '--app-chassis': '#fdfdfd',
+    '--color-accent': '#fdfdfd',
+  } as const;
+
+  it('keeps the owner-pinned Paper neutrals at their exact values', () => {
+    for (const [name, value] of Object.entries(OWNER_PINNED)) {
+      expect(token(lightBlock, name), `${name} is owner-pinned`).toBe(value);
+    }
+  });
+
+  it('keeps every other Paper neutral on the warm side of the hue circle', () => {
     const neutrals = [
       '--color-background',
       '--color-foreground',
@@ -241,17 +259,16 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-secondary-foreground',
       '--color-muted',
       '--color-muted-foreground',
-      '--color-accent',
       '--color-border',
       '--color-border-interactive',
       '--color-action',
       '--color-action-hover',
       '--color-code-bg',
       '--color-status-inactive',
-      '--app-chassis',
       '--app-header-bg',
     ];
     for (const name of neutrals) {
+      expect(name in OWNER_PINNED, `${name} is under the ramp, not pinned`).toBe(false);
       const hex = token(lightBlock, name);
       const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
         number,
@@ -260,6 +277,23 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       ];
       expect(r, `${name} (${hex}) must be warm: red channel above blue`).toBeGreaterThan(b);
     }
+  });
+
+  // The hover/selected fill no longer separates from the white pane on value
+  // (1.02:1), so the interactive border IS the selected state. If that edge
+  // ever drops below 1.4.11's 3:1 on this fill, a selected row stops being
+  // identifiable at all rather than merely looking flat.
+  it('keeps the interactive edge legible on the near-white hover fill', () => {
+    expectContrast(
+      'border-interactive on the owner-pinned accent fill',
+      token(lightBlock, '--color-border-interactive'),
+      OWNER_PINNED['--color-accent'],
+      3,
+    );
+    const navSelection = extractBlock(css, '@utility nav-selection {');
+    expect(navSelection, 'nav-selection must keep its interactive outline').toMatch(
+      /outline:\s*1px solid var\(--color-border-interactive\)/,
+    );
   });
 });
 
