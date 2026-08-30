@@ -666,11 +666,16 @@ together, which matters most for #1114's query-side prefix.
   and `llm_conversations.messages` — #1361 persists a matched image's
   `attachmentUrl` per assistant turn),
   with BOTH page storage-format columns additionally run through
-  `getExpectedAttachmentFilenames` (#1525 — storage format names attachments
-  by `ri:filename`/`diagramName` and carries no URL, so the URL pass cannot
-  cover `draft_body_storage`; forward protection, since no writer populates
-  that column today and a draft's diagram already reaches `draft_body_html`
-  as an `/api/attachments/…` URL),
+  `getExpectedAttachmentFilenames` (#1525 — storage format names Confluence
+  attachments by `ri:filename`/`diagramName`, which no `/api/attachments/…`
+  URL regex can match, so the enumerator is the only pass that can see those.
+  Storage format is not URL-free, though: `htmlToConfluence` rewrites only
+  `img[src^="/api/attachments/"]`, so an `/api/local-attachments/…` img
+  survives conversion verbatim and the URL pass over the same column DOES
+  find it — which is why the draft column gets BOTH halves, not just the
+  enumerator. Forward protection either way, since no writer populates
+  `draft_body_storage` today and a draft's diagram already reaches
+  `draft_body_html` as an `/api/attachments/…` URL),
   because attachment URLs are copied verbatim between bodies. A 24h mtime
   grace window covers sync/paste races (both write files before the row that
   references them), only image-like files are per-file candidates in the

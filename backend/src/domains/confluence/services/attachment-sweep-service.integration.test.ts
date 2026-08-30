@@ -348,10 +348,11 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
     });
 
     // #1525 — a draw.io diagram whose macro survives only in the UNPUBLISHED
-    // draft's STORAGE format. Storage format names attachments by
-    // `ri:filename` / `diagramName` and carries no URL, so the URL collector
-    // can never see `DraftOnlyArch.png` there and the storage pass only ran
-    // over `body_storage`: the name fell out of the keep-set entirely.
+    // draft's STORAGE format. Storage format names Confluence attachments by
+    // `ri:filename` / `diagramName`, which no `/api/attachments/…` URL regex
+    // can match, so the URL collector can never see `DraftOnlyArch.png` there
+    // and the storage pass only ran over `body_storage`: the name fell out of
+    // the keep-set entirely.
     // Scope note (fixer r1): this is forward protection, not the only thing
     // standing between a real draft diagram and a delete — every persisting
     // `confluenceToHtml` caller passes a pageId, so the macro reaches
@@ -368,7 +369,8 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
                  '<ac:image><ri:attachment ri:filename="published-storage.png"/></ac:image>',
                  '<p>no image yet</p>',
                  '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">DraftOnlyArch</ac:parameter></ac:structured-macro>'
-                 || '<p><img src="/api/attachments/90007/draft-storage-url.png"></p>')`,
+                 || '<p><img src="/api/attachments/90007/draft-storage-url.png"></p>'
+                 || '<p><img src="/api/local-attachments/1/draft-local-url.png"></p>')`,
       );
 
       const keep = await buildAttachmentKeepSets();
@@ -378,6 +380,12 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(keep.confluence.has('DraftOnlyArch.png')).toBe(true);
       // The URL-collector half of the same two-line treatment.
       expect(keep.confluence.has('draft-storage-url.png')).toBe(true);
+      // ...and the half that only the URL collector can reach: storage format
+      // is NOT URL-free. `htmlToConfluence` rewrites only
+      // `img[src^="/api/attachments/"]`, so an `/api/local-attachments/…` img
+      // survives conversion verbatim into storage format, and the LOCAL store
+      // is a set the confluence-only enumerator cannot feed at all.
+      expect(keep.local.has('draft-local-url.png')).toBe(true);
       // Control: the published halves were already kept.
       expect(keep.confluence.has('published.png')).toBe(true);
       expect(keep.confluence.has('published-storage.png')).toBe(true);

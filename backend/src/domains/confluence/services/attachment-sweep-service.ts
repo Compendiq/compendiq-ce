@@ -46,12 +46,14 @@
  *     `img[src]` and `a[href]`-style references via a raw-string regex
  *     (strictly more inclusive than an attribute parse), plus
  *     `getExpectedAttachmentFilenames` over BOTH storage-format columns of a
- *     page (#1525: storage format names attachments by `ri:filename` /
- *     `diagramName` and carries no URL at all, so the URL pass cannot cover
- *     `draft_body_storage` — a draft's PNG is kept today by the
- *     `/api/attachments/…` URL in its `draft_body_html`, and giving the draft
- *     storage column the enumerator too is defence-in-depth for whoever
- *     starts persisting that column). In the Confluence
+ *     page (#1525: storage format names Confluence attachments by
+ *     `ri:filename` / `diagramName`, which no `/api/attachments/…` URL regex
+ *     can match, so the enumerator is the only pass that can see THOSE — it
+ *     is not that storage format is URL-free, see `buildAttachmentKeepSets`.
+ *     A draft's PNG is kept today by the `/api/attachments/…` URL in its
+ *     `draft_body_html`, and giving the draft storage column the same
+ *     two-line treatment is defence-in-depth for whoever starts persisting
+ *     that column). In the Confluence
  *     tree only IMAGE-LIKE files are per-file candidates
  *     (`SUPPORTED_IMAGE_EXTENSIONS` + `external-<hash>` keys): the cache also
  *     holds lazily fetched non-image attachments no enumerator covers — those
@@ -483,10 +485,22 @@ export async function forEachRowYielding<T>(rows: T[], perRow: (row: T) => void)
  * `getExpectedAttachmentFilenames` (a pure function, recomputed at sweep
  * time — the cached `expected_image_files` column is deliberately not
  * consulted, which removes its NULL-means-uncomputed question), because
- * storage format references attachments by `ri:filename` / `diagramName` and
- * contains no URL at all, which is exactly why the URL pass cannot cover
- * `draft_body_storage` either and the draft column gets the SAME two-line
- * treatment (#1525). What that treatment is NOT: the only protection for a
+ * storage format names Confluence attachments by `ri:filename` /
+ * `diagramName`, which no `/api/attachments/…` URL regex can match — the
+ * enumerator is the only pass that can see THOSE.
+ *
+ * Storage format is NOT URL-free, which is why the draft column gets the SAME
+ * two-line treatment rather than the enumerator alone (review r1, probed):
+ * `htmlToConfluence` rewrites only `img[src^="/api/attachments/"]`
+ * (content-converter.ts), so an `/api/local-attachments/<pageId>/<file>` img
+ * — the local store's product spelling, written by `local-attachment-service`
+ * and rewritten onto that prefix by `page-relocate-service` — survives
+ * conversion VERBATIM into storage format, where `collectAttachmentUrlReferences`
+ * finds it and keeps it in the LOCAL store's set, which the confluence-only
+ * enumerator can never do. Pinned by the `draft-storage-url.png` /
+ * `draft-local-url.png` assertions in the integration test.
+ *
+ * What the treatment is NOT: the only protection for a
  * draft-only draw.io diagram. Every persisting caller of `confluenceToHtml`
  * passes a pageId (8 of 8 at this head), so the macro is rendered as
  * `<img src="/api/attachments/<pageId>/<name>.png">` — the `#drawio:<name>`
