@@ -67,8 +67,11 @@ describe.skipIf(!dbAvailable)('Migration 109 — embedding_compare_judgements pe
   });
 
   it('one admin re-judging the same query still UPDATEs in place — no row growth', async () => {
-    // The mutation guard on the migration: drop the old constraint and forget
-    // to create the new one and this reds with 2 rows.
+    // The mutation guard on the migration: drop the old constraint and forget to
+    // create the new one and this reds with Postgres 42P10 ("there is no unique
+    // or exclusion constraint matching the ON CONFLICT specification") — the
+    // upsert cannot infer an arbiter index, so it throws on the FIRST insert and
+    // no second row is ever reached.
     await seedUsers();
     await judge(ADMIN_A, 'live');
     await judge(ADMIN_A, 'candidate');

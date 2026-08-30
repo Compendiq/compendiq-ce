@@ -531,7 +531,12 @@ export interface JudgedVerdict {
 export interface ShadowCompareJudgementsView {
   /** run queryId → recorded side, for the queries of THIS run. */
   judgements: Record<string, ShadowCompareJudgementSide>;
-  /** Computed over every stored judgement for the run's model pair. */
+  /**
+   * Computed over ONE judgement per query for the run's model pair — the most
+   * recently judged one, since #1527. NOT every stored judgement: 109 keys the
+   * table per judge, so several rows can exist for one `query_hash` and
+   * `judgementsForReport` reads only the newest of them (whole).
+   */
   verdict: JudgedVerdict;
 }
 
