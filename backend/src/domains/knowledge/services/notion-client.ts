@@ -286,6 +286,11 @@ export class NotionClient {
       if (statusCode === 404) {
         throw new NotionError('Notion resource not found', 404);
       }
+      // GET /v1/pages/:id on a database is 400 validation_error, not 404.
+      // classifySelection / tree parent lookup fall back to getDatabase.
+      if (statusCode === 400 && method === 'GET' && path.startsWith('/v1/pages/')) {
+        throw new NotionError(`Notion API error: HTTP ${statusCode}`, 400);
+      }
       if (statusCode >= 400) {
         const error = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);
         if (!isRetryableStatus(statusCode, method, path)) {

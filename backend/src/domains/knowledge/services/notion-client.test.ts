@@ -98,6 +98,21 @@ describe('NotionClient (fake Notion HTTP)', () => {
     expect(blocks.map((b) => b.id)).toEqual(['b1', 'b2']);
   });
 
+  it('returns 400 when GET /v1/pages is given a database id', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      databases: {
+        'db-1': { object: 'database', id: 'db-1', title: [] },
+      },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+    await expect(client.getPage('db-1')).rejects.toMatchObject({
+      statusCode: 400,
+      message: 'Notion API error: HTTP 400',
+    });
+    await expect(client.getDatabase('db-1')).resolves.toMatchObject({ object: 'database', id: 'db-1' });
+  });
+
   it('paginateAll stops when has_more is false', async () => {
     const pages = [
       { object: 'list' as const, results: [1, 2], next_cursor: 'c1', has_more: true },

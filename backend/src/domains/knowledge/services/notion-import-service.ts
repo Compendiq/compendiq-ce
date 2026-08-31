@@ -681,6 +681,8 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
     }
     return { kind: 'page', page };
   } catch (err) {
+    // Notion returns 400 (not 404) when the id is a database:
+    // "This API doesn't support retrieving databases as pages."
     if (isMissing(err)) {
       try {
         return { kind: 'database', database: await client.getDatabase(id) };
@@ -1352,7 +1354,11 @@ function normalizeNotionId(id: string): string {
 }
 
 function isMissing(err: unknown): boolean {
-  return err instanceof NotionError && (err.statusCode === 404 || err.statusCode === 403);
+  // 400: GET /v1/pages/:id on a database ("doesn't support retrieving databases as pages").
+  return (
+    err instanceof NotionError &&
+    (err.statusCode === 404 || err.statusCode === 403 || err.statusCode === 400)
+  );
 }
 
 function failReason(err: unknown): string {

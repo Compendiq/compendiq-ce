@@ -10,6 +10,7 @@ import {
   NOTION_INLINE_DATABASE_REASON,
   NOTION_ROW_SAMPLE_SIZE,
   fetchNotionWorkspaceTree,
+  rowHasBodyContent,
 } from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
@@ -634,6 +635,48 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     ]);
   });
 
+  it('recommends a table when sampled rows only have empty headings or callouts', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'fhs',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Filesystem Hierarchy'),
+        },
+        {
+          object: 'page',
+          id: 'bin',
+          parent: { type: 'database_id', database_id: 'fhs' },
+          properties: titleProp('/bin'),
+        },
+      ],
+      blockChildren: {
+        bin: [
+          {
+            object: 'block',
+            id: 'bin-heading',
+            type: 'heading_2',
+            heading_2: { rich_text: [] },
+          },
+          {
+            object: 'block',
+            id: 'bin-callout',
+            type: 'callout',
+            callout: { rich_text: [], icon: { type: 'emoji', emoji: '📝' } },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'fhs')).toMatchObject({
+      isWiki: false,
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+  });
+
   it('still resolves the tree when every row sample fails', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
@@ -943,6 +986,37 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(linux?.children.map((c) => c.id)).toContain('tmux');
   });
 
+  it('attaches a child when the missing parent is a database that GET /v1/pages 400s', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      pageErrors: { linux: 400 },
+      databases: {
+        linux: {
+          object: 'database',
+          id: 'linux',
+          title: richTitle('Linux'),
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            Name: { id: 'title', type: 'title' },
+            Verification: { id: 'ver', type: 'verification' },
+          },
+        },
+      },
+      searchResults: [
+        {
+          object: 'page',
+          id: 'tmux',
+          parent: { type: 'page_id', page_id: 'linux' },
+          properties: titleProp('TMUX'),
+        },
+      ],
+    });
+
+    const linux = findById(nodes as TreeNode[], 'linux');
+    expect(linux).toMatchObject({ type: 'database', isWiki: true });
+    expect(linux?.children.map((c) => c.id)).toContain('tmux');
+  });
+
   it('fails the tree when a block-parent walk hits a non-missing Notion error', async () => {
     await expect(
       treeFor({
@@ -1057,5 +1131,31 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
     expect(server!.peakConcurrentLookups).toBeGreaterThan(1);
     expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('child-'))).toHaveLength(8);
+  });
+});
+
+describe('rowHasBodyContent', () => {
+  function list(results: Array<Record<string, unknown>>, hasMore = false) {
+    return { object: 'list' as const, results, next_cursor: null, has_more: hasMore };
+  }
+
+  it('treats an empty heading, callout, or list item as no body', () => {
+    expect(
+      rowHasBodyContent(
+        list([
+          { type: 'heading_2', heading_2: { rich_text: [] } },
+          { type: 'callout', callout: { rich_text: [], icon: { type: 'emoji', emoji: '📝' } } },
+          { type: 'bulleted_list_item', bulleted_list_item: { rich_text: [] } },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('still treats a heading with text as body content', () => {
+    expect(
+      rowHasBodyContent(
+        list([{ type: 'heading_2', heading_2: { rich_text: [{ type: 'text', plain_text: 'Install' }] } }]),
+      ),
+    ).toBe(true);
   });
 });
