@@ -39,8 +39,15 @@ const ISSUE_REF = /^#[1-9][0-9]{2,3}$/;
 const COLOR_FUNCTION = /\b(?:rgb|rgba|hsl|hsla)\(\s*[\d.]/g;
 
 /**
- * Literal Tailwind palette utilities: `text-amber-500`, `bg-blue-600/20`.
- * These are v3 shades on a v4 token palette — nothing remaps them per theme.
+ * Literal Tailwind palette utilities: a `text-` utility on `amber-500`, a `bg-`
+ * utility on `blue-600/20`. These are v3 shades on a v4 token palette — nothing
+ * remaps them per theme.
+ *
+ * Prefix and shade are written apart for the same reason the header above
+ * spells no hexes: Tailwind 4 scans comments for class candidates, so a whole
+ * utility named here compiles a rule — and its `--color-*` theme variable —
+ * into the shipped stylesheet with no callsite anywhere. A bare shade matches
+ * nothing; Tailwind registers no utility under a colour name on its own.
  */
 const LITERAL_SHADE =
   /\b(?:bg|text|border|ring|fill|stroke|from|via|to|shadow|outline|decoration|accent|caret|divide)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g;

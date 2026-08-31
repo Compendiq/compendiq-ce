@@ -578,8 +578,12 @@ the backend side.
   the perceptual threshold, so do not describe it as a warm palette. Its frame
   (gutter, left destination rail, top app header) is near-white `#FAFAF9`, so
   Canvas is no longer the darkest step. Hover, press and selection are three
-  separate tokens rather than one shared fill, and chart colours resolve from
-  tokens at render rather than shipping literal hexes (ADR-010 v0.8, v0.9).
+  separate tokens rather than one shared fill — with a perceptual floor between
+  adjacent states, not just an ordering — and chart colours resolve from tokens
+  at render rather than shipping literal hexes. Embedding is body ink rather
+  than a hue, prose links are underlined at rest for WCAG G183, and `/login`
+  holds the single declared exception to the flat-surface rule through
+  `@utility login-halo` (ADR-010 v0.8, v0.9, v1.0).
   See ADR-010 v0.7 for the roles and the Graphite
   values, v0.8 for Paper's;
   its structural rules continue v0.6, which superseded

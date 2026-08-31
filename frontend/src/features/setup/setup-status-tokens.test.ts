@@ -37,7 +37,16 @@ const css = readFileSync(cssPath, 'utf-8');
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="paper"] {');
 
-/** Literal Tailwind status-colour utilities: `bg-emerald-500/10`, `text-red-300`, … */
+/**
+ * Literal Tailwind status-colour utilities: a `bg-` utility on `emerald-500/10`,
+ * a `text-` utility on `red-300`, and so on.
+ *
+ * Prefix and shade are written apart on purpose. Tailwind 4 scans comments for
+ * class candidates, so a whole utility spelled here compiles a rule — and its
+ * `--color-*` theme variable — into the shipped stylesheet even though nothing
+ * renders it. A bare shade carries the same meaning and matches nothing —
+ * Tailwind registers no utility under a colour name on its own.
+ */
 const LITERAL_SHADE = /\b(?:bg|text|border|ring|fill|stroke|from|via|to)-(?:emerald|green|red|rose|lime)-\d{2,3}\b/;
 
 function sourceFiles(dir: string): string[] {

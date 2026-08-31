@@ -183,8 +183,19 @@ export function mixOklab(a: string, b: string, weight = 0.5): string {
  * The palette's distinct hues, ordered so that the first entries of a ramp are
  * the furthest apart.
  *
- * `--color-status-embedding` is omitted: it is declared equal to
- * `--color-primary` in both themes, so it would contribute a duplicate.
+ * `--color-status-embedding` is omitted, and the reason was re-derived when
+ * that token stopped being a hue. It used to be excluded as a DUPLICATE: it
+ * was declared byte-identical to `--color-primary` in both themes. It now
+ * resolves to `--color-foreground`, so it stays out for three stronger
+ * reasons, any one of which is sufficient:
+ *
+ *  1. Still a duplicate — of `--color-foreground`, which `--color-action`
+ *     already tracks.
+ *  2. It carries no hue at all. `categoricalRamp` below fills entries past
+ *     the base list with oklab midpoints of ADJACENT pairs, so one neutral
+ *     member would desaturate two derived colours as well as its own slot.
+ *  3. These colours are identity FILLS with labels drawn on them. A tile the
+ *     colour of body ink measures 1:1 against the ink on top of it.
  */
 const CATEGORICAL_TOKENS = [
   '--color-info',

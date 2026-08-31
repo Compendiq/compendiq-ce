@@ -38,7 +38,7 @@ export function LocalLoopLogin({ authPanel, controls, edition }: LocalLoopLoginP
       <div className="relative isolate mx-auto flex min-h-full w-full max-w-[1440px] flex-col overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12 lg:py-9">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute left-[8%] top-[12%] -z-10 h-[32rem] w-[32rem] rounded-full bg-primary opacity-[0.08] blur-[120px]"
+          className="login-halo left-[8%] top-[12%] h-[32rem] w-[32rem]"
         />
 
         <LoginBrandHeader controls={controls} edition={edition} />

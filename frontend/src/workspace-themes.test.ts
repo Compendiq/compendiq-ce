@@ -38,6 +38,27 @@ import {
 const cssPath = resolve(__dirname, 'index.css');
 const css = readFileSync(cssPath, 'utf-8');
 
+/** Oklab ΔE — perceptual distance, for claims that a value step is *visible*. */
+function deltaEOk(a: string, b: string): number {
+  const lab = (hex: string) => {
+    const [r, g, bl] = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl);
+    const s2 = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s2,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s2,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s2,
+    ] as const;
+  };
+  const [l1, a1, b1] = lab(a);
+  const [l2, a2, b2] = lab(b);
+  return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
+}
+
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="paper"] {');
 const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
@@ -309,12 +330,55 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       // A state a user cannot see is not a state. 1.05 is the smallest step that
       // survives an IPS panel at 13px; Paper's hover measures 1.081.
       expect(steps[0]!.ratio, `${theme}: hover must be visible against the pane`).toBeGreaterThanOrEqual(1.05);
+
+      // ADJACENT steps, not just ordering. Graphite shipped pressed one step off
+      // hover — ΔE-OK 0.0101 at 1.024:1 — and passed every assertion above it,
+      // because "distinct values in the right order" says nothing about whether a
+      // human can see the difference.
+      //
+      // The floor is 0.014, and it is derived rather than chosen. The usable band
+      // is capped at BOTH ends: hover must stay ≥1.05:1 against the pane, and the
+      // deepest fill must keep the weakest ink (muted-foreground in Paper,
+      // status-inactive in Graphite) at 4.5:1. In Paper that band spans ΔE-OK
+      // 0.048 in total, so the best achievable minimum step is ~0.024 and the
+      // shipped 0.0151 is 63% of the ceiling — pushing closer costs AA headroom
+      // (the optimum lands muted-foreground at 4.51:1 and the edge at 3.19:1,
+      // versus 4.54 and 3.22 today, for a gain of 0.003 nobody can see).
+      // Graphite has more room and ships 0.0241 / 0.0321.
+      //
+      // So 0.014 sits below what the light theme can physically deliver and well
+      // above what failed review. It catches a regression; it does not pretend
+      // there is headroom the arithmetic does not have.
+      for (let i = 1; i < steps.length; i++) {
+        const d = deltaEOk(steps[i]!.value, steps[i - 1]!.value);
+        expect(
+          d,
+          `${theme}: ${steps[i - 1]!.name} → ${steps[i]!.name} is ΔE-OK ${d.toFixed(4)} — imperceptible at 13px`,
+        ).toBeGreaterThanOrEqual(0.014);
+      }
     }
   });
 
   // `--color-muted` is a resting FIELD fill, not a state. It may share a value
   // with a state (Paper: both #ebebea) but it must never be the token a state
   // reads, which is how the four-way collapse happened in the first place.
+  it('keeps the field fill off every state value', () => {
+    // Paper shipped --color-muted and --color-selected both at #ebebea, so an
+    // input resting inside a selected row painted the row's own value.
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const field = token(block, '--color-muted');
+      for (const state of ['--color-pressed', '--color-selected'] as const) {
+        expect(
+          token(block, state),
+          `${theme}: ${state} must not share the resting field fill (${field})`,
+        ).not.toBe(field);
+      }
+    }
+  });
+
   it('keeps the field fill out of the state ladder', () => {
     const navSelection = extractBlock(css, '@utility nav-selection {');
     expect(navSelection, 'nav-selection must paint the selected fill').toMatch(
@@ -434,7 +498,9 @@ describe('Measured contrast — Graphite (dark)', () => {
       'disconnected',
       'inactive',
     ]) {
-      const value = token(darkBlock, `--color-status-${role}`);
+      // resolveToken, not token: `embedding` is an alias onto the body ink since
+      // it left the hue vocabulary, and it must still clear AA on every ground.
+      const value = resolveToken(darkBlock, `--color-status-${role}`);
       for (const [name, surface] of Object.entries(surfaces)) {
         expectContrast(`status-${role} on ${name}`, value, surface, 4.5);
       }
@@ -529,7 +595,7 @@ describe('Measured contrast — Paper (light)', () => {
       'disconnected',
       'inactive',
     ]) {
-      const value = token(lightBlock, `--color-status-${role}`);
+      const value = resolveToken(lightBlock, `--color-status-${role}`);
       for (const [name, surface] of Object.entries(statusGrounds)) {
         expectContrast(`status-${role} on ${name}`, value, surface, 4.5);
       }
@@ -807,6 +873,46 @@ describe('Flat depth model', () => {
     );
   });
 
+  // WCAG 2.1 SC 1.4.1, technique G183: a link that is not underlined at rest
+  // needs >= 3:1 against the SURROUNDING BODY TEXT. This file shipped
+  // `text-decoration: none` on prose links and failed it in both themes — Steel
+  // against body ink measures 2.72:1 (Paper) and 1.94:1 (Graphite) — while every
+  // contrast guard passed the element, because they all measure ink-on-surface.
+  //
+  // The colour route is arithmetically closed: to clear 3:1 against Graphite's
+  // #e7e9eb ink a link needs Y <= 0.238, which measures 3.04:1 on the dark pane
+  // and is unreadable as text. So the assertion is on the DECORATION, and the
+  // ink-on-ink ratio is measured only to prove the underline is load-bearing
+  // rather than decorative.
+  it('underlines prose links at rest, because colour alone cannot carry them', () => {
+    const rule = /\.prose :where\(a\) \{([^}]*)\}/.exec(css);
+    expect(rule, 'no .prose :where(a) rule found').not.toBeNull();
+    const body = rule![1]!;
+    expect(body, 'prose links must not be undecorated at rest').not.toMatch(
+      /text-decoration:\s*none/,
+    );
+    expect(body, 'prose links must declare an underline at rest').toMatch(
+      /text-decoration:\s*underline/,
+    );
+    expect(body, 'the underline colour must come from the accent token').toMatch(
+      /text-decoration-color:[^;]*var\(--color-primary\)/,
+    );
+
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const linkVsBody = contrast(
+        token(block, '--color-primary'),
+        token(block, '--color-foreground'),
+      );
+      expect(
+        linkVsBody,
+        `${theme}: link vs body ink is ${linkVsBody.toFixed(2)}:1 — if this ever reaches 3:1 the underline becomes optional under G183, and this test should be revisited rather than deleted`,
+      ).toBeLessThan(3);
+    }
+  });
+
   // Outlined controls take the MEASURED interactive border, not the quiet
   // hairline used for separators and pane edges.
   it('outlined controls use the interactive border token', () => {
@@ -1078,6 +1184,65 @@ describe('Colour carries meaning, and only its own', () => {
   });
 });
 
+describe('Comments do not outlive the values they describe', () => {
+  // Twice now a critique has used this file's own comments as claims to verify
+  // and found them stale: a ratio computed against a previous token value, and a
+  // hex attributed to the wrong token. Nothing asserted them, so nothing caught
+  // them. The comments are load-bearing documentation here — they explain why
+  // values are what they are — so they get a guard.
+  //
+  // The rule: a hex mentioned inside a theme block's comments must either be a
+  // value currently declared in that block, or be explicitly marked as history.
+  // That is narrow on purpose. It cannot check prose ("5.58:1 on Workspace"), so
+  // it does not pretend to; what it catches is the specific failure that has
+  // actually happened twice — a comment naming a colour the block no longer has.
+  // A sentence is history if it says so in words, carries a date (this file dates
+  // every change note), or names a palette version. Without the date clause the
+  // scan fires on legitimate notes like "Lifted 2026-08-31 from #71717a", which
+  // is exactly the provenance worth keeping.
+  const HISTORY_MARKERS =
+    /\b(was|were|retired|previous|prior|used to|until|replaced|old|earlier|first|lifted|darkened|lightened|deepened|instead of|had|gave|given|pass \d|20\d\d-\d\d-\d\d|v\d\.\d)\b/i;
+
+  for (const [theme, blockName] of [
+    ['graphite', '@theme {'],
+    ['paper', '[data-theme="paper"] {'],
+  ] as const) {
+    it(`${theme}: every hex named in a comment is either current or marked as history`, () => {
+      // Include the comment immediately preceding the block: the staleness a
+      // critique found twice lived in that preamble, not in the declarations.
+      const at = css.indexOf(blockName);
+      expect(at, `${blockName} not found`).toBeGreaterThan(-1);
+      const before = css.slice(0, at);
+      const preambleStart = before.lastIndexOf('/*');
+      const preamble =
+        preambleStart > -1 && before.indexOf('*/', preambleStart) === -1
+          ? before.slice(preambleStart)
+          : '';
+      const block = preamble + extractBlock(css, blockName);
+      const declared = new Set(
+        [...block.matchAll(/:\s*(#[0-9a-fA-F]{3,8})\b/g)].map((m) => m[1]!.toLowerCase()),
+      );
+      const offenders: string[] = [];
+      for (const comment of block.match(/\/\*[\s\S]*?\*\//g) ?? []) {
+        // Sentence-ish granularity, so a marker in one clause does not excuse a
+        // stale hex three sentences later.
+        for (const sentence of comment.split(/(?<=[.;])\s+/)) {
+          for (const m of sentence.matchAll(/(#[0-9a-fA-F]{6})\b/g)) {
+            const hex = m[1]!.toLowerCase();
+            if (declared.has(hex)) continue;
+            if (HISTORY_MARKERS.test(sentence)) continue;
+            offenders.push(`${hex} — "${sentence.replace(/\s+/g, ' ').trim().slice(0, 110)}"`);
+          }
+        }
+      }
+      expect(
+        offenders,
+        `${theme}: these hexes are named as current but are not declared in the block:\n${offenders.join('\n')}`,
+      ).toEqual([]);
+    });
+  }
+});
+
 describe('Colour survives colour-vision deficiency', () => {
   /**
    * The guards above assert that no two semantic hues are equal, and that every
@@ -1158,10 +1323,12 @@ describe('Colour survives colour-vision deficiency', () => {
     return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
   }
 
+  // `status-embedding` is deliberately ABSENT: as of 2026-08-31 it resolves to
+  // `--color-foreground`, i.e. body ink rather than a hue, so it is not a member
+  // of the semantic-colour set this block reasons about. Its own guard is below.
   const ROLES = [
     'status-connected',
     'status-syncing',
-    'status-embedding',
     'status-ai',
     'status-disconnected',
     'status-inactive',
@@ -1204,6 +1371,26 @@ describe('Colour survives colour-vision deficiency', () => {
     ['status-syncing', 'status-inactive'],
   ];
 
+  it('keeps embedding out of the hue vocabulary entirely', () => {
+    // It was Steel — byte-identical to --color-primary — through three critiques,
+    // so ambient telemetry wore the interaction colour and collapsed onto
+    // `connected` under tritanopia at ΔE-OK 0.0399. Hueless had one safe landing
+    // place: pointed at a muted neutral it measured 0.0000–0.0477 from
+    // status-inactive, which would have made "indexing" and "idle" the same
+    // colour. Assert the alias, not a value, so the reasoning survives a retune.
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const decl = new RegExp('--color-status-embedding:\\s*([^;]+);').exec(block);
+      expect(decl, `${theme} must declare --color-status-embedding`).not.toBeNull();
+      expect(
+        decl![1]!.trim(),
+        `${theme}: embedding must resolve to the body ink, not a hue`,
+      ).toBe('var(--color-foreground)');
+    }
+  });
+
   it('separates AI from an informational notice under every simulation', () => {
     for (const [theme, block] of [
       ['graphite', darkBlock],
@@ -1221,13 +1408,15 @@ describe('Colour survives colour-vision deficiency', () => {
   it('keeps the interactive Steel apart from the informational hue under every simulation', () => {
     // Under tritanopia both drift teal, and "passive notice" reading as
     // "clickable" is the one confusion this palette cannot afford: Steel is the
-    // single interaction colour.
+    // single interaction colour. Read `--color-primary` directly — this used to
+    // be measured through `status-embedding`, which was the same value until
+    // embedding stopped being a hue.
     for (const [theme, block] of [
       ['graphite', darkBlock],
       ['paper', lightBlock],
     ] as const) {
-      const pal = palette(block);
-      const worst = worstPair(pal, [['status-embedding', 'info']]);
+      const pal = { ...palette(block), steel: token(block, '--color-primary') };
+      const worst = worstPair(pal, [['steel', 'info']]);
       expect(
         worst.d,
         `${theme}: Steel and the informational hue collapse — ${worst.label} ΔE-OK ${worst.d.toFixed(4)}`,

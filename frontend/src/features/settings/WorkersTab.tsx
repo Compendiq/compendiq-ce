@@ -426,8 +426,23 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
       ) : null}
 
       {usesEmbeddingStream && runNow.isPending && (
+        // `--color-status-embedding` resolves to body ink now (it had been
+        // byte-identical to `--color-primary`, so ambient pipeline telemetry
+        // wore the one colour meaning "you can act on this"). At full strength
+        // the token measures 17.59:1 (Paper) / 14.86:1 (Graphite) on Pane,
+        // which would make this transient progress line the LOUDEST text on a
+        // card whose timing row is muted (5.42 / 7.22:1) and whose emphasised
+        // values sit at 80% ink — an ambient readout outranking the numbers it
+        // annotates. Held at 80% it measures 9.30:1 / 9.81:1: above every
+        // neighbour, far above the 4.5:1 floor for 12px text, and exactly the
+        // emphasis weight the timing row above already uses.
+        //
+        // Hue is not a channel here and never was the only one: `role="status"`
+        // announces it, the Loader2 glyph marks it, and `progressLabel` names
+        // the work. The glyph is what survives `prefers-reduced-motion`, under
+        // which index.css clamps the spin to 0.01ms.
         <div
-          className="flex min-w-0 items-center gap-2 text-xs text-status-embedding"
+          className="flex min-w-0 items-center gap-2 text-xs text-status-embedding/80"
           role="status"
           aria-live="polite"
           data-testid="embedding-run-progress"

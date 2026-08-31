@@ -1171,12 +1171,172 @@ resolves from `--color-foreground` in both themes, asserts operable borders pain
 and carries a new `describe` block that applies Machado matrices in linear light
 and holds floors on the pairs that share a status strip.
 
-**Not done, and deliberately so.** Graphite's quiet hairline stays at 1.20–1.39:1
-— the near-white-frame argument is Paper's, and dark's boundary was not the
-finding. `--color-status-embedding` remains Steel, so ambient pipeline telemetry
-still wears the interaction colour; splitting it is a vocabulary change worth its
-own decision. `compendiq-landing` still carries neither the Steel pair nor this
-ramp.
+**Not done in v0.9, and deliberately so.** Graphite's quiet hairline stays at
+1.20–1.39:1 — the near-white-frame argument is Paper's, and dark's boundary was
+not the finding. `--color-status-embedding` remains Steel, so ambient pipeline
+telemetry still wears the interaction colour; splitting it is a vocabulary change
+worth its own decision. (v1.0 below takes that decision.) `compendiq-landing`
+still carries neither the Steel pair nor this ramp.
+
+### v1.0 — The second critique: what the guards still could not see (2026-08-31)
+
+A re-run of the same dual-assessment critique scored **28/36**, up from 26, with
+P1 count 3 → 1: every v0.9 fix held under independent measurement (Paper's status
+matrix minimum 4.544 with zero sub-floor cells, Graphite zero simulated CVD
+collisions, `ai ↔ info` from 0.0148 to a minimum of 0.0997, all five focus stops
+ringing at ≥5.82:1 under real `Tab` presses). The evidence agent reproduced
+**eleven** independent claims from this file to 2–4 decimal places, which is why
+the following findings can be trusted.
+
+What the second pass exposed is a different class of defect: **the palette's rules
+had become stronger than the surfaces allowed to ignore them.** Both new findings
+are composition failures, not token failures — the tokens measured correctly and
+were guarded; what escaped was a ratio between two inks that no ink-on-surface
+matrix computes, and a sibling paint layer no ancestor-chain compositor can see.
+
+**1. Prose links failed WCAG G183, and colour could not fix it.** `.prose
+:where(a)` shipped `text-decoration: none`, underlining only on hover. G183
+requires ≥3:1 between link text and the **surrounding body text** when a link is
+not underlined at rest; Steel against body ink measures **2.72:1** (Paper) and
+**1.94:1** (Graphite). Every contrast guard passed the element, because they all
+measure ink-on-surface — 6.46:1 here, comfortably AA — and none measured
+ink-on-ink.
+
+Retuning Steel was arithmetically impossible: clearing 3:1 against Graphite's
+`#E7E9EB` ink requires Y ≤ 0.238, and that value measures 3.04:1 on the dark pane,
+i.e. unreadable as text. The underline is the only channel available, so it is now
+permanent at 40% of Steel (full strength on hover) and guarded. The guard asserts
+the *decoration* and measures the ink-on-ink ratio only to prove the underline is
+load-bearing — with a failure message telling a future author to revisit rather
+than delete the test if that ratio ever reaches 3:1.
+
+**2. An undeclared halo on `/login` broke this file's own canon.** Two login
+variants painted a blurred accent disc as raw utilities (`bg-primary
+opacity-[0.08] blur-[120px]`, 512px, plus a violet twin). It contradicted three
+rules stated here — flat surfaces, never a zero-offset halo, and the stated reason
+gradients were removed: *"a moving value under dense 13px text… the same row reads
+at a different contrast at the top of a pane than at the bottom."* That is exactly
+what it did: the hero's lead paragraph ran 5.19:1 on the declared ground and
+**4.648:1** on the painted one. Its deviation from the chassis is ΔE-OK 0.034
+(Paper) / 0.054 (Graphite) — larger than the palette's own deliberate
+hover→selected state step.
+
+The owner's ruling was **declare and measure, not delete.** The login page is not
+a workspace surface: no tree, no document, no dense rows, one paragraph of body
+copy. So `@utility login-halo` now owns the colour, opacity, blur and stacking
+context, the flatness rule carries an explicit exception naming where decoration
+is permitted, and `login-halo-surface.test.ts` composites the halo over the
+chassis **in sRGB** — the space a browser actually blends in — and asserts the
+paragraph's muted ink still clears 4.5:1. Measured worst case at the shipped
+opacity: `#EBEEEF` → 4.648:1 (Paper/steel), `#EFEBF3` → **4.607:1** (Paper/violet,
+the binding case), 7.25:1 and 7.29:1 in Graphite. The guard derives the breach
+point by stepping alpha and asserts it equals 0.10, so the ceiling and this
+paragraph are coupled in both directions.
+
+*A modelling note worth keeping, because it nearly shipped as a permissive guard:*
+compositing this in linear light gives 4.83:1 and would have passed a halo that
+actually fails. Browsers alpha-blend on gamma-encoded bytes. The sRGB model
+reproduces the pixel measurement to within one quantisation step.
+
+**3. Graphite's press state was invisible — and its edge token was the cause.**
+v0.9 split hover/press/selection into three tokens, but Graphite shipped press one
+step off hover: **ΔE-OK 0.0101 at 1.024:1**, which the reviewer could not
+distinguish in rendered 13px rows. The v0.9 guard asserted ordering and
+distinctness but no perceptual floor, so an invisible step passed.
+
+Widening downward was blocked by two other tokens, and the fix was to move THEM
+rather than hug a floor: at the wider selected fill the old
+`--color-border-interactive` (`#71717A`) measured **2.97:1** — the edge that *is*
+the selected state, under 1.4.11 — and `--color-status-inactive` (`#8B8F99`)
+measured 4.44:1. Both were lifted. The dark ladder was compressed because its edge
+token was too dark, not because the state values were wrong.
+
+| State | Token | Graphite v0.9 | Graphite v1.0 | on Pane | ΔE-OK step |
+|---|---|---:|---:|---:|---:|
+| Hover | `--color-accent` | `#1C1D1D` | `#1C1D1D` | 1.070:1 | 0.0292 |
+| Press | `--color-pressed` | `#1E1F21` | `#212226` | 1.138:1 | 0.0241 |
+| Selection | `--color-selected` | `#232427` | `#282A2E` | 1.258:1 | 0.0321 |
+| Interactive border | `--color-border-interactive` | `#71717A` | `#7C7C85` | 4.37:1 | — |
+| Inactive status | `--color-status-inactive` | `#8B8F99` | `#979AA3` | 5.11:1 worst | — |
+
+Paper's rungs were left alone at 0.0180 / 0.0151, and the new floor is **0.014**,
+*derived rather than chosen*: Paper's usable band is capped at both ends — hover
+must stay ≥1.05:1 against the pane, and the deepest fill must keep
+muted-foreground at 4.5:1 — which allows ΔE-OK 0.048 in total, so the best
+possible minimum step is ~0.024 and the shipped 0.0151 is 63% of that ceiling.
+Pushing closer costs AA headroom (the optimum lands muted-foreground at 4.51:1 and
+the edge at 3.19:1, versus 4.54 and 3.22 today) for a gain of 0.003 nobody can
+see. The floor sits below what light can physically deliver and well above what
+failed review.
+
+**4. Embedding left the hue vocabulary.** `--color-status-embedding` was
+byte-identical to `--color-primary` through three critiques, so ambient pipeline
+telemetry wore the one colour that means "you can act on this", and under
+tritanopia it collapsed onto `connected` at ΔE-OK 0.0399. It now resolves to
+`var(--color-foreground)`: an embedding surface is ordinary text plus a progress
+affordance, and the arc from 237–306° carries one role fewer.
+
+Hueless had exactly one safe landing place, and the analysis is the point. Pointed
+at a muted neutral it measured ΔE-OK **0.0000–0.0477** against
+`--color-status-inactive` — "indexing" and "idle" would have become the same
+colour, trading one collision for a worse one. Pointed at the foreground it sits
+0.12–0.16 from every other role. The guard asserts the **alias**, not a value, so
+the reasoning survives a retune, and the CVD block now excludes embedding from the
+hue matrix by construction.
+
+**5. Paper's resting field fill was its selection fill.** `--color-muted` and
+`--color-selected` were both `#EBEBEA`, so an input resting inside a selected row
+painted the row's own value with only its border between them. The field fill goes
+one rung lighter to `#EEEEED`, which also lifts the interactive edge's binding
+ground from 3.22:1 to 3.30:1. Guarded: no state token may share the field value.
+
+**6. Three ratio claims in this file were stale, all from the v0.9 pass.** The
+interactive border's "3.42 accent" was measured against the pass-3 accent, not the
+declared one (3.55 today). A preamble paragraph still described pass-3 state
+values as current. And the light-mode amber remap attributed `#8A5A00` to
+`--color-warning`, when that hex is `--color-code-number` — the quoted ratios were
+arithmetically correct for a colour that was not the one named, and the shipped
+value is *better* than the text claimed (5.89/6.26 versus 5.58/5.93).
+
+Comments here are load-bearing documentation — two critiques in a row used them as
+claims to verify — so they now have a guard. `workspace-themes.test.ts` scans each
+theme block **and its preamble** and fails when a comment names a hex the block no
+longer declares, unless the sentence marks itself as history (a date, a version, a
+past-tense marker). It deliberately does not try to verify prose ratios; it catches
+the failure that has actually happened twice.
+
+**7. Two smaller edges.** `nm-pill-active` marked the current tab with the quiet
+hairline over a pane fill, inside a group that itself sits on `bg-muted` — the
+thinnest cue on screen for "where am I" in a settings grid; it now takes the
+measured interactive edge, while keeping the pane fill, because the fill was never
+the problem (swapping it to the selection fill measured 1.028:1 against the group,
+worse than what it replaced). And the inline-code chip's border, composited from
+two translucent layers, landed at 1.18:1 — below even Graphite's hairline floor —
+so its edge takes `--color-border` at full strength, 1.309:1 on the composited
+chip.
+
+**What the guards learned this time.** Every finding above was invisible to a test
+that measured the right thing in the wrong place. The three new guards therefore
+measure *relationships* rather than values: ink against adjacent ink (G183), a
+composited sibling layer in the space browsers actually blend in, and a perceptual
+floor between adjacent states derived from the band's own arithmetic. A fourth
+guards the documentation itself.
+
+**Corrected in this round.** A claim in v0.9's own record — that 15 literal-palette
+Tailwind utilities ship because the scanner reads comments — was half right. The
+utilities did ship from test-file comments and are now gone, but `index.css` is
+**not** a scanner source: Tailwind does not scan its own input stylesheet, so the
+`.text-amber-*` and `.text-yellow-*` names in this file's remap selectors never
+generated rules at all. Four of six stock colour-variable families left `:root`;
+two remain, generated by live test fixtures rather than prose.
+
+**Still open.** Graphite's quiet hairline stays at 1.20–1.39:1. `--color-primary`
+still carries brand, primary action, link, focus ring and active nav — four roles
+on one hue, now that embedding has left. The blue–violet arc still holds five roles
+(Steel, informational indigo, function syntax, type syntax, AI violet). Paper's
+four residual CVD pairs remain within 0.044 and always will, which is why the
+non-colour channel is mandatory. `compendiq-landing` still carries neither the
+Steel pair nor this ramp.
 
 ---
 

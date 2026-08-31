@@ -114,10 +114,12 @@ benchmark numbers, no named reference customers. Future work must not invent the
   perceptual threshold: it keeps the greys off the cool blue-grey they came from rather than reading as
   warm, and the product should not claim warmth it does not show. The earlier "avoid pure white" rule no
   longer applies to light mode, and Canvas is no longer light mode's darkest step.
-- **Colour is never the only channel for state** (2026-08-30). Seven semantic hues cannot be mutually
+- **Colour is never the only channel for state** (2026-08-30, reaffirmed 2026-08-31 when embedding left the hue vocabulary and became body ink plus a progress affordance). Seven semantic hues cannot be mutually
   separated under colour-vision deficiency while every one clears WCAG AA on a white pane — that is
   arithmetic, not an oversight — so every status indicator also carries an icon, shape, or accessible
-  name, and the palette's job is to reduce how often that channel carries the load alone.
+  name, and the palette's job is to reduce how often that channel carries the load alone. The same rule
+  covers links: an inline citation is underlined, not merely Steel, because colour alone cannot carry it
+  against body ink at any value that stays readable on the pane.
 - A separate marketing site (`compendiq-landing`) exists and is currently on a retired
   palette; cross-surface parity is a known open item, not a constraint on this work.
 

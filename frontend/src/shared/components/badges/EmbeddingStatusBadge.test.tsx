@@ -31,21 +31,67 @@ describe('EmbeddingStatusBadge', () => {
     expect(badge).toHaveAttribute('data-status', 'not_embedded');
   });
 
-  it('renders embedding state with blue styling and pulse animation', () => {
+  // Was: "renders embedding state with blue styling and pulse animation",
+  // asserting the fill at 20% and the ink class. Both assertions died with the
+  // hue: `--color-status-embedding` resolves to body ink now (it had been
+  // byte-identical to `--color-primary`), so there is no blue to assert and
+  // re-stating the ink class would only mirror the stylesheet. What has to
+  // hold instead is the two non-colour channels plus the measured weight
+  // ceiling.
+  it('renders embedding state hueless — label and glyph carry the state', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedding" />);
     const badge = screen.getByTestId('embedding-status-badge');
     expect(badge).toHaveTextContent('Embedding...');
-    expect(badge.className).toContain('text-status-embedding');
-    expect(badge.className).toContain('bg-status-embedding/20');
-    expect(badge.className).toContain('animate-pulse');
     expect(badge).toHaveAttribute('data-status', 'embedding');
+
+    // Channel 1 — a glyph no sibling state renders. This is the one that has
+    // to survive `prefers-reduced-motion: reduce`, under which index.css
+    // clamps every animation to 0.01ms and a single iteration.
+    expect(badge.querySelector('[data-testid="embedding-status-glyph"]')).toBeTruthy();
+    // Channel 2 — motion, a redundant enhancement on top, never the only one.
+    expect(badge.className).toContain('animate-pulse');
+
+    // The measured ceiling, pinned by enumeration so no literal dead utility
+    // has to be written here. An embedding surface may not out-weigh the
+    // `--color-border` hairline (1.414:1 Paper / 1.264:1 Graphite on Pane):
+    // the fill at 20% measured 1.527 / 1.746:1, and any `border-` utility
+    // bound to this token composites over the fill and reaches 1.439 / 1.592:1
+    // at the pill's outer edge. The 10% fill (1.225 / 1.278:1) and the quiet
+    // hairline token are the pair that fits.
+    const utilities = badge.className.split(/\s+/);
+    expect(utilities.filter((c) => c.startsWith('bg-'))).toEqual(['bg-status-embedding/10']);
+    expect(utilities.filter((c) => c.startsWith('border-'))).toEqual(['border-border']);
+  });
+
+  // With `embedding` hueless too, three of the four states are neutral. What
+  // keeps them apart is enumerated here so a future relabel cannot quietly
+  // collapse two of them into the same rendering.
+  it('keeps all four states distinguishable without colour', () => {
+    const signatures = (['not_embedded', 'embedding', 'embedded', 'failed'] as const).map(
+      (status) => {
+        const { unmount } = render(
+          <EmbeddingStatusBadge embeddingStatus={status} onRetry={() => {}} />,
+        );
+        const badge = screen.getByTestId(
+          status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge',
+        );
+        const signature = [
+          badge.textContent,
+          badge.querySelector('[data-testid="embedding-status-glyph"]') ? 'glyph' : '-',
+          badge.querySelector('[data-testid="embedding-retry-button"]') ? 'retry' : '-',
+        ].join('|');
+        unmount();
+        return signature;
+      },
+    );
+    expect(new Set(signatures).size).toBe(4);
   });
 
   // "Embedded <date>" is the resting state of every healthy page — a
   // freshness readout, not an event — so it may not wear the connected green:
   // a permanent green pill on every Details tab dilutes the one hue that
-  // means "a connection is up". The live states (embedding/failed) keep
-  // their reserved hues.
+  // means "a connection is up". `failed` keeps its reserved red; `embedding`
+  // gave its hue up entirely and reads from label, glyph and ink weight.
   it('renders embedded state neutral, not in the connected green', () => {
     render(<EmbeddingStatusBadge embeddingStatus="embedded" />);
     const badge = screen.getByTestId('embedding-status-badge');
