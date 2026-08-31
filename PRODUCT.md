@@ -103,11 +103,18 @@ benchmark numbers, no named reference customers. Future work must not invent the
   reading typography.
 - **Default theme follows the OS**, with a manual override persisted per user. Neither light
   nor dark is a fallback; both are designed and tuned.
-- **Palette commitment (2026-08-20):** Graphite and Paper use the exact eight-role ladder
-  recorded in ADR-010 v0.7, with the desaturated Steel pair (`#86AEC8` dark / `#3F627C`
-  light) as the single brand and interaction accent. Violet remains AI, amber warning,
-  green success, and red failure; these semantic colors are not alternate accents. The
-  document panes avoid near-black and pure white to reduce long-session glare.
+- **Palette commitment (2026-08-20, amended 2026-08-30):** Graphite and Paper use the
+  eight-role ladder recorded in ADR-010 — v0.7 for the roles and Graphite, v0.8 for
+  Paper — with the desaturated Steel pair (`#86AEC8` dark / `#3F627C` light) as the
+  single brand and interaction accent. Violet remains AI, amber warning, green success,
+  and red failure; these semantic colors are not alternate accents. Graphite's document
+  pane stays off near-black to reduce long-session glare. **Paper is a quietly warm neutral with white
+  panes and a near-white frame** (owner decision, 2026-08-30): document, left navigation
+  and context rail are `#FFFFFF`; the frame — gutter, left destination rail, top app
+  header — is `#FAFAF9`, with the hover/selected fill a measured step below white, and the remaining warmth lives in Chrome, Workspace, the fills,
+  the borders and the ink at chroma 0.002–0.007, where the hue is felt and not seen. The
+  earlier "avoid pure white" rule no longer applies to light mode, and Canvas is no longer
+  light mode's darkest step.
 - A separate marketing site (`compendiq-landing`) exists and is currently on a retired
   palette; cross-surface parity is a known open item, not a constraint on this work.
 

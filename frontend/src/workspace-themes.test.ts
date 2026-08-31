@@ -191,7 +191,7 @@ describe('Theme preference follows the OS by default', () => {
   });
 });
 
-describe('Eye-comfort reading surface hierarchy', () => {
+describe('Surface hierarchy — reading comfort in dark, warm paper in light', () => {
   it('lifts the Graphite pane clearly above its near-black workspace', () => {
     const workspace = token(darkBlock, '--color-background');
     const pane = token(darkBlock, '--color-card');
@@ -202,14 +202,131 @@ describe('Eye-comfort reading surface hierarchy', () => {
     expect(luminance(raised)).toBeGreaterThan(luminance(pane));
   });
 
-  it('keeps the Paper pane off pure white while remaining above its workspace', () => {
+  // Paper's Pane is pure white by product decision (2026-08-30): the document,
+  // the left navigation pane and the context rail are #ffffff, and the warm
+  // ramp lives in the frame around them. So the claim here is no longer "the
+  // pane stays off white" — it is that the pane is white, that Workspace stays
+  // BELOW it so the seam survives on value and not only on the hairline, and
+  // that Raised does not try to out-lighten white.
+  it('paints the Paper pane pure white above a warm workspace ground', () => {
     const workspace = token(lightBlock, '--color-background');
     const pane = token(lightBlock, '--color-card');
     const raised = token(lightBlock, '--color-card-elevated');
 
-    expect(pane).not.toBe('#ffffff');
+    expect(pane).toBe('#ffffff');
     expect(luminance(pane)).toBeGreaterThan(luminance(workspace));
-    expect(luminance(pane)).toBeLessThan(luminance(raised));
+    expect(raised).toBe(pane);
+  });
+
+  // Losing the Pane→Raised value step means the overlay shadow is the whole
+  // separation, so it must actually be declared with an offset and a blur —
+  // a flat halo would leave a white popover invisible on a white page.
+  it('carries an offset overlay shadow now that Raised matches Pane in Paper', () => {
+    const m = /--shadow-overlay:\s*([^;]+);/.exec(lightSharedBlock);
+    expect(m, 'the light theme must declare --shadow-overlay').not.toBeNull();
+    expect(m![1]!.trim(), 'the light overlay shadow needs a Y offset and a blur').toMatch(
+      /0 [1-9]\d*px \d+px/,
+    );
+  });
+
+  // Paper is a near-neutral warm ramp: every surface, fill, border and ink under
+  // it sits on the warm side of the hue circle. A cool grey slipping back in is
+  // the regression this guards — it is what the palette was before, and one
+  // stray #f7f7f8 reads as a blue patch against the rest.
+  //
+  // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
+  // destination rail, top app header) three times, landing on #fafaf9, so
+  // asserting a hue rule on it would assert the ramp over the owner's own value.
+  // It gets the stricter check instead — its exact value — which catches drift
+  // in EITHER direction rather than trading one unguarded token for another.
+  // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
+  // now that the owner asked for a darker grey and a fitted palette.
+  const OWNER_PINNED = {
+    '--app-chassis': '#fafaf9',
+  } as const;
+
+  it('keeps the owner-pinned Paper neutral at its exact value', () => {
+    for (const [name, value] of Object.entries(OWNER_PINNED)) {
+      expect(token(lightBlock, name), `${name} is owner-pinned`).toBe(value);
+    }
+  });
+
+  it('keeps every other Paper neutral on the warm side of the hue circle', () => {
+    const neutrals = [
+      '--color-background',
+      '--color-foreground',
+      '--color-secondary',
+      '--color-secondary-foreground',
+      '--color-muted',
+      '--color-muted-foreground',
+      '--color-accent',
+      '--color-border',
+      '--color-border-interactive',
+      '--color-action',
+      '--color-action-hover',
+      '--color-code-bg',
+      '--color-status-inactive',
+      '--app-header-bg',
+    ];
+    for (const name of neutrals) {
+      expect(name in OWNER_PINNED, `${name} is under the ramp, not pinned`).toBe(false);
+      const hex = token(lightBlock, name);
+      const [r, , b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [
+        number,
+        number,
+        number,
+      ];
+      expect(r, `${name} (${hex}) must be warm: red channel above blue`).toBeGreaterThan(b);
+    }
+  });
+
+  // The lesson of the #fdfdfd pass, encoded. With Pane pure white, a state fill
+  // that sits within ~1.05:1 of it is not a state a user can see, and hover on
+  // rows that carry no border is ONLY that fill. 1.10 is the floor this palette
+  // is tuned above (hover 1.12, pressed 1.19), not a value it barely clears.
+  it('keeps the hover and pressed fills separable from the white pane', () => {
+    const pane = token(lightBlock, '--color-card');
+    for (const [role, name] of [
+      ['hover/selected', '--color-accent'],
+      ['pressed/field', '--color-secondary'],
+    ] as const) {
+      const fill = token(lightBlock, name);
+      const ratio = contrast(fill, pane);
+      expect(
+        ratio,
+        `${role} fill ${fill} must separate from Pane ${pane} (measured ${ratio.toFixed(3)}:1)`,
+      ).toBeGreaterThanOrEqual(1.1);
+    }
+    // Press must read as deeper than hover, not land on the same value.
+    expect(luminance(token(lightBlock, '--color-secondary'))).toBeLessThan(
+      luminance(token(lightBlock, '--color-accent')),
+    );
+  });
+
+  // Paper's surfaces must be four distinct steps, in this order. Chrome is the
+  // deepest band, the frame sits just under the document, and Pane is brightest.
+  it('spaces the four Paper surfaces as an ordered ladder', () => {
+    const ys = (['--app-header-bg', '--color-background', '--app-chassis', '--color-card'] as const).map(
+      (name) => luminance(token(lightBlock, name)),
+    );
+    for (let i = 1; i < ys.length; i++) {
+      expect(ys[i]!, `surface ${i} must sit above surface ${i - 1}`).toBeGreaterThan(ys[i - 1]!);
+    }
+  });
+
+  // Selection survived the near-invisible-fill era on this edge plus weight, and
+  // that is still how a selected row is identified at these fill values.
+  it('keeps the interactive edge legible on the hover fill', () => {
+    expectContrast(
+      'border-interactive on the accent fill',
+      token(lightBlock, '--color-border-interactive'),
+      token(lightBlock, '--color-accent'),
+      3,
+    );
+    const navSelection = extractBlock(css, '@utility nav-selection {');
+    expect(navSelection, 'nav-selection must keep its interactive outline').toMatch(
+      /outline:\s*1px solid var\(--color-border-interactive\)/,
+    );
   });
 });
 
