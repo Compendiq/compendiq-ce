@@ -11,7 +11,7 @@ interface ChangeDeskLoginProps {
 
 export function ChangeDeskLogin({ authPanel, controls, edition }: ChangeDeskLoginProps) {
   return (
-    <div className="app-backdrop h-dvh overflow-y-auto text-foreground">
+    <div className="login-backdrop h-dvh overflow-y-auto text-foreground">
       <div className="relative isolate mx-auto flex min-h-full w-full max-w-[1440px] flex-col overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12 lg:py-9">
         <div
           aria-hidden="true"

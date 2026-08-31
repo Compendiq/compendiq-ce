@@ -16,7 +16,7 @@ import { extractBlock, composite } from './test-utils';
  * the five palette guard suites in this directory, and jsdom itself — resolves
  * "the background behind this text" by walking the element's ANCESTOR chain
  * until it finds a non-transparent `background-color`. That walk goes
- * paragraph -> section -> main -> layout root, finds `app-backdrop`, and
+ * paragraph -> section -> main -> layout root, finds `login-backdrop`, and
  * reports the bare chassis. The halo is on a branch the walk never enters, so
  * it is invisible to all of them; it shipped as `bg-primary opacity-[0.08]
  * blur-[120px]` on two components and no guard here so much as saw it. jsdom
@@ -40,8 +40,14 @@ import { extractBlock, composite } from './test-utils';
  *   - A new halo hue added to the utility without being measured: the hues are
  *     READ OUT of the utility block, so a third one is measured automatically
  *     and fails if it does not clear AA over either chassis.
- *   - A retune of `--color-primary`, `--color-status-ai`, `--app-chassis` or
- *     `--color-muted-foreground` that pushes the composited ground under AA.
+ *   - A retune of `--color-primary`, `--color-status-ai`, `--app-login-ground`
+ *     or `--color-muted-foreground` that pushes the composited ground under AA.
+ *   - The login ground being re-pointed at `--app-chassis`. It was the chassis
+ *     until 2026-08-31, when the workspace frame went grey (#EBEAE8) and the
+ *     composite fell to 4.013:1; the surfaces were split so the frame could keep
+ *     moving without dragging the hero under AA (ADR-010 v1.1). This file owns
+ *     the login ground, so a future frame retune is no longer its business —
+ *     and re-merging the two tokens fails right here.
  *
  * WHAT IT CANNOT CATCH
  *   - Geometry. It assumes the worst case — full declared opacity directly
@@ -312,7 +318,7 @@ describe('the halo strength is bounded and the bound is measured', () => {
     const failures: string[] = [];
 
     for (const theme of Object.keys(THEME_BLOCKS) as ThemeName[]) {
-      const chassis = token(theme, '--app-chassis');
+      const chassis = token(theme, '--app-login-ground');
       const ink = token(theme, '--color-muted-foreground');
       for (const { variant, cssVar } of hues) {
         const hue = token(theme, cssVar);
@@ -346,7 +352,7 @@ describe('the halo strength is bounded and the bound is measured', () => {
     const worst = (alpha: number) => {
       let lowest = Infinity;
       for (const theme of Object.keys(THEME_BLOCKS) as ThemeName[]) {
-        const chassis = token(theme, '--app-chassis');
+        const chassis = token(theme, '--app-login-ground');
         const ink = token(theme, '--color-muted-foreground');
         for (const { cssVar } of hues) {
           lowest = Math.min(lowest, contrast(ink, composite(token(theme, cssVar), alpha, chassis)));
@@ -384,7 +390,7 @@ describe('the halo strength is bounded and the bound is measured', () => {
     // be decoration.
     const opacity = declaredOpacity();
     for (const theme of Object.keys(THEME_BLOCKS) as ThemeName[]) {
-      const chassis = token(theme, '--app-chassis');
+      const chassis = token(theme, '--app-login-ground');
       for (const { variant, cssVar } of declaredHues()) {
         const ground = composite(token(theme, cssVar), opacity, chassis);
         expect(ground, `${theme}/${variant}: halo composites to the bare chassis`).not.toBe(

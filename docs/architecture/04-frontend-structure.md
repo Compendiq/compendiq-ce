@@ -566,7 +566,7 @@ the backend side.
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
   **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
-  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#FAFAF9` canvas) — a neutral flat system
+  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#EBEAE8` canvas) — a neutral flat system
   carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
   interaction colour, amber reserved for warning/attention, and violet for AI
   ornament (operable things stay Steel). Surfaces are **flat
@@ -576,19 +576,51 @@ the backend side.
   palette is designed out. Paper's panes — document, left navigation, context
   rail — are pure white; its neutrals sit a hair off neutral toward warm, below
   the perceptual threshold, so do not describe it as a warm palette. Its frame
-  (gutter, left destination rail, top app header) is near-white `#FAFAF9`, so
-  Canvas is no longer the darkest step. Hover, press and selection are three
+  (gutter, left destination rail, top app header) is `#EBEAE8`: the darkest step
+  and a real grey, deepened twice in v1.1 — once when the workspace and
+  context-rail hairlines were removed and the value step became the only thing
+  drawing the card, then again when the owner asked for "more gray" (1.202:1 on
+  Pane, the same rung `--color-selected` occupies). It is the floor of the range:
+  the destination rail's 12px labels are `--color-muted-foreground` on it at
+  4.51:1, so a deeper frame needs the secondary ink darkened first, and
+  `workspace-themes.test.ts` pins that pair. Hover, press and selection are three
   separate tokens rather than one shared fill — with a perceptual floor between
   adjacent states, not just an ordering — and chart colours resolve from tokens
   at render rather than shipping literal hexes. Embedding is body ink rather
   than a hue, prose links are underlined at rest for WCAG G183, and `/login`
   holds the single declared exception to the flat-surface rule through
-  `@utility login-halo` (ADR-010 v0.8, v0.9, v1.0).
+  `@utility login-halo`, over its OWN ground (`--app-login-ground` +
+  `@utility login-backdrop`, `#FAFAF9` in Paper) rather than the workspace frame:
+  the halo's measured AA floor was calibrated against a near-white ground and the
+  grey frame broke it, so the two surfaces were split (ADR-010 v0.8, v0.9, v1.0,
+  v1.1).
   See ADR-010 v0.7 for the roles and the Graphite
-  values, v0.8 for Paper's;
+  values, v0.8 for Paper's, v1.1 for the unlined shell;
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
+- **The shell draws no lines.** The workspace card and the context rail carry no
+  border — inset, radius and the Pane-over-Canvas step draw both — and neither
+  does any pane's own first row: it inherits the pane rather than painting
+  Chrome, and the 48px chrome band across the top of every pane draws no
+  hairline either. That band is now held by HEIGHT alone: the sidebar's chrome
+  row, the article context strip and the inspector's tab row all resolve to
+  exactly 48px so the panes start their content on one y, and
+  `toolbar-rule-alignment.test.ts` fails both when a row loses `h-12` and when
+  one reinstates a `border-b`. Segmented controls follow: the track is fill only
+  (`bg-muted`, no border, seven call sites) and the selected chip's edge — the
+  one line left in the control — is `--color-border-interactive` in both
+  `panel-tab-active` and `nm-pill-active`, because a selected segment's STATE has
+  to clear 1.4.11. The lines that remain are the ones nothing else
+  states: the left navigation's `border-r` (both sides are Pane), card borders
+  (a card paints Pane on a Pane), `--color-border-interactive` on anything
+  operable **except the one owner exception, `nm-composer`** (quiet hairline by
+  explicit decision; focus-within restores a ≥3:1 border plus ring), and the two
+  sticky headers whose own content scrolls under them
+  (`SettingsLayout`'s title strip, `Editor`'s fallback toolbar) plus the pane
+  footers a scrolling list ends against. `app-shell-layout.test.ts` holds a
+  1.08:1 floor under the card's value step, since an unlined card fails
+  silently (ADR-010 v1.1).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
   the outer frame and top app header, Workspace paints navigation, Chrome
   paints internal panel toolbars, and the content pane sits one value step up.

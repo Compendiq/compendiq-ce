@@ -977,7 +977,8 @@ Three changes, and they are separable:
    warmed only in its backgrounds. Steel and the semantic hues (success, warning,
    AI, destructive, informational) did **not** move — they are brand and meaning,
    not neutrals. `--color-status-inactive` did, being neutral grey by role.
-3. **The frame is near-white, and Canvas is no longer the darkest step.** The
+3. **The frame is near-white, and Canvas is no longer the darkest step.**
+   *(Superseded by v0.9: Canvas is `#EBEAE8` and the darkest step again.)* The
    owner set the gutter around the main area, the left destination rail and the
    top app header — all three are `--app-chassis` — to `#F9F8F7`. Paper's order
    is now Chrome → Workspace → Canvas → Pane. The document is still the
@@ -1337,6 +1338,230 @@ on one hue, now that embedding has left. The blue–violet arc still holds five 
 four residual CVD pairs remain within 0.044 and always will, which is why the
 non-colour channel is mandatory. `compendiq-landing` still carries neither the
 Steel pair nor this ramp.
+
+### v1.1 — the shell loses its lines (2026-08-31)
+
+**Decision.** The 1px hairline around the workspace card and the one around the
+detached context rail are removed. Nothing replaces them: the card is drawn by
+the chassis inset, the 12–14px radius, and the Pane-over-Canvas value step.
+
+The owner's reading was that the shell had too many lines and that these two —
+the frame around the work and the frame around the inspector — were the loudest.
+They were also the most redundant: each traced a boundary that the inset and the
+radius already state, and in Graphite a third statement (the value step) as well.
+
+Three consequences follow, and all three are the point:
+
+1. **Canvas moved twice in Paper, ending at `#EBEAE8`.** With no line, the value
+   step is the entire boundary, and at `#FAFAF9` it measured **1.04:1** against
+   the white Pane — not an edge. `#F4F3F1` took it to **1.11:1**, matching the
+   1.10:1 Graphite gets from `#161617` on `#09090A`. The owner then asked for
+   "more gray" and it went to **`#EBEAE8`, 1.20:1** — the same step the
+   hover/selected fill uses, so the frame reads as grey rather than as a lighter
+   white. Paper's ladder returns to v0.7's order and now has real spacing in it:
+   Canvas `#EBEAE8` → Chrome `#F5F5F4` → Workspace `#F8F8F7` → Pane `#FFFFFF`.
+   **`#EBEAE8` is the floor of the range, and the constraint is ink, not taste:**
+   the left destination rail's inactive labels are 12px `--color-muted-foreground`
+   on Canvas, and `#6A6A68` there measures **4.51:1** against 1.4.3's 4.5 — the
+   next step of grey has to be paid for by darkening the secondary ink first.
+   `workspace-themes.test.ts` pins that pair so the rail cannot lose its labels
+   to a later retune. `--color-border-interactive` on Canvas is 3.19:1, still
+   over the 1.4.11 floor.
+2. **The context rail's tab row stopped painting Chrome.** `.app-context-rail
+   .panel-toolbar` inherits the rail, exactly as `.app-sidebar .panel-toolbar`
+   already inherited the pane. While a border traced the rail, a Chrome band at
+   its top edge was fine; without one it measured 1.03:1 against Canvas in
+   Graphite and 1.00:1 in Paper, which dissolved the rail's top 48px and its top
+   corners into the frame and left that row's hairline floating in the gutter.
+   Chrome now belongs to toolbars *inside* a bordered panel (the Library results
+   panels), never to a pane's own first row.
+3. **`--app-shell-border-width` is gone.** It existed only to switch that
+   hairline off below `md`. `app-shell-layout.test.ts` fails if the name returns.
+
+**Ten more hairlines came out of the article inspector**, all of them a second
+statement of a grouping the panel already made with an 11px eyebrow label and
+spacing: the six `divide-y` rules between Page details rows (the "Document
+health" and "Labels" sections in the same panel never had them), the `border-t`
+above Page actions in both the read and edit variants, the one above the More
+actions disclosure, and the one between the outline header and the outline tree —
+where a scroll mask already fades the boundary and the reading-progress bar
+already terminates the header.
+
+**Then the 48px rule came off too, in the same session.** The owner named its
+three instances one by one — the line under the space selector, the line under
+Edit, the line under the inspector's tabs — so the band that ran across the top
+of every pane now draws nothing. The argument for keeping it (it is one line, and
+both surfaces either side of it are the same `--color-card`) was an argument for
+a *seam*, and the owner does not want a seam. What survives is the thing the
+seam was made of: **all three rows still resolve to exactly 48px**, so the panes
+start their content on one y. `toolbar-rule-alignment.test.ts` therefore outlives
+the line — it now holds the height and additionally fails if any one row
+reinstates a `border-b`, because one line back on its own is a rule that starts
+and stops mid-width.
+
+Two mechanical consequences. `PageViewPage`'s read row and `EditorToolbar` move
+from `calc(3rem-1px)` to the full `3rem`: the subtraction existed to fit a row
+plus its parent's hairline into 48, and without the hairline it left the article
+strip a pixel short of the panes beside it. And the space selector — the one
+operable thing left in the sidebar's chrome row — takes a Workspace fill
+(`bg-background`), so the row is read off the control rather than off a rule
+under it. Workspace is the only surface that is *darker than Pane in both
+themes* (1.06:1 either side), and it keeps hover direction honest: the hover
+fill `--color-accent` is darker still, where a `--color-muted` rest fill would
+have made hover *lighten* while every tree row beside it darkens.
+
+**What was kept, and why it is not the same case.** Three families of line are
+load-bearing and were left alone:
+
+- **`app-sidebar`'s `border-r`.** Left navigation and `<main>` deliberately share
+  Pane so the workspace reads as one card; the hairline is the only split.
+- **`nm-card` and panel borders.** A card paints `--color-card` on a pane that is
+  already `--color-card`, in both themes. There the border *is* the card.
+- **`--color-border-interactive` on operable surfaces.** WCAG 1.4.11 non-text
+  contrast, measured from the token file, and the only boundary that survives
+  `forced-colors: active`.
+
+Two lines are kept for a mechanical reason rather than a compositional one, and
+both are **sticky headers over their own scroller**: `SettingsLayout`'s title
+strip and `Editor`'s fallback toolbar. Content passes *under* those, and both
+sides of the boundary are `bg-card`, so removing the line would let paragraphs
+slide into the chrome. `SettingsLayout` is why one `min-h-[calc(3rem-1px)]`
+remains in the codebase. The sidebar and conversation-pane **footers** keep their
+`border-t` for the same reason in the other direction: a scrolling list ends
+against them.
+
+**The segmented controls lost their tracks' borders, and their selected chips
+gained a real edge.** Seven call sites shared one recipe — `rounded-md border
+border-border bg-muted p-0.5` — and the Notes filter track beside them was
+already borderless, so the border was the odd one out rather than the pattern.
+With it gone the track reads on fill alone (`--color-muted` on Pane: 1.19:1
+Paper, 1.07:1 Graphite) and the chip's edge is the only line left in the
+control. That edge therefore moved from `--color-border` to
+`--color-border-interactive` in BOTH `panel-tab-active` and `nm-pill-active` —
+the same correction `nav-selection` already took, and for the same reason: a
+selected segment is an operable component whose STATE must be identifiable
+under 1.4.11, and at 1.27:1 it was not. This is why the shadow-compare picks
+needed a glyph to carry selection at all; the glyph stays as a redundant
+channel, not as the only one.
+
+**One deliberate 1.4.11 exception: `nm-composer`.** The owner asked for the
+assistant's input to read "like the other lines" once the shell's own lines came
+off, and chose the quiet hairline over the floor with the numbers in front of
+them: `--color-border` measures **1.27:1** in Paper where
+`--color-border-interactive` measured 3.84:1, so the resting state no longer
+meets non-text contrast on all six composers (dock, Ask, Improve, Generate,
+Diagram, the URL row). What still carries it: `:focus-within` swaps the border to
+Steel *and* adds a 1px ring, both ≥3:1; the placeholder names the field; the
+send button keeps its own operable edge. The exception is asserted in
+`workspace-themes.test.ts` rather than dropped from the guard list, so restoring
+the interactive token has to come back through that test — and so that nobody
+reads it as drift and copies it to `nm-input` or the buttons. The same box also
+moved from `--radius-md` to `--radius-lg`, matching `nm-card`: the composer is a
+container that grows with its content, not a 32px control, and at 6px it read
+sharper than every card and message bubble around it.
+
+**And the dock lost two more lines.** The `border-t` above the composer drew a
+second rule 10px from the boundary the composer's own box already provides. The
+1px `bg-border` track under the panel header now paints only when there IS a
+header above it: in the inspector's `tab` variant the header is not rendered, so
+that hairline sat directly under the inspector's own chrome row and read as the
+tab row's border coming back one pixel lower. The box stays in flow at
+`bg-transparent` so nothing shifts when a stream starts painting it violet.
+
+**The grey frame collided with v0.9's login halo, and the surfaces were split.**
+`login-halo-surface.test.ts` — added in the same session by the palette
+remediation — composites the login page's 8% halo over the frame and requires
+the hero's 18px lead paragraph to hold 4.5:1 on the result. It was calibrated
+against `#FAFAF9`, where it measures 4.607:1. Against a grey frame it fails:
+4.355:1 at `#F4F3F1` and **4.013:1 at `#EBEAE8`**. The two changes are both
+right and genuinely incompatible at the current secondary ink, so the choice was
+real: darken `--color-muted-foreground` app-wide (to about `#5F5F5D`, which buys
+4.738:1 and makes every muted label heavier), dim the halo to 0.03 and soften the
+frame to `#F0EFED`, or stop making one token serve both surfaces.
+
+The owner chose the split. `--app-login-ground` is now its own token — `#FAFAF9`
+in Paper, the chassis value in Graphite, where the composite measures 7.25:1 and
+nothing forced anything — and `@utility login-backdrop` paints it on the two
+login shells in place of `app-backdrop`. The argument is the one the halo
+amendment already makes: **the login page is not a workspace surface.** It has no
+tree, no document, no dense rows and one paragraph of body copy, so a frame value
+tuned for a workspace has no claim on it. The guard now reads
+`--app-login-ground`, which means the frame can keep moving without dragging the
+hero under AA, and re-pointing the login ground back at `--app-chassis` fails
+there by name.
+
+**Guards.** `app-shell-layout.test.ts` inverts its two card assertions — the
+workspace and rail utilities must now carry no border in any spelling — and adds
+the measurement that replaces them: Pane over Canvas ≥ 1.08:1 in both themes,
+because the failure mode of an unlined card is a silent chassis retune that keeps
+"Canvas below Pane" true while flattening the edge to nothing.
+`workspace-themes.test.ts` re-pins the owner value at `#EBEAE8`, holds muted
+foreground ≥4.5:1 on it for the rail labels, and reorders the
+Paper ladder with Canvas at the bottom. `toolbar-rule-alignment.test.ts` keeps
+the 48px band by height and forbids a `border-b` on any chrome row; it reads
+quoted class strings rather than source lines, so prose naming `panel-toolbar`
+and a ternary's other branch cannot be mistaken for a row's own classes.
+
+### v1.2 — the rule becomes a whisper (2026-08-31)
+
+**Decision.** The owner looked at the result of v1.1 and said the elements that
+still carried a hard hairline should be very slim or gone. Two moves, one new
+token, and a line the pass deliberately did not cross.
+
+1. **`--color-border` softened in both themes**, from `#2A2A2D` → `#222225`
+   (Graphite) and `#D9D9D6` → `#EFEEEC` (Paper): **1.26:1 / 1.41:1 → ~1.15:1
+   against the Pane**. This is the app's structural rule — the left
+   navigation's `border-r`, a card's own ring, list-row dividers, the sticky
+   headers content scrolls under, pane footers, badge and `kbd` edges. Nothing
+   rests on it after v1.1: the shell, the workspace card, the context rail and
+   now the content panes are all drawn by a value step and a radius. Paper
+   stays on the warm side of the ramp (239 R over 236 B).
+2. **The content panes lost their rings.** The two Library results panels
+   (`overflow-hidden rounded-lg bg-card`) and the AI page's options row, message
+   pane and diagram-type row. Each ring was the last statement of a boundary
+   something else already made: the results list has a Chrome header band on
+   top, a divider under every row and the last divider closing the bottom; the
+   AI panes are Pane on the sticky strip's Workspace ground plus a radius. The
+   results headers dropped their own `border-b` at the same time — the band's
+   fill (1.09:1 Paper / 1.11:1 Graphite on Pane) is that edge, which also makes
+   the band Chrome's one remaining home in the app.
+3. **`--doc-rule` is a new token, held at the app rule's pre-softening value**
+   (`#2A2A2D` / `#D9D9D6`), carrying document content only: `.prose` and
+   `.tiptap` table cells — including the `--tw-prose-th-borders` /
+   `--tw-prose-td-borders` / `--tw-prose-hr` / `--tw-prose-quote-borders`
+   typography variables in both prose blocks — the blockquote marker and `hr`.
+   A data grid is content structure, not chrome: at the softened weight a `td`
+   (0.6 alpha of the token) measured **1.09:1** and the table stopped reading as
+   a table. Notion's tables are stronger than its chrome for the same reason.
+
+**The Paper ≥1.35 floor is retired with its reason.** It was added on 2026-08-30
+to pay for the owner-pinned near-white frame, when the quiet line was "the only
+thing drawing the workspace card". v1.1 removed that card's border and deepened
+Canvas to `#EBEAE8`, so the card is drawn by a 1.11:1 value step that
+`app-shell-layout.test.ts` measures at ≥1.08:1. The other half of the old
+argument keeps its test: a Raised surface in Paper shares Pane's pure white
+outright, so an overlay separates on `--color-border-interactive` plus the one
+real shadow — and that assertion now also pins `--color-card-elevated ===
+--color-card`, so the day Raised stops sharing Pane the edge gets revisited.
+
+**What did not move: `--color-border-interactive`.** The loudest lines in the
+app are the resting edges of inputs, selects, ghost buttons, the Library search
+surface and the selected segment of a segmented control. They are also exactly
+the edges WCAG 1.4.11 requires at 3:1 and the only boundary that survives
+`forced-colors: active`. The owner was offered the trade — extend the
+`nm-composer` exception app-wide, edit the rule in `CLAUDE.md` and the contrast
+tests — and declined. Quieting an operable edge stays a decision on the record,
+not a taste pass. One control moved the other way: `graph-picker-input` was a
+text field on the quiet token, which the softening took to 1.16:1, so it now
+carries the interactive edge like every other field.
+
+**Guards.** `workspace-themes.test.ts` adds the three-weight order (app rule <
+document rule < operable edge, measured against the Pane), a 1.20:1 ceiling on
+the app rule with a 1.10:1 floor under it — a divider under 222 library rows
+still has to be findable — and a sweep that fails if anything outside `.prose` /
+`.tiptap` borrows `--doc-rule`. `app-shell-layout.test.ts` gains a `Content
+panes carry no ring` block over the Library and AI sources, the same shape as
+its workspace-card assertions.
 
 ---
 

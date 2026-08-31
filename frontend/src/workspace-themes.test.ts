@@ -256,20 +256,41 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // stray #f7f7f8 reads as a blue patch against the rest.
   //
   // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
-  // destination rail, top app header) three times, landing on #fafaf9, so
-  // asserting a hue rule on it would assert the ramp over the owner's own value.
-  // It gets the stricter check instead — its exact value — which catches drift
-  // in EITHER direction rather than trading one unguarded token for another.
+  // destination rail, top app header) three times on 2026-08-30, landing on
+  // #fafaf9; then #f4f3f1 on 2026-08-31 when the workspace and context-rail
+  // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
+  // against the frame, which is not an edge — and then #ebeae8 the same day,
+  // asked for as "more gray" (1.202:1 on Pane). Asserting a hue rule on it would
+  // assert the ramp over the owner's own value, so it gets the stricter check
+  // instead — its exact value — which catches drift in EITHER direction rather
+  // than trading one unguarded token for another. The card edge is measured in
+  // app-shell-layout.test.ts; the rail's own ink floor is measured below.
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#fafaf9',
+    '--app-chassis': '#ebeae8',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
     for (const [name, value] of Object.entries(OWNER_PINNED)) {
       expect(token(lightBlock, name), `${name} is owner-pinned`).toBe(value);
     }
+  });
+
+  // The left destination rail paints Canvas, and its inactive labels are 12px
+  // --color-muted-foreground on it — normal text, so 1.4.3 wants 4.5:1. This is
+  // the constraint that sets HOW GREY the frame may go: at #ebeae8 the pair
+  // measures 4.51:1, so the next step of grey has to be paid for by darkening
+  // the secondary ink first. Without this guard the rail loses its labels to a
+  // chassis retune nothing else in the suite would notice, because every other
+  // muted-foreground measurement is taken against Pane and Raised.
+  it('keeps the destination rail labels readable on the frame', () => {
+    expectContrast(
+      'muted foreground on Canvas (rail labels)',
+      token(lightBlock, '--color-muted-foreground'),
+      token(lightBlock, '--app-chassis'),
+      4.5,
+    );
   });
 
   it('keeps every other Paper neutral on the warm side of the hue circle', () => {
@@ -396,10 +417,14 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // Paper's surfaces must be four distinct steps, in this order. Chrome is the
-  // deepest band, the frame sits just under the document, and Pane is brightest.
+  // Paper's surfaces must be four distinct steps, in this order: Canvas is the
+  // frame and the deepest step, Chrome one 8-bit step above it (the two are one
+  // family by intent — the frame and the panel bands should not read as separate
+  // greys), Workspace above that, and Pane brightest. Canvas moved under Chrome
+  // on 2026-08-31 when the workspace and rail hairlines came off and the
+  // Canvas/Pane step became the whole card boundary.
   it('spaces the four Paper surfaces as an ordered ladder', () => {
-    const ys = (['--app-header-bg', '--color-background', '--app-chassis', '--color-card'] as const).map(
+    const ys = (['--app-chassis', '--app-header-bg', '--color-background', '--color-card'] as const).map(
       (name) => luminance(token(lightBlock, name)),
     );
     for (let i = 1; i < ys.length; i++) {
@@ -407,21 +432,30 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // With Canvas pinned near-white and Raised sharing Pane's pure white, the
-  // quiet hairline is doing work a value step used to do: it is the only thing
-  // drawing the workspace card, and the overlay edge is half of what separates
-  // a popover from the page. Neither may be softened back.
-  it('pays for the near-white frame with a stronger hairline and overlay edge', () => {
-    const pane = token(lightBlock, '--color-card');
-    const hairline = contrast(token(lightBlock, '--color-border'), pane);
-    expect(
-      hairline,
-      `Paper's hairline measures ${hairline.toFixed(3)}:1 on Pane; the near-white frame needs ≥1.35`,
-    ).toBeGreaterThanOrEqual(1.35);
+  // The ≥1.35 floor this test used to hold on Paper's hairline is gone, and the
+  // reason it existed went with it. It was written when the quiet line was
+  // "the only thing drawing the workspace card" — which stopped being true the
+  // same day: the card is unlined and drawn by the Canvas step (measured in
+  // app-shell-layout.test.ts at ≥1.08:1), and on 2026-08-31 the owner asked for
+  // the surviving hairlines to be very slim or gone. The app rule's new ceiling
+  // and floor live in 'Three line weights, ordered' below.
+  //
+  // What survives here is the other half of that argument, and it is the half
+  // with teeth: a Raised surface in Paper shares Pane's pure white outright, so
+  // an overlay has no value step at all. Its edge is the measured interactive
+  // token plus the offset shadow — never the structural rule.
+  it('separates a Raised overlay from the white pane with the interactive edge', () => {
     const elevated = extractBlock(css, '@utility nm-card-elevated {');
     expect(elevated, 'the overlay edge must be the measured interactive token').toMatch(
       /border:\s*1px solid var\(--color-border-interactive\)/,
     );
+    expect(elevated, 'and it keeps the one real shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay\)/,
+    );
+    expect(
+      token(lightBlock, '--color-card-elevated'),
+      'Raised still shares Pane in Paper — if that changes, revisit the edge',
+    ).toBe(token(lightBlock, '--color-card'));
   });
 
   // Selection is carried by this edge plus weight on top of the deeper fill.
@@ -665,6 +699,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-destructive',
     '--color-destructive-foreground',
     '--color-border',
+    '--doc-rule',
     '--color-border-interactive',
     '--color-ring',
     '--color-success',
@@ -704,6 +739,77 @@ describe('Both themes declare a complete, symmetric token set', () => {
       expect(block).toMatch(/--shadow-overlay:/);
       expect(block).toMatch(/--shadow-overlay-sm:/);
     }
+  });
+});
+
+/**
+ * Three line weights, and each one has a different job. The order between them
+ * is the system; the exact hexes are a taste call the owner has now made three
+ * times, so this asserts the ORDER and one ceiling rather than the values.
+ *
+ * The ceiling is the part worth a test. On 2026-08-31 the owner asked for the
+ * hairlines that survived the shell pass to be very slim or gone, and the app
+ * rule went from 1.26:1 / 1.41:1 on Pane to ~1.15:1 in both themes. Nothing
+ * rests on it any more — the shell, the workspace card, the context rail and
+ * the content panes are all value plus radius, and an overlay takes the
+ * interactive edge — so the failure mode is not "too quiet" but a later pass
+ * quietly re-hardening it to carry a boundary it no longer owns.
+ */
+describe('Three line weights, ordered', () => {
+  const themes = [
+    ['graphite', darkBlock],
+    ['paper', lightBlock],
+  ] as const;
+
+  it('the app rule is quieter than the document rule, which is quieter than the operable edge', () => {
+    for (const [theme, block] of themes) {
+      const pane = token(block, '--color-card');
+      const rule = contrast(token(block, '--color-border'), pane);
+      const doc = contrast(token(block, '--doc-rule'), pane);
+      const operable = contrast(token(block, '--color-border-interactive'), pane);
+      expect(rule, `${theme}: the app rule must stay under the document rule`).toBeLessThan(doc);
+      expect(doc, `${theme}: the document rule must stay under the operable edge`).toBeLessThan(
+        operable,
+      );
+    }
+  });
+
+  it('keeps the app rule a whisper on the pane in both themes', () => {
+    for (const [theme, block] of themes) {
+      const ratio = contrast(token(block, '--color-border'), token(block, '--color-card'));
+      expect(
+        ratio,
+        `${theme}: the structural rule is back to reading as a drawn line (${ratio.toFixed(3)}:1). ` +
+          `It separates; it does not bound. Nothing in the shell needs it to be visible.`,
+      ).toBeLessThanOrEqual(1.2);
+      expect(
+        ratio,
+        `${theme}: the structural rule dissolved (${ratio.toFixed(3)}:1) — a divider under 222 ` +
+          `library rows still has to be findable`,
+      ).toBeGreaterThan(1.1);
+    }
+  });
+
+  // A data grid is content structure, not chrome: at the app rule's weight a
+  // `td` (0.6 alpha of the token) measured 1.09:1 and the table stopped being a
+  // table. The token exists so the app rule can go on softening without taking
+  // document tables with it — which only holds while nothing else borrows it.
+  it('reserves the document rule for document content', () => {
+    const source = stripComments(css);
+    const borrowed: string[] = [];
+    for (const m of source.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (!m[2]!.includes('var(--doc-rule)')) continue;
+      const selector = m[1]!.trim().replace(/\s+/g, ' ');
+      if (!/\.(prose|tiptap)\b/.test(selector)) borrowed.push(selector);
+    }
+    expect(
+      borrowed,
+      `--doc-rule is the document grid's weight, not a second app rule:\n${borrowed.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      source.match(/var\(--doc-rule\)/g)?.length ?? 0,
+      'the --doc-rule sweep matched nothing — its scan is stale',
+    ).toBeGreaterThan(3);
   });
 });
 
@@ -915,10 +1021,48 @@ describe('Flat depth model', () => {
 
   // Outlined controls take the MEASURED interactive border, not the quiet
   // hairline used for separators and pane edges.
+  //
+  // `nm-composer` is a deliberate owner exception as of 2026-08-31: the owner
+  // asked for the assistant's input to read "like the other lines" once the
+  // shell's own lines came off, which spends 1.4.11's resting non-text contrast
+  // (3.836:1 → 1.414:1 in Paper) on that one surface. It is asserted here rather
+  // than dropped from the list, so the exception is a decision on the record and
+  // a `--color-border-interactive` restoration has to come back through this
+  // test. What still carries the floor there is `:focus-within` — Steel border
+  // plus a 1px ring, both ≥3:1 — which the two assertions below pin.
   it('outlined controls use the interactive border token', () => {
-    for (const name of ['nm-button-ghost', 'nm-input', 'nm-composer']) {
+    for (const name of ['nm-button-ghost', 'nm-input']) {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block, `${name} should use --color-border-interactive`).toMatch(
+        /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
+      );
+    }
+  });
+
+  it('the composer keeps the quiet hairline the owner asked for, and a compliant focus state', () => {
+    const block = extractBlock(css, '@utility nm-composer {');
+    expect(block, 'nm-composer is the owner exception: quiet hairline at rest').toMatch(
+      /border:\s*1px\s+solid\s+var\(--color-border\)/,
+    );
+    expect(block, 'focus must swap the border to Steel').toMatch(
+      /border-color:\s*var\(--color-primary\)/,
+    );
+    expect(block, 'focus must add a 1px ring, not only recolour the border').toMatch(
+      /box-shadow:\s*0 0 0 1px var\(--color-primary\)/,
+    );
+    expect(block, 'the composer is a container: it takes the card radius').toMatch(
+      /border-radius:\s*var\(--radius-lg\)/,
+    );
+  });
+
+  // A selected segment is an operable component whose STATE must be
+  // identifiable (1.4.11). Both chip utilities sit on a borderless `bg-muted`
+  // track whose fill step is 1.161:1 (Paper) / 1.070:1 (Graphite), so the chip's
+  // own edge is the only channel that can carry 3:1.
+  it('selected segments carry the interactive edge', () => {
+    for (const name of ['panel-tab-active', 'nm-pill-active']) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      expect(block, `${name} must use --color-border-interactive`).toMatch(
         /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
       );
     }

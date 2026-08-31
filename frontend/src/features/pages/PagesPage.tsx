@@ -1747,8 +1747,16 @@ export function PagesPage() {
               />
             ) : (
               <>
-                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
-                  <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="search-results-context" aria-live="polite">
+                {/* Unlined since 2026-08-31 (ADR-010, second pass). The
+                    results list states its own extent: the Chrome header band
+                    at the top, a row divider under every row, and the last
+                    divider closing the bottom. A ring around all of that was a
+                    third statement of the same boundary — the argument that
+                    took the border off the workspace card and the context
+                    rail — and the header band's fill is what replaces the
+                    header's own `border-b`. */}
+                <div data-testid="library-search-results-panel" className="overflow-hidden rounded-lg bg-card">
+                  <div className="panel-toolbar flex flex-wrap items-center gap-3 px-3 py-2 text-xs text-muted-foreground" data-testid="search-results-context" aria-live="polite">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <input
                         type="checkbox"
@@ -2008,8 +2016,9 @@ export function PagesPage() {
             />
           ) : (
             <>
-              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg border border-border bg-card">
-                <div className="panel-toolbar flex flex-wrap items-center gap-3 border-b border-border px-3 py-2 text-xs text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
+              {/* Unlined, same reasoning as the search results panel above. */}
+              <div data-testid="library-results-panel" className="overflow-hidden rounded-lg bg-card">
+                <div className="panel-toolbar flex flex-wrap items-center gap-3 px-3 py-2 text-xs text-muted-foreground" data-testid="browse-results-context" aria-live="polite">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <input
                       type="checkbox"

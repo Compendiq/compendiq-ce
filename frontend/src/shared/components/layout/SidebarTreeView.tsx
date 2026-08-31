@@ -757,8 +757,10 @@ export function SidebarTreeView({
           className="app-sidebar flex flex-col items-center border-r overflow-hidden"
         >
           {/* Keep the collapsed control in the same 48px chrome row as the
-              expanded main-nav toolbar, so the divider stays on one baseline. */}
-          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center border-b">
+              expanded main-nav toolbar, so both panes start their content on
+              one baseline. No hairline since 2026-08-31 — the height is the
+              alignment now, not a shared line. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center">
             <button
               onClick={() => {
                 if (forceCollapsed && !treeSidebarCollapsed) {
@@ -826,7 +828,7 @@ export function SidebarTreeView({
       )}
     >
       {embedMainNav && (
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
           <button
             onClick={toggleTreeSidebar}
@@ -839,11 +841,13 @@ export function SidebarTreeView({
       </div>
       )}
 
-      {/* Space selector + collapse share the 48px chrome line that the
-          article toolbar and inspector tab row also draw (`h-12` + `border-b`).
+      {/* Space selector + collapse sit in the 48px chrome row the article
+          strip and the inspector tab row also hold. The row draws no line:
+          the selector carries a Workspace fill instead, so the one operable
+          thing in the row is what you see rather than a rule under it.
           Scope lives on the chip; source/key stay in the title. New Space
           stays at the foot of the dropdown. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <div ref={spaceDropdownRef} className="relative min-w-0 flex-1">
           <button
             // Routed through closeSpaceDropdown on the way shut so the filter
@@ -851,7 +855,7 @@ export function SidebarTreeView({
             // filtered list behind whenever you closed with the toggle.
             onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-background px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
             aria-expanded={spaceDropdownOpen}
             title={
               selectedSpaceOption

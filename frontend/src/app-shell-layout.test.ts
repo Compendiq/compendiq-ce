@@ -41,6 +41,11 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 describe('Inset shell tokens', () => {
   it('declares chassis as hex in both themes', () => {
     for (const [theme, block] of [
@@ -73,13 +78,12 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  // Graphite keeps Canvas as its darkest step. Paper does NOT: the owner set the
-  // frame — gutter, left destination rail and top app header — to #f9f8f7
-  // (2026-08-30), which sits just above Workspace. The claim that still matters
-  // in both themes is that the document Pane is the brightest surface and the
-  // frame is not the same value as it, since that is what makes the workspace
-  // card read as a card. Asserting "Canvas is darkest" here would be pinning
-  // v0.7's ladder over the owner's own value.
+  // Graphite keeps Canvas as its darkest step. Paper does NOT rank it that way
+  // either: --color-muted sits below it. The claim that matters in both themes is
+  // that the document Pane is the brightest surface and the frame is a real step
+  // under it, because since 2026-08-31 that step is ALL that makes the workspace
+  // card read as a card — the hairline that used to trace it is gone. The
+  // measured floor is asserted separately below.
   it('keeps the chassis below the pane in both themes, and darkest in Graphite', () => {
     expect(luminance(tokenHex(darkBlock, '--app-chassis'))).toBeLessThan(
       luminance(tokenHex(darkBlock, '--color-background')),
@@ -92,6 +96,24 @@ describe('Inset shell tokens', () => {
         luminance(tokenHex(block, '--app-chassis')),
         `${theme} frame must stay below the document pane`,
       ).toBeLessThan(luminance(tokenHex(block, '--color-card')));
+    }
+  });
+
+  // Since the workspace and rail hairlines came off (2026-08-31), the Pane over
+  // Canvas step is the ONLY thing drawing the card. Both themes were tuned to
+  // land on the same edge — 1.101:1 Graphite, 1.109:1 Paper — and the failure
+  // mode this guards is silent: a chassis retune that keeps "below the pane"
+  // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
+  // was the reason the frame had to be deepened when the line went away).
+  it('keeps the pane a visible step above the frame in both themes', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      expect(
+        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
+        `${theme}: the unlined workspace card needs a readable value step`,
+      ).toBeGreaterThanOrEqual(1.08);
     }
   });
 
@@ -168,11 +190,18 @@ describe('Inset shell utilities', () => {
     );
   });
 
-  it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
+  it('the workspace utility is the detached card: unlined, radiused, unshadowed', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
-    expect(block).toMatch(/border:/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
+    // The card is inset, radiused and a value step above Canvas. A border here
+    // was a third statement of the same boundary and read as a frame drawn
+    // around the work; the owner removed it on 2026-08-31. Retune --app-chassis
+    // if the card stops reading. The width token went with it, so a `1px`
+    // reappearing anywhere in the ladder is caught too.
+    expect(block).not.toMatch(/border:/);
+    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
+    expect(css).not.toMatch(/--app-shell-border-width/);
     expect(block).not.toMatch(/box-shadow:/);
   });
 
@@ -191,11 +220,16 @@ describe('Inset shell utilities', () => {
     expect(css).not.toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
   });
 
-  it('the context rail utility is a bordered, radiused, unshadowed pane', () => {
+  it('the context rail utility is an unlined, radiused, unshadowed pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
-    expect(block).toMatch(/border:/);
     expect(block).toMatch(/border-radius:\s*var\(--app-rail-radius\)/);
+    // Same reasoning as the workspace card: the --app-rail-gap strip of Canvas
+    // and the Pane/Canvas step carry the boundary. Below `md` this element is
+    // the inspector sheet over a dimmed backdrop, where a border would be the
+    // only line on screen.
+    expect(block).not.toMatch(/border:/);
+    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
   });
@@ -226,6 +260,54 @@ describe('Inset shell utilities', () => {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block, `${name} must not use transform`).not.toMatch(/transform:/);
     }
+  });
+});
+
+/**
+ * The same argument, one level in: the shell stopped drawing frames on
+ * 2026-08-31, and the content panes inside it followed the same afternoon when
+ * the owner asked for the remaining hairlines to be very slim or gone.
+ *
+ * These are source guards for the panes whose ring was the LAST statement of a
+ * boundary something else already made — the Library results list (a Chrome
+ * header band on top, a divider under every row, the last divider closing the
+ * bottom) and the AI page's options row and message pane (Pane on the sticky
+ * strip's Workspace ground, plus a radius). A ring returning here is a box
+ * drawn around content that was already legible without one.
+ */
+describe('Content panes carry no ring', () => {
+  const pagesPage = read('features/pages/PagesPage.tsx');
+  const aiPage = read('features/ai/AiAssistantPage.tsx');
+
+  it('the Library results panels are unlined and their header band carries no rule', () => {
+    const panels = [...pagesPage.matchAll(/data-testid="library-(?:search-)?results-panel" className="([^"]*)"/g)];
+    expect(panels.length, 'both Library results panels must be found — this guard is stale').toBe(2);
+    for (const [, classes] of panels) {
+      expect(classes, `results panel must stay unlined: ${classes}`).not.toMatch(/\bborder\b/);
+      expect(classes, 'the panel keeps its clip and radius, which is what draws it').toMatch(
+        /overflow-hidden[\s\S]*rounded-lg/,
+      );
+    }
+    // The header row is `panel-toolbar`: Chrome at 1.09:1 (Paper) / 1.11:1
+    // (Graphite) on the pane. The fill is the boundary, so a `border-b` on the
+    // same edge is a second statement of it.
+    for (const testId of ['search-results-context', 'browse-results-context']) {
+      const row = new RegExp(`className="([^"]*)" data-testid="${testId}"`).exec(pagesPage);
+      expect(row, `${testId} row not found — this guard is stale`).not.toBeNull();
+      expect(row![1]!, `${testId} must keep the Chrome band`).toMatch(/\bpanel-toolbar\b/);
+      expect(row![1]!, `${testId} must not re-add a rule under the band`).not.toMatch(/\bborder-b\b/);
+    }
+  });
+
+  it('the AI options row and message pane are unlined', () => {
+    const messagePane = /className="([^"]*)" data-testid="ai-message-pane"/.exec(aiPage);
+    expect(messagePane, 'the AI message pane was not found — this guard is stale').not.toBeNull();
+    expect(messagePane![1]!, 'the message pane must stay unlined').not.toMatch(/\bborder\b/);
+    expect(messagePane![1]!, 'its radius and the Pane/Workspace step draw it').toMatch(/rounded-xl/);
+
+    const optionsRow = /className="flex flex-wrap items-center gap-x-2 gap-y-2 ([^"]*)"/.exec(aiPage);
+    expect(optionsRow, 'the AI options row was not found — this guard is stale').not.toBeNull();
+    expect(optionsRow![1]!, 'the options row must stay unlined').not.toMatch(/\bborder\b/);
   });
 });
 

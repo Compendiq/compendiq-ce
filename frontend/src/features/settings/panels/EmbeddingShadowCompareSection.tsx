@@ -1162,7 +1162,7 @@ function JudgementRow({
         // than claiming the control cannot be used.
         aria-busy={saving || undefined}
         onKeyDown={moveFocus}
-        className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+        className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5"
       >
         {sides.map(({ side, label }) => {
           const chosen = judged === side;

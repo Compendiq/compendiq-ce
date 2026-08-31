@@ -49,10 +49,12 @@ export function SettingsSidebar({
       transition={reduceEffects ? { duration: 0 } : sidebarSpring}
       className="app-sidebar relative flex flex-col border-r overflow-hidden"
     >
-      {/* Same 48px rule height as SidebarTreeView's — the two sidebars share
-          MainNavStrip precisely so this row cannot drift between routes. */}
+      {/* Same 48px chrome height as SidebarTreeView's — the two sidebars share
+          MainNavStrip precisely so this row cannot drift between routes. The
+          hairline came off with the rest of the 48px rule (2026-08-31); the
+          height is what keeps the panes aligned. */}
       {embedMainNav && (
-        <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+        <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
           <MainNavStripExpanded onNavigate={onNavigate} />
         </div>
       )}

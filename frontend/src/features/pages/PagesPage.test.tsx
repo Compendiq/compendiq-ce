@@ -339,16 +339,16 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('page-search-field')).toHaveClass('w-full', 'library-search-surface');
   });
 
-  it('frames browse results as one table-like work surface', async () => {
+  it('frames browse results as one table-like work surface, without a ring', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
 
     await screen.findByText('Test Page');
-    expect(screen.getByTestId('library-results-panel')).toHaveClass(
-      'overflow-hidden',
-      'rounded-lg',
-      'border',
-      'bg-card',
-    );
+    const panel = screen.getByTestId('library-results-panel');
+    expect(panel).toHaveClass('overflow-hidden', 'rounded-lg', 'bg-card');
+    // The clip, the radius, the Chrome header band and the row dividers draw
+    // this list; the ring came off on 2026-08-31 (ADR-010). The source
+    // guard lives in app-shell-layout.test.ts.
+    expect(panel).not.toHaveClass('border');
   });
 
   it('shows the space name on a list row, not only the key', async () => {

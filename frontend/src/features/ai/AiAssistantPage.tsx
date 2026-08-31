@@ -340,7 +340,10 @@ export function AiAssistantPage() {
         aria-hidden
         className="pointer-events-none absolute inset-0 z-[-1] bg-background"
       />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
+      {/* Unlined (ADR-010, 2026-08-31): this row is Pane on the sticky
+          strip's Workspace ground, so the value step and the radius draw it —
+          the same argument that took the border off the workspace card. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl bg-card px-3 py-2">
         {/* Durable options, and only those (#1361). The model `<select>` went
             with page scope: the model is an admin assignment (ADR-021), not a
             per-question choice, and `modelsError` / `refetchModels` stay on the
@@ -434,7 +437,7 @@ export function AiAssistantPage() {
           laptop lost them entirely, and on mobile they rendered behind the
           composer. min-h-0 lets the flex child actually shrink so the scroll
           container resolves instead of overflowing its parent. */}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border bg-card" data-testid="ai-message-pane">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl bg-card" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant

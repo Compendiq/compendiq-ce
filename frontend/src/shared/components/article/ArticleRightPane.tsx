@@ -995,7 +995,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center border-b border-border">
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -1428,22 +1428,30 @@ export function ArticleRightPane({
           page title. Both were redundant: the article's own H1 is a few pixels
           to the left and never scrolls out from under the context strip, so the
           pane was spending 48px restating it. The tabs are the only thing in
-          this chrome anyone operates, so they take the row, and the rule under
-          it now lands on the same y as the sidebar's and the article strip's —
-          one line across the app instead of three near-misses.
+          this chrome anyone operates, so they take the row.
 
-          `h-12` is the shared height of that line (see SidebarTreeView and
-          PageViewPage's context strip). It is not free space: the segmented
-          control is 34px (28px segments + 2px track inset + 1px borders), so
-          the row has ~7px of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+          No hairline under it since 2026-08-31: the owner took the 48px rule
+          off every pane. The segmented control below carries its own track and
+          border, so the row still reads as chrome without one, and the height
+          survives because the panes' content must still start on one y.
+
+          `h-12` is that shared height (see SidebarTreeView and PageViewPage's
+          context strip). It is not free space: the segmented control is 34px
+          (28px segments + 2px track inset + 1px borders), so the row has ~7px
+          of breathing room and no more. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         {/* Two stable views replace one long mixed-purpose column.
-            Same segmented-control shape as the main nav and the search-mode
-            toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
-            This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
-            a third distinct treatment for the same interaction. */}
+            Same segmented-control shape as the main nav, the settings sub-tabs
+            and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
+            inset, one raised active segment. The track's own `border-border`
+            came off on 2026-08-31 with the rest of the panel's lines — the fill
+            is 1.161:1 on Pane in Paper and carries the boundary alone, which is
+            what the Notes filter track beside it was already doing. The active
+            chip's edge is now the only line in the control, and it moved to
+            --color-border-interactive so the selected state still clears
+            1.4.11 (see `panel-tab-active`). */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
@@ -1630,7 +1638,11 @@ export function ArticleRightPane({
       ) : page ? (
         <div className="px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
-          <dl className="mt-2 divide-y divide-border/45 text-xs">
+          {/* Label/value pairs, no rules. The dividers here drew six lines in a
+              320px pane to separate rows that a 32px rhythm and the
+              muted-label/ink-value contrast already separate — and the sections
+              below ("Document health", "Labels") never had them. */}
+          <dl className="mt-2 text-xs">
             <div className="flex items-center justify-between gap-3 py-2">
               <dt className="text-muted-foreground">Space</dt>
               <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
@@ -1766,7 +1778,7 @@ export function ArticleRightPane({
 
 
       {page && id && aiAutoTagAvailable && editing && (
-        <div className="border-t border-border px-2 pb-3 pt-4" data-testid="article-actions-edit">
+        <div className="px-2 pb-3 pt-5" data-testid="article-actions-edit">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1779,7 +1791,7 @@ export function ArticleRightPane({
       )}
 
       {!editing && page && (
-        <div className="space-y-0.5 border-t border-border px-2 pb-3 pt-4" data-testid="article-actions">
+        <div className="space-y-0.5 px-2 pb-3 pt-5" data-testid="article-actions">
           <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
             Page actions
           </div>
@@ -1819,7 +1831,7 @@ export function ArticleRightPane({
             <span className="truncate">{isPinned ? 'Pinned' : 'Pin'}</span>
           </button>
 
-          <details className="group mt-2 border-t border-border pt-2">
+          <details className="group mt-3">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={13}
@@ -1991,7 +2003,7 @@ export function ArticleRightPane({
         {/* Outline tree — with scroll mask */}
         <div
           ref={expandedTreeRef}
-          className="mt-1 flex-1 overflow-y-auto border-t border-border p-2 scroll-mask"
+          className="mt-1 flex-1 overflow-y-auto p-2 scroll-mask"
           data-testid="article-outline-tree"
         >
         {headings.length === 0 ? (
