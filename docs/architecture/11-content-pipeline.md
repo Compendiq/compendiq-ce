@@ -517,7 +517,11 @@ by `databaseModes` on the import request (`skip` writes nothing at all):
   default for a wiki (`isWikiDatabase()`), and it is also the fallback whenever
   a row turns out to hold page content or cannot be read — `table` mode is
   verified over every row, not over the tree's sample, so flattening can never
-  silently drop a body.
+  silently drop a body. A row *holds* content when any probed block carries
+  visible text, is media or a child page, or **still has children**: a blank
+  toggle or callout wrapping prose is content, not a leftover row template. The
+  probe reads `NOTION_ROW_PROBE_BLOCKS` (8) blocks, because an unread remainder
+  is `has_more`, which counts as content and would refuse the flatten.
 
 `renderDatabaseTable()` is the **single** table builder. The inline
 `child_database` block renderer and the top-level `table`-mode import both call
