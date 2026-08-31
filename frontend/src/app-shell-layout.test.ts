@@ -263,6 +263,54 @@ describe('Inset shell utilities', () => {
   });
 });
 
+/**
+ * The same argument, one level in: the shell stopped drawing frames on
+ * 2026-08-31, and the content panes inside it followed the same afternoon when
+ * the owner asked for the remaining hairlines to be very slim or gone.
+ *
+ * These are source guards for the panes whose ring was the LAST statement of a
+ * boundary something else already made — the Library results list (a Chrome
+ * header band on top, a divider under every row, the last divider closing the
+ * bottom) and the AI page's options row and message pane (Pane on the sticky
+ * strip's Workspace ground, plus a radius). A ring returning here is a box
+ * drawn around content that was already legible without one.
+ */
+describe('Content panes carry no ring', () => {
+  const pagesPage = read('features/pages/PagesPage.tsx');
+  const aiPage = read('features/ai/AiAssistantPage.tsx');
+
+  it('the Library results panels are unlined and their header band carries no rule', () => {
+    const panels = [...pagesPage.matchAll(/data-testid="library-(?:search-)?results-panel" className="([^"]*)"/g)];
+    expect(panels.length, 'both Library results panels must be found — this guard is stale').toBe(2);
+    for (const [, classes] of panels) {
+      expect(classes, `results panel must stay unlined: ${classes}`).not.toMatch(/\bborder\b/);
+      expect(classes, 'the panel keeps its clip and radius, which is what draws it').toMatch(
+        /overflow-hidden[\s\S]*rounded-lg/,
+      );
+    }
+    // The header row is `panel-toolbar`: Chrome at 1.09:1 (Paper) / 1.11:1
+    // (Graphite) on the pane. The fill is the boundary, so a `border-b` on the
+    // same edge is a second statement of it.
+    for (const testId of ['search-results-context', 'browse-results-context']) {
+      const row = new RegExp(`className="([^"]*)" data-testid="${testId}"`).exec(pagesPage);
+      expect(row, `${testId} row not found — this guard is stale`).not.toBeNull();
+      expect(row![1]!, `${testId} must keep the Chrome band`).toMatch(/\bpanel-toolbar\b/);
+      expect(row![1]!, `${testId} must not re-add a rule under the band`).not.toMatch(/\bborder-b\b/);
+    }
+  });
+
+  it('the AI options row and message pane are unlined', () => {
+    const messagePane = /className="([^"]*)" data-testid="ai-message-pane"/.exec(aiPage);
+    expect(messagePane, 'the AI message pane was not found — this guard is stale').not.toBeNull();
+    expect(messagePane![1]!, 'the message pane must stay unlined').not.toMatch(/\bborder\b/);
+    expect(messagePane![1]!, 'its radius and the Pane/Workspace step draw it').toMatch(/rounded-xl/);
+
+    const optionsRow = /className="flex flex-wrap items-center gap-x-2 gap-y-2 ([^"]*)"/.exec(aiPage);
+    expect(optionsRow, 'the AI options row was not found — this guard is stale').not.toBeNull();
+    expect(optionsRow![1]!, 'the options row must stay unlined').not.toMatch(/\bborder\b/);
+  });
+});
+
 describe('AppLayout structure', () => {
   it('wraps the authenticated app in chassis then shell', () => {
     expect(appLayout).toMatch(/data-testid="app-chassis"/);

@@ -432,21 +432,30 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // With Canvas pinned near-white and Raised sharing Pane's pure white, the
-  // quiet hairline is doing work a value step used to do: it is the only thing
-  // drawing the workspace card, and the overlay edge is half of what separates
-  // a popover from the page. Neither may be softened back.
-  it('pays for the near-white frame with a stronger hairline and overlay edge', () => {
-    const pane = token(lightBlock, '--color-card');
-    const hairline = contrast(token(lightBlock, '--color-border'), pane);
-    expect(
-      hairline,
-      `Paper's hairline measures ${hairline.toFixed(3)}:1 on Pane; the near-white frame needs ≥1.35`,
-    ).toBeGreaterThanOrEqual(1.35);
+  // The ≥1.35 floor this test used to hold on Paper's hairline is gone, and the
+  // reason it existed went with it. It was written when the quiet line was
+  // "the only thing drawing the workspace card" — which stopped being true the
+  // same day: the card is unlined and drawn by the Canvas step (measured in
+  // app-shell-layout.test.ts at ≥1.08:1), and on 2026-08-31 the owner asked for
+  // the surviving hairlines to be very slim or gone. The app rule's new ceiling
+  // and floor live in 'Three line weights, ordered' below.
+  //
+  // What survives here is the other half of that argument, and it is the half
+  // with teeth: a Raised surface in Paper shares Pane's pure white outright, so
+  // an overlay has no value step at all. Its edge is the measured interactive
+  // token plus the offset shadow — never the structural rule.
+  it('separates a Raised overlay from the white pane with the interactive edge', () => {
     const elevated = extractBlock(css, '@utility nm-card-elevated {');
     expect(elevated, 'the overlay edge must be the measured interactive token').toMatch(
       /border:\s*1px solid var\(--color-border-interactive\)/,
     );
+    expect(elevated, 'and it keeps the one real shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay\)/,
+    );
+    expect(
+      token(lightBlock, '--color-card-elevated'),
+      'Raised still shares Pane in Paper — if that changes, revisit the edge',
+    ).toBe(token(lightBlock, '--color-card'));
   });
 
   // Selection is carried by this edge plus weight on top of the deeper fill.
@@ -690,6 +699,7 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-destructive',
     '--color-destructive-foreground',
     '--color-border',
+    '--doc-rule',
     '--color-border-interactive',
     '--color-ring',
     '--color-success',
@@ -729,6 +739,77 @@ describe('Both themes declare a complete, symmetric token set', () => {
       expect(block).toMatch(/--shadow-overlay:/);
       expect(block).toMatch(/--shadow-overlay-sm:/);
     }
+  });
+});
+
+/**
+ * Three line weights, and each one has a different job. The order between them
+ * is the system; the exact hexes are a taste call the owner has now made three
+ * times, so this asserts the ORDER and one ceiling rather than the values.
+ *
+ * The ceiling is the part worth a test. On 2026-08-31 the owner asked for the
+ * hairlines that survived the shell pass to be very slim or gone, and the app
+ * rule went from 1.26:1 / 1.41:1 on Pane to ~1.15:1 in both themes. Nothing
+ * rests on it any more — the shell, the workspace card, the context rail and
+ * the content panes are all value plus radius, and an overlay takes the
+ * interactive edge — so the failure mode is not "too quiet" but a later pass
+ * quietly re-hardening it to carry a boundary it no longer owns.
+ */
+describe('Three line weights, ordered', () => {
+  const themes = [
+    ['graphite', darkBlock],
+    ['paper', lightBlock],
+  ] as const;
+
+  it('the app rule is quieter than the document rule, which is quieter than the operable edge', () => {
+    for (const [theme, block] of themes) {
+      const pane = token(block, '--color-card');
+      const rule = contrast(token(block, '--color-border'), pane);
+      const doc = contrast(token(block, '--doc-rule'), pane);
+      const operable = contrast(token(block, '--color-border-interactive'), pane);
+      expect(rule, `${theme}: the app rule must stay under the document rule`).toBeLessThan(doc);
+      expect(doc, `${theme}: the document rule must stay under the operable edge`).toBeLessThan(
+        operable,
+      );
+    }
+  });
+
+  it('keeps the app rule a whisper on the pane in both themes', () => {
+    for (const [theme, block] of themes) {
+      const ratio = contrast(token(block, '--color-border'), token(block, '--color-card'));
+      expect(
+        ratio,
+        `${theme}: the structural rule is back to reading as a drawn line (${ratio.toFixed(3)}:1). ` +
+          `It separates; it does not bound. Nothing in the shell needs it to be visible.`,
+      ).toBeLessThanOrEqual(1.2);
+      expect(
+        ratio,
+        `${theme}: the structural rule dissolved (${ratio.toFixed(3)}:1) — a divider under 222 ` +
+          `library rows still has to be findable`,
+      ).toBeGreaterThan(1.1);
+    }
+  });
+
+  // A data grid is content structure, not chrome: at the app rule's weight a
+  // `td` (0.6 alpha of the token) measured 1.09:1 and the table stopped being a
+  // table. The token exists so the app rule can go on softening without taking
+  // document tables with it — which only holds while nothing else borrows it.
+  it('reserves the document rule for document content', () => {
+    const source = stripComments(css);
+    const borrowed: string[] = [];
+    for (const m of source.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      if (!m[2]!.includes('var(--doc-rule)')) continue;
+      const selector = m[1]!.trim().replace(/\s+/g, ' ');
+      if (!/\.(prose|tiptap)\b/.test(selector)) borrowed.push(selector);
+    }
+    expect(
+      borrowed,
+      `--doc-rule is the document grid's weight, not a second app rule:\n${borrowed.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      source.match(/var\(--doc-rule\)/g)?.length ?? 0,
+      'the --doc-rule sweep matched nothing — its scan is stale',
+    ).toBeGreaterThan(3);
   });
 });
 

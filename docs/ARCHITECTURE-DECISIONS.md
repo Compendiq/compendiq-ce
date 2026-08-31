@@ -1502,6 +1502,67 @@ the 48px band by height and forbids a `border-b` on any chrome row; it reads
 quoted class strings rather than source lines, so prose naming `panel-toolbar`
 and a ternary's other branch cannot be mistaken for a row's own classes.
 
+### v1.2 — the rule becomes a whisper (2026-08-31)
+
+**Decision.** The owner looked at the result of v1.1 and said the elements that
+still carried a hard hairline should be very slim or gone. Two moves, one new
+token, and a line the pass deliberately did not cross.
+
+1. **`--color-border` softened in both themes**, from `#2A2A2D` → `#222225`
+   (Graphite) and `#D9D9D6` → `#EFEEEC` (Paper): **1.26:1 / 1.41:1 → ~1.15:1
+   against the Pane**. This is the app's structural rule — the left
+   navigation's `border-r`, a card's own ring, list-row dividers, the sticky
+   headers content scrolls under, pane footers, badge and `kbd` edges. Nothing
+   rests on it after v1.1: the shell, the workspace card, the context rail and
+   now the content panes are all drawn by a value step and a radius. Paper
+   stays on the warm side of the ramp (239 R over 236 B).
+2. **The content panes lost their rings.** The two Library results panels
+   (`overflow-hidden rounded-lg bg-card`) and the AI page's options row, message
+   pane and diagram-type row. Each ring was the last statement of a boundary
+   something else already made: the results list has a Chrome header band on
+   top, a divider under every row and the last divider closing the bottom; the
+   AI panes are Pane on the sticky strip's Workspace ground plus a radius. The
+   results headers dropped their own `border-b` at the same time — the band's
+   fill (1.09:1 Paper / 1.11:1 Graphite on Pane) is that edge, which also makes
+   the band Chrome's one remaining home in the app.
+3. **`--doc-rule` is a new token, held at the app rule's pre-softening value**
+   (`#2A2A2D` / `#D9D9D6`), carrying document content only: `.prose` and
+   `.tiptap` table cells — including the `--tw-prose-th-borders` /
+   `--tw-prose-td-borders` / `--tw-prose-hr` / `--tw-prose-quote-borders`
+   typography variables in both prose blocks — the blockquote marker and `hr`.
+   A data grid is content structure, not chrome: at the softened weight a `td`
+   (0.6 alpha of the token) measured **1.09:1** and the table stopped reading as
+   a table. Notion's tables are stronger than its chrome for the same reason.
+
+**The Paper ≥1.35 floor is retired with its reason.** It was added on 2026-08-30
+to pay for the owner-pinned near-white frame, when the quiet line was "the only
+thing drawing the workspace card". v1.1 removed that card's border and deepened
+Canvas to `#EBEAE8`, so the card is drawn by a 1.11:1 value step that
+`app-shell-layout.test.ts` measures at ≥1.08:1. The other half of the old
+argument keeps its test: a Raised surface in Paper shares Pane's pure white
+outright, so an overlay separates on `--color-border-interactive` plus the one
+real shadow — and that assertion now also pins `--color-card-elevated ===
+--color-card`, so the day Raised stops sharing Pane the edge gets revisited.
+
+**What did not move: `--color-border-interactive`.** The loudest lines in the
+app are the resting edges of inputs, selects, ghost buttons, the Library search
+surface and the selected segment of a segmented control. They are also exactly
+the edges WCAG 1.4.11 requires at 3:1 and the only boundary that survives
+`forced-colors: active`. The owner was offered the trade — extend the
+`nm-composer` exception app-wide, edit the rule in `CLAUDE.md` and the contrast
+tests — and declined. Quieting an operable edge stays a decision on the record,
+not a taste pass. One control moved the other way: `graph-picker-input` was a
+text field on the quiet token, which the softening took to 1.16:1, so it now
+carries the interactive edge like every other field.
+
+**Guards.** `workspace-themes.test.ts` adds the three-weight order (app rule <
+document rule < operable edge, measured against the Pane), a 1.20:1 ceiling on
+the app rule with a 1.10:1 floor under it — a divider under 222 library rows
+still has to be findable — and a sweep that fails if anything outside `.prose` /
+`.tiptap` borrows `--doc-rule`. `app-shell-layout.test.ts` gains a `Content
+panes carry no ring` block over the Library and AI sources, the same shape as
+its workspace-card assertions.
+
 ---
 
 ## ADR-011: Docker Deployment Architecture

@@ -44,7 +44,9 @@ export function DiagramTypeSelector() {
     ? (diagramType as (typeof DIAGRAM_TYPES)[number])
     : 'flowchart';
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2">
+    /* Unlined like the AI page's own options row: Pane on Workspace plus the
+       radius states it, and the chips inside carry their own edges. */
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-card px-3 py-2">
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">
         Diagram type
       </span>

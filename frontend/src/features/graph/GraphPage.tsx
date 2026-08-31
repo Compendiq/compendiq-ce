@@ -965,7 +965,12 @@ function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePage
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages by title…"
-            className="w-full rounded-lg border border-border bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            // A text field is operable, so its resting edge is the measured
+            // --color-border-interactive one (WCAG 1.4.11, forced-colors), not
+            // the app's structural rule. It was on the quiet token, which the
+            // 2026-08-31 softening pass took to 1.16:1 — under the floor and
+            // now visibly so.
+            className="w-full rounded-lg border border-border-interactive bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
             data-testid="graph-picker-input"
           />
         </div>
