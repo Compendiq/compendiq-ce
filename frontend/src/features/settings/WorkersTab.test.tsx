@@ -326,6 +326,13 @@ describe('WorkersTab', () => {
 
     const progress = await screen.findByTestId('embedding-run-progress');
     expect(progress).toHaveTextContent('1 of 3 pending pages processed');
+    // Non-colour channels, and the ink cap. `--color-status-embedding` resolves
+    // to body ink now, so at full strength this transient line (17.59:1 Paper /
+    // 14.86:1 Graphite on Pane) would be the loudest text on a card whose
+    // timing row is muted (5.42 / 7.22:1). Held at 80% it measures 9.30 /
+    // 9.81:1 — the same emphasis weight the timing row's values already use.
+    expect(progress).toHaveAttribute('role', 'status');
+    expect(progress.className).toContain('text-status-embedding/80');
     expect(within(screen.getByTestId('worker-card-embedding')).getByText('Running')).toBeInTheDocument();
     expect(button).toBeDisabled();
     expect(embeddingFetch).toHaveBeenCalledWith(

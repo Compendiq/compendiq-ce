@@ -1445,7 +1445,7 @@ export function ArticleRightPane({
             and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
             inset, one raised active segment. The track's own `border-border`
             came off on 2026-08-31 with the rest of the panel's lines — the fill
-            is 1.19:1 on Pane in Paper and carries the boundary alone, which is
+            is 1.161:1 on Pane in Paper and carries the boundary alone, which is
             what the Notes filter track beside it was already doing. The active
             chip's edge is now the only line in the control, and it moved to
             --color-border-interactive so the selected state still clears

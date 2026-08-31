@@ -18,10 +18,25 @@ const css = readFileSync(cssPath, 'utf-8');
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="paper"] {');
 
-function token(block: string, name: string): string {
-  const m = new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})\\b`).exec(block);
-  if (!m) throw new Error(`token not found (or not a 6-digit hex): ${name}`);
-  return m[1].toLowerCase();
+function token(block: string, name: string, depth = 0): string {
+  if (depth > 4) throw new Error(`alias chain too deep resolving ${name}`);
+  const m = new RegExp(`${name}:\\s*([^;]+);`).exec(block);
+  if (!m) throw new Error(`token not declared: ${name}`);
+  const value = m[1].trim();
+  // Follow `var()` aliases rather than demanding a literal. `RESERVED` below
+  // names ROLES, and one of them — `--color-status-embedding` — is now
+  // declared as `var(--color-foreground)`: embedding left the hue vocabulary
+  // because it had been byte-identical to `--color-primary`, and pipeline
+  // telemetry was wearing the colour that means "you can act on this".
+  // Resolving keeps this guard's original claim intact ("no caret colour
+  // equals a reserved token") instead of hardcoding the ink token here, where
+  // a later repoint of the alias would silently start checking the wrong hex.
+  const ref = /^var\((--[\w-]+)\)$/.exec(value);
+  if (ref) return token(block, ref[1], depth + 1);
+  if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+    throw new Error(`token is neither a 6-digit hex nor a var() reference: ${name}: ${value}`);
+  }
+  return value.toLowerCase();
 }
 
 function luminance(hex: string): number {

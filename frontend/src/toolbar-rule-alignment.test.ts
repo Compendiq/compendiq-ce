@@ -12,7 +12,7 @@ import { resolve } from 'node:path';
  *
  * Until 2026-08-31 they also drew a shared hairline, which is what made a
  * misalignment obvious — and what made this file necessary. The owner took
- * that rule off every pane (ADR-010 v0.9), so the seam is now invisible while
+ * that rule off every pane (ADR-010 v1.1), so the seam is now invisible while
  * the misalignment is not: the panes' CONTENT still has to start on one y, and
  * a row 6px short now shows up as three near-miss first rows instead of three
  * near-miss lines. So this guard outlives the line it was written for, and it
@@ -90,7 +90,7 @@ describe('the 48px chrome band across the top of every pane', () => {
       expect(
         row,
         `${file}: a chrome row reinstated its border-b. The 48px rule came off ` +
-          `every pane in ADR-010 v0.9 — one pane bringing it back alone is a line ` +
+          `every pane in ADR-010 v1.1 — one pane bringing it back alone is a line ` +
           `that starts and stops mid-width: ${row}`,
       ).not.toMatch(/\bborder-b\b/);
     }
@@ -102,7 +102,7 @@ describe('the 48px chrome band across the top of every pane', () => {
     expect(
       src,
       'the article strip is outside the scroller, so nothing may pass under it ' +
-        'and it needs no hairline (ADR-010 v0.9)',
+        'and it needs no hairline (ADR-010 v1.1)',
     ).not.toMatch(/w-full border-b border-border bg-card/);
   });
 

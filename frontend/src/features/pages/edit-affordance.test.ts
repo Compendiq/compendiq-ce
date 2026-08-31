@@ -49,7 +49,7 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/text-xs/);
     expect(editButton()).not.toMatch(/max-sm:min-h-11/);
     // The chassis row owns the whole 48px band now that the strip draws no
-    // hairline under it (ADR-010 v0.9); it was 48 minus that border before.
+    // hairline under it (ADR-010 v1.1); it was 48 minus that border before.
     expect(source).toContain('min-h-12');
   });
 

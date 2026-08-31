@@ -5,6 +5,15 @@ import { apiFetch } from '../../../shared/lib/api';
 import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 import { cn } from '../../../shared/lib/cn';
 import type { DashboardProps } from './AnalyticsPage';
+import { useThemeColors } from '../../../shared/hooks/use-theme-colors';
+import type { ReadThemeColor } from '../../../shared/lib/theme-colors';
+import {
+  CHART_GRID_STROKE,
+  CHART_LEGEND_WRAPPER_STYLE,
+  CHART_TICK_FILL,
+  CHART_TOOLTIP_CONTENT_STYLE,
+  CHART_TOOLTIP_LABEL_STYLE,
+} from '../../../shared/components/charts/chart-chrome';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -20,6 +29,23 @@ interface AiUsageData {
   modelBreakdown: Array<{ model: string; action: string; count: number; avgDurationMs: number }>;
   errorRate: { total: number; errors: number; rate: number } | null;
 }
+
+// ── Colors ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Series colours, resolved from the palette per theme. These were Tailwind v3
+ * defaults, which follow no theme and fail contrast on the light pane
+ * (v3 emerald-500 measures 2.54:1 on white). Requests are the AI series and
+ * take the AI token; errors take the destructive one. The token bars are the
+ * two halves of one stack, so they only have to stay distinguishable: Steel
+ * and the palette's green.
+ */
+const buildColors = (read: ReadThemeColor) => ({
+  requests: read('--color-status-ai'),
+  errors: read('--color-status-disconnected'),
+  inputTokens: read('--color-primary'),
+  outputTokens: read('--color-status-connected'),
+});
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
@@ -59,6 +85,7 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const aiUsageEnabled = hasFeature('ai_usage_analytics');
 
   const { data, isLoading } = useAiUsage(dateRange, aiUsageEnabled);
+  const colors = useThemeColors(buildColors);
 
   // Feature gate: ai_usage_analytics (separate from outer advanced_analytics)
   if (!aiUsageEnabled) {
@@ -170,13 +197,16 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
               <LineChart data={data.requestsOverTime}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Legend />
-                <Line type="monotone" dataKey="requests" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="errors" stroke="#ef4444" strokeWidth={2} dot={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <YAxis tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
+                <Legend wrapperStyle={CHART_LEGEND_WRAPPER_STYLE} />
+                <Line type="monotone" dataKey="requests" stroke={colors.requests} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="errors" stroke={colors.errors} strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </Suspense>
@@ -188,13 +218,16 @@ export function AiUsageDashboard({ dateRange, onExportPdf }: DashboardProps) {
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={data.tokenConsumption}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                <XAxis dataKey="model" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="inputTokens" name="Input Tokens" fill="#3b82f6" stackId="tokens" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="outputTokens" name="Output Tokens" fill="#10b981" stackId="tokens" radius={[4, 4, 0, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                <XAxis dataKey="model" tick={{ fontSize: 11, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <YAxis tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
+                <Legend wrapperStyle={CHART_LEGEND_WRAPPER_STYLE} />
+                <Bar dataKey="inputTokens" name="Input Tokens" fill={colors.inputTokens} stackId="tokens" radius={[0, 0, 0, 0]} />
+                <Bar dataKey="outputTokens" name="Output Tokens" fill={colors.outputTokens} stackId="tokens" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Suspense>

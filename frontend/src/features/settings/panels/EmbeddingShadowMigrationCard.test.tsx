@@ -120,6 +120,34 @@ describe('EmbeddingShadowMigrationCard (#1116)', () => {
     expect(screen.queryByText(/remaining/i)).toBeNull();
   });
 
+  // The border tint that used to mark every phase card is gone. It came from
+  // `--color-status-embedding`, which resolves to body ink now, and at 30% that
+  // measures 1.941:1 (Paper) / 2.431:1 (Graphite) against Pane against the
+  // `--color-border` hairline's 1.414 / 1.264 — a card reporting background
+  // work would have been the most sharply drawn box in a column of ordinary
+  // ones. Lowering the alpha does not rescue it either: the largest ink alpha
+  // under Graphite's ceiling (8%, 1.212:1) is quieter than an untinted card.
+  // So progress is the signal, and the signal is what this asserts — never a
+  // colour class, which would only mirror the stylesheet.
+  it('marks the backfill with a determinate bar, not a border tint', async () => {
+    mockApi({
+      active: true,
+      migration: { phase: 'backfilling', model: 'm', dimensions: 1024, totalPages: 40, backfilledPages: 10, stragglerPages: 30, indexed: true, indexReady: false, startedAt: '2026-08-06T10:00:00.000Z' },
+    });
+    renderCard(null);
+
+    const card = await screen.findByTestId('shadow-migration-card');
+    // The prose keeps the raw pair: it is the accessible readout, which is why
+    // the bar itself is aria-hidden rather than a second announcing widget.
+    expect(card).toHaveTextContent('10/40');
+    // 10 of 40 pages backfilled.
+    const bar = screen.getByTestId('shadow-backfill-progress');
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('25%');
+    // And the card carries no border utility at all — it wears `nm-card`'s
+    // hairline like every other card on the panel.
+    expect(card.className.split(/\s+/).filter((c) => c.startsWith('border'))).toEqual([]);
+  });
+
   it('warns instead of claiming an index when the dimension is past pgvector\'s indexable range (review r5)', async () => {
     // >4000 dimensions builds no HNSW index at all — telling the admin "the
     // new index is built" hides a post-swap sequential scan behind a Swap

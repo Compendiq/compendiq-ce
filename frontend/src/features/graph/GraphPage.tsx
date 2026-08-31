@@ -6,7 +6,16 @@ import { toast } from 'sonner';
 import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useThemeColors } from '../../shared/hooks/use-theme-colors';
+import {
+  categoricalRamp,
+  withAlpha,
+  FALLBACK_INK,
+  FALLBACK_NEUTRAL,
+  FALLBACK_PAPER,
+  type ReadThemeColor,
+} from '../../shared/lib/theme-colors';
+import { isLightTheme, type ThemeId } from '../../stores/theme-store';
 import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
@@ -52,26 +61,18 @@ function isClusterNode(node: GraphNode | ClusterNode): node is ClusterNode {
 
 // ---------- Helpers ----------
 
-const SPACE_COLORS = [
-  '#7c8cf5', '#5cc9a7', '#f59e42', '#e879a8', '#64b5f6',
-  '#ab82e6', '#4dd0a1', '#f4c84b', '#e57373', '#81d4fa',
-  '#ce93d8', '#a5d6a7',
-];
+/**
+ * How many distinct space colours the graph offers before it wraps. Twelve
+ * matches the hand-picked ramp this replaces; past a dozen spaces on one
+ * canvas, colour has stopped being how a reader tells them apart anyway.
+ */
+const SPACE_COLOR_COUNT = 12;
 
-function getSpaceColor(spaceKey: string, spaceKeys: string[]): string {
-  const idx = spaceKeys.indexOf(spaceKey);
-  return SPACE_COLORS[idx % SPACE_COLORS.length] ?? '#7c8cf5';
+function getSpaceColor(spaceKey: string, spaceKeys: string[], ramp: string[]): string {
+  // An unlisted space (indexOf -1) takes the first entry, as it always has.
+  const idx = Math.max(0, spaceKeys.indexOf(spaceKey));
+  return ramp[idx % ramp.length] ?? FALLBACK_NEUTRAL;
 }
-
-const EDGE_COLORS: Record<string, string> = {
-  embedding_similarity: 'rgba(124, 140, 245, 0.35)',
-  label_overlap: 'rgba(92, 201, 167, 0.45)',
-  explicit_link: 'rgba(245, 158, 66, 0.5)',
-  // #362: parent_child edges get a distinct hue and higher opacity so the
-  // hierarchy is legible against the semantic-similarity haze.
-  parent_child: 'rgba(232, 176, 106, 0.7)',
-  cluster_relationship: 'rgba(171, 130, 230, 0.4)',
-};
 
 const MAX_TOOLTIP_LABELS = 5;
 
@@ -99,11 +100,13 @@ const SMALL_GRAPH_NODE_LIMIT = 50;
  */
 const PROBE_PENDING_TIMEOUT_MS = 3000;
 
-// #1257 post-review: these four force-graph props used to be inline closures,
-// re-allocated on every render. react-kapsule diffs props by identity, and its
-// setters call notifyRedraw — so each unrelated re-render (a status poll
-// result, a hover) forced a FULL canvas repaint. They are state-free, so they
-// hoist to module scope where their identity is permanent.
+// #1257 post-review: these three force-graph props used to be inline
+// closures, re-allocated on every render. react-kapsule diffs props by
+// identity, and its setters call notifyRedraw — so each unrelated re-render (a
+// status poll result, a hover) forced a FULL canvas repaint. They are
+// state-free, so they hoist to module scope where their identity is permanent.
+// `linkColor` used to live here too; it is theme-derived now and sits in a
+// useCallback in the component instead.
 const nodeCanvasObjectModeAll = () => 'replace' as const;
 
 function getNodeVal(node: GraphNode | ClusterNode): number {
@@ -112,52 +115,73 @@ function getNodeVal(node: GraphNode | ClusterNode): number {
     : Math.max(1, (node as GraphNode).embeddingCount);
 }
 
-function getLinkColor(link: { type?: string }): string {
-  return EDGE_COLORS[link.type ?? 'embedding_similarity'] ?? 'rgba(255,255,255,0.1)';
-}
-
 function getLinkWidth(link: { score?: number }): number {
   return Math.max(0.5, (link.score ?? 0.5) * 3);
 }
 
-// #941: node text/border colours must adapt to the active theme. On the light
-// theme the previously-hardcoded white label was invisible against the pale
-// surface. Text takes the deep navy ink on light and the cool near-white on
-// dark; borders mirror that so the outline reads on both surfaces.
-//
-// These are the palette's --color-foreground values written as literals:
-// react-force-graph-2d paints to a <canvas> via ctx.fillStyle, which resolves
-// no CSS custom properties. Keep them in step with the tokens in index.css.
-interface GraphCanvasColors {
-  label: string;
-  title: string;
-  badge: string;
-  border: string;
-  borderHover: string;
-  hoverStroke: string;
-}
-
-function getCanvasColors(isLight: boolean): GraphCanvasColors {
-  return isLight
-    ? {
-        // Paper --color-foreground #17181a
-        label: 'rgba(23,24,26,0.85)',
-        title: 'rgba(23,24,26,0.95)',
-        badge: 'rgba(23,24,26,0.7)',
-        border: 'rgba(23,24,26,0.4)',
-        borderHover: 'rgba(23,24,26,0.9)',
-        hoverStroke: 'rgba(23,24,26,0.8)',
-      }
-    : {
-        // Graphite --color-foreground #e4e6e7
-        label: 'rgba(236,238,242,0.85)',
-        title: 'rgba(236,238,242,0.95)',
-        badge: 'rgba(236,238,242,0.7)',
-        border: 'rgba(236,238,242,0.4)',
-        borderHover: 'rgba(236,238,242,0.9)',
-        hoverStroke: 'rgba(236,238,242,0.8)',
-      };
-}
+/**
+ * Canvas and edge colours, resolved from the active theme.
+ *
+ * react-force-graph-2d paints through `ctx.fillStyle`, which resolves no CSS
+ * custom properties, so these have to be read back out of the live palette.
+ * They were copied literals, and they had already drifted: this file carried
+ * both themes' `--color-foreground` from a revision of index.css that has
+ * since been retuned twice.
+ *
+ * The `FALLBACK_*` inks apply only where no stylesheet exists (SSR, jsdom).
+ * Pure black / white on purpose — a copy of either theme's ink is the thing
+ * that goes stale.
+ */
+const buildGraphColors = (read: ReadThemeColor, theme: ThemeId) => {
+  const ink = read('--color-foreground', isLightTheme(theme) ? FALLBACK_INK : FALLBACK_PAPER);
+  const similarityHue = read('--color-info');
+  const labelOverlapHue = read('--color-status-connected');
+  return {
+    label: withAlpha(ink, 0.85),
+    title: withAlpha(ink, 0.95),
+    badge: withAlpha(ink, 0.7),
+    border: withAlpha(ink, 0.4),
+    borderHover: withAlpha(ink, 0.9),
+    hoverStroke: withAlpha(ink, 0.8),
+    /** Ring on the ego-graph's centre node: a highlight, not a fault. */
+    centerStroke: withAlpha(read('--color-status-syncing'), 0.9),
+    /**
+     * Spaces carry no status — a space is not "healthy", its dot only has to
+     * differ from the dot beside it. See `categoricalRamp`.
+     */
+    spaces: categoricalRamp(read, SPACE_COLOR_COUNT),
+    /**
+     * The palette owns no edge tokens, so each relation type takes the token
+     * nearest the hue it replaces and the five stay tellable apart: the
+     * similarity haze was periwinkle → `--color-info`, label overlap mint →
+     * the palette green, explicit links orange → the amber, cluster links
+     * violet → the AI token. `parent_child` moves off the tan it shared with
+     * `explicit_link` onto Steel, which keeps #362's "distinct hue, higher
+     * opacity" promise more honestly than a second amber did. Alphas are
+     * unchanged, so relation weight reads exactly as before.
+     */
+    edges: {
+      embedding_similarity: withAlpha(similarityHue, 0.35),
+      label_overlap: withAlpha(labelOverlapHue, 0.45),
+      explicit_link: withAlpha(read('--color-status-syncing'), 0.5),
+      parent_child: withAlpha(read('--color-primary'), 0.7),
+      cluster_relationship: withAlpha(read('--color-status-ai'), 0.4),
+    } as Record<string, string>,
+    /**
+     * Legend keys share the edge hues but not their alphas. A 2px swatch at an
+     * edge's 0.35 opacity is imperceptible, and a legend key identifies
+     * something (WCAG 1.4.11 asks 3:1 of such a graphic) — while a canvas of
+     * edges at full opacity would be a wall of colour. Same hue, honest
+     * weight at each size.
+     */
+    edgeLegend: {
+      similarity: similarityHue,
+      labelOverlap: labelOverlapHue,
+    },
+    /** An edge type the API grows that this map does not know yet. */
+    edgeFallback: withAlpha(read('--color-border'), 0.4),
+  };
+};
 
 // ---------- Component ----------
 
@@ -333,10 +357,18 @@ export function GraphPage() {
   const [hoveredNode, setHoveredNode] = useState<(GraphNode | ClusterNode) | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  // #941: derive theme-aware canvas colours so node labels/borders stay
-  // legible on both the dark (Graphite) and light (Paper) themes.
-  const isLight = useIsLightTheme();
-  const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
+  // #941/#1556: derive theme-aware canvas colours so node labels, borders and
+  // edges track the palette on both Graphite and Paper.
+  const graphColors = useThemeColors(buildGraphColors);
+
+  // Theme-derived, so this cannot hoist to module scope with the props below;
+  // keyed on the resolved colours it still only changes identity when the
+  // theme does, not on every render.
+  const linkColor = useCallback(
+    (link: { type?: string }) =>
+      graphColors.edges[link.type ?? 'embedding_similarity'] ?? graphColors.edgeFallback,
+    [graphColors],
+  );
 
   const prefersReducedMotion = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -428,7 +460,7 @@ export function GraphPage() {
       const y = node.y ?? 0;
       const isHovered = hoveredNode?.id === node.id;
       const isCenter = data?.centerId === node.id;
-      const color = getSpaceColor(node.spaceKey, spaceKeys);
+      const color = getSpaceColor(node.spaceKey, spaceKeys, graphColors.spaces);
 
       if (isClusterNode(node)) {
         // Cluster node: larger rounded rect with count badge
@@ -444,7 +476,7 @@ export function GraphPage() {
         ctx.globalAlpha = 1;
 
         // Thicker border for clusters
-        ctx.strokeStyle = isHovered ? canvasColors.borderHover : canvasColors.border;
+        ctx.strokeStyle = isHovered ? graphColors.borderHover : graphColors.border;
         ctx.lineWidth = (isHovered ? 2.5 : 1.5) / globalScale;
         ctx.stroke();
 
@@ -453,14 +485,14 @@ export function GraphPage() {
         ctx.font = `bold ${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = canvasColors.title;
+        ctx.fillStyle = graphColors.title;
         const truncated = node.title.length > 20 ? node.title.slice(0, 17) + '...' : node.title;
         ctx.fillText(truncated, x, y - 3 / globalScale);
 
         // Count badge
         const badgeFontSize = Math.max(9 / globalScale, 1.2);
         ctx.font = `${badgeFontSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = canvasColors.badge;
+        ctx.fillStyle = graphColors.badge;
         ctx.fillText(`${node.articleCount} pages`, x, y + fontSize);
         return;
       }
@@ -477,7 +509,7 @@ export function GraphPage() {
       ctx.fill();
 
       if (isHovered || isCenter) {
-        ctx.strokeStyle = isCenter ? 'rgba(245, 158, 66, 0.9)' : canvasColors.hoverStroke;
+        ctx.strokeStyle = isCenter ? graphColors.centerStroke : graphColors.hoverStroke;
         ctx.lineWidth = (isCenter ? 2 : 1.5) / globalScale;
         ctx.stroke();
       }
@@ -487,12 +519,12 @@ export function GraphPage() {
         ctx.font = `${isHovered || isCenter ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = canvasColors.label;
+        ctx.fillStyle = graphColors.label;
         const truncated = label.length > 30 ? label.slice(0, 27) + '...' : label;
         ctx.fillText(truncated, x, y + size + 2 / globalScale);
       }
     },
-    [spaceKeys, hoveredNode, data?.centerId, canvasColors],
+    [spaceKeys, hoveredNode, data?.centerId, graphColors],
   );
 
   const nodePointerAreaPaint = useCallback(
@@ -740,18 +772,18 @@ export function GraphPage() {
           <span key={sk} className="flex items-center gap-1.5">
             <span
               className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: getSpaceColor(sk, spaceKeys) }}
+              style={{ backgroundColor: getSpaceColor(sk, spaceKeys, graphColors.spaces) }}
             />
             {sk}
           </span>
         ))}
         <span className="ml-4 font-medium">Edges:</span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: '#7c8cf5' }} />
+          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: graphColors.edgeLegend.similarity }} />
           Similarity
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: '#5cc9a7' }} />
+          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: graphColors.edgeLegend.labelOverlap }} />
           Labels
         </span>
       </div>
@@ -796,7 +828,7 @@ export function GraphPage() {
           nodeCanvasObjectMode={nodeCanvasObjectModeAll}
           nodePointerAreaPaint={nodePointerAreaPaint}
           nodeVal={getNodeVal}
-          linkColor={getLinkColor}
+          linkColor={linkColor}
           linkWidth={getLinkWidth}
           linkDirectionalParticles={0}
           onNodeClick={handleNodeClick}

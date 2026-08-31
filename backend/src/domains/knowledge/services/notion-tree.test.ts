@@ -8,8 +8,10 @@ import {
 } from './notion-client.js';
 import {
   NOTION_INLINE_DATABASE_REASON,
+  NOTION_ROW_PROBE_BLOCKS,
   NOTION_ROW_SAMPLE_SIZE,
   fetchNotionWorkspaceTree,
+  rowHasBodyContent,
 } from './notion-tree.js';
 
 const TOKEN = 'secret_tree_ntn_never_echo';
@@ -123,7 +125,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
    * because samples are issued concurrently. Row sampling is the only
    * legitimate caller, so the shape of this log is the invariant: page bodies
    * are never walked (`page_size=100`), rows are only peeked at
-   * (`page_size=2`).
+   * (`page_size=NOTION_ROW_PROBE_BLOCKS`).
    */
   function childRequests(): Array<{ blockId: string; pageSize: number | null }> {
     return server!.requests
@@ -406,7 +408,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(canonical?.skipReason).toBeUndefined();
     expect(canonical?.children.map((child) => child.id)).toContain('row-listed');
     // Classification peeks at the row; nothing walks a page body.
-    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: 2 }]);
+    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: NOTION_ROW_PROBE_BLOCKS }]);
   });
 
 
@@ -450,7 +452,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       rowContent: 'some',
       recommendedMode: 'pages',
     });
-    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: 2 }]);
+    expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: NOTION_ROW_PROBE_BLOCKS }]);
   });
 
   it('spends no row sample on a wiki database — its rows are articles by definition', async () => {
@@ -524,8 +526,8 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       recommendedMode: 'table',
     });
     expect(childRequests()).toEqual([
-      { blockId: 'acme', pageSize: 2 },
-      { blockId: 'globex', pageSize: 2 },
+      { blockId: 'acme', pageSize: NOTION_ROW_PROBE_BLOCKS },
+      { blockId: 'globex', pageSize: NOTION_ROW_PROBE_BLOCKS },
     ]);
   });
 
@@ -564,9 +566,9 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       recommendedMode: 'pages',
     });
     expect(childRequests()).toEqual([
-      { blockId: 'apollo', pageSize: 2 },
-      { blockId: 'gemini', pageSize: 2 },
-      { blockId: 'mercury', pageSize: 2 },
+      { blockId: 'apollo', pageSize: NOTION_ROW_PROBE_BLOCKS },
+      { blockId: 'gemini', pageSize: NOTION_ROW_PROBE_BLOCKS },
+      { blockId: 'mercury', pageSize: NOTION_ROW_PROBE_BLOCKS },
     ]);
   });
 
@@ -629,9 +631,122 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       recommendedMode: 'pages',
     });
     expect(childRequests()).toEqual([
-      { blockId: 'blank-row', pageSize: 2 },
-      { blockId: 'filled-row', pageSize: 2 },
+      { blockId: 'blank-row', pageSize: NOTION_ROW_PROBE_BLOCKS },
+      { blockId: 'filled-row', pageSize: NOTION_ROW_PROBE_BLOCKS },
     ]);
+  });
+
+  it('recommends a table when sampled rows only have empty headings or callouts', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'fhs',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Filesystem Hierarchy'),
+        },
+        {
+          object: 'page',
+          id: 'bin',
+          parent: { type: 'database_id', database_id: 'fhs' },
+          properties: titleProp('/bin'),
+        },
+      ],
+      blockChildren: {
+        bin: [
+          {
+            object: 'block',
+            id: 'bin-heading',
+            type: 'heading_2',
+            heading_2: { rich_text: [] },
+          },
+          {
+            object: 'block',
+            id: 'bin-callout',
+            type: 'callout',
+            callout: { rich_text: [], icon: { type: 'emoji', emoji: '📝' } },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'fhs')).toMatchObject({
+      isWiki: false,
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+  });
+
+  it('reads past a three-block row template instead of calling the remainder content', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'fhs',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Filesystem Hierarchy'),
+        },
+        {
+          object: 'page',
+          id: 'bin',
+          parent: { type: 'database_id', database_id: 'fhs' },
+          properties: titleProp('/bin'),
+        },
+      ],
+      blockChildren: {
+        // Three blocks: at the old two-block probe the third was unread, and an
+        // unread remainder is `has_more`, which counts as body content.
+        bin: [
+          { object: 'block', id: 'bin-heading', type: 'heading_2', heading_2: { rich_text: [] } },
+          { object: 'block', id: 'bin-callout', type: 'callout', callout: { rich_text: [] } },
+          { object: 'block', id: 'bin-divider', type: 'divider', divider: {} },
+        ],
+      },
+    });
+
+    expect(childRequests()).toEqual([{ blockId: 'bin', pageSize: NOTION_ROW_PROBE_BLOCKS }]);
+    expect(findById(nodes as TreeNode[], 'fhs')).toMatchObject({
+      rowContent: 'none',
+      recommendedMode: 'table',
+    });
+  });
+
+  it('recommends pages when a row body hides inside a blank toggle', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'fhs',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Filesystem Hierarchy'),
+        },
+        {
+          object: 'page',
+          id: 'bin',
+          parent: { type: 'database_id', database_id: 'fhs' },
+          properties: titleProp('/bin'),
+        },
+      ],
+      blockChildren: {
+        bin: [
+          {
+            object: 'block',
+            id: 'bin-toggle',
+            type: 'toggle',
+            has_children: true,
+            toggle: { rich_text: [] },
+          },
+        ],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'fhs')).toMatchObject({
+      rowContent: 'some',
+      recommendedMode: 'pages',
+    });
   });
 
   it('still resolves the tree when every row sample fails', async () => {
@@ -662,7 +777,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
     // Both rows are sampled, each climbing the full retry ladder for its 500.
     expect([...new Set(childRequests().map((request) => request.blockId))].sort()).toEqual(['acme', 'globex']);
-    expect(childRequests().every((request) => request.pageSize === 2)).toBe(true);
+    expect(childRequests().every((request) => request.pageSize === NOTION_ROW_PROBE_BLOCKS)).toBe(true);
     expect(childRequests()).toHaveLength(2 * NOTION_RATE_LIMIT_MAX_ATTEMPTS);
   });
 
@@ -694,7 +809,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     const sampled = childRequests();
     expect(sampled.length).toBeLessThanOrEqual(NOTION_ROW_SAMPLE_SIZE);
     expect(sampled.length).toBeGreaterThan(0);
-    expect(sampled.filter((request) => request.pageSize === 2 && rowIds.includes(request.blockId))).toEqual(sampled);
+    expect(sampled.filter((request) => request.pageSize === NOTION_ROW_PROBE_BLOCKS && rowIds.includes(request.blockId))).toEqual(sampled);
   });
 
   it('reports columns in schema order and counts only direct row pages', async () => {
@@ -739,7 +854,7 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(catalog?.rowCount).toBe(1);
     expect(catalog?.children.map((child) => child.id)).toEqual(['catalog-row', 'catalog-sidebar']);
     expect(findById(nodes as TreeNode[], 'catalog-row')?.children.map((child) => child.id)).toEqual(['row-subpage']);
-    expect(childRequests()).toEqual([{ blockId: 'catalog-row', pageSize: 2 }]);
+    expect(childRequests()).toEqual([{ blockId: 'catalog-row', pageSize: NOTION_ROW_PROBE_BLOCKS }]);
   });
 
   it('does not fetch children of nested list items — Search already listed the pages', async () => {
@@ -943,6 +1058,37 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(linux?.children.map((c) => c.id)).toContain('tmux');
   });
 
+  it('attaches a child when the missing parent is a database that GET /v1/pages 400s', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      pageErrors: { linux: 400 },
+      databases: {
+        linux: {
+          object: 'database',
+          id: 'linux',
+          title: richTitle('Linux'),
+          parent: { type: 'workspace', workspace: true },
+          properties: {
+            Name: { id: 'title', type: 'title' },
+            Verification: { id: 'ver', type: 'verification' },
+          },
+        },
+      },
+      searchResults: [
+        {
+          object: 'page',
+          id: 'tmux',
+          parent: { type: 'page_id', page_id: 'linux' },
+          properties: titleProp('TMUX'),
+        },
+      ],
+    });
+
+    const linux = findById(nodes as TreeNode[], 'linux');
+    expect(linux).toMatchObject({ type: 'database', isWiki: true });
+    expect(linux?.children.map((c) => c.id)).toContain('tmux');
+  });
+
   it('fails the tree when a block-parent walk hits a non-missing Notion error', async () => {
     await expect(
       treeFor({
@@ -1057,5 +1203,58 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(server!.peakConcurrentLookups).toBeLessThanOrEqual(5);
     expect(server!.peakConcurrentLookups).toBeGreaterThan(1);
     expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('child-'))).toHaveLength(8);
+  });
+});
+
+describe('rowHasBodyContent', () => {
+  function list(results: Array<Record<string, unknown>>, hasMore = false) {
+    return { object: 'list' as const, results, next_cursor: null, has_more: hasMore };
+  }
+
+  it('treats an empty heading, callout, or list item as no body', () => {
+    expect(
+      rowHasBodyContent(
+        list([
+          { type: 'heading_2', heading_2: { rich_text: [] } },
+          { type: 'callout', callout: { rich_text: [], icon: { type: 'emoji', emoji: '📝' } } },
+          { type: 'bulleted_list_item', bulleted_list_item: { rich_text: [] } },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('still treats a heading with text as body content', () => {
+    expect(
+      rowHasBodyContent(
+        list([{ type: 'heading_2', heading_2: { rich_text: [{ type: 'text', plain_text: 'Install' }] } }]),
+      ),
+    ).toBe(true);
+  });
+
+  it('treats a blank container that still has children as body content', () => {
+    for (const block of [
+      { type: 'toggle', toggle: { rich_text: [] }, has_children: true },
+      { type: 'callout', callout: { rich_text: [], icon: { type: 'emoji', emoji: '📝' } }, has_children: true },
+      { type: 'bulleted_list_item', bulleted_list_item: { rich_text: [] }, has_children: true },
+      { type: 'paragraph', paragraph: { rich_text: [] }, has_children: true },
+    ]) {
+      expect(rowHasBodyContent(list([block]))).toBe(true);
+    }
+  });
+
+  it('treats a three-block empty template as no body once the probe reads it whole', () => {
+    expect(
+      rowHasBodyContent(
+        list([
+          { type: 'heading_2', heading_2: { rich_text: [] } },
+          { type: 'callout', callout: { rich_text: [] } },
+          { type: 'divider', divider: {} },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('still counts an unread remainder as body content', () => {
+    expect(rowHasBodyContent(list([{ type: 'paragraph', paragraph: { rich_text: [] } }], true))).toBe(true);
   });
 });

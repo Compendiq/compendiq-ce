@@ -193,16 +193,53 @@ export function EmbeddingReembedBanner({ currentDimensions, pending, live }: Pro
     } else if (phase === 'complete') {
       status = 'Complete';
     }
+    const processed = progress?.processed ?? 0;
+    const total = progress?.total ?? 0;
+    // Determinate only where a real pair exists. `embedding` is the one phase
+    // that reports both numbers; `waiting-on-user-locks`, `started` and
+    // `complete` have nothing to divide, and a bar guessing at a width there
+    // would be a claim the server never made.
+    const percent =
+      phase === 'embedding' && total > 0
+        ? Math.min(100, Math.round((processed / total) * 100))
+        : null;
     return (
-      <div
-        // status-embedding, not info: a re-embed in flight IS the embedding
-        // pipeline state, and Steel is its reserved hue (ADR-010).
-        className="nm-card border-status-embedding/30 flex items-center justify-between p-3 text-sm"
-        data-testid="reembed-progress-banner"
-      >
-        <span>
-          Re-embed in progress: <b>{status}</b>
-        </span>
+      // Plain `nm-card`: the border tint is gone. It used to be a `border-`
+      // utility on `status-embedding` at 30% — pale blue-grey while the token
+      // was Steel (1.569:1 Paper / 1.808:1 Graphite against Pane), but the
+      // token resolves to body ink now and the same 30% measures 1.941:1 /
+      // 2.431:1, i.e. 1.4x and 1.9x the `--color-border` hairline every
+      // ordinary card wears (1.414 / 1.264). A card announcing background work
+      // would have been the most sharply drawn box on the panel.
+      //
+      // Lowering the alpha instead does not work: the largest ink alpha that
+      // clears Graphite's 1.264 ceiling is 8% (1.212:1), which is QUIETER than
+      // an untinted card — the marked surface would read as less defined than
+      // an unmarked one. So the state moves off the border entirely and onto
+      // the two channels that say it outright: the sentence below, and a
+      // determinate bar wherever the job reports pages.
+      <div className="nm-card space-y-2 p-3 text-sm" data-testid="reembed-progress-banner">
+        <div className="flex items-center justify-between">
+          <span>
+            Re-embed in progress: <b>{status}</b>
+          </span>
+        </div>
+        {percent !== null && (
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-foreground/10"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-label="Re-embed progress"
+            data-testid="reembed-progress-bar"
+          >
+            <div
+              className="bg-action h-full rounded-full transition-[width] duration-300 ease-out"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        )}
       </div>
     );
   }

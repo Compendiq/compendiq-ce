@@ -204,22 +204,36 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
     const pageMatch = /^\/v1\/pages\/([^/]+)$/.exec(path);
     if (method === 'GET' && pageMatch) {
       await runLookup(() => {
-        const errorStatus = state.pageErrors?.[pageMatch[1]!];
+        const id = pageMatch[1]!;
+        const errorStatus = state.pageErrors?.[id];
         if (errorStatus) {
           send(res, errorStatus, {
             object: 'error',
             status: errorStatus,
-            code: errorStatus >= 500 ? 'internal_server_error' : 'rate_limited',
-            message: 'upstream',
+            code: errorStatus >= 500 ? 'internal_server_error' : errorStatus === 400 ? 'validation_error' : 'rate_limited',
+            message:
+              errorStatus === 400
+                ? "This API doesn't support retrieving databases as pages. Please use the retrieve a database endpoint instead."
+                : 'upstream',
           });
           return;
         }
-        const page = state.pages?.[pageMatch[1]!];
-        if (!page) {
-          send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+        const page = state.pages?.[id];
+        if (page) {
+          send(res, 200, page);
           return;
         }
-        send(res, 200, page);
+        if (state.databases?.[id]) {
+          send(res, 400, {
+            object: 'error',
+            status: 400,
+            code: 'validation_error',
+            message:
+              "This API doesn't support retrieving databases as pages. Please use the retrieve a database endpoint instead.",
+          });
+          return;
+        }
+        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
       });
       return;
     }

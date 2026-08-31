@@ -197,6 +197,32 @@ describe('Settings SyncTab', () => {
     expect(screen.getByTestId('sync-overview-issue-page-1')).toHaveTextContent('missing.png');
   });
 
+  // `embedding` is the only hueless pill in the sync status map:
+  // `--color-status-embedding` resolves to body ink now (it had been
+  // byte-identical to `--color-primary`, so pipeline telemetry wore the colour
+  // that means "you can act on this"). Hue therefore cannot say "indexing" any
+  // more — `syncLabel` does — and the pill's weight is capped, which is the
+  // part a stylesheet edit could silently undo. At the siblings' 20% the ink
+  // fill measures 1.746:1 in Graphite, past the 1.264:1 `--color-border`
+  // hairline; any `border-` utility on the token composites over that fill and
+  // reaches 1.592:1 at the pill's outer edge. 10% plus the hairline token fits.
+  it('names the embedding sync state in text, with a capped hueless pill', async () => {
+    mockFetchResponses({
+      overview: {
+        ...mockOverview,
+        sync: { ...mockOverview.sync, status: 'embedding' },
+      } as typeof mockOverview,
+    });
+    render(<SyncTab />, { wrapper: createWrapper() });
+
+    const pill = await waitFor(() => screen.getByTestId('sync-overview-status'));
+    await waitFor(() => expect(pill).toHaveTextContent('Embedding'));
+
+    const utilities = pill.className.split(/\s+/);
+    expect(utilities.filter((c) => c.startsWith('bg-'))).toEqual(['bg-status-embedding/10']);
+    expect(utilities.filter((c) => c.startsWith('border-'))).toEqual(['border-border']);
+  });
+
   it('shows a clean empty state when no missing assets are present', async () => {
     mockFetchResponses({
       overview: {

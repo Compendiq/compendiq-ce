@@ -574,18 +574,28 @@ the backend side.
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
   palette is designed out. Paper's panes — document, left navigation, context
-  rail — are pure white, its neutrals sit quietly on the warm side of the hue
-  circle, and its frame (gutter, left destination rail, top app header) is
-  `#EBEAE8`: the darkest step and a real grey, deepened twice in v0.9 — once when
-  the workspace and context-rail hairlines were removed and the value step became
-  the only thing drawing the card, then again when the owner asked for "more
-  gray" (1.20:1 on Pane). It is the floor of the range: the destination rail's
-  12px labels are `--color-muted-foreground` on it at 4.51:1, so a deeper frame
-  needs the secondary ink darkened first, and `workspace-themes.test.ts` pins
-  that pair. Every other neutral is fitted to that grey and to the white panes, and
-  the hover and pressed fills keep a measured floor against white so a state
-  stays visible (ADR-010 v0.8/v0.9). See ADR-010 v0.7 for the roles and the
-  Graphite values, v0.8 for Paper's, v0.9 for the unlined shell;
+  rail — are pure white; its neutrals sit a hair off neutral toward warm, below
+  the perceptual threshold, so do not describe it as a warm palette. Its frame
+  (gutter, left destination rail, top app header) is `#EBEAE8`: the darkest step
+  and a real grey, deepened twice in v1.1 — once when the workspace and
+  context-rail hairlines were removed and the value step became the only thing
+  drawing the card, then again when the owner asked for "more gray" (1.202:1 on
+  Pane, the same rung `--color-selected` occupies). It is the floor of the range:
+  the destination rail's 12px labels are `--color-muted-foreground` on it at
+  4.51:1, so a deeper frame needs the secondary ink darkened first, and
+  `workspace-themes.test.ts` pins that pair. Hover, press and selection are three
+  separate tokens rather than one shared fill — with a perceptual floor between
+  adjacent states, not just an ordering — and chart colours resolve from tokens
+  at render rather than shipping literal hexes. Embedding is body ink rather
+  than a hue, prose links are underlined at rest for WCAG G183, and `/login`
+  holds the single declared exception to the flat-surface rule through
+  `@utility login-halo`, over its OWN ground (`--app-login-ground` +
+  `@utility login-backdrop`, `#FAFAF9` in Paper) rather than the workspace frame:
+  the halo's measured AA floor was calibrated against a near-white ground and the
+  grey frame broke it, so the two surfaces were split (ADR-010 v0.8, v0.9, v1.0,
+  v1.1).
+  See ADR-010 v0.7 for the roles and the Graphite
+  values, v0.8 for Paper's, v1.1 for the unlined shell;
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
@@ -610,7 +620,7 @@ the backend side.
   (`SettingsLayout`'s title strip, `Editor`'s fallback toolbar) plus the pane
   footers a scrolling list ends against. `app-shell-layout.test.ts` holds a
   1.08:1 floor under the card's value step, since an unlined card fails
-  silently (ADR-010 v0.9).
+  silently (ADR-010 v1.1).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
   the outer frame and top app header, Workspace paints navigation, Chrome
   paints internal panel toolbars, and the content pane sits one value step up.

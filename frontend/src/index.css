@@ -329,7 +329,31 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
   --color-muted-foreground: #a0a4aa;
-  --color-accent: #1c1d1d;
+  /* THREE state fills, not one. Until 2026-08-30 `--color-accent`,
+     `--color-secondary` and `--color-muted` were all #1c1d1d, so hover,
+     selected, pressed and a quiet field fill were the same value: a critique
+     measured ΔE-OK 0.0000 between them, which in a 40-row page tree means a
+     hovered row is indistinguishable from the selected one. Each state now has
+     its own rung above the pane (#161617): hover 1.070:1, pressed 1.138:1,
+     selected 1.258:1 — and selection still adds its interactive outline on top.
+     `--color-muted` stays at the hover value on purpose: it is a resting FIELD
+     fill, not a state.
+
+     WIDENED 2026-08-31. The first split shipped pressed at #1e1f21, one step off
+     hover: ΔE-OK 0.0101 at 1.024:1, which a critique could not tell apart from
+     hover in rendered 13px rows. The guard asserted ordering and distinctness
+     but no perceptual floor, so an invisible step passed. Steps are now ΔE-OK
+     0.0292 / 0.0241 / 0.0321, each at or above Paper's equivalent.
+
+     Widening downward was blocked by two other tokens, and the fix was to move
+     THEM rather than hug a floor: at #282a2e the old --color-border-interactive
+     (#71717a) measured 2.97:1 — the edge that IS the selected state, under
+     1.4.11's 3:1 — and --color-status-inactive (#8b8f99) measured 4.44:1. Both
+     were lifted; see their declarations. The dark ladder was compressed because
+     its edge token was too dark, not because the state values were wrong. */
+  --color-accent: #1c1d1d;             /* hover    — 1.070:1 on Pane */
+  --color-pressed: #212226;            /* :active  — 1.138:1 */
+  --color-selected: #282a2e;           /* current destination — 1.258:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -352,7 +376,11 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
                          survives. (The retired honey palette used one 1.60:1
                          border for both jobs and did not meet 1.4.11.) */
   --color-border: #2a2a2d;
-  --color-border-interactive: #71717a;
+  /* Lifted 2026-08-31 from #71717a. This token caps how deep a state fill may
+     go: at the widened selected fill (#282a2e) the old value measured 2.97:1,
+     so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
+     and 4.37:1 on the pane, which is what gave the dark ladder its room. */
+  --color-border-interactive: #7c7c85;
   --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -362,18 +390,42 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      marks a passive notice ("How web search works", the AI-safety rules
      banner) and the Confluence info admonition panel, and nothing else: not a
      state, not a measurement, not a category chip, and never an interactive
-     affordance. It deliberately collides with no reserved hue. */
-  --color-info: #8b93f8;
+     affordance.
 
-  /* Status colors. Steel carries "embedding" (it is the system's one blue);
-     violet is reserved for AI so it never collides with an interactive
-     affordance. All ≥4.5:1 on both --color-background and --color-card. */
+     Retuned 2026-08-30 from #8b93f8. "Collides with no reserved hue" was only
+     ever asserted for NORMAL vision, and it was false for everyone else: under
+     Machado severity-1.0 simulation the old value sat ΔE-OK 0.0148 from
+     --color-status-ai under protanopia, 0.0248 under deuteranopia, and 0.0420
+     from Steel under tritanopia. Hue cannot fix that — indigo is boxed between
+     Steel (237°) and AI violet (306°) — so the separation is bought in
+     LIGHTNESS instead: this value is Y=0.557 against AI's 0.347, which no CVD
+     transform collapses. Hue stays 272°, so it still reads as the same indigo
+     notice; Graphite now has zero simulated collisions among the seven roles. */
+  --color-info: #b2c3ff;
+
+  /* Status colors. Violet is reserved for AI so it never collides with an
+     interactive affordance. All ≥4.5:1 on every ground a status can land on.
+
+     EMBEDDING IS NOT A HUE (2026-08-31). It was Steel — byte-identical to
+     --color-primary — through three critiques, so ambient pipeline telemetry
+     wore the one colour that means "you can act on this", and under tritanopia
+     it collapsed onto `connected` at ΔE-OK 0.0399. It now resolves to the body
+     ink: an embedding surface is ordinary text plus a progress affordance, and
+     the hue vocabulary is one role smaller.
+
+     Hueless had exactly one safe landing place. Pointed at a muted neutral it
+     measured ΔE-OK 0.0000–0.0477 against --color-status-inactive — "indexing"
+     and "idle" would have become the same colour — so it points at the
+     foreground, which sits 0.12–0.16 from every other role. */
   --color-status-connected: #4ade80;
   --color-status-syncing: #fbbf24;
-  --color-status-embedding: #86aec8;
+  --color-status-embedding: var(--color-foreground);   /* not a hue — see above */
   --color-status-ai: #c084fc;
   --color-status-disconnected: #f87171;
-  --color-status-inactive: #8b8f99;
+  /* Lifted 2026-08-31 from #8b8f99, which measured 4.44:1 on the widened
+     selected fill. Worst ground is now 5.11:1, and Graphite still has zero
+     simulated CVD collisions across the seven roles. */
+  --color-status-inactive: #979aa3;
 
   /* Brand typography — self-hosted via @fontsource (privacy-safe).
      Tailwind 4 exposes these as font-display / font-sans / font-mono. */
@@ -456,6 +508,10 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #09090a;
+  /* The login page's own ground. Identical to the chassis here: Graphite's
+     composite under the halo measures 7.25:1 and never forced a split. Paper's
+     does — see the token there and `@utility login-backdrop`. */
+  --app-login-ground: #09090a;
   /* Internal panel-header chrome. Slightly lighter than the viewport chassis
      and darker than the workspace chrome, so toolbars read as neutral framing
      rather than another content pane. The top app header uses --app-chassis
@@ -662,21 +718,26 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
       hairlines, so the value step became the whole boundary and 1.04:1 was no
       longer enough to be one. Canvas went to #f4f3f1 (1.11:1 on Pane) and with
       it Paper's order returned to v0.7's: Canvas → Chrome → Workspace → Pane.
-   6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8, 1.20:1
+   6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8, 1.202:1
       on Pane — the frame reads as grey rather than as a lighter white, and it
-      now matches the step the hover fill uses. This is the FLOOR of the range:
+      lands on the same rung --color-selected occupies (1.193:1). This is the
+      FLOOR of the range:
       the destination rail's 12px labels are --color-muted-foreground on Canvas
       and #6a6a68 measures 4.51:1 there against 1.4.3's 4.5, so the next step of
       grey has to be paid for by darkening the secondary ink. Only Canvas moved
       in either pass; the fills fitted in pass 4 are measured against Pane, not
       against the frame.
 
-   The state fills were the real casualty of pass 3 and are the point of pass 4:
-   hover/selected (--color-accent) is #f2f2f1, which separates from the white
-   pane at 1.12:1 instead of 1.02:1, and the pressed/field fill
-   (--color-secondary / --color-muted) sits a step below it at #ebebea. Only
-   --app-chassis stays owner-pinned; workspace-themes.test.ts holds its exact
-   value and holds a floor under the hover fill's separation from Pane. */
+   The state fills were the real casualty of pass 3, and pass 4 split them into
+   three: hover, press and selection each own a token and a rung. A fifth pass
+   (2026-08-31) widened Graphite's, where press had shipped ΔE-OK 0.0101 from
+   hover and was invisible, and split Paper's resting field fill off the
+   selection fill, which had shared one value. Current values live at their
+   declarations below rather than being restated here — restating them is how
+   this paragraph came to describe pass 3's numbers as though they were pass 4's.
+   Only --app-chassis stays owner-pinned; workspace-themes.test.ts holds its
+   exact value, a floor under each state step, and a scan asserting no comment in
+   these blocks names a colour the block no longer declares. */
 [data-theme="paper"] {
   /* Pane is PURE WHITE by explicit product decision (2026-08-30): the document,
      the left navigation pane and the detached context rail — every surface a
@@ -716,23 +777,35 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --color-action: #191918;             /* matches --color-foreground */
   --color-action-foreground: #ffffff;
   --color-action-hover: #2e2e2d;
-  /* Pressed / quiet field fill. One step BELOW the hover fill, so press reads
-     as deeper than hover instead of landing on the same value. */
-  --color-secondary: #ebebea;
+  /* Quiet FIELD fill — an input's or chip's resting surface, not a state.
+     SPLIT off --color-selected 2026-08-31: both were #ebebea, so an input
+     resting inside a selected row painted exactly the row's value and had only
+     its border to separate the two. One rung lighter now, which also lifts the
+     interactive edge's binding ground from 3.22:1 to 3.30:1. */
+  --color-secondary: #eeeeed;
   --color-secondary-foreground: #393938;
-  --color-muted: #ebebea;
+  --color-muted: #eeeeed;
   /* Measured against the WORST surface it lands on — white Pane and Raised
      (5.42:1), not the chassis. */
   --color-muted-foreground: #6a6a68;
-  /* Hover AND selected fill, both, because one token serves both states:
-     `nav-selection`, `nm-card-hover`, `nm-card-interactive:hover`, and 23
-     `hover:bg-accent` callsites. This is the token pass 3 broke and pass 4
-     fixed: pinned to #fdfdfd it measured 1.02:1 on the white Pane, so a row
-     whose hover is only a fill had no hover at all. At #f2f2f1 it separates at
-     1.12:1 on Pane and 1.07:1 on the Canvas frame — quiet, but a state you can
-     see. Selection still carries its `--color-border-interactive` outline and
-     weight on top of this; the fill is no longer doing that job alone. */
-  --color-accent: #f2f2f1;
+  /* THREE state fills on the white pane, each its own rung. One token used to
+     serve hover AND selected — `nav-selection`, `nm-card-hover`,
+     `nm-card-interactive:hover` and 23 `hover:bg-accent` callsites all read the
+     same value — so a hovered row and the selected row were the same colour and
+     selection rested entirely on its 1px outline.
+
+     Measured against Pane #ffffff: hover 1.081:1, pressed 1.140:1, selected
+     1.193:1, each step ≈1.05:1 from the last, which is the smallest step that
+     survives an IPS panel at 13px. SELECTED is the deepest because it is the
+     only one that persists — a press lasts as long as a finger is down, and
+     hover as long as the cursor rests; "where I am" outranks both. The band is bounded from below by the
+     statuses: no state fill may be darker than Y=0.820 or a status label
+     sitting on it drops under AA, which is why these are close together rather
+     than comfortably spaced. Selection keeps its interactive outline (3.36:1
+     on this fill) and weight 500 on top of the deeper fill. */
+  --color-accent: #f6f6f5;             /* hover    — 1.081:1 on Pane */
+  --color-pressed: #f0f0ef;            /* :active  — 1.140:1 */
+  --color-selected: #ebebea;           /* current destination — 1.193:1 */
   --color-accent-foreground: #191918;
   /* Semantic aliases — var() references, exactly as in the dark block. The
      re-declaration is DEFENSIVE, not load-bearing today: `data-theme` sits on
@@ -744,37 +817,65 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --color-destructive: var(--color-status-disconnected);
   --color-destructive-foreground: #ffffff;
   /* Same two-weight split as dark: a quiet hairline for structure, and an
-     interactive edge that clears 1.4.11's 3:1 on both background and card.
-     The pane boundary rests on this hairline as well as a deliberately small
-     value step, so it has to remain visible without reading like a control.
-     It is still a separator, NOT an operable edge — that stays
-     --color-border-interactive, which the 3:1 test measures. */
-  --color-border: #e4e4e2;
+     interactive edge that clears 1.4.11's 3:1 on every ground.
+
+     Darkened 2026-08-30 from #e4e4e2 (1.273:1 on Pane) to 1.414:1. That was the
+     price of the owner-pinned near-white frame: with Canvas at #fafaf9 back then
+     the workspace card was separated from its gutter by only a 1.044:1 value
+     step, and Raised shares Pane's pure white outright, so this hairline was
+     doing the work a value step used to do. Canvas has since gone grey (#ebeae8,
+     1.202:1) and the card no longer leans on it, but the value stays: Raised on
+     Pane has not changed, and a hairline that reads is worth keeping. It is
+     still a separator and NOT an operable
+     edge — that stays --color-border-interactive, which the 3:1 test measures. */
+  --color-border: #d9d9d6;
   /* Darkened twice under the cool ramp, and every retune since keeps that
      hard-won headroom rather than restarting the argument. It carries more than
      a boundary: it is what marks a selected row once the fill went quiet, so it
      must not be softened. The binding ground is `muted` — the pressed/field
      fill — since that is the darkest surface a control sits on. All Paper
      grounds are measured by workspace-themes.test.ts:
-     3.22 muted / 3.42 accent / 3.52 Chrome / 3.61 Workspace / 3.67 Canvas /
-     3.84 Pane / 3.84 Raised. */
+     3.30 field / 3.55 hover / 3.36 press / 3.22 selection / 3.52 Chrome /
+     3.61 Workspace / 3.67 Canvas / 3.84 Pane / 3.84 Raised. (The 3.42 that stood
+     here was measured against the pass-3 accent, not the one this block
+     declares — a stale figure a critique caught before any guard did.) */
   --color-border-interactive: #838281;
   --color-ring: #3f627c;
   --color-success: var(--color-status-connected);
   --color-warning: var(--color-status-syncing);
-  /* Indigo = informational, light sibling — see the dark block's note. */
-  --color-info: #3f49b8;
+  /* Indigo = informational, light sibling — see the dark block's note for why
+     this moved (CVD collision with AI violet and with Steel). Separation is
+     bought in lightness: Y=0.048 against AI's 0.101 and Steel's 0.113. */
+  --color-info: #2a3977;
 
-  /* Status colors — the light-theme counterparts, all ≥4.5:1 on background
-     and card. Same role assignment as dark: steel = embedding, violet = AI.
-     Only `inactive` moves with the ramp; it is neutral grey by role and tracks
-     --color-muted-foreground. The hued statuses are semantic and stay. */
-  --color-status-connected: #16794a;
-  --color-status-syncing: #8a5a00;
-  --color-status-embedding: #3f627c;
+  /* Status colors — the light-theme counterparts. Same role assignment as dark:
+     steel = embedding, violet = AI. Retuned 2026-08-30 for COLOUR-VISION
+     separation, not for taste: on the white pane these six were nearly
+     iso-luminant (Y 0.101–0.144), so under simulation connected merged with
+     inactive (ΔE-OK 0.038) and syncing with disconnected (0.040) — a dead sync
+     and a healthy one became the same olive dot. Luminance is now spread across
+     Y 0.048–0.131 and every value clears 4.5:1 on all eight grounds a status
+     label can land on, including the three state fills, with ≥4.85 headroom.
+
+     This does NOT make the palette colour-blind safe on its own, and the file
+     should not pretend otherwise: seven roles cannot be mutually separated by
+     hue and lightness while all of them clear AA on a white pane — the usable
+     OKLab L band is 0.354–0.512, so seven evenly spread roles sit ΔL≈0.026
+     apart against a 0.05 discrimination target. Four simulated pairs remain
+     within 0.044. That residue is why every status indicator also carries a
+     non-colour channel (icon or accessible name); WCAG 1.4.1 is satisfied by
+     that channel, and these values reduce how often it has to carry the load
+     alone. */
+  --color-status-connected: #007544;
+  --color-status-syncing: #80590f;
+  --color-status-embedding: var(--color-foreground);   /* not a hue — see the dark block */
   --color-status-ai: #7041a8;
-  --color-status-disconnected: #c03434;
-  --color-status-inactive: #6a6a68;
+  --color-status-disconnected: #bc3031;
+  /* Decoupled from --color-muted-foreground (#6a6a68) as of 2026-08-30: that
+     token is body-adjacent ink tuned for reading, this one is a status hue that
+     needed to clear `connected` under deuteranopia. Different jobs, so they no
+     longer track each other. */
+  --color-status-inactive: #5c5c5a;
 
   /* Code colors — matched against --color-code-bg #f1f1ef, a tint sitting
      between Chrome and the pressed fill so a code block reads as recessed
@@ -798,9 +899,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      2026-08-30 at 249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9;
      on 2026-08-31 to #F4F3F1 when the workspace and rail hairlines came off and
      the value step became the whole card boundary; and again the same day to
-     #EBEAE8, asked for as "more gray". The frame now measures 1.20:1 against the
-     white Pane — the same step the hover/selected fill uses, and a frame you
-     read as grey rather than as off-white.
+     #EBEAE8, asked for as "more gray". The frame now measures 1.202:1 against
+     the white Pane — the rung --color-selected occupies (1.193:1), and a frame
+     you read as grey rather than as off-white.
 
      THIS IS THE GREYEST VALUE THE SECONDARY INK ALLOWS. The left destination
      rail labels ("Pages", "AI", "Graph") are 12px --color-muted-foreground on
@@ -813,6 +914,15 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      than beige. The rail's destinations are unaffected: they carry hover and
      selection with ink and a Steel marker line, never a fill. */
   --app-chassis: #ebeae8;
+  /* The login page keeps the ground its halo was measured against. Canvas left
+     it behind on 2026-08-31: at #EBEAE8 the halo composites to #DDDFDF and the
+     hero's 18px lead paragraph measures 4.013:1, under 1.4.3's 4.5. This value
+     is #FAFAF9 — the frame's own value for one day — where the composite holds
+     4.607:1. It is not "the old chassis kept around": it is the login surface's
+     ground, owned by `login-halo-surface.test.ts`, which measures the halo
+     against THIS token. Retune it and that guard re-measures; retune Canvas and
+     it does not, which is the whole point of the split. */
+  --app-login-ground: #fafaf9;
   /* Chrome for internal panel headers and toolbars: one step under Workspace and
      a band you can see on a white Pane (1.09:1). It is no longer the deepest
      step of the ramp — Canvas passed it on 2026-08-31 — and its reach is now
@@ -831,8 +941,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    `text-amber-100..400` / `text-yellow-300..400` shades. Those were tuned for
    the dark theme — on Paper's white pane they're effectively invisible
    (contrast < 1.5:1). Rather than editing every callsite, remap those text
-   classes to the AA-pass `--color-warning` (#8a5a00 — 5.58:1 on Workspace,
-   5.93:1 on the white Pane). Same colour the design system already uses for
+   classes to the AA-pass `--color-warning` — which resolves to
+   --color-status-syncing, 5.89:1 on Workspace and 6.26:1 on the white Pane. (This
+   quoted #8a5a00 at 5.58/5.93 for years. Those ratios were arithmetically
+   correct, but #8a5a00 is --color-code-number: the note measured a real colour
+   that was not the one it named, and the shipped value is better than the text
+   claimed.) Same colour the design system already uses for
    warning panels in Tiptap/prose blocks. Backgrounds and borders stay as-is
    — only text.
 
@@ -865,6 +979,66 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    on that element a silent regression. */
 @utility app-backdrop {
   background: var(--surface-backdrop);
+}
+
+/* The unauthenticated login ground, and the reason it is not the chassis.
+
+   `--app-login-ground` was the chassis until 2026-08-31, when the owner asked
+   for the workspace frame to be "more gray" and Canvas went to #ebeae8. The
+   halo declared below is measured against the ground it sits on, and on a grey
+   ground the composite fails: the hero's 18px lead paragraph drops to 4.013:1
+   (violet over Paper) against 1.4.3's 4.5. Every way out costs something — a
+   darker secondary ink app-wide, a dimmer halo, or a less grey frame — and the
+   owner chose to keep BOTH calibrations by splitting the surfaces, which is the
+   same argument the halo amendment below already makes: the login page is not a
+   workspace surface. It has no tree, no document, no dense rows, and one
+   paragraph of body copy, so the frame value tuned for a workspace has no claim
+   on it.
+
+   Graphite's login ground stays the chassis: there the composite measures
+   7.25:1 and nothing forced a split. Paper's holds the near-white the halo was
+   measured against. `login-halo-surface.test.ts` reads THIS token, so raising
+   the frame's grey can no longer silently darken the login hero — and dimming
+   this ground now fails there instead. */
+@utility login-backdrop {
+  background: var(--app-login-ground);
+}
+
+/* ---- The one declared exception to the flat-surface rule ----
+
+   The flatness canon below is absolute for workspace surfaces: flat colours, no
+   gradients, and never a zero-offset halo. The stated reason is measurability —
+   "a gradient on a workspace surface puts a moving value under dense 13px text,
+   so the same row reads at a different contrast at the top of a pane than at the
+   bottom, and every surface needs measuring twice."
+
+   The unauthenticated login page is not a workspace surface: it has no tree, no
+   document, no dense rows, and one paragraph of body copy. It carried a blurred
+   accent disc as raw utility classes on two components — `bg-primary
+   opacity-[0.08] blur-[120px]` — which meant the palette's own file could not
+   see it, no guard could bound it, and it sat there contradicting the rule three
+   lines below. Measured, it moves the ground under the hero's lead paragraph from
+   #fafaf9 to #ebeeef in Paper: a real deviation of ΔE-OK 0.034, larger than the
+   deliberate hover->selected state step.
+
+   So it is declared here instead of deleted, and the ceiling is load-bearing.
+   `login-halo-surface.test.ts` composites this colour at this opacity over the
+   chassis — in sRGB, the way a browser actually blends — and asserts the lead
+   paragraph's muted ink still clears 4.5:1 on the result. At 0.08 the binding
+   case (violet over Paper) measures 4.607:1; at 0.10 it breaches. Decoration is
+   permitted HERE, at THIS strength, because it is measured. Nowhere else. */
+@utility login-halo {
+  position: absolute;
+  z-index: -10;
+  border-radius: 9999px;
+  pointer-events: none;
+  background-color: var(--color-primary);
+  opacity: 0.08;
+  filter: blur(120px);
+
+  &[data-halo="ai"] {
+    background-color: var(--color-status-ai);
+  }
 }
 
 /* Inset / radius / rail gap live on :root so every surface reads one set of
@@ -1018,10 +1192,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 /* An active tab is a filled chip, not a tinted pane with a shadow — and since
    2026-08-31 it is the ONLY line in a segmented control: the tracks dropped
    their `border border-border` and now read on fill alone (--color-muted on
-   Pane, 1.19:1 in Paper / 1.07:1 in Graphite). That makes this edge the whole
+   Pane, 1.161:1 in Paper / 1.070:1 in Graphite). That makes this edge the whole
    selected state, so it takes the ≥3:1 token for the same reason `nav-selection`
    did: a selected segment is an operable component whose STATE has to be
-   identifiable under 1.4.11. On --color-border it measured 1.27:1 in Paper —
+   identifiable under 1.4.11. On --color-border it measured 1.414:1 in Paper —
    which is why the shadow-compare picks had to add a glyph to carry selection
    at all (EmbeddingShadowCompareSection). The glyph stays; it is now a
    redundant channel rather than the only one. */
@@ -1045,7 +1219,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @utility nav-selection {
   color: var(--color-foreground);
   font-weight: 500;
-  background: var(--color-accent);
+  /* The SELECTED fill, one rung deeper than hover, so sweeping the cursor down a
+     tree never repaints a row to look like the current destination. */
+  background: var(--color-selected);
   outline: 1px solid var(--color-border-interactive);
   outline-offset: -1px;
 }
@@ -1168,7 +1344,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    that gives away a flat system that was not committed to. */
 @utility nm-card-elevated {
   border-radius: var(--radius-lg);
-  border: 1px solid var(--color-border);
+  /* The overlay edge is the INTERACTIVE token, not the quiet hairline. In Paper
+     Raised is the same pure white as Pane, so a popover has no value step to
+     float on: the offset shadow plus a 3.84:1 edge is the whole separation, and
+     the edge is the half that survives forced-colors. */
+  border: 1px solid var(--color-border-interactive);
   background: var(--surface-card-elevated, var(--color-card-elevated, var(--color-card)));
   box-shadow: var(--shadow-overlay);
 }
@@ -1222,7 +1402,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 
   &:active {
-    background-color: var(--color-secondary);
+    background-color: var(--color-pressed);
   }
 
   &:focus-visible {
@@ -1248,9 +1428,25 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* An active segmented-control pill. Neutral fill, full-strength ink, same
    reasoning as `nav-selection`: the accent is reserved for actions, so a row
-   of pills does not read as five primary buttons. Its edge moved to the ≥3:1
-   token alongside `panel-tab-active` on 2026-08-31, when the tracks under both
-   went borderless — see that block for the argument. */
+   of pills does not read as five primary buttons. */
+/* An active segmented pill. It used to mark "you are here" with the QUIET
+   hairline over a pane-coloured fill — inside a segment group that itself sits on
+   `bg-muted`, that made the thinnest cue on screen the one carrying position in
+   a settings grid. It now takes the measured interactive edge every other
+   current-destination surface uses (`nav-selection`), so selection means one
+   thing everywhere.
+
+   Note which half moved. The fill stays `--color-card`: a segment group sits on
+   `bg-muted`, so the pane colour is a step UP and measures 1.161:1 against the
+   group — a real cue. Swapping the fill to `--color-selected` measured 1.028:1
+   against that same group, i.e. worse than what it replaced. It was the EDGE
+   that was failing, at the quiet hairline; that is the half that became the
+   measured interactive token, 3.84:1 on the fill.
+
+   Since 2026-08-31 that edge is also the ONLY line in the control: the tracks
+   under both this and `panel-tab-active` dropped their own `border-border` and
+   read on fill alone, which is the other half of why the edge had to be the
+   measured token rather than the hairline. */
 @utility nm-pill-active {
   border-radius: var(--radius-sm);
   background: var(--color-card);
@@ -1271,7 +1467,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      a 28px toolbar chip. */
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
+  /* Same colour as the fill, so nothing changes visually — but `transparent` is
+     PRESERVED by forced-colors mode while a real colour is replaced by a system
+     one. With transparent here the primary action was the one operable control
+     with no forced edge, and the guard that claims otherwise was only checking
+     that a border declaration existed. */
+  border: 1px solid var(--color-primary);
   background-color: var(--color-primary);
   color: var(--color-primary-foreground);
   font-size: 0.8125rem;
@@ -1364,7 +1565,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      dialog footer. Only the palette differs. */
   padding: 0.375rem 0.75rem;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
+  /* Same reasoning as nm-button-primary: a `transparent` edge is preserved by
+     forced-colors, so the destructive action would lose its boundary in exactly
+     the mode that has nothing else. Matching the fill keeps it invisible here. */
+  border: 1px solid var(--color-destructive);
   background-color: var(--color-destructive);
   color: var(--color-destructive-foreground);
   font-size: 0.8125rem;
@@ -1428,7 +1632,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 
   &:active {
-    background-color: var(--color-secondary);
+    background-color: var(--color-pressed);
   }
 
   &:focus-visible {
@@ -1487,7 +1691,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 
   &:active {
-    background-color: var(--color-secondary);
+    background-color: var(--color-pressed);
   }
 
   &:focus-visible {
@@ -1561,7 +1765,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    `--color-border` hairline, not the ≥3:1 `--color-border-interactive` every
    other operable surface uses. The owner asked for it to read "like the other
    lines" once the shell's own lines came off, and it is theirs to spend: at
-   rest the box measures 1.27:1 in Paper instead of 3.84:1, so the resting state
+   rest the box measures 1.414:1 in Paper instead of 3.836:1, so the resting state
    does not meet non-text contrast. What still does: `:focus-within` swaps the
    border to Steel AND adds a 1px ring (both ≥3:1), the placeholder names the
    field, and the send button beside it keeps its own operable edge. Do not
@@ -2141,17 +2345,33 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   line-height: 1.65;
 }
 
-/* Links — theme-colored with underline on hover */
+/* Links — Steel, and UNDERLINED AT REST.
+
+   WCAG 2.1 SC 1.4.1 via technique G183: a link that is not underlined at rest
+   needs >= 3:1 contrast against the SURROUNDING BODY TEXT, not just against the
+   background. This rule shipped `text-decoration: none` and failed that floor in
+   both themes — Steel vs body ink measures 2.72:1 on Paper and 1.94:1 on
+   Graphite. Every contrast guard in the repo passed it, because they all measure
+   ink-on-surface (6.46:1 here, comfortably AA) and none measures ink-on-ink.
+
+   Retuning Steel could not fix it: to reach 3:1 against Graphite's #e7e9eb body
+   ink a link would need Y <= 0.238, and that value measures 3.04:1 on the dark
+   pane — unreadable as text. The underline is the only channel available, which
+   is why it is now permanent and guarded.
+
+   The decoration sits at 40% of Steel so a Confluence page dense with citations
+   does not read as a link farm, and goes full strength on hover. */
 .prose :where(a) {
   color: var(--color-primary);
-  text-decoration: none;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--color-primary) 40%, transparent);
+  text-underline-offset: 2px;
   font-weight: 500;
-  transition: color 0.15s ease, text-decoration 0.15s ease;
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
 }
 
 .prose :where(a):hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration-color: var(--color-primary);
 }
 
 /* Blockquotes — flat, neutral left border */
@@ -2763,6 +2983,52 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* ============================================
+   Prose ink, per theme — BOTH themes, in CSS
+   ============================================ */
+
+/* The dark half of this pair did not exist until 2026-08-30, and the light half
+   made that invisible. Dark prose was produced by toggling Tailwind
+   Typography's `prose-invert` class from JSX at eight callsites, which painted
+   body copy Tailwind's stock invert ink — measured `#d1d5dc`, hue 258°, 12.28:1
+   on the pane — where this palette's own `--color-foreground` (`#e7e9eb`) is
+   14.86:1. So every article body in Graphite rendered a colour that appeared
+   nowhere in this file, and any component that forgot the conditional fell back
+   to Tailwind's LIGHT ink at 1.75:1. Both themes are now declared here, the
+   class is gone, and prose ink is a token like everything else. */
+[data-theme-type="dark"] .prose {
+  --tw-prose-body: var(--color-foreground);
+  --tw-prose-headings: var(--color-foreground);
+  --tw-prose-lead: var(--color-muted-foreground);
+  --tw-prose-links: var(--color-primary);
+  --tw-prose-bold: var(--color-foreground);
+  --tw-prose-counters: var(--color-muted-foreground);
+  --tw-prose-bullets: var(--color-muted-foreground);
+  --tw-prose-hr: var(--color-border);
+  --tw-prose-quotes: var(--color-muted-foreground);
+  --tw-prose-quote-borders: var(--color-border);
+  --tw-prose-captions: var(--color-muted-foreground);
+  --tw-prose-kbd: var(--color-foreground);
+  --tw-prose-kbd-shadows: var(--color-border);
+  --tw-prose-code: var(--color-foreground);
+  --tw-prose-pre-code: var(--color-foreground);
+  --tw-prose-pre-bg: oklch(from var(--color-muted) l c h / 0.3);
+  --tw-prose-th-borders: var(--color-border);
+  --tw-prose-td-borders: var(--color-border);
+}
+
+/* A prose link is a keyboard-reachable control on every article page, and it was
+   the one this file never gave a ring: focus rings are enumerated per utility,
+   `.prose a` is not a utility, so it fell through to Chrome's UA blue #005fcc —
+   off-palette, and 3.02:1 in Graphite, the narrowest margin in the system. This
+   is the same failure the `::selection` rule above already fixed once. */
+.prose a:focus-visible,
+.tiptap a:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ============================================
    Light theme prose overrides
    ============================================ */
 [data-theme-type="light"] .prose {
@@ -2797,9 +3063,17 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    now resolve their own token, so retuning inline code means editing the token
    and not hunting for an override. Background and border still need a theme
    override — the light surfaces sit at different alphas. */
+/* The inline-code chip composites TWO translucent layers, so its edge lands
+   lower than any other border in the system: at 50% of the hairline it measured
+   1.18:1 on Paper, below even Graphite's 1.24:1 floor, despite --color-border
+   having been deliberately strengthened for the near-white frame. At 75% it still
+   measured 1.223:1, under Graphite's floor, so the edge takes the hairline at FULL
+   strength: 1.309:1 on the composited chip. The background keeps its 50% tint —
+   the chip should still read as a recessed inline surface, and it was the edge,
+   not the fill, that was out of range. */
 [data-theme-type="light"] .prose :where(code):not(:where(pre code)) {
   background: oklch(from var(--color-muted) l c h / 0.5);
-  border-color: oklch(from var(--color-border) l c h / 0.5);
+  border-color: var(--color-border);
 }
 
 /* Light theme code blocks */

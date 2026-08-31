@@ -702,7 +702,7 @@ describe('ArticleRightPane', () => {
       renderRail();
       const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
       expect(chrome).toHaveClass('h-12');
-      // ADR-010 v0.9 took the 48px rule off every pane; the height is the
+      // ADR-010 v1.1 took the 48px rule off every pane; the height is the
       // alignment now, so a border-b here would be one line starting mid-width.
       expect(chrome?.className).not.toMatch(/\bborder-b\b/);
     });

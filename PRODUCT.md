@@ -108,13 +108,18 @@ benchmark numbers, no named reference customers. Future work must not invent the
   Paper — with the desaturated Steel pair (`#86AEC8` dark / `#3F627C` light) as the
   single brand and interaction accent. Violet remains AI, amber warning, green success,
   and red failure; these semantic colors are not alternate accents. Graphite's document
-  pane stays off near-black to reduce long-session glare. **Paper is a quietly warm neutral with white
-  panes and a near-white frame** (owner decision, 2026-08-30): document, left navigation
-  and context rail are `#FFFFFF`; the frame — gutter, left destination rail, top app
-  header — is `#FAFAF9`, with the hover/selected fill a measured step below white, and the remaining warmth lives in Chrome, Workspace, the fills,
-  the borders and the ink at chroma 0.002–0.007, where the hue is felt and not seen. The
-  earlier "avoid pure white" rule no longer applies to light mode, and Canvas is no longer
-  light mode's darkest step.
+  pane stays off near-black to reduce long-session glare. **Paper's panes are pure white and its ramp is near-neutral** (owner decisions, 2026-08-30): document,
+  left navigation and context rail are `#FFFFFF`; the frame — gutter, left destination rail, top app
+  header — is `#FAFAF9`. The ramp carries one to three 8-bit steps of red over blue, which is below the
+  perceptual threshold: it keeps the greys off the cool blue-grey they came from rather than reading as
+  warm, and the product should not claim warmth it does not show. The earlier "avoid pure white" rule no
+  longer applies to light mode, and Canvas is no longer light mode's darkest step.
+- **Colour is never the only channel for state** (2026-08-30, reaffirmed 2026-08-31 when embedding left the hue vocabulary and became body ink plus a progress affordance). Seven semantic hues cannot be mutually
+  separated under colour-vision deficiency while every one clears WCAG AA on a white pane — that is
+  arithmetic, not an oversight — so every status indicator also carries an icon, shape, or accessible
+  name, and the palette's job is to reduce how often that channel carries the load alone. The same rule
+  covers links: an inline citation is underlined, not merely Steel, because colour alone cannot carry it
+  against body ink at any value that stays readable on the pane.
 - A separate marketing site (`compendiq-landing`) exists and is currently on a retired
   palette; cross-surface parity is a known open item, not a constraint on this work.
 

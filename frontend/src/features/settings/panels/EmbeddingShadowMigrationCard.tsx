@@ -455,13 +455,32 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (!migration && pending) {
     return (
-      // Every phase card wears border-status-embedding/30: this surface IS
-      // the embedding pipeline, and Steel is its reserved hue (ADR-010). It
-      // used to be the informational indigo, which names no state.
-      <div
-        className="nm-card border-status-embedding/30 p-3 text-sm"
-        data-testid="shadow-migration-card"
-      >
+      // Every phase card used to wear a `border-` utility on
+      // `status-embedding` at 30%: this surface IS the embedding pipeline, and
+      // Steel was that token's hue. The token resolves to body ink now — it
+      // had been byte-identical to `--color-primary` through three critiques,
+      // so ambient pipeline telemetry wore the one colour meaning "you can act
+      // on this" — and the same 30% no longer measures the same thing. All
+      // ratios below are WCAG on an sRGB-space, byte-rounded composite, which
+      // is how a browser blends alpha:
+      //
+      //   as Steel   1.569:1 (Paper) / 1.808:1 (Graphite) against Pane
+      //   as ink     1.941:1 / 2.431:1 — 1.4x and 1.9x the `--color-border`
+      //              hairline every ordinary card wears (1.414 / 1.264)
+      //
+      // So the tint is gone rather than retuned. Retuning cannot work: the
+      // largest ink alpha that clears Graphite's 1.264 ceiling is 8%
+      // (1.212:1), which is QUIETER than an untinted card — the marked surface
+      // would read as less defined than an unmarked one, and five of these
+      // cards sit in a column of ordinary ones.
+      //
+      // Nothing was carried by the tint anyway. Every branch's prose names its
+      // phase outright ("Start a re-embed", "A previous abort did not finish",
+      // "N/M pages backfilled", "Backfill complete", "<model> is live"), and
+      // the branch that has real numbers now draws them as a determinate bar.
+      // Two of these branches — `ready` and `swapped` — are not even work in
+      // flight, so a pipeline tint there was wrong on its own terms.
+      <div className="nm-card p-3 text-sm" data-testid="shadow-migration-card">
         <p ref={phaseProseRef} tabIndex={-1}>
           Start a re-embed to switch to <b>{pending.model}</b>. Search keeps the current index
           until you swap. Do not save the assignment — that would switch the live model
@@ -486,7 +505,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (migration.phase === 'aborting') {
     return (
-      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card p-3 text-sm" data-testid="shadow-migration-card">
         <p ref={phaseProseRef} tabIndex={-1}>
           A previous abort did not finish — the shadow columns may still exist.
           Retry to complete it; nothing else can start until it does.
@@ -519,9 +538,19 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
     // (review r9).
     const buildingIndex = migration.stragglerPages === 0 && !migration.indexReady;
     const eta = !buildingIndex ? etaFromObservedRate(migration) : null;
+    // Determinate progress, replacing the border tint as the primary signal.
+    // Guarded on `totalPages`: a migration that has not counted yet would
+    // otherwise divide by zero, and the prose already carries the raw pair.
+    const backfillPercent =
+      migration.totalPages > 0
+        ? Math.max(
+            0,
+            Math.min(100, Math.round((migration.backfilledPages / migration.totalPages) * 100)),
+          )
+        : null;
 
     return (
-      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card p-3 text-sm" data-testid="shadow-migration-card">
         <p ref={phaseProseRef} tabIndex={-1}>
           {/*
             "Search is unaffected" was half true, and this is the surface where
@@ -559,6 +588,25 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
             longest phase and reports no page-level progress — writes to the embedding table queue
             behind it.
           </p>
+        )}
+        {/* The bar the tint used to stand in for. `aria-hidden`, with no
+            `role="progressbar"`: the prose above is the accessible readout and
+            already states `backfilledPages`/`totalPages` in words, so a
+            labelled progressbar would announce the same pair twice on a
+            surface that re-polls. During the index build the page count is
+            legitimately full while work continues — the paragraph above says
+            so, which is why the bar is not the only thing on screen. */}
+        {backfillPercent !== null && (
+          <div
+            className="mt-2 h-1.5 overflow-hidden rounded-full bg-foreground/10"
+            data-testid="shadow-backfill-progress"
+            aria-hidden="true"
+          >
+            <div
+              className="bg-action h-full rounded-full transition-[width] duration-300 ease-out"
+              style={{ width: `${backfillPercent}%` }}
+            />
+          </div>
         )}
         <div className="mt-2 flex gap-2">
           {/* Always offered while backfilling: it also recovers a worker
@@ -609,7 +657,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   if (migration.phase === 'ready') {
     return (
-      <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
+      <div className="nm-card p-3 text-sm" data-testid="shadow-migration-card">
         <p ref={phaseProseRef} tabIndex={-1}>
           Backfill complete — <b>{migration.totalPages}</b> pages carry <b>{migration.model}</b>{' '}
           vectors
@@ -655,7 +703,7 @@ export function EmbeddingShadowMigrationCard({ pending, onLifecycleChange, onAct
 
   // swapped
   return (
-    <div className="nm-card border-status-embedding/30 p-3 text-sm" data-testid="shadow-migration-card">
+    <div className="nm-card p-3 text-sm" data-testid="shadow-migration-card">
       <p ref={phaseProseRef} tabIndex={-1}>
         <b>{migration.model}</b> is live. Validate search quality, then clean up — or roll back
         to the previous model. Cleanup <b>deletes the old vectors</b> and ends the rollback

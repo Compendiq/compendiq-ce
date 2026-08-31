@@ -271,4 +271,64 @@ describe('EmbeddingReembedBanner', () => {
       expect(banner.textContent ?? '').toMatch(/waiting for alice/i);
     }, { timeout: 5000 });
   });
+
+  // The banner's border tint is gone. It came from `--color-status-embedding`,
+  // which resolves to body ink now, and its 30% measures 1.941:1 (Paper) /
+  // 2.431:1 (Graphite) against Pane where an ordinary card's `--color-border`
+  // hairline measures 1.414 / 1.264 — the banner would have out-drawn every
+  // card around it. The determinate bar is the replacement signal, so the bar
+  // is what is asserted, and only for the one phase that reports both numbers.
+  it('draws a determinate bar for the embedding phase and none without a page pair', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/embedding/probe')) {
+        return new Response(JSON.stringify({ dimensions: 1024 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/admin/embedding/reembed')) {
+        return new Response(JSON.stringify({ jobId: 'reembed-all', pageCount: 40 }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/admin/embedding/reembed/reembed-all')) {
+        return new Response(
+          JSON.stringify({
+            jobId: 'reembed-all',
+            state: 'active',
+            progress: { phase: 'embedding', processed: 10, total: 40 },
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+    });
+
+    render(
+      <EmbeddingReembedBanner
+        currentDimensions={1024}
+        pending={null}
+        live={{ providerId: 'p1', model: 'bge-m3-instruct' }}
+      />,
+      { wrapper: Wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^Wipe current index$/i }));
+    await screen.findByText(/dimension stays at 1024/i);
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+
+    const banner = await waitFor(() => screen.getByTestId('reembed-progress-banner'), {
+      timeout: 5000,
+    });
+    // The sentence still carries the raw pair.
+    await waitFor(() => expect(banner.textContent ?? '').toMatch(/10\/40 pages/), {
+      timeout: 5000,
+    });
+    // No border utility: the banner wears `nm-card`'s own hairline.
+    expect(banner.className.split(/\s+/).filter((c) => c.startsWith('border'))).toEqual([]);
+    // 10 of 40 → 25%, announced once through the sentence, drawn once here.
+    const bar = screen.getByTestId('reembed-progress-bar');
+    expect(bar).toHaveAttribute('aria-valuenow', '25');
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('25%');
+  });
 });
