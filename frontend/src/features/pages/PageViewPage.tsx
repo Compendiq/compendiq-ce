@@ -874,7 +874,16 @@ export function PageViewPage() {
           article scroller so the strip meets the pane's right edge. Write
           fills it with format tools + the tag chip + Cancel/Save. Read
           keeps the bar: labels as pills on the left, Edit on the right.
-          Operate verbs stay in the inspector. */}
+          Operate verbs stay in the inspector.
+
+          No hairline under it since 2026-08-31 (the owner took the 48px rule
+          off every pane), which is safe here precisely because the strip is
+          outside the scroller: nothing passes under it, so the line was
+          separating two surfaces that are the same colour and never move
+          relative to each other. The height stays 48 — the sidebar's chrome
+          row and the inspector's tab row still start their content on that
+          same y, and `min-h-12` is now the whole 48 rather than 48 minus a
+          border. */}
       <div className="relative z-30 shrink-0">
         {confluenceModified && (
           <ConfluenceModifiedAlert
@@ -883,7 +892,7 @@ export function PageViewPage() {
             onDismiss={() => setConfluenceModified(null)}
           />
         )}
-        <div className="relative w-full border-b border-border bg-card">
+        <div className="relative w-full bg-card">
           {editing && editorInstance ? (
             <div className="px-2">
               <EditorToolbar
@@ -898,7 +907,7 @@ export function PageViewPage() {
           ) : (
             <div
               className={cn(
-                'flex min-h-[calc(3rem-1px)] w-full items-center gap-1.5 px-2',
+                'flex min-h-12 w-full items-center gap-1.5 px-2',
                 editing && 'justify-end',
               )}
               {...(!editing

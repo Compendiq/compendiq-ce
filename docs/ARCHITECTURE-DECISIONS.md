@@ -1055,7 +1055,7 @@ Pane in both themes, and Canvas stays the darkest step in Graphite.
 **Still open (inherited from v0.7):** `compendiq-landing` carries neither the
 Steel pair nor this warm ramp. The app remains the source of truth.
 
-### v0.9 — the workspace loses its frame lines (2026-08-31)
+### v0.9 — the shell loses its lines (2026-08-31)
 
 **Decision.** The 1px hairline around the workspace card and the one around the
 detached context rail are removed. Nothing replaces them: the card is drawn by
@@ -1098,14 +1098,32 @@ actions disclosure, and the one between the outline header and the outline tree 
 where a scroll mask already fades the boundary and the reading-progress bar
 already terminates the header.
 
-**What was kept, and why it is not the same case.** Four families of line are
+**Then the 48px rule came off too, in the same session.** The owner named its
+three instances one by one — the line under the space selector, the line under
+Edit, the line under the inspector's tabs — so the band that ran across the top
+of every pane now draws nothing. The argument for keeping it (it is one line, and
+both surfaces either side of it are the same `--color-card`) was an argument for
+a *seam*, and the owner does not want a seam. What survives is the thing the
+seam was made of: **all three rows still resolve to exactly 48px**, so the panes
+start their content on one y. `toolbar-rule-alignment.test.ts` therefore outlives
+the line — it now holds the height and additionally fails if any one row
+reinstates a `border-b`, because one line back on its own is a rule that starts
+and stops mid-width.
+
+Two mechanical consequences. `PageViewPage`'s read row and `EditorToolbar` move
+from `calc(3rem-1px)` to the full `3rem`: the subtraction existed to fit a row
+plus its parent's hairline into 48, and without the hairline it left the article
+strip a pixel short of the panes beside it. And the space selector — the one
+operable thing left in the sidebar's chrome row — takes a Workspace fill
+(`bg-background`), so the row is read off the control rather than off a rule
+under it. Workspace is the only surface that is *darker than Pane in both
+themes* (1.06:1 either side), and it keeps hover direction honest: the hover
+fill `--color-accent` is darker still, where a `--color-muted` rest fill would
+have made hover *lighten* while every tree row beside it darkens.
+
+**What was kept, and why it is not the same case.** Three families of line are
 load-bearing and were left alone:
 
-- **The 48px chrome rule** across the sidebar's nav row, the article context
-  strip and the inspector's tab row. It is perceptually one line
-  (`toolbar-rule-alignment.test.ts` holds the three at the same y), and on both
-  the sidebar and the article strip the surfaces either side of it are the same
-  `--color-card` — nothing else marks that boundary.
 - **`app-sidebar`'s `border-r`.** Left navigation and `<main>` deliberately share
   Pane so the workspace reads as one card; the hairline is the only split.
 - **`nm-card` and panel borders.** A card paints `--color-card` on a pane that is
@@ -1114,13 +1132,25 @@ load-bearing and were left alone:
   contrast, measured from the token file, and the only boundary that survives
   `forced-colors: active`.
 
+Two lines are kept for a mechanical reason rather than a compositional one, and
+both are **sticky headers over their own scroller**: `SettingsLayout`'s title
+strip and `Editor`'s fallback toolbar. Content passes *under* those, and both
+sides of the boundary are `bg-card`, so removing the line would let paragraphs
+slide into the chrome. `SettingsLayout` is why one `min-h-[calc(3rem-1px)]`
+remains in the codebase. The sidebar and conversation-pane **footers** keep their
+`border-t` for the same reason in the other direction: a scrolling list ends
+against them.
+
 **Guards.** `app-shell-layout.test.ts` inverts its two card assertions — the
 workspace and rail utilities must now carry no border in any spelling — and adds
 the measurement that replaces them: Pane over Canvas ≥ 1.08:1 in both themes,
 because the failure mode of an unlined card is a silent chassis retune that keeps
 "Canvas below Pane" true while flattening the edge to nothing.
 `workspace-themes.test.ts` re-pins the owner value at `#F4F3F1` and reorders the
-Paper ladder with Canvas at the bottom.
+Paper ladder with Canvas at the bottom. `toolbar-rule-alignment.test.ts` keeps
+the 48px band by height and forbids a `border-b` on any chrome row; it reads
+quoted class strings rather than source lines, so prose naming `panel-toolbar`
+and a ternary's other branch cannot be mistaken for a row's own classes.
 
 ---
 

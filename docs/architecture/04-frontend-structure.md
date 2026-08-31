@@ -586,14 +586,21 @@ the backend side.
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
-- **The workspace card and the context rail carry no border.** They are drawn by
-  the chassis inset, their radius, and the Pane-over-Canvas step; the same is
-  true of every pane's own first row, which inherits the pane rather than
-  painting Chrome. The lines that remain are the ones nothing else states: the
-  48px chrome rule across the top of every pane, the left navigation's
-  `border-r` (both sides are Pane), card borders (a card paints Pane on a Pane),
-  and `--color-border-interactive` on anything operable. `app-shell-layout.test.ts`
-  holds a 1.08:1 floor under the card's value step, since an unlined card fails
+- **The shell draws no lines.** The workspace card and the context rail carry no
+  border — inset, radius and the Pane-over-Canvas step draw both — and neither
+  does any pane's own first row: it inherits the pane rather than painting
+  Chrome, and the 48px chrome band across the top of every pane draws no
+  hairline either. That band is now held by HEIGHT alone: the sidebar's chrome
+  row, the article context strip and the inspector's tab row all resolve to
+  exactly 48px so the panes start their content on one y, and
+  `toolbar-rule-alignment.test.ts` fails both when a row loses `h-12` and when
+  one reinstates a `border-b`. The lines that remain are the ones nothing else
+  states: the left navigation's `border-r` (both sides are Pane), card borders
+  (a card paints Pane on a Pane), `--color-border-interactive` on anything
+  operable, and the two sticky headers whose own content scrolls under them
+  (`SettingsLayout`'s title strip, `Editor`'s fallback toolbar) plus the pane
+  footers a scrolling list ends against. `app-shell-layout.test.ts` holds a
+  1.08:1 floor under the card's value step, since an unlined card fails
   silently (ADR-010 v0.9).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
   the outer frame and top app header, Workspace paints navigation, Chrome

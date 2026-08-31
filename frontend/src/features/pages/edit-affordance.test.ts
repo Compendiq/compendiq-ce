@@ -48,8 +48,9 @@ describe('the Edit affordance', () => {
     expect(editButton()).toMatch(/px-2\.5/);
     expect(editButton()).toMatch(/text-xs/);
     expect(editButton()).not.toMatch(/max-sm:min-h-11/);
-    // Write-mode sticky chassis still matches the 48px header line.
-    expect(source).toContain('min-h-[calc(3rem-1px)]');
+    // The chassis row owns the whole 48px band now that the strip draws no
+    // hairline under it (ADR-010 v0.9); it was 48 minus that border before.
+    expect(source).toContain('min-h-12');
   });
 
   it('keeps its keyboard hint', () => {

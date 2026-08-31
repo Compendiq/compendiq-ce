@@ -995,7 +995,7 @@ export function ArticleRightPane({
               nothing is lost for a mouse user, and `aria-label` for everyone
               else. The left-opening flyout is what a sighted keyboard user
               gets — native `title` is hover-only. */}
-          <div className="group relative flex h-12 w-full flex-col items-center justify-center border-b border-border">
+          <div className="group relative flex h-12 w-full flex-col items-center justify-center">
             <button
               onClick={handleExpandSidebar}
               className={railIconBtn}
@@ -1428,15 +1428,18 @@ export function ArticleRightPane({
           page title. Both were redundant: the article's own H1 is a few pixels
           to the left and never scrolls out from under the context strip, so the
           pane was spending 48px restating it. The tabs are the only thing in
-          this chrome anyone operates, so they take the row, and the rule under
-          it now lands on the same y as the sidebar's and the article strip's —
-          one line across the app instead of three near-misses.
+          this chrome anyone operates, so they take the row.
 
-          `h-12` is the shared height of that line (see SidebarTreeView and
-          PageViewPage's context strip). It is not free space: the segmented
-          control is 34px (28px segments + 2px track inset + 1px borders), so
-          the row has ~7px of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+          No hairline under it since 2026-08-31: the owner took the 48px rule
+          off every pane. The segmented control below carries its own track and
+          border, so the row still reads as chrome without one, and the height
+          survives because the panes' content must still start on one y.
+
+          `h-12` is that shared height (see SidebarTreeView and PageViewPage's
+          context strip). It is not free space: the segmented control is 34px
+          (28px segments + 2px track inset + 1px borders), so the row has ~7px
+          of breathing room and no more. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav and the search-mode
             toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.

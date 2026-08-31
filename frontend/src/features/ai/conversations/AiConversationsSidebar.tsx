@@ -181,22 +181,21 @@ export function AiConversationsSidebar({
         isResizing && 'select-none',
       )}
     >
-      {/* The 48px line across the top of every pane: h-12 with the hairline in
-          the same border box, never py-*. EVERY bordered panel-toolbar row in
-          this file needs h-12 — toolbar-rule-alignment.test.ts:52-69 loops over
-          all of them, not just the first.
+      {/* The 48px chrome row every pane holds: h-12, never py-*, so the panes
+          start their content on one y. The hairline that used to run under it
+          came off with the rest of the 48px rule (2026-08-31) — the height is
+          the alignment now, and toolbar-rule-alignment.test.ts still loops
+          over EVERY panel-toolbar row in this file, not just the first.
 
           Rendered only when this rail owns the destination strip. On desktop
           the chassis rail does (embedMainNav={false}), and then this row does
           not exist — so the collapse button moves into the New chat row below,
-          exactly as SidebarTreeView.tsx:1087-1096 moves its own. And the New
-          chat row then BECOMES the bordered toolbar row (the tree's own
-          !embedMainNav shape keeps its bordered space row at the top): without
-          this, a desktop pane would be the one rail with no hairline across
-          its top. Both class branches keep the guard honest — the branch
-          that draws the border carries h-12 and no py-*. */}
+          exactly as SidebarTreeView.tsx:1087-1096 moves its own, and that row
+          becomes the pane's 48px chrome row instead. Both class branches keep
+          the guard honest: the branch that IS the chrome row carries h-12 and
+          no py-*. */}
       {embedMainNav && (
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 border-b px-2">
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         <MainNavStripExpanded onNavigate={onNavigate} />
         <button
           type="button"
@@ -213,7 +212,7 @@ export function AiConversationsSidebar({
       <div
         className={cn(
           'flex shrink-0 items-center gap-1 px-2',
-          embedMainNav ? 'py-2' : 'panel-toolbar h-12 border-b',
+          embedMainNav ? 'py-2' : 'panel-toolbar h-12',
         )}
       >
         <button
