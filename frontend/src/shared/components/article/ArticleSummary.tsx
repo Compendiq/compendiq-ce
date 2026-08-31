@@ -291,7 +291,7 @@ export function ArticleSummary({
 
       {!collapsed && (
         <SanitizedHtml
-          className="border-t border-status-ai/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none dark:prose-invert"
+          className="border-t border-status-ai/10 px-4 pb-4 pt-2 text-sm text-foreground/90 prose prose-sm max-w-none"
           data-testid="article-summary-content"
           html={summaryHtml}
         />

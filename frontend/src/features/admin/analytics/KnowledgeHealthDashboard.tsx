@@ -3,6 +3,15 @@ import { useQuery } from '@tanstack/react-query';
 import { Download } from 'lucide-react';
 import { apiFetch } from '../../../shared/lib/api';
 import type { DashboardProps } from './AnalyticsPage';
+import { useThemeColors } from '../../../shared/hooks/use-theme-colors';
+import { categoricalRamp, type ReadThemeColor } from '../../../shared/lib/theme-colors';
+import {
+  CHART_GRID_STROKE,
+  CHART_LEGEND_WRAPPER_STYLE,
+  CHART_TICK_FILL,
+  CHART_TOOLTIP_CONTENT_STYLE,
+  CHART_TOOLTIP_LABEL_STYLE,
+} from '../../../shared/components/charts/chart-chrome';
 import {
   BarChart, Bar, PieChart, Pie, Cell, Treemap,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -19,21 +28,43 @@ interface KnowledgeHealthData {
 
 // ── Colors ─────────────────────────────────────────────────────────────────────
 
-const QUALITY_COLORS: Record<string, string> = {
-  excellent: '#10b981',
-  good: '#3b82f6',
-  fair: '#f59e0b',
-  poor: '#ef4444',
-  unscored: '#6b7280',
-};
-
-const VERIFICATION_COLORS: Record<string, string> = {
-  verified_current: '#10b981',
-  verified_stale: '#f59e0b',
-  unverified: '#6b7280',
-};
-
-const TREEMAP_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#6b7280'];
+/**
+ * Series colours, resolved from the palette per theme: every bucket maps onto
+ * the token that already owns its meaning, so a retune in index.css moves the
+ * chart with it. These were Tailwind v3 defaults, which follow no theme and
+ * fail contrast on the light pane: v3 emerald-500 measures 2.54:1 on white
+ * where `--color-status-connected` measures 5.43:1.
+ */
+const buildColors = (read: ReadThemeColor) => ({
+  quality: {
+    excellent: read('--color-status-connected'),
+    good: read('--color-primary'),
+    fair: read('--color-status-syncing'),
+    poor: read('--color-status-disconnected'),
+    unscored: read('--color-status-inactive'),
+  } as Record<string, string>,
+  verification: {
+    verified_current: read('--color-status-connected'),
+    verified_stale: read('--color-status-syncing'),
+    unverified: read('--color-status-inactive'),
+  } as Record<string, string>,
+  /** Any bucket the API reports that has no mapping above. */
+  unmapped: read('--color-status-inactive'),
+  /** Stale content is a warning, and only a warning. */
+  stale: read('--color-status-syncing'),
+  /**
+   * Spaces carry no status — a space is not "healthy", its tile only has to
+   * differ from the tile beside it. See `categoricalRamp`.
+   */
+  coverage: categoricalRamp(read, 8),
+  /**
+   * Ink on a saturated tile. `--color-background` is the counter-ink by
+   * construction: dark on Graphite, where the status hues are light, and
+   * light on Paper, where they are dark. The hard-coded white this replaces
+   * measured 3.4:1 against Paper's amber tile.
+   */
+  coverageLabel: read('--color-background'),
+});
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
@@ -58,6 +89,7 @@ function ChartSkeleton() {
 
 export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useKnowledgeHealth(dateRange);
+  const colors = useThemeColors(buildColors);
 
   if (isLoading) {
     return (
@@ -119,13 +151,16 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={data.qualityDistribution}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                <XAxis dataKey="bucket" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                <XAxis dataKey="bucket" tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <YAxis tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
                 <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                   {data.qualityDistribution.map((entry) => (
-                    <Cell key={entry.bucket} fill={QUALITY_COLORS[entry.bucket] ?? '#6b7280'} />
+                    <Cell key={entry.bucket} fill={colors.quality[entry.bucket] ?? colors.unmapped} />
                   ))}
                 </Bar>
               </BarChart>
@@ -139,11 +174,14 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={data.staleContent} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                <XAxis type="number" tick={{ fontSize: 12 }} />
-                <YAxis dataKey="bucket" type="category" tick={{ fontSize: 12 }} width={100} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#f59e0b" radius={[0, 4, 4, 0]} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                <XAxis type="number" tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <YAxis dataKey="bucket" type="category" tick={{ fontSize: 12, fill: CHART_TICK_FILL }} width={100} stroke={CHART_GRID_STROKE} />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
+                <Bar dataKey="count" fill={colors.stale} radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </Suspense>
@@ -159,7 +197,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
                   data={data.coverageBySpace.map((d, i) => ({
                     name: d.spaceKey ?? 'Unassigned',
                     size: d.pageCount,
-                    fill: TREEMAP_COLORS[i % TREEMAP_COLORS.length],
+                    fill: colors.coverage[i % colors.coverage.length],
                   }))}
                   dataKey="size"
                   stroke="var(--color-background)"
@@ -168,7 +206,7 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
                     <g>
                       <rect x={x} y={y} width={width} height={height} fill={fill} rx={4} opacity={0.85} />
                       {width > 40 && height > 20 && (
-                        <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="central" fontSize={11} fill="#fff">
+                        <text x={x + width / 2} y={y + height / 2} textAnchor="middle" dominantBaseline="central" fontSize={11} fill={colors.coverageLabel}>
                           {name}
                         </text>
                       )}
@@ -203,11 +241,14 @@ export function KnowledgeHealthDashboard({ dateRange, onExportPdf }: DashboardPr
                   labelLine={false}
                 >
                   {data.verificationStatus.map((entry) => (
-                    <Cell key={entry.status} fill={VERIFICATION_COLORS[entry.status] ?? '#6b7280'} />
+                    <Cell key={entry.status} fill={colors.verification[entry.status] ?? colors.unmapped} />
                   ))}
                 </Pie>
-                <Tooltip />
-                <Legend />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
+                <Legend wrapperStyle={CHART_LEGEND_WRAPPER_STYLE} />
               </PieChart>
             </ResponsiveContainer>
           </Suspense>

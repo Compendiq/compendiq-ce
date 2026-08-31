@@ -3,10 +3,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Shield,
+  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, XCircle, Shield,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
-import { cn } from '../../shared/lib/cn';
 import { Button, IconButton } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
@@ -47,7 +46,9 @@ function formatDate(value: string | null): string {
   return date.toLocaleDateString();
 }
 
-function tokenStatus(expiresAt: string | null): 'active' | 'expiring' | 'expired' {
+type TokenState = 'active' | 'expiring' | 'expired';
+
+function tokenStatus(expiresAt: string | null): TokenState {
   if (!expiresAt) return 'active';
   const now = Date.now();
   const exp = new Date(expiresAt).getTime();
@@ -57,11 +58,40 @@ function tokenStatus(expiresAt: string | null): 'active' | 'expiring' | 'expired
   return 'active';
 }
 
-const statusDotClass: Record<ReturnType<typeof tokenStatus>, string> = {
-  active: 'bg-success',
-  expiring: 'bg-warning',
-  expired: 'bg-destructive',
+/**
+ * A token's state needs a channel besides hue. The dot this replaced was the
+ * only thing in the row saying "expired" — the Expires column shows a date, not
+ * a state word — and `success` vs `destructive` (and either against
+ * `status-inactive`) collapse to near-identical warm greys under deuteranopia,
+ * so the row read the same whether the token worked or not (WCAG 1.4.1).
+ *
+ * Icon SHAPE carries it visually, in the vocabulary the rest of admin already
+ * uses for these three meanings (CheckCircle2 = healthy, AlertTriangle =
+ * attention, XCircle = failed); the `sr-only` word is the accessible name,
+ * which a `title` would not reliably be.
+ */
+const statusConfig: Record<
+  TokenState,
+  { icon: typeof CheckCircle2; className: string; label: string }
+> = {
+  active: { icon: CheckCircle2, className: 'text-success', label: 'Active' },
+  expiring: { icon: AlertTriangle, className: 'text-warning', label: 'Expiring soon' },
+  expired: { icon: XCircle, className: 'text-destructive', label: 'Expired' },
 };
+
+function TokenStatusIcon({ status }: { status: TokenState }) {
+  const { icon: Icon, className, label } = statusConfig[status];
+  return (
+    <span
+      className="inline-flex shrink-0 items-center"
+      data-testid={`scim-token-status-${status}`}
+    >
+      {/* size 13 matches the row's Trash2 action, not the 18px banner icons. */}
+      <Icon size={13} className={className} aria-hidden="true" />
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -361,7 +391,7 @@ export function ScimSettingsPage() {
                   >
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <div className={cn('h-2 w-2 rounded-full', statusDotClass[status])} />
+                        <TokenStatusIcon status={status} />
                         <span className="font-medium">{t.name}</span>
                       </div>
                     </td>

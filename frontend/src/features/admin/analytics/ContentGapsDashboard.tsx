@@ -2,7 +2,15 @@ import { Suspense } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Download } from 'lucide-react';
 import { apiFetch } from '../../../shared/lib/api';
+import { cn } from '../../../shared/lib/cn';
 import type { DashboardProps } from './AnalyticsPage';
+import { useThemeColors } from '../../../shared/hooks/use-theme-colors';
+import type { ReadThemeColor } from '../../../shared/lib/theme-colors';
+import {
+  CHART_LEGEND_WRAPPER_STYLE,
+  CHART_TOOLTIP_CONTENT_STYLE,
+  CHART_TOOLTIP_LABEL_STYLE,
+} from '../../../shared/components/charts/chart-chrome';
 import {
   PieChart, Pie, Cell,
   Tooltip, ResponsiveContainer, Legend,
@@ -31,12 +39,22 @@ interface ContentGapsData {
 
 // ── Colors ─────────────────────────────────────────────────────────────────────
 
-const BACKLOG_COLORS: Record<string, string> = {
-  open: '#3b82f6',
-  in_progress: '#f59e0b',
-  completed: '#10b981',
-  rejected: '#6b7280',
-};
+/**
+ * Series colours, resolved from the palette per theme. These were Tailwind v3
+ * defaults, which follow no theme and fail contrast on the light pane
+ * (v3 emerald-500 measures 2.54:1 on white). An open request is informational,
+ * not a fault; in-progress is the warning hue because the work is outstanding.
+ */
+const buildColors = (read: ReadThemeColor) => ({
+  backlog: {
+    open: read('--color-info'),
+    in_progress: read('--color-status-syncing'),
+    completed: read('--color-status-connected'),
+    rejected: read('--color-status-inactive'),
+  } as Record<string, string>,
+  /** Any status the API reports that has no mapping above. */
+  unmapped: read('--color-status-inactive'),
+});
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
@@ -70,18 +88,59 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 
 // ── Severity indicator ─────────────────────────────────────────────────────────
 
-function SeverityDot({ score }: { score: number | null }) {
-  const color =
-    score == null ? 'bg-status-inactive' :
-    score < 0.2 ? 'bg-destructive' :
-    score < 0.5 ? 'bg-warning' : 'bg-success';
-  return <span className={`inline-block h-2 w-2 rounded-full ${color}`} />;
+/**
+ * Severity is carried by BAR COUNT first and hue second.
+ *
+ * Hue alone was the whole signal here and it failed WCAG 1.4.1: the column has
+ * no header text, nothing else in the row names the severity, and the four
+ * states used `status-inactive`/`destructive`/`warning`/`success` — pairs that
+ * collapse to near-identical warm greys under deuteranopia, so an unscored gap
+ * and a healthy one rendered as the same dot.
+ *
+ * Filled-segment count is a pre-attentive length channel that survives
+ * greyscale, forced-colors and desaturation. It is the same channel
+ * QualityScoreBadge uses for the quality band, for the same reason. More bars =
+ * worse gap; no bars = never scored, which no longer needs a hue of its own.
+ * The `sr-only` word is the accessible name — a `title` would not be.
+ */
+const SEVERITY_BARS = 3;
+
+interface Severity {
+  /** 0–3; how many of the bars are filled. */
+  filled: number;
+  label: string;
+  barClass: string;
+}
+
+function severityFor(score: number | null): Severity {
+  if (score == null) return { filled: 0, label: 'Never scored', barClass: 'bg-border' };
+  if (score < 0.2) return { filled: 3, label: 'Severe gap', barClass: 'bg-destructive' };
+  if (score < 0.5) return { filled: 2, label: 'Moderate gap', barClass: 'bg-warning' };
+  return { filled: 1, label: 'Minor gap', barClass: 'bg-success' };
+}
+
+function SeverityMeter({ score }: { score: number | null }) {
+  const { filled, label, barClass } = severityFor(score);
+  return (
+    <span className="inline-flex items-center" data-testid="gap-severity" data-filled={filled}>
+      <span aria-hidden="true" className="flex items-center gap-px">
+        {Array.from({ length: SEVERITY_BARS }, (_, i) => (
+          <span
+            key={i}
+            className={cn('h-2 w-[3px] rounded-[1px]', i < filled ? barClass : 'bg-border')}
+          />
+        ))}
+      </span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useContentGaps(dateRange);
+  const colors = useThemeColors(buildColors);
 
   if (isLoading) {
     return (
@@ -175,11 +234,14 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
                     labelLine={false}
                   >
                     {data.requestBacklog.map((entry) => (
-                      <Cell key={entry.status} fill={BACKLOG_COLORS[entry.status] ?? '#6b7280'} />
+                      <Cell key={entry.status} fill={colors.backlog[entry.status] ?? colors.unmapped} />
                     ))}
                   </Pie>
-                  <Tooltip />
-                  <Legend />
+                  <Tooltip
+                    contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                    labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                  />
+                  <Legend wrapperStyle={CHART_LEGEND_WRAPPER_STYLE} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
@@ -201,7 +263,13 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-foreground/5">
-                    <th className="text-left px-4 py-2 text-xs text-muted-foreground font-medium" />
+                    {/* Header text the column always lacked, so the severity
+                        cells have a column name to be read against. sr-only:
+                        the meter is a 9px graphic and a visible label would
+                        outweigh it. */}
+                    <th className="text-left px-4 py-2 text-xs text-muted-foreground font-medium">
+                      <span className="sr-only">Severity</span>
+                    </th>
                     <th className="text-left px-4 py-2 text-xs text-muted-foreground font-medium">Query</th>
                     <th className="text-right px-4 py-2 text-xs text-muted-foreground font-medium">Occurrences</th>
                     <th className="text-right px-4 py-2 text-xs text-muted-foreground font-medium">Avg Results</th>
@@ -211,7 +279,7 @@ export function ContentGapsDashboard({ dateRange, onExportPdf }: DashboardProps)
                 <tbody>
                   {data.gaps.map((row) => (
                     <tr key={row.query} className="border-b border-foreground/5 last:border-0">
-                      <td className="px-4 py-2"><SeverityDot score={row.avgMaxScore} /></td>
+                      <td className="px-4 py-2"><SeverityMeter score={row.avgMaxScore} /></td>
                       <td className="px-4 py-2 font-mono text-xs truncate max-w-[200px]">{row.query}</td>
                       <td className="px-4 py-2 text-right">{row.occurrences}</td>
                       <td className="px-4 py-2 text-right">{row.avgResultCount.toFixed(1)}</td>

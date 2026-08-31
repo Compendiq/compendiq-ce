@@ -37,7 +37,6 @@ interface MessageBubbleProps {
   isStreaming: boolean;
   isThinking: boolean;
   thinkingElapsed: boolean;
-  isLight: boolean;
   shouldReduceMotion: boolean | null;
   /**
    * rAF-batched content of the in-flight answer (#747). Only passed to the
@@ -47,7 +46,7 @@ interface MessageBubbleProps {
 }
 
 const MessageBubble = memo(function MessageBubble({
-  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion, streamingContent,
+  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, shouldReduceMotion, streamingContent,
 }: MessageBubbleProps) {
   const isLastAssistant = msg.role === 'assistant' && isLast;
   const isStreamingThis = isStreaming && isLastAssistant;
@@ -102,7 +101,7 @@ const MessageBubble = memo(function MessageBubble({
           effectiveContent ? (
             <StreamingMessage content={effectiveContent} isStreaming />
           ) : (!showThinkingBlob && !showTypingIndicator ? (
-            <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+            <div className="prose prose-sm max-w-none">
               <TypingIndicator />
             </div>
           ) : null)
@@ -119,7 +118,7 @@ const MessageBubble = memo(function MessageBubble({
             <p className="mt-2 whitespace-pre-wrap text-foreground">{msg.content}</p>
           </>
         ) : (
-          <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+          <div className="prose prose-sm max-w-none">
             {msg.content ? (
               <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
             ) : null}
@@ -177,7 +176,6 @@ const MessageBubble = memo(function MessageBubble({
   if (prev.streamingContent !== next.streamingContent) return false;
   if (prev.isThinking !== next.isThinking) return false;
   if (prev.thinkingElapsed !== next.thinkingElapsed) return false;
-  if (prev.isLight !== next.isLight) return false;
   return true;
 });
 
@@ -217,7 +215,6 @@ export function AiAssistantPage() {
     mode, page,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, streamingThreadId, activeThreadId,
-    isLight,
     thinkingMode, setThinkingMode,
     embeddingStatus,
     startNewConversation, threadLoadState, threadLoadError, retryThreadLoad,
@@ -531,7 +528,6 @@ export function AiAssistantPage() {
               isStreaming={streamingHere}
               isThinking={thinkingHere}
               thinkingElapsed={thinkingElapsed}
-              isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
               // #747: only the last bubble receives the batched in-flight
               // content; earlier (committed) bubbles keep a stable prop so

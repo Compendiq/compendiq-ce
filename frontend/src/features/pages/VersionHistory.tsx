@@ -15,7 +15,6 @@ import { DiffView } from '../../shared/components/article/DiffView';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useSettings } from '../../shared/hooks/use-settings';
 import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { markFormattedVersionDiff, versionContentAsHtml } from './version-formatted-diff';
@@ -85,7 +84,6 @@ function formatVersionTime(editedAt: string | null, syncedAt: string | null): st
 }
 
 export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model, renderTrigger }: VersionHistoryProps) {
-  const isLight = useIsLightTheme();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
@@ -514,7 +512,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <FeatureErrorBoundary
                           featureName="Version Preview"
                           fallback={
-                            <div className={cn('prose max-h-[50vh] overflow-y-auto p-4 text-xs', !isLight && 'prose-invert')}>
+                            <div className="prose max-h-[50vh] overflow-y-auto p-4 text-xs">
                               <pre className="whitespace-pre-wrap text-muted-foreground">
                                 {selectedVersionData.bodyText ?? 'No content available'}
                               </pre>
@@ -549,7 +547,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                           </div>
                         </FeatureErrorBoundary>
                       ) : (
-                        <div className={cn('prose max-h-[55vh] overflow-y-auto px-5 py-4 text-xs', !isLight && 'prose-invert')}>
+                        <div className="prose max-h-[55vh] overflow-y-auto px-5 py-4 text-xs">
                           <InlineVersionDiff
                             changes={rawVersionDiff}
                             content={selectedVersionData.bodyText ?? 'No content available'}
@@ -598,7 +596,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     Failed to generate semantic diff.
                   </p>
                 ) : semanticDiffMutation.data ? (
-                  <div className={cn('prose max-h-[50vh] overflow-y-auto text-sm', !isLight && 'prose-invert')}>
+                  <div className="prose max-h-[50vh] overflow-y-auto text-sm">
                     <pre className="whitespace-pre-wrap text-xs">{semanticDiffMutation.data.diff}</pre>
                   </div>
                 ) : null}

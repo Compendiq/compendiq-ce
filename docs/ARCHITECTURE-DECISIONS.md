@@ -1054,6 +1054,130 @@ Pane in both themes, and Canvas stays the darkest step in Graphite.
 **Still open (inherited from v0.7):** `compendiq-landing` carries neither the
 Steel pair nor this warm ramp. The app remains the source of truth.
 
+### v0.9 — What the palette critique found, and what it cost to fix (2026-08-30)
+
+A dual-assessment design critique of the palette (design review + deterministic
+detector/browser evidence, archived at
+`.impeccable/critique/2026-08-30T19-41-17Z__frontend-src-index-css.md`, scored
+26/36) found the token *system* strong and its *states* weak. Three findings were
+P1. This amendment records the fixes, the numbers behind them, and one thing that
+turned out to be mathematically impossible.
+
+**1. Hover, press and selection were one colour.** `--color-accent` served hover
+AND selection, and in Graphite `--color-secondary` and `--color-muted` held the
+same `#1c1d1d`, so hover, selection, press and a resting field fill were a single
+value — ΔE-OK **0.0000**. In a Confluence-scale tree of 40+ rows, sweeping the
+cursor repainted every row to look like the current destination.
+
+There are now three state tokens, each a further rung from the pane, with
+selection deepest because it is the only one that persists:
+
+| State | Token | Graphite | on Pane | Paper | on Pane |
+|---|---|---:|---:|---:|---:|
+| Hover | `--color-accent` | `#1C1D1D` | 1.070:1 | `#F6F6F5` | 1.081:1 |
+| Press | `--color-pressed` | `#1E1F21` | 1.096:1 | `#F0F0EF` | 1.140:1 |
+| Selection | `--color-selected` | `#232427` | 1.165:1 | `#EBEBEA` | 1.193:1 |
+
+`--color-secondary` / `--color-muted` remain the resting FIELD fill and are no
+longer read by any state. Selection keeps its `--color-border-interactive`
+outline and weight 500 on top of the deeper fill. Paper's band is bounded from
+below: no state fill may be darker than Y=0.820 or a status label sitting on it
+drops under AA, which is why the three rungs are ~1.05:1 apart rather than
+comfortably spaced.
+
+**2. Dark document ink was never in the palette.** `--tw-prose-*` was declared
+only under `[data-theme-type="light"] .prose`. Dark prose came from toggling
+Tailwind Typography's `prose-invert` class in JSX at eight callsites, which
+painted body copy `#d1d5dc` — hue 258°, 12.28:1 on the pane, a value appearing
+nowhere in `index.css` — where `--color-foreground` (`#E7E9EB`) is 14.86:1. Any
+component that forgot the conditional rendered Tailwind's *light* ink at
+**1.75:1**. Both themes now declare prose ink in CSS from the tokens, the class
+and its theme conditionals are deleted, and `AiContextValue` no longer carries an
+`isLight` flag it only existed to feed.
+
+**3. Status colour was single-channel — and cannot be fixed by colour alone.**
+On the white pane the six statuses were nearly iso-luminant (Y 0.101–0.144), so
+under Machado severity-1.0 simulation a healthy sync merged with a disabled item
+(connected ↔ inactive, ΔE-OK 0.038) and a failing sync merged with a working one
+(syncing ↔ disconnected, 0.040). `--color-status-ai` ↔ `--color-info` collided in
+**every** deficiency type in **both** themes (0.0148–0.0391), while this file
+claimed indigo "deliberately collides with no reserved hue" — a claim that was
+only ever tested for normal vision.
+
+Three moves. Paper's statuses were spread across Y 0.048–0.131:
+
+| Role | Paper v0.8 | Paper v0.9 | Y | Graphite v0.8 | Graphite v0.9 |
+|---|---:|---:|---:|---:|---:|
+| Connected | `#16794A` | `#007544` | 0.131 | `#4ADE80` | unchanged |
+| Syncing | `#8A5A00` | `#80590F` | 0.118 | `#FBBF24` | unchanged |
+| Embedding | `#3F627C` | unchanged | 0.113 | `#86AEC8` | unchanged |
+| AI | `#7041A8` | unchanged | 0.101 | `#C084FC` | unchanged |
+| Disconnected | `#C03434` | `#BC3031` | 0.130 | `#F87171` | unchanged |
+| Inactive | `#6A6A68` | `#5C5C5A` | 0.107 | `#8B8F99` | unchanged |
+| Informational | `#3F49B8` | `#2A3977` | 0.048 | `#8B93F8` | `#B2C3FF` |
+
+`--color-info` moved in **lightness, not hue** (it stays at 270–272°, still the
+same indigo notice), because hue has nowhere to go: indigo is boxed between Steel
+at 237–242° and AI violet at 302–306°, and any move toward either makes it read
+as a second Steel or a second AI in normal vision. Graphite now has **zero**
+simulated collisions among the seven roles. `--color-status-inactive` is also
+decoupled from `--color-muted-foreground`: one is a status hue that must clear
+`connected` under deuteranopia, the other is body-adjacent reading ink.
+
+**The impossibility, stated so nobody re-litigates it.** Seven semantic hues
+cannot be mutually separated under CVD while every one clears 4.5:1 on a white
+pane. The AA ceiling puts every Paper status at Y ≤ 0.133, which is OKLab
+L 0.354–0.512; seven roles spread evenly across that band sit ΔL ≈ 0.026 apart
+against a ~0.05 discrimination threshold. Four simulated pairs therefore remain
+within 0.044 and always will. That residue is why **colour is never the only
+channel for state** (recorded in PRODUCT.md): every status indicator carries an
+icon, a distinct shape, or an accessible name, guarded by
+`status-non-colour-channel.test.ts`. WCAG 1.4.1 is satisfied by that channel; the
+palette's job is to reduce how often it carries the load alone.
+
+**4. Paying for the near-white frame (P2).** Canvas `#FAFAF9` sits 1.044:1 from
+the white pane and Raised shares Pane's white outright, so the quiet hairline was
+carrying a boundary a value step used to carry — at 1.273:1. `--color-border`
+goes to `#D9D9D6` (**1.414:1** on Pane) and the overlay edge on
+`nm-card-elevated` is promoted from the quiet hairline to
+`--color-border-interactive` (**3.84:1**), the half of an overlay's separation
+that survives `forced-colors`. The owner's pinned frame and pure-white panes are
+unchanged; this is the cost of keeping them.
+
+**5. Colour that escaped the token system (P2).** Three instances, one cause:
+- **Charts ran a second and third palette** — Tailwind-v3 hexes in four analytics
+  dashboards plus a twelve-hue array in the graph view, theme-blind and landing
+  1.6–3.8 ratio points below the token owning the same role (`#10b981` measured
+  **2.54:1** on white where `--color-status-connected` measures 5.43). Chart
+  series now resolve tokens from computed style at render.
+- **`.prose a` had no focus ring** and inherited Chrome's UA blue `#005FCC` at
+  **3.02:1** in Graphite — the narrowest margin in the system, on a control users
+  hit on every article. It now takes `--color-ring`.
+- **`nm-button-primary` and `nm-button-destructive` declared `border: 1px solid
+  transparent`** while the guard asserted "every operable utility keeps a 1px
+  border (WCAG 1.4.11, forced-colors)". `transparent` is *preserved* by
+  forced-colors, so the two most consequential actions were the ones with no
+  forced edge. Both now declare their own fill colour as the border — invisible
+  in normal rendering, a real edge under forced-colors — and the guard asserts a
+  painted colour rather than the presence of a declaration.
+
+**What the guards learned, again.** Every one of these was a place where a test
+asserted a *rule* or a *declaration* instead of a *measurement*:
+`workspace-themes.test.ts` now pins the three state rungs and their order in both
+themes, measures statuses against all nine grounds they can land on (including
+the hover, press, selection and field fills — the old test used `{ bg, card }`,
+which is how a success label sat at 4.44:1 on a hovered row), asserts prose ink
+resolves from `--color-foreground` in both themes, asserts operable borders paint,
+and carries a new `describe` block that applies Machado matrices in linear light
+and holds floors on the pairs that share a status strip.
+
+**Not done, and deliberately so.** Graphite's quiet hairline stays at 1.20–1.39:1
+— the near-white-frame argument is Paper's, and dark's boundary was not the
+finding. `--color-status-embedding` remains Steel, so ambient pipeline telemetry
+still wears the interaction colour; splitting it is a vocabulary change worth its
+own decision. `compendiq-landing` still carries neither the Steel pair nor this
+ramp.
+
 ---
 
 ## ADR-011: Docker Deployment Architecture
