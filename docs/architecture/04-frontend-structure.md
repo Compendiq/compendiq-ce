@@ -566,7 +566,7 @@ the backend side.
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
   **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
-  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#F4F3F1` canvas) — a neutral flat system
+  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#EBEAE8` canvas) — a neutral flat system
   carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
   interaction colour, amber reserved for warning/attention, and violet for AI
   ornament (operable things stay Steel). Surfaces are **flat
@@ -576,10 +576,13 @@ the backend side.
   palette is designed out. Paper's panes — document, left navigation, context
   rail — are pure white, its neutrals sit quietly on the warm side of the hue
   circle, and its frame (gutter, left destination rail, top app header) is
-  `#F4F3F1`: the darkest step, one 8-bit step under Chrome, deepened in v0.9
-  when the workspace and context-rail hairlines were removed and the value step
-  became the only thing drawing the card (1.11:1 on Pane, matching Graphite's
-  1.10:1). Every other neutral is fitted to that grey and to the white panes, and
+  `#EBEAE8`: the darkest step and a real grey, deepened twice in v0.9 — once when
+  the workspace and context-rail hairlines were removed and the value step became
+  the only thing drawing the card, then again when the owner asked for "more
+  gray" (1.20:1 on Pane). It is the floor of the range: the destination rail's
+  12px labels are `--color-muted-foreground` on it at 4.51:1, so a deeper frame
+  needs the secondary ink darkened first, and `workspace-themes.test.ts` pins
+  that pair. Every other neutral is fitted to that grey and to the white panes, and
   the hover and pressed fills keep a measured floor against white so a state
   stays visible (ADR-010 v0.8/v0.9). See ADR-010 v0.7 for the roles and the
   Graphite values, v0.8 for Paper's, v0.9 for the unlined shell;
@@ -594,10 +597,16 @@ the backend side.
   row, the article context strip and the inspector's tab row all resolve to
   exactly 48px so the panes start their content on one y, and
   `toolbar-rule-alignment.test.ts` fails both when a row loses `h-12` and when
-  one reinstates a `border-b`. The lines that remain are the ones nothing else
+  one reinstates a `border-b`. Segmented controls follow: the track is fill only
+  (`bg-muted`, no border, seven call sites) and the selected chip's edge — the
+  one line left in the control — is `--color-border-interactive` in both
+  `panel-tab-active` and `nm-pill-active`, because a selected segment's STATE has
+  to clear 1.4.11. The lines that remain are the ones nothing else
   states: the left navigation's `border-r` (both sides are Pane), card borders
   (a card paints Pane on a Pane), `--color-border-interactive` on anything
-  operable, and the two sticky headers whose own content scrolls under them
+  operable **except the one owner exception, `nm-composer`** (quiet hairline by
+  explicit decision; focus-within restores a ≥3:1 border plus ring), and the two
+  sticky headers whose own content scrolls under them
   (`SettingsLayout`'s title strip, `Editor`'s fallback toolbar) plus the pane
   footers a scrolling list ends against. `app-shell-layout.test.ts` holds a
   1.08:1 floor under the card's value step, since an unlined card fails

@@ -62,13 +62,14 @@ export function MainNavStripExpanded({ onNavigate }: MainNavStripProps) {
   const location = useLocation();
   return (
     // A segmented control on a recessed track — the same shape as the article
-    // inspector's Outline/Details tabs and the search-mode toggle. All three
+    // inspector's tabs, the settings sub-tabs and the search-mode toggle. All
     // are "pick one of N", and they had three different treatments: this one
     // was a bare row with an accent-tinted active item, the inspector a track
     // with a raised tab, the search toggle a third thing again. One pattern
-    // now: recessed track, raised neutral active segment.
+    // now: recessed track, raised neutral active segment — and since 2026-08-31
+    // the track carries no border, so the fill is the whole track.
     <nav
-      className="flex shrink-0 grow items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+      className="flex shrink-0 grow items-center gap-0.5 rounded-md bg-muted p-0.5"
       aria-label="Main navigation"
     >
       {MAIN_NAV_ITEMS.map(({ icon: Icon, label, path, shortcut, ariaLabel }) => {

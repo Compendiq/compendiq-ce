@@ -660,11 +660,16 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
       own greys.
    5. Pass 5 (2026-08-31). The workspace card and the context rail lost their
       hairlines, so the value step became the whole boundary and 1.04:1 was no
-      longer enough to be one. Canvas went to #f4f3f1 (1.11:1 on Pane, the same
-      edge Graphite gets from its own step) and with it Paper's order returns to
-      v0.7's: Canvas #f4f3f1 → Chrome #f5f5f4 → Workspace #f8f8f7 →
-      Pane #ffffff. Only Canvas moved; the fills fitted in pass 4 are unchanged
-      because they are measured against Pane, not against the frame.
+      longer enough to be one. Canvas went to #f4f3f1 (1.11:1 on Pane) and with
+      it Paper's order returned to v0.7's: Canvas → Chrome → Workspace → Pane.
+   6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8, 1.20:1
+      on Pane — the frame reads as grey rather than as a lighter white, and it
+      now matches the step the hover fill uses. This is the FLOOR of the range:
+      the destination rail's 12px labels are --color-muted-foreground on Canvas
+      and #6a6a68 measures 4.51:1 there against 1.4.3's 4.5, so the next step of
+      grey has to be paid for by darkening the secondary ink. Only Canvas moved
+      in either pass; the fills fitted in pass 4 are measured against Pane, not
+      against the frame.
 
    The state fills were the real casualty of pass 3 and are the point of pass 4:
    hover/selected (--color-accent) is #f2f2f1, which separates from the white
@@ -681,13 +686,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is the darkest step again as of 2026-08-31 (#f4f3f1), having spent a
+     Canvas is the darkest step again as of 2026-08-31 (#ebeae8), having spent a
      day above Workspace at #f9f8f7 → #fdfdfd → #fafaf9. The reason is not
      symmetry with Graphite: when the workspace and rail hairlines came off,
      nothing but the Canvas/Pane step was left to draw the card, and #fafaf9
-     measured 1.04:1 — a boundary you could not see without the line. #f4f3f1
-     measures 1.11:1. The document is still the brightest surface, which is the
-     part that was always load-bearing. */
+     measured 1.04:1 — a boundary you could not see without the line. Two passes
+     later the frame is a real grey at 1.20:1. The document is still the
+     brightest surface, which is the part that was always load-bearing. */
   --color-background: #f8f8f7;          /* Workspace — card ground, bg-background fills */
   --color-foreground: #191918;          /* ink, one step warm */
   --color-card: #ffffff;                /* Pane — document, left pane, context rail */
@@ -789,24 +794,33 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --inline-code-color: #7041a8;
 
   /* Canvas is the gutter around the white workspace card, and it also paints the
-     left destination rail and the top app header. Owner-pinned three times on
-     2026-08-30 (249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9),
-     and deepened once more on 2026-08-31 when the workspace and rail hairlines
-     came off: at #FAFAF9 the frame measured 1.04:1 against the white Pane, which
-     is not an edge once no line traces it. #F4F3F1 measures 1.11:1 — the same
-     edge strength Graphite gets from its own Pane/Canvas step (1.10:1) — so both
-     themes lose the line and keep the card by value alone. It stays above the
-     3:1 floor for --color-border-interactive on Canvas (3.46:1). Every other
-     neutral in this block is fitted to THIS value and to white, which is why the
-     ramp reads near-neutral rather than beige. The rail's destinations are
-     unaffected either way: they carry hover and selection with ink and a Steel
-     marker line, never a fill. */
-  --app-chassis: #f4f3f1;
-  /* Chrome for internal panel headers and toolbars — the deepest surface step of
-     the light ramp, and the only one that reads as a band. This stays a token
-     because the same chrome appears above navigation, trees, settings, and the
-     article inspector. The top app header remains Canvas so the outer frame has
-     one colour on all four sides. */
+     left destination rail and the top app header. Owner-pinned five times: on
+     2026-08-30 at 249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9;
+     on 2026-08-31 to #F4F3F1 when the workspace and rail hairlines came off and
+     the value step became the whole card boundary; and again the same day to
+     #EBEAE8, asked for as "more gray". The frame now measures 1.20:1 against the
+     white Pane — the same step the hover/selected fill uses, and a frame you
+     read as grey rather than as off-white.
+
+     THIS IS THE GREYEST VALUE THE SECONDARY INK ALLOWS. The left destination
+     rail labels ("Pages", "AI", "Graph") are 12px --color-muted-foreground on
+     this surface, so 1.4.3 applies at 4.5:1 and #6A6A68 on #EBEAE8 measures
+     4.51:1. Any deeper grey needs --color-muted-foreground darkened first;
+     workspace-themes.test.ts pins that relationship so the rail cannot lose its
+     labels to a later retune. --color-border-interactive on Canvas is 3.19:1,
+     still over the 1.4.11 floor. Every other neutral in this block is fitted to
+     white and to this frame, which is why the ramp reads near-neutral rather
+     than beige. The rail's destinations are unaffected: they carry hover and
+     selection with ink and a Steel marker line, never a fill. */
+  --app-chassis: #ebeae8;
+  /* Chrome for internal panel headers and toolbars: one step under Workspace and
+     a band you can see on a white Pane (1.09:1). It is no longer the deepest
+     step of the ramp — Canvas passed it on 2026-08-31 — and its reach is now
+     narrow: `.app-sidebar` and `.app-context-rail` neutralise it, so the only
+     toolbars still painting Chrome are the ones inside a bordered panel (the
+     Library results headers). It stays a token because that band must not drift
+     between the surfaces that keep it. The top app header is Canvas, so the
+     outer frame has one colour on all four sides. */
   --app-header-bg: #f5f5f4;
   --app-shell-bg: var(--color-background);
   --app-rail-bg: var(--color-card);
@@ -1001,11 +1015,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border: 1px solid var(--color-border-interactive);
 }
 
-/* An active tab is a filled chip, not a tinted pane with a shadow. */
+/* An active tab is a filled chip, not a tinted pane with a shadow — and since
+   2026-08-31 it is the ONLY line in a segmented control: the tracks dropped
+   their `border border-border` and now read on fill alone (--color-muted on
+   Pane, 1.19:1 in Paper / 1.07:1 in Graphite). That makes this edge the whole
+   selected state, so it takes the ≥3:1 token for the same reason `nav-selection`
+   did: a selected segment is an operable component whose STATE has to be
+   identifiable under 1.4.11. On --color-border it measured 1.27:1 in Paper —
+   which is why the shadow-compare picks had to add a glyph to carry selection
+   at all (EmbeddingShadowCompareSection). The glyph stays; it is now a
+   redundant channel rather than the only one. */
 @utility panel-tab-active {
   color: var(--color-foreground);
   background: var(--color-card);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-interactive);
 }
 
 /* A selected destination is a quiet neutral fill with full-strength ink — the
@@ -1225,11 +1248,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* An active segmented-control pill. Neutral fill, full-strength ink, same
    reasoning as `nav-selection`: the accent is reserved for actions, so a row
-   of pills does not read as five primary buttons. */
+   of pills does not read as five primary buttons. Its edge moved to the ≥3:1
+   token alongside `panel-tab-active` on 2026-08-31, when the tracks under both
+   went borderless — see that block for the argument. */
 @utility nm-pill-active {
   border-radius: var(--radius-sm);
   background: var(--color-card);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-interactive);
   color: var(--color-foreground);
   font-weight: 500;
 }
@@ -1527,17 +1552,32 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   }
 }
 
-/* Composer — multi-element horizontal input wrapper for chat / prompt rows.
-   Same inset depth as nm-input, but designed to host an icon button + input
-   + send button as siblings without each carrying its own border. The
-   :focus-within rule lifts the wrapper when any descendant takes focus. */
+/* Composer — multi-element wrapper for chat / prompt rows. Hosts an icon
+   button + input + send button as siblings without each carrying its own
+   border. The :focus-within rule lifts the wrapper when any descendant takes
+   focus.
+
+   OWNER EXCEPTION, 2026-08-31 (WCAG 1.4.11): this border is the quiet
+   `--color-border` hairline, not the ≥3:1 `--color-border-interactive` every
+   other operable surface uses. The owner asked for it to read "like the other
+   lines" once the shell's own lines came off, and it is theirs to spend: at
+   rest the box measures 1.27:1 in Paper instead of 3.84:1, so the resting state
+   does not meet non-text contrast. What still does: `:focus-within` swaps the
+   border to Steel AND adds a 1px ring (both ≥3:1), the placeholder names the
+   field, and the send button beside it keeps its own operable edge. Do not
+   "fix" this back to the interactive token without asking — and do not copy the
+   exception to nm-input, nm-select or the buttons.
+
+   Radius is --radius-lg, matching nm-card: the composer is a container that
+   grows with its content and holds rows of controls, not a 32px control. At
+   --radius-md it read sharper than every card and message bubble around it. */
 @utility nm-composer {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding: 0.375rem 0.5rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-interactive);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
   background: var(--color-card);
   transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
 

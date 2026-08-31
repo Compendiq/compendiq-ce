@@ -381,7 +381,7 @@ export function NewPagePage() {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-medium text-muted-foreground">Type</span>
                 <div
-                  className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5"
                   role="group"
                   aria-label="Article type"
                   data-testid="article-type-toggle"
@@ -454,7 +454,7 @@ export function NewPagePage() {
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs font-medium text-muted-foreground">Visibility</span>
                     <div
-                      className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                      className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5"
                       role="group"
                       aria-label="Visibility"
                       data-testid="visibility-picker"

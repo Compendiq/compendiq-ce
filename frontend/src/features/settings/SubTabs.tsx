@@ -76,7 +76,7 @@ export function SubTabs({ ariaLabel, tabs, testIdRoot = 'tab' }: SubTabsProps) {
       <div
         role="tablist"
         aria-label={ariaLabel}
-        className="inline-flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+        className="inline-flex flex-wrap items-center gap-0.5 rounded-md bg-muted p-0.5"
         onKeyDown={(e) => {
           const ids = visible.map((t) => t.id);
           const idx = ids.indexOf(activeId);

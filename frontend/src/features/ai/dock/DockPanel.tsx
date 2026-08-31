@@ -290,9 +290,14 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
       </div>
       )}
 
-      {/* Streaming indicator: a violet hairline under the header, visible even
-          when the thread is scrolled away from the in-flight answer. */}
-      <div className="h-px shrink-0 bg-border">
+      {/* Streaming indicator: a violet hairline where the header meets the
+          thread, visible even when the thread is scrolled away from the
+          in-flight answer. The 1px box is always here so nothing shifts when a
+          stream starts; it only paints a resting `bg-border` when there IS a
+          header above it to separate. In the `tab` variant the inspector's own
+          chrome row is above instead, and that row draws no line — a resting
+          hairline here read as the tab row's border coming back 1px lower. */}
+      <div className={cn('h-px shrink-0', variant === 'tab' ? 'bg-transparent' : 'bg-border')}>
         {isStreaming && (
           <div className="h-px w-full animate-pulse bg-status-ai" role="status" aria-label="Assistant is responding" data-testid="ai-dock-streaming" />
         )}
@@ -373,8 +378,11 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
       </div>
 
       {/* One selector, one composer, one Send path. The selected action is
-          visible beside Send so the request cannot quietly fall back to Q&A. */}
-      <div className="shrink-0 border-t border-border px-3 pb-3 pt-2.5">
+          visible beside Send so the request cannot quietly fall back to Q&A.
+          No `border-t`: the composer's own box is the boundary, and a rule
+          above it drew a second line 10px from the one the composer already
+          has. */}
+      <div className="shrink-0 px-3 pb-3 pt-2.5">
         {modelsError && (
           <button
             type="button"

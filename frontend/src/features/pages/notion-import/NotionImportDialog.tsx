@@ -1039,7 +1039,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     </span>
                     <div
                       ref={visibilityGroupRef}
-                      className="inline-flex items-center gap-0.5 rounded-md border border-border bg-muted p-0.5"
+                      className="inline-flex items-center gap-0.5 rounded-md bg-muted p-0.5"
                       role="radiogroup"
                       aria-labelledby="notion-import-visibility-label"
                       onKeyDown={(event) => {

@@ -978,7 +978,7 @@ Three changes, and they are separable:
    AI, destructive, informational) did **not** move — they are brand and meaning,
    not neutrals. `--color-status-inactive` did, being neutral grey by role.
 3. **The frame is near-white, and Canvas is no longer the darkest step.**
-   *(Superseded by v0.9: Canvas is `#F4F3F1` and the darkest step again.)* The
+   *(Superseded by v0.9: Canvas is `#EBEAE8` and the darkest step again.)* The
    owner set the gutter around the main area, the left destination rail and the
    top app header — all three are `--app-chassis` — to `#F9F8F7`. Paper's order
    is now Chrome → Workspace → Canvas → Pane. The document is still the
@@ -1068,16 +1068,21 @@ radius already state, and in Graphite a third statement (the value step) as well
 
 Three consequences follow, and all three are the point:
 
-1. **Canvas moved to `#F4F3F1` in Paper.** With no line, the value step is the
-   entire boundary, and at `#FAFAF9` it measured **1.04:1** against the white
-   Pane — not an edge. `#F4F3F1` measures **1.11:1**, matching the 1.10:1 that
-   Graphite gets from `#161617` on `#09090A`, so both themes lose the line and
-   keep the card. Paper's ladder returns to v0.7's order: Canvas `#F4F3F1` →
-   Chrome `#F5F5F4` → Workspace `#F8F8F7` → Pane `#FFFFFF`. Canvas and Chrome
-   are now one 8-bit step apart by intent — the frame and the panel bands should
-   not read as two different greys. Ink and edges on Canvas move with it and all
-   still clear their floors: foreground 15.87:1, muted foreground 4.89:1, Steel
-   5.83:1, and `--color-border-interactive` 3.46:1 against the 1.4.11 3:1 floor.
+1. **Canvas moved twice in Paper, ending at `#EBEAE8`.** With no line, the value
+   step is the entire boundary, and at `#FAFAF9` it measured **1.04:1** against
+   the white Pane — not an edge. `#F4F3F1` took it to **1.11:1**, matching the
+   1.10:1 Graphite gets from `#161617` on `#09090A`. The owner then asked for
+   "more gray" and it went to **`#EBEAE8`, 1.20:1** — the same step the
+   hover/selected fill uses, so the frame reads as grey rather than as a lighter
+   white. Paper's ladder returns to v0.7's order and now has real spacing in it:
+   Canvas `#EBEAE8` → Chrome `#F5F5F4` → Workspace `#F8F8F7` → Pane `#FFFFFF`.
+   **`#EBEAE8` is the floor of the range, and the constraint is ink, not taste:**
+   the left destination rail's inactive labels are 12px `--color-muted-foreground`
+   on Canvas, and `#6A6A68` there measures **4.51:1** against 1.4.3's 4.5 — the
+   next step of grey has to be paid for by darkening the secondary ink first.
+   `workspace-themes.test.ts` pins that pair so the rail cannot lose its labels
+   to a later retune. `--color-border-interactive` on Canvas is 3.19:1, still
+   over the 1.4.11 floor.
 2. **The context rail's tab row stopped painting Chrome.** `.app-context-rail
    .panel-toolbar` inherits the rail, exactly as `.app-sidebar .panel-toolbar`
    already inherited the pane. While a border traced the rail, a Chrome band at
@@ -1141,12 +1146,51 @@ remains in the codebase. The sidebar and conversation-pane **footers** keep thei
 `border-t` for the same reason in the other direction: a scrolling list ends
 against them.
 
+**The segmented controls lost their tracks' borders, and their selected chips
+gained a real edge.** Seven call sites shared one recipe — `rounded-md border
+border-border bg-muted p-0.5` — and the Notes filter track beside them was
+already borderless, so the border was the odd one out rather than the pattern.
+With it gone the track reads on fill alone (`--color-muted` on Pane: 1.19:1
+Paper, 1.07:1 Graphite) and the chip's edge is the only line left in the
+control. That edge therefore moved from `--color-border` to
+`--color-border-interactive` in BOTH `panel-tab-active` and `nm-pill-active` —
+the same correction `nav-selection` already took, and for the same reason: a
+selected segment is an operable component whose STATE must be identifiable
+under 1.4.11, and at 1.27:1 it was not. This is why the shadow-compare picks
+needed a glyph to carry selection at all; the glyph stays as a redundant
+channel, not as the only one.
+
+**One deliberate 1.4.11 exception: `nm-composer`.** The owner asked for the
+assistant's input to read "like the other lines" once the shell's own lines came
+off, and chose the quiet hairline over the floor with the numbers in front of
+them: `--color-border` measures **1.27:1** in Paper where
+`--color-border-interactive` measured 3.84:1, so the resting state no longer
+meets non-text contrast on all six composers (dock, Ask, Improve, Generate,
+Diagram, the URL row). What still carries it: `:focus-within` swaps the border to
+Steel *and* adds a 1px ring, both ≥3:1; the placeholder names the field; the
+send button keeps its own operable edge. The exception is asserted in
+`workspace-themes.test.ts` rather than dropped from the guard list, so restoring
+the interactive token has to come back through that test — and so that nobody
+reads it as drift and copies it to `nm-input` or the buttons. The same box also
+moved from `--radius-md` to `--radius-lg`, matching `nm-card`: the composer is a
+container that grows with its content, not a 32px control, and at 6px it read
+sharper than every card and message bubble around it.
+
+**And the dock lost two more lines.** The `border-t` above the composer drew a
+second rule 10px from the boundary the composer's own box already provides. The
+1px `bg-border` track under the panel header now paints only when there IS a
+header above it: in the inspector's `tab` variant the header is not rendered, so
+that hairline sat directly under the inspector's own chrome row and read as the
+tab row's border coming back one pixel lower. The box stays in flow at
+`bg-transparent` so nothing shifts when a stream starts painting it violet.
+
 **Guards.** `app-shell-layout.test.ts` inverts its two card assertions — the
 workspace and rail utilities must now carry no border in any spelling — and adds
 the measurement that replaces them: Pane over Canvas ≥ 1.08:1 in both themes,
 because the failure mode of an unlined card is a silent chassis retune that keeps
 "Canvas below Pane" true while flattening the edge to nothing.
-`workspace-themes.test.ts` re-pins the owner value at `#F4F3F1` and reorders the
+`workspace-themes.test.ts` re-pins the owner value at `#EBEAE8`, holds muted
+foreground ≥4.5:1 on it for the rail labels, and reorders the
 Paper ladder with Canvas at the bottom. `toolbar-rule-alignment.test.ts` keeps
 the 48px band by height and forbids a `border-b` on any chrome row; it reads
 quoted class strings rather than source lines, so prose naming `panel-toolbar`

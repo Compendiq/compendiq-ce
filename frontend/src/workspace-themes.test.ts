@@ -236,24 +236,40 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   //
   // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
   // destination rail, top app header) three times on 2026-08-30, landing on
-  // #fafaf9, then chose #f4f3f1 on 2026-08-31 when the workspace and context-rail
+  // #fafaf9; then #f4f3f1 on 2026-08-31 when the workspace and context-rail
   // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
-  // against the frame, which is not an edge. #f4f3f1 measures 1.109:1, matching
-  // Graphite's own Pane/Canvas step. Asserting a hue rule on it would assert the
-  // ramp over the owner's own value, so it gets the stricter check instead — its
-  // exact value — which catches drift in EITHER direction rather than trading one
-  // unguarded token for another. The edge itself is measured in
-  // app-shell-layout.test.ts; this pins the value the owner chose.
+  // against the frame, which is not an edge — and then #ebeae8 the same day,
+  // asked for as "more gray" (1.202:1 on Pane). Asserting a hue rule on it would
+  // assert the ramp over the owner's own value, so it gets the stricter check
+  // instead — its exact value — which catches drift in EITHER direction rather
+  // than trading one unguarded token for another. The card edge is measured in
+  // app-shell-layout.test.ts; the rail's own ink floor is measured below.
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#f4f3f1',
+    '--app-chassis': '#ebeae8',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
     for (const [name, value] of Object.entries(OWNER_PINNED)) {
       expect(token(lightBlock, name), `${name} is owner-pinned`).toBe(value);
     }
+  });
+
+  // The left destination rail paints Canvas, and its inactive labels are 12px
+  // --color-muted-foreground on it — normal text, so 1.4.3 wants 4.5:1. This is
+  // the constraint that sets HOW GREY the frame may go: at #ebeae8 the pair
+  // measures 4.51:1, so the next step of grey has to be paid for by darkening
+  // the secondary ink first. Without this guard the rail loses its labels to a
+  // chassis retune nothing else in the suite would notice, because every other
+  // muted-foreground measurement is taken against Pane and Raised.
+  it('keeps the destination rail labels readable on the frame', () => {
+    expectContrast(
+      'muted foreground on Canvas (rail labels)',
+      token(lightBlock, '--color-muted-foreground'),
+      token(lightBlock, '--app-chassis'),
+      4.5,
+    );
   });
 
   it('keeps every other Paper neutral on the warm side of the hue circle', () => {
@@ -712,10 +728,48 @@ describe('Flat depth model', () => {
 
   // Outlined controls take the MEASURED interactive border, not the quiet
   // hairline used for separators and pane edges.
+  //
+  // `nm-composer` is a deliberate owner exception as of 2026-08-31: the owner
+  // asked for the assistant's input to read "like the other lines" once the
+  // shell's own lines came off, which spends 1.4.11's resting non-text contrast
+  // (3.84:1 → 1.27:1 in Paper) on that one surface. It is asserted here rather
+  // than dropped from the list, so the exception is a decision on the record and
+  // a `--color-border-interactive` restoration has to come back through this
+  // test. What still carries the floor there is `:focus-within` — Steel border
+  // plus a 1px ring, both ≥3:1 — which the two assertions below pin.
   it('outlined controls use the interactive border token', () => {
-    for (const name of ['nm-button-ghost', 'nm-input', 'nm-composer']) {
+    for (const name of ['nm-button-ghost', 'nm-input']) {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block, `${name} should use --color-border-interactive`).toMatch(
+        /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
+      );
+    }
+  });
+
+  it('the composer keeps the quiet hairline the owner asked for, and a compliant focus state', () => {
+    const block = extractBlock(css, '@utility nm-composer {');
+    expect(block, 'nm-composer is the owner exception: quiet hairline at rest').toMatch(
+      /border:\s*1px\s+solid\s+var\(--color-border\)/,
+    );
+    expect(block, 'focus must swap the border to Steel').toMatch(
+      /border-color:\s*var\(--color-primary\)/,
+    );
+    expect(block, 'focus must add a 1px ring, not only recolour the border').toMatch(
+      /box-shadow:\s*0 0 0 1px var\(--color-primary\)/,
+    );
+    expect(block, 'the composer is a container: it takes the card radius').toMatch(
+      /border-radius:\s*var\(--radius-lg\)/,
+    );
+  });
+
+  // A selected segment is an operable component whose STATE must be
+  // identifiable (1.4.11). Both chip utilities sit on a borderless `bg-muted`
+  // track whose fill step is 1.19:1 (Paper) / 1.07:1 (Graphite), so the chip's
+  // own edge is the only channel that can carry 3:1.
+  it('selected segments carry the interactive edge', () => {
+    for (const name of ['panel-tab-active', 'nm-pill-active']) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      expect(block, `${name} must use --color-border-interactive`).toMatch(
         /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
       );
     }

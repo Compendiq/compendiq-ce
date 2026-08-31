@@ -1441,12 +1441,17 @@ export function ArticleRightPane({
           of breathing room and no more. */}
       <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
         {/* Two stable views replace one long mixed-purpose column.
-            Same segmented-control shape as the main nav and the search-mode
-            toggle: `rounded-md` track, `border-border`, `bg-muted`, 2px inset.
-            This was `rounded-xl` on `bg-foreground/[0.045]` with a 4px inset —
-            a third distinct treatment for the same interaction. */}
+            Same segmented-control shape as the main nav, the settings sub-tabs
+            and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
+            inset, one raised active segment. The track's own `border-border`
+            came off on 2026-08-31 with the rest of the panel's lines — the fill
+            is 1.19:1 on Pane in Paper and carries the boundary alone, which is
+            what the Notes filter track beside it was already doing. The active
+            chip's edge is now the only line in the control, and it moved to
+            --color-border-interactive so the selected state still clears
+            1.4.11 (see `panel-tab-active`). */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md border border-border bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
