@@ -44,7 +44,6 @@ import { MermaidBlock } from './MermaidBlockExtension';
 import { CommentPopover } from './CommentPopover';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
-import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
 import { handleTableCellTripleClick } from './table-cell-selection';
 
@@ -119,7 +118,6 @@ export function ArticleViewer({
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
-  const isLight = useIsLightTheme();
   const headerNumbering = localStorage.getItem('editor-header-numbering') === 'true';
   // #747: tracks the content last parsed into the editor so the setContent
   // effect can skip the no-op re-parse that used to happen on mount (the
@@ -555,7 +553,6 @@ export function ArticleViewer({
         editor={editor}
         className={cn(
           'article-viewer prose max-w-none',
-          !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles
           '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',

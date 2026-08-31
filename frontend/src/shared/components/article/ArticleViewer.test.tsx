@@ -638,19 +638,29 @@ describe('ArticleViewer', () => {
     expect(pre.getAttribute('data-title')).toBeNull();
   });
 
-  it('applies prose-invert class only in dark theme', async () => {
-    const html = '<p>Dark theme content</p>';
-
-    const { container } = render(<ArticleViewer content={html} />);
-
-    await waitFor(() => {
-      const editorContent = container.querySelector('.article-viewer');
-      expect(editorContent).toBeTruthy();
+  // Prose ink is owned by the CSS cascade (`[data-theme-type] .prose` in
+  // index.css), not by a JSX conditional, so the viewer carries `prose` and
+  // never `prose-invert` — whichever theme is mounted.
+  describe('prose surface', () => {
+    afterEach(() => {
+      delete document.documentElement.dataset.themeType;
     });
 
-    const editorContent = container.querySelector('.article-viewer')!;
-    // useIsLightTheme is mocked to return false (dark theme), so prose-invert should be present
-    expect(editorContent.classList.contains('prose-invert')).toBe(true);
+    it.each(['light', 'dark'])('renders prose without prose-invert in the %s theme', async (themeType) => {
+      document.documentElement.dataset.themeType = themeType;
+      const html = '<p>Themed content</p>';
+
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const editorContent = container.querySelector('.article-viewer');
+        expect(editorContent).toBeTruthy();
+      });
+
+      const editorContent = container.querySelector('.article-viewer')!;
+      expect(editorContent.classList.contains('prose')).toBe(true);
+      expect(editorContent.classList.contains('prose-invert')).toBe(false);
+    });
   });
 
   it('sets role="document" and aria-readonly="true" on the TipTap editor element', async () => {

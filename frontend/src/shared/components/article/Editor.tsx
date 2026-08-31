@@ -18,7 +18,6 @@ import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
 import { MIME_TO_EXT, uploadPastedImage } from './editor-image-upload';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
-import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import { useUiStore } from '../../../stores/ui-store';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
@@ -718,7 +717,6 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
 }
 
 export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
-  const isLight = useIsLightTheme();
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
   // (#877). We store only the key and serialize the editor lazily at flush
@@ -1112,7 +1110,6 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         editor={editor}
         className={cn(
           'prose max-w-none',
-          !isLight && 'prose-invert',
           '[&_.tiptap]:min-h-[200px] [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
           // Naked article/new-page editors sit in the page's own
           // `px-5 sm:px-10` column — a second px-10 here inset the body
