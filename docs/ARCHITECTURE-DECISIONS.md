@@ -977,7 +977,8 @@ Three changes, and they are separable:
    warmed only in its backgrounds. Steel and the semantic hues (success, warning,
    AI, destructive, informational) did **not** move — they are brand and meaning,
    not neutrals. `--color-status-inactive` did, being neutral grey by role.
-3. **The frame is near-white, and Canvas is no longer the darkest step.** The
+3. **The frame is near-white, and Canvas is no longer the darkest step.**
+   *(Superseded by v0.9: Canvas is `#F4F3F1` and the darkest step again.)* The
    owner set the gutter around the main area, the left destination rail and the
    top app header — all three are `--app-chassis` — to `#F9F8F7`. Paper's order
    is now Chrome → Workspace → Canvas → Pane. The document is still the
@@ -1053,6 +1054,73 @@ Pane in both themes, and Canvas stays the darkest step in Graphite.
 
 **Still open (inherited from v0.7):** `compendiq-landing` carries neither the
 Steel pair nor this warm ramp. The app remains the source of truth.
+
+### v0.9 — the workspace loses its frame lines (2026-08-31)
+
+**Decision.** The 1px hairline around the workspace card and the one around the
+detached context rail are removed. Nothing replaces them: the card is drawn by
+the chassis inset, the 12–14px radius, and the Pane-over-Canvas value step.
+
+The owner's reading was that the shell had too many lines and that these two —
+the frame around the work and the frame around the inspector — were the loudest.
+They were also the most redundant: each traced a boundary that the inset and the
+radius already state, and in Graphite a third statement (the value step) as well.
+
+Three consequences follow, and all three are the point:
+
+1. **Canvas moved to `#F4F3F1` in Paper.** With no line, the value step is the
+   entire boundary, and at `#FAFAF9` it measured **1.04:1** against the white
+   Pane — not an edge. `#F4F3F1` measures **1.11:1**, matching the 1.10:1 that
+   Graphite gets from `#161617` on `#09090A`, so both themes lose the line and
+   keep the card. Paper's ladder returns to v0.7's order: Canvas `#F4F3F1` →
+   Chrome `#F5F5F4` → Workspace `#F8F8F7` → Pane `#FFFFFF`. Canvas and Chrome
+   are now one 8-bit step apart by intent — the frame and the panel bands should
+   not read as two different greys. Ink and edges on Canvas move with it and all
+   still clear their floors: foreground 15.87:1, muted foreground 4.89:1, Steel
+   5.83:1, and `--color-border-interactive` 3.46:1 against the 1.4.11 3:1 floor.
+2. **The context rail's tab row stopped painting Chrome.** `.app-context-rail
+   .panel-toolbar` inherits the rail, exactly as `.app-sidebar .panel-toolbar`
+   already inherited the pane. While a border traced the rail, a Chrome band at
+   its top edge was fine; without one it measured 1.03:1 against Canvas in
+   Graphite and 1.00:1 in Paper, which dissolved the rail's top 48px and its top
+   corners into the frame and left that row's hairline floating in the gutter.
+   Chrome now belongs to toolbars *inside* a bordered panel (the Library results
+   panels), never to a pane's own first row.
+3. **`--app-shell-border-width` is gone.** It existed only to switch that
+   hairline off below `md`. `app-shell-layout.test.ts` fails if the name returns.
+
+**Ten more hairlines came out of the article inspector**, all of them a second
+statement of a grouping the panel already made with an 11px eyebrow label and
+spacing: the six `divide-y` rules between Page details rows (the "Document
+health" and "Labels" sections in the same panel never had them), the `border-t`
+above Page actions in both the read and edit variants, the one above the More
+actions disclosure, and the one between the outline header and the outline tree —
+where a scroll mask already fades the boundary and the reading-progress bar
+already terminates the header.
+
+**What was kept, and why it is not the same case.** Four families of line are
+load-bearing and were left alone:
+
+- **The 48px chrome rule** across the sidebar's nav row, the article context
+  strip and the inspector's tab row. It is perceptually one line
+  (`toolbar-rule-alignment.test.ts` holds the three at the same y), and on both
+  the sidebar and the article strip the surfaces either side of it are the same
+  `--color-card` — nothing else marks that boundary.
+- **`app-sidebar`'s `border-r`.** Left navigation and `<main>` deliberately share
+  Pane so the workspace reads as one card; the hairline is the only split.
+- **`nm-card` and panel borders.** A card paints `--color-card` on a pane that is
+  already `--color-card`, in both themes. There the border *is* the card.
+- **`--color-border-interactive` on operable surfaces.** WCAG 1.4.11 non-text
+  contrast, measured from the token file, and the only boundary that survives
+  `forced-colors: active`.
+
+**Guards.** `app-shell-layout.test.ts` inverts its two card assertions — the
+workspace and rail utilities must now carry no border in any spelling — and adds
+the measurement that replaces them: Pane over Canvas ≥ 1.08:1 in both themes,
+because the failure mode of an unlined card is a silent chassis retune that keeps
+"Canvas below Pane" true while flattening the edge to nothing.
+`workspace-themes.test.ts` re-pins the owner value at `#F4F3F1` and reorders the
+Paper ladder with Canvas at the bottom.
 
 ---
 

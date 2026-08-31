@@ -641,9 +641,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    which is what lets both themes share one set of shell utilities.
 
    Paper is a NEAR-NEUTRAL warm ramp fitted to two owner values: a pure white
-   Pane and the grey the owner picked for the frame. It has been tuned four
-   times on 2026-08-30 and the history is worth keeping, because each pass
-   answers the previous one.
+   Pane and the grey the owner picked for the frame. It has been tuned five
+   times — four on 2026-08-30, once more on 2026-08-31 — and the history is
+   worth keeping, because each pass answers the previous one.
 
    1. Every grey used to sit at OKLCH hue ~250-286 — a cool blue cast that read
       as screen-grey beside the steel accent. The ramp went to hue ~68-70 at the
@@ -653,12 +653,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    3. The owner pinned the frame, and then pinned it again at #fdfdfd, where it
       measured 1.02:1 against the white Pane — a frame you could not see, and
       (sharing the token) a hover you could not see either.
-   4. This pass. The grey is three 8-bit steps darker at #fafaf9 (1.04:1 on
-      Pane) and every other neutral is refitted to IT and to white, rather than
-      to the beige ramp of pass 1. The family is now a whisper of warmth — one
-      to three 8-bit steps of red over blue, matching the owner's own greys —
-      and the surfaces are spaced so each step is a step: Chrome #f5f5f4 →
-      Workspace #f8f8f7 → Canvas #fafaf9 → Pane #ffffff.
+   4. Pass 4 (2026-08-30). The grey went three 8-bit steps darker to #fafaf9
+      (1.04:1 on Pane) and every other neutral was refitted to IT and to white,
+      rather than to the beige ramp of pass 1. The family is a whisper of
+      warmth — one to three 8-bit steps of red over blue, matching the owner's
+      own greys.
+   5. Pass 5 (2026-08-31). The workspace card and the context rail lost their
+      hairlines, so the value step became the whole boundary and 1.04:1 was no
+      longer enough to be one. Canvas went to #f4f3f1 (1.11:1 on Pane, the same
+      edge Graphite gets from its own step) and with it Paper's order returns to
+      v0.7's: Canvas #f4f3f1 → Chrome #f5f5f4 → Workspace #f8f8f7 →
+      Pane #ffffff. Only Canvas moved; the fills fitted in pass 4 are unchanged
+      because they are measured against Pane, not against the frame.
 
    The state fills were the real casualty of pass 3 and are the point of pass 4:
    hover/selected (--color-accent) is #f2f2f1, which separates from the white
@@ -675,13 +681,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is ABOVE Workspace in value since the owner set the frame — #f9f8f7,
-     then #fdfdfd, now #fafaf9 (all 2026-08-30) — so Paper's order is Chrome →
-     Workspace → Canvas → Pane rather than v0.7's Canvas-is-darkest. The
-     document is still the brightest surface, which is the part that was
-     load-bearing; the workspace card is read off a 1.04:1 value step against
-     the gutter AND its `--color-border` hairline, where at #fdfdfd the hairline
-     was carrying that boundary alone. */
+     Canvas is the darkest step again as of 2026-08-31 (#f4f3f1), having spent a
+     day above Workspace at #f9f8f7 → #fdfdfd → #fafaf9. The reason is not
+     symmetry with Graphite: when the workspace and rail hairlines came off,
+     nothing but the Canvas/Pane step was left to draw the card, and #fafaf9
+     measured 1.04:1 — a boundary you could not see without the line. #f4f3f1
+     measures 1.11:1. The document is still the brightest surface, which is the
+     part that was always load-bearing. */
   --color-background: #f8f8f7;          /* Workspace — card ground, bg-background fills */
   --color-foreground: #191918;          /* ink, one step warm */
   --color-card: #ffffff;                /* Pane — document, left pane, context rail */
@@ -784,15 +790,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
   /* Canvas is the gutter around the white workspace card, and it also paints the
      left destination rail and the top app header. Owner-pinned three times on
-     2026-08-30: 249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9.
-     At 1.04:1 against the white Pane the frame is quiet but present again,
-     which is what #FDFDFD (1.02:1) had given up; the card boundary now rests on
-     that step AND the --color-border hairline (1.22:1 here) rather than on the
-     hairline alone. Every other neutral in this block is fitted to THIS value
-     and to white, which is why the ramp reads near-neutral rather than beige.
-     The rail's destinations are unaffected either way: they carry hover and
-     selection with ink and a Steel marker line, never a fill. */
-  --app-chassis: #fafaf9;
+     2026-08-30 (249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9),
+     and deepened once more on 2026-08-31 when the workspace and rail hairlines
+     came off: at #FAFAF9 the frame measured 1.04:1 against the white Pane, which
+     is not an edge once no line traces it. #F4F3F1 measures 1.11:1 — the same
+     edge strength Graphite gets from its own Pane/Canvas step (1.10:1) — so both
+     themes lose the line and keep the card by value alone. It stays above the
+     3:1 floor for --color-border-interactive on Canvas (3.46:1). Every other
+     neutral in this block is fitted to THIS value and to white, which is why the
+     ramp reads near-neutral rather than beige. The rail's destinations are
+     unaffected either way: they carry hover and selection with ink and a Steel
+     marker line, never a fill. */
+  --app-chassis: #f4f3f1;
   /* Chrome for internal panel headers and toolbars — the deepest surface step of
      the light ramp, and the only one that reads as a band. This stays a token
      because the same chrome appears above navigation, trees, settings, and the
@@ -855,7 +864,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      room outside their controls after the rail's padding. */
   --app-nav-rail-width: calc(var(--app-header-height) + 30px);
   --app-shell-radius: 0px;
-  --app-shell-border-width: 0px;
   --app-rail-gap: 0px;
   --app-rail-radius: 0px;
 }
@@ -864,7 +872,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   :root {
     --app-inset: 12px;
     --app-shell-radius: 12px;
-    --app-shell-border-width: 1px;
     --app-rail-gap: 4px;
     --app-rail-radius: 12px;
   }
@@ -874,7 +881,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   :root {
     --app-inset: 16px;
     --app-shell-radius: 14px;
-    --app-shell-border-width: 1px;
     --app-rail-gap: 6px;
     --app-rail-radius: 14px;
   }
@@ -895,9 +901,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   min-height: 0;
 }
 
+/* The workspace card is defined by value and shape, not by a line: the chassis
+   inset holds it off the frame, the radius cuts its corners, and Pane sits a
+   step above Canvas in both themes (1.10:1 Graphite, 1.11:1 Paper). The 1px
+   hairline that used to trace all four sides was a third statement of the same
+   boundary, and it read as a frame drawn around the work. Do not add it back:
+   retune --app-chassis if the card stops reading as a card. */
 @utility app-workspace {
   background: var(--app-shell-bg);
-  border: var(--app-shell-border-width) solid var(--color-border);
   border-radius: var(--app-shell-radius);
   min-width: 0;
 }
@@ -906,9 +917,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   gap: 0;
 }
 
+/* Detached sibling of the workspace card. Its boundary is the --app-rail-gap
+   strip of Canvas on one side and the chassis inset on the other three, plus
+   the same Pane-over-Canvas step the workspace uses — so it needs no hairline
+   either. Below `md` it is the inspector sheet over a dimmed backdrop, where a
+   border would be the only line on screen. */
 @utility app-context-rail {
   background: var(--app-rail-bg);
-  border: 1px solid var(--color-border);
   border-radius: var(--app-rail-radius);
 }
 
@@ -930,18 +945,24 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   height: 100%;
 }
 
-/* Context-rail headers share the same neutral chrome as every other panel
-   header; the token keeps that band coherent across detached surfaces. */
+/* The rail's tab row inherits the rail, exactly as the left navigation's title
+   band inherits the pane. It used to paint Chrome, which was fine while a 1px
+   border traced the rail: once that came off (2026-08-31) a Chrome band at the
+   rail's top edge measured 1.03:1 against Canvas in Graphite and 1.00:1 in
+   Paper, so the top 48px — and the top corners' radius with it — dissolved into
+   the frame and left the row's own hairline floating. On Pane the same edge is
+   1.10:1 / 1.11:1. Chrome now belongs to toolbars that sit INSIDE a bordered
+   panel, never to a pane's own first row. */
 .app-context-rail .panel-toolbar {
-  background: var(--app-header-bg);
+  background: transparent;
 }
 
 /* Shell surfaces carry the palette without competing with content. The top
    app header continues the Canvas around the workspace on all four sides.
    The left navigation pane — title, tree, and footer — paints the same
    surface as main so the workspace reads as one card split by a hairline,
-   not a chrome band beside a reading pane. The detached context rail keeps
-   Chrome on its header. */
+   not a chrome band beside a reading pane. The detached context rail is the
+   same composition: one pane, its own first row, no band. */
 @utility app-header {
   background: var(--app-chassis);
   border-color: var(--color-border);

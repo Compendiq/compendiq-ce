@@ -566,7 +566,7 @@ the backend side.
 
 - **TailwindCSS 4** with CSS variables for theming. Two themes ship —
   **Graphite** (dark, `#0F0F10` workspace / `#161617` pane / `#09090A` canvas) and **Paper**
-  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#FAFAF9` canvas) — a neutral flat system
+  (light, warm: `#F8F8F7` workspace / `#FFFFFF` pane / `#F4F3F1` canvas) — a neutral flat system
   carrying one Steel accent (`#86AEC8` / `#3F627C`) as the single brand and
   interaction colour, amber reserved for warning/attention, and violet for AI
   ornament (operable things stay Steel). Surfaces are **flat
@@ -576,14 +576,25 @@ the backend side.
   palette is designed out. Paper's panes — document, left navigation, context
   rail — are pure white, its neutrals sit quietly on the warm side of the hue
   circle, and its frame (gutter, left destination rail, top app header) is
-  near-white `#FAFAF9`, so Canvas is no longer the darkest step. Every other
-  neutral is fitted to that grey and to the white panes, and the hover and
-  pressed fills keep a measured floor against white so a state stays visible
-  (ADR-010 v0.8). See ADR-010 v0.7 for the roles and the Graphite
-  values, v0.8 for Paper's;
+  `#F4F3F1`: the darkest step, one 8-bit step under Chrome, deepened in v0.9
+  when the workspace and context-rail hairlines were removed and the value step
+  became the only thing drawing the card (1.11:1 on Pane, matching Graphite's
+  1.10:1). Every other neutral is fitted to that grey and to the white panes, and
+  the hover and pressed fills keep a measured floor against white so a state
+  stays visible (ADR-010 v0.8/v0.9). See ADR-010 v0.7 for the roles and the
+  Graphite values, v0.8 for Paper's, v0.9 for the unlined shell;
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic
   surfaces before it.
+- **The workspace card and the context rail carry no border.** They are drawn by
+  the chassis inset, their radius, and the Pane-over-Canvas step; the same is
+  true of every pane's own first row, which inherits the pane rather than
+  painting Chrome. The lines that remain are the ones nothing else states: the
+  48px chrome rule across the top of every pane, the left navigation's
+  `border-r` (both sides are Pane), card borders (a card paints Pane on a Pane),
+  and `--color-border-interactive` on anything operable. `app-shell-layout.test.ts`
+  holds a 1.08:1 floor under the card's value step, since an unlined card fails
+  silently (ADR-010 v0.9).
 - **The frame, workspace, Chrome, and Pane each have one job.** Canvas paints
   the outer frame and top app header, Workspace paints navigation, Chrome
   paints internal panel toolbars, and the content pane sits one value step up.

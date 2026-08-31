@@ -41,6 +41,11 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+function contrast(a: string, b: string): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 describe('Inset shell tokens', () => {
   it('declares chassis as hex in both themes', () => {
     for (const [theme, block] of [
@@ -73,13 +78,12 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  // Graphite keeps Canvas as its darkest step. Paper does NOT: the owner set the
-  // frame — gutter, left destination rail and top app header — to #f9f8f7
-  // (2026-08-30), which sits just above Workspace. The claim that still matters
-  // in both themes is that the document Pane is the brightest surface and the
-  // frame is not the same value as it, since that is what makes the workspace
-  // card read as a card. Asserting "Canvas is darkest" here would be pinning
-  // v0.7's ladder over the owner's own value.
+  // Graphite keeps Canvas as its darkest step. Paper does NOT rank it that way
+  // either: --color-muted sits below it. The claim that matters in both themes is
+  // that the document Pane is the brightest surface and the frame is a real step
+  // under it, because since 2026-08-31 that step is ALL that makes the workspace
+  // card read as a card — the hairline that used to trace it is gone. The
+  // measured floor is asserted separately below.
   it('keeps the chassis below the pane in both themes, and darkest in Graphite', () => {
     expect(luminance(tokenHex(darkBlock, '--app-chassis'))).toBeLessThan(
       luminance(tokenHex(darkBlock, '--color-background')),
@@ -92,6 +96,24 @@ describe('Inset shell tokens', () => {
         luminance(tokenHex(block, '--app-chassis')),
         `${theme} frame must stay below the document pane`,
       ).toBeLessThan(luminance(tokenHex(block, '--color-card')));
+    }
+  });
+
+  // Since the workspace and rail hairlines came off (2026-08-31), the Pane over
+  // Canvas step is the ONLY thing drawing the card. Both themes were tuned to
+  // land on the same edge — 1.101:1 Graphite, 1.109:1 Paper — and the failure
+  // mode this guards is silent: a chassis retune that keeps "below the pane"
+  // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
+  // was the reason the frame had to be deepened when the line went away).
+  it('keeps the pane a visible step above the frame in both themes', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      expect(
+        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
+        `${theme}: the unlined workspace card needs a readable value step`,
+      ).toBeGreaterThanOrEqual(1.08);
     }
   });
 
@@ -168,11 +190,18 @@ describe('Inset shell utilities', () => {
     );
   });
 
-  it('the workspace utility is the detached card: bordered, radiused, unshadowed', () => {
+  it('the workspace utility is the detached card: unlined, radiused, unshadowed', () => {
     const block = extractBlock(css, '@utility app-workspace {');
     expect(block).toMatch(/background:\s*var\(--app-shell-bg\)/);
-    expect(block).toMatch(/border:/);
     expect(block).toMatch(/border-radius:\s*var\(--app-shell-radius\)/);
+    // The card is inset, radiused and a value step above Canvas. A border here
+    // was a third statement of the same boundary and read as a frame drawn
+    // around the work; the owner removed it on 2026-08-31. Retune --app-chassis
+    // if the card stops reading. The width token went with it, so a `1px`
+    // reappearing anywhere in the ladder is caught too.
+    expect(block).not.toMatch(/border:/);
+    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
+    expect(css).not.toMatch(/--app-shell-border-width/);
     expect(block).not.toMatch(/box-shadow:/);
   });
 
@@ -191,11 +220,16 @@ describe('Inset shell utilities', () => {
     expect(css).not.toMatch(/\.app-rail-to-floor \.app-context-rail[\s\S]*border-bottom-left-radius:\s*0/);
   });
 
-  it('the context rail utility is a bordered, radiused, unshadowed pane', () => {
+  it('the context rail utility is an unlined, radiused, unshadowed pane', () => {
     const block = extractBlock(css, '@utility app-context-rail {');
     expect(block).toMatch(/background:\s*var\(--app-rail-bg\)/);
-    expect(block).toMatch(/border:/);
     expect(block).toMatch(/border-radius:\s*var\(--app-rail-radius\)/);
+    // Same reasoning as the workspace card: the --app-rail-gap strip of Canvas
+    // and the Pane/Canvas step carry the boundary. Below `md` this element is
+    // the inspector sheet over a dimmed backdrop, where a border would be the
+    // only line on screen.
+    expect(block).not.toMatch(/border:/);
+    expect(block).not.toMatch(/border-(top|right|bottom|left|inline|block)/);
     expect(block).not.toMatch(/box-shadow:/);
     expect(block).not.toMatch(/gradient\(/);
   });

@@ -235,14 +235,19 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // stray #f7f7f8 reads as a blue patch against the rest.
   //
   // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
-  // destination rail, top app header) three times, landing on #fafaf9, so
-  // asserting a hue rule on it would assert the ramp over the owner's own value.
-  // It gets the stricter check instead — its exact value — which catches drift
-  // in EITHER direction rather than trading one unguarded token for another.
+  // destination rail, top app header) three times on 2026-08-30, landing on
+  // #fafaf9, then chose #f4f3f1 on 2026-08-31 when the workspace and context-rail
+  // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
+  // against the frame, which is not an edge. #f4f3f1 measures 1.109:1, matching
+  // Graphite's own Pane/Canvas step. Asserting a hue rule on it would assert the
+  // ramp over the owner's own value, so it gets the stricter check instead — its
+  // exact value — which catches drift in EITHER direction rather than trading one
+  // unguarded token for another. The edge itself is measured in
+  // app-shell-layout.test.ts; this pins the value the owner chose.
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#fafaf9',
+    '--app-chassis': '#f4f3f1',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -303,10 +308,14 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  // Paper's surfaces must be four distinct steps, in this order. Chrome is the
-  // deepest band, the frame sits just under the document, and Pane is brightest.
+  // Paper's surfaces must be four distinct steps, in this order: Canvas is the
+  // frame and the deepest step, Chrome one 8-bit step above it (the two are one
+  // family by intent — the frame and the panel bands should not read as separate
+  // greys), Workspace above that, and Pane brightest. Canvas moved under Chrome
+  // on 2026-08-31 when the workspace and rail hairlines came off and the
+  // Canvas/Pane step became the whole card boundary.
   it('spaces the four Paper surfaces as an ordered ladder', () => {
-    const ys = (['--app-header-bg', '--color-background', '--app-chassis', '--color-card'] as const).map(
+    const ys = (['--app-chassis', '--app-header-bg', '--color-background', '--color-card'] as const).map(
       (name) => luminance(token(lightBlock, name)),
     );
     for (let i = 1; i < ys.length; i++) {
