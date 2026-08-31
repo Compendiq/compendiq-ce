@@ -1064,6 +1064,44 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect((await query('SELECT notion_page_id FROM pages')).rows.map((r) => r.notion_page_id)).toEqual(['crm']);
   });
 
+  it('refuses to flatten a database whose row body hides inside a blank toggle', async () => {
+    const rowA = crmRow('row-a', 'Acme Corp', 'First note', 'Won');
+    const client = await start({
+      validToken: TOKEN,
+      pages: { 'row-a': rowA },
+      databases: { crm: crmDatabase() },
+      databaseQueryResults: { crm: [rowA] },
+      blockChildren: {
+        // The row reads as a lone untitled toggle; the prose is one level down.
+        'row-a': [
+          { object: 'block', id: 'row-a-toggle', type: 'toggle', has_children: true, toggle: { rich_text: [] } },
+        ],
+        'row-a-toggle': [paragraph('ra1', 'Acme meeting notes')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['crm'],
+      visibility: 'shared',
+      databaseModes: { crm: 'table' },
+    });
+
+    expect(items[0]).toMatchObject({
+      notionPageId: 'crm',
+      status: 'success',
+      importedAs: 'page',
+      reason: NOTION_TABLE_DOWNGRADE_REASON,
+    });
+    const pages = await query<{ notion_page_id: string | null; body_html: string }>(
+      'SELECT notion_page_id, body_html FROM pages ORDER BY id',
+    );
+    expect(pages.rows.map((r) => r.notion_page_id)).toEqual(['crm', 'row-a']);
+    // The body the flatten would have dropped.
+    expect(pages.rows.find((r) => r.notion_page_id === 'row-a')!.body_html).toContain('Acme meeting notes');
+  });
+
   it('re-runs a table-mode database against the same page instead of creating a second one', async () => {
     const client = await start({
       validToken: TOKEN,

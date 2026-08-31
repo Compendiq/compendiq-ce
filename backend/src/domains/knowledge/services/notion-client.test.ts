@@ -9,6 +9,7 @@ import {
   NOTION_VERSION,
   NotionClient,
   NotionError,
+  isNotionObjectMissing,
   paginateAll,
   setNotionApiBaseUrlForTests,
 } from './notion-client.js';
@@ -98,7 +99,7 @@ describe('NotionClient (fake Notion HTTP)', () => {
     expect(blocks.map((b) => b.id)).toEqual(['b1', 'b2']);
   });
 
-  it('returns 400 when GET /v1/pages is given a database id', async () => {
+  it('flags GET /v1/pages on a database id as an object-type mismatch, not a plain 400', async () => {
     server = await startFakeNotionServer({
       validToken: TOKEN,
       databases: {
@@ -108,9 +109,22 @@ describe('NotionClient (fake Notion HTTP)', () => {
     const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
     await expect(client.getPage('db-1')).rejects.toMatchObject({
       statusCode: 400,
-      message: 'Notion API error: HTTP 400',
+      objectTypeMismatch: true,
+      message: 'Notion object is not a page',
     });
+    expect(isNotionObjectMissing(await client.getPage('db-1').catch((e) => e))).toBe(true);
     await expect(client.getDatabase('db-1')).resolves.toMatchObject({ object: 'database', id: 'db-1' });
+  });
+
+  it('leaves an ordinary 400 unflagged, so it is a failure and not a fallback', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      blockChildrenErrors: { 'blk-1': 400 },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+    const err = await client.getBlockChildren('blk-1').catch((e: unknown) => e);
+    expect(err).toMatchObject({ statusCode: 400, objectTypeMismatch: false });
+    expect(isNotionObjectMissing(err)).toBe(false);
   });
 
   it('paginateAll stops when has_more is false', async () => {

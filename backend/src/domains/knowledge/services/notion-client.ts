@@ -93,10 +93,30 @@ export class NotionError extends Error {
   constructor(
     message: string,
     public statusCode: number,
+    /**
+     * Notion refused because the id names another object type, not because the
+     * object is absent: `GET /v1/pages/:id` on a database is a 400
+     * `validation_error`. Callers that recover by asking the other endpoint
+     * match on this flag, never on the bare status — an ordinary 400 (malformed
+     * id, bad cursor, bad filter) must stay a failure.
+     */
+    public objectTypeMismatch = false,
   ) {
     super(message);
     this.name = 'NotionError';
   }
+}
+
+/**
+ * The object is absent (404), invisible to this integration (403), or not the
+ * type the endpoint serves (a flagged 400). All three mean "ask somewhere
+ * else", which is why the tree walk and the import classifier share one test.
+ */
+export function isNotionObjectMissing(err: unknown): boolean {
+  return (
+    err instanceof NotionError &&
+    (err.statusCode === 404 || err.statusCode === 403 || err.objectTypeMismatch)
+  );
 }
 
 function redact(text: string, secret: string): string {
@@ -286,10 +306,11 @@ export class NotionClient {
       if (statusCode === 404) {
         throw new NotionError('Notion resource not found', 404);
       }
-      // GET /v1/pages/:id on a database is 400 validation_error, not 404.
-      // classifySelection / tree parent lookup fall back to getDatabase.
+      // GET /v1/pages/:id on a database is a 400 validation_error, not a 404.
+      // Flagged rather than warn-logged: classifySelection and the tree's
+      // parent lookup answer it by asking getDatabase instead.
       if (statusCode === 400 && method === 'GET' && path.startsWith('/v1/pages/')) {
-        throw new NotionError(`Notion API error: HTTP ${statusCode}`, 400);
+        throw new NotionError('Notion object is not a page', 400, true);
       }
       if (statusCode >= 400) {
         const error = new NotionError(`Notion API error: HTTP ${statusCode}`, statusCode);

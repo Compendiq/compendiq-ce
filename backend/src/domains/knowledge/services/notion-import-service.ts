@@ -28,7 +28,7 @@ import { putLocalAttachment } from '../../../core/services/local-attachment-serv
 import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
 import { withNotionImportLocks } from './notion-import-lock.js';
-import { NotionClient, NotionError } from './notion-client.js';
+import { NotionClient, NotionError, isNotionObjectMissing } from './notion-client.js';
 import {
   convertNotionBlocks,
   escapeHtml,
@@ -37,7 +37,12 @@ import {
   renderDatabaseTable,
   type NotionBlock,
 } from './notion-block-converter.js';
-import { extractParentRelationId, isWikiDatabase, rowHasBodyContent } from './notion-tree.js';
+import {
+  NOTION_ROW_PROBE_BLOCKS,
+  extractParentRelationId,
+  isWikiDatabase,
+  rowHasBodyContent,
+} from './notion-tree.js';
 
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
 /** Row-body checks run concurrently against Notion's per-integration rate limit. */
@@ -681,9 +686,7 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
     }
     return { kind: 'page', page };
   } catch (err) {
-    // Notion returns 400 (not 404) when the id is a database:
-    // "This API doesn't support retrieving databases as pages."
-    if (isMissing(err)) {
+    if (isNotionObjectMissing(err)) {
       try {
         return { kind: 'database', database: await client.getDatabase(id) };
       } catch (dbErr) {
@@ -920,7 +923,9 @@ async function readFlattenableRows(
         const rowId = typeof row.id === 'string' ? row.id : '';
         if (!rowId) return true;
         try {
-          return rowHasBodyContent(await client.getBlockChildren(rowId, { pageSize: 2 }));
+          return rowHasBodyContent(
+            await client.getBlockChildren(rowId, { pageSize: NOTION_ROW_PROBE_BLOCKS }),
+          );
         } catch {
           return true;
         }
@@ -1351,14 +1356,6 @@ function richTextToPlain(value: unknown): string {
 
 function normalizeNotionId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
-}
-
-function isMissing(err: unknown): boolean {
-  // 400: GET /v1/pages/:id on a database ("doesn't support retrieving databases as pages").
-  return (
-    err instanceof NotionError &&
-    (err.statusCode === 404 || err.statusCode === 403 || err.statusCode === 400)
-  );
 }
 
 function failReason(err: unknown): string {

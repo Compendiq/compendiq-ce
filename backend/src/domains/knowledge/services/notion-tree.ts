@@ -23,7 +23,7 @@ import {
   type NotionTreeNode,
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
-import { NotionClient, NotionError, type NotionListResponse } from './notion-client.js';
+import { NotionClient, isNotionObjectMissing, type NotionListResponse } from './notion-client.js';
 
 export { NOTION_UNSUPPORTED_LABEL };
 
@@ -39,6 +39,13 @@ const NOTION_LOOKUP_CONCURRENCY = 5;
 export const NOTION_ROW_SAMPLE_SIZE = 5;
 /** Ceiling on row samples per tree build, so a database-heavy workspace still renders. */
 export const NOTION_ROW_SAMPLE_BUDGET = 60;
+/**
+ * Blocks read per sampled row. A row template leaves a run of empty blocks
+ * behind (heading, callout, divider, …) and `rowHasBodyContent` has to see the
+ * END of that run: an unread remainder is `has_more`, which counts as content.
+ * Two blocks made every three-block template look written-in.
+ */
+export const NOTION_ROW_PROBE_BLOCKS = 8;
 
 function normalizeId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
@@ -232,15 +239,6 @@ function attach(parent: NotionTreeNode, child: NotionTreeNode, attached: Set<str
   attached.add(childKey);
 }
 
-function isMissing(err: unknown): boolean {
-  // 400: GET /v1/pages/:id on a database ("doesn't support retrieving databases as pages").
-  return (
-    err instanceof NotionError &&
-    (err.statusCode === 404 || err.statusCode === 403 || err.statusCode === 400)
-  );
-}
-
-
 async function resolveHostPageId(
   client: NotionClient,
   startBlockId: string,
@@ -259,7 +257,7 @@ async function resolveHostPageId(
     try {
       block = await client.getBlock(current);
     } catch (err) {
-      if (isMissing(err)) return null;
+      if (isNotionObjectMissing(err)) return null;
       throw err;
     }
     const type = parentTypeOf(block);
@@ -335,7 +333,7 @@ export async function fetchNotionWorkspaceTree(
               try {
                 parentRaw = await client.getPage(parentId);
               } catch (err) {
-                if (!isMissing(err)) throw err;
+                if (!isNotionObjectMissing(err)) throw err;
                 parentRaw = await client.getDatabase(parentId);
               }
             }
@@ -347,7 +345,7 @@ export async function fetchNotionWorkspaceTree(
               }
             }
           } catch (err) {
-            if (isMissing(err)) return;
+            if (isNotionObjectMissing(err)) return;
             throw err;
           }
         }),
@@ -444,16 +442,20 @@ export async function fetchNotionWorkspaceTree(
 }
 
 /**
- * A row page counts as empty when it has no blocks at all, or only blank
- * text blocks — Notion leaves an empty paragraph (and templates leave empty
- * headings/callouts) on a row nobody wrote in. Media, child pages, and any
- * block with visible text still count as content, which is the safe
- * direction: it recommends articles rather than a table that would drop them.
+ * A row page counts as empty when it has no blocks at all, or only blank text
+ * blocks — Notion leaves an empty paragraph (and templates leave empty
+ * headings/callouts) on a row nobody wrote in. Media, child pages, any block
+ * with visible text, and any block still HOLDING CHILDREN count as content,
+ * which is the safe direction: it recommends articles rather than a table that
+ * would drop them.
  */
 export function rowHasBodyContent(list: NotionListResponse<Record<string, unknown>>): boolean {
   for (const block of list.results) {
     const type = typeof block.type === 'string' ? block.type : '';
     if (!type || type === 'divider' || type === 'table_of_contents' || type === 'breadcrumb') continue;
+    // Notion nests body inside paragraphs, quotes, callouts, toggles and list
+    // items, so a blank one that has children is a wrapper around real content.
+    if (block.has_children === true) return true;
     const payload = block[type];
     if (payload && typeof payload === 'object') {
       if ('rich_text' in payload && richTextHasContent(payload.rich_text)) return true;
@@ -532,7 +534,9 @@ async function classifyDatabases(client: NotionClient, nodes: Map<string, Notion
           sample.map((row) =>
             limit(async () => {
               try {
-                return rowHasBodyContent(await client.getBlockChildren(row.id, { pageSize: 2 }))
+                return rowHasBodyContent(
+                  await client.getBlockChildren(row.id, { pageSize: NOTION_ROW_PROBE_BLOCKS }),
+                )
                   ? 'content'
                   : 'empty';
               } catch {
