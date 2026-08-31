@@ -15,7 +15,8 @@ export function ChangeDeskLogin({ authPanel, controls, edition }: ChangeDeskLogi
       <div className="relative isolate mx-auto flex min-h-full w-full max-w-[1440px] flex-col overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12 lg:py-9">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute bottom-[4%] left-[18%] -z-10 h-[28rem] w-[28rem] rounded-full bg-status-ai opacity-[0.07] blur-[120px]"
+          data-halo="ai"
+          className="login-halo bottom-[4%] left-[18%] h-[28rem] w-[28rem]"
         />
 
         <LoginBrandHeader controls={controls} edition={edition} />

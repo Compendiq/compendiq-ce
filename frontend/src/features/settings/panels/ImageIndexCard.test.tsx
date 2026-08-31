@@ -363,6 +363,36 @@ describe('ImageIndexCard (#1115 P2)', () => {
     expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'true');
   });
 
+  // The border tint that used to mark this card is gone. It came from
+  // `--color-status-embedding`, which resolves to body ink now, so the 30% it
+  // wore measures 1.941:1 (Paper) / 2.431:1 (Graphite) against Pane where an
+  // ordinary card's `--color-border` hairline measures 1.414 / 1.264 — and
+  // this card is permanently mounted, so the tint made the panel's most
+  // sharply drawn box the one that is usually idle. What has to read is a RUN,
+  // so that is what these two tests assert instead of a colour class.
+  it('draws determinate index progress while a scan runs, with no border tint', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+
+    const card = screen.getByTestId('image-index-card');
+    expect(card.className.split(/\s+/).filter((c) => c.startsWith('border'))).toEqual([]);
+    // 3 of 120 pages still queued → 98% indexed. The `dl` above the bar is the
+    // accessible readout of the same pair, which is why the bar is aria-hidden.
+    const bar = screen.getByTestId('image-index-progress');
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('98%');
+  });
+
+  it('shows no progress bar while the index is at rest', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await screen.findByTestId('image-index-counters');
+    // Idle the backlog does not move, and a bar would read as live work that
+    // nobody started. The counters are the resting readout.
+    expect(screen.queryByTestId('image-index-running')).toBeNull();
+    expect(screen.queryByTestId('image-index-progress')).toBeNull();
+  });
+
   /**
    * The regression pin. It cannot FAIL in jsdom for the browser reason (no
    * focus fixup here), so it is not the proof — it is what reds if someone

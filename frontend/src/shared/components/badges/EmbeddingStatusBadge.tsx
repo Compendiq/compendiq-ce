@@ -1,3 +1,4 @@
+import { Loader2, type LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import type { EmbeddingStatus } from '../../hooks/use-pages';
@@ -20,6 +21,8 @@ interface StatusConfig {
   label: string;
   title: string;
   badgeClass: string;
+  /** Glyph channel — the differentiator that outlives reduced motion. */
+  icon?: LucideIcon;
   animate: boolean;
 }
 
@@ -54,7 +57,43 @@ function getStatusConfig(
       return {
         label: 'Embedding...',
         title: 'Content is being indexed for AI search',
-        badgeClass: 'bg-status-embedding/20 text-status-embedding border border-status-embedding/30',
+        // `--color-status-embedding` no longer carries a hue: it resolves to
+        // body ink, because it had been byte-identical to `--color-primary`
+        // (Steel) through three critiques and ambient pipeline telemetry was
+        // wearing the one colour that means "you can act on this". Every alpha
+        // here is therefore re-measured against INK, not against Steel. All
+        // ratios are WCAG on an sRGB-space (gamma, byte-rounded) composite,
+        // which is how a browser blends alpha.
+        //
+        // Fill at 10%, not the 20% Steel wore: a `bg-` utility on this token at
+        // 20% measures 1.53:1 (Paper) / 1.75:1 (Graphite) against Pane, and in
+        // Graphite that is LOUDER than `--color-border` itself (1.26:1) — a
+        // "still indexing" pill would out-shout the hairlines that structure
+        // the page. At 10% it lands 1.225:1 / 1.278:1, which is exactly the
+        // measured neutral-chip tint (neutral-chip.ts).
+        //
+        // The hairline is `border-border`, NOT a `border-` utility on this
+        // token: a border tint composites on top of the fill underneath it, so
+        // even the cheapest ink alpha that still registers (8%) measures
+        // 1.439:1 (Paper) / 1.592:1 (Graphite) at the pill's OUTER edge —
+        // past `--color-border` in both themes, Graphite by 26%. The quiet
+        // hairline token is the ceiling (1.414 / 1.264) and is what
+        // neutral-chip.ts settled on for a fill this subtle.
+        //
+        // Ink stays full strength. `text-status-embedding` measures 14.36:1
+        // (Paper) / 11.62:1 (Graphite) on its own fill, against the resting
+        // states' muted-on-muted 4.54 / 6.75:1. That value step is the real
+        // separator from `not_embedded` / `embedded`, because the FILL is not
+        // one: in Paper this tint (1.225:1 vs Pane) and their `bg-muted`
+        // (1.193:1) are 2.7% apart, which nobody can see.
+        badgeClass: 'bg-status-embedding/10 text-status-embedding border border-border',
+        // The load-bearing channel, and the reason this state does not depend
+        // on motion. index.css's blanket `prefers-reduced-motion` rule clamps
+        // every animation to 0.01ms and one iteration, so for those users the
+        // pulse below simply does not exist and the pill is a static neutral
+        // chip. A stopped Loader2 is still a visible arc that no sibling state
+        // carries — the same reasoning WorkersTab's Processing pill is built on.
+        icon: Loader2,
         animate: true,
       };
     case 'embedded':
@@ -111,6 +150,14 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
         className,
       )}
     >
+      {config.icon && (
+        <config.icon
+          size={11}
+          className={cn('shrink-0', config.animate && 'animate-spin')}
+          data-testid="embedding-status-glyph"
+          aria-hidden="true"
+        />
+      )}
       {config.label}
       {status === 'failed' && onRetry && (
         <button

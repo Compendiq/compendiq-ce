@@ -885,11 +885,11 @@ describe('the component layer is as flat as the token layer', () => {
     // What it adds: the rule above is a v3 pattern on a v4 repo. `shadow-xs` —
     // which is what Tailwind 4 renamed `shadow-sm` TO, so it is the spelling the
     // upgrade itself produced — never matched it, and neither did `shadow-2xs`,
-    // a coloured `shadow-cyan-400/40`, the `shadow-(--custom)` variable
-    // shorthand, or `shadow-overlay-sm`. This cell reads every token of every
-    // class-list SEGMENT (never the whole body: see `classSegments`) and decides
-    // per token, so a legitimate overlay shadow no longer exempts the shadows
-    // standing beside it either.
+    // a coloured `shadow-` utility on `cyan-400/40`, the `shadow-(--custom)`
+    // variable shorthand, or `shadow-overlay-sm`. This cell reads every token
+    // of every class-list SEGMENT (never the whole body: see `classSegments`)
+    // and decides per token, so a legitimate overlay shadow no longer exempts
+    // the shadows standing beside it either.
     const budget: Record<string, number> = {};
     for (const debt of V4_SHADOW_DEBT) budget[`${debt.path} ${debt.token}`] = debt.count;
     const offenders: string[] = [];
@@ -1000,19 +1000,28 @@ describe('the component layer is as flat as the token layer', () => {
   it('status colours are tokens, never a raw Tailwind palette shade', () => {
     // Tokens track the theme; the palette does not. Every one of these classes
     // had been picked to look right in Graphite, so the light theme inherited a
-    // set of near-invisible status states — `text-emerald-300` on
-    // `bg-emerald-500/10` over Paper's white card measured 1.52:1, and that was
-    // the *success* state of the sync panel. `text-amber-100` measured 1.11:1.
+    // set of near-invisible status states — a `text-` utility on `emerald-300`
+    // over a `bg-` utility on `emerald-500/10` measured 1.52:1 on Paper's white
+    // card, and that was the *success* state of the sync panel. `amber-100` ink
+    // measured 1.11:1.
     //
     // The same markup on tokens measures 4.75–6.31:1 in Paper and 5.57–8.69:1
     // in Graphite, computed over `bg-<role>/10` on the card.
     //
+    // Prefix and shade are written apart throughout this comment, the way the
+    // role is elided in `bg-<role>/10` just above. Tailwind 4 scans comments
+    // for class candidates, so a whole utility spelled here compiles a rule —
+    // and its `--color-*` theme variable — into the shipped stylesheet, which
+    // is the very debt this cell exists to keep out of the tree. A bare shade
+    // matches nothing: Tailwind registers no utility under a colour name on
+    // its own.
+    //
     // Two things the sweep had to preserve that a colour name alone does not
     // carry, and which are the reason this is a guard and not just a rename:
-    //   - the SHADE encoded tint-vs-solid. `bg-yellow-50` is a pale panel fill
-    //     and `bg-yellow-500` is a solid one; collapsing both to `bg-warning`
-    //     turned three tinted badges into full-strength fills, one of which
-    //     ended up painting `text-destructive` on `bg-destructive`.
+    //   - the SHADE encoded tint-vs-solid. On a `bg-` utility, `yellow-50` is a
+    //     pale panel fill and `yellow-500` is a solid one; collapsing both to
+    //     `bg-warning` turned three tinted badges into full-strength fills, one
+    //     of which ended up painting `text-destructive` on `bg-destructive`.
     //   - a 2px streaming cursor and a score dot are solid MARKS, not panels,
     //     so the shade heuristic's tint was wrong for them specifically.
     const offenders: string[] = [];

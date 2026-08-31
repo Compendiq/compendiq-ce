@@ -38,6 +38,27 @@ import {
 const cssPath = resolve(__dirname, 'index.css');
 const css = readFileSync(cssPath, 'utf-8');
 
+/** Oklab ΔE — perceptual distance, for claims that a value step is *visible*. */
+function deltaEOk(a: string, b: string): number {
+  const lab = (hex: string) => {
+    const [r, g, bl] = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * bl);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * bl);
+    const s2 = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * bl);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s2,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s2,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s2,
+    ] as const;
+  };
+  const [l1, a1, b1] = lab(a);
+  const [l2, a2, b2] = lab(b);
+  return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
+}
+
 const darkBlock = extractBlock(css, '@theme {');
 const lightBlock = extractBlock(css, '[data-theme="paper"] {');
 const lightSharedBlock = extractBlock(css, '[data-theme-type="light"] {');
@@ -260,6 +281,8 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
       '--color-muted',
       '--color-muted-foreground',
       '--color-accent',
+      '--color-pressed',
+      '--color-selected',
       '--color-border',
       '--color-border-interactive',
       '--color-action',
@@ -280,27 +303,97 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // The lesson of the #fdfdfd pass, encoded. With Pane pure white, a state fill
-  // that sits within ~1.05:1 of it is not a state a user can see, and hover on
-  // rows that carry no border is ONLY that fill. 1.10 is the floor this palette
-  // is tuned above (hover 1.12, pressed 1.19), not a value it barely clears.
-  it('keeps the hover and pressed fills separable from the white pane', () => {
-    const pane = token(lightBlock, '--color-card');
-    for (const [role, name] of [
-      ['hover/selected', '--color-accent'],
-      ['pressed/field', '--color-secondary'],
+  // Hover, pressed and selected are THREE tokens with three values, in both
+  // themes. They were one token — Graphite had accent, secondary and muted all
+  // at #1c1d1d, so ΔE-OK between hover, selected, pressed and a field fill was
+  // 0.0000 — which made a hovered row in a 40-deep page tree indistinguishable
+  // from the current destination. Order matters as much as distinctness: each
+  // state must sit FURTHER from the resting pane than the one before it, or
+  // "more engaged" stops meaning "more filled".
+  it('gives hover, pressed and selected their own rung in both themes', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
     ] as const) {
-      const fill = token(lightBlock, name);
-      const ratio = contrast(fill, pane);
-      expect(
-        ratio,
-        `${role} fill ${fill} must separate from Pane ${pane} (measured ${ratio.toFixed(3)}:1)`,
-      ).toBeGreaterThanOrEqual(1.1);
+      const pane = token(block, '--color-card');
+      const steps = (['--color-accent', '--color-pressed', '--color-selected'] as const).map(
+        (name) => ({ name, value: token(block, name), ratio: contrast(token(block, name), pane) }),
+      );
+      const values = new Set(steps.map((s) => s.value));
+      expect(values.size, `${theme}: ${steps.map((s) => `${s.name}=${s.value}`).join(' ')}`).toBe(3);
+      for (let i = 1; i < steps.length; i++) {
+        expect(
+          steps[i]!.ratio,
+          `${theme}: ${steps[i]!.name} (${steps[i]!.ratio.toFixed(3)}:1 on Pane) must sit further from the pane than ${steps[i - 1]!.name} (${steps[i - 1]!.ratio.toFixed(3)}:1)`,
+        ).toBeGreaterThan(steps[i - 1]!.ratio);
+      }
+      // A state a user cannot see is not a state. 1.05 is the smallest step that
+      // survives an IPS panel at 13px; Paper's hover measures 1.081.
+      expect(steps[0]!.ratio, `${theme}: hover must be visible against the pane`).toBeGreaterThanOrEqual(1.05);
+
+      // ADJACENT steps, not just ordering. Graphite shipped pressed one step off
+      // hover — ΔE-OK 0.0101 at 1.024:1 — and passed every assertion above it,
+      // because "distinct values in the right order" says nothing about whether a
+      // human can see the difference.
+      //
+      // The floor is 0.014, and it is derived rather than chosen. The usable band
+      // is capped at BOTH ends: hover must stay ≥1.05:1 against the pane, and the
+      // deepest fill must keep the weakest ink (muted-foreground in Paper,
+      // status-inactive in Graphite) at 4.5:1. In Paper that band spans ΔE-OK
+      // 0.048 in total, so the best achievable minimum step is ~0.024 and the
+      // shipped 0.0151 is 63% of the ceiling — pushing closer costs AA headroom
+      // (the optimum lands muted-foreground at 4.51:1 and the edge at 3.19:1,
+      // versus 4.54 and 3.22 today, for a gain of 0.003 nobody can see).
+      // Graphite has more room and ships 0.0241 / 0.0321.
+      //
+      // So 0.014 sits below what the light theme can physically deliver and well
+      // above what failed review. It catches a regression; it does not pretend
+      // there is headroom the arithmetic does not have.
+      for (let i = 1; i < steps.length; i++) {
+        const d = deltaEOk(steps[i]!.value, steps[i - 1]!.value);
+        expect(
+          d,
+          `${theme}: ${steps[i - 1]!.name} → ${steps[i]!.name} is ΔE-OK ${d.toFixed(4)} — imperceptible at 13px`,
+        ).toBeGreaterThanOrEqual(0.014);
+      }
     }
-    // Press must read as deeper than hover, not land on the same value.
-    expect(luminance(token(lightBlock, '--color-secondary'))).toBeLessThan(
-      luminance(token(lightBlock, '--color-accent')),
+  });
+
+  // `--color-muted` is a resting FIELD fill, not a state. It may share a value
+  // with a state (Paper: both #ebebea) but it must never be the token a state
+  // reads, which is how the four-way collapse happened in the first place.
+  it('keeps the field fill off every state value', () => {
+    // Paper shipped --color-muted and --color-selected both at #ebebea, so an
+    // input resting inside a selected row painted the row's own value.
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const field = token(block, '--color-muted');
+      for (const state of ['--color-pressed', '--color-selected'] as const) {
+        expect(
+          token(block, state),
+          `${theme}: ${state} must not share the resting field fill (${field})`,
+        ).not.toBe(field);
+      }
+    }
+  });
+
+  it('keeps the field fill out of the state ladder', () => {
+    const navSelection = extractBlock(css, '@utility nav-selection {');
+    expect(navSelection, 'nav-selection must paint the selected fill').toMatch(
+      /background:\s*var\(--color-selected\)/,
     );
+    expect(navSelection, 'nav-selection must keep its interactive outline').toMatch(
+      /outline:\s*1px solid var\(--color-border-interactive\)/,
+    );
+    for (const name of ['nm-card-interactive', 'nm-icon-button', 'nm-pill-active']) {
+      const block = extractBlock(css, `@utility ${name} {`);
+      if (!/&:active/.test(block)) continue;
+      expect(block, `${name}'s press must read --color-pressed, not the field fill`).not.toMatch(
+        /&:active\s*\{[^}]*var\(--color-secondary\)/,
+      );
+    }
   });
 
   // Paper's surfaces must be four distinct steps, in this order. Chrome is the
@@ -314,19 +407,38 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     }
   });
 
-  // Selection survived the near-invisible-fill era on this edge plus weight, and
-  // that is still how a selected row is identified at these fill values.
-  it('keeps the interactive edge legible on the hover fill', () => {
-    expectContrast(
-      'border-interactive on the accent fill',
-      token(lightBlock, '--color-border-interactive'),
-      token(lightBlock, '--color-accent'),
-      3,
+  // With Canvas pinned near-white and Raised sharing Pane's pure white, the
+  // quiet hairline is doing work a value step used to do: it is the only thing
+  // drawing the workspace card, and the overlay edge is half of what separates
+  // a popover from the page. Neither may be softened back.
+  it('pays for the near-white frame with a stronger hairline and overlay edge', () => {
+    const pane = token(lightBlock, '--color-card');
+    const hairline = contrast(token(lightBlock, '--color-border'), pane);
+    expect(
+      hairline,
+      `Paper's hairline measures ${hairline.toFixed(3)}:1 on Pane; the near-white frame needs ≥1.35`,
+    ).toBeGreaterThanOrEqual(1.35);
+    const elevated = extractBlock(css, '@utility nm-card-elevated {');
+    expect(elevated, 'the overlay edge must be the measured interactive token').toMatch(
+      /border:\s*1px solid var\(--color-border-interactive\)/,
     );
-    const navSelection = extractBlock(css, '@utility nav-selection {');
-    expect(navSelection, 'nav-selection must keep its interactive outline').toMatch(
-      /outline:\s*1px solid var\(--color-border-interactive\)/,
-    );
+  });
+
+  // Selection is carried by this edge plus weight on top of the deeper fill.
+  it('keeps the interactive edge legible on every state fill', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      for (const name of ['--color-accent', '--color-pressed', '--color-selected'] as const) {
+        expectContrast(
+          `${theme}: border-interactive on ${name}`,
+          token(block, '--color-border-interactive'),
+          token(block, name),
+          3,
+        );
+      }
+    }
   });
 });
 
@@ -386,7 +498,9 @@ describe('Measured contrast — Graphite (dark)', () => {
       'disconnected',
       'inactive',
     ]) {
-      const value = token(darkBlock, `--color-status-${role}`);
+      // resolveToken, not token: `embedding` is an alias onto the body ink since
+      // it left the hue vocabulary, and it must still clear AA on every ground.
+      const value = resolveToken(darkBlock, `--color-status-${role}`);
       for (const [name, surface] of Object.entries(surfaces)) {
         expectContrast(`status-${role} on ${name}`, value, surface, 4.5);
       }
@@ -421,6 +535,22 @@ describe('Measured contrast — Paper (light)', () => {
   const card = token(lightBlock, '--color-card');
   const codeBg = token(lightBlock, '--color-code-bg');
   const surfaces = { bg, card };
+  // A status label is read most often on a row, and rows are hovered, pressed
+  // and selected. Measuring statuses against only `bg` and `card` is how
+  // `--color-status-connected` sat at 4.44:1 on a hovered row while this file
+  // claimed "every status clears AA" — the same blind spot the interactive-border
+  // test below was widened to fix, one describe block earlier and 30 lines up.
+  const statusGrounds = {
+    ...surfaces,
+    elevated: token(lightBlock, '--color-card-elevated'),
+    chrome: token(lightBlock, '--app-header-bg'),
+    chassis: token(lightBlock, '--app-chassis'),
+    codeBg,
+    hover: token(lightBlock, '--color-accent'),
+    pressed: token(lightBlock, '--color-pressed'),
+    selected: token(lightBlock, '--color-selected'),
+    field: token(lightBlock, '--color-muted'),
+  };
 
   it('body and muted text clear AA on background and card', () => {
     for (const role of ['--color-foreground', '--color-muted-foreground']) {
@@ -456,7 +586,7 @@ describe('Measured contrast — Paper (light)', () => {
     );
   });
 
-  it('every status colour clears AA on both background and card', () => {
+  it('every status colour clears AA on every ground it can land on', () => {
     for (const role of [
       'connected',
       'syncing',
@@ -465,10 +595,18 @@ describe('Measured contrast — Paper (light)', () => {
       'disconnected',
       'inactive',
     ]) {
-      const value = token(lightBlock, `--color-status-${role}`);
-      for (const [name, surface] of Object.entries(surfaces)) {
+      const value = resolveToken(lightBlock, `--color-status-${role}`);
+      for (const [name, surface] of Object.entries(statusGrounds)) {
         expectContrast(`status-${role} on ${name}`, value, surface, 4.5);
       }
+    }
+  });
+
+  // The informational hue is not a status but lands on the same grounds.
+  it('the informational hue clears AA on every ground a status does', () => {
+    const info = token(lightBlock, '--color-info');
+    for (const [name, surface] of Object.entries(statusGrounds)) {
+      expectContrast(`info on ${name}`, info, surface, 4.5);
     }
   });
 
@@ -521,6 +659,9 @@ describe('Both themes declare a complete, symmetric token set', () => {
     '--color-action',
     '--color-action-foreground',
     '--color-muted-foreground',
+    '--color-accent',
+    '--color-pressed',
+    '--color-selected',
     '--color-destructive',
     '--color-destructive-foreground',
     '--color-border',
@@ -687,7 +828,11 @@ describe('Flat depth model', () => {
     }
   });
 
-  it('every operable utility keeps a 1px border (WCAG 1.4.11, forced-colors)', () => {
+  it('every operable utility keeps a 1px border that actually paints', () => {
+    // This asserted only that a `border: 1px solid …` declaration existed, and
+    // `nm-button-primary` satisfied it with `transparent` — which forced-colors
+    // mode PRESERVES, so the primary action was the one operable control with no
+    // forced edge in the mode where the edge is all that survives.
     for (const name of [
       'nm-card-interactive',
       'nm-button-ghost',
@@ -697,7 +842,74 @@ describe('Flat depth model', () => {
       'nm-composer',
     ]) {
       const block = extractBlock(css, `@utility ${name} {`);
-      expect(block, `${name} must declare a 1px border`).toMatch(/border:\s*1px\s+solid/);
+      const decl = /border:\s*1px\s+solid\s+([^;]+);/.exec(block);
+      expect(decl, `${name} must declare a 1px border`).not.toBeNull();
+      expect(
+        decl![1]!.trim(),
+        `${name}'s border must resolve to a colour; transparent survives forced-colors as transparent`,
+      ).not.toBe('transparent');
+    }
+  });
+
+  // Prose ink is a token in BOTH themes. Dark used to come from Tailwind
+  // Typography's `prose-invert` class toggled in JSX, which painted #d1d5dc —
+  // a colour absent from this file — and fell back to 1.75:1 light ink whenever
+  // a component forgot the conditional.
+  it('declares prose ink from the palette in both themes, with no invert class', () => {
+    for (const type of ['light', 'dark']) {
+      const block = extractBlock(css, `[data-theme-type="${type}"] .prose {`);
+      expect(block, `${type} prose block must exist`).not.toBe('');
+      expect(block, `${type} prose body ink must be the palette's foreground`).toMatch(
+        /--tw-prose-body:\s*var\(--color-foreground\)/,
+      );
+      expect(block, `${type} prose links must be the palette's accent`).toMatch(
+        /--tw-prose-links:\s*var\(--color-primary\)/,
+      );
+    }
+    // A prose link is keyboard-reachable on every article page and had no ring,
+    // so it inherited Chrome's UA blue at 3.02:1 in Graphite.
+    expect(css, 'prose links must carry a palette focus ring').toMatch(
+      /\.prose a:focus-visible[\s\S]{0,120}outline:\s*2px solid var\(--color-ring\)/,
+    );
+  });
+
+  // WCAG 2.1 SC 1.4.1, technique G183: a link that is not underlined at rest
+  // needs >= 3:1 against the SURROUNDING BODY TEXT. This file shipped
+  // `text-decoration: none` on prose links and failed it in both themes — Steel
+  // against body ink measures 2.72:1 (Paper) and 1.94:1 (Graphite) — while every
+  // contrast guard passed the element, because they all measure ink-on-surface.
+  //
+  // The colour route is arithmetically closed: to clear 3:1 against Graphite's
+  // #e7e9eb ink a link needs Y <= 0.238, which measures 3.04:1 on the dark pane
+  // and is unreadable as text. So the assertion is on the DECORATION, and the
+  // ink-on-ink ratio is measured only to prove the underline is load-bearing
+  // rather than decorative.
+  it('underlines prose links at rest, because colour alone cannot carry them', () => {
+    const rule = /\.prose :where\(a\) \{([^}]*)\}/.exec(css);
+    expect(rule, 'no .prose :where(a) rule found').not.toBeNull();
+    const body = rule![1]!;
+    expect(body, 'prose links must not be undecorated at rest').not.toMatch(
+      /text-decoration:\s*none/,
+    );
+    expect(body, 'prose links must declare an underline at rest').toMatch(
+      /text-decoration:\s*underline/,
+    );
+    expect(body, 'the underline colour must come from the accent token').toMatch(
+      /text-decoration-color:[^;]*var\(--color-primary\)/,
+    );
+
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const linkVsBody = contrast(
+        token(block, '--color-primary'),
+        token(block, '--color-foreground'),
+      );
+      expect(
+        linkVsBody,
+        `${theme}: link vs body ink is ${linkVsBody.toFixed(2)}:1 — if this ever reaches 3:1 the underline becomes optional under G183, and this test should be revisited rather than deleted`,
+      ).toBeLessThan(3);
     }
   });
 
@@ -969,5 +1181,280 @@ describe('Colour carries meaning, and only its own', () => {
     expect(selection, 'no ::selection rule found').not.toBeNull();
     expect(selection![1]).toMatch(/var\(--color-primary\)/);
     expect(selection![1], 'selection must not hardcode a colour').not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});
+
+describe('Comments do not outlive the values they describe', () => {
+  // Twice now a critique has used this file's own comments as claims to verify
+  // and found them stale: a ratio computed against a previous token value, and a
+  // hex attributed to the wrong token. Nothing asserted them, so nothing caught
+  // them. The comments are load-bearing documentation here — they explain why
+  // values are what they are — so they get a guard.
+  //
+  // The rule: a hex mentioned inside a theme block's comments must either be a
+  // value currently declared in that block, or be explicitly marked as history.
+  // That is narrow on purpose. It cannot check prose ("5.58:1 on Workspace"), so
+  // it does not pretend to; what it catches is the specific failure that has
+  // actually happened twice — a comment naming a colour the block no longer has.
+  // A sentence is history if it says so in words, carries a date (this file dates
+  // every change note), or names a palette version. Without the date clause the
+  // scan fires on legitimate notes like "Lifted 2026-08-31 from #71717a", which
+  // is exactly the provenance worth keeping.
+  const HISTORY_MARKERS =
+    /\b(was|were|retired|previous|prior|used to|until|replaced|old|earlier|first|lifted|darkened|lightened|deepened|instead of|had|gave|given|pass \d|20\d\d-\d\d-\d\d|v\d\.\d)\b/i;
+
+  for (const [theme, blockName] of [
+    ['graphite', '@theme {'],
+    ['paper', '[data-theme="paper"] {'],
+  ] as const) {
+    it(`${theme}: every hex named in a comment is either current or marked as history`, () => {
+      // Include the comment immediately preceding the block: the staleness a
+      // critique found twice lived in that preamble, not in the declarations.
+      const at = css.indexOf(blockName);
+      expect(at, `${blockName} not found`).toBeGreaterThan(-1);
+      const before = css.slice(0, at);
+      const preambleStart = before.lastIndexOf('/*');
+      const preamble =
+        preambleStart > -1 && before.indexOf('*/', preambleStart) === -1
+          ? before.slice(preambleStart)
+          : '';
+      const block = preamble + extractBlock(css, blockName);
+      const declared = new Set(
+        [...block.matchAll(/:\s*(#[0-9a-fA-F]{3,8})\b/g)].map((m) => m[1]!.toLowerCase()),
+      );
+      const offenders: string[] = [];
+      for (const comment of block.match(/\/\*[\s\S]*?\*\//g) ?? []) {
+        // Sentence-ish granularity, so a marker in one clause does not excuse a
+        // stale hex three sentences later.
+        for (const sentence of comment.split(/(?<=[.;])\s+/)) {
+          for (const m of sentence.matchAll(/(#[0-9a-fA-F]{6})\b/g)) {
+            const hex = m[1]!.toLowerCase();
+            if (declared.has(hex)) continue;
+            if (HISTORY_MARKERS.test(sentence)) continue;
+            offenders.push(`${hex} — "${sentence.replace(/\s+/g, ' ').trim().slice(0, 110)}"`);
+          }
+        }
+      }
+      expect(
+        offenders,
+        `${theme}: these hexes are named as current but are not declared in the block:\n${offenders.join('\n')}`,
+      ).toEqual([]);
+    });
+  }
+});
+
+describe('Colour survives colour-vision deficiency', () => {
+  /**
+   * The guards above assert that no two semantic hues are equal, and that every
+   * one clears AA. Both claims were only ever true for NORMAL vision, and the
+   * file said so out loud: "[indigo] deliberately collides with no reserved
+   * hue." Simulated, the old palette merged `--color-status-ai` with
+   * `--color-info` at ΔE-OK 0.0148 (Graphite, protanopia) and merged a healthy
+   * sync with a disabled one in Paper at 0.0380 — a claim no inequality check
+   * can catch, because the two hexes were never equal.
+   *
+   * Machado, Oliveira & Fernandes (2009) severity-1.0 matrices, applied in
+   * LINEAR light (applying them to gamma-encoded bytes is the common error and
+   * understates the collapse). Distance is Euclidean in Oklab, which is
+   * perceptually uniform enough for a "can these be told apart" threshold.
+   */
+  const CVD_MATRICES = {
+    protanopia: [
+      [0.152286, 1.052583, -0.204868],
+      [0.114503, 0.786281, 0.099216],
+      [-0.003882, -0.048116, 1.051998],
+    ],
+    deuteranopia: [
+      [0.367322, 0.860646, -0.227968],
+      [0.280085, 0.672501, 0.047413],
+      [-0.011820, 0.042940, 0.968881],
+    ],
+    tritanopia: [
+      [1.255528, -0.076749, -0.178779],
+      [-0.078411, 0.930809, 0.147602],
+      [0.004733, 0.691367, 0.303900],
+    ],
+  } as const;
+
+  function toLinear(hex: string): [number, number, number] {
+    return [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    }) as [number, number, number];
+  }
+
+  function fromLinear(lin: readonly number[]): string {
+    return (
+      '#' +
+      lin
+        .map((c) => {
+          const v = Math.max(0, Math.min(1, c));
+          const s = v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+          return Math.round(Math.max(0, Math.min(1, s)) * 255)
+            .toString(16)
+            .padStart(2, '0');
+        })
+        .join('')
+    );
+  }
+
+  function simulate(hex: string, kind: keyof typeof CVD_MATRICES): string {
+    const lin = toLinear(hex);
+    const m = CVD_MATRICES[kind];
+    return fromLinear(m.map((row) => row[0]! * lin[0] + row[1]! * lin[1] + row[2]! * lin[2]));
+  }
+
+  /** Oklab coordinates, for a perceptual distance that luminance alone cannot fake. */
+  function oklab(hex: string): [number, number, number] {
+    const [r, g, b] = toLinear(hex);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+      0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+    ];
+  }
+
+  function deltaE(a: string, b: string): number {
+    const [l1, a1, b1] = oklab(a);
+    const [l2, a2, b2] = oklab(b);
+    return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
+  }
+
+  // `status-embedding` is deliberately ABSENT: as of 2026-08-31 it resolves to
+  // `--color-foreground`, i.e. body ink rather than a hue, so it is not a member
+  // of the semantic-colour set this block reasons about. Its own guard is below.
+  const ROLES = [
+    'status-connected',
+    'status-syncing',
+    'status-ai',
+    'status-disconnected',
+    'status-inactive',
+    'info',
+  ] as const;
+
+  const VIEWS = ['normal', 'protanopia', 'deuteranopia', 'tritanopia'] as const;
+
+  function palette(block: string): Record<string, string> {
+    return Object.fromEntries(ROLES.map((r) => [r, token(block, `--color-${r}`)]));
+  }
+
+  function worstPair(pal: Record<string, string>, only?: readonly [string, string][]) {
+    const names = Object.keys(pal);
+    const pairs =
+      only ??
+      names.flatMap((a, i) => names.slice(i + 1).map((b) => [a, b] as [string, string]));
+    let worst = { d: Infinity, label: '' };
+    for (const view of VIEWS) {
+      for (const [a, b] of pairs) {
+        if (pal[a] === pal[b]) continue; // same token by design (embedding IS Steel)
+        const x = view === 'normal' ? pal[a]! : simulate(pal[a]!, view);
+        const y = view === 'normal' ? pal[b]! : simulate(pal[b]!, view);
+        const d = deltaE(x, y);
+        if (d < worst.d) worst = { d, label: `${view}: ${a} ↔ ${b} (${pal[a]} / ${pal[b]})` };
+      }
+    }
+    return worst;
+  }
+
+  // The pairs that appear TOGETHER in one status strip, where confusing them
+  // means misreading the health of the system: a dead sync read as healthy, a
+  // disabled space read as connected.
+  const SAME_STRIP: readonly [string, string][] = [
+    ['status-connected', 'status-disconnected'],
+    ['status-connected', 'status-inactive'],
+    ['status-connected', 'status-syncing'],
+    ['status-syncing', 'status-disconnected'],
+    ['status-disconnected', 'status-inactive'],
+    ['status-syncing', 'status-inactive'],
+  ];
+
+  it('keeps embedding out of the hue vocabulary entirely', () => {
+    // It was Steel — byte-identical to --color-primary — through three critiques,
+    // so ambient telemetry wore the interaction colour and collapsed onto
+    // `connected` under tritanopia at ΔE-OK 0.0399. Hueless had one safe landing
+    // place: pointed at a muted neutral it measured 0.0000–0.0477 from
+    // status-inactive, which would have made "indexing" and "idle" the same
+    // colour. Assert the alias, not a value, so the reasoning survives a retune.
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const decl = new RegExp('--color-status-embedding:\\s*([^;]+);').exec(block);
+      expect(decl, `${theme} must declare --color-status-embedding`).not.toBeNull();
+      expect(
+        decl![1]!.trim(),
+        `${theme}: embedding must resolve to the body ink, not a hue`,
+      ).toBe('var(--color-foreground)');
+    }
+  });
+
+  it('separates AI from an informational notice under every simulation', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const pal = palette(block);
+      const worst = worstPair(pal, [['status-ai', 'info']]);
+      expect(
+        worst.d,
+        `${theme}: AI violet and the informational hue collapse — ${worst.label} ΔE-OK ${worst.d.toFixed(4)}`,
+      ).toBeGreaterThanOrEqual(0.05);
+    }
+  });
+
+  it('keeps the interactive Steel apart from the informational hue under every simulation', () => {
+    // Under tritanopia both drift teal, and "passive notice" reading as
+    // "clickable" is the one confusion this palette cannot afford: Steel is the
+    // single interaction colour. Read `--color-primary` directly — this used to
+    // be measured through `status-embedding`, which was the same value until
+    // embedding stopped being a hue.
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const pal = { ...palette(block), steel: token(block, '--color-primary') };
+      const worst = worstPair(pal, [['steel', 'info']]);
+      expect(
+        worst.d,
+        `${theme}: Steel and the informational hue collapse — ${worst.label} ΔE-OK ${worst.d.toFixed(4)}`,
+      ).toBeGreaterThanOrEqual(0.05);
+    }
+  });
+
+  it('holds a floor under every pair that shares a status strip', () => {
+    // 0.039 is not a target, it is the measured ceiling: seven roles cannot be
+    // mutually separated while every one clears 4.5:1 on a white pane, because
+    // the usable Oklab L band is 0.354–0.512 and seven evenly spread roles sit
+    // ΔL ≈ 0.026 apart. Paper is tuned to 0.0399 at its worst pair and Graphite
+    // to 0.05+. The residue is why every status indicator also carries a
+    // non-colour channel — that contract is guarded in
+    // `status-non-colour-channel.test.ts`, not here.
+    for (const [theme, block, floor] of [
+      ['graphite', darkBlock, 0.05],
+      ['paper', lightBlock, 0.039],
+    ] as const) {
+      const pal = palette(block);
+      const worst = worstPair(pal, SAME_STRIP);
+      expect(
+        worst.d,
+        `${theme}: ${worst.label} ΔE-OK ${worst.d.toFixed(4)} — below the ${floor} floor`,
+      ).toBeGreaterThanOrEqual(floor);
+    }
+  });
+
+  it('never lets any two semantic hues merge completely under simulation', () => {
+    for (const [theme, block] of [
+      ['graphite', darkBlock],
+      ['paper', lightBlock],
+    ] as const) {
+      const worst = worstPair(palette(block));
+      expect(
+        worst.d,
+        `${theme}: ${worst.label} ΔE-OK ${worst.d.toFixed(4)}`,
+      ).toBeGreaterThanOrEqual(0.035);
+    }
   });
 });

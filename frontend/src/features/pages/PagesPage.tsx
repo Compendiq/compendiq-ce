@@ -30,7 +30,6 @@ import {
 } from './pages-filter-params';
 import { cn } from '../../shared/lib/cn';
 import { neutralChipClass } from '../../shared/components/badges/neutral-chip';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { PageIcon } from '../../shared/components/page-icon/PageIcon';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
@@ -408,7 +407,6 @@ const PageListItem = memo(function PageListItem({
 export function PagesPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const isLight = useIsLightTheme();
 
   // Filter / search / sort / pagination state lives in the URL, not in
   // component state (#1124). Opening an article unmounts this page; on the way
@@ -1711,7 +1709,7 @@ export function PagesPage() {
               </div>
             </div>
             <SanitizedHtml
-              className={`prose max-w-none py-2${isLight ? '' : ' prose-invert'}`}
+              className="prose max-w-none py-2"
               html={homeBodyHtml}
               additionalAllowedAttrs={['data-diagram-name', 'data-drawio', 'data-color', 'data-layout', 'data-layout-type', 'data-cell-width', 'data-border']}
             />

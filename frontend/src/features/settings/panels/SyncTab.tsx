@@ -561,9 +561,28 @@ export function SyncTab() {
 const syncBadgeClasses: Record<'idle' | 'syncing' | 'embedding' | 'error', string> = {
   idle: 'border-success/30 bg-success/10 text-success',
   syncing: 'border-warning/30 bg-warning/10 text-warning',
-  // Steel, not indigo: `embedding` is a pipeline STATE and Steel is its reserved
-  // hue (ADR-010); indigo is the informational colour and names no state.
-  embedding: 'border-status-embedding/30 bg-status-embedding/10 text-status-embedding',
+  // The one hueless pill, and the only one that breaks the /30 + /10 + ink
+  // shape its siblings share. `--color-status-embedding` used to be Steel and
+  // is body ink now — it had been byte-identical to `--color-primary`, so
+  // ambient pipeline telemetry wore the colour reserved for "you can act on
+  // this". The alphas therefore had to be re-measured against INK (WCAG on an
+  // sRGB-space, byte-rounded composite, the way a browser blends):
+  //
+  //   fill at 10%  1.225:1 (Paper) / 1.278:1 (Graphite) against Pane — keeps
+  //                the siblings' alpha, because at ink strength this is
+  //                already the measured neutral-chip tint.
+  //   border       `border-border`, not the token: a border tint composites
+  //                ON TOP of that fill, so even an 8% ink border reaches
+  //                1.439:1 / 1.592:1 at the pill's outer edge, past
+  //                `--color-border` (1.414 / 1.264) in both themes — 26% past
+  //                it in Graphite, where a status pill would then out-weigh
+  //                every structural hairline on the page. The quiet hairline
+  //                token IS that ceiling, so it is what the pill wears.
+  //
+  // Hue is no longer a channel here; `syncLabel` above is. The four statuses
+  // read "Idle" / "Syncing <space>" / "Embedding" / "Error", so nothing is
+  // carried by colour alone.
+  embedding: 'border-border bg-status-embedding/10 text-status-embedding',
   error: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 

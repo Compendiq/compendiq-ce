@@ -10,7 +10,6 @@ import { usePage, useEmbeddingStatus, type EmbeddingStatusData } from '../../sha
 import { DEFAULT_IMPROVEMENT_TYPE, type ImprovementType } from './improvement-types';
 import { isAiHomeAction } from './assistant-actions';
 import { type CreateSkillId } from './create-skills';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
 import { useStreamingContent } from '../../shared/hooks/use-streaming-content';
 import { type Source } from './SourceCitations';
 import { toast } from 'sonner';
@@ -189,9 +188,6 @@ interface AiContextValue {
 
   // Embedding status
   embeddingStatus: EmbeddingStatusData | undefined;
-
-  // Theme
-  isLight: boolean;
 
   // Improve mode state
   /**
@@ -568,7 +564,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const queryClient = useQueryClient();
   const pageId = resolveAiPageId(location.pathname, searchParams);
-  const isLight = useIsLightTheme();
 
   // Consumer registration (see `useAiContext`). The count lives in a ref so
   // mount/unmount churn is cheap; the boolean is state because the queries
@@ -1642,7 +1637,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setThinkingMode: handleSetThinkingMode,
     isPageLoading,
     embeddingStatus,
-    isLight,
     improvementType,
     setImprovementType,
     showDiffView,

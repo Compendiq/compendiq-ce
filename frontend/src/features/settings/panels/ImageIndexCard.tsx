@@ -221,9 +221,36 @@ export function ImageIndexCard() {
   /** A number the server has not sent yet is `—`, never a claimed zero. */
   const num = (n: number | undefined): string => (isPending || isError ? '—' : String(n ?? 0));
 
+  /**
+   * Indexed fraction, for the determinate bar below. `pagesDirty` is the
+   * QUEUE, so what is done is the remainder — and it only means anything once
+   * the server has sent a total, which `num()` above spells `—` until it has.
+   */
+  const pagesTotal = data?.pagesTotal ?? 0;
+  const indexedPercent =
+    !isPending && !isError && pagesTotal > 0
+      ? Math.max(0, Math.min(100, Math.round(((pagesTotal - (data?.pagesDirty ?? 0)) / pagesTotal) * 100)))
+      : null;
+
   return (
     <div
-      className="nm-card border-status-embedding/30 space-y-3 p-3 text-sm"
+      // Plain `nm-card`: the border tint is gone. It used to be a `border-`
+      // utility on `status-embedding` at 30%, which was a pale blue-grey while
+      // that token was Steel (1.569:1 Paper / 1.808:1 Graphite against Pane).
+      // The token resolves to body ink now, and the same 30% measures 1.941:1 /
+      // 2.431:1 — 1.4x and 1.9x the `--color-border` hairline every ordinary
+      // card wears (1.414 / 1.264). This card is permanently mounted, so the
+      // panel's most sharply drawn box would have been the one that is usually
+      // idle. Retuning the alpha down cannot fix it either: the largest ink
+      // alpha under Graphite's 1.264 ceiling is 8% (1.212:1), quieter than an
+      // untinted card, so the "marked" surface would read as less defined than
+      // its neighbours.
+      //
+      // Nothing is lost: the state this card actually has to report is a RUN,
+      // and that is carried by the "Scanning…" chip, `aria-busy` below, and
+      // the determinate bar under the counters — a border tint never said
+      // which of those was true.
+      className="nm-card space-y-3 p-3 text-sm"
       data-testid="image-index-card"
       // #1532: the same card-root busy signal `AttachmentStorageCard` carries,
       // off the same fact — the run the "Scanning…" chip reports. The counters
@@ -304,6 +331,33 @@ export function ImageIndexCard() {
           </dd>
         </div>
       </dl>
+
+      {/*
+        The determinate channel that replaced the border tint, and the one
+        thing on this card that shows how far a run has got rather than merely
+        that one is happening. Rendered only while the server says it is
+        RUNNING: idle, this backlog does not move, and a permanent bar would
+        read as live work on a card that is usually at rest — the counters
+        above are the resting readout.
+
+        `aria-hidden`, with no `role="progressbar"`: the "Scanning…" chip and
+        `aria-busy` on the card root already carry the run on the assistive
+        channel, and the numbers this bar draws are the `dl` immediately above
+        it. A labelled progressbar here would announce the same pair a second
+        time on every poll.
+      */}
+      {serverRunning && indexedPercent !== null && (
+        <div
+          className="h-1.5 overflow-hidden rounded-full bg-foreground/10"
+          data-testid="image-index-progress"
+          aria-hidden="true"
+        >
+          <div
+            className="bg-action h-full rounded-full transition-[width] duration-300 ease-out"
+            style={{ width: `${indexedPercent}%` }}
+          />
+        </div>
+      )}
 
       {data?.lastRun && (
         <div className="text-muted-foreground space-y-1 text-xs" data-testid="image-index-last-run">

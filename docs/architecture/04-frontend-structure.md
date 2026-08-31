@@ -574,12 +574,17 @@ the backend side.
   `--surface-card-elevated` are plain values, so a `hover:bg-*` utility
   composes normally — the gradient-as-background-image trap of the previous
   palette is designed out. Paper's panes — document, left navigation, context
-  rail — are pure white, its neutrals sit quietly on the warm side of the hue
-  circle, and its frame (gutter, left destination rail, top app header) is
-  near-white `#FAFAF9`, so Canvas is no longer the darkest step. Every other
-  neutral is fitted to that grey and to the white panes, and the hover and
-  pressed fills keep a measured floor against white so a state stays visible
-  (ADR-010 v0.8). See ADR-010 v0.7 for the roles and the Graphite
+  rail — are pure white; its neutrals sit a hair off neutral toward warm, below
+  the perceptual threshold, so do not describe it as a warm palette. Its frame
+  (gutter, left destination rail, top app header) is near-white `#FAFAF9`, so
+  Canvas is no longer the darkest step. Hover, press and selection are three
+  separate tokens rather than one shared fill — with a perceptual floor between
+  adjacent states, not just an ordering — and chart colours resolve from tokens
+  at render rather than shipping literal hexes. Embedding is body ink rather
+  than a hue, prose links are underlined at rest for WCAG G183, and `/login`
+  holds the single declared exception to the flat-surface rule through
+  `@utility login-halo` (ADR-010 v0.8, v0.9, v1.0).
+  See ADR-010 v0.7 for the roles and the Graphite
   values, v0.8 for Paper's;
   its structural rules continue v0.6, which superseded
   the neumorphic depth model of v0.4/v0.5 and the v0.3-era glassmorphic

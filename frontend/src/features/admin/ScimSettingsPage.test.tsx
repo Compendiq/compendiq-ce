@@ -370,4 +370,35 @@ describe('ScimSettingsPage', () => {
       expect(body).not.toHaveProperty('expiresInDays');
     });
   });
+
+  // 13. Token state is not hue-only
+  //
+  // The row's only state signal used to be a coloured dot: the Expires column
+  // shows a date, never a state word. Assert the two channels that replace it —
+  // a per-state icon (shape) and a readable state word (accessible name).
+  it('names each token state in text, not only in colour', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    mockFetchWithTokens([
+      { ...mockTokens[0], id: 'tok-a', name: 'Healthy', expiresAt: new Date(Date.now() + 90 * day).toISOString() },
+      { ...mockTokens[0], id: 'tok-b', name: 'Soon', expiresAt: new Date(Date.now() + 2 * day).toISOString() },
+      { ...mockTokens[0], id: 'tok-c', name: 'Gone', expiresAt: new Date(Date.now() - day).toISOString() },
+    ]);
+    render(<ScimSettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Healthy')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByText('Expiring soon')).toBeInTheDocument();
+    expect(screen.getByText('Expired')).toBeInTheDocument();
+
+    // One marker per state, and each carries an icon (svg) beside the word, so
+    // the distinction survives a greyscale render.
+    for (const state of ['active', 'expiring', 'expired']) {
+      const marker = screen.getByTestId(`scim-token-status-${state}`);
+      expect(marker.querySelector('svg')).not.toBeNull();
+      expect(marker.querySelector('.sr-only')?.textContent).toBeTruthy();
+    }
+  });
 });
