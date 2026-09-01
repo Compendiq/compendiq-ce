@@ -3,6 +3,7 @@ import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen,
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { ThinkToggle } from '../ThinkToggle';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
@@ -341,8 +342,8 @@ export function GenerateModeInput() {
 
 function GenerateModeInputContent() {
   const {
-    input, setInput, isStreaming, model, thinkingMode, setMessages, runStream, chatVision,
-    chatVisionModel,
+    input, setInput, isStreaming, model, thinkingMode, setThinkingMode, setMessages, runStream,
+    chatVision, chatVisionModel,
   } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
@@ -542,7 +543,18 @@ function GenerateModeInputContent() {
             isPreparing={attachments.isPreparing}
             disabled={isStreaming}
           />
-          <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
+          {/* Skill select plus `Think`: extended thinking left the page's
+              options row for the composers (owner request, 2026-09-01, see
+              `ThinkToggle`), and `/llm/generate` reads the same provider state,
+              so it stays reachable where the request is composed. */}
+          <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} className="self-end" />
+          <ThinkToggle
+            checked={thinkingMode}
+            onChange={setThinkingMode}
+            disabled={isStreaming}
+            testId="generate-think"
+            className="self-end"
+          />
           <textarea
             ref={promptRef}
             value={input}

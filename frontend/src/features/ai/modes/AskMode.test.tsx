@@ -172,7 +172,9 @@ describe('AskMode', () => {
     });
 
     render(<AskModeInput />, { wrapper: createWrapper() });
-    fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+    // One trigger, both kinds (2026-09-01): `useAttachments` routes the file,
+    // so a .txt lands in the document slot from the same input a .png would.
+    fireEvent.change(screen.getByTestId('ask-attach-file-input'), {
       target: { files: [new File(['policy'], 'policy.txt', { type: 'text/plain' })] },
     });
     await screen.findByTestId('ask-doc-attachment-card');
@@ -205,14 +207,22 @@ describe('AskMode', () => {
     });
 
     render(<AskModeInput />, { wrapper: createWrapper() });
-    await waitFor(() => expect(screen.getByTestId('ask-image-trigger')).not.toBeDisabled());
-    fireEvent.change(screen.getByTestId('ask-image-file-input'), {
-      target: { files: [new File(['image'], 'diagram.png', { type: 'image/png' })] },
-    });
-    await screen.findByTestId('ask-image-card');
     fireEvent.change(screen.getByPlaceholderText('Ask a question...'), {
       target: { value: 'What is shown here?' },
     });
+    // Send enables only once a model has resolved, and on this mock the model
+    // and `vision` arrive in the SAME `/llm/usecase-default?usecase=chat`
+    // response — so this is the honest signal that image intake is open. The
+    // merged trigger cannot be that signal any more: it is enabled either way
+    // and `useAttachments` refuses an image with the vision reason instead
+    // (which is what the toast case below pins).
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
+    });
+    fireEvent.change(screen.getByTestId('ask-attach-file-input'), {
+      target: { files: [new File(['image'], 'diagram.png', { type: 'image/png' })] },
+    });
+    await screen.findByTestId('ask-image-card');
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     await waitFor(() => expect(streamSSEMock).toHaveBeenCalledWith(
@@ -220,6 +230,40 @@ describe('AskMode', () => {
       expect.objectContaining({ imageHandle: IMAGE_HANDLE }),
       expect.any(Object),
     ));
+  });
+
+  // The merged trigger's other half (2026-09-01). Two triggers used to say
+  // "no vision" by rendering one of them disabled with the reason in its
+  // tooltip; one trigger says it by refusing the file it was handed, so the
+  // refusal has to be visible and the slot has to stay empty.
+  it('refuses an image with a reason when the chat model has no vision', async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === '/settings') {
+        return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+      }
+      if (path === '/llm/usecase-default?usecase=chat') {
+        return Promise.resolve({ model: 'llama3', vision: false });
+      }
+      if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+      return Promise.resolve([]);
+    });
+
+    render(<AskModeInput />, { wrapper: createWrapper() });
+    fireEvent.change(screen.getByPlaceholderText('Ask a question...'), {
+      target: { value: 'What is shown here?' },
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Send message' })).not.toBeDisabled();
+    });
+
+    fireEvent.change(screen.getByTestId('ask-attach-file-input'), {
+      target: { files: [new File(['image'], 'diagram.png', { type: 'image/png' })] },
+    });
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+    // The reason names the model, not just "not supported".
+    expect(String(toastErrorMock.mock.calls[0]?.[0])).toMatch(/llama3/);
+    expect(screen.queryByTestId('ask-image-card')).toBeNull();
   });
 
   /** Exposes the current URL search string so tests can assert ?q was consumed. */
@@ -905,26 +949,31 @@ describe('AskMode', () => {
     });
 
     // The whole reason this ships opt-in is that it is measurably WORSE on
-    // ordinary questions. A caveat that lives only in `title` is unreachable by
-    // touch, by keyboard and by a screen reader — and the text that WAS visible
-    // ("Slower; this question only.") reads as slower-but-better, the inverse of
-    // the measurement. So the downside is on screen, at rest, and wired to the
-    // control as its description.
-    it('shows the downside without hover, before the toggle is switched on', () => {
+    // ordinary questions, so the downside has to be reachable without hover:
+    // `title` alone is unreachable by touch and by most screen-reader flows.
+    // 2026-09-01 (owner request) the chip moved into the composer's action row
+    // and took the dock's popover with it, so the caveat is one click away and
+    // stays the control's accessible description — instead of a permanent line
+    // of prose sitting above the field on every render.
+    it('offers the downside on demand, before the toggle is switched on', async () => {
       withModel();
       render(<AskModeInput />, { wrapper: createWrapper() });
 
       const toggle = screen.getByTestId('ask-deep-search');
       expect(toggle).not.toBeChecked();
 
-      const caveat = screen.getByTestId('ask-deep-search-caveat');
-      expect(caveat).toBeVisible();
+      // Not on screen at rest — that is the change — but not hover-only either.
+      expect(screen.getByTestId('ask-deep-search-caveat').className).toContain('sr-only');
+
+      fireEvent.click(screen.getByTestId('ask-deep-search-info-trigger'));
+
+      const details = await screen.findByTestId('ask-deep-search-popover-content');
       // The two halves of an honest description: what it is for, and what it
       // costs you when it is not.
-      expect(caveat).toHaveTextContent(/normal search missed/i);
-      expect(caveat).toHaveTextContent(/worse on straightforward questions/i);
-      expect(caveat).toHaveTextContent(/2\.4 seconds slower/i);
-      expect(caveat).toHaveTextContent(/this question only/i);
+      expect(details).toHaveTextContent(/normal search missed/i);
+      expect(details).toHaveTextContent(/worse on straightforward questions/i);
+      expect(details).toHaveTextContent(/2\.4 seconds slower/i);
+      expect(details).toHaveTextContent(/this question only/i);
     });
 
     it('describes the control with that text rather than leaving it decorative', () => {
@@ -981,6 +1030,81 @@ describe('AskMode', () => {
       await waitFor(() => {
         expect(screen.getByTestId('ask-deep-search')).not.toBeChecked();
       });
+    });
+  });
+
+  /**
+   * `Think` is the deliberate opposite of Deep search: it is a durable setting
+   * (`AiContext` writes it to localStorage), and on 2026-09-01 it moved out of
+   * the page's options row into this composer's action row at the owner's
+   * request. What has to hold is that it is IN the composer box — so the row
+   * reads as "what Send is about to do" — and that it still reaches the wire.
+   */
+  describe('extended thinking rides in the composer (#20)', () => {
+    function withModel() {
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path === '/settings') {
+          return Promise.resolve({ llmProvider: 'ollama', ollamaModel: 'llama3', openaiModel: null });
+        }
+        if (path.startsWith('/ollama/models')) return Promise.resolve([{ name: 'llama3' }]);
+        return Promise.resolve([]);
+      });
+      streamSSEMock.mockImplementation(async function* fakeStream() {
+        yield { content: 'Answer' };
+      });
+    }
+
+    /** Sends `question` and waits for the request it produced. */
+    async function ask(question: string) {
+      const input = screen.getByPlaceholderText('Ask a question...');
+      fireEvent.change(input, { target: { value: question } });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /send message/i })).not.toBeDisabled();
+      });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => {
+        expect(streamSSEMock).toHaveBeenLastCalledWith(
+          '/llm/ask',
+          expect.objectContaining({ question }),
+          expect.any(Object),
+        );
+      });
+    }
+
+    it('sits inside the composer box, beside the send button', () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      const think = screen.getByTestId('ask-think');
+      const box = screen.getByTestId('ask-input').closest('.nm-composer');
+      expect(box).not.toBeNull();
+      expect(box).toContainElement(think);
+    });
+
+    it('omits the flag when off and sends thinking: true when switched on', async () => {
+      withModel();
+      render(<AskModeInput />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('ask-think')).not.toBeChecked();
+      await ask('where is the runbook?');
+      // Omitted entirely rather than sent as false: an untouched composer sends
+      // the body it always sent.
+      expect(streamSSEMock).toHaveBeenLastCalledWith(
+        '/llm/ask',
+        expect.not.objectContaining({ thinking: expect.anything() }),
+        expect.any(Object),
+      );
+
+      fireEvent.click(screen.getByTestId('ask-think'));
+      // Durable, unlike Deep search: it stays on for the next question too,
+      // which is why it is stored rather than read-and-cleared at submit.
+      expect(screen.getByTestId('ask-think')).toBeChecked();
+      await ask('what governs the retention window?');
+      expect(streamSSEMock).toHaveBeenLastCalledWith(
+        '/llm/ask',
+        expect.objectContaining({ thinking: true }),
+        expect.any(Object),
+      );
     });
   });
 
@@ -1051,7 +1175,7 @@ describe('AskMode', () => {
         { wrapper: createWrapper() },
       );
 
-      fireEvent.change(screen.getByTestId('ask-doc-file-input'), {
+      fireEvent.change(screen.getByTestId('ask-attach-file-input'), {
         target: { files: [new File(['policy'], 'policy.txt', { type: 'text/plain' })] },
       });
       await screen.findByTestId('ask-doc-attachment-card');

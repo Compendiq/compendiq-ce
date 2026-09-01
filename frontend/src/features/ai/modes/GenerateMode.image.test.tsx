@@ -541,6 +541,9 @@ describe('Generate composer focus order (#1154)', () => {
       'image-attach-remove',
       'image-attach-trigger',
       'assistant-action-select',
+      // Think sits with the skill select, before the field it applies to
+      // (2026-09-01: the page's options row moved into the composers).
+      'generate-think',
       'textarea',
       'button',
     ]);

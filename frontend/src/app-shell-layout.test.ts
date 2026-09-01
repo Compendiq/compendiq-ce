@@ -271,9 +271,9 @@ describe('Inset shell utilities', () => {
  * These are source guards for the panes whose ring was the LAST statement of a
  * boundary something else already made — the Library results list (a Chrome
  * header band on top, a divider under every row, the last divider closing the
- * bottom) and the AI page's options row and message pane (Pane on the sticky
- * strip's Workspace ground, plus a radius). A ring returning here is a box
- * drawn around content that was already legible without one.
+ * bottom) and the AI page's message pane (Pane on the sticky strip's Workspace
+ * ground, plus a radius). A ring returning here is a box drawn around content
+ * that was already legible without one.
  */
 describe('Content panes carry no ring', () => {
   const pagesPage = read('features/pages/PagesPage.tsx');
@@ -299,15 +299,35 @@ describe('Content panes carry no ring', () => {
     }
   });
 
-  it('the AI options row and message pane are unlined', () => {
+  it('the AI message pane is unlined and no options row came back above it', () => {
     const messagePane = /className="([^"]*)" data-testid="ai-message-pane"/.exec(aiPage);
     expect(messagePane, 'the AI message pane was not found — this guard is stale').not.toBeNull();
     expect(messagePane![1]!, 'the message pane must stay unlined').not.toMatch(/\bborder\b/);
     expect(messagePane![1]!, 'its radius and the Pane/Workspace step draw it').toMatch(/rounded-xl/);
 
-    const optionsRow = /className="flex flex-wrap items-center gap-x-2 gap-y-2 ([^"]*)"/.exec(aiPage);
-    expect(optionsRow, 'the AI options row was not found — this guard is stale').not.toBeNull();
-    expect(optionsRow![1]!, 'the options row must stay unlined').not.toMatch(/\bborder\b/);
+    // The `bg-card` options row above the pane held one chip (`Think`) and
+    // went into the composers on 2026-09-01 (owner request). A card row
+    // returning here is a full-width strip describing a request composed 600px
+    // below it — and it would spend its padding and both column gaps out of
+    // the pane's height at every mode.
+    expect(aiPage, 'the AI options row must not come back').not.toMatch(
+      /flex flex-wrap items-center gap-x-2[^"]*bg-card/,
+    );
+    expect(aiPage, 'Think belongs to the composers now, not this page').not.toContain(
+      'Thinking mode',
+    );
+
+    // What is left of the sticky strip is the mode-specific setting, and its
+    // under-mask must still cover exactly the bar's box: an absolutely
+    // positioned mask past the block-end edge grows scrollable overflow in a
+    // container that has none (#769). The DOM half of this is pinned in
+    // `AiAssistantPage.test.tsx`, which cannot reach diagram mode on /ai.
+    const masks = [...aiPage.matchAll(/aria-hidden\s*\n\s*className="([^"]*)"/g)];
+    expect(masks.length, 'the /ai under-masks were not found — this guard is stale')
+      .toBeGreaterThan(0);
+    for (const [, classes] of masks) {
+      expect(classes).toBe('pointer-events-none absolute inset-0 z-[-1] bg-background');
+    }
   });
 });
 

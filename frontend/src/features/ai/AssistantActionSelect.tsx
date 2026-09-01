@@ -211,8 +211,13 @@ export function AssistantActionSelect({
           <Icon size={16} className="shrink-0" aria-hidden />
           {showLabel ? (
             <>
-              <span className="shrink-0">Skill</span>
-              <span aria-hidden="true">·</span>
+              {/* The word and its separator yield below `sm`: on a 390px
+                  composer the row overflows, and "Skill" is the one token the
+                  trigger can lose without losing meaning — the icon and the
+                  selected action's own name still say what Send will do, and
+                  `aria-label` above carries the full phrase either way. */}
+              <span className="hidden shrink-0 sm:inline">Skill</span>
+              <span aria-hidden="true" className="hidden sm:inline">·</span>
               <span className="truncate">{current.label}</span>
               <ChevronDown size={13} className="shrink-0" aria-hidden />
             </>

@@ -266,8 +266,8 @@ therefore disables requests even when the user's preference remains enabled.
 
 ## Composer attachments (#1131 documents, #1154 images)
 
-The three AI composer surfaces — `/ai` Generate, `/ai` Improve and the dock's
-`DockPanel` — do not each hold their own attachment state. All three mount one
+The AI composer surfaces — `/ai` Ask, Generate and Improve, and the dock's
+`DockPanel` — do not each hold their own attachment state. All of them mount one
 `useAttachments` (`shared/hooks/`), which owns **both** slots and every way a
 file can arrive.
 
@@ -334,6 +334,17 @@ flowchart TB
   the reordering convention that predated this is gone from the zones and all
   three hosts; `expectComposerFocusOrder` (`test-utils.ts`) fails on any `order-*`
   inside a composer (WCAG 2.4.3).
+- **One trigger where the hook already routes: `ComposerAttachmentPicker`**
+  (`shared/components/upload/`), used by `DockPanel` and by `/ai` Ask
+  (2026-09-01, owner request; it was the dock's local picker since #1131). Those
+  two hosts mount both zones with `showTrigger={false}`, so a zone contributes
+  DOM only once it has a card or a drop hint, and the single paperclip hands
+  every file to `pickFiles`. The consequence is deliberate: with no per-kind
+  trigger there is nothing left to render disabled, so a refused image reports
+  the vision reason as a **toast** instead — `imageDisabledReason` is passed to
+  the hook rather than to a button. Generate and Improve keep their per-zone
+  triggers; their boxes are single-row composers where the zone rows are the
+  layout.
 
 ## Image retrieval on the frontend (#1115)
 

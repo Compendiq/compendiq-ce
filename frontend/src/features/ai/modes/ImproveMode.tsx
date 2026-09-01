@@ -14,6 +14,7 @@ import { Button } from '../../../shared/components/Button';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
+import { ThinkToggle } from '../ThinkToggle';
 
 /**
  * Diff view shown after an improve stream completes.
@@ -103,7 +104,8 @@ export function ImproveModeInput() {
 
 function ImproveModeInputContent() {
   const {
-    input, setInput, isStreaming, page, isPageLoading, model, pageId, includeSubPages, thinkingMode, runStream,
+    input, setInput, isStreaming, page, isPageLoading, model, pageId, includeSubPages,
+    thinkingMode, setThinkingMode, runStream,
     improvementType, setShowDiffView, setImprovedContent, setOriginalMarkdown, setLayoutTokensLost,
     chatVision,
     chatVisionModel,
@@ -272,7 +274,19 @@ function ImproveModeInputContent() {
           isPreparing={attachments.isPreparing}
           disabled={isStreaming}
         />
-        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
+        {/* The skill select names the Send button beside it, and `Think` sits
+            with it: extended thinking left the page's options row for the
+            composers (owner request, 2026-09-01, see `ThinkToggle`), and
+            `/llm/improve` sends `thinking` from the same provider state, so the
+            control has to be reachable from this composer too. */}
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} className="self-end" />
+        <ThinkToggle
+          checked={thinkingMode}
+          onChange={setThinkingMode}
+          disabled={isStreaming}
+          testId="improve-think"
+          className="self-end"
+        />
         <textarea
           ref={textareaRef}
           value={input}

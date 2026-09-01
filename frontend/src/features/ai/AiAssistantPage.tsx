@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Brain, AlertTriangle, RefreshCw, SquarePen,
+  Bot, User, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -215,9 +215,8 @@ export function AiAssistantPage() {
     mode, page,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
     streamingContent, streamingThreadId, activeThreadId,
-    thinkingMode, setThinkingMode,
     embeddingStatus,
-    startNewConversation, threadLoadState, threadLoadError, retryThreadLoad,
+    threadLoadState, threadLoadError, retryThreadLoad,
   } = ctx;
 
   // #1361: `isStreaming` / `isThinking` / `streamingContent` are one
@@ -257,19 +256,16 @@ export function AiAssistantPage() {
       // nothing. Guarded by name in `src/ai-scroll-chain.test.ts`.
       className="flex min-h-0 flex-1 flex-col gap-3"
     >
-      {/* The route's heading, and the home of New chat (#1361, amendment item 2
-          — owner decision 12, re-decided 2026-08-22 after #1377/#1378 deleted
-          the header slot the 08-18 amendment had named). `HeaderHost` renders
-          in the document now: there is no #app-header-slot producer left, no
-          AppHeaderMain to suppress a fallback title, and no data-header-kpis to
-          avoid. It still renders at every width and still survives a collapsed
-          conversations rail, and it stays on screen as the log grows because
-          the MESSAGE PANE owns the scroller (#1218), not this column.
+      {/* The route's heading. New chat is NOT here any more (owner request,
+          2026-09-01): the conversations rail carries it — full-width when the
+          rail is expanded, a `SquarePen` glyph when it is collapsed — and two
+          buttons 200px apart doing the same thing made the page's one heading
+          row carry a duplicate. `AiConversationsSidebar` owns it in both of its
+          states, so no width loses the action.
 
-          The Library heading row is the recipe (PagesPage.tsx:1037-1058).
-          HeaderHost renders a plain <div className={fallbackClassName}>, so the
-          row supplies its own layout — justify-between, and no ml-auto, because
-          there is no flex-1 slot to sit at the far end of any more.
+          `HeaderHost` renders in the document now: there is no
+          #app-header-slot producer left, no AppHeaderMain to suppress a
+          fallback title, and no data-header-kpis to avoid.
 
           FIRST CHILD INSIDE the root <m.div>, never a fragment sibling above
           it, and the root's className must stay a STATIC string literal:
@@ -279,110 +275,39 @@ export function AiAssistantPage() {
           leaves `scroll-padding-mask.test.ts` describing a strategy nothing
           enforces. */}
       <HeaderHost fallbackClassName="mb-1">
-        <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
-          <button
-            type="button"
-            onClick={() => startNewConversation()}
-            className="nm-button-ghost flex h-8 items-center gap-1.5 px-2.5 text-xs sm:text-sm"
-            aria-label="New chat"
-            data-testid="ai-new-chat"
-          >
-            <SquarePen size={15} />
-            {/* The label yields the row's width below `sm`; the aria-label
-                above is what keeps the accessible name when it does. */}
-            <span className="hidden sm:inline">New chat</span>
-          </button>
         </div>
       </HeaderHost>
 
-      {/* Sticky sub-header: mode selector | context + options.
-          Sits at top-0 of the column so it stays visible as messages grow.
+      {/* Diagram's one secondary setting, and nothing else. The durable-option
+          row that used to sit here — a `bg-card` strip holding the single
+          `Think` chip — went into the composer's action row (owner request,
+          2026-09-01, see `ThinkToggle`), which left a full-width card
+          describing the request from 600px above it. With it gone the sticky
+          strip only exists for the mode that has a setting: an empty sticky box
+          would still consume its `py-1` and both gaps out of the message
+          pane's height at every other mode.
 
-          The opaque UNDER-mask (bg-background, z-[-1]) behind the translucent
-          bar is belt-and-braces through the supported viewport range, not
+          The opaque UNDER-mask (bg-background, z-[-1]) behind the bar is
+          belt-and-braces through the supported viewport range, not
           load-bearing. It was what occluded chat content scrolling up behind
           the bar (#703) — but since #1218 the message pane owns the scroller
-          and this column does not scroll, so nothing passes behind the bar to
-          occlude. Do not read a live mask as evidence that it still does.
-
-          It is not decorative at the extremes, which is the other half of why
-          it stays: both bars are content-sized and cannot shrink, so once they
-          plus the two gaps exceed the column, the outer scroller re-engages
-          and they scroll over each other. Measured at 1280x300 with the
-          composer at AUTO_GROW_MAX_HEIGHT: pane 0px, outer overflow 34px,
-          growing to 134px at 1280x200. No message bleed there — the pane has
-          no height to show one — but the mask is doing work again. It also
-          costs one div, and it is what keeps #703 from returning if a future
-          change re-engages outer scrolling in the ordinary range.
-
-          It covers exactly the bar's box (inset-0), and that constraint still
+          and this column does not scroll, so nothing passes behind it. It
+          covers exactly the bar's box (inset-0), and that constraint still
           binds: an absolutely positioned mask overflowing the block-end edge
-          creates scrollable overflow in a container that now has none, which
-          is #769's phantom scroll re-opened on a page that had stopped
-          scrolling entirely. Note the bar does NOT pin flush at the scrollport
-          edge — a sticky box is clamped to its containing block, which begins
-          after the scroll container's padding (#1186). What removed the live
-          strip that gap used to expose is the min-h-0 chain, not this mask.
-
-          The action selector moved into the composer: it now describes the
-          very Send button it controls. This header carries only request
-          context and durable options. */}
-      {/* Opaque, no blur. The `inset-0` under-mask directly below already
-          guarantees occlusion, so `bg-background/85 backdrop-blur` on the bar
-          itself was belt-and-braces over something already solid — and blur is
-          the most expensive thing the compositor does, here on a bar that is
-          composited on every scroll frame. (Missed by the glass sweep: its
-          regex required a suffix, `backdrop-blur-sm`, and this is the bare
-          utility.) */}
-      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background px-1 py-1">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 z-[-1] bg-background"
-      />
-      {/* Unlined (ADR-010, 2026-08-31): this row is Pane on the sticky
-          strip's Workspace ground, so the value step and the radius draw it —
-          the same argument that took the border off the workspace card. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl bg-card px-3 py-2">
-        {/* Durable options, and only those (#1361). The model `<select>` went
-            with page scope: the model is an admin assignment (ADR-021), not a
-            per-question choice, and `modelsError` / `refetchModels` stay on the
-            context for the dock's own retry chip. The `flex-1` spacer and the
-            divider went with the controls they separated — Think sits left
-            rather than being pushed right by a spacer with nothing on its
-            left. */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {/* Thinking mode toggle (#20). Always render the resting surface so
-              the affordance reads as a toggle rather than collapsing into a
-              label-with-icon when off. */}
-          <label
-            className={cn(
-              'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
-              thinkingMode
-                ? 'border-status-ai/45 bg-status-ai/15 text-status-ai'
-                : 'border-border text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-            )}
-            title={thinkingMode
-              ? 'Extended thinking is on — responses take longer but reason more carefully'
-              : 'Enable extended thinking for more thorough responses'}
-          >
-            <input
-              type="checkbox"
-              checked={thinkingMode}
-              onChange={(e) => setThinkingMode(e.target.checked)}
-              className="sr-only"
-              aria-label="Thinking mode"
-            />
-            <Brain size={12} />
-            <span>Think</span>
-          </label>
+          creates scrollable overflow in a container that now has none, which is
+          #769's phantom scroll re-opened on a page that had stopped scrolling
+          entirely. */}
+      {mode === 'diagram' && (
+        <div className="sticky top-0 z-20 isolate -mx-1 bg-background px-1 py-1">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+          />
+          <DiagramTypeSelector />
         </div>
-      </div>
-
-      {/* Diagram has one secondary setting. The selected primary action lives
-          beside Send; this only refines which diagram that action produces. */}
-      {mode === 'diagram' && <DiagramTypeSelector />}
-      </div>
+      )}
 
       {/* Primed live region for error announcements. It must exist (empty)
           BEFORE any error so assistive tech watches it for content changes —

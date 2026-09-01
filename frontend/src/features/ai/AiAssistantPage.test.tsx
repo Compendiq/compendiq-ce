@@ -188,22 +188,26 @@ describe('AiAssistantPage', () => {
     expect(screen.queryByText('Quality')).not.toBeInTheDocument();
   });
 
-  // #1361 / amendment item 2, as re-decided by the owner on 2026-08-22: New
-  // chat lives at the TOP OF THE PAGE COLUMN, not in the sub-header and not in
-  // the app header — dev deleted the header slot outright (#1377/#1378), so
-  // `HeaderHost` renders in the document. It still renders at every width and
-  // still survives a collapsed conversations rail, and it stays on screen as
-  // the log grows because /ai scrolls its message pane, not the page.
+  // #1361 / amendment item 2 put New chat at the top of the page column;
+  // 2026-09-01 the owner had it removed again, because the conversations rail
+  // already carries one — full-width when expanded, a glyph when collapsed
+  // (`AiConversationsSidebar`, whose own tests pin both) — and two buttons a
+  // few hundred pixels apart ran the same action. What survives here is the
+  // route title, in the document: dev deleted the header slot outright
+  // (#1377/#1378), so `HeaderHost` renders inline.
   describe('the /ai heading row (#1361)', () => {
-    it('carries the route title and a New chat action, in the document', () => {
+    it('carries the route title, and no second New chat action', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       expect(screen.getByRole('heading', { level: 1, name: 'AI' })).toBeInTheDocument();
-      const newChat = screen.getByTestId('ai-new-chat');
-      expect(newChat).toHaveAttribute('aria-label', 'New chat');
       // One heading, and it is this page's: there is no fallback title left
       // anywhere else to collide with, AppHeaderMain having been deleted.
       expect(screen.getAllByRole('heading', { level: 1, name: 'AI' })).toHaveLength(1);
+      // The rail owns the action. A duplicate here is the thing that was
+      // removed, so its absence is what this pins — by accessible name, not by
+      // testid, because a differently-named copy of the same button is the
+      // same duplicate.
+      expect(screen.queryByRole('button', { name: 'New chat' })).toBeNull();
     });
 
     it('never portals into a header slot, even when one exists in the DOM', () => {
@@ -217,34 +221,8 @@ describe('AiAssistantPage', () => {
       render(<AiAssistantPage />, { wrapper: createWrapper() });
 
       expect(slot.querySelector('h1')).toBeNull();
-      expect(slot.querySelector('[data-testid="ai-new-chat"]')).toBeNull();
+      expect(slot.childElementCount).toBe(0);
       slot.remove();
-    });
-
-    it('New chat starts a fresh conversation', async () => {
-      let captured: ReturnType<typeof useAiContext> | null = null;
-      function Capture() {
-        captured = useAiContext();
-        return null;
-      }
-      render(
-        <>
-          <AiAssistantPage />
-          <Capture />
-        </>,
-        { wrapper: createWrapper() },
-      );
-
-      await act(async () => {
-        captured!.setMessages([{ id: 'seed-1', role: 'user', content: 'an earlier question' }]);
-      });
-      expect(screen.getByText('an earlier question')).toBeInTheDocument();
-
-      fireEvent.click(screen.getByTestId('ai-new-chat'));
-
-      await waitFor(() =>
-        expect(screen.queryByText('an earlier question')).not.toBeInTheDocument(),
-      );
     });
   });
 
@@ -1312,8 +1290,15 @@ describe('AiAssistantPage', () => {
   });
 
   // #703 — chat content must not bleed through the translucent sticky bars.
-  // Both bars carry an opaque bg-background under-mask (z-[-1]) covering
-  // exactly the bar's box (inset-0).
+  // Every sticky bar carries an opaque bg-background under-mask (z-[-1])
+  // covering exactly the bar's box (inset-0).
+  //
+  // 2026-09-01 — there is one bar left at rest. The top sub-header held a
+  // single durable option (`Think`), that chip moved into the composers, and
+  // the strip now renders only for the mode with a secondary setting, so a
+  // Q&A / Generate / rewrite session has the composer bar and nothing above
+  // the message pane. The sweep below therefore walks whatever `.sticky` boxes
+  // the render produced rather than naming two.
   //
   // #1218 — those masks are now belt-and-braces rather than load-bearing: the
   // message pane owns the scroller and the page column no longer scrolls, so
@@ -1341,21 +1326,17 @@ describe('AiAssistantPage', () => {
   const UNDER_MASK_CLASSES = 'pointer-events-none absolute inset-0 z-[-1] bg-background';
 
   describe('sticky bar under-mask (#703, #769, #1218)', () => {
-    it('renders an opaque under-mask behind the top sub-header covering exactly its box', () => {
+    it('renders no sticky strip above the message pane in a mode with no secondary setting', () => {
       const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
 
-      // The sticky sub-header wrapper establishes its own stacking context
-      // (isolate) so the negative-z mask sits behind it, not behind the page.
-      const subHeader = container.querySelector('.sticky.top-0');
-      expect(subHeader).not.toBeNull();
-      expect(subHeader!.className).toContain('isolate');
-
-      // The under-mask is an aria-hidden, opaque bg-background div behind the
-      // bar (z-[-1]), sized to exactly the bar's box (inset-0). Asserted as
-      // the whole class set, for the reason above the describe.
-      const mask = subHeader!.querySelector('[aria-hidden]');
-      expect(mask).not.toBeNull();
-      expect(mask!.className).toBe(UNDER_MASK_CLASSES);
+      // The option row's removal is structural, not cosmetic: an empty sticky
+      // box still spends its own padding and both column gaps out of the
+      // message pane's height, on every mode, forever.
+      expect(container.querySelector('.sticky.top-0')).toBeNull();
+      // Think did not disappear with the row — it is in the composer box now,
+      // beside the Send button it applies to.
+      const think = screen.getByLabelText('Thinking mode');
+      expect(think.closest('.nm-composer')).not.toBeNull();
     });
 
     it('renders an opaque under-mask behind the bottom input bar covering exactly its box', () => {
@@ -1375,13 +1356,12 @@ describe('AiAssistantPage', () => {
     it('no under-mask extends past its sticky bar (regression: #769 phantom scroll)', () => {
       const { container } = render(<AiAssistantPage />, { wrapper: createWrapper() });
 
-      const bars = [
-        container.querySelector('.sticky.top-0'),
-        container.querySelector('.sticky.bottom-0'),
-      ];
+      // Whatever sticky boxes this render produced, and there must be at least
+      // the composer bar — a sweep over an empty list asserts nothing.
+      const bars = Array.from(container.querySelectorAll('.sticky'));
+      expect(bars.length).toBeGreaterThan(0);
       for (const bar of bars) {
-        expect(bar).not.toBeNull();
-        const mask = bar!.querySelector('[aria-hidden]') as HTMLElement;
+        const mask = bar.querySelector('[aria-hidden]') as HTMLElement;
         expect(mask).not.toBeNull();
         // Every class-spelled offset is already refused by the exact class set
         // asserted above. Inline styles are the one way past it — `className`
