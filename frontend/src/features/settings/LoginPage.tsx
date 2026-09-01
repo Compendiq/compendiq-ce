@@ -105,10 +105,12 @@ export function LoginPage() {
     };
   }, []);
 
+  const searchError = searchParams.get('error');
+
   useEffect(() => {
-    if (searchParams.get('error')) return;
+    if (searchError) return;
     usernameInputRef.current?.focus();
-  }, []);
+  }, [searchError]);
 
   useEffect(() => {
     if (!loginError) return;
@@ -116,7 +118,6 @@ export function LoginPage() {
   }, [loginError]);
 
   useEffect(() => {
-    const searchError = searchParams.get('error');
     if (!searchError) return;
 
     toast.error(
@@ -126,7 +127,7 @@ export function LoginPage() {
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('error');
     setSearchParams(nextParams, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [searchError, searchParams, setSearchParams]);
 
   const fetchLoginPageConfig = useCallback(async () => {
     const generation = ++configGeneration.current;
