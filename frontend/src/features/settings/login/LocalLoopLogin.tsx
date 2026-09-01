@@ -43,8 +43,10 @@ export function LocalLoopLogin({ authPanel, controls, edition }: LocalLoopLoginP
 
         <LoginBrandHeader controls={controls} edition={edition} />
 
-        <main className="grid flex-1 gap-10 py-12 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-10 lg:py-14">
-          <section className="max-w-3xl lg:col-start-1 lg:row-start-1" aria-labelledby="local-loop-title">
+        <main className="grid flex-1 gap-8 py-8 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-10 lg:py-14">
+          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
+
+          <section className="hidden max-w-3xl lg:col-start-1 lg:row-start-1 lg:block" aria-labelledby="local-loop-title">
             <p className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-primary-ink">
               <span className="size-2 rounded-full bg-success" aria-hidden="true" />
               Knowledge stays connected to its source
@@ -61,10 +63,8 @@ export function LocalLoopLogin({ authPanel, controls, edition }: LocalLoopLoginP
             </p>
           </section>
 
-          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
-
           <section
-            className="nm-card relative overflow-hidden p-5 sm:p-6 lg:col-start-1 lg:row-start-2"
+            className="nm-card relative hidden overflow-hidden p-5 sm:p-6 lg:col-start-1 lg:row-start-2 lg:block"
             aria-labelledby="topology-title"
           >
             <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
@@ -74,7 +74,7 @@ export function LocalLoopLogin({ authPanel, controls, edition }: LocalLoopLoginP
                 </h2>
                 <p className="mt-1 text-sm text-muted-foreground">Static topology · your provider choice stays explicit</p>
               </div>
-              <span className="text-xs font-medium text-primary-ink">Local and remote paths</span>
+              <span className="text-xs font-medium text-muted-foreground">Local and remote paths</span>
             </div>
 
             <ol className="grid gap-3 sm:grid-cols-4" aria-label="Compendiq knowledge flow">

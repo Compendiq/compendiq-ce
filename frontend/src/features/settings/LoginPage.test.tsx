@@ -3,12 +3,14 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { LoginPage } from './LoginPage';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
+import { toast } from 'sonner';
 
-vi.mock('../../shared/lib/api', () => ({
-  apiFetch: vi.fn(),
-}));
+vi.mock('../../shared/lib/api', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, apiFetch: vi.fn() };
+});
 
 vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
@@ -42,6 +44,7 @@ function mockApi(
     registration?: RegOpt;
     loginVariant?: LoginVariantOpt;
     edition?: EditionOpt;
+    login?: 'ok' | { statusCode: number; message?: string };
   } = {},
 ) {
   const oidc = opts.oidc ?? { enabled: false, issuer: null, name: null, enterpriseRequired: false };
@@ -69,6 +72,12 @@ function mockApi(
     }
     if (u.includes('/auth/register')) {
       return { accessToken: 'tok', user: { id: 'u1', username: 'newuser', role: 'user' } } as never;
+    }
+    if (u.includes('/auth/login')) {
+      if (opts.login && opts.login !== 'ok') {
+        throw new ApiError(opts.login.statusCode, opts.login.message ?? 'Session expired');
+      }
+      return { accessToken: 'tok', user: { id: 'u1', username: 'simon', role: 'user' } } as never;
     }
     throw new Error(`unexpected apiFetch url: ${u}`);
   });
@@ -230,7 +239,9 @@ describe('LoginPage', () => {
       });
 
       renderLoginPage();
-      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      const retry = await screen.findByRole('button', { name: 'Check again' });
+      retry.focus();
+      fireEvent.click(retry);
 
       const ssoButton = await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
       await waitFor(() => expect(ssoButton).toHaveFocus());
@@ -485,7 +496,9 @@ describe('LoginPage', () => {
       });
 
       renderLoginPage();
-      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      const retry = await screen.findByRole('button', { name: 'Check again' });
+      retry.focus();
+      fireEvent.click(retry);
 
       const ssoButton = await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
       await waitFor(() => expect(ssoButton).toHaveFocus());
@@ -784,4 +797,145 @@ describe('LoginPage', () => {
       expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
     });
   });
+
+  describe('credential error recovery', () => {
+    async function submitWrongPassword() {
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'simon' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    }
+
+    it('reports a wrong password in the panel, not as Session expired', async () => {
+      mockApi({ login: { statusCode: 401, message: 'Session expired' } });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent("That username and password don't match.");
+      expect(alert).toHaveAttribute('id', 'login-error');
+      expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
+    });
+
+    it('marks both fields invalid, describes them, and returns focus to username', async () => {
+      mockApi({ login: { statusCode: 401, message: 'Session expired' } });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      await screen.findByRole('alert');
+      expect(screen.getByLabelText('Username')).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Password')).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Username')).toHaveAttribute('aria-describedby', 'login-error');
+      expect(screen.getByLabelText('Password')).toHaveAttribute('aria-describedby', 'login-error');
+      expect(screen.getByLabelText('Username')).toHaveFocus();
+    });
+
+    it('clears the credential error as soon as the user edits a field', async () => {
+      mockApi({ login: { statusCode: 401, message: 'Session expired' } });
+      renderLoginPage();
+      await submitWrongPassword();
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'retry' } });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('names a rate limit instead of a generic failure', async () => {
+      mockApi({ login: { statusCode: 429, message: 'Too Many Requests' } });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Too many attempts. Try again in a few seconds.',
+      );
+    });
+
+    it('reuses the unreachable wording when the API is down', async () => {
+      mockApi({ login: { statusCode: 502, message: 'Bad Gateway' } });
+      renderLoginPage();
+      await submitWrongPassword();
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Cannot reach the server');
+    });
+  });
+
+  describe('operate layout', () => {
+    it('puts the auth panel before the pitch in the document', () => {
+      mockApi();
+      renderLoginPage();
+      const panel = screen.getByRole('heading', { name: 'Sign in to Compendiq' });
+      const hero = document.getElementById('local-loop-title');
+      expect(hero).not.toBeNull();
+      expect(panel.compareDocumentPosition(hero!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('keeps the pitch and topology off the small-screen layout', () => {
+      mockApi();
+      renderLoginPage();
+      expect(document.getElementById('local-loop-title')?.closest('section')).toHaveClass('hidden', 'lg:block');
+      expect(document.getElementById('topology-title')?.closest('section')).toHaveClass('hidden', 'lg:block');
+    });
+  });
+
+  describe('instance facts', () => {
+    it('says who creates accounts when registration is closed', async () => {
+      mockApi({ registration: { allowRegistration: false } });
+      renderLoginPage();
+      expect(
+        await screen.findByText('Accounts are created by your workspace administrator.'),
+      ).toBeInTheDocument();
+    });
+
+    it('says credentials are the only method when SSO is off', async () => {
+      mockApi({ oidc: { enabled: false, issuer: null, name: null, enterpriseRequired: false } });
+      renderLoginPage();
+      expect(
+        await screen.findByText('This workspace signs in with a username and password.'),
+      ).toBeInTheDocument();
+    });
+
+    it('does not claim credentials-only when SSO is available', async () => {
+      mockApi({
+        oidc: { enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO', enterpriseRequired: false },
+      });
+      renderLoginPage();
+      await screen.findByRole('button', { name: 'Sign in with OrgSSO' });
+      expect(
+        screen.queryByText('This workspace signs in with a username and password.'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('keeps the edition badge visible at every width', async () => {
+      mockApi({ edition: 'enterprise' });
+      renderLoginPage();
+      const badge = await screen.findByText('Enterprise Edition');
+      expect(badge).not.toHaveClass('hidden');
+    });
+  });
+
+  describe('arrival polish', () => {
+    it('focuses the username field on load', async () => {
+      mockApi();
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByLabelText('Username')).toHaveFocus());
+    });
+
+    it('does not advertise a shortcut in the username label row', () => {
+      mockApi();
+      renderLoginPage();
+      expect(screen.queryByText(/Press/)).not.toBeInTheDocument();
+    });
+
+    it('names the route in the document title', () => {
+      mockApi();
+      renderLoginPage();
+      expect(document.title).toBe('Sign in · Compendiq');
+    });
+
+    it('does not paint non-interactive topology labels as links', () => {
+      mockApi();
+      renderLoginPage();
+      expect(screen.getByText('Local and remote paths')).not.toHaveClass('text-primary-ink');
+    });
+  });
+
 });

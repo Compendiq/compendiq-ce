@@ -8,12 +8,12 @@ import {
   RegistrationPolicySchema,
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
 import { LoginVariantPicker } from './login/LoginVariantPicker';
-import { ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
+import { ssoNoticeCopy, ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
 import {
   isLoginVariantPickerEnabled,
   resolveLoginVariant,
@@ -29,6 +29,14 @@ const OIDC_ERROR_MESSAGES: Record<string, string> = {
   temporarily_unavailable: 'SSO is temporarily unavailable. Please try again later.',
 };
 
+function credentialErrorCopy(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.statusCode === 401) return "That username and password don't match.";
+    if (error.statusCode === 429) return 'Too many attempts. Try again in a few seconds.';
+  }
+  return ssoNoticeCopy(true).heading;
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -41,6 +49,7 @@ export function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [oidcProbe, setOidcProbe] = useState<OidcProbe>({ status: 'pending' });
   const [allowRegistration, setAllowRegistration] = useState(false);
@@ -87,6 +96,24 @@ export function LoginPage() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    const previous = document.title;
+    document.title = 'Sign in · Compendiq';
+    return () => {
+      document.title = previous;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (searchParams.get('error')) return;
+    usernameInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!loginError) return;
+    usernameInputRef.current?.focus();
+  }, [loginError]);
 
   useEffect(() => {
     const searchError = searchParams.get('error');
@@ -194,13 +221,14 @@ export function LoginPage() {
     setIsRegister(register);
     setConfirmPassword('');
     setConfirmError(null);
+    setLoginError(null);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (isRegister && !allowRegistration) {
-      toast.error('Registration is disabled');
+      setLoginError('Registration is disabled');
       return;
     }
 
@@ -210,6 +238,7 @@ export function LoginPage() {
     }
 
     setConfirmError(null);
+    setLoginError(null);
     setLoading(true);
 
     try {
@@ -226,7 +255,7 @@ export function LoginPage() {
       toast.success(isRegister ? 'Account created' : 'Welcome back');
       navigate('/');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Authentication failed');
+      setLoginError(credentialErrorCopy(error));
     } finally {
       setLoading(false);
     }
@@ -240,16 +269,21 @@ export function LoginPage() {
     confirmPassword,
     showPassword,
     confirmError,
+    loginError,
     loading,
     oidcProbe,
     onRetryOidc: recheckServerState,
     serverUnreachable: serverReachable === false,
     focusSsoOnRecovery,
     allowRegistration,
-    onUsernameChange: setUsername,
+    onUsernameChange: (value) => {
+      setUsername(value);
+      if (loginError) setLoginError(null);
+    },
     onPasswordChange: (value) => {
       setPassword(value);
       if (confirmError) setConfirmError(null);
+      if (loginError) setLoginError(null);
     },
     onConfirmPasswordChange: (value) => {
       setConfirmPassword(value);
