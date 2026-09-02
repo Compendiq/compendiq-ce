@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { Send, FileInput } from 'lucide-react';
 import { useAiContext } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
+import { ThinkToggle } from '../ThinkToggle';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { MermaidDiagram } from '../../../shared/components/diagrams/MermaidDiagram';
 import { cn } from '../../../shared/lib/cn';
@@ -149,7 +150,7 @@ export function DiagramModeInput() {
 
 function DiagramModeInputContent() {
   const {
-    input, setInput, isStreaming, page, model, pageId, thinkingMode,
+    input, setInput, isStreaming, page, model, pageId, thinkingMode, setThinkingMode,
     runStream, diagramType, setDiagramCode,
   } = useAiContext();
   const attachments = useAssistantAttachments();
@@ -201,8 +202,19 @@ function DiagramModeInputContent() {
           Attachments are kept here but are not sent to Diagram.
         </p>
       )}
-      <div className="nm-composer">
-        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
+      <div className="nm-composer flex-wrap">
+        {/* Skill select plus `Think`: extended thinking left the page's options
+            row for the composers (owner request, 2026-09-01, see
+            `ThinkToggle`), and `/llm/generate-diagram` sends `thinking` from
+            the same provider state. */}
+        <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} className="self-end" />
+        <ThinkToggle
+          checked={thinkingMode}
+          onChange={setThinkingMode}
+          disabled={isStreaming}
+          testId="diagram-think"
+          className="self-end"
+        />
         <textarea
           ref={inputRef}
           value={input}

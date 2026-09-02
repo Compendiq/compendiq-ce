@@ -4,6 +4,7 @@ import { useAiContext, nextMessageId } from '../AiContext';
 import { AssistantActionSelect } from '../AssistantActionSelect';
 import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { DeepSearchToggle } from '../DeepSearchToggle';
+import { ThinkToggle } from '../ThinkToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '../../../shared/lib/api';
@@ -13,6 +14,7 @@ import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textare
 import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
+import { ComposerAttachmentPicker } from '../../../shared/components/upload/ComposerAttachmentPicker';
 import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
 import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
@@ -39,7 +41,7 @@ export function AskModeInput() {
 function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
-    includeSubPages, thinkingMode, setMessages, runStream,
+    includeSubPages, thinkingMode, setThinkingMode, setMessages, runStream,
     chatVision, chatVisionModel, historyTruncated,
     activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
@@ -299,20 +301,13 @@ function AskModeInputContent() {
         </div>
       )}
 
-      {/* Per-question retrieval options. Deliberately here rather than in the
-          header chip row beside `Think`: that row holds settings that outlive
-          the question (thinking mode is in localStorage, sub-pages is session
-          state), and a control that resets itself on send would read as broken
-          among them. Here it sits with the external URLs above, the composer's
-          other per-send state. */}
-      <DeepSearchToggle
-        checked={deepSearch}
-        onChange={setDeepSearch}
-        disabled={isStreaming}
-        testId="ask-deep-search"
-        className="mb-2"
-        variant="inline"
-      />
+      {/* Deep search used to sit here as a full-width row with its caveat
+          printed beside it. Both moved into the composer's action row below
+          (owner request, 2026-09-01): the chip now sits with Send, where the
+          request it modifies is composed, and the caveat is the popover the
+          dock has always used — the same three facts, one click away and still
+          the control's `aria-describedby`, instead of a line of permanent
+          prose above the field. */}
 
       {/* #1361, decision 10 made visible. The backend replays whole exchanges
           only while they fit the model's budget, so a long conversation quietly
@@ -331,8 +326,13 @@ function AskModeInputContent() {
         </p>
       )}
 
-      {/* Main input row */}
-      <div className="nm-composer flex-wrap">
+      {/* The composer reads as stacked rows — the dock's arrangement
+          (`DockPanel.tsx`), adopted here so one surface does not teach a
+          different composer than the other: staged attachment cards, the
+          full-width prompt, then every control that acts on it. Keeping the
+          action row AFTER the field is what makes visual and keyboard order
+          match (WCAG 2.4.3). */}
+      <div className="nm-composer flex-col items-stretch">
         <DocumentUploadZone
           variant="composer"
           onPick={(file) => handlePickFiles([file])}
@@ -343,7 +343,7 @@ function AskModeInputContent() {
           documents={documents}
           onRemove={removeDocument}
           disabled={isStreaming}
-          triggerLabel="Attach a document to this Q&A request"
+          showTrigger={false}
           usageHint="context for Q&A"
           isDragOver={isDragOver}
           testIdPrefix="ask-doc"
@@ -356,21 +356,9 @@ function AskModeInputContent() {
           onRemove={removeImage}
           isPreparing={isPreparing}
           disabled={isStreaming}
+          showTrigger={false}
           testIdPrefix="ask-image"
         />
-        {mcpEnabled && (
-          <IconButton
-            variant={showUrlInput || externalUrls.length > 0 ? 'secondary' : 'ghost'}
-            size="icon-sm"
-            onClick={() => setShowUrlInput(!showUrlInput)}
-            title="Attach external documentation URL"
-            label="Attach external documentation URL"
-            className={cn('shrink-0 self-end h-8 w-8', (showUrlInput || externalUrls.length > 0) && 'bg-primary/15 text-primary')}
-            testid="attach-url-button"
-            icon={<Link2 size={16} />}
-          />
-        )}
-        <AssistantActionSelect actions={AI_HOME_ACTIONS} disabled={isStreaming} className="self-end" />
         <textarea
           ref={inputRef}
           value={input}
@@ -385,20 +373,71 @@ function AskModeInputContent() {
           // hook owns the height — a drag handle would fight it.
           // min-w-0 so a textarea's intrinsic `cols` width can't push the
           // composer wider than a narrow viewport.
-          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          className="min-h-10 w-full min-w-0 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           data-testid="ask-input"
         />
-        <Button
-          type="button"
-          variant="primary"
-          size="sm"
-          onClick={handleSubmit}
-          disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState !== 'ready'}
-          isLoading={isStreaming}
-          aria-label={isStreaming ? 'Sending...' : 'Send message'}
-          className="shrink-0 self-end h-8 px-3"
-          leftIcon={<Send size={14} />}
-        />
+        <div
+          className="flex w-full min-w-0 items-center gap-1"
+          data-testid="ask-composer-actions"
+        >
+          {/* The controls scroll rather than wrap: a wrapping row grows the
+              composer upward on a narrow viewport and pushes the field off the
+              thread. Send stays outside the scroller so it is never the thing
+              that scrolls out of reach. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {/* One trigger for both kinds (owner request, 2026-09-01). The two
+                zones above keep the staged cards, the drop hint and removal;
+                `useAttachments` routes document-vs-image and refuses an image
+                with the vision reason as a toast, which is what the separate
+                image trigger used to say by being disabled. */}
+            <ComposerAttachmentPicker
+              onPickFiles={handlePickFiles}
+              disabled={isStreaming || isBusy}
+              label="Attach a document or image to this Q&A request"
+              testIdPrefix="ask-attach"
+            />
+            {/* Beside the paperclip, not after the toggles: both buttons add
+                source material to the request, while everything to their right
+                changes how the request is run. */}
+            {mcpEnabled && (
+              <IconButton
+                variant={showUrlInput || externalUrls.length > 0 ? 'secondary' : 'ghost'}
+                size="icon-sm"
+                onClick={() => setShowUrlInput(!showUrlInput)}
+                title="Attach external documentation URL"
+                label="Attach external documentation URL"
+                className={cn('h-8 w-8 shrink-0', (showUrlInput || externalUrls.length > 0) && 'bg-primary/15 text-primary')}
+                testid="attach-url-button"
+                icon={<Link2 size={16} />}
+              />
+            )}
+            <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} />
+            <ThinkToggle
+              checked={thinkingMode}
+              onChange={setThinkingMode}
+              disabled={isStreaming}
+              testId="ask-think"
+            />
+            <DeepSearchToggle
+              checked={deepSearch}
+              onChange={setDeepSearch}
+              disabled={isStreaming}
+              testId="ask-deep-search"
+              className="shrink-0"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={handleSubmit}
+            disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState !== 'ready'}
+            isLoading={isStreaming}
+            aria-label={isStreaming ? 'Sending...' : 'Send message'}
+            className="h-8 shrink-0 px-3"
+            leftIcon={<Send size={14} />}
+          />
+        </div>
       </div>
     </div>
   );

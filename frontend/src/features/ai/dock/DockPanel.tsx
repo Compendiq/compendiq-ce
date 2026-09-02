@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Network, PanelRightClose, Paperclip, Send, Sparkles, Square, X } from 'lucide-react';
-import { SUPPORTED_DOCUMENT_FORMATS, SUPPORTED_IMAGE_FORMATS } from '@compendiq/contracts';
+import { AlertTriangle, Network, PanelRightClose, Send, Sparkles, Square, X } from 'lucide-react';
 import { useAiContext, type Message } from '../AiContext';
 import { StreamingMessage } from '../StreamingMessage';
 import { CitationChips } from '../CitationChips';
@@ -11,6 +10,7 @@ import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textare
 import { buildDocumentReferenceText, useAttachments } from '../../../shared/hooks/use-attachments';
 import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
 import { ImageAttachZone, imageDisabledReason } from '../../../shared/components/upload/ImageAttachZone';
+import { ComposerAttachmentPicker } from '../../../shared/components/upload/ComposerAttachmentPicker';
 import { PROMPT_MAX_LENGTH } from '../modes/prompt-limits';
 import { DeepSearchToggle } from '../DeepSearchToggle';
 import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from '../refusal';
@@ -22,54 +22,6 @@ import { DOCK_ACTIONS } from '../assistant-actions';
 import { CREATE_SKILLS, getCreateSkill, type CreateSkillId } from '../create-skills';
 import { cn } from '../../../shared/lib/cn';
 import { Button } from '../../../shared/components/Button';
-
-// This filter helps native file pickers offer the full attachment surface. It
-// does not decide what is accepted: `useAttachments` routes and validates the
-// selected files, including the chat model's vision capability.
-const ATTACHMENT_ACCEPT = [
-  ...SUPPORTED_DOCUMENT_FORMATS.map((format) => `.${format}`),
-  '.markdown', '.text', '.yml', '.yaml',
-  ...SUPPORTED_IMAGE_FORMATS.map((format) => `image/${format}`),
-  '.png', '.jpg', '.jpeg', '.webp', '.gif',
-].join(',');
-
-function DockAttachmentPicker({
-  onPickFiles,
-  disabled,
-}: {
-  onPickFiles: (files: readonly File[]) => void;
-  disabled: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  return (
-    <div className="flex shrink-0 items-center self-end">
-      <input
-        ref={inputRef}
-        type="file"
-        accept={ATTACHMENT_ACCEPT}
-        multiple
-        className="hidden"
-        onChange={(event) => {
-          onPickFiles(Array.from(event.target.files ?? []));
-          event.target.value = '';
-        }}
-        data-testid="ai-dock-attach-file-input"
-      />
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        disabled={disabled}
-        aria-label="Attach a document or image"
-        title="Attach a document or image"
-        className="flex shrink-0 items-center rounded-md border border-transparent px-2 py-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-        data-testid="ai-dock-attach-button"
-      >
-        <Paperclip size={16} aria-hidden />
-      </button>
-    </div>
-  );
-}
 
 /**
  * The assistant's contents — everything between the header and the composer.
@@ -551,9 +503,10 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
             data-testid="ai-dock-composer-actions"
           >
             <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-              <DockAttachmentPicker
+              <ComposerAttachmentPicker
                 onPickFiles={handlePickFiles}
                 disabled={isStreaming || selectedAction === 'diagram' || isBusy}
+                testIdPrefix="ai-dock-attach"
               />
               <AssistantActionSelect actions={DOCK_ACTIONS} showLabel disabled={isStreaming || modelsError} />
               {selectedAction === 'ask' && (
