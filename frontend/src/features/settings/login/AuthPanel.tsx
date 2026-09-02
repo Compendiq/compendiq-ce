@@ -11,6 +11,7 @@ export interface AuthPanelProps {
   showPassword: boolean;
   confirmError: string | null;
   loginError: string | null;
+  credentialsInvalid: boolean;
   loading: boolean;
   oidcProbe: OidcProbe;
   onRetryOidc: () => void;
@@ -30,7 +31,7 @@ export interface AuthPanelProps {
    * otherwise reset the bookkeeping mid-recheck.
    */
   focusSsoOnRecovery: boolean;
-  allowRegistration: boolean;
+  allowRegistration: boolean | null;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
@@ -48,6 +49,7 @@ export function AuthPanel({
   showPassword,
   confirmError,
   loginError,
+  credentialsInvalid,
   loading,
   oidcProbe,
   onRetryOidc,
@@ -171,8 +173,8 @@ export function AuthPanel({
             value={username}
             onChange={(event) => onUsernameChange(event.target.value)}
             placeholder="Enter username"
-            aria-invalid={Boolean(loginError)}
-            aria-describedby={loginError ? 'login-error' : undefined}
+            aria-invalid={credentialsInvalid}
+            aria-describedby={credentialsInvalid ? 'login-error' : undefined}
             className="nm-input min-h-11 w-full px-3.5 text-sm"
           />
         </div>
@@ -191,8 +193,8 @@ export function AuthPanel({
               value={password}
               onChange={(event) => onPasswordChange(event.target.value)}
               placeholder="Enter password"
-              aria-invalid={Boolean(loginError)}
-              aria-describedby={loginError ? 'login-error' : undefined}
+              aria-invalid={credentialsInvalid}
+              aria-describedby={credentialsInvalid ? 'login-error' : undefined}
               className="nm-input min-h-11 w-full px-3.5 pr-12 text-sm"
             />
             <button
@@ -268,7 +270,7 @@ export function AuthPanel({
         </button>
       </form>
 
-      {allowRegistration ? (
+      {isRegister || allowRegistration === true ? (
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
@@ -280,14 +282,17 @@ export function AuthPanel({
           </button>
         </p>
       ) : (
-        <div className="mt-6 space-y-1 text-center text-sm text-muted-foreground">
-          {!isRegister && (
-            <p>Accounts are created by your workspace administrator.</p>
-          )}
-          {oidcProbe.status === 'ready' && !oidcProbe.config.enabled && (
-            <p>This workspace signs in with a username and password.</p>
-          )}
-        </div>
+        ((allowRegistration === false && !isRegister) ||
+          (oidcProbe.status === 'ready' && !oidcProbe.config.enabled)) && (
+          <div className="mt-6 space-y-1 text-center text-sm text-muted-foreground">
+            {allowRegistration === false && !isRegister && (
+              <p>Accounts are created by your workspace administrator.</p>
+            )}
+            {oidcProbe.status === 'ready' && !oidcProbe.config.enabled && (
+              <p>This workspace signs in with a username and password.</p>
+            )}
+          </div>
+        )
       )}
     </section>
   );

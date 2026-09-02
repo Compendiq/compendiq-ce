@@ -45,6 +45,7 @@ function mockApi(
     loginVariant?: LoginVariantOpt;
     edition?: EditionOpt;
     login?: 'ok' | { statusCode: number; message?: string };
+    register?: { statusCode: number; message: string };
   } = {},
 ) {
   const oidc = opts.oidc ?? { enabled: false, issuer: null, name: null, enterpriseRequired: false };
@@ -71,6 +72,9 @@ function mockApi(
       return registration as never;
     }
     if (u.includes('/auth/register')) {
+      if (opts.register) {
+        throw new ApiError(opts.register.statusCode, opts.register.message);
+      }
       return { accessToken: 'tok', user: { id: 'u1', username: 'newuser', role: 'user' } } as never;
     }
     if (u.includes('/auth/login')) {
@@ -702,11 +706,108 @@ describe('LoginPage', () => {
       expect(await screen.findByRole('button', { name: 'Create one' })).toBeInTheDocument();
     });
 
-    it('does not render the signup toggle when the policy fetch fails (fail closed)', async () => {
-      mockApi({ oidc: 'reject', registration: 'reject' });
+    it('fails closed while rechecking a previously allowed policy', async () => {
+      const pendingPolicy = deferred<{ allowRegistration: boolean }>();
+      let policyCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/registration-policy')) {
+          policyCalls += 1;
+          if (policyCalls === 1) return { allowRegistration: true } as never;
+          return pendingPolicy.promise as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
       renderLoginPage();
-      await waitFor(() => expect(vi.mocked(apiFetch)).toHaveBeenCalled());
+
+      expect(await screen.findByRole('button', { name: 'Create one' })).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      await waitFor(() => expect(policyCalls).toBe(2));
+
       expect(screen.queryByRole('button', { name: 'Create one' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Accounts are created by your workspace administrator.'),
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        pendingPolicy.resolve({ allowRegistration: false });
+      });
+      expect(
+        await screen.findByText('Accounts are created by your workspace administrator.'),
+      ).toBeInTheDocument();
+    });
+
+    it('keeps a sign-in escape when a recheck makes the policy unreadable', async () => {
+      let policyCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/registration-policy')) {
+          policyCalls += 1;
+          if (policyCalls === 1) return { allowRegistration: true } as never;
+          throw new Error('Bad Gateway');
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+      renderLoginPage();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Create one' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      await waitFor(() => expect(policyCalls).toBe(2));
+
+      expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+      fireEvent.submit(
+        screen.getByRole('button', { name: 'Create Account' }).closest('form') as HTMLFormElement,
+      );
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Registration status is unavailable. Try again in a moment.',
+      );
+    });
+
+    it('clears a pending-policy error when the recheck resolves', async () => {
+      const pendingPolicy = deferred<{ allowRegistration: boolean }>();
+      let policyCalls = 0;
+      vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/auth/registration-policy')) {
+          policyCalls += 1;
+          if (policyCalls === 1) return { allowRegistration: true } as never;
+          return pendingPolicy.promise as never;
+        }
+        if (u.includes('/auth/login-page-config')) return { variant: 'local-loop' } as never;
+        if (u.includes('/auth/oidc/config')) throw new Error('Bad Gateway');
+        throw new Error(`unexpected apiFetch url: ${u}`);
+      });
+      renderLoginPage();
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Create one' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      await waitFor(() => expect(policyCalls).toBe(2));
+      fireEvent.submit(
+        screen.getByRole('button', { name: 'Create Account' }).closest('form') as HTMLFormElement,
+      );
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Registration status is unavailable. Try again in a moment.',
+      );
+
+      await act(async () => {
+        pendingPolicy.resolve({ allowRegistration: true });
+      });
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    });
+
+    it('fails closed without claiming administrator-created accounts when the policy is unreadable', async () => {
+      mockApi({ registration: 'reject' });
+      renderLoginPage();
+
+      await screen.findByText('This workspace signs in with a username and password.');
+      expect(screen.queryByRole('button', { name: 'Create one' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText('Accounts are created by your workspace administrator.'),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -796,6 +897,23 @@ describe('LoginPage', () => {
       });
       expect(screen.queryByText("Passwords don't match")).not.toBeInTheDocument();
     });
+
+    it('preserves an actionable registration API error', async () => {
+      mockApi({
+        oidc: 'reject',
+        registration: { allowRegistration: true },
+        register: { statusCode: 409, message: 'Username already taken' },
+      });
+      renderLoginPage();
+      await switchToRegister();
+
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'existinguser' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password123' } });
+      fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'password123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create Account' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Username already taken');
+    });
   });
 
   describe('credential error recovery', () => {
@@ -847,6 +965,23 @@ describe('LoginPage', () => {
       expect(await screen.findByRole('alert')).toHaveTextContent(
         'Too many attempts. Try again in a few seconds.',
       );
+    });
+
+    it('does not invalidate credentials or reclaim username focus for a rate limit', async () => {
+      mockApi({ login: { statusCode: 429, message: 'Too Many Requests' } });
+      renderLoginPage();
+      fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'simon' } });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'wrong' } });
+      const submit = screen.getByRole('button', { name: 'Sign in' });
+      submit.focus();
+      fireEvent.click(submit);
+
+      await screen.findByRole('alert');
+      expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText('Username')).not.toHaveAttribute('aria-describedby', 'login-error');
+      expect(screen.getByLabelText('Password')).not.toHaveAttribute('aria-describedby', 'login-error');
+      expect(screen.getByLabelText('Username')).not.toHaveFocus();
     });
 
     it('reuses the unreachable wording when the API is down', async () => {
