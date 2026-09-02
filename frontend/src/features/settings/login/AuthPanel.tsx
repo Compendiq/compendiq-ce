@@ -10,6 +10,8 @@ export interface AuthPanelProps {
   confirmPassword: string;
   showPassword: boolean;
   confirmError: string | null;
+  loginError: string | null;
+  credentialsInvalid: boolean;
   loading: boolean;
   oidcProbe: OidcProbe;
   onRetryOidc: () => void;
@@ -29,7 +31,7 @@ export interface AuthPanelProps {
    * otherwise reset the bookkeeping mid-recheck.
    */
   focusSsoOnRecovery: boolean;
-  allowRegistration: boolean;
+  allowRegistration: boolean | null;
   onUsernameChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
@@ -46,6 +48,8 @@ export function AuthPanel({
   confirmPassword,
   showPassword,
   confirmError,
+  loginError,
+  credentialsInvalid,
   loading,
   oidcProbe,
   onRetryOidc,
@@ -156,14 +160,9 @@ export function AuthPanel({
 
       <form onSubmit={onSubmit} className="space-y-5">
         <div>
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <label htmlFor="login-username" className="text-sm font-medium text-foreground">
-              Username
-            </label>
-            <span className="hidden text-xs text-muted-foreground sm:inline">
-              Press <kbd className="font-mono text-foreground">/</kbd> to focus
-            </span>
-          </div>
+          <label htmlFor="login-username" className="mb-2 block text-sm font-medium text-foreground">
+            Username
+          </label>
           <input
             ref={usernameInputRef}
             id="login-username"
@@ -174,6 +173,8 @@ export function AuthPanel({
             value={username}
             onChange={(event) => onUsernameChange(event.target.value)}
             placeholder="Enter username"
+            aria-invalid={credentialsInvalid}
+            aria-describedby={credentialsInvalid ? 'login-error' : undefined}
             className="nm-input min-h-11 w-full px-3.5 text-sm"
           />
         </div>
@@ -192,6 +193,8 @@ export function AuthPanel({
               value={password}
               onChange={(event) => onPasswordChange(event.target.value)}
               placeholder="Enter password"
+              aria-invalid={credentialsInvalid}
+              aria-describedby={credentialsInvalid ? 'login-error' : undefined}
               className="nm-input min-h-11 w-full px-3.5 pr-12 text-sm"
             />
             <button
@@ -240,6 +243,12 @@ export function AuthPanel({
           </div>
         )}
 
+
+        {loginError && (
+          <p id="login-error" className="text-sm font-medium text-destructive" role="alert">
+            {loginError}
+          </p>
+        )}
         <button
           type="submit"
           disabled={loading}
@@ -261,7 +270,7 @@ export function AuthPanel({
         </button>
       </form>
 
-      {allowRegistration && (
+      {isRegister || allowRegistration === true ? (
         <p className="mt-6 text-center text-sm text-muted-foreground">
           {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
           <button
@@ -272,6 +281,18 @@ export function AuthPanel({
             {isRegister ? 'Sign in' : 'Create one'}
           </button>
         </p>
+      ) : (
+        ((allowRegistration === false && !isRegister) ||
+          (oidcProbe.status === 'ready' && !oidcProbe.config.enabled)) && (
+          <div className="mt-6 space-y-1 text-center text-sm text-muted-foreground">
+            {allowRegistration === false && !isRegister && (
+              <p>Accounts are created by your workspace administrator.</p>
+            )}
+            {oidcProbe.status === 'ready' && !oidcProbe.config.enabled && (
+              <p>This workspace signs in with a username and password.</p>
+            )}
+          </div>
+        )
       )}
     </section>
   );

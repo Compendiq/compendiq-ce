@@ -23,7 +23,7 @@ export function LoginBrandHeader({ controls, edition }: LoginBrandHeaderProps) {
       <div className="ml-auto flex items-center gap-3">
         {controls}
         {edition && (
-          <span className="hidden text-xs font-medium text-muted-foreground sm:inline">
+          <span className="text-xs font-medium text-muted-foreground">
             {EDITION_LABELS[edition]}
           </span>
         )}

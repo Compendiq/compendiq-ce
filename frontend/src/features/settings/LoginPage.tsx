@@ -8,12 +8,12 @@ import {
   RegistrationPolicySchema,
 } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { AuthPanel, type AuthPanelProps } from './login/AuthPanel';
 import { ChangeDeskLogin } from './login/ChangeDeskLogin';
 import { LocalLoopLogin } from './login/LocalLoopLogin';
 import { LoginVariantPicker } from './login/LoginVariantPicker';
-import { ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
+import { ssoNoticeCopy, ssoProbeAnnouncement, type OidcProbe } from './login/sso-notice';
 import {
   isLoginVariantPickerEnabled,
   resolveLoginVariant,
@@ -29,6 +29,38 @@ const OIDC_ERROR_MESSAGES: Record<string, string> = {
   temporarily_unavailable: 'SSO is temporarily unavailable. Please try again later.',
 };
 
+interface SubmitError {
+  message: string;
+  kind: 'credentials' | 'registration-policy' | 'request';
+}
+
+function submitErrorFor(error: unknown, isRegister: boolean): SubmitError {
+  if (isRegister) {
+    return {
+      message: error instanceof ApiError ? error.message : 'Registration failed. Please try again.',
+      kind: 'request',
+    };
+  }
+  if (error instanceof ApiError) {
+    if (error.statusCode === 401) {
+      return {
+        message: "That username and password don't match.",
+        kind: 'credentials',
+      };
+    }
+    if (error.statusCode === 429) {
+      return {
+        message: 'Too many attempts. Try again in a few seconds.',
+        kind: 'request',
+      };
+    }
+  }
+  return {
+    message: ssoNoticeCopy(true).heading,
+    kind: 'request',
+  };
+}
+
 export function LoginPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -41,9 +73,10 @@ export function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<SubmitError | null>(null);
   const [loading, setLoading] = useState(false);
   const [oidcProbe, setOidcProbe] = useState<OidcProbe>({ status: 'pending' });
-  const [allowRegistration, setAllowRegistration] = useState(false);
+  const [allowRegistration, setAllowRegistration] = useState<boolean | null>(null);
   const [runtimeVariant, setRuntimeVariant] = useState<LoginVariant | null>(null);
   const [edition, setEdition] = useState<AppEdition | null>(null);
   // null until the presentation config has settled once. `false` means an
@@ -89,7 +122,26 @@ export function LoginPage() {
   }, []);
 
   useEffect(() => {
-    const searchError = searchParams.get('error');
+    const previous = document.title;
+    document.title = 'Sign in · Compendiq';
+    return () => {
+      document.title = previous;
+    };
+  }, []);
+
+  const searchError = searchParams.get('error');
+
+  useEffect(() => {
+    if (searchError) return;
+    usernameInputRef.current?.focus();
+  }, [searchError]);
+
+  useEffect(() => {
+    if (submitError?.kind !== 'credentials') return;
+    usernameInputRef.current?.focus();
+  }, [submitError]);
+
+  useEffect(() => {
     if (!searchError) return;
 
     toast.error(
@@ -99,7 +151,7 @@ export function LoginPage() {
     const nextParams = new URLSearchParams(searchParams);
     nextParams.delete('error');
     setSearchParams(nextParams, { replace: true });
-  }, [searchParams, setSearchParams]);
+  }, [searchError, searchParams, setSearchParams]);
 
   const fetchLoginPageConfig = useCallback(async () => {
     const generation = ++configGeneration.current;
@@ -148,15 +200,19 @@ export function LoginPage() {
 
   const fetchRegistrationPolicy = useCallback(async () => {
     const generation = ++registrationGeneration.current;
+    setAllowRegistration(null);
+    setSubmitError((current) => (current?.kind === 'registration-policy' ? null : current));
     try {
       const policy = RegistrationPolicySchema.parse(await apiFetch('/auth/registration-policy'));
       if (generation !== registrationGeneration.current) return;
       setAllowRegistration(policy.allowRegistration);
+      setSubmitError((current) => (current?.kind === 'registration-policy' ? null : current));
     } catch {
-      // Fail closed — on every settle, not just the first. A recheck that
-      // cannot reach this route must not leave a stale "yes" on screen.
+      // Fail closed without claiming the policy is closed. `null` cannot
+      // render the signup control, but it also cannot render a policy fact
+      // that this request failed to establish.
       if (generation !== registrationGeneration.current) return;
-      setAllowRegistration(false);
+      setAllowRegistration(null);
     }
   }, []);
 
@@ -194,13 +250,20 @@ export function LoginPage() {
     setIsRegister(register);
     setConfirmPassword('');
     setConfirmError(null);
+    setSubmitError(null);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (isRegister && !allowRegistration) {
-      toast.error('Registration is disabled');
+    if (isRegister && allowRegistration !== true) {
+      setSubmitError({
+        message:
+          allowRegistration === false
+            ? 'Registration is disabled'
+            : 'Registration status is unavailable. Try again in a moment.',
+        kind: 'registration-policy',
+      });
       return;
     }
 
@@ -210,6 +273,7 @@ export function LoginPage() {
     }
 
     setConfirmError(null);
+    setSubmitError(null);
     setLoading(true);
 
     try {
@@ -226,7 +290,7 @@ export function LoginPage() {
       toast.success(isRegister ? 'Account created' : 'Welcome back');
       navigate('/');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Authentication failed');
+      setSubmitError(submitErrorFor(error, isRegister));
     } finally {
       setLoading(false);
     }
@@ -240,16 +304,22 @@ export function LoginPage() {
     confirmPassword,
     showPassword,
     confirmError,
+    loginError: submitError?.message ?? null,
+    credentialsInvalid: submitError?.kind === 'credentials',
     loading,
     oidcProbe,
     onRetryOidc: recheckServerState,
     serverUnreachable: serverReachable === false,
     focusSsoOnRecovery,
     allowRegistration,
-    onUsernameChange: setUsername,
+    onUsernameChange: (value) => {
+      setUsername(value);
+      if (submitError) setSubmitError(null);
+    },
     onPasswordChange: (value) => {
       setPassword(value);
       if (confirmError) setConfirmError(null);
+      if (submitError) setSubmitError(null);
     },
     onConfirmPasswordChange: (value) => {
       setConfirmPassword(value);

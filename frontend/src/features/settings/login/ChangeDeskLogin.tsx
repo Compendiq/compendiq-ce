@@ -21,8 +21,10 @@ export function ChangeDeskLogin({ authPanel, controls, edition }: ChangeDeskLogi
 
         <LoginBrandHeader controls={controls} edition={edition} />
 
-        <main className="grid flex-1 gap-10 py-12 lg:grid-cols-[minmax(0,1.12fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-9 lg:py-14">
-          <section className="max-w-3xl lg:col-start-1 lg:row-start-1" aria-labelledby="change-desk-title">
+        <main className="grid flex-1 gap-8 py-8 lg:grid-cols-[minmax(0,1.12fr)_minmax(22rem,28rem)] lg:grid-rows-[auto_auto] lg:items-center lg:gap-x-16 lg:gap-y-9 lg:py-14">
+          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
+
+          <section className="hidden max-w-3xl lg:col-start-1 lg:row-start-1 lg:block" aria-labelledby="change-desk-title">
             <p className="mb-5 inline-flex items-center gap-2 text-sm font-semibold text-status-ai">
               <Sparkles aria-hidden="true" className="h-4 w-4" />
               A clearer workspace for every page
@@ -38,10 +40,8 @@ export function ChangeDeskLogin({ authPanel, controls, edition }: ChangeDeskLogi
             </p>
           </section>
 
-          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-end">{authPanel}</div>
-
           <section
-            className="nm-card overflow-hidden lg:col-start-1 lg:row-start-2"
+            className="nm-card hidden overflow-hidden lg:col-start-1 lg:row-start-2 lg:block"
             aria-labelledby="change-preview-title"
           >
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4 sm:px-6">
