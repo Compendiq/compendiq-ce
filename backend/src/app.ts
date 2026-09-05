@@ -361,9 +361,9 @@ export async function buildApp() {
 
   // ── Knowledge Relationship Producers (issue #359) ───────────────
   // Register cross-domain edge producers (e.g. explicit_link from
-  // body_html anchors) into the embedding-service registry so they run
-  // inside `computePageRelationships()`'s transaction. Idempotent: safe
-  // to call once per process.
+  // body_html anchors) into the shared deterministic engine, used by
+  // authorized Connections/focused graph reads and embedding recomputation.
+  // Idempotent: safe to call once per process.
   registerKnowledgeRelationshipProducers();
 
   // Known Fastify HTTP error names that are safe to expose to clients.

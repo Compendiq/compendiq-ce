@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
+import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 
@@ -259,6 +260,8 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     if (!centerAccess.has(centerPageId)) {
       return { nodes: [], edges: [], centerId: String(centerPageId) };
     }
+
+    await ensureDeterministicRelationships();
 
     // Resolve the complete CE+EE-visible vertex set before traversal. Passing
     // it into the LATERAL edge scan removes inaccessible targets before the

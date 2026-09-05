@@ -6,6 +6,7 @@ import {
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { authorizedPageIds } from '../../../core/services/authorized-pages.js';
+import { ensureDeterministicRelationships } from '../../llm/services/deterministic-relationships.js';
 import {
   buildUnambiguousTitleIndex,
   extractInternalLinks,
@@ -26,10 +27,9 @@ interface RelationshipRow {
 
 interface PageRow {
   id: number;
-  confluence_id: string | null;
+  resolved_parent_id: number | null;
   title: string;
   body_html: string | null;
-  parent_id: string | null;
   labels: string[] | null;
 }
 
@@ -38,11 +38,6 @@ interface CandidateEvidence {
   relationships: RelationshipRow[];
 }
 
-function referencesParent(child: PageRow, parent: PageRow): boolean {
-  if (child.parent_id === null) return false;
-  return child.parent_id === String(parent.id)
-    || (parent.confluence_id !== null && child.parent_id === parent.confluence_id);
-}
 
 function sharedLabels(source: PageRow, target: PageRow): string[] {
   const targetLabels = new Set(target.labels ?? []);
@@ -71,8 +66,10 @@ export async function getPageConnections(
   const sourceAccess = await authorizedPageIds(userId, [sourcePageId]);
   if (!sourceAccess.has(sourcePageId)) return null;
 
+  await ensureDeterministicRelationships();
+
   const sourceResult = await query<PageRow>(
-    `SELECT id, confluence_id, title, body_html, parent_id, labels
+    `SELECT id, relationship_parent_id(parent_id) AS resolved_parent_id, title, body_html, labels
        FROM pages
       WHERE id = $1 AND deleted_at IS NULL`,
     [sourcePageId],
@@ -103,7 +100,7 @@ export async function getPageConnections(
   }
 
   const pagesResult = await query<PageRow>(
-    `SELECT id, confluence_id, title, body_html, parent_id, labels
+    `SELECT id, relationship_parent_id(parent_id) AS resolved_parent_id, title, body_html, labels
        FROM pages
       WHERE id = ANY($1::int[]) AND deleted_at IS NULL`,
     [[...accessibleIds]],
@@ -124,7 +121,11 @@ export async function getPageConnections(
   let titleToId = new Map<string, number>();
   if (hasExplicitEvidence) {
     const titleRows = await query<{ id: number; title: string }>(
-      'SELECT id, title FROM pages WHERE deleted_at IS NULL AND title IS NOT NULL',
+      // Only these endpoints can establish the directions below. Include ALL
+      // matches for their titles (not just authorized matches) to reject
+      // ambiguity without rescanning the corpus on every clean read.
+      'SELECT id, title FROM pages WHERE deleted_at IS NULL AND title = ANY($1::text[])',
+      [[source.title, ...pagesResult.rows.map((page) => page.title)]],
     );
     titleToId = buildUnambiguousTitleIndex(titleRows.rows);
   }
@@ -156,10 +157,10 @@ export async function getPageConnections(
 
     const sectionReasons: ConnectionReason[] = [];
     if (relationshipTypes.has('parent_child')) {
-      if (referencesParent(source, page)) {
+      if (source.resolved_parent_id === page.id) {
         sectionReasons.push({ type: 'parent_child', direction: 'parent' });
       }
-      if (referencesParent(page, source)) {
+      if (page.resolved_parent_id === source.id) {
         sectionReasons.push({ type: 'parent_child', direction: 'child' });
       }
     }
