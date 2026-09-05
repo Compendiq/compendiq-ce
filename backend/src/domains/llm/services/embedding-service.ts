@@ -1457,18 +1457,19 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
       [useIncremental ? changedPageIds : null],
     );
 
-    // #362: parent_child edges. pages.parent_id is TEXT (a Confluence id)
-    // while page_relationships.page_id_1/2 is INT FK to pages.id after
-    // migration 030. Join via confluence_id to translate.
-    // Pairs are stored canonically (lower id first) so the unique key
-    // (page_id_1, page_id_2, relationship_type) catches both directions.
-    // Score = 1.0 since these edges are deterministic, not similarity-derived.
+    // #362: parent_child edges. `pages.parent_id` stores the parent row's
+    // Confluence id for synced parents and its numeric `pages.id` as text for
+    // standalone parents. Resolve both live hierarchy forms before persisting
+    // the canonical unordered relationship pair.
     const parentChildResult = await client.query<{ page_id_1: number; page_id_2: number }>(
       `WITH parent_links AS (
          SELECT child.id AS child_id,
                 parent.id AS parent_id
          FROM pages child
-         JOIN pages parent ON parent.confluence_id = child.parent_id
+         JOIN pages parent ON (
+           parent.confluence_id = child.parent_id
+           OR parent.id::text = child.parent_id
+         )
          WHERE child.deleted_at IS NULL
            AND parent.deleted_at IS NULL
            AND child.parent_id IS NOT NULL

@@ -147,6 +147,23 @@ export function getInternalHosts(): Set<string> {
   return hosts;
 }
 
+export function buildUnambiguousTitleIndex(
+  rows: readonly { id: number; title: string }[],
+): Map<string, number> {
+  const titleToId = new Map<string, number>();
+  const seenTitles = new Set<string>();
+  for (const row of rows) {
+    if (seenTitles.has(row.title)) {
+      titleToId.delete(row.title);
+      continue;
+    }
+    seenTitles.add(row.title);
+    titleToId.set(row.title, row.id);
+  }
+  return titleToId;
+}
+
+
 /**
  * Build the title→id map used by the `#confluence-page:<title>` resolver.
  * Ambiguous titles are dropped from `titleToId` so we never emit an edge to
@@ -173,18 +190,10 @@ async function loadTitleIndex(client: PoolClient): Promise<{
   const titleRows = await client.query<{ id: number; title: string }>(
     `SELECT id, title FROM pages WHERE deleted_at IS NULL AND title IS NOT NULL`,
   );
-  const titleToId = new Map<string, number>();
-  const seenTitles = new Set<string>();
-  const idToTitle = new Map<number, string>();
-  for (const r of titleRows.rows) {
-    idToTitle.set(r.id, r.title);
-    if (seenTitles.has(r.title)) {
-      titleToId.delete(r.title);
-      continue;
-    }
-    seenTitles.add(r.title);
-    titleToId.set(r.title, r.id);
-  }
+  const titleToId = buildUnambiguousTitleIndex(titleRows.rows);
+  const idToTitle = new Map<number, string>(
+    titleRows.rows.map((row) => [row.id, row.title] as const),
+  );
   const activeIds = new Set(titleRows.rows.map((r) => r.id));
   return { titleToId, activeIds, idToTitle };
 }

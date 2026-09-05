@@ -63,6 +63,7 @@ import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
 import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
+import { pagesConnectionRoutes } from './routes/knowledge/pages-connections.js';
 import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
 import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
 import { analyticsRoutes } from './routes/knowledge/analytics.js';
@@ -527,6 +528,7 @@ export async function buildApp() {
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });
   await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
+  await app.register(pagesConnectionRoutes, { prefix: '/api' });
   await app.register(pagesDuplicateRoutes, { prefix: '/api' });
   await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
