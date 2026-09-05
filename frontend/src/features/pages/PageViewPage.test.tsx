@@ -75,6 +75,10 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
   };
 });
 
+vi.mock('../../shared/components/article/ArticleConnections', () => ({
+  ArticleConnections: ({ pageId }: { pageId: string }) => <div data-testid="article-connections" data-page-id={pageId} />,
+}));
+
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
