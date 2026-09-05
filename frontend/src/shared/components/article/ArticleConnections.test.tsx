@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleConnections } from './ArticleConnections';
 
@@ -182,27 +182,124 @@ describe('ArticleConnections', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Connections' })).toHaveFocus());
   });
 
-  it('suppresses cached titles after permission revocation', async () => {
-    let connectionsRead = 0;
+  it.each([403, 404])('keeps %s-denied results revoked through failed retries and a remount until an authorized read succeeds', async (status) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let connectionsResponse = Promise.resolve(json(connections));
+    const events: Array<{ event: string }> = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = requestUrl(input);
       if (url === '/api/pages/12/connections' && (init?.method ?? 'GET') === 'GET') {
-        connectionsRead += 1;
-        return connectionsRead === 1 ? json(connections) : json({ message: 'Forbidden' }, 403);
+        return connectionsResponse;
       }
-      if (url === '/api/auth/refresh' && init?.method === 'POST') return json({ message: 'Forbidden' }, 403);
+      if (url === '/api/pages/12/connections/events' && init?.method === 'POST') {
+        events.push(JSON.parse(String(init.body)));
+      }
       return json({ recorded: true });
     });
-
-    renderPanel();
-    expect(await screen.findByRole('link', { name: 'Related article' })).toBeInTheDocument();
-
-    focusManager.setFocused(false);
-    focusManager.setFocused(true);
-
-    await waitFor(() => {
-      expect(screen.queryByRole('link', { name: 'Related article' })).not.toBeInTheDocument();
+    const mountPanel = () => render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/pages/12']}>
+          <Routes>
+            <Route path="/pages/12" element={<ArticleConnections pageId="12" />} />
+            <Route path="/pages/10" element={<h1>Fresh destination article</h1>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const expectRevokedResultsAbsent = () => {
+      expect(screen.queryByRole('list')).not.toBeInTheDocument();
+      expect(screen.getAllByRole('link')).toEqual([
+        screen.getByRole('link', { name: 'Explore connections' }),
+      ]);
+      expect(screen.queryByText(/Incoming and hierarchy article|Parent article|Related article/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Links to this article|Parent page|Shares labels:/)).not.toBeInTheDocument();
+      expect(screen.queryByText('No connections found for this article.')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Showing the last loaded results/)).not.toBeInTheDocument();
       expect(screen.getByText("Couldn't load connections.")).toBeInTheDocument();
+    };
+
+    const firstVisit = mountPanel();
+    await screen.findByRole('link', { name: 'Related article' });
+    act(() => emitIntersection(true));
+    await waitFor(() => expect(events.filter((event) => event.event === 'impression')).toHaveLength(1));
+
+    connectionsResponse = Promise.resolve(json({ message: 'Unavailable' }, status));
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
     });
+    await screen.findByRole('button', { name: 'Retry' });
+    expectRevokedResultsAbsent();
+
+    const unavailable = Promise.withResolvers<Response>();
+    connectionsResponse = unavailable.promise;
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    retry.focus();
+    fireEvent.click(retry);
+    expect(screen.getByRole('button', { name: 'Retrying…' })).toHaveFocus();
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
+    expect(retry).not.toBeDisabled();
+    expectRevokedResultsAbsent();
+    unavailable.resolve(json({ message: 'Unavailable' }, 503));
+    await screen.findByRole('button', { name: 'Retry' });
+    expectRevokedResultsAbsent();
+    expect(retry).toHaveFocus();
+
+    const offline = Promise.withResolvers<Response>();
+    connectionsResponse = offline.promise;
+    fireEvent.click(retry);
+    expectRevokedResultsAbsent();
+    offline.reject(new TypeError('Failed to fetch'));
+    await screen.findByRole('button', { name: 'Retry' });
+    expectRevokedResultsAbsent();
+    expect(retry).toHaveFocus();
+
+    firstVisit.unmount();
+    observers.length = 0;
+    const recovered = Promise.withResolvers<Response>();
+    connectionsResponse = recovered.promise;
+    mountPanel();
+    expectRevokedResultsAbsent();
+    act(() => emitIntersection(true));
+    expect(events.filter((event) => event.event === 'impression')).toHaveLength(1);
+
+    recovered.resolve(json({
+      linked: [{
+        pageId: '10',
+        title: 'Fresh authorized connection',
+        reasons: [{ type: 'explicit_link', direction: 'outgoing' }],
+      }],
+      section: [],
+      related: [],
+    }));
+    const freshTarget = await screen.findByRole('link', { name: 'Fresh authorized connection' });
+    expect(screen.getByText('Linked from this article')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Related article' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Shares labels:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load connections.")).not.toBeInTheDocument();
+    await waitFor(() => expect(events.filter((event) => event.event === 'impression')).toHaveLength(2));
+    fireEvent.click(freshTarget);
+    expect(await screen.findByRole('heading', { name: 'Fresh destination article' })).toBeInTheDocument();
+  });
+
+  it('keeps authorized cached results with a stale warning after a non-permission failure', async () => {
+    let connectionsRead = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (requestUrl(input) === '/api/pages/12/connections') {
+        connectionsRead += 1;
+        return connectionsRead === 1 ? json(connections) : json({ message: 'Unavailable' }, 503);
+      }
+      return json({ recorded: true });
+    });
+    renderPanel();
+    await screen.findByRole('link', { name: 'Related article' });
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await screen.findByText("Couldn't refresh connections. Showing the last loaded results.");
+    expect(screen.getByRole('link', { name: 'Related article' })).toHaveAttribute('href', '/pages/9');
+    expect(screen.getByText('Similar content · 0.88 · Shares labels: architecture, search')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load connections.")).not.toBeInTheDocument();
   });
 });

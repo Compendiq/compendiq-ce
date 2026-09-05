@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ConnectionEvent, ConnectionItem, ConnectionReason, PageConnections } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../lib/api';
 
@@ -9,6 +9,8 @@ interface ArticleConnectionsProps {
 }
 
 type ConnectionGroup = 'linked' | 'section' | 'related';
+// null means access was denied, never a successful empty connections result.
+type ConnectionsCache = PageConnections | null;
 
 const GROUPS: Array<{ key: ConnectionGroup; heading: string }> = [
   { key: 'linked', heading: 'Linked articles' },
@@ -81,14 +83,24 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
   const impressionSentRef = useRef(false);
   const panelVisibleRef = useRef(false);
 
-  const query = useQuery({
+  const queryClient = useQueryClient();
+  const query = useQuery<ConnectionsCache>({
     queryKey: ['pages', pageId, 'connections'],
-    queryFn: () => apiFetch<PageConnections>(`/pages/${encodeURIComponent(pageId)}/connections`),
+    queryFn: async ({ queryKey }) => {
+      try {
+        return await apiFetch<PageConnections>(`/pages/${encodeURIComponent(pageId)}/connections`);
+      } catch (error) {
+        if (error instanceof ApiError && [401, 403, 404].includes(error.statusCode)) {
+          // Replace revoked data before Query retries or this panel unmounts.
+          // undefined would leave the previous cache intact.
+          queryClient.setQueryData<ConnectionsCache>(queryKey, null);
+        }
+        throw error;
+      }
+    },
   });
 
-  const accessFailure = query.failureReason ?? query.error;
-  const permissionError = accessFailure instanceof ApiError && [401, 403, 404].includes(accessFailure.statusCode);
-  const connections = permissionError ? undefined : query.data;
+  const connections = query.data;
 
   const recordEvent = useCallback(
     (event: ConnectionEvent) => {
@@ -155,7 +167,7 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
   );
 
   const loading = query.isPending && !connections;
-  const failedWithoutCache = (query.isError || permissionError || retryInFlight) && !connections;
+  const failedWithoutCache = (query.isError || connections === null || retryInFlight) && !connections;
   const stale = (query.isError || retryInFlight) && Boolean(connections);
 
   return (
