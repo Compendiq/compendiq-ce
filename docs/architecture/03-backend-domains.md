@@ -58,6 +58,11 @@ flowchart LR
     panel["Article Connections"] --> read["knowledge/pages-connections<br/>GET /pages/:id/connections"]
     read --> service["knowledge/page-connections-service"]
     service --> evidence["page_relationships<br/>persisted types and scores"]
+    service --> materialize["Settle pending deterministic evidence"]
+    changes["Page create / body / label / hierarchy / identity mutations"] --> dirty["DB-tracked pending page changes"]
+    dirty --> materialize
+    materialize --> engine["Shared deterministic relationship engine<br/>no embedding provider"]
+    engine --> evidence
     service --> live["Current bodies, hierarchy and shared labels<br/>validate structural evidence"]
     service --> access["core/authorized-pages<br/>visibility + page-level RBAC"]
     panel --> collect["POST /pages/:id/connections/events"]
@@ -66,6 +71,7 @@ flowchart LR
     audit --> store["audit_log<br/>unique user + article + visit impression"]
     panel --> local["Existing focused graph<br/>GET /pages/:id/graph/local?hops=2"]
     local --> access
+    local --> materialize
 ```
 
 Authorization removes inaccessible source/target pages before panel ranking and

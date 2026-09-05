@@ -627,8 +627,14 @@ explicit links, hierarchy, and ranked recommendations in separate groups.
 canonical pair order does not establish link direction or parenthood, and a
 label-overlap score does not identify the shared labels. Check actual content
 and hierarchy evidence; apply source and target visibility before ranking.
-Missing embeddings must not gate deterministic connections. Keep loading,
-empty, failed, and stale data distinct, and drop cached titles on access denial.
+Missing embeddings must not gate deterministic connections: database-tracked
+page mutations feed the shared deterministic materializer, independently of
+semantic embedding work. Do not introduce another read-side relationship engine.
+Use the canonical parent key, never a synced parent's unrelated internal ID;
+ambiguous keys do not justify asserting multiple parents. Keep loading, empty,
+failed, and stale data distinct. Access denial discards cached titles across
+later failures and panel remounts until a successful authorized result replaces
+them.
 `/graph?focus=<pageId>` remains the existing two-hop exploration path; do not
 remove Graph from navigation before the post-release four-week decision gate.
 Panel usage goes through the authenticated collection path, without content in

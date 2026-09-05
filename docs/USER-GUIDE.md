@@ -85,10 +85,12 @@ Select a title to open that article. **Explore connections** opens the current
 article's focused, two-hop view at `/graph?focus=<page-id>`. Graph remains in
 navigation; the panel does not replace or expand the global canvas.
 
-Only articles you can access appear. A page without embeddings can still have
-links, hierarchy, and shared-label connections. An empty result is stated in the
-panel rather than hiding it. Loading and failed requests are distinct from an
-empty result, with a Retry action on failures.
+Only articles you can access appear. Links, hierarchy, and shared-label evidence
+update without waiting for an embedding provider, including on articles with no
+body yet. An empty result is stated in the panel rather than hiding it. Loading
+and failed requests are distinct from an empty result, with a Retry action on
+failures. A failed refresh may retain the last loaded results with a warning;
+an access denial discards them until a successful authorized read.
 
 ### Creating a Page
 

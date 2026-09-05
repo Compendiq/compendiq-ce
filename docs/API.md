@@ -159,6 +159,13 @@ are not repeated as semantic recommendations. An empty response contains three
 empty arrays; unavailable source pages return 404. Source and target visibility
 checks precede recommendation ranking.
 
+Deterministic relationship materialization is independent of embeddings. Page
+mutations invalidate deterministic evidence in the database; the authorized
+Connections and focused-local-graph read paths settle pending materialization
+through the shared engine before returning results. Unchanged reads do not
+rebuild the corpus, and failures are reported rather than converted to empty
+groups. Semantic scores are not rewritten by deterministic-only work.
+
 `POST /api/pages/:id/connections/events` collects authenticated panel usage:
 
 ```json
