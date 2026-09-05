@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleConnections } from './ArticleConnections';
 
@@ -25,7 +26,9 @@ function renderPanel(pageId = '12') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <ArticleConnections pageId={pageId} />
+      <MemoryRouter>
+        <ArticleConnections pageId={pageId} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -34,9 +37,9 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function emitIntersection() {
+function emitIntersection(isIntersecting = true) {
   for (const observer of observers) {
-    observer([{ isIntersecting: true } as IntersectionObserverEntry]);
+    observer([{ isIntersecting } as IntersectionObserverEntry]);
   }
 }
 
@@ -138,6 +141,45 @@ describe('ArticleConnections', () => {
     expect(await screen.findByText("Couldn't load connections.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('No connections found for this article.')).toBeInTheDocument();
+  });
+
+  it('does not count an offscreen result when only its loading state was visible', async () => {
+    const response = Promise.withResolvers<Response>();
+    const events: unknown[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (requestUrl(input) === '/api/pages/12/connections') return response.promise;
+      events.push(JSON.parse(String(init?.body)));
+      return json({ recorded: true });
+    });
+    renderPanel();
+    expect(screen.getByText('Loading connections…')).toBeInTheDocument();
+    act(() => {
+      emitIntersection(true);
+      emitIntersection(false);
+    });
+    response.resolve(json(connections));
+    await screen.findByRole('link', { name: 'Related article' });
+    expect(events).toEqual([]);
+    act(() => emitIntersection(true));
+    await waitFor(() => expect(events).toEqual([
+      expect.objectContaining({ event: 'impression' }),
+    ]));
+  });
+
+  it('hands keyboard focus to the surviving heading after a successful retry', async () => {
+    let reads = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      reads += 1;
+      return reads === 1
+        ? json({ message: 'Unavailable' }, 503)
+        : json({ linked: [], section: [], related: [] });
+    });
+    renderPanel();
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    retry.focus();
+    fireEvent.click(retry);
+    await screen.findByText('No connections found for this article.');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Connections' })).toHaveFocus());
   });
 
   it('suppresses cached titles after permission revocation', async () => {

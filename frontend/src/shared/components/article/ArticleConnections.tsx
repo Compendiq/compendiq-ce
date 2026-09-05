@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import type { ConnectionEvent, ConnectionItem, ConnectionReason, PageConnections } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../lib/api';
@@ -49,13 +50,13 @@ function ConnectionList({
       <ul className="space-y-1">
         {items.map((item) => (
           <li key={item.pageId} className="min-w-0 px-3 py-2">
-            <a
-              href={`/pages/${encodeURIComponent(item.pageId)}`}
+            <Link
+              to={`/pages/${encodeURIComponent(item.pageId)}`}
               className="nm-focus-ring break-words text-sm font-medium text-primary underline decoration-primary/50 underline-offset-2 hover:decoration-primary"
               onClick={() => onConnectionClick(item.pageId, group)}
             >
               {item.title}
-            </a>
+            </Link>
             <p className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">
               {item.reasons.map(reasonText).join(' · ')}
             </p>
@@ -73,7 +74,7 @@ function ConnectionList({
  */
 export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
   const panelRef = useRef<HTMLElement | null>(null);
-  const retryTargetRef = useRef<HTMLParagraphElement | null>(null);
+  const retryTargetRef = useRef<HTMLHeadingElement | null>(null);
   const [visitId] = useState(() => crypto.randomUUID());
   const [retryInFlight, setRetryInFlight] = useState(false);
   const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
@@ -85,7 +86,8 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
     queryFn: () => apiFetch<PageConnections>(`/pages/${encodeURIComponent(pageId)}/connections`),
   });
 
-  const permissionError = query.error instanceof ApiError && [401, 403, 404].includes(query.error.statusCode);
+  const accessFailure = query.failureReason ?? query.error;
+  const permissionError = accessFailure instanceof ApiError && [401, 403, 404].includes(accessFailure.statusCode);
   const connections = permissionError ? undefined : query.data;
 
   const recordEvent = useCallback(
@@ -100,26 +102,25 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
   );
 
   useEffect(() => {
-    if (!connections || !panelVisibleRef.current || impressionSentRef.current) return;
+    if (!query.isSuccess || !connections || !panelVisibleRef.current || impressionSentRef.current) return;
     impressionSentRef.current = true;
     recordEvent({ event: 'impression', visitId });
-  }, [connections, recordEvent, visitId]);
+  }, [connections, query.isSuccess, recordEvent, visitId]);
 
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
 
     const observer = new IntersectionObserver(([entry]) => {
-      if (!entry?.isIntersecting || panelVisibleRef.current) return;
-      panelVisibleRef.current = true;
-      if (connections && !impressionSentRef.current) {
+      panelVisibleRef.current = entry?.isIntersecting ?? false;
+      if (panelVisibleRef.current && query.isSuccess && connections && !impressionSentRef.current) {
         impressionSentRef.current = true;
         recordEvent({ event: 'impression', visitId });
       }
     });
     observer.observe(panel);
     return () => observer.disconnect();
-  }, [connections, recordEvent, visitId]);
+  }, [connections, query.isSuccess, recordEvent, visitId]);
 
   useEffect(() => {
     if (!restoreFocusAfterRetry || retryInFlight || query.isError) return;
@@ -154,29 +155,29 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
   );
 
   const loading = query.isPending && !connections;
-  const failedWithoutCache = (query.isError || retryInFlight) && !connections;
+  const failedWithoutCache = (query.isError || permissionError || retryInFlight) && !connections;
   const stale = (query.isError || retryInFlight) && Boolean(connections);
 
   return (
     <section ref={panelRef} aria-labelledby="article-connections-heading" className="mt-8 border-t border-border pt-5">
       <div className="mb-4 flex min-w-0 items-baseline justify-between gap-3 max-sm:flex-wrap">
-        <h2 id="article-connections-heading" className="text-base font-semibold text-foreground">
+        <h2 ref={retryTargetRef} tabIndex={-1} id="article-connections-heading" className="nm-focus-ring text-base font-semibold text-foreground">
           Connections
         </h2>
-        <a
-          href={`/graph?focus=${encodeURIComponent(pageId)}`}
+        <Link
+          to={`/graph?focus=${encodeURIComponent(pageId)}`}
           className="nm-focus-ring shrink-0 text-sm text-primary underline underline-offset-2"
           onClick={onGraphLaunch}
         >
           Explore connections
-        </a>
+        </Link>
       </div>
 
       {loading && <p className="text-sm text-muted-foreground">Loading connections…</p>}
 
       {failedWithoutCache && (
         <div role="status" className="text-sm text-muted-foreground">
-          <p ref={retryTargetRef} tabIndex={-1}>
+          <p>
             Couldn&apos;t load connections.
           </p>
           <button
@@ -192,7 +193,7 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
 
       {stale && (
         <div role="status" className="mb-3 text-sm text-muted-foreground">
-          <p>Showing the last loaded connections.</p>
+          <p>Couldn&apos;t refresh connections. Showing the last loaded results.</p>
           <button
             type="button"
             className="nm-focus-ring mt-1 text-sm font-medium text-primary underline underline-offset-2 aria-disabled:cursor-default aria-disabled:opacity-70"

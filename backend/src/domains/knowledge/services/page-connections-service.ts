@@ -51,11 +51,6 @@ function sharedLabels(source: PageRow, target: PageRow): string[] {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function labelOverlapScore(source: PageRow, target: PageRow, labels: string[]): number {
-  const denominator = Math.max(source.labels?.length ?? 0, target.labels?.length ?? 0);
-  return denominator === 0 ? 0 : labels.length / denominator;
-}
-
 function connectionItem(page: PageRow, reasons: ConnectionReason[]): ConnectionItem {
   return { pageId: String(page.id), title: page.title, reasons };
 }
@@ -187,12 +182,13 @@ export async function getPageConnections(
     const labels = sharedLabels(source, page);
     const labelRows = relationships.filter((row) => row.relationship_type === 'label_overlap');
     if (labelRows.length > 0 && labels.length > 0) {
+      const score = Math.max(...labelRows.map((row) => Number(row.score)));
       relatedReasons.push({
         type: 'label_overlap',
         labels,
-        score: labelOverlapScore(source, page, labels),
+        score,
       });
-      persistedEvidenceScores.push(...labelRows.map((row) => Number(row.score)));
+      persistedEvidenceScores.push(score);
     }
 
     if (relatedReasons.length > 0) {

@@ -1940,6 +1940,56 @@ Compendiq supports zero-downtime rotation of the PAT encryption key:
 
 5. **Remove the old key** once all PATs have been re-encrypted.
 
+## Connections adoption review (#1314)
+
+The four-week review starts at the deployment of the Connections panel, not at
+issue creation. Record that deployment time and the evaluated revision. **Graph
+stays in primary navigation until an explicit post-release decision**; no
+adoption result is assumed by this change.
+
+The panel submits three authenticated event kinds through
+`POST /api/pages/:id/connections/events`: `impression`, `connection_click`, and
+`graph_launch`. An impression means a successful Connections result has rendered
+and the panel has entered the viewport. Empty successful panels are included;
+loading and failed reads are not. Ordinary re-renders and background refetches
+do not create another impression. The per-visit UUID ties clicks to the
+corresponding panel visit without storing article text.
+
+Collection uses the existing `audit_log`: actions `CONNECTION_IMPRESSION`,
+`CONNECTION_CLICK`, and `CONNECTION_GRAPH_LAUNCH`, with resource type
+`page_connections` and the source article ID as `resource_id`. Metadata holds
+only `event`, `visitId`, and the click's `group`; the target is authorized at
+collection time but its ID is not retained. Article titles, bodies, labels,
+scores, and reasons are never analytics metadata. The ordinary audit IP/user-agent
+fields and configured retention policy still apply.
+
+An article panel mount owns one visit UUID. The database deduplicates impressions
+by authenticated user, source article, and UUID, including duplicate delivery;
+clicks remain individual events. Leaving an article and returning creates a new
+visit. Match clicks to impressions on that same three-part key, not UUID alone,
+and retain audit records for at least the complete 28-day evaluation window.
+
+For the first 28 days after deployment, evaluate:
+
+1. **Reach:** recorded impressions and distinct participating users. Report the
+   denominator explicitly: this is visible panel visits, not all article loads.
+2. **Read-next adoption:** the share of impressed visits with at least one
+   connection click, plus the `linked` / `section` / `related` breakdown.
+3. **Advanced exploration:** the share of impressed visits launching the focused
+   graph. Count visits, not raw repeat clicks, for the conversion rate.
+4. **Repeat use:** users returning to Connections across separate days, with
+   sample size and the deployment window shown alongside the rate.
+5. **Measurement health:** collection failures, retention covering the entire
+   window, and whether browser/network blocking could explain missing events.
+   A missing event is not proof that a reader ignored the feature.
+
+Choose what constitutes meaningful use with the product owner before interpreting
+the figures. Rates alone do not establish usefulness, and small samples are not
+evidence for removing navigation. If adoption is insufficient, the follow-up
+decision may remove Graph from primary navigation while retaining relationship
+data for recommendations, search, duplicate detection, and AI context. This PR
+does not make that decision and contains no fabricated adoption figures.
+
 ## Troubleshooting
 
 ### Backend fails to start with "JWT_SECRET must be at least 32 characters"

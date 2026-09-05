@@ -51,6 +51,31 @@ flowchart LR
     dK --> dC
 ```
 
+### Article Connections (#1314)
+
+```mermaid
+flowchart LR
+    panel["Article Connections"] --> read["knowledge/pages-connections<br/>GET /pages/:id/connections"]
+    read --> service["knowledge/page-connections-service"]
+    service --> evidence["page_relationships<br/>persisted types and scores"]
+    service --> live["Current bodies, hierarchy and shared labels<br/>validate structural evidence"]
+    service --> access["core/authorized-pages<br/>visibility + page-level RBAC"]
+    panel --> collect["POST /pages/:id/connections/events"]
+    collect --> access
+    collect --> audit["core/audit-service<br/>durable collection, no content metadata"]
+    audit --> store["audit_log<br/>unique user + article + visit impression"]
+    panel --> local["Existing focused graph<br/>GET /pages/:id/graph/local?hops=2"]
+    local --> access
+```
+
+Authorization removes inaccessible source/target pages before panel ranking and
+before local-graph traversal, limits, and counts. Unavailable intermediate pages
+cannot expose second-hop neighbors. The global graph and its navigation remain
+unchanged. Explicit links and hierarchy do not depend on embeddings; current
+bodies and parent IDs recover direction from canonical persisted pairs.
+Recommendations remain bounded to five, ordered by persisted evidence score.
+
+
 ## ESLint-enforced boundary rules
 
 Defined in `backend/eslint.config.js` with `eslint-plugin-boundaries`:

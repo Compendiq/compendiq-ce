@@ -202,7 +202,7 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     await seedRelationship(100, 10, 'embedding_similarity', 0.99);
     await seedRelationship(100, 300, 'embedding_similarity', 0.72);
     await seedRelationship(300, 100, 'embedding_similarity', 0.91);
-    await seedRelationship(100, 300, 'label_overlap', 0.5);
+    await seedRelationship(100, 300, 'label_overlap', 0.63);
 
     const response = await app.inject({ method: 'GET', url: '/api/pages/100/connections' });
     expect(response.statusCode).toBe(200);
@@ -223,7 +223,7 @@ describe.skipIf(!dbAvailable)('Connections and local graph API', () => {
     expect(body.related[0].reasons[1]).toEqual({
       type: 'label_overlap',
       labels: ['shared'],
-      score: 0.5,
+      score: expect.closeTo(0.63, 5),
     });
     expect(body.related.some((item: { pageId: string }) => item.pageId === '10')).toBe(false);
   });

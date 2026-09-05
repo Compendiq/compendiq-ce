@@ -1090,6 +1090,7 @@ export function PageViewPage() {
                 Add content
               </Button>
             </div>
+            <ArticleConnections key={page.id} pageId={page.id} />
           </div>
         ) : (
           /* Reading view — constrained to 1200px reading column */
