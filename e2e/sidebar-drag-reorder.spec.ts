@@ -19,9 +19,8 @@ import { authenticateContext, bearerHeaders, registerUser } from './helpers/auth
  * emit trusted pointer events and latch the bridge off, so they must NOT be used
  * here.)
  *
- * Primary assertion: no uncaught exception surfaces during the drag — i.e. the
- * bridge swallowed the `setPointerCapture` NotFoundError that @dnd-kit raises at
- * drag start. The reorder actually persisting is a best-effort secondary check.
+ * The drag must persist the new order after reload without an uncaught
+ * setPointerCapture exception. A drag that never activates is not a pass.
  */
 
 interface Seeded {
@@ -76,7 +75,7 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     seeded = { spaceKey, titlesInOrder };
   });
 
-  test('pointerless drag reorder does not crash on setPointerCapture', async ({ page }) => {
+  test('pointerless drag persists reordered pages without setPointerCapture errors', async ({ page }) => {
     // Wait for the lazy-loaded local-space tree to render its draggable rows.
     const rows = page.locator('[role="treeitem"][data-page-id]');
     await expect(rows).toHaveCount(seeded.titlesInOrder.length, { timeout: 20_000 });
@@ -91,36 +90,19 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     // events, so the bridge stays active and synthesizes the pointer stream that
     // @dnd-kit consumes — including the drag-start setPointerCapture(1) that a
     // real browser rejects with NotFoundError for the synthesized pointer id.
+    const reordered = page.waitForResponse(
+      (res) => /\/api\/pages\/\d+\/reorder$/.test(res.url()) && res.request().method() === 'PUT',
+    );
     await simulatePointerlessDrag(page);
-
-    // Give @dnd-kit's async drag lifecycle (rAF + state commits) time to run and
-    // any deferred exception to surface.
-    await page.waitForTimeout(500);
-
-    // PRIMARY: the drag produced no uncaught exception.
+    expect((await reordered).ok()).toBeTruthy();
     expect(errors).toEqual([]);
 
-    // SECONDARY (best-effort): the reorder persisted. The exact @dnd-kit
-    // activation is timing-sensitive under synthetic events, so a missed reorder
-    // must NOT fail the test — only a persisted-but-broken one would, and that is
-    // covered by the reorder integration tests. We simply reload and confirm the
-    // tree still renders all rows without error.
-    try {
-      const reorderReq = await page.waitForRequest(
-        (req) => /\/api\/pages\/\d+\/reorder$/.test(req.url()) && req.method() === 'PUT',
-        { timeout: 2_000 },
-      );
-      const resp = await reorderReq.response();
-      if (resp) expect(resp.ok()).toBeTruthy();
-    } catch {
-      // No reorder request fired — acceptable for this correctness-of-no-crash test.
-    }
-
     await page.reload();
-    await expect(page.locator('[role="treeitem"][data-page-id]')).toHaveCount(
-      seeded.titlesInOrder.length,
-      { timeout: 20_000 },
-    );
+    await expect(page.locator('[role="treeitem"][data-page-id]')).toHaveText([
+      seeded.titlesInOrder[1]!,
+      seeded.titlesInOrder[2]!,
+      seeded.titlesInOrder[0]!,
+    ]);
     expect(errors).toEqual([]);
   });
 });
@@ -136,9 +118,10 @@ async function simulatePointerlessDrag(page: Page): Promise<void> {
     const rows = Array.from(
       document.querySelectorAll<HTMLElement>('[role="treeitem"][data-page-id]'),
     );
-    if (rows.length < 2) return;
+    if (rows.length < 2) throw new Error('Drag requires at least two sidebar rows');
 
-    const source = rows[0]!;
+    const source = rows[0]!.querySelector<HTMLElement>('.cursor-grab');
+    if (!source) throw new Error('First sidebar row has no drag handle');
     const target = rows[rows.length - 1]!;
     const from = source.getBoundingClientRect();
     const to = target.getBoundingClientRect();
