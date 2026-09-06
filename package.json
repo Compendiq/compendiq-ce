@@ -35,7 +35,14 @@
     "knip": "^6.3.0",
     "vitest": "^4.0.18"
   },
+  "//inference-deps-note": "Transformers 4.2.0 still excludes patched sharp and adm-zip. Scope security overrides to its native chain; keep onnxruntime-node/web paired as published. Compatibility and removal criteria: docs/runbooks/client-inference.md#native-dependency-security-overrides.",
   "overrides": {
+    "@huggingface/transformers@4.2.0": {
+      "sharp": "0.35.3",
+      "onnxruntime-node@1.24.3": {
+        "adm-zip": "0.6.0"
+      }
+    },
     "vite": "^8.0.16",
     "@tiptap/core": "3.30.4",
     "@tiptap/pm": "3.30.4",
