@@ -159,14 +159,15 @@ LIMIT 10;
 
 ### Frontend Performance
 
-Use Lighthouse CI:
+Use the repository-local Lighthouse CI so its dependency security overrides and
+lockfile apply; a global `@lhci/cli` install does not inherit them.
 
 ```bash
-# Install Lighthouse CI
-npm install -g @lhci/cli
+# Install the locked workspace dependencies from the repository root
+npm ci
 
-# Run against local dev server
-lhci autorun --collect.url=http://localhost:8081/login \
+# Run against an already-running local server with Chrome installed
+npm run lighthouse -- --collect.url=http://localhost:8081/login \
   --collect.url=http://localhost:8081/ \
   --assert.assertions.categories:performance=off
 ```
