@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { Editor } from '@tiptap/core';
+import { Editor, mergeAttributes } from '@tiptap/core';
+import { DOMSerializer } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
 import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
@@ -13,6 +14,35 @@ import { CompendiqTableView } from './table-layout-view';
 function getParseRules(ext: any) {
   return ext.config.parseHTML?.call({ name: ext.name, options: {}, storage: {}, parent: undefined });
 }
+
+// GHSA-cp6q-959q-f8rh: guard the dependency boundary used by custom renderHTML
+// implementations, not a claim that arbitrary editor JSON reaches this helper.
+describe('TipTap attribute serialization security', () => {
+  it('keeps JSON-origin prototype attributes out of serialized DOM while merging ordinary attributes', () => {
+    const input = JSON.parse(`{
+      "__proto__": {
+        "data-inherited-canary": "present",
+        "src": "x-invalid://canary",
+        "onerror": "void 0"
+      },
+      "class": "panel imported",
+      "style": "color: blue"
+    }`);
+    const attrs = mergeAttributes(
+      { class: 'panel', style: 'color: red; text-align: center' },
+      input,
+    );
+    const { dom } = DOMSerializer.renderSpec(document, ['img', attrs]);
+
+    expect(dom).not.toHaveAttribute('data-inherited-canary');
+    expect(dom).not.toHaveAttribute('src');
+    expect(dom).not.toHaveAttribute('onerror');
+    expect(Object.getPrototypeOf(attrs)).toBe(Object.prototype);
+    expect(attrs['data-inherited-canary']).toBeUndefined();
+    expect(dom).toHaveClass('panel', 'imported');
+    expect(dom).toHaveStyle({ color: 'rgb(0, 0, 255)', textAlign: 'center' });
+  });
+});
 
 describe('article-extensions', () => {
   describe('Details', () => {
