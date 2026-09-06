@@ -26,9 +26,8 @@
  *      We resolve the title back to a `pages.id` (matching by exact title
  *      first; ambiguous titles emit no edge).
  *
- * The producer itself runs as part of `computePageRelationships()` (see
- * embedding-service.ts) so explicit_link edges materialise on every recompute
- * — both the admin /graph/refresh route and the post-embed incremental path.
+ * The shared deterministic relationship engine runs this producer on pending
+ * page mutations and embedding/admin recomputation, in the caller's transaction.
  *
  * Idempotent: ON CONFLICT on (page_id_1, page_id_2, relationship_type).
  */
@@ -147,6 +146,23 @@ export function getInternalHosts(): Set<string> {
   return hosts;
 }
 
+export function buildUnambiguousTitleIndex(
+  rows: readonly { id: number; title: string }[],
+): Map<string, number> {
+  const titleToId = new Map<string, number>();
+  const seenTitles = new Set<string>();
+  for (const row of rows) {
+    if (seenTitles.has(row.title)) {
+      titleToId.delete(row.title);
+      continue;
+    }
+    seenTitles.add(row.title);
+    titleToId.set(row.title, row.id);
+  }
+  return titleToId;
+}
+
+
 /**
  * Build the title→id map used by the `#confluence-page:<title>` resolver.
  * Ambiguous titles are dropped from `titleToId` so we never emit an edge to
@@ -173,18 +189,10 @@ async function loadTitleIndex(client: PoolClient): Promise<{
   const titleRows = await client.query<{ id: number; title: string }>(
     `SELECT id, title FROM pages WHERE deleted_at IS NULL AND title IS NOT NULL`,
   );
-  const titleToId = new Map<string, number>();
-  const seenTitles = new Set<string>();
-  const idToTitle = new Map<number, string>();
-  for (const r of titleRows.rows) {
-    idToTitle.set(r.id, r.title);
-    if (seenTitles.has(r.title)) {
-      titleToId.delete(r.title);
-      continue;
-    }
-    seenTitles.add(r.title);
-    titleToId.set(r.title, r.id);
-  }
+  const titleToId = buildUnambiguousTitleIndex(titleRows.rows);
+  const idToTitle = new Map<number, string>(
+    titleRows.rows.map((row) => [row.id, row.title] as const),
+  );
   const activeIds = new Set(titleRows.rows.map((r) => r.id));
   return { titleToId, activeIds, idToTitle };
 }
@@ -205,10 +213,8 @@ function escapeLikePattern(raw: string): string {
 /**
  * Run the explicit_link producer against an existing transactional client.
  *
- * This is the canonical entry point — `computePageRelationships()` calls it
- * inside its own BEGIN/COMMIT so explicit_link edges land atomically with the
- * similarity / label_overlap / parent_child edges. Caller is responsible for
- * the surrounding transaction.
+ * The deterministic engine calls this inside its caller's transaction, both
+ * independently of embeddings and alongside semantic recomputation.
  *
  * `changedPageIds`: when provided and non-empty, the scan is scoped
  * **symmetrically** — both
@@ -216,7 +222,7 @@ function escapeLikePattern(raw: string): string {
  *   (b) any other page whose `body_html` could reference one of the changed
  *       pages as a **target** (via `/pages/<id>` or `#confluence-page:<title>`
  *       substrings).
- * This mirrors the symmetric DELETE in `computePageRelationships`
+ * This mirrors the deterministic engine's symmetric DELETE
  * (`page_id_1 = ANY($1) OR page_id_2 = ANY($1)`): without (b), an unchanged
  * page B that links to a changed page C would have its B↔C edge wiped by
  * the DELETE and never re-emitted, because B's body was never re-scanned.

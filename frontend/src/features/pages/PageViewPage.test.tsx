@@ -75,6 +75,7 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
   };
 });
 
+
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
@@ -176,7 +177,7 @@ vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
 }));
 
 vi.mock('../../shared/lib/api', () => ({
-  apiFetch: vi.fn().mockResolvedValue({}),
+  apiFetch: vi.fn().mockResolvedValue({ linked: [], section: [], related: [] }),
   ApiError: class ApiError extends Error {
     statusCode: number;
     code?: string;
@@ -369,7 +370,7 @@ describe('PageViewPage', () => {
       error: null,
     }));
     vi.mocked(apiFetch).mockClear();
-    vi.mocked(apiFetch).mockResolvedValue({} as never);
+    vi.mocked(apiFetch).mockResolvedValue({ linked: [], section: [], related: [] } as never);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
     useAiDockStore.setState({ open: false });
@@ -841,6 +842,7 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
     expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connections' })).toBeInTheDocument();
   });
 
   it('shows empty page placeholder when bodyHtml is whitespace-only', () => {
@@ -1489,7 +1491,7 @@ describe('PageViewPage', () => {
     it('flag on: provider mounts only in edit mode, and the editor receives the ydoc', async () => {
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === '/collab/config') return { enabled: true };
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       const ydoc = { __ydoc: true };
       useCollabProviderMock.mockImplementation(() => ({
@@ -1526,7 +1528,7 @@ describe('PageViewPage', () => {
             resolveConfig = resolve;
           });
         }
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(await screen.findByText('Edit'));
@@ -1549,7 +1551,7 @@ describe('PageViewPage', () => {
     it('keeps the collab editor mounted when synced goes false after first sync', async () => {
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === '/collab/config') return { enabled: true };
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       const live = {
         ydoc: { __ydoc: true },
@@ -1576,7 +1578,7 @@ describe('PageViewPage', () => {
     it('Done confirms when title diverged and leaves the session without isDirty', async () => {
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === '/collab/config') return { enabled: true };
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       useCollabProviderMock.mockImplementation(() => ({
         ydoc: { __ydoc: true },
@@ -1605,7 +1607,7 @@ describe('PageViewPage', () => {
         if (path === '/pages/page-1/collab/commit') {
           return { id: 1, title: 'Updated Engineering Handbook', version: 8, source: 'standalone' };
         }
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       useCollabProviderMock.mockImplementation(() => ({
         ydoc: { __ydoc: true },
@@ -1645,7 +1647,7 @@ describe('PageViewPage', () => {
           err.localVersion = 7;
           throw err;
         }
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       useCollabProviderMock.mockImplementation(() => ({
         ydoc: { __ydoc: true },
@@ -1672,7 +1674,7 @@ describe('PageViewPage', () => {
       ];
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === '/collab/config') return { enabled: true };
-        return {};
+        return { linked: [], section: [], related: [] };
       });
       useCollabProviderMock.mockImplementation(() => ({
         ydoc: { __ydoc: true },

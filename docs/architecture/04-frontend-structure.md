@@ -102,7 +102,20 @@ flowchart LR
     rail["ArticleRightPane<br/>280px pane ⇄ 40px rail<br/>tabs: Assistant · Outline · Details<br/>outline flyout on hover/focus"]
 
     workspace --- rail
+    workspace --> connections["ArticleConnections (#1314)<br/>read-mode article footer<br/>linked · section · related"]
+    connections --> connectionAPI["GET /api/pages/:id/connections<br/>authorized persisted evidence"]
+    connections --> connectionEvents["POST /api/pages/:id/connections/events<br/>visible impression · article click · graph launch"]
+    connections --> focusedGraph["/graph?focus=pageId<br/>existing two-hop local graph"]
 ```
+
+**Article-native Connections (#1314).** The read-mode footer is part of the
+article, not another inspector tab or a global graph replacement. One query
+returns three meaning-based groups with typed evidence; recommendation scores
+never relabel direct links or hierarchy. The footer remains present for an
+empty result, and its heading, links, and failure recovery work by keyboard.
+Usage records carry a per-visit UUID and event category, not article content.
+The impression fires only after successful data is rendered and the panel
+enters the viewport, not on ordinary re-renders or background refetches.
 
 - **The assistant is a tab, not a third column.** #1126 shipped it as its own
   column beside `ArticleRightPane`; on a 1440px screen that drew three vertical

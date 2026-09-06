@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { computePageRelationships } from '../../domains/llm/services/embedding-service.js';
+import { ensureDeterministicRelationships } from '../../domains/llm/services/deterministic-relationships.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { authorizedPageIds } from '../../core/services/authorized-pages.js';
 
 /** Graph cache uses a short TTL (5 min) so relationship changes surface quickly. */
 const GRAPH_CACHE_TTL = 300;
@@ -241,12 +243,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     const { id } = IdParamSchema.parse(request.params);
     const { hops, edgeTypes, minScore, labels, perHopLimit } = LocalGraphQuerySchema.parse(request.query);
 
-    // Resolve to integer page ID
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{ id: number; space_key: string }>(
+    const pageResult = await query<{ id: number }>(
       isNumericId
-        ? 'SELECT id, space_key FROM pages WHERE id = $1 AND deleted_at IS NULL'
-        : 'SELECT id, space_key FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
+        ? 'SELECT id FROM pages WHERE id = $1 AND deleted_at IS NULL'
+        : 'SELECT id FROM pages WHERE confluence_id = $1 AND deleted_at IS NULL',
       [isNumericId ? parseInt(id, 10) : id],
     );
 
@@ -255,20 +256,19 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
     }
 
     const centerPageId = pageResult.rows[0]!.id;
-
-    // RBAC check
-    const graphSpaces = await getUserAccessibleSpaces(userId);
-    if (!graphSpaces.includes(pageResult.rows[0]!.space_key)) {
+    const centerAccess = await authorizedPageIds(userId, [centerPageId]);
+    if (!centerAccess.has(centerPageId)) {
       return { nodes: [], edges: [], centerId: String(centerPageId) };
     }
 
-    // Find connected page IDs within N hops via recursive CTE on
-    // page_relationships. #361 Phase 3: cap each hop at $3 neighbours
-    // (LATERAL LIMIT) so a 3-hop expansion can't pull most of a 2000-page
-    // corpus; higher-score edges are preferred via ORDER BY pr.score DESC.
-    // #360: apply edgeTypes/minScore filters INSIDE LATERAL so the local
-    // subgraph matches what the user filtered to (otherwise we'd traverse
-    // hidden edges and return ghost nodes the UI then has to drop).
+    await ensureDeterministicRelationships();
+
+    // Resolve the complete CE+EE-visible vertex set before traversal. Passing
+    // it into the LATERAL edge scan removes inaccessible targets before the
+    // per-hop ORDER/LIMIT, so a hidden vertex cannot consume a bound or become
+    // an intermediate path to otherwise visible content.
+    const accessiblePageIds = [...await authorizedPageIds(userId)];
+
     const neighborResult = await query<{ page_id: number; hop: number }>(
       `WITH RECURSIVE neighbors AS (
          SELECT $1::int AS page_id, 0 AS hop
@@ -281,7 +281,11 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
            WHERE (pr.page_id_1 = n.page_id OR pr.page_id_2 = n.page_id)
              AND ($4::text[] IS NULL OR pr.relationship_type = ANY($4::text[]))
              AND ($5::real IS NULL OR pr.score >= $5::real)
-           ORDER BY pr.score DESC
+             AND (
+               CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END
+             ) = ANY($6::int[])
+           ORDER BY pr.score DESC,
+             CASE WHEN pr.page_id_1 = n.page_id THEN pr.page_id_2 ELSE pr.page_id_1 END ASC
            LIMIT $3
          ) next
          WHERE n.hop < $2
@@ -295,21 +299,19 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
         perHopLimit,
         edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
         minScore ?? null,
+        accessiblePageIds,
       ],
     );
 
-    const neighborIds = neighborResult.rows.map((r) => r.page_id);
-    if (neighborIds.length === 0) {
-      neighborIds.push(centerPageId);
-    }
+    const neighborIds = neighborResult.rows.map((row) => row.page_id);
+    if (neighborIds.length === 0) neighborIds.push(centerPageId);
 
-    // Fetch node data for all neighbors. #360: apply label filter here —
-    // the center node is exempt so the user sees their selected article
-    // even if it doesn't carry the filter labels.
+    // The label filter remains a display filter. The center is exempt so the
+    // requested article is always present in its own authorized graph.
     const nodesResult = await query<{
       id: number;
       confluence_id: string | null;
-      space_key: string;
+      space_key: string | null;
       title: string;
       labels: string[];
       embedding_status: string;
@@ -320,19 +322,19 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
               cp.embedding_status, cp.last_modified_at, cp.parent_id
        FROM pages cp
        WHERE cp.id = ANY($1::int[])
-         AND cp.space_key = ANY($2::text[])
+         AND cp.id = ANY($2::int[])
          AND cp.deleted_at IS NULL
          AND ($3::text[] IS NULL OR cp.id = $4::int OR cp.labels && $3::text[])`,
-      [neighborIds, graphSpaces, labels && labels.length > 0 ? labels : null, centerPageId],
+      [neighborIds, accessiblePageIds, labels && labels.length > 0 ? labels : null, centerPageId],
     );
 
-    // Embedding counts
+    const nodeIdSet = new Set(nodesResult.rows.map((row) => row.id));
     const embeddingCountResult = await query<{ page_id: number; count: string }>(
       `SELECT pe.page_id, COUNT(*) as count
        FROM page_embeddings pe
        WHERE pe.page_id = ANY($1::int[])
        GROUP BY pe.page_id`,
-      [neighborIds],
+      [[...nodeIdSet]],
     );
 
     const embeddingCountMap = new Map<number, number>();
@@ -340,10 +342,6 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
       embeddingCountMap.set(row.page_id, parseInt(row.count, 10));
     }
 
-    const nodeIdSet = new Set(nodesResult.rows.map((r) => r.id));
-
-    // Fetch edges between neighbor nodes — apply the same edgeTypes /
-    // minScore filters here so the rendered edges match the BFS scope.
     const edgesResult = await query<{
       page_id_1: number;
       page_id_2: number;
@@ -357,7 +355,7 @@ export async function pagesEmbeddingRoutes(fastify: FastifyInstance) {
          AND ($3::real IS NULL OR pr.score >= $3::real)
        ORDER BY pr.score DESC`,
       [
-        Array.from(nodeIdSet),
+        [...nodeIdSet],
         edgeTypes && edgeTypes.length > 0 ? edgeTypes : null,
         minScore ?? null,
       ],

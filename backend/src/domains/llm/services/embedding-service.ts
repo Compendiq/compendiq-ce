@@ -23,7 +23,8 @@ import {
   shadowStateFingerprint,
   shadowEpochFromClient,
 } from './shadow-migration-service.js';
-import { listRelationshipProducers } from './embedding-relationship-hooks.js';
+import { materializeDeterministicRelationships } from './deterministic-relationships.js';
+import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.js';
 import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
@@ -1333,12 +1334,12 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
   // 120s-`statement_timeout` transaction (review r1).
   const efSearch = await efSearchFor(TOP_K);
 
-  // Wrap all three queries in a single transaction so the graph is never
-  // visible as empty during the window between DELETE and INSERT.
+  // Semantic and deterministic writers share one transaction lock.
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
     await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
+    await client.query('SELECT pg_advisory_xact_lock($1)', [RELATIONSHIP_ADVISORY_LOCK_ID]);
     // The LATERAL kNN below is served by idx_pages_page_avg_embedding_hnsw, so
     // it is governed by hnsw.ef_search exactly as the RAG vector leg is. Without
     // this it ran at PostgreSQL's default 40 while retrieval ran at >= 100 — one
@@ -1366,17 +1367,8 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
          WHERE relationship_type = 'embedding_similarity' AND page_id_1 = ANY($1)`,
         [changedPageIds],
       );
-      // All other edge types (label_overlap, parent_child, explicit_link) are
-      // symmetric and stored canonically (lower id first), and are fully
-      // recomputed for any pair touching a changed page — so delete both sides.
-      await client.query(
-        `DELETE FROM page_relationships
-         WHERE relationship_type <> 'embedding_similarity'
-           AND (page_id_1 = ANY($1) OR page_id_2 = ANY($1))`,
-        [changedPageIds],
-      );
     } else {
-      await client.query('DELETE FROM page_relationships');
+      await client.query("DELETE FROM page_relationships WHERE relationship_type = 'embedding_similarity'");
     }
 
     // Compute embedding similarity edges using pgvector <=> operator.
@@ -1421,99 +1413,15 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
       [TOP_K, SIMILARITY_THRESHOLD, useIncremental ? changedPageIds : null],
     );
 
-    // Compute label-overlap edges: pages sharing at least one label.
-    // When changedPageIds is provided, only compute for pairs involving at least one changed page.
-    const labelResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
-      `WITH label_overlaps AS (
-         SELECT
-           a.id AS page_id_1,
-           b.id AS page_id_2,
-           CASE
-             WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
-             ELSE (
-               SELECT COUNT(*)::real FROM (
-                 SELECT unnest(a.labels) INTERSECT SELECT unnest(b.labels)
-               ) x
-             ) / GREATEST(
-               array_length(a.labels, 1)::real,
-               array_length(b.labels, 1)::real
-             )
-           END AS score
-         FROM pages a
-         JOIN pages b ON a.id < b.id
-         WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
-           AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
-           AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
-           AND a.labels && b.labels
-           AND ($1::int[] IS NULL OR a.id = ANY($1) OR b.id = ANY($1))
-       )
-       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-       SELECT page_id_1, page_id_2, 'label_overlap', score
-       FROM label_overlaps
-       WHERE score > 0
-       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
-         SET score = EXCLUDED.score, created_at = NOW()
-       RETURNING page_id_1, page_id_2, score`,
-      [useIncremental ? changedPageIds : null],
+    const deterministicEdges = await materializeDeterministicRelationships(
+      client, useIncremental ? changedPageIds : null,
     );
-
-    // #362: parent_child edges. pages.parent_id is TEXT (a Confluence id)
-    // while page_relationships.page_id_1/2 is INT FK to pages.id after
-    // migration 030. Join via confluence_id to translate.
-    // Pairs are stored canonically (lower id first) so the unique key
-    // (page_id_1, page_id_2, relationship_type) catches both directions.
-    // Score = 1.0 since these edges are deterministic, not similarity-derived.
-    const parentChildResult = await client.query<{ page_id_1: number; page_id_2: number }>(
-      `WITH parent_links AS (
-         SELECT child.id AS child_id,
-                parent.id AS parent_id
-         FROM pages child
-         JOIN pages parent ON parent.confluence_id = child.parent_id
-         WHERE child.deleted_at IS NULL
-           AND parent.deleted_at IS NULL
-           AND child.parent_id IS NOT NULL
-           AND ($1::int[] IS NULL OR child.id = ANY($1) OR parent.id = ANY($1))
-       )
-       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-       SELECT
-         LEAST(child_id, parent_id),
-         GREATEST(child_id, parent_id),
-         'parent_child',
-         1.0
-       FROM parent_links
-       WHERE child_id <> parent_id
-       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO NOTHING
-       RETURNING page_id_1, page_id_2`,
-      [useIncremental ? changedPageIds : null],
-    );
-
-    // #359: cross-domain producers (registered at app bootstrap) run inside
-    // the same transaction. ESLint forbids `llm → knowledge` imports, so the
-    // explicit_link producer registers itself via `registerRelationshipProducer`
-    // — see `embedding-relationship-hooks.ts`. Producers honour the same
-    // `changedPageIds` scoping; failures bubble up and ROLLBACK below.
-    let extraEdges = 0;
-    const extraCounts: Record<string, number> = {};
-    for (const producer of listRelationshipProducers()) {
-      const inserted = await producer.fn(client, useIncremental ? changedPageIds : null);
-      extraCounts[producer.name] = inserted;
-      extraEdges += inserted;
-    }
 
     await client.query('COMMIT');
 
-    const totalEdges =
-      similarityResult.rows.length +
-      labelResult.rows.length +
-      parentChildResult.rows.length +
-      extraEdges;
+    const totalEdges = similarityResult.rows.length + deterministicEdges;
     logger.info(
-      {
-        embeddingSimilarity: similarityResult.rows.length,
-        labelOverlap: labelResult.rows.length,
-        parentChild: parentChildResult.rows.length,
-        ...extraCounts,
-      },
+      { embeddingSimilarity: similarityResult.rows.length, deterministicEdges },
       'Page relationships computed',
     );
     return totalEdges;
