@@ -72,6 +72,26 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 - **Filter** by space, tags, or status
 - **Pin** important pages for quick access from the dashboard
 
+### Connections: what to read next
+
+In read mode, **Connections** sits below the article. It groups **Linked articles**
+(links in either direction), **In this section** (parent and child pages), and
+**Related articles** (up to five ranked semantic or shared-label recommendations).
+Each row explains why it appears. Link direction and hierarchy are not similarity
+scores; shared labels name the actual overlap, and semantic scores are the
+relationship engine's recorded cosine similarity, not an AI confidence rating.
+
+Select a title to open that article. **Explore connections** opens the current
+article's focused, two-hop view at `/graph?focus=<page-id>`. Graph remains in
+navigation; the panel does not replace or expand the global canvas.
+
+Only articles you can access appear. Links, hierarchy, and shared-label evidence
+update without waiting for an embedding provider, including on articles with no
+body yet. An empty result is stated in the panel rather than hiding it. Loading
+and failed requests are distinct from an empty result, with a Retry action on
+failures. A failed refresh may retain the last loaded results with a warning;
+an access denial discards them until a successful authorized read.
+
 ### Creating a Page
 
 1. Click **New Page** (or press `Alt+N`).

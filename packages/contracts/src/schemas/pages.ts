@@ -19,6 +19,65 @@ export type PageSource = z.infer<typeof PageSourceEnum>;
 export const PageVisibilityEnum = z.enum(['private', 'shared']);
 export type PageVisibility = z.infer<typeof PageVisibilityEnum>;
 
+export const ConnectionReasonSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('explicit_link'),
+    direction: z.enum(['incoming', 'outgoing']),
+  }).strict(),
+  z.object({
+    type: z.literal('parent_child'),
+    direction: z.enum(['parent', 'child']),
+  }).strict(),
+  z.object({
+    type: z.literal('embedding_similarity'),
+    score: z.number().min(0).max(1),
+  }).strict(),
+  z.object({
+    type: z.literal('label_overlap'),
+    labels: z.array(z.string().min(1)),
+    score: z.number().min(0).max(1),
+  }).strict(),
+]);
+export type ConnectionReason = z.infer<typeof ConnectionReasonSchema>;
+
+export const ConnectionItemSchema = z.object({
+  pageId: z.string().regex(/^[1-9]\d*$/),
+  title: z.string(),
+  reasons: z.array(ConnectionReasonSchema).min(1),
+}).strict();
+export type ConnectionItem = z.infer<typeof ConnectionItemSchema>;
+
+export const PageConnectionsSchema = z.object({
+  linked: z.array(ConnectionItemSchema),
+  section: z.array(ConnectionItemSchema),
+  related: z.array(ConnectionItemSchema).max(5),
+}).strict();
+export type PageConnections = z.infer<typeof PageConnectionsSchema>;
+
+const ConnectionVisitSchema = z.object({
+  event: z.literal('impression'),
+  visitId: z.string().uuid(),
+}).strict();
+
+const ConnectionClickSchema = z.object({
+  event: z.literal('connection_click'),
+  visitId: z.string().uuid(),
+  targetPageId: z.string().regex(/^[1-9]\d*$/),
+  group: z.enum(['linked', 'section', 'related']),
+}).strict();
+
+const ConnectionGraphLaunchSchema = z.object({
+  event: z.literal('graph_launch'),
+  visitId: z.string().uuid(),
+}).strict();
+
+export const ConnectionEventSchema = z.discriminatedUnion('event', [
+  ConnectionVisitSchema,
+  ConnectionClickSchema,
+  ConnectionGraphLaunchSchema,
+]);
+export type ConnectionEvent = z.infer<typeof ConnectionEventSchema>;
+
 export const PageSummarySchema = z.object({
   id: z.union([z.string(), z.number()]),
   spaceKey: z.string().nullable(),

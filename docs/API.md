@@ -139,6 +139,47 @@ curl http://localhost:3051/api/pages/<page-id> \
   -H "Authorization: Bearer <access-token>"
 ```
 
+### Article Connections
+
+`GET /api/pages/:id/connections` returns the article's `linked`, `section`, and
+`related` groups. IDs on this endpoint are numeric `pages.id` values, serialized
+as strings. Each item contains `pageId`, `title`, and a `reasons` array:
+
+| Persisted type | Evidence on the response |
+|---|---|
+| `explicit_link` | `direction`: `incoming` or `outgoing`, verified against the current link content |
+| `parent_child` | `direction`: `parent` or `child`, verified against the current hierarchy |
+| `embedding_similarity` | The persisted numeric `score` |
+| `label_overlap` | Actual shared `labels` and the persisted numeric `score` |
+
+Related recommendations contain at most five unique targets, ranked by their
+highest persisted evidence score, then numeric page ID. Reciprocal similarity
+rows contribute one target with the maximum score. Direct and hierarchy targets
+are not repeated as semantic recommendations. An empty response contains three
+empty arrays; unavailable source pages return 404. Source and target visibility
+checks precede recommendation ranking.
+
+Deterministic relationship materialization is independent of embeddings. Page
+mutations invalidate deterministic evidence in the database; the authorized
+Connections and focused-local-graph read paths settle pending materialization
+through the shared engine before returning results. Unchanged reads do not
+rebuild the corpus, and failures are reported rather than converted to empty
+groups. Semantic scores are not rewritten by deterministic-only work.
+
+`POST /api/pages/:id/connections/events` collects authenticated panel usage:
+
+```json
+{"event":"impression","visitId":"f72f706e-a3b4-46cb-91f0-926558a03d68"}
+```
+
+The other event bodies are `{"event":"graph_launch","visitId":"<uuid>"}` and
+`{"event":"connection_click","visitId":"<uuid>","targetPageId":"42","group":"related"}`.
+The group is `linked`, `section`, or `related`. Requests use the shared strict
+`ConnectionEventSchema`; successful collection returns `{"recorded":true}`.
+Never send titles, labels, relationship explanations, scores, or article bodies
+as analytics metadata. See the administrator guide for impression semantics and
+the four-week adoption review.
+
 ### Search Pages
 
 ```bash

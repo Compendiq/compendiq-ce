@@ -156,6 +156,12 @@ erDiagram
         double score
     }
 
+    deterministic_relationship_dirty {
+        int page_id PK "no FK; deleted identities survive; 0 means upgrade backfill"
+        bigint revision "deterministic_relationship_revision sequence"
+        boolean full_rebuild "identity changes can affect unrelated pairs"
+    }
+
     llm_conversations {
         uuid id PK
         uuid user_id FK
@@ -348,6 +354,21 @@ erDiagram
         timestamptz created_at
     }
 ```
+
+**Deterministic relationship freshness (#1314, migration 111).** The
+`pages_deterministic_relationship_dirty` trigger records committed content,
+label, hierarchy and identity changes in `deterministic_relationship_dirty`.
+There is deliberately no page FK: deletion must invalidate old references.
+An upgrade inserts the full-rebuild sentinel. Authorized Connections and
+focused-graph reads settle pending work through the same deterministic
+materializer used by embedding recomputation; clean reads only check for
+pending work. No embedding provider is needed. The transaction advisory lock
+`RELATIONSHIP_ADVISORY_LOCK_ID` serializes materializers, and revision-matched
+deletion preserves mutations committed during a rebuild. Failed production
+rolls back both evidence and queue consumption. Semantic evidence is preserved.
+`relationship_parent_key` follows the source-sensitive hierarchy key;
+`relationship_parent_id` resolves exactly one live parent, never an ambiguous
+cross-namespace match. Its live-page expression index supports that lookup.
 
 Backup configuration is stored as rows in `admin_settings`, not as a separate
 wide table. Migration 107 seeds `backup_s3_enabled`, `backup_s3_endpoint`,

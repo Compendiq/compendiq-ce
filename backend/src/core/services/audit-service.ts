@@ -1,4 +1,5 @@
-import { FastifyRequest } from 'fastify';
+import type { FastifyRequest } from 'fastify';
+import type { ConnectionEvent } from '@compendiq/contracts';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -102,6 +103,9 @@ export type AuditAction =
   | 'EMBEDDING_RESCAN'
   | 'EMBEDDING_RESET_FAILED'
   | 'ADMIN_ACCESS_DENIED'
+  | 'CONNECTION_IMPRESSION'
+  | 'CONNECTION_CLICK'
+  | 'CONNECTION_GRAPH_LAUNCH'
   | 'ROLE_ASSIGNED'
   | 'ROLE_REVOKED'
   | 'GROUP_CREATED'
@@ -209,6 +213,44 @@ export async function logAuditEvent(
     // Audit logging must never block the main operation
     logger.error({ err, action, userId }, 'Failed to write audit log');
   }
+}
+
+/**
+ * Persist a Connections instrumentation event. Unlike the general audit
+ * helper, this throws on storage failure: this endpoint's only operation is
+ * collection, so returning `{ recorded: true }` without a durable row would be
+ * false. The partial unique index from migration 110 makes impression retries
+ * idempotent; the other event types remain append-only.
+ */
+export async function recordConnectionEvent(
+  userId: string,
+  sourcePageId: number,
+  event: ConnectionEvent,
+  request?: FastifyRequest,
+): Promise<void> {
+  const action: AuditAction = event.event === 'impression'
+    ? 'CONNECTION_IMPRESSION'
+    : event.event === 'connection_click'
+      ? 'CONNECTION_CLICK'
+      : 'CONNECTION_GRAPH_LAUNCH';
+  const metadata = event.event === 'connection_click'
+    ? { event: event.event, visitId: event.visitId, group: event.group }
+    : { event: event.event, visitId: event.visitId };
+
+  await query(
+    `INSERT INTO audit_log
+       (user_id, action, resource_type, resource_id, metadata, ip_address, user_agent)
+     VALUES ($1, $2, 'page_connections', $3, $4, $5, $6)
+     ON CONFLICT DO NOTHING`,
+    [
+      userId,
+      action,
+      String(sourcePageId),
+      JSON.stringify(metadata),
+      request?.ip ?? null,
+      request?.headers['user-agent'] ?? null,
+    ],
+  );
 }
 
 interface AuditLogFilter {

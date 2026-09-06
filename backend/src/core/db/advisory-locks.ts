@@ -42,3 +42,6 @@ export const ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;
  * service.
  */
 export const NOTION_IMPORT_LOCK_KEY = 1_420_002;
+
+/** Transaction mutex shared by deterministic and embedding relationship materializers. */
+export const RELATIONSHIP_ADVISORY_LOCK_ID = 1_314_001;

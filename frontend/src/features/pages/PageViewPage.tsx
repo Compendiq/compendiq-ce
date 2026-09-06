@@ -32,6 +32,7 @@ import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } fr
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
+import { ArticleConnections } from '../../shared/components/article/ArticleConnections';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
 import { apiFetch, ApiError } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
@@ -1089,6 +1090,7 @@ export function PageViewPage() {
                 Add content
               </Button>
             </div>
+            <ArticleConnections key={page.id} pageId={page.id} />
           </div>
         ) : (
           /* Reading view — constrained to 1200px reading column */
@@ -1143,6 +1145,8 @@ export function PageViewPage() {
                 confluencePageId={page.confluenceId}
               />
             </FeatureErrorBoundary>
+
+            <ArticleConnections key={page.id} pageId={page.id} />
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
             {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
