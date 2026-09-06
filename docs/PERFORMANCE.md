@@ -161,6 +161,8 @@ LIMIT 10;
 
 Use the repository-local Lighthouse CI so its dependency security overrides and
 lockfile apply; a global `@lhci/cli` install does not inherit them.
+Keep reports local: the filesystem upload target below overrides the repository's
+temporary public storage target, so local audit results are not published.
 
 ```bash
 # Install the locked workspace dependencies from the repository root
@@ -169,7 +171,8 @@ npm ci
 # Run against an already-running local server with Chrome installed
 npm run lighthouse -- --collect.url=http://localhost:8081/login \
   --collect.url=http://localhost:8081/ \
-  --assert.assertions.categories:performance=off
+  --assert.assertions.categories:performance=off \
+  --upload.target=filesystem --upload.outputDir=.lighthouseci/reports
 ```
 
 Or use Playwright's built-in performance measurement:
