@@ -7,7 +7,7 @@ on:
 
 # Cancel in-progress runs for the same PR — saves CI minutes on rapid pushes
 concurrency:
-  group: pr-check-${{ github.head_ref }}
+  group: pr-check-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 # @huggingface/transformers depends on onnxruntime-node, whose linux/x64
@@ -30,6 +30,7 @@ jobs:
       mcp: ${{ steps.filter.outputs.mcp }}
       vl: ${{ steps.filter.outputs.vl }}
       retrieval: ${{ steps.filter.outputs.retrieval }}
+      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -44,7 +45,12 @@ jobs:
             echo "mcp=true" >> "$GITHUB_OUTPUT"
             echo "vl=true" >> "$GITHUB_OUTPUT"
             echo "retrieval=true" >> "$GITHUB_OUTPUT"
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
           }
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            fail_open
+            exit 0
+          fi
           BASE="origin/${{ github.base_ref || 'dev' }}"
           # NO `git fetch --depth=1` here: checkout already fetched full
           # history, and a shallow fetch would CUT the base's ancestry, making
@@ -58,7 +64,8 @@ jobs:
           fi
           flag() {
             local name="$1" pattern="$2"
-            if echo "$CHANGED" | grep -qE "$pattern"; then
+            # Avoid an early grep exit SIGPIPE-ing echo under pipefail.
+            if grep -qE "$pattern" <<< "$CHANGED"; then
               echo "$name=true" >> "$GITHUB_OUTPUT"
               echo "$name=true"
             else
@@ -73,6 +80,7 @@ jobs:
           # through it since #1265 (htmlToEmbeddingText / htmlToMarkdown) — a
           # turndown-rule change moves retrieval as surely as a rag-service one.
           flag retrieval '^backend/src/domains/llm/(services/(rag-service|embedding-service|llm-provider-resolver)|eval/)|^backend/src/core/services/content-converter|^backend/scripts/run-retrieval-eval|^\.github/workflows/pr-check'
+          flag e2e '^(frontend/|backend/|packages/contracts/|e2e/|docker/|scripts/|configs?/|package(-lock)?\.json$|playwright\.config\.|[^/]*config[^/]*$|tsconfig[^/]*\.json$|\.env[^/]*$|\.npmrc$|build-info\.json$|\.github/workflows/)'
 
   typecheck-lint:
     name: Typecheck & Lint
@@ -212,6 +220,88 @@ jobs:
       # exports map. This is that production build, on the same install.
       - name: Frontend production build
         run: npm run build -w frontend
+
+  e2e:
+    name: Playwright E2E
+    needs: changes
+    # Detection failures must not turn the browser gate green by omission.
+    if: ${{ always() && !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.e2e != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: kb_user
+          POSTGRES_PASSWORD: changeme-postgres
+          POSTGRES_DB: kb_e2e
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U kb_user -d kb_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      E2E_CI: '1'
+      E2E_BASE_URL: http://localhost:8081
+      VITE_API_PROXY_TARGET: http://localhost:3051
+      COLLAB_E2E_ADMIN: ci_e2e_admin
+      COLLAB_E2E_PASSWORD: TestPassword123!
+      POSTGRES_URL: postgresql://kb_user:changeme-postgres@localhost:5433/kb_e2e
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-secret-that-is-at-least-32-characters-long
+      PAT_ENCRYPTION_KEY: ci-test-encryption-key-at-least-32-chars
+      COOKIE_SECURE: 'false'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build contracts, backend and frontend
+        run: npm run build
+
+      # Match backend/Dockerfile: tsc does not emit the SQL runtime assets.
+      - name: Install backend migrations
+        run: cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
+
+      - name: Install Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Test E2E helpers
+        run: npx vitest run --config e2e/vitest.config.ts
+
+      # Playwright owns both built servers and fresh-instance provisioning.
+      # No continue-on-error: provisioning, assertions and skip-policy failures
+      # retain the original failing step even if uploading diagnostics fails.
+      - name: Run eligible Playwright suite
+        run: npm run test:e2e
+
+      - name: Upload Playwright failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn
 
   # #1102 — retrieval quality gate. Deliberately its OWN job: it runs a real
   # embedding model, which the fast PR path must not wait on. Postgres is

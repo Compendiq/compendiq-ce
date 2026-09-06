@@ -69,6 +69,9 @@ async function resolveAdmin(browser: Browser): Promise<E2eUser | null> {
 test.describe('Collaborative editing (#1449)', () => {
   test.beforeAll(async ({ browser }) => {
     const admin = await resolveAdmin(browser);
+    if (process.env.E2E_CI === '1') {
+      expect(admin?.user.role, 'CI must provision and supply the collab admin').toBe('admin');
+    }
     if (!admin || admin.user.role !== 'admin') {
       test.skip(true, COLLAB_E2E_SKIP_NO_ADMIN);
       return;

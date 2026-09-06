@@ -17,9 +17,8 @@ test.describe('Session refresh retention', () => {
     });
     expect(regRes.ok()).toBe(true);
 
-    // Clear auth state to simulate a fresh browser session on the login page
-    await page.goto('/login');
-    await page.evaluate(() => localStorage.clear());
+    // The refresh cookie is the session; localStorage alone cannot log out.
+    await page.context().clearCookies();
     await page.goto('/login');
 
     // 2. Fill login form
@@ -31,17 +30,13 @@ test.describe('Session refresh retention', () => {
     // 3. Verify successful login redirect to /
     await expect(page).toHaveURL(/\/$/, { timeout: 10_000 });
 
-    // 4. RELOAD / REFRESH the page
+    // Observe the app's own refresh; a manual second POST races rotation.
+    const refreshed = page.waitForResponse((res) =>
+      res.url().endsWith('/api/auth/refresh') && res.request().method() === 'POST',
+    );
     await page.reload();
-
-    // 5. Assert user STAYS logged in on / (not kicked back to /login)
+    expect((await refreshed).status()).toBe(200);
+    await expect(page.getByRole('button', { name: `${testUser} menu` })).toBeVisible();
     await expect(page).toHaveURL(/\/$/, { timeout: 10_000 });
-
-    // 6. Verify silent refresh endpoint returns 200 OK
-    const refreshStatus = await page.evaluate(async () => {
-      const res = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' });
-      return res.status;
-    });
-    expect(refreshStatus).toBe(200);
   });
 });

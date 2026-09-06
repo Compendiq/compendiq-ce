@@ -1,189 +1,107 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+import { authenticateContext, registerUser, uniqueUsername } from './helpers/auth';
 
-/**
- * E2E: Theme switching (Frost Steel + Slate Steel, #30)
- *
- * Verifies:
- *  - First paint applies slate-steel on a fresh visit (FOUC prevention).
- *  - The header theme toggle swaps between slate-steel and frost-steel.
- *  - data-theme + data-theme-type attributes update on <html>.
- *  - The change persists to localStorage under `compendiq-theme`.
- *  - A persisted retired theme ID falls back to slate-steel on reload.
- *  - The retired honey pair migrates to its steel replacement before first
- *    paint, preserving brightness (honey-linen → frost-steel stays light).
- *  - Settings → Theme tab renders exactly the two current themes.
- */
+async function chooseTheme(page: Page, preference: 'system' | 'light' | 'dark') {
+  await page.getByTestId('theme-toggle').click();
+  await page.getByTestId(`theme-option-${preference}`).click();
+}
 
-const TEST_USER = `e2e_themes_${Date.now()}`;
-const TEST_PASS = 'TestPassword123!';
-
-test.describe('Theme switching', () => {
-  let authToken: string;
-  let authUser: { id: string; username: string; role: string };
-
-  test.beforeEach(async ({ page }) => {
-    const registerRes = await page.request.post('/api/auth/register', {
-      data: {
-        username: TEST_USER + Math.random().toString(36).slice(2, 6),
-        password: TEST_PASS,
-      },
+test.describe('Theme preferences', () => {
+  test.beforeEach(async ({ context, page }) => {
+    const session = await registerUser(context.request, uniqueUsername('e2e_themes'));
+    expect(session.user.role).toBe('user');
+    await authenticateContext(context, session);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    // Capture the inline bootstrap's first theme write, before the module
+    // bundle can rehydrate React and potentially correct an incorrect flash.
+    await context.addInitScript(() => {
+      sessionStorage.removeItem('e2e-bootstrap-theme');
+      const observer = new MutationObserver((records) => {
+        if (!records.some((record) => record.type === 'attributes' && record.attributeName === 'data-theme')) return;
+        sessionStorage.setItem('e2e-bootstrap-theme', JSON.stringify({
+          theme: document.documentElement.getAttribute('data-theme'),
+          type: document.documentElement.getAttribute('data-theme-type'),
+        }));
+        observer.disconnect();
+      });
+      observer.observe(document, { subtree: true, attributes: true, attributeFilter: ['data-theme'] });
     });
-
-    if (!registerRes.ok()) {
-      test.skip();
-      return;
-    }
-
-    const data = await registerRes.json();
-    authToken = data.accessToken;
-    authUser = data.user;
-
-    await page.goto('/login');
-    await page.evaluate(
-      ({ accessToken, user }) => {
-        const authState = {
-          state: { accessToken, user, isAuthenticated: true },
-          version: 0,
-        };
-        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
-      },
-      { accessToken: authToken, user: authUser },
-    );
   });
 
-  test('first paint applies slate-steel (no FOUC)', async ({ page }) => {
+  test('first paint follows the OS for a fresh visitor', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('/');
-
-    const dataTheme = await page.locator('html').getAttribute('data-theme');
-    const dataThemeType = await page.locator('html').getAttribute('data-theme-type');
-
-    expect(dataTheme).toBe('slate-steel');
-    expect(dataThemeType).toBe('dark');
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('e2e-bootstrap-theme')!))).toEqual({ theme: 'paper', type: 'light' });
+    await expect(page.getByTestId('theme-toggle')).toHaveAccessibleName('Theme: System');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'paper');
   });
 
-  test('header toggle switches slate-steel → frost-steel', async ({ page }) => {
+  test('header preference switches dark to light', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'slate-steel');
-
-    const toggle = page.getByRole('button', { name: /switch to light mode/i });
-    await toggle.click();
-
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'frost-steel');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'graphite');
+    await chooseTheme(page, 'light');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'paper');
     await expect(page.locator('html')).toHaveAttribute('data-theme-type', 'light');
+    await expect(page.getByTestId('theme-toggle')).toHaveAccessibleName('Theme: Light');
   });
 
-  test('header toggle switches frost-steel → slate-steel', async ({ page }) => {
+  test('header preference switches light to dark', async ({ page }) => {
     await page.goto('/');
-
-    // First flip to light
-    await page.getByRole('button', { name: /switch to light mode/i }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'frost-steel');
-
-    // Then back to dark
-    await page.getByRole('button', { name: /switch to dark mode/i }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'slate-steel');
+    await chooseTheme(page, 'light');
+    await chooseTheme(page, 'dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'graphite');
     await expect(page.locator('html')).toHaveAttribute('data-theme-type', 'dark');
+    await expect(page.getByTestId('theme-toggle')).toHaveAccessibleName('Theme: Dark');
   });
 
-  test('theme choice persists to localStorage and survives reload', async ({ page }) => {
+  test('an explicit choice survives reload without reverting to the OS', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: /switch to light mode/i }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'frost-steel');
-
-    // Persisted under compendiq-theme key
-    const persisted = await page.evaluate(() => localStorage.getItem('compendiq-theme'));
-    expect(persisted).toBeTruthy();
-    expect(persisted).toContain('frost-steel');
-
-    // Survives reload (FOUC-prevention script in index.html honours the persisted choice)
+    await chooseTheme(page, 'light');
     await page.reload();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'frost-steel');
-    await expect(page.locator('html')).toHaveAttribute('data-theme-type', 'light');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'paper');
+    await expect(page.getByTestId('theme-toggle')).toHaveAccessibleName('Theme: Light');
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('e2e-bootstrap-theme')!))).toEqual({ theme: 'paper', type: 'light' });
+    await chooseTheme(page, 'system');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'graphite');
   });
 
-  test('persisted retired theme ID falls back to slate-steel', async ({ page }) => {
-    await page.goto('/');
-
-    // Inject a retired theme ID into localStorage as if from an older client
-    await page.evaluate(() => {
-      localStorage.setItem(
-        'compendiq-theme',
-        JSON.stringify({ state: { theme: 'void-indigo' }, version: 0 }),
-      );
-    });
-
-    await page.reload();
-
-    // The validateThemeId path should drop void-indigo and the FOUC script's
-    // VALID map should refuse to apply it; both routes settle on the default.
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'slate-steel');
-    await expect(page.locator('html')).toHaveAttribute('data-theme-type', 'dark');
-  });
-
-  // The honey → steel rebrand retired both previous theme IDs. Upgrading users
-  // hold them in localStorage, so each must migrate to the replacement of the
-  // SAME brightness — and must do so in the FOUC script, before first paint,
-  // or a light-theme user gets a full-brightness flash on every page load.
   for (const [retired, replacement, type] of [
-    ['honey-linen', 'frost-steel', 'light'],
-    ['graphite-honey', 'slate-steel', 'dark'],
+    ['void-indigo', 'graphite', 'dark'],
+    ['honey-linen', 'paper', 'light'],
+    ['graphite-honey', 'graphite', 'dark'],
+    ['frost-steel', 'paper', 'light'],
   ] as const) {
-    test(`retired ${retired} migrates to ${replacement} before first paint`, async ({ page }) => {
-      await page.goto('/');
-      await page.evaluate((theme) => {
-        localStorage.setItem(
-          'compendiq-theme',
-          JSON.stringify({ state: { theme }, version: 0 }),
-        );
+    test(`legacy ${retired} preserves brightness before and after rehydration`, async ({ page }) => {
+      // Choose the opposite OS preference: a migration that falls back to
+      // System would otherwise accidentally pass for the dark legacy cases.
+      await page.emulateMedia({ colorScheme: type === 'light' ? 'dark' : 'light' });
+      // Seed the old installation before boot, not while the current store is
+      // still hydrating and can overwrite an out-of-band storage edit.
+      await page.addInitScript((theme) => {
+        localStorage.setItem('compendiq-theme', JSON.stringify({ state: { theme }, version: 0 }));
       }, retired);
-
-      // Read the attributes the inline FOUC script set, captured as early as
-      // the document element exists — before React has had a chance to correct
-      // them. If the migration only lived in the store, this would read the
-      // <html> default (slate-steel/dark) and the light case would fail here.
-      await page.reload({ waitUntil: 'commit' });
-      const atFirstPaint = await page.evaluate(() => ({
-        theme: document.documentElement.getAttribute('data-theme'),
-        type: document.documentElement.getAttribute('data-theme-type'),
-      }));
-
-      expect(atFirstPaint.theme).toBe(replacement);
-      expect(atFirstPaint.type).toBe(type);
-
-      // And it stays there once the store rehydrates — no late correction.
+      await page.goto('/');
+      expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('e2e-bootstrap-theme')!))).toEqual({ theme: replacement, type });
+      await expect(page.getByTestId('theme-toggle')).toHaveAccessibleName(`Theme: ${type === 'light' ? 'Light' : 'Dark'}`);
       await expect(page.locator('html')).toHaveAttribute('data-theme', replacement);
       await expect(page.locator('html')).toHaveAttribute('data-theme-type', type);
     });
   }
 
-  test('Settings → Theme tab renders exactly the two current themes', async ({ page }) => {
-    await page.goto('/settings');
-
-    // Click the Theme tab
-    await page.getByTestId('tab-theme').click();
-
-    // Both expected themes present
-    await expect(page.getByTestId('theme-slate-steel')).toBeVisible();
-    await expect(page.getByTestId('theme-frost-steel')).toBeVisible();
-
-    // Retired themes absent
-    await expect(page.getByTestId('theme-void-indigo')).toHaveCount(0);
-    await expect(page.getByTestId('theme-obsidian-violet')).toHaveCount(0);
-    await expect(page.getByTestId('theme-polar-slate')).toHaveCount(0);
-    await expect(page.getByTestId('theme-parchment-glow')).toHaveCount(0);
-
-    // Active badge is on slate-steel (the current theme after fresh visit)
-    const activeCard = page.getByTestId('theme-slate-steel');
-    await expect(activeCard.locator('[data-testid="theme-active-badge"]')).toBeVisible();
+  test('appearance offers only the current palettes and marks the active one', async ({ page }) => {
+    await page.goto('/settings/personal/theme');
+    await expect(page.getByTestId('theme-grid').getByRole('button')).toHaveCount(2);
+    await expect(page.getByTestId('theme-graphite')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('theme-paper')).toHaveAttribute('aria-pressed', 'false');
   });
 
-  test('clicking a theme card in Settings switches the theme', async ({ page }) => {
-    await page.goto('/settings');
-    await page.getByTestId('tab-theme').click();
-
-    await page.getByTestId('theme-frost-steel').click();
-
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'frost-steel');
-    await expect(page.locator('html')).toHaveAttribute('data-theme-type', 'light');
+  test('selecting a palette applies it and persists it to the profile', async ({ page }) => {
+    await page.goto('/settings/personal/theme');
+    const saved = page.waitForResponse((res) => res.url().endsWith('/api/settings') && res.request().method() === 'PUT' && res.request().postDataJSON()?.theme === 'paper');
+    await page.getByTestId('theme-paper').click();
+    expect((await saved).ok()).toBe(true);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'paper');
+    await expect(page.getByTestId('theme-paper')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('theme-graphite')).toHaveAttribute('aria-pressed', 'false');
   });
 });

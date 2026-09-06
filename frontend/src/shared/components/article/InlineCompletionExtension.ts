@@ -259,7 +259,8 @@ export const InlineCompletionExtension = Extension.create<InlineCompletionOption
                 },
                 {
                   side: 1,
-                  key: 'inline-completion-ghost',
+                  // A stable key reuses the old widget DOM after word acceptance.
+                  key: `inline-completion-ghost:${pluginState.activeSuggestion}`,
                   stopEvent: () => true,
                   ignoreMutation: () => true,
                 },
