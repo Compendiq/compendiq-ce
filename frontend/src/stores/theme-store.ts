@@ -272,6 +272,15 @@ export const useThemeStore = create<ThemeState>()(
     }),
     {
       name: 'compendiq-theme',
+      // Read the persisted shape before defaults are merged. Otherwise the
+      // default `system` masks a legacy fixed palette's missing preference.
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<ThemeState> | undefined;
+        const preference = persisted?.preference === undefined && typeof persisted?.theme === 'string'
+          ? (isLightTheme(validateThemeId(persisted.theme)) ? 'light' : 'dark')
+          : validateThemePreference(persisted?.preference);
+        return { ...currentState, ...persisted, preference };
+      },
       // `theme` is derived state and is deliberately NOT persisted: writing it
       // would let a stale resolved value win over the live OS reading on the
       // next boot, which is how "follow the OS" quietly stops following.

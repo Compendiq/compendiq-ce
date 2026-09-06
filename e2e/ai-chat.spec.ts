@@ -1,163 +1,69 @@
 import { test, expect } from '@playwright/test';
-
-/**
- * E2E: AI Chat interface
- *
- * Tests that the AI assistant page loads, shows mode buttons,
- * and handles the chat interface appropriately even if no LLM
- * backend is available.
- */
-
-const TEST_USER = `e2e_ai_${Date.now()}`;
-const TEST_PASS = 'TestPassword123!';
+import { authenticateContext, registerUser, uniqueUsername } from './helpers/auth';
 
 test.describe('AI Chat', () => {
-  test.beforeEach(async ({ page }) => {
-    // Register a fresh user via API
-    const registerRes = await page.request.post('/api/auth/register', {
-      data: { username: TEST_USER + Math.random().toString(36).slice(2, 6), password: TEST_PASS },
-    });
+  test.beforeEach(async ({ context }) => {
+    const session = await registerUser(context.request, uniqueUsername('e2e_ai'));
+    expect(session.user.role).toBe('user');
+    await authenticateContext(context, session);
+  });
 
-    if (!registerRes.ok()) {
-      test.skip();
-      return;
+  test('offers current standalone chat and creation skills', async ({ page }) => {
+    await page.goto('/ai');
+    const action = page.getByTestId('assistant-action-select');
+    await expect(action).toHaveAccessibleName('Selected action: Q&A');
+    await action.click();
+    for (const id of ['ask', 'generate', 'create-spec', 'create-guide', 'create-notes', 'create-postmortem', 'create-custom']) {
+      await expect(page.getByTestId(`assistant-action-${id}`)).toBeVisible();
     }
-
-    const data = await registerRes.json();
-
-    // Set auth state
-    await page.goto('/login');
-    await page.evaluate(
-      ({ accessToken, user }) => {
-        const authState = {
-          state: { accessToken, user, isAuthenticated: true },
-          version: 0,
-        };
-        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
-      },
-      { accessToken: data.accessToken, user: data.user },
-    );
+    // Rewrite and diagram actions require an article and belong in its dock,
+    // not on the standalone AI route.
+    await expect(page.getByTestId('assistant-action-diagram')).toHaveCount(0);
+    await page.keyboard.press('Escape');
   });
 
-  test('loads AI assistant page with mode buttons', async ({ page }) => {
+  test('shows an editable question composer with empty-send protection', async ({ page }) => {
     await page.goto('/ai');
-    await expect(page).toHaveURL(/\/ai/, { timeout: 10_000 });
-
-    // The AI assistant should show mode buttons
-    await expect(
-      page.getByText('Q&A').or(page.getByRole('button', { name: /Q&A/i })),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // Check for other mode buttons
-    const improveBtn = page.getByText('Improve').or(page.getByRole('button', { name: /Improve/i }));
-    const generateBtn = page.getByText('Generate').or(page.getByRole('button', { name: /Generate/i }));
-
-    await expect(improveBtn).toBeVisible({ timeout: 5_000 });
-    await expect(generateBtn).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId('ask-input')).toBeEditable();
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
+    await page.getByTestId('ask-input').fill('First line');
+    await page.getByTestId('ask-input').press('Shift+Enter');
+    await page.getByTestId('ask-input').press('End');
+    await page.getByTestId('ask-input').press('x');
+    await expect(page.getByTestId('ask-input')).toHaveValue('First line\nx');
   });
 
-  test('shows chat input area', async ({ page }) => {
+  test('switches between question and generation composers', async ({ page }) => {
     await page.goto('/ai');
-    await expect(page).toHaveURL(/\/ai/, { timeout: 10_000 });
-
-    // Wait for the page to load
-    await page.waitForLoadState('networkidle');
-
-    // Should have some kind of input area for asking questions
-    const chatInput = page
-      .getByPlaceholder(/ask|question|type|message/i)
-      .or(page.getByTestId('chat-input'))
-      .or(page.getByRole('textbox'))
-      .or(page.locator('textarea'));
-
-    // The chat input should be visible (or a "loading models" state)
-    const hasInput = await chatInput.first().isVisible({ timeout: 5_000 }).catch(() => false);
-    const hasLoadingModels = await page
-      .getByText(/loading models/i)
-      .isVisible({ timeout: 2_000 })
-      .catch(() => false);
-    const hasNoModels = await page
-      .getByText(/no models|configure|connect/i)
-      .isVisible({ timeout: 2_000 })
-      .catch(() => false);
-
-    // At least one of these states should be visible
-    expect(hasInput || hasLoadingModels || hasNoModels).toBeTruthy();
+    await page.getByTestId('assistant-action-select').click();
+    await page.getByTestId('assistant-action-generate').click();
+    await expect(page.getByPlaceholder('Describe the page to generate...', { exact: true })).toBeEditable();
+    await expect(page.getByTestId('ask-input')).toHaveCount(0);
+    await page.getByTestId('assistant-action-select').click();
+    await page.getByTestId('assistant-action-ask').click();
+    await expect(page.getByTestId('ask-input')).toBeEditable();
+    await expect(page.getByPlaceholder('Describe the page to generate...', { exact: true })).toHaveCount(0);
   });
 
-  test('can switch between AI modes', async ({ page }) => {
+  test('surfaces a failed LLM request and makes the composer usable again', async ({ page }) => {
+    // Mock only the LLM-facing boundary. Auth, settings, conversations and
+    // knowledge APIs still use the disposable backend.
+    await page.route('**/api/ollama/models?usecase=chat', (route) => route.fulfill({
+      json: [{ name: 'e2e-unavailable-model' }],
+    }));
+    await page.route('**/api/llm/ask', (route) => route.fulfill({
+      status: 503,
+      json: { error: 'Service Unavailable', message: 'E2E provider is unavailable', statusCode: 503 },
+    }));
     await page.goto('/ai');
-    await expect(page).toHaveURL(/\/ai/, { timeout: 10_000 });
-
-    // Wait for modes to render
-    await expect(
-      page.getByText('Q&A').or(page.getByRole('button', { name: /Q&A/i })),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // Click "Improve" mode
-    const improveBtn = page.getByRole('button', { name: /Improve/i }).or(page.getByText('Improve'));
-    await improveBtn.click();
-
-    // Should show improve-specific content (e.g., "Navigate to a page" prompt)
-    await expect(
-      page.getByText(/navigate to a page|select a page|improve/i),
-    ).toBeVisible({ timeout: 5_000 });
-
-    // Click "Generate" mode
-    const generateBtn = page.getByRole('button', { name: /Generate/i }).or(page.getByText('Generate'));
-    await generateBtn.click();
-
-    // Should show generate-specific content
-    // Allow UI transition to settle
-    await page.waitForLoadState('domcontentloaded');
-
-    // Switch back to Q&A
-    const qaBtn = page.getByRole('button', { name: /Q&A/i }).or(page.getByText('Q&A'));
-    await qaBtn.click();
-
-    await expect(
-      page.getByText(/ask questions|knowledge base/i),
-    ).toBeVisible({ timeout: 5_000 });
-  });
-
-  test('handles question submission gracefully when LLM is unavailable', async ({
-    page,
-  }) => {
-    await page.goto('/ai');
-    await expect(page).toHaveURL(/\/ai/, { timeout: 10_000 });
-
-    // Wait for the page to fully load
-    await page.waitForLoadState('networkidle');
-
-    // Find the chat input
-    const chatInput = page
-      .getByPlaceholder(/ask|question|type|message/i)
-      .or(page.getByTestId('chat-input'))
-      .or(page.getByRole('textbox'))
-      .or(page.locator('textarea'));
-
-    if (await chatInput.first().isVisible({ timeout: 5_000 }).catch(() => false)) {
-      // Type a question
-      await chatInput.first().fill('What is Compendiq?');
-
-      // Try to submit (Enter or submit button)
-      const submitBtn = page
-        .getByRole('button', { name: /send|submit|ask/i })
-        .or(page.getByTestId('send-btn'));
-
-      if (await submitBtn.first().isVisible({ timeout: 2_000 }).catch(() => false)) {
-        await submitBtn.first().click();
-      } else {
-        await chatInput.first().press('Enter');
-      }
-
-      // Should either show a response/streaming indicator OR an error message
-      // (since LLM might not be available in the test environment)
-      await page.waitForLoadState('networkidle');
-
-      // Verify the app does not crash — any visible state is acceptable
-      // (response message, loading indicator, or error toast)
-      await expect(page).toHaveURL(/\/ai/);
-    }
+    await page.getByTestId('ask-input').fill('What is Compendiq?');
+    const response = page.waitForResponse((res) => res.url().endsWith('/api/llm/ask') && res.request().method() === 'POST');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    expect((await response).status()).toBe(503);
+    await expect(page.getByTestId('message-error')).toBeVisible();
+    await expect(page.getByTestId('ai-error-announcer')).not.toBeEmpty();
+    await expect(page.getByTestId('ask-input')).toBeEditable();
+    await page.getByTestId('ask-input').fill('Try another question');
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
   });
 });

@@ -65,6 +65,9 @@ test.describe('Library empty state (#1402 phase 3)', () => {
       const probe = await probeContext.request.post('/api/auth/register', {
         data: { username: uniqueUsername('e2e_emptystate_probe'), password: E2E_PASSWORD },
       });
+      if (process.env.E2E_CI === '1') {
+        expect(probe.ok(), await probe.text()).toBeTruthy();
+      }
       if (!probe.ok()) return;
     } finally {
       await probeContext.close();

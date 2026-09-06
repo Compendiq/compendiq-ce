@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { authenticateContext, bearerHeaders, registerUser } from './helpers/auth';
 
 /**
  * E2E: Sidebar drag-to-reorder under the pointer-event bridge (#1089, follow-up
@@ -21,12 +22,7 @@ import { test, expect, type Page } from '@playwright/test';
  * Primary assertion: no uncaught exception surfaces during the drag — i.e. the
  * bridge swallowed the `setPointerCapture` NotFoundError that @dnd-kit raises at
  * drag start. The reorder actually persisting is a best-effort secondary check.
- *
- * NOTE: correct-by-construction; runs on CI / a live stack only (needs backend +
- * frontend on E2E_BASE_URL). It was NOT executed against a live app locally.
  */
-
-const TEST_PASS = 'TestPassword123!';
 
 interface Seeded {
   spaceKey: string;
@@ -44,18 +40,9 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     // title) is deterministic: Alpha, Bravo, Charlie top-to-bottom.
     const titlesInOrder = [`Alpha ${suffix}`, `Bravo ${suffix}`, `Charlie ${suffix}`];
 
-    const registerRes = await page.request.post('/api/auth/register', {
-      data: { username, password: TEST_PASS },
-    });
-    if (!registerRes.ok()) {
-      test.skip();
-      return;
-    }
-    const { accessToken, user } = (await registerRes.json()) as {
-      accessToken: string;
-      user: unknown;
-    };
-    const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+    const session = await registerUser(page.request, username);
+    await authenticateContext(page.context(), session);
+    const auth = { headers: bearerHeaders(session) };
 
     // Seed a local space + three root pages so the sidebar has draggable rows.
     // (An empty dev DB — no draggable rows — was the original #1088 blocker.)
@@ -63,40 +50,25 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
       ...auth,
       data: { key: spaceKey, name: `Drag E2E ${suffix}` },
     });
-    if (!spaceRes.ok()) {
-      test.skip();
-      return;
-    }
+    expect(spaceRes.ok(), await spaceRes.text()).toBeTruthy();
     for (const title of titlesInOrder) {
       const pageRes = await page.request.post('/api/pages', {
         ...auth,
         data: { title, bodyHtml: '<p>drag e2e</p>', spaceKey },
       });
-      if (!pageRes.ok()) {
-        test.skip();
-        return;
-      }
+      expect(pageRes.ok(), await pageRes.text()).toBeTruthy();
     }
 
     // Seed auth + pre-select the local space so the tree renders on first load
     // WITHOUT any real click (a click would emit trusted pointer events and
     // latch the bridge off before we can simulate the pointerless drag).
-    await page.goto('/login');
-    await page.evaluate(
-      ({ accessToken, user, spaceKey }) => {
-        localStorage.setItem(
-          'compendiq-auth',
-          JSON.stringify({ state: { accessToken, user, isAuthenticated: true }, version: 0 }),
-        );
-        // zustand persist shallow-merges the persisted slice over the store
-        // defaults, so seeding only treeSidebarSpaceKey is enough.
+    await page.context().addInitScript((spaceKey: string) => {
+        // Preselect the space without a native pointer event.
         localStorage.setItem(
           'compendiq-ui',
           JSON.stringify({ state: { treeSidebarSpaceKey: spaceKey }, version: 0 }),
         );
-      },
-      { accessToken, user, spaceKey },
-    );
+      }, spaceKey);
 
     await page.goto('/');
     await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });

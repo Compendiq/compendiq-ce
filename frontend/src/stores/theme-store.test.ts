@@ -270,6 +270,22 @@ describe('theme-store', () => {
  * an in-memory `setState` test cannot see.
  */
 describe('theme preference survives a reload', () => {
+  it('preserves a legacy fixed palette through hydration without overriding an explicit preference', async () => {
+    localStorage.setItem('compendiq-theme', JSON.stringify({
+      state: { theme: 'honey-linen' }, version: 0,
+    }));
+    await useThemeStore.persist.rehydrate();
+    expect(useThemeStore.getState().preference).toBe('light');
+    expect(document.documentElement.dataset.theme).toBe('paper');
+
+    localStorage.setItem('compendiq-theme', JSON.stringify({
+      state: { theme: 'honey-linen', preference: 'dark' }, version: 0,
+    }));
+    await useThemeStore.persist.rehydrate();
+    expect(useThemeStore.getState().preference).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('graphite');
+  });
+
   it('rehydrates an explicitly stored dark preference', async () => {
     localStorage.setItem(
       'compendiq-theme',

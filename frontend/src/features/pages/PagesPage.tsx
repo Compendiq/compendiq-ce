@@ -1149,7 +1149,7 @@ export function PagesPage() {
             >
               <Plus size={15} />
               <span>New Page</span>
-              <ShortcutHint shortcutId="new-page" />
+              <ShortcutHint shortcutId="new-page" className="border-current bg-transparent text-primary-foreground" />
             </button>
           </div>
         </div>

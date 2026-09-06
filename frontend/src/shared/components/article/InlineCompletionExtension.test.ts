@@ -158,7 +158,7 @@ describe('InlineCompletionExtension (#1417)', () => {
     await typeAndResolve(editor);
     key(editor, { key: ']', code: 'BracketRight', ctrlKey: true });
     expect(editor.getText()).toBe('Rotate the access ');
-    expect(document.querySelector('[data-testid="inline-completion-ghost"]')).toHaveTextContent(
+    expect(document.querySelector('[data-testid="inline-completion-ghost"]')?.textContent).toBe(
       'token before expiry.',
     );
     editor.destroy();

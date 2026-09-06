@@ -261,8 +261,76 @@ fingerprint, and migration validation.
 
 - `docker-compose.confluence.yml` — spins up a throwaway Confluence DC for
   local integration testing.
-- `docker-compose.test.yml` — CI services (Postgres on `:5433`, Redis
-  ephemeral) used by `backend` tests and Playwright E2E.
+- `docker-compose.test.yml` — local test services (Postgres on `:5433`, Redis
+  ephemeral). PR Check provisions its PostgreSQL and Redis as job-local services.
+
+## Pull-request browser stack (#1543)
+
+PR Check runs `Playwright E2E` for relevant source, test, configuration and
+workflow changes, and on every manual dispatch. Change-detection failures
+fail open into running the job. It does not need external service secrets.
+
+```mermaid
+flowchart LR
+    pr["Relevant PR or manual dispatch"] --> build["npm ci + build<br/>copy SQL migrations"]
+    build --> backend["Compiled backend<br/>:3051"]
+    build --> preview["Vite preview<br/>:8081"]
+    backend --> pg[("Job-local pgvector 17<br/>kb_e2e")]
+    backend --> redis[("Job-local Redis 8")]
+    preview -->|"API + WebSocket proxy"| backend
+    setup["Fresh-instance setup + open registration"] --> preview
+    setup --> chromium["Chromium specs<br/>one worker"]
+    chromium --> collab["Collab project<br/>provisioned admin"]
+    collab --> report["Executed / skipped summary<br/>selected skips fail"]
+    report -->|"failure"| artifacts["HTML + traces + screenshots<br/>7-day retention"]
+```
+
+`E2E_CI=1` validates loopback URLs and the dedicated `kb_e2e` database name
+before starting servers. The global setup then refuses an already-provisioned
+instance, creates the first admin with `POST /api/setup/admin`, logs in, and
+uses `PUT /api/admin/settings` to open registration. A real registration
+probe verifies that setting; the probe user is deleted afterward.
+
+The disposable instance gets `rateLimitAuth=1000`, `rateLimitGlobal=10000`
+and `rateLimitAdmin=1000`. Serial workers avoid shared-instance races; raising
+the CI-only auth limit avoids exhausting the normal five requests/minute even
+when tests run serially. The collaboration project runs after Chromium and
+restores its instance settings. Production rate-limit defaults are unchanged.
+
+The checked-in CI exclusion list is deliberately narrow:
+
+| Spec | Why it is outside this job |
+|---|---|
+| `confluence-sync.spec.ts` | Real Confluence instance and `E2E_CONFLUENCE_URL` / `E2E_CONFLUENCE_PAT`. The mocked Confluence flow runs in CI. |
+| `llm-providers.spec.ts` | Live Ollama-compatible endpoint (`E2E_LLM_URL`) and a fresh first-admin fixture. |
+| `think-toggle.spec.ts` | Dedicated LLM request-log harness (`E2E_LLM_URL`, `MOCK_REQ_LOG`) and a fresh first-admin fixture. |
+
+These specs remain available in normal local mode; exclusion is not a passing
+test result. Every selected CI test must execute. The custom reporter rejects
+zero executed tests and any selected skip, writes counts to the job summary,
+and preserves failures/timeouts. Playwright also rejects an empty selection.
+
+To reproduce the job locally, start **disposable** PostgreSQL/Redis with a
+fresh `kb_e2e` database. Export `POSTGRES_URL`, `REDIS_URL`, `JWT_SECRET`,
+`PAT_ENCRYPTION_KEY`, `COLLAB_E2E_ADMIN` and `COLLAB_E2E_PASSWORD` for that
+stack, then run from the repository root:
+
+```bash
+npm ci
+npm run build
+cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
+npx playwright install chromium
+npx vitest run --config e2e/vitest.config.ts
+E2E_CI=1 E2E_BASE_URL=http://localhost:8081 \
+  VITE_API_PROXY_TARGET=http://localhost:3051 COOKIE_SECURE=false \
+  npm run test:e2e
+```
+
+The two HTTP ports must be free; CI mode never reuses running servers.
+Recreate only the disposable database and clear only its Redis before another
+CI-mode run. To test an already-running development installation instead, omit
+`E2E_CI` and set `E2E_BASE_URL` plus the existing collaboration admin credentials;
+normal mode neither provisions nor relaxes instance rate limits.
 
 ## Enterprise image
 

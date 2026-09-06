@@ -1,20 +1,10 @@
 import { expect, test } from '@playwright/test';
-
-const PASSWORD = 'TestPassword123!';
+import { authenticateContext, registerUser, uniqueUsername } from './helpers/auth';
 
 test.describe('AI inline completion (#1417)', () => {
   test('shows ghost text, accepts full/word continuations, and dismisses with Escape', async ({ page }) => {
-    const username = `e2e_inline_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const registration = await page.request.post('/api/auth/register', {
-      data: { username, password: PASSWORD },
-    });
-    test.skip(!registration.ok(), 'Registration is unavailable in this E2E environment');
-    const auth = await registration.json();
-    const headers = { Authorization: `Bearer ${auth.accessToken}` };
-    await page.request.post('/api/spaces/local', {
-      headers,
-      data: { key: `INL${Date.now().toString().slice(-4)}`, name: 'Inline completion' },
-    });
+    const auth = await registerUser(page.request, uniqueUsername('e2e_inline'));
+    await authenticateContext(page.context(), auth);
 
     await page.route('**/api/settings', async (route) => {
       if (route.request().method() !== 'GET') return route.continue();
@@ -63,13 +53,6 @@ test.describe('AI inline completion (#1417)', () => {
         }),
       }));
 
-    await page.goto('/login');
-    await page.evaluate(({ accessToken, user }) => {
-      localStorage.setItem('compendiq-auth', JSON.stringify({
-        state: { accessToken, user, isAuthenticated: true },
-        version: 0,
-      }));
-    }, auth);
     await page.goto('/pages/new');
 
     const editor = page.locator('.tiptap');
@@ -87,7 +70,7 @@ test.describe('AI inline completion (#1417)', () => {
     completion = ' next words remain';
     await page.keyboard.type(' with');
     await expect(ghost).toHaveText(' next words remain');
-    await page.keyboard.press('Control+]');
+    await page.keyboard.press(process.platform === 'darwin' ? 'Alt+]' : 'Control+]');
     await expect(editor).toContainText('Start continuation with next ');
     await expect(ghost).toHaveText('words remain');
 

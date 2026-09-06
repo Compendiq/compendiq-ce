@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import { authenticateContext, loginUser, registerUser, uniqueUsername } from './helpers/auth';
 
 /**
  * E2E: WCAG-AA contrast audit (accessibility + amber-as-AI bundle, task 6/6)
@@ -13,16 +14,13 @@ import { test, expect, Page } from '@playwright/test';
  * on 2026-05-17.
  */
 
-const TEST_USER = `e2e_contrast_${Date.now()}`;
-const TEST_PASS = 'TestPassword123!';
-
 const ROUTES = [
-  '/',
-  '/graph',
-  '/ai',
-  '/settings',
-  '/settings/system/license',
-  '/admin/analytics',
+  { route: '/', admin: false, ready: '[data-testid="library-filter-panel"]' },
+  { route: '/graph', admin: false, ready: '[data-testid="graph-empty-state"], [data-testid="graph-picker-landing"], [data-testid="graph-container"]' },
+  { route: '/ai', admin: false, ready: '[data-testid="ask-input"]' },
+  { route: '/settings/personal/confluence', admin: false, ready: '#confluence-url' },
+  { route: '/settings/system/license', admin: true, ready: '[data-testid="license-status"]' },
+  { route: '/admin/analytics', admin: true, ready: '[data-testid="analytics-gate"]' },
 ];
 
 interface ContrastViolation {
@@ -129,72 +127,43 @@ async function auditPage(
 }
 
 test.describe('WCAG-AA contrast audit', () => {
-  // Single shared auth across all 12 tests. The audit is read-only against
-  // the rendered DOM — there's no per-test state to isolate — and reusing one
-  // user avoids tripping the backend's per-IP registration rate limit, which
-  // kicks in around ~5 registrations and was silently skipping the remaining
-  // tests.
-  let authToken: string | null = null;
-  let authUser: { id: string; username: string; role: string } | null = null;
-
-  test.beforeAll(async ({ request }) => {
-    const registerRes = await request.post('/api/auth/register', {
-      data: {
-        username: `${TEST_USER}_${Math.random().toString(36).slice(2, 8)}`,
-        password: TEST_PASS,
-      },
-    });
-    if (!registerRes.ok()) {
-      // Leave auth* null; per-test beforeEach will call test.skip().
-      return;
-    }
-    const data = await registerRes.json();
-    authToken = data.accessToken;
-    authUser = data.user;
-  });
-
-  test.beforeEach(async ({ page }) => {
-    if (!authToken || !authUser) {
-      test.skip();
-      return;
-    }
-    await page.goto('/login');
-    await page.evaluate(
-      ({ accessToken, user }) => {
-        const authState = {
-          state: { accessToken, user, isAuthenticated: true },
-          version: 0,
-        };
-        localStorage.setItem('compendiq-auth', JSON.stringify(authState));
-      },
-      { accessToken: authToken, user: authUser },
-    );
-  });
-
-  for (const route of ROUTES) {
+  for (const { route, admin, ready } of ROUTES) {
     for (const theme of ['light', 'dark'] as const) {
-      test(`contrast: ${route} (${theme})`, async ({ page }) => {
-        // 1. Set theme. slate-steel is the default after fresh visit; flip
-        //    to frost-steel via the header toggle if light is requested.
-        await page.goto('/');
-        await expect(page.locator('html')).toHaveAttribute(
-          'data-theme',
-          'slate-steel',
-        );
-
-        if (theme === 'light') {
-          await page
-            .getByRole('button', { name: /switch to light mode/i })
-            .click();
-          await expect(page.locator('html')).toHaveAttribute(
-            'data-theme',
-            'frost-steel',
-          );
+      test(`contrast: ${route} (${theme})`, async ({ context, page }) => {
+        // Cookies belong to this test's browser context; a request-fixture
+        // session from beforeAll would not survive a new page's refresh.
+        let session;
+        if (admin) {
+          const username = process.env.COLLAB_E2E_ADMIN;
+          const password = process.env.COLLAB_E2E_PASSWORD;
+          if (!username || !password) throw new Error('Admin contrast audit requires COLLAB_E2E_ADMIN and COLLAB_E2E_PASSWORD');
+          session = await loginUser(context.request, username, password);
+          expect(session.user.role).toBe('admin');
+        } else {
+          session = await registerUser(context.request, uniqueUsername('e2e_contrast'));
+          expect(session.user.role).toBe('user');
         }
+        await authenticateContext(context, session);
+        // Explicitly choose the audited palette, independent of the OS and
+        // the admin's profile; System is the current first-visit default.
+        await page.goto('/');
+        await page.getByTestId('theme-toggle').click();
+        await page.getByTestId(`theme-option-${theme}`).click();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme === 'light' ? 'paper' : 'graphite');
 
         // 2. Navigate to the target route under the chosen theme.
         await page.goto(route);
-        await page.waitForLoadState('networkidle');
+        await expect(page).toHaveURL(new RegExp(`${route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+        await expect(page.locator(ready)).toBeVisible();
+        await expect(page.locator('html')).toHaveAttribute('data-theme-type', theme);
+        // Measure settled colors, not a button's transparent-to-primary
+        // entrance transition. Infinite loading indicators need not finish.
+        await page.evaluate(async () => {
+          await document.fonts.ready;
+          await Promise.all(document.getAnimations()
+            .filter(animation => animation.effect?.getComputedTiming().endTime !== Infinity)
+            .map(animation => animation.finished.catch(() => {})));
+        });
 
         // 3. Run the audit.
         const violations = await auditPage(page, route, theme);

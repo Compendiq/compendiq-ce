@@ -30,7 +30,7 @@ npm run build | lint | typecheck    # all workspaces
 npm test                            # all suites
 npm test -w backend                 # one workspace
 cd backend && npx vitest run <file> # single file
-npx playwright test                 # E2E (needs backend + frontend running)
+npx playwright test                 # local E2E against an already-running stack; CI recipe below
 docker compose -f docker/docker-compose.yml up -d   # pull GHCR; needs POSTGRES_PASSWORD + REDIS_PASSWORD in docker/.env
 ```
 
@@ -82,7 +82,7 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 ## Testing & Mocks
 
-Mocks exist for CI only (Confluence, Ollama, Redis aren't reachable there).
+Mock external Confluence/LLM boundaries where needed. Playwright CI uses real PostgreSQL and Redis, not mocked persistence or auth.
 
 **Carve-out — the retrieval eval (#1102) runs a REAL embedding model in CI.**
 The `retrieval-eval` job in `pr-check.yml` brings up Ollama as a service
@@ -604,6 +604,23 @@ about what it measured, and lint, typecheck and every other suite stay green.
 - Frontend tests → mock fetch/MSW at the network boundary, not internal components.
 - Pure utilities → test directly with real inputs.
 - Mock at the boundary (HTTP), never at the service-function layer.
+
+**Browser CI (#1543).** PR Check's `Playwright E2E` job runs on relevant PRs
+(frontend, backend, contracts, E2E, build/config and workflow changes); manual
+`workflow_dispatch` runs it unconditionally. `E2E_CI=1` builds on a disposable
+loopback `kb_e2e` database: Playwright starts the compiled backend and Vite
+preview, creates the admin through `/api/setup/admin`, and opens registration
+through the admin settings API. One worker plus CI-only rate-limit settings
+avoid the default 5-auth-requests/minute cap; production defaults stay intact.
+The `collab` project runs last using that admin. The reporter prints executed
+and skipped counts and fails on any selected skip, including all-skipped runs.
+Failures retain HTML reports, screenshots and traces for seven days.
+
+Only three external specs are excluded from this CI selection:
+`confluence-sync`, `llm-providers`, and `think-toggle`; their prerequisites and
+the local reproduction recipe are in
+[`docs/architecture/05-deployment.md`](docs/architecture/05-deployment.md#pull-request-browser-stack-1543).
+Do not turn a missing core prerequisite into `test.skip()`.
 
 ## Enterprise (Open-Core)
 
