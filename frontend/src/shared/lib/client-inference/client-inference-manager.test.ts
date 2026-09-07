@@ -487,4 +487,17 @@ describe('ClientInferenceManager (#1418)', () => {
     expect(decision.kind).toBe('server');
     expect(worker.messages.some((m) => m.type === 'complete')).toBe(false);
   });
+
+  it('treats an empty policy payload as allowed', async () => {
+    const worker = new FakeWorker();
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchOrgPolicy: async () => undefined as unknown as ClientInferenceOrgPolicy,
+    });
+    expect(() => mgr.setFlags({ adminEnabled: true, userEnabled: true })).not.toThrow();
+    await mgr.refreshOrgPolicy();
+    expect(mgr.orgPolicySnapshot()).toEqual(INACTIVE_POLICY);
+  });
 });

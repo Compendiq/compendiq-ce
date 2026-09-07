@@ -1,5 +1,5 @@
 import { ClientModelIdSchema, type ClientAssetManifest, type ClientModelId, type InlineCompletionRequest, type InlineCompletionResponse } from '@compendiq/contracts';
-import { apiFetch, apiFetchBlob, ApiError } from '../api';
+import { apiFetch, apiFetchBlob } from '../api';
 import { useAuthStore } from '../../../stores/auth-store';
 import { probeDeviceGpu, type DeviceGpuProfile } from './device-gpu-profile';
 import { capMaxTokens, normalizeInlineCompletion } from './instruct-format';
@@ -112,7 +112,7 @@ export class ClientInferenceManager {
   }
 
   orgPolicySnapshot(): ClientInferenceOrgPolicy {
-    return this.orgPolicy;
+    return this.orgPolicy ?? INACTIVE_ORG_POLICY;
   }
 
   async refreshOrgPolicy(): Promise<ClientInferenceOrgPolicy> {
@@ -141,17 +141,19 @@ export class ClientInferenceManager {
   }
 
   canUseGpu(): boolean {
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') return false;
+    const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
+    if (policy.active && policy.mode === 'disabled_server_only') return false;
     const compact = (this.probeCache?.recommendedModelTier ?? 'server_only') === 'compact';
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'mandated_offline_only') {
+    if (policy.active && policy.mode === 'mandated_offline_only') {
       return compact;
     }
     return this.adminEnabled && this.userEnabled && compact;
   }
 
   decideGhostAvailability(assigned: boolean, withoutServer: boolean): boolean {
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') return assigned;
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'mandated_offline_only') return this.isReady();
+    const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
+    if (policy.active && policy.mode === 'disabled_server_only') return assigned;
+    if (policy.active && policy.mode === 'mandated_offline_only') return this.isReady();
     if (assigned) return true;
     return this.userEnabled && withoutServer && this.isReady();
   }
@@ -164,8 +166,9 @@ export class ClientInferenceManager {
     wordMode: boolean;
   }): Promise<CompleteDecision> {
     await this.ensureOrgPolicy();
-    const mandated = this.orgPolicy.active && this.orgPolicy.mode === 'mandated_offline_only';
-    const disabled = this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only';
+    const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
+    const mandated = policy.active && policy.mode === 'mandated_offline_only';
+    const disabled = policy.active && policy.mode === 'disabled_server_only';
     const serverFallback = (): CompleteDecision => {
       if (mandated) return { kind: 'off' };
       return { kind: args.assigned ? 'server' : 'off' };
@@ -207,7 +210,8 @@ export class ClientInferenceManager {
     signal: AbortSignal;
   }): Promise<RewriteDecision> {
     await this.ensureOrgPolicy();
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') {
+    if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).active
+      && (this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only') {
       return { kind: 'server' };
     }
     if (!this.userEnabled || !this.adminEnabled) return { kind: 'server' };
@@ -233,7 +237,8 @@ export class ClientInferenceManager {
 
   async predownload(onProgress?: (loaded: number, total: number) => void): Promise<void> {
     await this.ensureOrgPolicy();
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') {
+    if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).active
+      && (this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only') {
       throw new Error('On-device inference is disabled by organization policy');
     }
     const fetchManifest = this.opts.fetchManifest
@@ -242,10 +247,11 @@ export class ClientInferenceManager {
       ?? ((modelId: string, file: string) => apiFetchBlob(`/models/client-assets/${modelId}/${file}`));
     const manifest = await fetchManifest();
     const modelId = activeOnnxId(manifest);
+    const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
     if (
-      this.orgPolicy.active
-      && this.orgPolicy.allowedModels.length > 0
-      && !this.orgPolicy.allowedModels.includes(modelId)
+      policy.active
+      && policy.allowedModels.length > 0
+      && !policy.allowedModels.includes(modelId)
     ) {
       throw new Error('On-device model is not on the organization allow-list');
     }
@@ -295,7 +301,8 @@ export class ClientInferenceManager {
 
   private async maybeStartLoad(): Promise<void> {
     await this.ensureOrgPolicy();
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') return;
+    if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only'
+      && (this.orgPolicy ?? INACTIVE_ORG_POLICY).active) return;
     if (this.loadFailed) return;
     if (this.opts.hasCache) {
       if (await this.opts.hasCache()) await this.startLoad();
@@ -308,7 +315,8 @@ export class ClientInferenceManager {
   }
 
   private async startLoad(): Promise<void> {
-    if (this.orgPolicy.active && this.orgPolicy.mode === 'disabled_server_only') return;
+    if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).active
+      && (this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only') return;
     if (this.loadFailed) return;
     if (this.ready) return;
     if (this.loadInFlight) return this.loadInFlight;
@@ -330,10 +338,11 @@ export class ClientInferenceManager {
       const modelId = this.opts.fetchManifest
         ? activeOnnxId(await this.opts.fetchManifest())
         : CLIENT_INFERENCE_MODEL_ID;
+      const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
       if (
-        this.orgPolicy.active
-        && this.orgPolicy.allowedModels.length > 0
-        && !this.orgPolicy.allowedModels.includes(modelId)
+        policy.active
+        && policy.allowedModels.length > 0
+        && !policy.allowedModels.includes(modelId)
       ) {
         return;
       }
@@ -364,13 +373,14 @@ export class ClientInferenceManager {
     const fetchPolicy = this.opts.fetchOrgPolicy
       ?? (() => apiFetch<ClientInferenceOrgPolicy>('/client-inference/policy'));
     try {
-      this.orgPolicy = await fetchPolicy();
+      const next = await fetchPolicy();
+      this.orgPolicy = next && typeof next.active === 'boolean' ? next : INACTIVE_ORG_POLICY;
     } catch (err) {
-      if (err instanceof ApiError && err.statusCode === 404) {
-        this.orgPolicy = INACTIVE_ORG_POLICY;
-      } else {
-        this.orgPolicy = FAIL_CLOSED_ORG_POLICY;
+      let status: unknown;
+      if (err && typeof err === 'object' && 'statusCode' in err) {
+        status = err.statusCode;
       }
+      this.orgPolicy = status === 404 ? INACTIVE_ORG_POLICY : FAIL_CLOSED_ORG_POLICY;
     }
     this.orgPolicyFetched = true;
     if (!this.canUseGpu()) this.teardownWorker();
