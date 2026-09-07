@@ -126,7 +126,7 @@ export function CommentThread({
                   onJumpToAnchor?.(comment.id);
                 }
               }}
-              className="my-1.5 flex w-full text-left cursor-pointer items-start gap-1.5 rounded border-l-2 border-border-interactive bg-muted/50 px-2 py-1 text-xs italic text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              className="my-1.5 flex w-full text-left cursor-pointer items-start gap-1.5 rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs italic text-muted-foreground transition-colors hover:border-border-interactive hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               title="Click to jump to highlighted text in article"
               aria-label={`Jump to highlighted text in article: "${comment.anchorData.quote}"`}
               data-testid={`comment-quote-${comment.id}`}

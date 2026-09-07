@@ -88,6 +88,32 @@ describe('NotesInspectorPanel', () => {
       expect(screen.queryByText('Great article!')).not.toBeInTheDocument();
     });
   });
+  it('supports arrow key navigation on filter tabs and links to tabpanel', async () => {
+    renderNotesPanel();
+    await waitFor(() => {
+      expect(screen.getByTestId('notes-filter-open')).toBeInTheDocument();
+    });
+
+    const tablist = screen.getByRole('tablist', { name: 'Filter notes by status' });
+    expect(tablist).toBeInTheDocument();
+    const openTab = screen.getByRole('tab', { name: /Open/ });
+    const resolvedTab = screen.getByRole('tab', { name: /Resolved/ });
+    const panel = screen.getByRole('tabpanel');
+
+    expect(openTab).toHaveAttribute('aria-selected', 'true');
+    expect(panel).toHaveAttribute('aria-labelledby', 'notes-tab-open');
+
+    // Press ArrowRight to switch to resolved
+    fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+    expect(resolvedTab).toHaveAttribute('aria-selected', 'true');
+    expect(panel).toHaveAttribute('aria-labelledby', 'notes-tab-resolved');
+
+    // Press ArrowLeft to switch back to open
+    fireEvent.keyDown(tablist, { key: 'ArrowLeft' });
+    expect(openTab).toHaveAttribute('aria-selected', 'true');
+    expect(panel).toHaveAttribute('aria-labelledby', 'notes-tab-open');
+  });
+
 
   it('toggles new note composer form', async () => {
     renderNotesPanel();

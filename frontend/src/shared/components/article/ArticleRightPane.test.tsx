@@ -283,6 +283,20 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
   });
+  it('renders a synthesized health summary and categorized groups inside More actions', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Synthesized health summary banner
+    expect(screen.getByText(/Indexed for AI search|Verified and ready/)).toBeInTheDocument();
+
+    // Open More actions and verify logical groups
+    const moreActions = screen.getByText('More actions').closest('details')!;
+    fireEvent.click(screen.getByText('More actions'));
+    expect(moreActions).toHaveAttribute('open');
+    expect(screen.getByText('Navigation & Export')).toBeInTheDocument();
+    expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
+  });
+
 
   it('lists page facts above page actions in Details', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });

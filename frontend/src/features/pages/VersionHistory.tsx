@@ -369,8 +369,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         onClick={() => setSelectedVersion(
                           selectedVersion === version.versionNumber ? null : version.versionNumber,
                         )}
-                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         title="Preview version"
+                        aria-label={`Preview version ${version.versionNumber}`}
                       >
                         <Eye size={12} />
                       </button>
@@ -378,15 +379,17 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <>
                           <button
                             onClick={() => handleCompare(versions[i + 1]!.versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="Compare with previous version"
+                            aria-label={`Compare version ${version.versionNumber} with previous version`}
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
                             onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="AI semantic diff with previous version"
+                            aria-label={`AI semantic diff for version ${version.versionNumber}`}
                           >
                             <Sparkles size={12} />
                           </button>
@@ -396,8 +399,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <button
                           onClick={() => handleRestore(version.versionNumber)}
                           disabled={restoreMutation.isPending}
-                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary disabled:opacity-40"
+                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                           title="Restore this version"
+                          aria-label={`Restore version ${version.versionNumber}`}
                         >
                           {restoreMutation.isPending && restoreMutation.variables?.version === version.versionNumber ? (
                             <Loader2 size={12} className="animate-spin" />
@@ -581,7 +585,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   </h4>
                   <button
                     onClick={() => { setShowSemanticDiff(false); setCompareVersions(null); }}
-                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title="Close semantic diff"
+                    aria-label="Close semantic diff"
                   >
                     <X size={12} />
                   </button>

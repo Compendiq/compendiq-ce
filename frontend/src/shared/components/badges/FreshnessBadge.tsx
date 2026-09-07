@@ -51,9 +51,12 @@ export function FreshnessBadge({ lastModified, className }: FreshnessBadgeProps)
   return (
     <span
       title={`Last modified: ${formattedDate}`}
+      tabIndex={0}
+      role="note"
+      aria-label={`Last modified: ${formattedDate}`}
       data-testid={level.testId}
       className={cn(
-        'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium',
+        'inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         neutralChipInk,
         className,
       )}

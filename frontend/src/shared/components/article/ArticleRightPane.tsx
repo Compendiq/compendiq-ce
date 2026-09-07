@@ -352,6 +352,19 @@ export function ArticleRightPane({
     ? new Date(verifiedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
     : null;
 
+  const overallHealth = useMemo(() => {
+    if (page?.embeddingError || page?.qualityStatus === 'failed') {
+      return { label: 'Needs attention · Check failures detected', tone: 'warning' as const };
+    }
+    if (page?.embeddingStatus === 'embedding' || page?.qualityStatus === 'analyzing') {
+      return { label: 'Pipeline active · Indexing in progress', tone: 'active' as const };
+    }
+    if (verifiedDateStr) {
+      return { label: 'Verified and ready for AI search', tone: 'healthy' as const };
+    }
+    return { label: 'Indexed for AI search', tone: 'neutral' as const };
+  }, [page?.embeddingError, page?.embeddingStatus, page?.qualityStatus, verifiedDateStr]);
+
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
   // 054). The backend resolves the auto_tag use-case itself; we only hide the button
@@ -1689,7 +1702,20 @@ export function ArticleRightPane({
 
           <div className="mt-4">
             <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
-            <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-health-badges">
+            <div className="mt-1.5 mb-2.5 flex items-center gap-2 text-xs font-medium text-foreground/85">
+              <span
+                className={cn(
+                  'size-2 rounded-full shrink-0',
+                  overallHealth.tone === 'warning' && 'bg-warning',
+                  overallHealth.tone === 'active' && 'bg-status-ai animate-pulse',
+                  overallHealth.tone === 'healthy' && 'bg-success',
+                  overallHealth.tone === 'neutral' && 'bg-muted-foreground/60',
+                )}
+                aria-hidden="true"
+              />
+              <span>{overallHealth.label}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
               <span
                 className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
                 data-testid="verification-chip"
@@ -1818,9 +1844,11 @@ export function ArticleRightPane({
                 aria-hidden="true"
               />
               <span className="flex-1">More actions</span>
-              <span className="text-[11px] font-normal opacity-70">Maintenance &amp; AI</span>
             </summary>
             <div className="mt-1 space-y-0.5">
+              <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-semibold text-muted-foreground">
+                Navigation &amp; Export
+              </div>
               {id && (
                 <button
                   type="button"
@@ -1860,6 +1888,9 @@ export function ArticleRightPane({
                 <span className="truncate">Export PDF</span>
               </button>
 
+              <div className="px-2 pt-2 pb-0.5 text-[11px] font-semibold text-muted-foreground">
+                Maintenance &amp; AI
+              </div>
               {id && aiAutoTagAvailable && (
                 <AutoTagger
                   pageId={id}
@@ -1871,62 +1902,53 @@ export function ArticleRightPane({
               {/* Re-sync from Confluence — only for Confluence-sourced articles.
                   Locally-authored pages have no upstream to pull from. */}
               {page?.confluenceId && (
-                <Button
-                  variant="ghost"
-                  size="sm"
+                <button
+                  type="button"
                   onClick={handleResync}
                   disabled={resyncMutation.isPending}
-                  className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                   title="Re-sync from Confluence"
                   data-testid="article-resync-btn"
-                  leftIcon={
-                    <RefreshCw
-                      size={15}
-                      className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
-                    />
-                  }
                 >
+                  <RefreshCw
+                    size={15}
+                    className={cn('shrink-0 opacity-70', resyncMutation.isPending && 'animate-spin')}
+                  />
                   <span className="truncate">Re-sync</span>
-                </Button>
+                </button>
               )}
 
-              <Button
-                variant="ghost"
-                size="sm"
+              <button
+                type="button"
                 onClick={handleReembed}
                 disabled={reembedMutation.isPending}
-                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 title="Re-embed for search"
                 data-testid="article-reembed-btn"
-                leftIcon={
-                  reembedMutation.isPending ? (
-                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                  ) : (
-                    <Cpu size={15} className="shrink-0 opacity-70" />
-                  )
-                }
               >
+                {reembedMutation.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <Cpu size={15} className="shrink-0 opacity-70" />
+                )}
                 <span className="truncate">Re-embed</span>
-              </Button>
+              </button>
 
-              <Button
-                variant="ghost"
-                size="sm"
+              <button
+                type="button"
                 onClick={handleRequality}
                 disabled={requalityMutation.isPending}
-                className="w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:opacity-50"
                 title="Re-check quality"
                 data-testid="article-requality-btn"
-                leftIcon={
-                  requalityMutation.isPending ? (
-                    <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
-                  ) : (
-                    <Gauge size={15} className="shrink-0 opacity-70" />
-                  )
-                }
               >
+                {requalityMutation.isPending ? (
+                  <Loader2 size={15} className="shrink-0 animate-spin opacity-70" />
+                ) : (
+                  <Gauge size={15} className="shrink-0 opacity-70" />
+                )}
                 <span className="truncate">Re-check Quality</span>
-              </Button>
+              </button>
             </div>
           </details>
 
