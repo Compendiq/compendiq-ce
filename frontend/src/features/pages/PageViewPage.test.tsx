@@ -1184,6 +1184,29 @@ describe('PageViewPage', () => {
       expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
       expect(screen.getByText('Edit')).toBeInTheDocument();
     });
+
+    it('does not add another AI summary after Edit then Done', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
+
+      fireEvent.click(screen.getByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-summary')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
+
+      fireEvent.click(screen.getByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
+    });
   });
 
   // #872 — The /pages/:id route is not keyed, so React Router keeps a single
