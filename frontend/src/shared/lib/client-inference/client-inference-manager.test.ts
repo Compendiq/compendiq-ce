@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClientInferenceManager } from './client-inference-manager';
+import { ClientInferenceManager, type ClientInferenceOrgPolicy } from './client-inference-manager';
 import type { WorkerEvent, WorkerRequest } from './worker-protocol';
 import { LOCAL_COMPLETION_MODEL, LOCAL_COMPLETION_PROVIDER } from './worker-protocol';
 import type { DeviceGpuProfile } from './device-gpu-profile';
+import { ApiError } from '../api';
 
 const COMPACT: DeviceGpuProfile = {
   hasWebGPU: true,
@@ -44,11 +45,32 @@ class FakeWorker {
   terminate(): void {}
 }
 
-function compactManager(worker: FakeWorker, hasCache = true): ClientInferenceManager {
+const INACTIVE_POLICY: ClientInferenceOrgPolicy = {
+  active: false,
+  mode: 'allowed',
+  allowedModels: [],
+  enforceWebGpuOnly: false,
+};
+
+async function waitForLoad(worker: FakeWorker): Promise<WorkerRequest> {
+  for (let i = 0; i < 25; i++) {
+    const load = worker.messages.find((m) => m.type === 'load');
+    if (load) return load;
+    await Promise.resolve();
+  }
+  throw new Error('worker did not receive load');
+}
+
+function compactManager(
+  worker: FakeWorker,
+  hasCache = true,
+  fetchOrgPolicy?: () => Promise<ClientInferenceOrgPolicy>,
+): ClientInferenceManager {
   return new ClientInferenceManager({
     createWorker: () => worker as unknown as Worker,
     probe: async () => COMPACT,
     hasCache: async () => hasCache,
+    fetchOrgPolicy: fetchOrgPolicy ?? (async () => INACTIVE_POLICY),
   });
 }
 
@@ -126,6 +148,7 @@ describe('ClientInferenceManager (#1418)', () => {
       withoutServer: true,
       wordMode: false,
     });
+    await waitForLoad(worker);
     await Promise.resolve();
     await Promise.resolve();
     const controller = new AbortController();
@@ -136,6 +159,7 @@ describe('ClientInferenceManager (#1418)', () => {
       withoutServer: true,
       wordMode: false,
     });
+    await Promise.resolve();
     await Promise.resolve();
     const complete = worker.messages.filter((m) => m.type === 'complete').at(-1);
     expect(complete).toBeDefined();
@@ -194,12 +218,9 @@ describe('ClientInferenceManager (#1418)', () => {
       wordMode: false,
     };
     await mgr.decideComplete(args);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    const load = worker.messages.find((m) => m.type === 'load');
+    const load = await waitForLoad(worker);
     expect(load).toBeDefined();
-    worker.emit({ id: load!.id, type: 'error', code: 'webgpu', message: 'no adapter' });
+    worker.emit({ id: load.id, type: 'error', code: 'webgpu', message: 'no adapter' });
     await Promise.resolve();
     const loadsBefore = worker.messages.filter((m) => m.type === 'load').length;
     await mgr.decideComplete(args);
@@ -228,6 +249,7 @@ describe('ClientInferenceManager (#1418)', () => {
         }],
       }),
       downloadFile: async () => new Blob(['x']),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
@@ -237,11 +259,8 @@ describe('ClientInferenceManager (#1418)', () => {
       withoutServer: true,
       wordMode: false,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    const load = worker.messages.find((m) => m.type === 'load');
-    worker.emit({ id: load!.id, type: 'error', code: 'oom', message: 'out of memory' });
+    const load = await waitForLoad(worker);
+    worker.emit({ id: load.id, type: 'error', code: 'oom', message: 'out of memory' });
     await Promise.resolve();
     worker.autoReady = true;
     await mgr.predownload();
@@ -276,6 +295,7 @@ describe('ClientInferenceManager (#1418)', () => {
       probe: async () => COMPACT,
       hasCache: async () => true,
       accessToken: () => 'tok-9',
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
@@ -285,10 +305,7 @@ describe('ClientInferenceManager (#1418)', () => {
       withoutServer: true,
       wordMode: false,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(worker.messages.find((m) => m.type === 'load')).toMatchObject({
+    expect(await waitForLoad(worker)).toMatchObject({
       type: 'load',
       accessToken: 'tok-9',
     });
@@ -312,6 +329,7 @@ describe('ClientInferenceManager (#1418)', () => {
           files: [{ name: 'config.json', bytes: 1 }],
         }],
       }),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
     });
     mgr.setFlags({ adminEnabled: true, userEnabled: true });
     await mgr.decideComplete({
@@ -321,12 +339,7 @@ describe('ClientInferenceManager (#1418)', () => {
       withoutServer: true,
       wordMode: false,
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(worker.messages.find((m) => m.type === 'load')).toMatchObject({
+    expect(await waitForLoad(worker)).toMatchObject({
       type: 'load',
       modelId: 'HuggingFaceTB--SmolLM2-135M-Instruct',
     });
@@ -343,5 +356,135 @@ describe('ClientInferenceManager (#1418)', () => {
     expect(await mgr.isModelDownloaded()).toBe(true);
     cached = false;
     expect(await mgr.isModelDownloaded()).toBe(false);
+  });
+
+  it('does not start the worker when org policy is disabled_server_only', async () => {
+    const worker = new FakeWorker();
+    const mgr = compactManager(worker, true, async () => ({
+      active: true,
+      mode: 'disabled_server_only',
+      allowedModels: [],
+      enforceWebGpuOnly: false,
+    }));
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const decision = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    expect(decision.kind).toBe('server');
+    expect(worker.messages.some((m) => m.type === 'complete')).toBe(false);
+  });
+
+  it('refuses server fallback for mandated_offline_only when local is not ready', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = compactManager(worker, false, async () => ({
+      active: true,
+      mode: 'mandated_offline_only',
+      allowedModels: [],
+      enforceWebGpuOnly: false,
+    }));
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const decision = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    expect(decision.kind).toBe('off');
+  });
+
+  it('runs mandated_offline_only locally when the worker is ready', async () => {
+    const worker = new FakeWorker();
+    const mgr = compactManager(worker, true, async () => ({
+      active: true,
+      mode: 'mandated_offline_only',
+      allowedModels: [],
+      enforceWebGpuOnly: false,
+    }));
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const first = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: false,
+      wordMode: false,
+    });
+    expect(first.kind).toBe('off');
+    await Promise.resolve();
+    await Promise.resolve();
+    const decision = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: false,
+      wordMode: false,
+    });
+    expect(decision.kind).toBe('local');
+  });
+
+  it('refuses predownload when org policy disables on-device inference', async () => {
+    const worker = new FakeWorker();
+    const mgr = compactManager(worker, true, async () => ({
+      active: true,
+      mode: 'disabled_server_only',
+      allowedModels: [],
+      enforceWebGpuOnly: false,
+    }));
+    await expect(mgr.predownload()).rejects.toThrow(/disabled by organization policy/);
+  });
+  it('treats a missing policy endpoint as allowed', async () => {
+    const worker = new FakeWorker();
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchOrgPolicy: async () => {
+        throw new ApiError(404, 'Not Found');
+      },
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const decision = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    expect(decision.kind).toBe('local');
+  });
+
+  it('fails closed to disabled_server_only when the policy read errors', async () => {
+    const worker = new FakeWorker();
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      hasCache: async () => true,
+      fetchOrgPolicy: async () => {
+        throw new ApiError(503, 'unavailable');
+      },
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const decision = await mgr.decideComplete({
+      input: { prefix: 'hello ', suffix: '', maxTokens: 16 },
+      signal: new AbortController().signal,
+      assigned: true,
+      withoutServer: true,
+      wordMode: false,
+    });
+    expect(decision.kind).toBe('server');
+    expect(worker.messages.some((m) => m.type === 'complete')).toBe(false);
   });
 });
