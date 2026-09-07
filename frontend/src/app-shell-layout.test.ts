@@ -56,15 +56,19 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  it('shell keeps the workspace ground while the rail uses the central pane surface in both themes', () => {
-    for (const block of [darkBlock, lightBlock]) {
-      const shell = /--app-shell-bg:\s*([^;]+);/.exec(block);
-      const rail = /--app-rail-bg:\s*([^;]+);/.exec(block);
-      expect(shell, '--app-shell-bg must be declared').not.toBeNull();
-      expect(rail, '--app-rail-bg must be declared').not.toBeNull();
-      expect(shell![1]!.trim()).toBe('var(--color-background)');
-      expect(rail![1]!.trim()).toBe('var(--color-card)');
-    }
+  it('shell keeps the workspace ground; rail matches central pane in Graphite and chassis in Paper', () => {
+    const darkShell = /--app-shell-bg:\s*([^;]+);/.exec(darkBlock);
+    const lightShell = /--app-shell-bg:\s*([^;]+);/.exec(lightBlock);
+    const darkRail = /--app-rail-bg:\s*([^;]+);/.exec(darkBlock);
+    const lightRail = /--app-rail-bg:\s*([^;]+);/.exec(lightBlock);
+    expect(darkShell, '--app-shell-bg must be declared in darkBlock').not.toBeNull();
+    expect(lightShell, '--app-shell-bg must be declared in lightBlock').not.toBeNull();
+    expect(darkRail, '--app-rail-bg must be declared in darkBlock').not.toBeNull();
+    expect(lightRail, '--app-rail-bg must be declared in lightBlock').not.toBeNull();
+    expect(darkShell![1]!.trim()).toBe('var(--color-background)');
+    expect(lightShell![1]!.trim()).toBe('var(--color-background)');
+    expect(darkRail![1]!.trim()).toBe('var(--color-card)');
+    expect(lightRail![1]!.trim()).toBe('var(--app-chassis)');
   });
 
   it('chassis is distinguishable from the shell ground in both themes', () => {
@@ -180,10 +184,10 @@ describe('Inset shell utilities', () => {
     expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
   });
 
-  it('left navigation, including title and footer chrome, paints the same surface as main', () => {
+  it('left navigation paints the rail surface while main paints the central pane', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');
     const pane = extractBlock(css, '@utility app-content-pane {');
-    expect(sidebar).toMatch(/background:\s*var\(--color-card\)/);
+    expect(sidebar).toMatch(/background:\s*var\(--app-rail-bg\)/);
     expect(pane).toMatch(/background:\s*var\(--color-card\)/);
     expect(css).toMatch(
       /\.app-sidebar\s+\.panel-toolbar\s*\{[^}]*background:\s*transparent/,

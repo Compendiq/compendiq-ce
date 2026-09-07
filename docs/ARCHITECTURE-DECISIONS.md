@@ -1563,6 +1563,16 @@ still has to be findable — and a sweep that fails if anything outside `.prose`
 panes carry no ring` block over the Library and AI sources, the same shape as
 its workspace-card assertions.
 
+
+### v1.3 — Light mode Header, site rails, and bottom rail turn light gray (2026-09-07)
+
+**Owner decision.** *"change the color of the Header and all site rails and bottom rail to an light gray in the light mode of the app"*
+
+Light mode only; Graphite is untouched. The framing surfaces around the central document (top app header, left destination rail, left navigation sidebar, right context rail, and bottom chassis rail) are unified on the light gray chassis/rail ground (`--app-chassis` / `--app-rail-bg`: `#EBEAE8`).
+
+- `--app-rail-bg` in Paper resolves to `var(--app-chassis)` (`#EBEAE8`).
+- `@utility app-sidebar` paints `var(--app-rail-bg)` instead of `var(--color-card)`. In Graphite, `--app-rail-bg` remains `var(--color-card)`, preserving the dark workspace. In Paper, the left navigation pane and the right context rail match the light gray frame.
+- Route and document content (`app-content-pane` / `<main>`) remains pure white (`#FFFFFF`, `--color-card`), creating a clean, focused reading and editing canvas framed by calm light gray rails.
 ---
 
 ## ADR-011: Docker Deployment Architecture
