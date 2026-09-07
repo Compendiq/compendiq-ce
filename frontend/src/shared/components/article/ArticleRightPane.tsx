@@ -181,7 +181,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         className={cn(
           'group relative flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nav-selection font-medium'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 12 + 28}px` }}
@@ -1805,7 +1805,7 @@ export function ArticleRightPane({
                   className={cn(
                     'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                     historyOpen
-                      ? 'nav-selection font-medium'
+                      ? 'nav-selection font-medium outline-none'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                   )}
                   title="Version history"
@@ -1822,7 +1822,7 @@ export function ArticleRightPane({
             className={cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'nav-selection font-medium'
+                ? 'nav-selection font-medium outline-none'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
             title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}

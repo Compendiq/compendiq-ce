@@ -1055,17 +1055,19 @@ describe('Flat depth model', () => {
     );
   });
 
-  // A selected segment is an operable component whose STATE must be
-  // identifiable (1.4.11). Both chip utilities sit on a borderless `bg-muted`
-  // track whose fill step is 1.161:1 (Paper) / 1.070:1 (Graphite), so the chip's
-  // own edge is the only channel that can carry 3:1.
-  it('selected segments carry the interactive edge', () => {
-    for (const name of ['panel-tab-active', 'nm-pill-active']) {
-      const block = extractBlock(css, `@utility ${name} {`);
-      expect(block, `${name} must use --color-border-interactive`).toMatch(
-        /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
-      );
-    }
+  it('selected segments carry the interactive edge or subtle elevation', () => {
+    const pill = extractBlock(css, '@utility nm-pill-active {');
+    expect(pill, 'nm-pill-active must use --color-border-interactive').toMatch(
+      /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
+    );
+    const tab = extractBlock(css, '@utility panel-tab-active {');
+    expect(tab, 'panel-tab-active is an elevated card chip').toMatch(
+      /background:\s*var\(--color-card\)/,
+    );
+    expect(tab, 'panel-tab-active uses shallow overlay shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay-sm\)/,
+    );
+    expect(tab, 'panel-tab-active draws no border').not.toMatch(/border:/);
   });
 
   // Chrome is the ground, content is the pane — the inversion that makes the

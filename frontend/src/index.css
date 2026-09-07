@@ -1223,20 +1223,13 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   border: 1px solid var(--color-border-interactive);
 }
 
-/* An active tab is a filled chip, not a tinted pane with a shadow — and since
-   2026-08-31 it is the ONLY line in a segmented control: the tracks dropped
-   their `border border-border` and now read on fill alone (--color-muted on
-   Pane, 1.161:1 in Paper / 1.070:1 in Graphite). That makes this edge the whole
-   selected state, so it takes the ≥3:1 token for the same reason `nav-selection`
-   did: a selected segment is an operable component whose STATE has to be
-   identifiable under 1.4.11. On --color-border it measured 1.414:1 in Paper —
-   which is why the shadow-compare picks had to add a glyph to carry selection
-   at all (EmbeddingShadowCompareSection). The glyph stays; it is now a
-   redundant channel rather than the only one. */
+/* An active tab in the segmented tablist is a clean elevated chip with subtle
+   depth, matching macOS and Linear segmented controls without harsh borders.
+   It uses the shallow overlay shadow on the card fill. */
 @utility panel-tab-active {
   color: var(--color-foreground);
   background: var(--color-card);
-  border: 1px solid var(--color-border-interactive);
+  box-shadow: var(--shadow-overlay-sm);
 }
 
 /* A selected destination is a quiet neutral fill with full-strength ink — the
