@@ -1846,7 +1846,7 @@ export function ArticleRightPane({
               <span className="flex-1">More actions</span>
             </summary>
             <div className="mt-1 space-y-0.5">
-              <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+              <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-semibold text-muted-foreground">
                 Navigation &amp; Export
               </div>
               {id && (
@@ -1888,7 +1888,7 @@ export function ArticleRightPane({
                 <span className="truncate">Export PDF</span>
               </button>
 
-              <div className="px-2 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+              <div className="px-2 pt-2 pb-0.5 text-[11px] font-semibold text-muted-foreground">
                 Maintenance &amp; AI
               </div>
               {id && aiAutoTagAvailable && (
