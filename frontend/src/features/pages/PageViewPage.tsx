@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
@@ -969,7 +969,7 @@ export function PageViewPage() {
         className="min-h-0 flex-1 overflow-y-auto pb-5 [scrollbar-gutter:stable]"
       >
         {editing ? (
-          <>
+          <Fragment key="article-edit">
             <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
                 <PageTitleIcon
                   icon={page.icon}
@@ -1052,10 +1052,11 @@ export function PageViewPage() {
                 )}
               </FeatureErrorBoundary>
             </div>
-          </>
+          </Fragment>
         ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (
           /* Empty page — no content yet */
           <div
+            key="article-empty"
             ref={contentRef}
             className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
@@ -1086,11 +1087,12 @@ export function PageViewPage() {
                 Add content
               </Button>
             </div>
-            <ArticleConnections key={page.id} pageId={page.id} />
+            <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
           </div>
         ) : (
           /* Reading view — constrained to 1200px reading column */
           <div
+            key="article-read"
             ref={contentRef}
             className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
@@ -1115,8 +1117,10 @@ export function PageViewPage() {
               <ArticleSummary
                 // Keyed on the page so navigating between articles remounts the
                 // block; without it React reconciles by position and one page's
-                // collapse state would carry onto the next.
-                key={page.id}
+                // collapse state would carry onto the next. Must not share that
+                // key with ArticleConnections — duplicate sibling keys leak the
+                // summary across Edit → Done.
+                key={`summary-${page.id}`}
                 pageId={page.id}
                 summaryHtml={page.summaryHtml}
                 summaryStatus={page.summaryStatus}
@@ -1142,7 +1146,7 @@ export function PageViewPage() {
               />
             </FeatureErrorBoundary>
 
-            <ArticleConnections key={page.id} pageId={page.id} />
+            <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
             {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
