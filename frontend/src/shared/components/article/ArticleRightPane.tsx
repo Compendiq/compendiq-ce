@@ -395,6 +395,7 @@ export function ArticleRightPane({
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
+  const [detailsSubView, setDetailsSubView] = useState<'overview' | 'notes'>('overview');
 
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
@@ -460,6 +461,7 @@ export function ArticleRightPane({
     if (previousInspectorPageIdRef.current !== currentKey) {
       previousInspectorPageIdRef.current = currentKey;
       inspectorViewTouchedRef.current = false;
+      setDetailsSubView('overview');
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
       // On new page, default to Assistant.
@@ -477,7 +479,15 @@ export function ArticleRightPane({
   useEffect(() => {
     if (!inspectorViewRequest) return;
     inspectorViewTouchedRef.current = true;
-    setActiveInspectorView(inspectorViewRequest.view);
+    if (inspectorViewRequest.view === 'notes') {
+      setActiveInspectorView('details');
+      setDetailsSubView('notes');
+    } else {
+      setActiveInspectorView(inspectorViewRequest.view);
+      if (inspectorViewRequest.view === 'details') {
+        setDetailsSubView('overview');
+      }
+    }
   }, [inspectorViewRequest]);
 
   const { data: pageNotes } = usePageNotes(id);
@@ -509,11 +519,13 @@ export function ArticleRightPane({
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
+          setDetailsSubView('overview');
           handleExpandSidebar();
         } else if (key === 'n') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
-          setActiveInspectorView('notes');
+          setActiveInspectorView('details');
+          setDetailsSubView('notes');
           handleExpandSidebar();
         }
       }
@@ -527,7 +539,8 @@ export function ArticleRightPane({
     if (typeof window === 'undefined') return;
     const handleOpenNotes = () => {
       inspectorViewTouchedRef.current = true;
-      setActiveInspectorView('notes');
+      setActiveInspectorView('details');
+      setDetailsSubView('notes');
       handleExpandSidebar();
     };
     window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
@@ -1451,12 +1464,12 @@ export function ArticleRightPane({
             --color-border-interactive so the selected state still clears
             1.4.11 (see `panel-tab-active`). */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
-            const tabs: InspectorView[] = ['assistant', 'outline', 'notes', 'details'];
-            const currentIndex = tabs.indexOf(activeInspectorView);
+            const tabs: ('assistant' | 'outline' | 'details')[] = ['assistant', 'outline', 'details'];
+            const currentIndex = tabs.indexOf(activeInspectorView as 'assistant' | 'outline' | 'details');
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
               const nextView = tabs[(currentIndex + 1) % tabs.length]!;
@@ -1495,9 +1508,6 @@ export function ArticleRightPane({
           data-ai-assistant-trigger
           data-testid="page-context-tab-assistant"
         >
-          {/* Violet marks AI (ADR-010) — on the tab's glyph only, so the
-              control still reads as one of three peers rather than the
-              coloured one. */}
           <Sparkles size={13} className={cn(activeInspectorView === 'assistant' && 'text-status-ai')} />
           Assistant
         </button>
@@ -1527,32 +1537,6 @@ export function ArticleRightPane({
         <button
           type="button"
           role="tab"
-          id="page-context-tab-notes"
-          aria-controls="page-context-panel-notes"
-          aria-selected={activeInspectorView === 'notes'}
-          tabIndex={activeInspectorView === 'notes' ? 0 : -1}
-          title="Notes (Alt+N)"
-          onClick={() => {
-            inspectorViewTouchedRef.current = true;
-            setActiveInspectorView('notes');
-          }}
-          className={cn(
-            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            activeInspectorView === 'notes'
-              ? 'panel-tab-active'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-          data-testid="page-context-tab-notes"
-        >
-          <MessageSquare size={13} />
-          Notes
-          {openNotesCount > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          role="tab"
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
@@ -1572,6 +1556,9 @@ export function ArticleRightPane({
         >
           <FileText size={13} />
           Details
+          {openNotesCount > 0 && (
+            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+          )}
         </button>
         </div>
 
@@ -1610,24 +1597,82 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {activeInspectorView === 'notes' && (
-        <div
-          id="page-context-panel-notes"
-          role="tabpanel"
-          aria-labelledby="page-context-tab-notes"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-        >
-          <NotesInspectorPanel pageId={id} />
-        </div>
-      )}
-
       {activeInspectorView === 'details' && (
       <div
         id="page-context-panel-details"
         role="tabpanel"
         aria-labelledby="page-context-tab-details"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden"
       >
+        {page && !isNewPage && (
+          <div className="shrink-0 border-b border-border p-2 bg-card">
+            <div
+              role="tablist"
+              aria-label="Details sections"
+              className="grid grid-cols-2 gap-0.5 rounded-md bg-muted p-0.5 text-xs"
+            >
+              <button
+                type="button"
+                role="tab"
+                id="details-subtab-overview"
+                aria-selected={detailsSubView === 'overview'}
+                aria-controls="details-panel-overview"
+                tabIndex={detailsSubView === 'overview' ? 0 : -1}
+                onClick={() => setDetailsSubView('overview')}
+                className={cn(
+                  'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  detailsSubView === 'overview'
+                    ? 'panel-tab-active'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                data-testid="details-subtab-overview"
+              >
+                <FileText size={13} />
+                Overview
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="details-subtab-notes"
+                aria-selected={detailsSubView === 'notes'}
+                aria-controls="details-panel-notes"
+                tabIndex={detailsSubView === 'notes' ? 0 : -1}
+                onClick={() => setDetailsSubView('notes')}
+                className={cn(
+                  'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  detailsSubView === 'notes'
+                    ? 'panel-tab-active'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                data-testid="details-subtab-notes"
+              >
+                <MessageSquare size={13} />
+                Notes
+                {openNotesCount > 0 && (
+                  <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {detailsSubView === 'notes' && !isNewPage ? (
+          <div
+            id="details-panel-notes"
+            role="tabpanel"
+            aria-labelledby="details-subtab-notes"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+            data-testid="details-notes-section"
+          >
+            <NotesInspectorPanel pageId={id} />
+          </div>
+        ) : (
+          <div
+            id="details-panel-overview"
+            role="tabpanel"
+            aria-labelledby="details-subtab-overview"
+            className="min-h-0 flex-1 overflow-y-auto scroll-mask"
+          >
       {isNewPage ? (
         <div className="px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
@@ -1973,6 +2018,8 @@ export function ArticleRightPane({
           </details>
         </div>
       )}
+          </div>
+        )}
       </div>
       )}
 

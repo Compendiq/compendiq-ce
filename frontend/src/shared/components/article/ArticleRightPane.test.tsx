@@ -1586,5 +1586,49 @@ describe('ArticleRightPane', () => {
       expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
+
+    it('moves Notes into the Details tab with sub-navigation and keeps 3 top-level tabs', async () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      mockNotes = [
+        { id: 'n1', parentId: null, resolved: false },
+        { id: 'n2', parentId: null, resolved: false },
+      ];
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Top tablist has 3 tabs, not 4
+      expect(screen.queryByTestId('page-context-tab-notes')).toBeNull();
+      const detailsTab = screen.getByTestId('page-context-tab-details');
+      expect(detailsTab).toBeInTheDocument();
+      // Details tab shows open notes count
+      await waitFor(() => expect(detailsTab).toHaveTextContent('2'));
+
+      // Switch to details tab
+      fireEvent.click(detailsTab);
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+
+      // Sub-tabs are rendered inside Details
+      const overviewSubtab = screen.getByTestId('details-subtab-overview');
+      const notesSubtab = screen.getByTestId('details-subtab-notes');
+      expect(overviewSubtab).toBeInTheDocument();
+      expect(notesSubtab).toBeInTheDocument();
+      expect(overviewSubtab).toHaveAttribute('aria-selected', 'true');
+      expect(notesSubtab).toHaveTextContent('2');
+
+      // Click Notes sub-tab
+      fireEvent.click(notesSubtab);
+      expect(notesSubtab).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('details-notes-section')).toBeInTheDocument();
+
+      // Press Alt+D to go back to overview
+      fireEvent.keyDown(window, { key: 'd', altKey: true });
+      expect(overviewSubtab).toHaveAttribute('aria-selected', 'true');
+
+      // Press Alt+N to jump directly to notes inside details
+      fireEvent.keyDown(window, { key: 'n', altKey: true });
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+      expect(notesSubtab).toHaveAttribute('aria-selected', 'true');
+    });
   });
 });
