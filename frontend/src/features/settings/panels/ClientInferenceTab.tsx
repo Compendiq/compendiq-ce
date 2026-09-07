@@ -11,6 +11,7 @@ import type {
 } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { getClientInferenceManager } from '../../../shared/lib/client-inference/client-inference-manager';
+import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 import { SETTINGS_PANELS } from '../settings-nav';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -22,6 +23,7 @@ const HUNSPELL_MODELS = [
 
 export function ClientInferenceTab() {
   const queryClient = useQueryClient();
+  const { hasFeature } = useEnterprise();
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
@@ -95,6 +97,13 @@ export function ClientInferenceTab() {
       void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
     }
   }, [installStatus.data?.status, queryClient]);
+  const orgPolicy = useQuery({
+    queryKey: ['client-inference-policy'],
+    queryFn: () => apiFetch<{ active: boolean; mode: string }>('/client-inference/policy'),
+    enabled: hasFeature('org_llm_policy'),
+    staleTime: 30_000,
+  });
+  const orgDisabled = orgPolicy.data?.active === true && orgPolicy.data.mode === 'disabled_server_only';
 
   const enabled = settings.data?.clientInferenceEnabled ?? false;
   const onnxInstalled = manifest.data?.models.some((m) => m.kind === 'onnx' && m.installed) ?? false;
@@ -106,6 +115,15 @@ export function ClientInferenceTab() {
 
   return (
     <div className="space-y-6">
+      {orgDisabled && (
+        <p
+          role="status"
+          data-testid="client-inference-org-disabled"
+          className="rounded-[var(--radius-lg)] border border-border px-4 py-3 text-sm text-muted-foreground"
+        >
+          Organization policy disables on-device inference. Authors fall through to server models.
+        </p>
+      )}
       <section aria-labelledby="client-inference-admin-enable">
         <h3 id="client-inference-admin-enable" className="text-sm font-semibold text-foreground">
           On-device suggestions
@@ -121,7 +139,7 @@ export function ClientInferenceTab() {
           <Switch.Root
             id="admin-client-inference"
             checked={enabled}
-            disabled={!onnxInstalled}
+            disabled={!onnxInstalled || orgDisabled}
             onCheckedChange={(next) => save.mutate(next)}
             className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action disabled:opacity-40"
           >

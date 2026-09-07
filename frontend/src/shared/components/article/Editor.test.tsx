@@ -7,6 +7,13 @@ vi.mock('../hooks/use-is-light-theme', () => ({
 
 vi.mock('../../lib/api', () => ({
   apiFetch: vi.fn(),
+  apiFetchBlob: vi.fn(),
+  ApiError: class ApiError extends Error {
+    constructor(public statusCode: number, message: string) {
+      super(message);
+      this.name = 'ApiError';
+    }
+  },
 }));
 
 const mockFetchAuthenticatedBlob = vi.fn();
@@ -808,6 +815,12 @@ describe('Editor', () => {
       const apiModule = await import('../../lib/api');
       mockApiFetch = apiModule.apiFetch as ReturnType<typeof vi.fn>;
       mockApiFetch.mockReset();
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        return undefined;
+      });
       // Sticky default so the NodeView's auth fetch (which fires for any
       // /api/attachments src inserted into the editor) doesn't crash on
       // `.then(undefined)`.
@@ -836,7 +849,15 @@ describe('Editor', () => {
     }
 
     it('rewrites a single http(s) img src via /pages/:id/images/import', async () => {
-      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported.png' });
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          return { url: '/api/attachments/42/imported.png' };
+        }
+        return undefined;
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -861,7 +882,15 @@ describe('Editor', () => {
     });
 
     it('rewrites a data: URI img via /pages/:id/images (existing upload endpoint)', async () => {
-      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported-data.png' });
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images') {
+          return { url: '/api/attachments/42/imported-data.png' };
+        }
+        return undefined;
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -903,13 +932,18 @@ describe('Editor', () => {
         expect(img?.getAttribute('data-import-failed')).toBe('true');
       });
       // No upload calls — relative paths are not auto-importable.
-      expect(mockApiFetch).not.toHaveBeenCalled();
+      expect(mockApiFetch.mock.calls.filter(([p]) => p !== '/client-inference/policy')).toEqual([]);
     });
 
     it('marks failed http(s) imports with data-import-failed', async () => {
       // /import returns null (apiFetch throws on non-2xx; our helper catches
       // and returns null, which the rewriter treats as failure).
-      mockApiFetch.mockRejectedValueOnce(new Error('502 Bad Gateway'));
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        throw new Error('502 Bad Gateway');
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -966,15 +1000,23 @@ describe('Editor', () => {
       // that no upload was attempted: without a pageId we have nowhere to
       // store the bytes.
       await new Promise((r) => setTimeout(r, 50));
-      expect(mockApiFetch).not.toHaveBeenCalled();
+      expect(mockApiFetch.mock.calls.filter(([p]) => p !== '/client-inference/policy')).toEqual([]);
     });
 
     it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
       // Two http(s) img tags: first import succeeds, second fails. The toast
       // helper should land on `toast.warning` with the X-of-Y message.
-      mockApiFetch
-        .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
-        .mockRejectedValueOnce(new Error('502 Bad Gateway'));
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          const n = mockApiFetch.mock.calls.filter(([p]) => p === '/pages/42/images/import').length;
+          if (n <= 1) return { url: '/api/attachments/42/ok.png' };
+          throw new Error('502 Bad Gateway');
+        }
+        return undefined;
+      });
 
       const sonner = await import('sonner');
       const warningSpy = sonner.toast.warning as ReturnType<typeof vi.fn>;
