@@ -395,7 +395,13 @@ export function ArticleRightPane({
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
-  const [detailsSubView, setDetailsSubView] = useState<'overview' | 'notes'>('overview');
+
+  const scrollToNotesSection = useCallback(() => {
+    setTimeout(() => {
+      const el = document.getElementById('details-notes-section');
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+  }, []);
 
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
@@ -461,7 +467,7 @@ export function ArticleRightPane({
     if (previousInspectorPageIdRef.current !== currentKey) {
       previousInspectorPageIdRef.current = currentKey;
       inspectorViewTouchedRef.current = false;
-      setDetailsSubView('overview');
+
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
       // On new page, default to Assistant.
@@ -479,16 +485,13 @@ export function ArticleRightPane({
   useEffect(() => {
     if (!inspectorViewRequest) return;
     inspectorViewTouchedRef.current = true;
+    setActiveInspectorView('details');
     if (inspectorViewRequest.view === 'notes') {
-      setActiveInspectorView('details');
-      setDetailsSubView('notes');
+      scrollToNotesSection();
     } else {
       setActiveInspectorView(inspectorViewRequest.view);
-      if (inspectorViewRequest.view === 'details') {
-        setDetailsSubView('overview');
-      }
     }
-  }, [inspectorViewRequest]);
+  }, [inspectorViewRequest, scrollToNotesSection]);
 
   const { data: pageNotes } = usePageNotes(id);
   const openNotesCount = useMemo(
@@ -519,20 +522,19 @@ export function ArticleRightPane({
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
-          setDetailsSubView('overview');
           handleExpandSidebar();
         } else if (key === 'n') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
           setActiveInspectorView('details');
-          setDetailsSubView('notes');
           handleExpandSidebar();
+          scrollToNotesSection();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleExpandSidebar]);
+  }, [handleExpandSidebar, scrollToNotesSection]);
 
   // Listen to open-sidebar requests from inline comment popovers
   useEffect(() => {
@@ -540,12 +542,12 @@ export function ArticleRightPane({
     const handleOpenNotes = () => {
       inspectorViewTouchedRef.current = true;
       setActiveInspectorView('details');
-      setDetailsSubView('notes');
       handleExpandSidebar();
+      scrollToNotesSection();
     };
     window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
     return () => window.removeEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
-  }, [handleExpandSidebar]);
+  }, [handleExpandSidebar, scrollToNotesSection]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -1107,12 +1109,13 @@ export function ArticleRightPane({
                   type="button"
                   onClick={() => {
                     inspectorViewTouchedRef.current = true;
-                    setActiveInspectorView('notes');
+                    setActiveInspectorView('details');
                     handleExpandSidebar();
+                    scrollToNotesSection();
                   }}
                   className={cn(
                     railIconBtn,
-                    activeInspectorView === 'notes' && 'nm-pill-active',
+                    activeInspectorView === 'details' && 'nm-pill-active',
                   )}
                   aria-label={`Notes (${openNotesCount} open)`}
                   title={`Notes — ${openNotesCount} open note${openNotesCount === 1 ? '' : 's'}. (Alt+N)`}
@@ -1602,77 +1605,8 @@ export function ArticleRightPane({
         id="page-context-panel-details"
         role="tabpanel"
         aria-labelledby="page-context-tab-details"
-        className="flex min-h-0 flex-1 flex-col overflow-hidden"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
       >
-        {page && !isNewPage && (
-          <div className="shrink-0 border-b border-border p-2 bg-card">
-            <div
-              role="tablist"
-              aria-label="Details sections"
-              className="grid grid-cols-2 gap-0.5 rounded-md bg-muted p-0.5 text-xs"
-            >
-              <button
-                type="button"
-                role="tab"
-                id="details-subtab-overview"
-                aria-selected={detailsSubView === 'overview'}
-                aria-controls="details-panel-overview"
-                tabIndex={detailsSubView === 'overview' ? 0 : -1}
-                onClick={() => setDetailsSubView('overview')}
-                className={cn(
-                  'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  detailsSubView === 'overview'
-                    ? 'panel-tab-active'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-                data-testid="details-subtab-overview"
-              >
-                <FileText size={13} />
-                Overview
-              </button>
-              <button
-                type="button"
-                role="tab"
-                id="details-subtab-notes"
-                aria-selected={detailsSubView === 'notes'}
-                aria-controls="details-panel-notes"
-                tabIndex={detailsSubView === 'notes' ? 0 : -1}
-                onClick={() => setDetailsSubView('notes')}
-                className={cn(
-                  'flex h-7 items-center justify-center gap-1.5 rounded-sm px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  detailsSubView === 'notes'
-                    ? 'panel-tab-active'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-                data-testid="details-subtab-notes"
-              >
-                <MessageSquare size={13} />
-                Notes
-                {openNotesCount > 0 && (
-                  <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
-                )}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {detailsSubView === 'notes' && !isNewPage ? (
-          <div
-            id="details-panel-notes"
-            role="tabpanel"
-            aria-labelledby="details-subtab-notes"
-            className="flex min-h-0 flex-1 flex-col overflow-hidden"
-            data-testid="details-notes-section"
-          >
-            <NotesInspectorPanel pageId={id} />
-          </div>
-        ) : (
-          <div
-            id="details-panel-overview"
-            role="tabpanel"
-            aria-labelledby="details-subtab-overview"
-            className="min-h-0 flex-1 overflow-y-auto scroll-mask"
-          >
       {isNewPage ? (
         <div className="px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
@@ -1815,6 +1749,21 @@ export function ArticleRightPane({
                     {label}
                   </span>
                 ))}
+              </div>
+            </div>
+          )}
+          {id && (
+            <div id="details-notes-section" className="mt-5 border-t border-border pt-4" data-testid="details-notes-section">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
+                {openNotesCount > 0 && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
+                    {openNotesCount} open
+                  </span>
+                )}
+              </div>
+              <div className="overflow-hidden rounded-lg border border-border bg-card">
+                <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
               </div>
             </div>
           )}
@@ -2018,8 +1967,6 @@ export function ArticleRightPane({
           </details>
         </div>
       )}
-          </div>
-        )}
       </div>
       )}
 

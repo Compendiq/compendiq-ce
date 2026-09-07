@@ -1587,7 +1587,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
 
-    it('moves Notes into the Details tab with sub-navigation and keeps 3 top-level tabs', async () => {
+    it('moves Notes inline into the Details tab above page actions and keeps 3 top-level tabs', async () => {
       useArticleViewStore.setState({
         headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
       });
@@ -1608,27 +1608,26 @@ describe('ArticleRightPane', () => {
       fireEvent.click(detailsTab);
       expect(detailsTab).toHaveAttribute('aria-selected', 'true');
 
-      // Sub-tabs are rendered inside Details
-      const overviewSubtab = screen.getByTestId('details-subtab-overview');
-      const notesSubtab = screen.getByTestId('details-subtab-notes');
-      expect(overviewSubtab).toBeInTheDocument();
-      expect(notesSubtab).toBeInTheDocument();
-      expect(overviewSubtab).toHaveAttribute('aria-selected', 'true');
-      expect(notesSubtab).toHaveTextContent('2');
+      // Notes section is rendered inline inside Details above page actions
+      const notesSection = screen.getByTestId('details-notes-section');
+      expect(notesSection).toBeInTheDocument();
+      expect(notesSection).toHaveTextContent('Notes');
+      expect(notesSection).toHaveTextContent('2 open');
+      expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
 
-      // Click Notes sub-tab
-      fireEvent.click(notesSubtab);
-      expect(notesSubtab).toHaveAttribute('aria-selected', 'true');
-      expect(screen.getByTestId('details-notes-section')).toBeInTheDocument();
+      // Page actions section is present below notes
+      const pageActions = screen.getByTestId('article-actions');
+      expect(pageActions).toBeInTheDocument();
+      // Verify notesSection precedes pageActions in the DOM order
+      expect(
+        Boolean(notesSection.compareDocumentPosition(pageActions) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ).toBe(true);
 
-      // Press Alt+D to go back to overview
-      fireEvent.keyDown(window, { key: 'd', altKey: true });
-      expect(overviewSubtab).toHaveAttribute('aria-selected', 'true');
-
-      // Press Alt+N to jump directly to notes inside details
+      // Alt+N hotkey switches to Details tab
+      fireEvent.click(screen.getByTestId('page-context-tab-outline'));
+      expect(detailsTab).toHaveAttribute('aria-selected', 'false');
       fireEvent.keyDown(window, { key: 'n', altKey: true });
       expect(detailsTab).toHaveAttribute('aria-selected', 'true');
-      expect(notesSubtab).toHaveAttribute('aria-selected', 'true');
     });
   });
 });
