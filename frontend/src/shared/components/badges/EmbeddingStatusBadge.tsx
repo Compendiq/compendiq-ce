@@ -141,10 +141,13 @@ export function EmbeddingStatusBadge(props: EmbeddingStatusBadgeProps) {
   return (
     <span
       title={config.title}
+      tabIndex={0}
+      role="note"
+      aria-label={config.title}
       data-testid={status === 'not_embedded' ? 'badge-not-embedded' : 'embedding-status-badge'}
       data-status={status}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
+        'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         config.badgeClass,
         config.animate && 'animate-pulse',
         className,

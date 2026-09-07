@@ -6,6 +6,7 @@ import { apiFetch } from '../../lib/api';
 import { CommentForm } from './CommentForm';
 import { CommentThread, type Comment } from './CommentThread';
 import { cn } from '../../lib/cn';
+import { isMac } from '../../lib/platform';
 
 export interface NotesInspectorPanelProps {
   pageId: string | undefined | null;
@@ -208,6 +209,23 @@ export function NotesInspectorPanel({
 
   const displayedThreads = filter === 'open' ? unresolvedThreads : resolvedThreads;
 
+  const handleTabKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const nextFilter = filter === 'open' ? 'resolved' : 'open';
+      setFilter(nextFilter);
+      const nextTabId = nextFilter === 'open' ? 'notes-tab-open' : 'notes-tab-resolved';
+      document.getElementById(nextTabId)?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setFilter('open');
+      document.getElementById('notes-tab-open')?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setFilter('resolved');
+      document.getElementById('notes-tab-resolved')?.focus();
+    }
+  };
   return (
     <div
       className={cn('flex min-h-0 flex-1 flex-col overflow-hidden bg-card text-card-foreground', className)}
@@ -216,7 +234,12 @@ export function NotesInspectorPanel({
       {/* Header with Filters and Add Note button */}
       <div className="border-b border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <div role="tablist" aria-label="Filter notes by status" className="flex items-center gap-1 rounded-md bg-muted p-0.5 text-xs">
+          <div
+            role="tablist"
+            aria-label="Filter notes by status"
+            onKeyDown={handleTabKeyDown}
+            className="flex items-center gap-1 rounded-md bg-muted p-0.5 text-xs"
+          >
             <button
               type="button"
               role="tab"
@@ -276,7 +299,7 @@ export function NotesInspectorPanel({
               onCancel={() => setShowNewNoteForm(false)}
               isSubmitting={addNote.isPending}
               autoFocus
-              placeholder="Write a note about this page… (⌘Enter to post)"
+              placeholder={`Write a note about this page… (${isMac() ? '⌘Enter' : 'Ctrl+Enter'} to post)`}
             />
           </div>
         )}
@@ -285,9 +308,10 @@ export function NotesInspectorPanel({
       {/* Threads List */}
       <div
         id="notes-threads-list"
-        role="region"
-        aria-label={filter === 'open' ? 'Open notes list' : 'Resolved notes list'}
-        className="flex-1 overflow-y-auto p-3 space-y-3"
+        role="tabpanel"
+        aria-labelledby={filter === 'open' ? 'notes-tab-open' : 'notes-tab-resolved'}
+        tabIndex={0}
+        className="flex-1 overflow-y-auto p-3 space-y-3 focus-visible:outline-none"
       >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
