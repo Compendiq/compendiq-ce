@@ -384,7 +384,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       await writeAttachmentCache('u1', '4242', 'a.png', PNG);
       await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
 
-      await cleanPageAttachments('u1', '4242');
+      await cleanPageAttachments('4242');
 
       expect(await flags(pageId)).toEqual({ image: true, text: false });
     });

@@ -342,8 +342,8 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
       expect(response.statusCode).toBe(200);
       expect(cleanPageAttachments).toHaveBeenCalledTimes(2);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-1');
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
     });
 
     /**
@@ -524,7 +524,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       );
       expect(pageDelete).toBeDefined();
       expect(pageDelete![1]).toEqual([[1, 2]]);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
     });
   });
 

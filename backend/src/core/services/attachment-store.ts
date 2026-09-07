@@ -141,9 +141,6 @@ export function validateFilename(filename: string): string {
 
 /**
  * Attachments are stored in a shared directory keyed only by pageId.
- * The public-facing functions still accept a `userId` argument for
- * backward compatibility / observability, but the on-disk path no longer
- * depends on it.
  */
 export function attachmentDir(pageId: string): string {
   const safeId = validatePageId(pageId);
@@ -190,7 +187,7 @@ export function safeAttachmentPath(pageId: string, filename: string): string {
  * This handles the case where stale cached HTML references a plain filename
  * but the sync stored the file with an xref suffix.
  */
-export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
+export async function readAttachment(pageId: string, filename: string): Promise<Buffer | null> {
   const fullPath = safeAttachmentPath(pageId, filename);
   try {
     return await fs.readFile(fullPath);
