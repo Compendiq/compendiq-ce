@@ -961,7 +961,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      outer frame has one colour on all four sides. */
   --app-header-bg: #f5f5f4;
   --app-shell-bg: var(--color-background);
-  --app-rail-bg: var(--app-chassis);
+  --app-rail-bg: var(--color-card);
 }
 
 /* ---- Light-theme warning-text remap ----
@@ -1176,10 +1176,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Shell surfaces carry the palette without competing with content. The top
    app header continues the Canvas around the workspace on all four sides.
-   The left navigation pane and the detached context rail paint the rail
-   surface (--app-rail-bg): in light mode, light gray matching the frame so
-   all rails recede around the white document; in dark mode, matching the
-   central pane. */
+   The left navigation pane — title, tree, and footer — paints the same
+   surface as main so the workspace reads as one card split by a hairline,
+   not a chrome band beside a reading pane. The detached context rail is the
+   same composition: one pane, its own first row, no band. */
 @utility app-header {
   background: var(--app-chassis);
   border-color: var(--color-border);
@@ -1190,17 +1190,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 @utility app-sidebar {
-  background: var(--app-rail-bg);
+  background: var(--color-card);
   border-color: var(--color-border);
 }
 
-/* Title and footer bands inherit the rail surface; they must not reintroduce Chrome. */
+/* Title and footer bands inherit the pane; they must not reintroduce Chrome. */
 .app-sidebar .panel-toolbar {
   background: transparent;
 }
 
-/* Route content is the page users are working on. It keeps pure white --color-card,
-   framed by the light gray rails and chassis. */
+/* Route content is the page users are working on. It shares --color-card with
+   the left pane so the workspace is one surface; the hairline on the sidebar
+   is the only split. The workspace clips both to the shared outer radius. */
 @utility app-content-pane {
   background: var(--color-card);
 }
