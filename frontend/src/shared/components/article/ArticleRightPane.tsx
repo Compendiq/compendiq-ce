@@ -1752,21 +1752,6 @@ export function ArticleRightPane({
               </div>
             </div>
           )}
-          {id && (
-            <div id="details-notes-section" className="mt-5 border-t border-border pt-4" data-testid="details-notes-section">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
-                {openNotesCount > 0 && (
-                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
-                    {openNotesCount} open
-                  </span>
-                )}
-              </div>
-              <div className="overflow-hidden rounded-lg border border-border bg-card">
-                <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
-              </div>
-            </div>
-          )}
         </div>
       ) : null}
 
@@ -1965,6 +1950,21 @@ export function ArticleRightPane({
               <span className="truncate">Move to trash</span>
             </Button>
           </details>
+        </div>
+      )}
+      {id && page && (
+        <div id="details-notes-section" className="px-3 pb-5 pt-3" data-testid="details-notes-section">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
+            {openNotesCount > 0 && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
+                {openNotesCount} open
+              </span>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
+          </div>
         </div>
       )}
       </div>

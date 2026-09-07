@@ -1587,7 +1587,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
 
-    it('moves Notes inline into the Details tab above page actions and keeps 3 top-level tabs', async () => {
+    it('renders Page actions above the Notes section inline in the Details tab', async () => {
       useArticleViewStore.setState({
         headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
       });
@@ -1608,19 +1608,20 @@ describe('ArticleRightPane', () => {
       fireEvent.click(detailsTab);
       expect(detailsTab).toHaveAttribute('aria-selected', 'true');
 
-      // Notes section is rendered inline inside Details above page actions
+      // Page actions section is present above notes
+      const pageActions = screen.getByTestId('article-actions');
+      expect(pageActions).toBeInTheDocument();
+
+      // Notes section is rendered inline inside Details below page actions
       const notesSection = screen.getByTestId('details-notes-section');
       expect(notesSection).toBeInTheDocument();
       expect(notesSection).toHaveTextContent('Notes');
       expect(notesSection).toHaveTextContent('2 open');
       expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
 
-      // Page actions section is present below notes
-      const pageActions = screen.getByTestId('article-actions');
-      expect(pageActions).toBeInTheDocument();
-      // Verify notesSection precedes pageActions in the DOM order
+      // Verify pageActions precedes notesSection in the DOM order
       expect(
-        Boolean(notesSection.compareDocumentPosition(pageActions) & Node.DOCUMENT_POSITION_FOLLOWING),
+        Boolean(pageActions.compareDocumentPosition(notesSection) & Node.DOCUMENT_POSITION_FOLLOWING),
       ).toBe(true);
 
       // Alt+N hotkey switches to Details tab
