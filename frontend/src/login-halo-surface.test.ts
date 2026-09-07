@@ -379,9 +379,9 @@ describe('the halo strength is bounded and the bound is measured', () => {
     ).toBeGreaterThan(OPACITY_CEILING);
     expect(
       breach,
-      `the halo now breaches AA at ${breach}, not 0.10. The canon amendment above ` +
-        '`@utility login-halo` in index.css states 0.10 — update it, and reconsider the ceiling.',
-    ).toBeCloseTo(0.1, 10);
+      `the halo now breaches AA at ${breach}, not 0.12. The canon amendment above ` +
+        '`@utility login-halo` in index.css states 0.12 — update it, and reconsider the ceiling.',
+    ).toBeCloseTo(0.12, 10);
   });
 
   it('the halo genuinely moves the ground, so measuring the composite is not theatre', () => {

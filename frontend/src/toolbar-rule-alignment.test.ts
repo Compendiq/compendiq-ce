@@ -96,14 +96,13 @@ describe('the 48px chrome band across the top of every pane', () => {
     }
   });
 
-  it('the article context strip is unlined and owns the full 48px', () => {
+  it('the article context strip carries a thin hairline below the edit bar and toolbar', () => {
     const src = read('features/pages/PageViewPage.tsx');
     expect(src, "the article strip's read row must own the whole 48").toContain('min-h-12');
     expect(
       src,
-      'the article strip is outside the scroller, so nothing may pass under it ' +
-        'and it needs no hairline (ADR-010 v1.1)',
-    ).not.toMatch(/w-full border-b border-border bg-card/);
+      'the article strip carries a thin hairline below the edit bar and toolbar',
+    ).toMatch(/w-full border-b border-border bg-card/);
   });
 
   it.each(PARENT_BORDERED)('%s subtracts the parent hairline (%s)', (file) => {

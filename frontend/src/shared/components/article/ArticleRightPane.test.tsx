@@ -1586,5 +1586,49 @@ describe('ArticleRightPane', () => {
       expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
+
+    it('renders Page actions above the Notes section inline in the Details tab', async () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      mockNotes = [
+        { id: 'n1', parentId: null, resolved: false },
+        { id: 'n2', parentId: null, resolved: false },
+      ];
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Top tablist has 3 tabs, not 4
+      expect(screen.queryByTestId('page-context-tab-notes')).toBeNull();
+      const detailsTab = screen.getByTestId('page-context-tab-details');
+      expect(detailsTab).toBeInTheDocument();
+      // Details tab shows open notes count
+      await waitFor(() => expect(detailsTab).toHaveTextContent('2'));
+
+      // Switch to details tab
+      fireEvent.click(detailsTab);
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+
+      // Page actions section is present above notes
+      const pageActions = screen.getByTestId('article-actions');
+      expect(pageActions).toBeInTheDocument();
+
+      // Notes section is rendered inline inside Details below page actions
+      const notesSection = screen.getByTestId('details-notes-section');
+      expect(notesSection).toBeInTheDocument();
+      expect(notesSection).toHaveTextContent('Notes');
+      expect(notesSection).toHaveTextContent('2 open');
+      expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
+
+      // Verify pageActions precedes notesSection in the DOM order
+      expect(
+        Boolean(pageActions.compareDocumentPosition(notesSection) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ).toBe(true);
+
+      // Alt+N hotkey switches to Details tab
+      fireEvent.click(screen.getByTestId('page-context-tab-outline'));
+      expect(detailsTab).toHaveAttribute('aria-selected', 'false');
+      fireEvent.keyDown(window, { key: 'n', altKey: true });
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+    });
   });
 });

@@ -69,10 +69,9 @@ flowchart TB
 ## Authenticated inset shell
 
 `AppLayout` paints a viewport **chassis** (`--app-chassis`, inset on `md+`)
-around a rounded **app shell**. The top app header also paints the chassis, so
-the outer frame is continuous on all four sides; internal panel toolbars paint
-Chrome (`--app-header-bg`). The composition is:
-
+around a rounded **app shell**. The top app header and destination rail also
+paint the chassis, so the outer frame (header, left rail, bottom rail) is
+continuous on all sides; internal panel toolbars paint Chrome (`--app-header-bg`). The composition is:
 ```mermaid
 flowchart TB
     chassis["viewport chassis --app-chassis"]

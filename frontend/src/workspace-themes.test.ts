@@ -259,8 +259,8 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // destination rail, top app header) three times on 2026-08-30, landing on
   // #fafaf9; then #f4f3f1 on 2026-08-31 when the workspace and context-rail
   // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
-  // against the frame, which is not an edge — and then #ebeae8 the same day,
-  // asked for as "more gray" (1.202:1 on Pane). Asserting a hue rule on it would
+  // against the frame, which is not an edge; then #ebeae8, and then #e8e8e8 on
+  // 2026-09-07, asked for as "more gray" (1.241:1 on Pane). Asserting a hue rule on it would
   // assert the ramp over the owner's own value, so it gets the stricter check
   // instead — its exact value — which catches drift in EITHER direction rather
   // than trading one unguarded token for another. The card edge is measured in
@@ -268,7 +268,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#ebeae8',
+    '--app-chassis': '#e8e8e8',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -1055,17 +1055,19 @@ describe('Flat depth model', () => {
     );
   });
 
-  // A selected segment is an operable component whose STATE must be
-  // identifiable (1.4.11). Both chip utilities sit on a borderless `bg-muted`
-  // track whose fill step is 1.161:1 (Paper) / 1.070:1 (Graphite), so the chip's
-  // own edge is the only channel that can carry 3:1.
-  it('selected segments carry the interactive edge', () => {
-    for (const name of ['panel-tab-active', 'nm-pill-active']) {
-      const block = extractBlock(css, `@utility ${name} {`);
-      expect(block, `${name} must use --color-border-interactive`).toMatch(
-        /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
-      );
-    }
+  it('selected segments carry the interactive edge or subtle elevation', () => {
+    const pill = extractBlock(css, '@utility nm-pill-active {');
+    expect(pill, 'nm-pill-active must use --color-border-interactive').toMatch(
+      /border:\s*1px\s+solid\s+var\(--color-border-interactive\)/,
+    );
+    const tab = extractBlock(css, '@utility panel-tab-active {');
+    expect(tab, 'panel-tab-active is an elevated card chip').toMatch(
+      /background:\s*var\(--color-card\)/,
+    );
+    expect(tab, 'panel-tab-active uses shallow overlay shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay-sm\)/,
+    );
+    expect(tab, 'panel-tab-active draws no border').not.toMatch(/border:/);
   });
 
   // Chrome is the ground, content is the pane — the inversion that makes the

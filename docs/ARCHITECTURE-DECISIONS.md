@@ -1563,6 +1563,16 @@ still has to be findable — and a sweep that fails if anything outside `.prose`
 panes carry no ring` block over the Library and AI sources, the same shape as
 its workspace-card assertions.
 
+
+### v1.3 — Light mode Header, destination rail, and bottom rail are light gray; sidebars return to white (2026-09-07)
+
+**Owner decision.** *"Set the app-chasis to #e8e8e8. also fit the other colors to this color. keep the colro of the left and right panes and main are ffffff"*.
+
+Light mode only; Graphite is untouched. The framing chassis around the central workspace (top app header, left destination rail, and bottom chassis rail) paints the neutral light gray chassis tone (`--app-chassis`: `#E8E8E8`).
+
+- The left navigation sidebar (`app-sidebar`) and the right context rail (`app-context-rail`) paint pure white (`#FFFFFF`, `var(--color-card)` / `var(--app-rail-bg)`), unified with the central document canvas (`app-content-pane`).
+- The outer chassis frame — top app header (`app-header`), left destination rail (`MainNavChassisRail`), and bottom rail (chassis bottom padding) — paints the light gray frame tone (`#E8E8E8`, `var(--app-chassis)`).
+- `--color-muted-foreground` is fitted to `#686866` to maintain WCAG AA contrast (4.56:1) against the `#E8E8E8` chassis while preserving warmth (`r > b`).
 ---
 
 ## ADR-011: Docker Deployment Architecture

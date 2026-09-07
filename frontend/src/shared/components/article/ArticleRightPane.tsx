@@ -181,7 +181,7 @@ const OutlineNodeItem = memo(function OutlineNodeItem({
         className={cn(
           'group relative flex items-center gap-1.5 rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'nav-selection font-medium'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-muted hover:text-foreground',
         )}
         style={{ paddingLeft: `${level * 12 + 28}px` }}
@@ -396,6 +396,13 @@ export function ArticleRightPane({
   );
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
 
+  const scrollToNotesSection = useCallback(() => {
+    setTimeout(() => {
+      const el = document.getElementById('details-notes-section');
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+  }, []);
+
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
       setAssistantMounted(true);
@@ -460,6 +467,7 @@ export function ArticleRightPane({
     if (previousInspectorPageIdRef.current !== currentKey) {
       previousInspectorPageIdRef.current = currentKey;
       inspectorViewTouchedRef.current = false;
+
       // `headings` still belongs to the previous page during this render.
       // Start from Details until the destination publishes its own structure.
       // On new page, default to Assistant.
@@ -477,8 +485,13 @@ export function ArticleRightPane({
   useEffect(() => {
     if (!inspectorViewRequest) return;
     inspectorViewTouchedRef.current = true;
-    setActiveInspectorView(inspectorViewRequest.view);
-  }, [inspectorViewRequest]);
+    setActiveInspectorView('details');
+    if (inspectorViewRequest.view === 'notes') {
+      scrollToNotesSection();
+    } else {
+      setActiveInspectorView(inspectorViewRequest.view);
+    }
+  }, [inspectorViewRequest, scrollToNotesSection]);
 
   const { data: pageNotes } = usePageNotes(id);
   const openNotesCount = useMemo(
@@ -513,26 +526,28 @@ export function ArticleRightPane({
         } else if (key === 'n') {
           e.preventDefault();
           inspectorViewTouchedRef.current = true;
-          setActiveInspectorView('notes');
+          setActiveInspectorView('details');
           handleExpandSidebar();
+          scrollToNotesSection();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleExpandSidebar]);
+  }, [handleExpandSidebar, scrollToNotesSection]);
 
   // Listen to open-sidebar requests from inline comment popovers
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleOpenNotes = () => {
       inspectorViewTouchedRef.current = true;
-      setActiveInspectorView('notes');
+      setActiveInspectorView('details');
       handleExpandSidebar();
+      scrollToNotesSection();
     };
     window.addEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
     return () => window.removeEventListener('compendiq:comment-open-sidebar', handleOpenNotes);
-  }, [handleExpandSidebar]);
+  }, [handleExpandSidebar, scrollToNotesSection]);
 
   // Persist collapsed section IDs
   useEffect(() => {
@@ -1094,12 +1109,13 @@ export function ArticleRightPane({
                   type="button"
                   onClick={() => {
                     inspectorViewTouchedRef.current = true;
-                    setActiveInspectorView('notes');
+                    setActiveInspectorView('details');
                     handleExpandSidebar();
+                    scrollToNotesSection();
                   }}
                   className={cn(
                     railIconBtn,
-                    activeInspectorView === 'notes' && 'nm-pill-active',
+                    activeInspectorView === 'details' && 'nm-pill-active',
                   )}
                   aria-label={`Notes (${openNotesCount} open)`}
                   title={`Notes — ${openNotesCount} open note${openNotesCount === 1 ? '' : 's'}. (Alt+N)`}
@@ -1451,12 +1467,12 @@ export function ArticleRightPane({
             --color-border-interactive so the selected state still clears
             1.4.11 (see `panel-tab-active`). */}
         <div
-          className="grid min-w-0 flex-1 grid-cols-4 gap-0.5 rounded-md bg-muted p-0.5"
+          className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-md bg-muted p-0.5"
           role="tablist"
           aria-label="Page context views"
           onKeyDown={(e) => {
-            const tabs: InspectorView[] = ['assistant', 'outline', 'notes', 'details'];
-            const currentIndex = tabs.indexOf(activeInspectorView);
+            const tabs: ('assistant' | 'outline' | 'details')[] = ['assistant', 'outline', 'details'];
+            const currentIndex = tabs.indexOf(activeInspectorView as 'assistant' | 'outline' | 'details');
             if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
               e.preventDefault();
               const nextView = tabs[(currentIndex + 1) % tabs.length]!;
@@ -1495,9 +1511,6 @@ export function ArticleRightPane({
           data-ai-assistant-trigger
           data-testid="page-context-tab-assistant"
         >
-          {/* Violet marks AI (ADR-010) — on the tab's glyph only, so the
-              control still reads as one of three peers rather than the
-              coloured one. */}
           <Sparkles size={13} className={cn(activeInspectorView === 'assistant' && 'text-status-ai')} />
           Assistant
         </button>
@@ -1527,32 +1540,6 @@ export function ArticleRightPane({
         <button
           type="button"
           role="tab"
-          id="page-context-tab-notes"
-          aria-controls="page-context-panel-notes"
-          aria-selected={activeInspectorView === 'notes'}
-          tabIndex={activeInspectorView === 'notes' ? 0 : -1}
-          title="Notes (Alt+N)"
-          onClick={() => {
-            inspectorViewTouchedRef.current = true;
-            setActiveInspectorView('notes');
-          }}
-          className={cn(
-            'flex h-7 items-center justify-center gap-1 rounded-sm px-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            activeInspectorView === 'notes'
-              ? 'panel-tab-active'
-              : 'text-muted-foreground hover:text-foreground',
-          )}
-          data-testid="page-context-tab-notes"
-        >
-          <MessageSquare size={13} />
-          Notes
-          {openNotesCount > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
-          )}
-        </button>
-        <button
-          type="button"
-          role="tab"
           id="page-context-tab-details"
           aria-controls="page-context-panel-details"
           aria-selected={activeInspectorView === 'details'}
@@ -1572,6 +1559,9 @@ export function ArticleRightPane({
         >
           <FileText size={13} />
           Details
+          {openNotesCount > 0 && (
+            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+          )}
         </button>
         </div>
 
@@ -1607,17 +1597,6 @@ export function ArticleRightPane({
               (hidden via CSS when viewing Outline/Details) to preserve staged
               attachments and deep-search state during tab switching. */}
           <DockPanel variant="tab" onClose={() => setActiveInspectorView('outline')} />
-        </div>
-      )}
-
-      {activeInspectorView === 'notes' && (
-        <div
-          id="page-context-panel-notes"
-          role="tabpanel"
-          aria-labelledby="page-context-tab-notes"
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-        >
-          <NotesInspectorPanel pageId={id} />
         </div>
       )}
 
@@ -1805,7 +1784,7 @@ export function ArticleRightPane({
                   className={cn(
                     'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
                     historyOpen
-                      ? 'nav-selection font-medium'
+                      ? 'nav-selection font-medium outline-none'
                       : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                   )}
                   title="Version history"
@@ -1822,7 +1801,7 @@ export function ArticleRightPane({
             className={cn(
               'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
               isPinned
-                ? 'nav-selection font-medium'
+                ? 'nav-selection font-medium outline-none'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
             title={`${isPinned ? 'Unpin' : 'Pin'} (${formatKeysForPlatform(getShortcutHint('pin-page') ?? '', detectMac())})`}
@@ -1971,6 +1950,21 @@ export function ArticleRightPane({
               <span className="truncate">Move to trash</span>
             </Button>
           </details>
+        </div>
+      )}
+      {id && page && (
+        <div id="details-notes-section" className="px-3 pb-5 pt-3" data-testid="details-notes-section">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
+            {openNotesCount > 0 && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
+                {openNotesCount} open
+              </span>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
+          </div>
         </div>
       )}
       </div>
