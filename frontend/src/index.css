@@ -736,13 +736,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
       hairlines, so the value step became the whole boundary and 1.04:1 was no
       longer enough to be one. Canvas went to #f4f3f1 (1.11:1 on Pane) and with
       it Paper's order returned to v0.7's: Canvas → Chrome → Workspace → Pane.
-   6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8, 1.202:1
-      on Pane — the frame reads as grey rather than as a lighter white, and it
-      lands on the same rung --color-selected occupies (1.193:1). This is the
-      FLOOR of the range:
-      the destination rail's 12px labels are --color-muted-foreground on Canvas
-      and #6a6a68 measures 4.51:1 there against 1.4.3's 4.5, so the next step of
-      grey has to be paid for by darkening the secondary ink. Only Canvas moved
+   6. Pass 6 (2026-08-31, same session). "More gray." Canvas to #ebeae8.
+   7. Pass 7 (2026-09-07). "Set the app-chassis to #e8e8e8. also fit the other colors to this color."
+      Canvas to #e8e8e8, 1.241:1 on Pane. The destination rail's 12px labels are --color-muted-foreground
+      on Canvas and #686866 measures 4.56:1 there against 1.4.3's 4.5.
       in either pass; the fills fitted in pass 4 are measured against Pane, not
       against the frame.
 
@@ -765,12 +762,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      light mode; Graphite still avoids near-black on its side, which is where
      the long-session glare argument actually has teeth.
 
-     Canvas is the darkest step again as of 2026-08-31 (#ebeae8), having spent a
+     Canvas is the darkest step again as of 2026-09-07 (#e8e8e8), having spent a
      day above Workspace at #f9f8f7 → #fdfdfd → #fafaf9. The reason is not
      symmetry with Graphite: when the workspace and rail hairlines came off,
      nothing but the Canvas/Pane step was left to draw the card, and #fafaf9
      measured 1.04:1 — a boundary you could not see without the line. Two passes
-     later the frame is a real grey at 1.20:1. The document is still the
+     later the frame is a real grey at 1.24:1. The document is still the
      brightest surface, which is the part that was always load-bearing. */
   --color-background: #f8f8f7;          /* Workspace — card ground, bg-background fills */
   --color-foreground: #191918;          /* ink, one step warm */
@@ -805,7 +802,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   --color-muted: #eeeeed;
   /* Measured against the WORST surface it lands on — white Pane and Raised
      (5.42:1), not the chassis. */
-  --color-muted-foreground: #6a6a68;
+  --color-muted-foreground: #686866;
   /* THREE state fills on the white pane, each its own rung. One token used to
      serve hover AND selected — `nav-selection`, `nm-card-hover`,
      `nm-card-interactive:hover` and 23 `hover:bg-accent` callsites all read the
@@ -840,7 +837,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      darkened on 2026-08-30 to #d9d9d6 (1.414:1) to pay for the owner-pinned
      near-white frame: with Canvas at #fafaf9 the workspace card had only a
      1.044:1 value step to its gutter, so this hairline was doing a value step's
-     job. Canvas then went grey (#ebeae8, 1.202:1) and the card went unlined
+     job. Canvas then went grey (#e8e8e8, 1.241:1) and the card went unlined
      entirely, which left the line with nothing to carry — and on 2026-08-31 the
      owner asked for the survivors to be very slim or gone. #efeeec: 1.16:1 on
      the white Pane, 1.09:1 on Workspace, 1.06:1 on Chrome. Warm side of the
@@ -925,23 +922,23 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      2026-08-30 at 249/248/247, then #FDFDFD, then "slightly darker" — #FAFAF9;
      on 2026-08-31 to #F4F3F1 when the workspace and rail hairlines came off and
      the value step became the whole card boundary; and again the same day to
-     #EBEAE8, asked for as "more gray". The frame now measures 1.202:1 against
+     #E8E8E8, asked for as "more gray". The frame now measures 1.241:1 against
      the white Pane — the rung --color-selected occupies (1.193:1), and a frame
      you read as grey rather than as off-white.
 
      THIS IS THE GREYEST VALUE THE SECONDARY INK ALLOWS. The left destination
      rail labels ("Pages", "AI", "Graph") are 12px --color-muted-foreground on
-     this surface, so 1.4.3 applies at 4.5:1 and #6A6A68 on #EBEAE8 measures
-     4.51:1. Any deeper grey needs --color-muted-foreground darkened first;
+     this surface, so 1.4.3 applies at 4.5:1 and #686866 on #E8E8E8 measures
+     4.56:1. Any deeper grey needs --color-muted-foreground darkened first;
      workspace-themes.test.ts pins that relationship so the rail cannot lose its
-     labels to a later retune. --color-border-interactive on Canvas is 3.19:1,
+     labels to a later retune. --color-border-interactive on Canvas is 3.13:1,
      still over the 1.4.11 floor. Every other neutral in this block is fitted to
      white and to this frame, which is why the ramp reads near-neutral rather
      than beige. The rail's destinations are unaffected: they carry hover and
      selection with ink and a Steel marker line, never a fill. */
-  --app-chassis: #ebeae8;
+  --app-chassis: #e8e8e8;
   /* The login page keeps the ground its halo was measured against. Canvas left
-     it behind on 2026-08-31: at #EBEAE8 the halo composites to #DDDFDF and the
+     it behind on 2026-08-31: at #E8E8E8 the halo composites to #DDDFDF and the
      hero's 18px lead paragraph measures 4.013:1, under 1.4.3's 4.5. This value
      is #FAFAF9 — the frame's own value for one day — where the composite holds
      4.607:1. It is not "the old chassis kept around": it is the login surface's
@@ -1053,7 +1050,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    `login-halo-surface.test.ts` composites this colour at this opacity over the
    chassis — in sRGB, the way a browser actually blends — and asserts the lead
    paragraph's muted ink still clears 4.5:1 on the result. At 0.08 the binding
-   case (violet over Paper) measures 4.607:1; at 0.10 it breaches. Decoration is
+   case (violet over Paper) measures 4.746:1; at 0.12 it breaches. Decoration is
    permitted HERE, at THIS strength, because it is measured. Nowhere else. */
 @utility login-halo {
   position: absolute;

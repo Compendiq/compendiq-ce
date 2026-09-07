@@ -109,7 +109,7 @@ benchmark numbers, no named reference customers. Future work must not invent the
   single brand and interaction accent. Violet remains AI, amber warning, green success,
   and red failure; these semantic colors are not alternate accents. Graphite's document
   pane stays off near-black to reduce long-session glare. **Paper's document pane, left navigation, and context rail are pure white (`#FFFFFF`)** (owner decisions, 2026-08-30, 2026-09-07):
-  the document, left navigation sidebar, and right context rail are `#FFFFFF`; the frame — top app header, left destination rail, and bottom rail — paints the light gray chassis tone (`#EBEAE8`).
+  the document, left navigation sidebar, and right context rail are `#FFFFFF`; the frame — top app header, left destination rail, and bottom rail — paints the light gray chassis tone (`#E8E8E8`).
 - **Colour is never the only channel for state** (2026-08-30, reaffirmed 2026-08-31 when embedding left the hue vocabulary and became body ink plus a progress affordance). Seven semantic hues cannot be mutually
   separated under colour-vision deficiency while every one clears WCAG AA on a white pane — that is
   arithmetic, not an oversight — so every status indicator also carries an icon, shape, or accessible
