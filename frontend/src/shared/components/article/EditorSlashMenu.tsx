@@ -207,11 +207,11 @@ export function EditorSlashMenu({ editor }: EditorSlashMenuProps) {
         left: `${coords.left}px`,
       }}
       className={cn(
-        'z-50 w-80 max-h-[340px] nm-card-elevated p-1 flex flex-col',
+        'z-50 w-80 max-h-[340px] nm-popover-glass p-1.5 flex flex-col',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
     >
-      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border/50 text-[11px] text-muted-foreground select-none">
+      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border/60 text-[11px] text-muted-foreground select-none">
         <span className="font-medium text-foreground">Insert block</span>
         <span>
           {query ? (
@@ -253,7 +253,7 @@ export function EditorSlashMenu({ editor }: EditorSlashMenuProps) {
                     onClick={() => executeItem(item)}
                     onMouseEnter={() => setSelectedIndex(currentIndex)}
                     className={cn(
-                      'flex w-full cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-colors outline-none',
+                      'flex w-full cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none',
                       isSelected
                         ? 'bg-accent text-foreground'
                         : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
@@ -261,9 +261,9 @@ export function EditorSlashMenu({ editor }: EditorSlashMenuProps) {
                   >
                     <div
                       className={cn(
-                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-foreground',
+                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-foreground',
                         isSelected
-                          ? 'border-border-interactive bg-background shadow-xs'
+                          ? 'border-border bg-background shadow-xs'
                           : 'border-border/60 bg-muted/40',
                       )}
                     >
@@ -278,7 +278,7 @@ export function EditorSlashMenu({ editor }: EditorSlashMenuProps) {
                         {item.title}
                       </span>
                       {item.shortcut && (
-                        <kbd className="ml-2 shrink-0 rounded border border-border/30 bg-muted/40 px-1 py-0.5 font-mono text-[11px] text-muted-foreground/70">
+                        <kbd className="ml-2 shrink-0 rounded-md border border-border/30 bg-muted/40 px-1 py-0.5 font-mono text-[11px] text-muted-foreground/70">
                           {item.shortcut}
                         </kbd>
                       )}

@@ -197,7 +197,7 @@ export function ColorPickerDropdown({
           align="start"
           sideOffset={6}
           aria-label="Color swatches"
-          className="z-50 nm-card-elevated p-2.5 outline-none"
+          className="z-50 nm-popover-glass p-2.5 outline-none"
         >
           <ColorPanel
             textColor={textColor}

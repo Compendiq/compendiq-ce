@@ -8,10 +8,10 @@ import { formatKeysForPlatform } from '../../lib/shortcut-registry';
 import { isMac } from '../../lib/platform';
 import { cn } from '../../lib/cn';
 
-const MENU_CONTENT = 'z-50 min-w-[13rem] nm-card-elevated p-1.5';
+const MENU_CONTENT = 'z-50 min-w-[13rem] nm-popover-glass p-1.5';
 
 const MENU_ITEM =
-  'flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] ' +
+  'flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ' +
   'text-muted-foreground outline-none ' +
   'data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground ' +
   'data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground';
@@ -21,7 +21,7 @@ const menuTriggerClass = (open: boolean) =>
     'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[13px] transition-colors duration-75 select-none',
     'outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
     open
-      ? 'border-border-interactive bg-background text-foreground'
+      ? 'border-border bg-background text-foreground'
       : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
   );
 

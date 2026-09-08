@@ -1380,6 +1380,42 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   box-shadow: var(--shadow-overlay);
 }
 
+/* Floating editor popover & popup glass surfaces.
+   Features a softened hairline boundary (quiet translucent hairline color-mix
+   reducing contrast from var(--color-border-interactive)), subtle glassmorphism
+   with 10px backdrop blur over an 85% translucent elevated card background,
+   softer modern rounded-xl (12px / 0.75rem) corner radius, and the single system
+   overlay shadow. */
+@utility nm-popover-glass {
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background-color: var(--color-card-elevated);
+  background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-overlay);
+}
+
+@utility nm-popup-glass {
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background-color: var(--color-card-elevated);
+  background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-overlay);
+}
+
+@utility nm-card-elevated-glass {
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background-color: var(--color-card-elevated);
+  background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-overlay);
+}
+
 /* Hover tint for a card-surfaced control (a small button wearing `nm-card`).
    Stacks a flat translucent layer ABOVE the card gradient — the one way to
    tint a surface whose background is an image. This replaced `hover:bg-*` on
@@ -1938,6 +1974,9 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 @media (forced-colors: active) {
   .nm-card,
   .nm-card-elevated,
+  .nm-popover-glass,
+  .nm-popup-glass,
+  .nm-card-elevated-glass,
   .nm-card-interactive,
   .nm-toolbar,
   .nm-sidebar,
