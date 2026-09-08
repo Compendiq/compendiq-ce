@@ -147,3 +147,57 @@ unrelated `variant` down with it.
 | `frontend/src/features/admin/OidcSettingsPage.tsx` | EE-gated OIDC config UI |
 | `frontend/src/features/auth/OidcCallbackPage.tsx` | EE-gated OIDC callback handler |
 | `docker/Dockerfile.enterprise` | Multi-stage Dockerfile template for EE builds |
+
+## Model registry and inference evidence extension points
+
+```mermaid
+flowchart LR
+    hub["CE model-hub outbound request"] --> guard["core/client-model-asset-policy<br/>beforeHubRequest"]
+    guard -->|CE: no policy| public["Public model hub"]
+    guard -->|EE: air-gap off| public
+    guard -->|EE: enabled or unreadable| refuse["403 or 503; no outbound request"]
+    browser["Authenticated browser asset GET / HEAD"] --> resolver["Policy resolveFile"]
+    resolver -->|registered| verify["EE immutable generation<br/>SHA-256 verified disk snapshot"]
+    resolver -->|unregistered| local["Existing CE local asset store"]
+    verify --> response["Full / range / conditional response<br/>dispose snapshot"]
+    manifest["CE client asset manifest"] --> discovery["Merge policy listAssets<br/>with existing local assets"]
+    admin["Offline CLI"] --> upload["Metadata + bounded chunks"]
+    upload --> stage["Complete generation in local/private S3 storage"]
+    stage --> publish["Atomic registry pointer publication"]
+    publish --> verify
+```
+
+The policy lives in `core/services/client-model-asset-policy.ts`; Community
+has no implementation and retains its existing behavior. EE registration
+returns an app-lifetime disposer. Every outbound hub fetch checks policy,
+including inspection reached through automatic HEAD and each install fetch.
+An existing registry entry whose verification fails never falls back to an
+unchecked CE copy. Full, ranged, HEAD and conditional responses all verify the
+source before serving or returning metadata. Registry snapshots use the data
+volume, not the deployment's bounded `/tmp` tmpfs.
+
+```mermaid
+flowchart LR
+    routes["Seven admitted text inference routes"] --> quota["EE department quota + stream admission"]
+    quota --> text["Assigned text model or department fallback"]
+    retrieval["embedding / rerank / image_embedding"] --> assigned["Existing dedicated assignments<br/>never department text fallback"]
+    text --> audit["CE audit hook<br/>provider usage or estimates"]
+    audit --> persist["Selected audit writer"]
+    audit --> meter["EE admitted-request accounting<br/>once; cache replay excluded"]
+    persist --> evidence["Model Governance Evidence report"]
+    observed["Independently supplied complete artifact observation"] --> persist
+    registry["Current registry checksum"] --> evidence
+```
+
+Summarize, Diagram and Quality use the shared SSE audit lifecycle; inline
+completion reports counts without prompt/completion plaintext. Department
+accounting is composed once with the selected writer, not repeated inside it.
+Only an independently supplied artifact pair can populate checksum/asset
+evidence: matching a model name is not an observation. Registry checksum
+agreement is not proof of execution or network isolation. No browser audit
+producer is introduced by these hooks.
+
+The shared `ReportId` contract and `ComplianceReportsTab` include
+`model_governance`; the live backend's `available` list controls generation.
+There is no EE frontend overlay. The EE report states retained audit coverage
+and ships CSV plus an unsigned checksum PDF cover in a ZIP.

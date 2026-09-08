@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  CLIENT_ASSET_UPLOAD_CHUNK_BYTES,
   ClientAssetInspectSchema,
   ClientAssetInstallRequestSchema,
   ClientAssetInstallStatusSchema,
@@ -9,7 +10,6 @@ import {
   HunspellInstallRequestSchema,
 } from '@compendiq/contracts';
 import {
-  CLIENT_ASSET_UPLOAD_CHUNK_BYTES,
   writeClientAssetChunk,
 } from '../../core/services/client-model-assets.js';
 import {
@@ -20,6 +20,7 @@ import {
   searchClientModels,
 } from '../../core/services/client-model-hub.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { assertClientModelHubEgressAllowed } from '../../core/services/client-model-asset-policy.js';
 
 const ADMIN_RATE_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
@@ -59,6 +60,7 @@ export async function llmClientAssetAdminRoutes(fastify: FastifyInstance) {
     if (getClientModelInstallStatus().status === 'running') {
       return reply.code(409).send({ error: 'An install is already running', statusCode: 409 });
     }
+    await assertClientModelHubEgressAllowed();
     void installClientModel(body.repo).catch(() => {});
     return reply.code(202).send(ClientAssetInstallStatusSchema.parse(getClientModelInstallStatus()));
   });

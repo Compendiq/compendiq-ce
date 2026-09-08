@@ -50,6 +50,13 @@ describe('abortOnPrematureResponseClose', () => {
 
     expect(controller.signal.aborted).toBe(true);
   });
+
+  it('cancels immediately if resolution finished after the connection was destroyed', () => {
+    const controller = new AbortController();
+    const response = Object.assign(responseThatCloses(false), { destroyed: true });
+    abortOnPrematureResponseClose(response, controller);
+    expect(controller.signal.aborted).toBe(true);
+  });
 });
 
 describe('rethrowUnlessClientDisconnect', () => {

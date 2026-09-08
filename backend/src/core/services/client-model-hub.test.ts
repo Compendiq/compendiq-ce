@@ -4,8 +4,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listClientAssetManifest } from './client-model-assets.js';
+import { setClientModelAssetPolicy } from './client-model-asset-policy.js';
 import {
   HUNSPELL_SOURCES,
+  getClientModelInstallStatus,
   inspectClientModel,
   installClientModel,
   installHunspellModel,
@@ -18,6 +20,8 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+afterEach(() => { setClientModelAssetPolicy(null); });
 
 describe('searchClientModels', () => {
   it('returns recommended models when the query is empty without calling Hub', async () => {
@@ -110,6 +114,45 @@ describe('installClientModel', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
+  it('stops an install before the next HTTP request when policy changes after inspection', async () => {
+    let blocked = false;
+    const requests: string[] = [];
+    setClientModelAssetPolicy({
+      beforeHubRequest: async () => {
+        if (blocked) throw Object.assign(new Error('airgap_egress_blocked'), { statusCode: 403 });
+      },
+      resolveFile: async () => null,
+      listAssets: async () => [],
+    });
+    const fetchImpl: typeof fetch = async (input) => {
+      requests.push(String(input));
+      blocked = true;
+      return jsonResponse([{ path: 'onnx/model_q4.onnx', size: 4, type: 'file' }]);
+    };
+    await expect(installClientModel('owner/model', { fetch: fetchImpl, root: tmp }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    expect(requests).toEqual(['https://huggingface.co/api/models/owner/model/tree/main/onnx']);
+    expect(getClientModelInstallStatus().status).toBe('failed');
+    expect(await fs.readdir(tmp)).toEqual([]);
+  });
+
+  it('leaves the installer retryable when the policy read fails before inspection', async () => {
+    const requests: string[] = [];
+    setClientModelAssetPolicy({
+      beforeHubRequest: async () => { throw new Error('Settings unavailable'); },
+      resolveFile: async () => null,
+      listAssets: async () => [],
+    });
+    const fetchImpl: typeof fetch = async (input) => {
+      requests.push(String(input));
+      return jsonResponse([]);
+    };
+    await expect(installClientModel('owner/model', { fetch: fetchImpl, root: tmp }))
+      .rejects.toThrow('Settings unavailable');
+    expect(requests).toEqual([]);
+    expect(getClientModelInstallStatus().status).toBe('failed');
+  });
+
   it('writes required files onto the volume and marks the Hub id active', async () => {
     const files: Record<string, string> = {
       'config.json': '{"ok":true}',
@@ -176,6 +219,27 @@ describe('installHunspellModel', () => {
 
   afterEach(async () => {
     await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('rechecks policy between the dictionary requests and discards partial bytes', async () => {
+    let blocked = false;
+    const requests: string[] = [];
+    setClientModelAssetPolicy({
+      beforeHubRequest: async () => {
+        if (blocked) throw new Error('airgap_egress_blocked');
+      },
+      resolveFile: async () => null,
+      listAssets: async () => [],
+    });
+    const fetchImpl: typeof fetch = async (input) => {
+      requests.push(String(input));
+      blocked = true;
+      return new Response('SET UTF-8');
+    };
+    await expect(installHunspellModel('hunspell-en_US', { fetch: fetchImpl, root: tmp }))
+      .rejects.toThrow('airgap_egress_blocked');
+    expect(requests).toEqual([HUNSPELL_SOURCES['hunspell-en_US'].files[0].url]);
+    expect(await fs.readdir(tmp)).toEqual([]);
   });
 
   it('has valid upstream URLs for all Hunspell sources', () => {

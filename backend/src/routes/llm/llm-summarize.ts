@@ -6,6 +6,7 @@ import { fetchWebSources, formatWebContext, type WebSource } from './_web-search
 import { SummarizeRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   assembleContextIfNeeded,
   resolveSystemPrompt,
@@ -118,9 +119,17 @@ export async function llmSummarizeRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: summarizeContent },
       ];
-      const generator = streamChat(summaryConfig, resolvedModel, summarizeMessages, undefined, { thinking: body.thinking });
-
-      await streamSSE(request, reply, generator, sumExtras, { llmCache, cacheKey, postProcess });
+      await streamSSE(request, reply,
+        (signal) => streamChat(summaryConfig, resolvedModel, summarizeMessages, signal, { thinking: body.thinking }),
+        sumExtras, {
+          llmCache, cacheKey, postProcess,
+          audit: {
+            userId, action: 'summarize', model: resolvedModel, provider: summaryConfig.providerId,
+            inputTokens: estimateTokens(summarizeMessages.map((m) => m.content).join('')),
+            inputMessages: summarizeMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: [],
+          },
+        });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }

@@ -976,3 +976,22 @@ them into an unpublished EE frontend overlay. Keep `kmsEnabled` distinct from
 `hasMasterKey`, with absent optional status fields remaining unsupported/off.
 Cloud credentials never enter these forms. Object Lock saves are partial and
 must preserve unrelated S3 drafts; KMS test/rotation acts on saved settings only.
+
+## Enterprise Model Policy and Audit Hooks
+
+`core/services/client-model-asset-policy.ts` is the inert CE boundary for
+EE public-hub checks, verified browser downloads and registry discovery.
+Check the policy at every outbound hub fetch, not by URL spelling at routing.
+Registered-but-invalid assets must fail closed, never fall through to local
+copies. Dispose verification resources for every response, including HEAD,
+304 and range errors; Fastify's automatic HEAD handling retains GET metadata.
+
+Summarize, Diagram and Quality use the shared SSE audit lifecycle. Inline
+completion reports provider usage (estimates if absent) without plaintext.
+Cache replays do not represent new inference. EE composes department metering
+once with its selected audit writer; do not also charge inside persistence.
+Department text fallback must not rewrite embedding, rerank or image embedding.
+`model_governance` belongs to the shared report contract and frontend, gated
+by backend availability. Supplied artifact observations and current-registry
+checksum agreement are not execution or air-gap attestation; never infer an
+observation from a model name or invent missing browser audit coverage.
