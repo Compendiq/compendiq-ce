@@ -16,10 +16,12 @@ import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/cont
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
 import {
+  NOTION_DISCOVERY_LIMIT_REASON,
   NOTION_TABLE_DOWNGRADE_REASON,
   NOTION_TABLE_ROW_SKIP_REASON,
   extractWikiPageProperties,
   runNotionImport,
+  setNotionDiscoveryLimitForTests,
 } from './notion-import-service.js';
 import { notionImportLockId } from './notion-import-lock.js';
 
@@ -125,6 +127,7 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
 
   afterEach(async () => {
     setNotionApiBaseUrlForTests(null);
+    setNotionDiscoveryLimitForTests(null);
     await server?.close();
     await rm(attachmentsDir, { recursive: true, force: true });
     expect(JSON.stringify(server?.requests.map((r) => r.url) ?? [])).not.toContain('api.notion.com');
@@ -224,7 +227,7 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     });
     const items = await runNotionImport({
       userId, client, pageIds: ['contact', 'articles', 'crm', 'runbook', 'host', 'excluded'],
-      databaseModes: { articles: 'pages', crm: 'pages', excluded: 'skip' }, visibility: 'shared',
+      databaseModes: { excluded: 'skip' }, visibility: 'shared',
     });
     expect(items[0]).toMatchObject({ status: 'skip', reason: NOTION_TABLE_ROW_SKIP_REASON });
     expect(items[3]).toMatchObject({ status: 'success', importedAs: 'article' });
@@ -248,6 +251,88 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     });
     expect(nextBatch[0]).toMatchObject({ status: 'skip', reason: NOTION_TABLE_ROW_SKIP_REASON });
     expect((await query('SELECT id FROM pages')).rows).toHaveLength(2);
+  });
+
+  it('gives a hosted database its own article with row articles beneath it when Pages was requested', async () => {
+    // The picker offers Table | Pages | Skip on a database nested in a page and
+    // `requestDatabaseModes` sends the shape for every selected one, so folding
+    // it into the host regardless would make that control decorative.
+    const row = crmRow('contact', 'Ada', 'Visible contact note', 'Won');
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        host: { object: 'page', id: 'host', properties: titleProp('Operations') },
+        contact: row,
+      },
+      databases: { crm: crmDatabase({ parent: { type: 'page_id', page_id: 'host' } }) },
+      databaseQueryResults: { crm: [row] },
+      blockChildren: {
+        host: [{ id: 'crm', type: 'child_database', child_database: { title: 'CRM' } }],
+        contact: [],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId, client, pageIds: ['host', 'crm'],
+      databaseModes: { crm: 'pages' }, visibility: 'shared',
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({ notionPageId: 'host', status: 'success' }),
+      expect.objectContaining({ notionPageId: 'crm', status: 'success', importedAs: 'page' }),
+      expect.objectContaining({ notionPageId: 'contact', status: 'success', importedAs: 'article' }),
+    ]);
+    const rows = await query<{ id: number; notion_page_id: string; parent_id: string | null; body_html: string }>(
+      'SELECT id, notion_page_id, parent_id, body_html FROM pages ORDER BY depth',
+    );
+    expect(rows.rows.map((r) => r.notion_page_id)).toEqual(['host', 'crm', 'contact']);
+    const [host, crm, contact] = rows.rows as [typeof rows.rows[0], typeof rows.rows[0], typeof rows.rows[0]];
+    // Nothing was flattened: the rows the operator asked to keep as articles
+    // must not also appear as a table in the host.
+    expect(host.body_html).not.toContain('<table>');
+    expect(host.body_html).not.toContain('Visible contact note');
+    expect(host.body_html).toContain('confluence-children-macro');
+    expect(crm.parent_id).toBe(String(host.id));
+    expect(crm.body_html).toContain('Imported from the Notion database “CRM”.');
+    expect(crm.body_html).not.toContain('<table>');
+    expect(contact.parent_id).toBe(String(crm.id));
+    expect(contact.body_html).toContain('Visible contact note');
+  });
+
+  it('reports a discovered page past the ceiling as a skip that names its remedy', async () => {
+    setNotionDiscoveryLimitForTests(2);
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        root: { object: 'page', id: 'root', properties: titleProp('Root') },
+        first: { object: 'page', id: 'first', parent: { type: 'page_id', page_id: 'root' }, properties: titleProp('First') },
+        second: { object: 'page', id: 'second', parent: { type: 'page_id', page_id: 'root' }, properties: titleProp('Second') },
+      },
+      blockChildren: {
+        root: [
+          { id: 'first', type: 'child_page', child_page: { title: 'First' } },
+          { id: 'second', type: 'child_page', child_page: { title: 'Second' } },
+        ],
+        first: [paragraph('f1', 'First body')],
+        second: [paragraph('s1', 'Second body')],
+      },
+    });
+
+    const items = await runNotionImport({ userId, client, pageIds: ['root'], visibility: 'shared' });
+
+    expect(items).toEqual([
+      expect.objectContaining({ notionPageId: 'root', status: 'success' }),
+      expect.objectContaining({ notionPageId: 'first', status: 'success' }),
+      { notionPageId: 'second', status: 'skip', reason: NOTION_DISCOVERY_LIMIT_REASON },
+    ]);
+    const stored = await query<{ notion_page_id: string }>('SELECT notion_page_id FROM pages ORDER BY id');
+    expect(stored.rows.map((r) => r.notion_page_id)).toEqual(['root', 'first']);
+
+    // The run stays idempotent, so the remedy the skip names actually works.
+    setNotionDiscoveryLimitForTests(null);
+    const retry = await runNotionImport({ userId, client, pageIds: ['second'], visibility: 'shared' });
+    expect(retry).toEqual([expect.objectContaining({ notionPageId: 'second', status: 'success' })]);
+    expect((await query('SELECT id FROM pages')).rows).toHaveLength(3);
   });
 
   it('imports an embedded wiki and its row articles when only the Knowledge Base root was selected', async () => {
@@ -285,6 +370,41 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(rows.rows[0]!.body_html).toContain('confluence-children-macro');
     expect(rows.rows[1]!.body_html).toContain('confluence-children-macro');
     expect(rows.rows.every((row) => !row.body_html.includes('<table>'))).toBe(true);
+  });
+
+  it('still indexes children of a page whose own prose names the children-macro class', async () => {
+    // The macro used to be appended only when the converted HTML did not already
+    // contain `confluence-children-macro` as a SUBSTRING, so a page documenting
+    // that class suppressed its own child index.
+    const guide = {
+      ...crmRow('guide', 'Guide', '', ''),
+      parent: { type: 'database_id', database_id: 'linux' },
+    };
+    const client = await start({
+      validToken: TOKEN,
+      pages: { root: { object: 'page', id: 'root', properties: titleProp('Knowledge Base') } },
+      databases: {
+        linux: {
+          ...crmDatabase(), id: 'linux', is_inline: true,
+          parent: { type: 'page_id', page_id: 'root' },
+          properties: { Name: { type: 'title', title: {} }, Verification: { type: 'verification', verification: {} } },
+        },
+      },
+      databaseQueryResults: { linux: [guide] },
+      blockChildren: {
+        root: [{ id: 'linux', type: 'child_database', child_database: { title: 'Linux' } }],
+        linux: [paragraph('home', 'Confluence renders div.confluence-children-macro as a child index.')],
+        guide: [paragraph('guide-body', 'A real article body')],
+      },
+    });
+
+    await runNotionImport({ userId, client, pageIds: ['root'], visibility: 'shared' });
+
+    const wiki = await query<{ body_html: string }>(
+      "SELECT body_html FROM pages WHERE notion_page_id = 'linux'",
+    );
+    expect(wiki.rows[0]!.body_html).toContain('as a child index');
+    expect(wiki.rows[0]!.body_html).toContain('<div class="confluence-children-macro"');
   });
 
   it('keeps a database with its own body and table in one child article rather than duplicating its table in the host', async () => {

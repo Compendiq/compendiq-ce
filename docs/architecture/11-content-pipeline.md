@@ -469,7 +469,10 @@ not a fourth editor format and not a `pages.source = 'notion'` row.
 `backend/src/domains/knowledge/services/notion-block-converter.ts` takes
 already-fetched Notion block objects (nested `children` attached by the
 caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
-download intents, and a skip report. It never calls `api.notion.com`.
+download intents, and a skip report. It never calls `api.notion.com`, and that
+is enforced rather than asserted: `backend/eslint.config.js` restricts the
+global `fetch` and any HTTP-client import in that one file, so a violation fails
+lint instead of slipping past a regex over the module's own source.
 
 `notion-import-service.ts` (#1465) plans page and database identities together
 before creating **standalone** pages. The selected root keeps its body and
@@ -514,27 +517,45 @@ Notion item is never rewritten to an internal page link.
 A Notion database reaches Compendiq as one of two shapes, chosen per database
 by `databaseModes` on the import request (`skip` writes nothing at all):
 
-- **`table`** — `readFlattenableRows()` verifies every row before
-  `renderDatabaseTable()` renders the properties. An embedded database without
+- **`table`** — `readFlattenableRows()` probes rows until one carries a body —
+  the first such row already refuses the flatten, and each probe is a paced
+  Notion request — then `renderDatabaseTable()` renders the properties. Rows it
+  paged are handed back so a downgrade to articles places them without a second
+  `queryDatabaseAll`. An embedded database without
   its own body folds into the parent article; no database or row article is
   created for that table, including rows sent in a later request batch. Without
   an imported host, a standalone database owns its table article. A database
   with its own body retains that body and owns its table rather than duplicating
   the table on its parent.
 - **`pages`** — wiki databases retain a container article, including any home
-  body. Ordinary embedded databases without their own body need no extra
-  container: row articles become children of the host. Databases found in a
-  selected body's `child_database` blocks enumerate their rows. A database
-  selected on its own in Pages mode retains the selected-row scope.
-  Property-only embedded databases still use a table; a row with content or an
-  unreadable body must never be flattened away. Media, child pages, visible text,
-  nested blocks and `has_more` all count as content during the eight-block probe.
+  body. Databases found in a selected body's `child_database` blocks enumerate
+  their rows. A database selected on its own in Pages mode retains the
+  selected-row scope. A row with content or an unreadable body must never be
+  flattened away: media, child pages, visible text, nested blocks and `has_more`
+  all count as content during the eight-block probe.
+
+**Folding is the default for an embedded database, never an override of a
+stated mode.** An embedded database with no body of its own and no mode on the
+request folds into its host — property-only rows as a table, article-bearing
+rows as children of the host, with no empty container in between. An
+**explicit** `pages` mode keeps that database's own article with its rows
+beneath it, host or not, and skips the flatten probe entirely: the picker
+renders a Table | Pages | Skip control for every selected database
+(`requestDatabaseModes` sends the effective mode for each one), so treating
+"appears in a host body" as `table` made that control decorative on every
+nested database.
 
 Explicit `skip` modes travel even without a selected database ID, preventing
 body discovery from importing an excluded database. Existing completed article
 bodies are unchanged unless `overwriteExisting` is requested; hierarchy can be
 repaired independently. Previously imported row articles are not automatically
 deleted when a database now folds into a table.
+
+**Discovery is bounded.** `NOTION_DISCOVERY_LIMIT` (2000) caps the pages one
+request may pull in beyond its own selection; past it a discovered page is
+reported as `skip` with `NOTION_DISCOVERY_LIMIT_REASON` rather than imported
+silently or dropped. An explicitly selected id is never refused, and the run is
+idempotent, so selecting the refused branch directly finishes it.
 
 `renderDatabaseTable()` is the **single** table builder. The inline
 `child_database` block renderer and the top-level `table`-mode import both call

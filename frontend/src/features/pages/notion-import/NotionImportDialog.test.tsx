@@ -571,6 +571,11 @@ describe('NotionImportDialog database mode switch', () => {
   });
 });
 
+// These specs render 51- and 201-node trees, and the first drives a two-batch
+// import through one. That is seconds of jsdom work, and the 5s default was a
+// coin flip once the whole suite runs in parallel.
+const LARGE_WORKSPACE_TIMEOUT = 20_000;
+
 describe('NotionImportDialog large workspace rendering', () => {
   it('shows a discovered child once when its explicit later batch reports already imported', async () => {
     const nodes = Array.from({ length: 201 }, (_, i) => pageNode(`p-${i}`, `Article ${i}`));
@@ -600,7 +605,7 @@ describe('NotionImportDialog large workspace rendering', () => {
     expect(child).toHaveAttribute('href', '/pages/201');
     expect(child.closest('li')).toHaveTextContent('imported');
     expect(child.closest('li')).not.toHaveTextContent('already imported');
-  });
+  }, LARGE_WORKSPACE_TIMEOUT);
 
   it('renders root groups in bounded batches and exposes the remainder', async () => {
     givenHappyPath({
@@ -617,7 +622,7 @@ describe('NotionImportDialog large workspace rendering', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show 1 more page' }));
     expect(screen.getByRole('checkbox', { name: 'Root page 50' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /show .* more page/i })).toBeNull();
-  });
+  }, LARGE_WORKSPACE_TIMEOUT);
 
   it('drops stale selections before enforcing the page cap after a tree refresh', async () => {
     givenHappyPath({

@@ -109,7 +109,7 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
 2. Pick what to import in the grouped workspace tree. Selecting a parent selects the importable group below it. Importing a page also discovers its actual embedded child pages and database contents, even if those children were not individually selected. Ordinary links do not import the linked pages. To import only part of a page's contents, select the desired children without their parent; set unwanted databases to **Skip**. Databases offer **Table | Pages | Skip**:
    - **Table** — property-only rows become table columns and rows, not separate articles. An embedded database's table belongs on its parent article; a standalone database owns its own table article.
-   - **Pages** — rows with real content stay articles. Wikis retain their root article and body, with rows beneath it. Ordinary embedded databases without their own body place row articles directly beneath the host instead of adding an empty container. A wiki offers only *Pages* or *Skip*.
+   - **Pages** — rows with real content stay articles. Choosing *Pages* keeps the database's own article, with its rows beneath it, even when that database sits inside another page you are importing. Wikis retain their root article and body, with rows beneath it, and offer only *Pages* or *Skip*. A database you never select — an inline table, or one found inside a page you did select — has no shape of its own: property-only rows become the parent's table, rows with content become the parent's children, and no empty container article is created.
    - **Skip** — leave the database in Notion.
 
    Rows beneath a *Table* database read **Included in the table above** and are not separately selectable. Everything beneath a *Skip* database reads **Excluded — stays in Notion**. If you force *Table* on a database whose scan found row content, the picker shows an amber caution: *Some rows have page content — the whole database imports as pages instead*.
@@ -126,6 +126,12 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 **Inline databases and child pages.** Non-wiki inline databases read *Imports inside its parent article*. Property-only entries become a simple table there. Entries with page content remain articles, and actual embedded pages become subarticles. The parent uses Compendiq's **Child pages** feature to display its children, including pages nested inside Notion columns or toggles. Wiki roots remain selectable and are never flattened into a table.
 
 **Nothing is dropped to make a table.** If a database cannot be safely flattened — a row holds page content, or a row cannot be read — it imports as pages instead of losing anything, and the result screen says so. Result rows read *imported as a table*, *imported as an article*, or *imported*.
+
+**Very large branches are cut off, not truncated silently.** One run pulls in at
+most 2000 pages beyond the ones you selected. Anything past that reads *Import
+limit reached — select this branch directly to import it* on the result screen;
+re-running the import on that branch picks up exactly where it stopped, and
+nothing already imported is duplicated.
 
 **Repairing an earlier import.** Select its root and enable **Update existing pages with latest Notion content** to rebuild imported content and child-page lists without changing article IDs. This replaces local edits. Leave it off to preserve existing bodies. Old database-row articles are not automatically deleted; review them separately, and do not identify duplicates by title alone.
 

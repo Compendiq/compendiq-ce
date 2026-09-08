@@ -47,6 +47,25 @@ import {
 const NO_RECURSE_TYPES = new Set(['child_page', 'child_database']);
 /** Row-body checks run concurrently against Notion's per-integration rate limit. */
 const NOTION_ROW_CHECK_CONCURRENCY = 5;
+/**
+ * Ceiling on how many pages one request may pull in beyond its own selection.
+ * Discovery follows every owned `child_page` / `child_database` transitively, so
+ * one root can reach a whole workspace — minutes of paced Notion traffic inside
+ * a single HTTP request that holds the import locks. Past the ceiling a
+ * discovered page is reported as a skip naming its remedy rather than imported
+ * silently or dropped: the run is idempotent, so selecting that branch directly
+ * finishes it. An explicitly selected id is never refused.
+ */
+export const NOTION_DISCOVERY_LIMIT = 2000;
+export const NOTION_DISCOVERY_LIMIT_REASON =
+  'Import limit reached — select this branch directly to import it' as const;
+
+let discoveryLimit: number = NOTION_DISCOVERY_LIMIT;
+
+/** Test-only. Production always uses {@link NOTION_DISCOVERY_LIMIT}. */
+export function setNotionDiscoveryLimitForTests(limit: number | null): void {
+  discoveryLimit = limit ?? NOTION_DISCOVERY_LIMIT;
+}
 
 export const NOTION_TABLE_ROW_SKIP_REASON = 'Included in the database table' as const;
 export const NOTION_TABLE_DOWNGRADE_REASON =
@@ -105,6 +124,10 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         status: 'skip',
         reason: id.startsWith('linked:') ? NOTION_UNSUPPORTED_LABEL : 'Database is excluded from import',
       });
+      return;
+    }
+    if (!explicitlySelected.has(key) && queued.size > discoveryLimit) {
+      items.set(id, { notionPageId: id, status: 'skip', reason: NOTION_DISCOVERY_LIMIT_REASON });
       return;
     }
     const classified: Classified = page
@@ -174,20 +197,35 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     }
   }
 
+  /**
+   * `pages` is the one shape the picker promises that discovery cannot infer: an
+   * explicit `pages` request keeps the database's own article with its rows
+   * beneath it, even when the database sits inside an imported host. Folding a
+   * hosted database into its host is the DEFAULT, never an override of a stated
+   * choice — `requestDatabaseModes` sends a mode for every selected database, so
+   * treating `hosted` as `table` made the picker's control decorative on every
+   * nested database.
+   */
+  const keepsOwnArticle = (key: string): boolean => modes.get(key) === 'pages';
+
   async function planDatabase(job: ImportJob): Promise<void> {
     if (!job.database) return;
     const key = normalizeNotionId(job.id);
     const hosted = databaseHosts.has(key);
     const mode = modes.get(key) ?? (explicitlySelected.has(key) ? 'table' : 'pages');
     const wiki = isWikiDatabase(job.database);
-    if (!wiki && !job.flatten && (mode === 'table' || hosted)) {
+    if (!wiki && !job.flatten && (mode === 'table' || (hosted && !keepsOwnArticle(key)))) {
       job.flatten = await readFlattenableRows(input.client, job.database);
       if (job.flatten.kind === 'table') tableDatabases.add(key);
     }
     if (!expandedDatabases.has(key) && job.flatten?.kind !== 'table' &&
         (hosted || (mode === 'table' && job.flatten?.kind === 'row-bodies'))) {
       expandedDatabases.add(key);
-      const rows = (await input.client.queryDatabaseAll(job.id)).filter((row) => !isTrashed(row));
+      // The flatten attempt already paged every row. Querying the same database
+      // a second time buys nothing but another round of paced requests.
+      const rows = job.flatten?.kind === 'row-bodies'
+        ? job.flatten.rows
+        : (await input.client.queryDatabaseAll(job.id)).filter((row) => !isTrashed(row));
       for (const row of rows) {
         if (typeof row.id === 'string') await enqueue(row.id, row);
       }
@@ -228,8 +266,9 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
           items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
         }
       }
-      // A database with its own body is an article, not an empty intermediary.
-      if (!job.blocks?.length) job.foldedInto = host;
+      // A database with its own body is an article, not an empty intermediary,
+      // and so is one the request explicitly asked to import as pages.
+      if (!job.blocks?.length && !keepsOwnArticle(key)) job.foldedInto = host;
     }
     job.parentNotionId = childHosts.get(key) ?? host ?? job.parentNotionId;
   }
@@ -253,6 +292,22 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     if (job) row.parentNotionId = job.parentNotionId;
   }
 
+  /**
+   * The rows of one database, read off each row's own Notion parent. A folded
+   * row's `parentNotionId` has already been rehomed onto the HOST, which cannot
+   * tell these rows from a sibling database's rows under the same host.
+   */
+  function databaseRowIds(databaseId: string): string[] {
+    const key = normalizeNotionId(databaseId);
+    return jobs
+      .filter((row) => {
+        const parent = isRecord(row.page.parent) ? row.page.parent : null;
+        const owner = parent?.type === 'database_id' ? parent.database_id : parent?.data_source_id;
+        return typeof owner === 'string' && normalizeNotionId(owner) === key;
+      })
+      .map((row) => row.id);
+  }
+
   function annotateDatabases(blocks: NotionBlock[]): void {
     for (const block of blocks) {
       if (block.type === 'child_database' && typeof block.id === 'string') {
@@ -262,10 +317,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
             block.databaseRows = db.flatten.rows;
             block.databaseColumns = db.flatten.columns;
           } else {
-            block.databasePageIds = db.foldedInto
-              ? jobs.filter((row) => row.parentNotionId && normalizeNotionId(row.parentNotionId) === normalizeNotionId(db.foldedInto!))
-                .map((row) => row.id)
-              : [db.id];
+            block.databasePageIds = db.foldedInto ? databaseRowIds(db.id) : [db.id];
           }
         }
       }
@@ -451,7 +503,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         bodyHtml = `${bodyHtml}${tableHtml}${lead.bodyHtml}`;
         bodyText = `${bodyText}\n\n${htmlToText(tableHtml)}\n\n${lead.bodyText}`.trim();
       }
-      if (childPageIds.size > 0 && !bodyHtml.includes('confluence-children-macro')) {
+      if (childPageIds.size > 0 && !converted.childrenMacroRendered) {
         bodyHtml += NOTION_CHILDREN_MACRO_HTML;
       }
       if (job.reuseComplete) {
@@ -875,7 +927,8 @@ function databaseContainerBody(
 type FlattenAttempt =
   | { kind: 'table'; columns: string[]; rows: Array<Record<string, unknown>> }
   | { kind: 'empty' }
-  | { kind: 'row-bodies' };
+  /** Rows are carried so the caller can place them without re-querying. */
+  | { kind: 'row-bodies'; rows: Array<Record<string, unknown>> };
 
 /**
  * Every row of the database, but only when NOT ONE of them carries a page body.
@@ -892,23 +945,31 @@ async function readFlattenableRows(
   // Nothing to tabulate. The container page is the honest result.
   if (rows.length === 0) return { kind: 'empty' };
 
+  // One row with a body settles the question, so the probe stops asking. Every
+  // probe is a paced Notion request against a database of unbounded size, and
+  // the queued remainder is exactly the work the answer already made pointless.
   const limit = pLimit(NOTION_ROW_CHECK_CONCURRENCY);
-  const carriesBody = await Promise.all(
+  let carriesBody = false;
+  await Promise.all(
     rows.map((row) =>
       limit(async () => {
+        if (carriesBody) return;
         const rowId = typeof row.id === 'string' ? row.id : '';
-        if (!rowId) return true;
+        if (!rowId) {
+          carriesBody = true;
+          return;
+        }
         try {
-          return rowHasBodyContent(
-            await client.getBlockChildren(rowId, { pageSize: NOTION_ROW_PROBE_BLOCKS }),
-          );
+          if (rowHasBodyContent(await client.getBlockChildren(rowId, { pageSize: NOTION_ROW_PROBE_BLOCKS }))) {
+            carriesBody = true;
+          }
         } catch {
-          return true;
+          carriesBody = true;
         }
       }),
     ),
   );
-  if (carriesBody.includes(true)) return { kind: 'row-bodies' };
+  if (carriesBody) return { kind: 'row-bodies', rows };
 
   const props = database.properties;
   return {

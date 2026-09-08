@@ -144,6 +144,12 @@ export interface NotionConversionResult {
   bodyText: string;
   attachments: NotionAttachmentIntent[];
   skips: NotionConversionSkip[];
+  /**
+   * Whether the body already carries the children macro. The caller appends one
+   * when it does not; searching the HTML for the class name instead would let a
+   * page whose prose mentions `confluence-children-macro` suppress its own index.
+   */
+  childrenMacroRendered: boolean;
 }
 
 interface ConvertCtx {
@@ -178,6 +184,7 @@ export function convertNotionBlocks(
     bodyText: htmlToText(bodyHtml),
     attachments: ctx.attachments,
     skips: ctx.skips,
+    childrenMacroRendered: ctx.childrenMacroRendered,
   };
 }
 
