@@ -460,6 +460,30 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     ).toBe(token(lightBlock, '--color-card'));
   });
 
+  it.each([
+    ['graphite', darkBlock],
+    ['paper', lightBlock],
+  ])('keeps %s popup text and edges readable over document images', (theme, block) => {
+    const glass = extractBlock(css, '@utility nm-popover-glass {');
+    const fill = /background-color:\s*color-mix\(in srgb,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)/.exec(glass);
+    if (!fill) throw new Error('Cannot resolve the popup fill and opacity');
+    const opacity = Number(fill[2]) / 100;
+    // Black and white bound the backgrounds a document image can contribute,
+    // including with blur disabled. Measuring the opaque token misses this.
+    for (const backdrop of ['#000000', '#ffffff']) {
+      const background = composite(token(block, fill[1]), opacity, backdrop);
+      for (const foreground of ['--color-foreground', '--color-muted-foreground']) {
+        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, 4.5);
+      }
+      expectContrast(
+        `${theme} popup edge over ${backdrop}`,
+        token(block, '--color-border-interactive'),
+        background,
+        3,
+      );
+    }
+  });
+
   // Selection is carried by this edge plus weight on top of the deeper fill.
   it('keeps the interactive edge legible on every state fill', () => {
     for (const [theme, block] of [

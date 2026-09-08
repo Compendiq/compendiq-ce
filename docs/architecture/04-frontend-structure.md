@@ -668,8 +668,13 @@ the backend side.
   shadow exists** (`--shadow-overlay`, on `nm-card-elevated` and
   `nm-popover-glass`) for content
   that genuinely floats above the page: popovers, dialogs, the command palette.
-  Popovers take `nm-popover-glass` (interactive edge + optional blur, stripped
-  under `prefers-reduced-transparency`); dialogs stay opaque `nm-card-elevated`.
+  Popovers take `nm-popover-glass`: interactive edge, 95% elevated-surface
+  fill and 10px blur. Theme tests require ≥4.5:1 text and ≥3:1 edge contrast
+  after compositing over black and white images in both themes.
+  `prefers-reduced-transparency` makes the fill opaque and removes blur;
+  dialogs stay opaque `nm-card-elevated`. Search rows in narrow popovers
+  need `min-w-0` on flex inputs and `shrink-0` on icons so typing scrolls
+  within the input rather than shifting and clipping the whole popup.
 - **Theme preference follows the OS by default** (`system | dark | light`). The
   preference is persisted; the resolved palette is not, so a stale value cannot
   outrank the live OS reading.
