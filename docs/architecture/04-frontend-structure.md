@@ -681,3 +681,24 @@ the backend side.
 - **View Mode Toggle**: Users can toggle between **Formatted View** (rich TipTap rendering) and **Raw Text View** (monospaced `<pre>` view).
 - **Graceful Fallback**: Automatically falls back to plain `bodyText` if `bodyHtml` is absent or fails to parse.
 - **Side-by-Side Diff**: `CompareView` / `DiffView` and AI semantic diff render with comfortable reading widths within the expanded modal window.
+
+## Shared Enterprise Backup Controls
+
+```mermaid
+flowchart LR
+    License["/api/admin/license"] --> Gate{"valid Enterprise<br/>enterprise_backup_dr"}
+    BackupTab["Shared CE BackupTab"] --> Gate
+    Gate -- entitled --> KmsCard["BackupKmsCard"]
+    Gate -- entitled --> LockCard["BackupObjectLockCard"]
+    KmsCard --> KmsApi["EE /api/admin/backup/kms<br/>GET / PUT / test / rotate"]
+    LockCard --> BackupApi["EE /api/admin/backup<br/>GET / partial PUT"]
+```
+
+Both components ship in the unchanged CE frontend image, never an EE overlay
+bundle. Community, expired, and unentitled sessions mount neither component and
+issue no KMS requests. Shared Zod schemas carry optional `kmsEnabled` and
+`objectLock` status extensions: absent KMS readiness is false, while an absent
+Object Lock extension renders an unavailable note rather than invented settings.
+`hasMasterKey` still names a real local key; KMS-only readiness is separate.
+Each enterprise save preserves unrelated S3 drafts, and KMS test/rotation uses
+only the last saved configuration.

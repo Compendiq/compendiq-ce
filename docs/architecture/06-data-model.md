@@ -395,6 +395,35 @@ its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
 after migrations and before reporting restore success.
 
+Enterprise migration 900 adds `backup_destinations` and
+`backup_destination_results`. The primary is a runtime mirror of the CE S3
+settings with a unique partial `is_primary` index; additional destinations
+store encrypted credentials. Migration 902 adds the nullable per-result
+`object_key`, the exact key under that destination's prefix. Historical keys
+stay null because a current prefix cannot reconstruct what was used earlier.
+The service serializes creation to admit at most two secondaries, and refuses
+over-limit legacy configurations before starting uploads.
+
+```mermaid
+erDiagram
+    backup_runs ||--o{ backup_destination_results : "run_id / CASCADE"
+    backup_destinations ||--o{ backup_destination_results : "destination_id / CASCADE"
+    backup_destination_results {
+        uuid run_id PK,FK
+        uuid destination_id PK,FK
+        text object_key "nullable; actual destination key"
+        text status
+        bigint uploaded_bytes
+        timestamptz completed_at
+    }
+```
+
+Enterprise migration 901 stores DR evidence in `backup_dr_verifications`.
+Its nullable text `run_id` and `destination_id` are provenance, not foreign
+keys. `rpo_seconds` is age from the authenticated manifest; `duration_ms` is
+elapsed verification time. Unknown measurements remain null and report as
+empty cells, never as retention counts/days or fabricated zeroes.
+
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
 

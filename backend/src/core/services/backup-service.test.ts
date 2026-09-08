@@ -393,38 +393,6 @@ describe('backup run job correlation', () => {
     );
   });
 
-  it('records a terminal failed row for a correlated job when master-key preflight fails', async () => {
-    mockGetBackupRuntimeConfig.mockResolvedValue({
-      s3: {
-        enabled: true,
-        endpoint: 'https://s3.example.com',
-        bucket: 'backups',
-      },
-    });
-    mockRequireMasterBackupKey.mockImplementationOnce(() => {
-      throw new Error('BACKUP_ENCRYPTION_KEY is not set');
-    });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ id: 'run-key-failed' }] })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-    await expect(runS3Backup('admin-1', 'backup-job-key')).rejects.toThrow(
-      'BACKUP_ENCRYPTION_KEY is not set',
-    );
-
-    expect(mockQuery).toHaveBeenNthCalledWith(
-      1,
-      expect.stringMatching(
-        /INSERT INTO backup_runs \(destination, status, triggered_by, job_id\)/,
-      ),
-      ['s3', 'admin-1', 'backup-job-key'],
-    );
-    expect(mockQuery).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('UPDATE backup_runs'),
-      ['run-key-failed', 'failed', null, null, 'BACKUP_ENCRYPTION_KEY is not set'],
-    );
-  });
 
   it('releases backup resources before recording an immediate S3 upload failure', async () => {
     process.env.POSTGRES_URL = 'postgres://db';

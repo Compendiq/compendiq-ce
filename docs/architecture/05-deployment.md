@@ -207,9 +207,13 @@ flowchart LR
     browser(["Admin browser"])
     publicS3[("Public S3-compatible service")]
     encrypted["Encrypted backup file"]
+    kms["EE only: AWS KMS / Vault Transit"]
+    replicas[("EE: up to two replica targets<br/>independent prefixes / outcomes")]
+    recoveryConfig["Offline endpoint + credentials<br/>outside protected database"]
 
     subgraph online["Online backend process"]
         beBackup["Backup exporter<br/>postgresql17-client: pg_dump<br/>constant-memory stream"]
+        dr["EE DR verifier"]
     end
 
     subgraph offline["Standalone restore boundary (Fastify offline)"]
@@ -221,11 +225,22 @@ flowchart LR
     attachments[("Live ATTACHMENTS_DIR<br/>same filesystem as staging")]
 
     pg -- "pg_dump -Fc" --> beBackup
+    sandbox[("Disposable DR database")]
     attachments -- "attachment read streams" --> beBackup
     beBackup -- "30-second ticket download" --> browser
     beBackup -- "validated public HTTP(S)" --> publicS3
+    browser -- "EE runtime-gated settings; no cloud credentials" --> beBackup
+    beBackup -- "EE: one policy snapshot / wrapped data key" --> kms
+    beBackup -- "EE: version retention + hold reads;<br/>exact-version deletion, no bypass" --> publicS3
+    beBackup -- "EE: bounded, backpressured fanout" --> replicas
+    replicas -- "encrypted object; complete destination key" --> cli
+    recoveryConfig -- "no source configuration DB lookup" --> cli
+    publicS3 -- "latest candidate" --> dr
+    dr -- "authenticated manifest age + restore" --> sandbox
+    dr -- "RPO seconds / duration milliseconds" --> pg
 
     encrypted --> cli
+    kms -- "EE: unwrap key from archive metadata" --> cli
     cli -- "authenticate + validate<br/>stream to disk" --> stage
     stage -- "rename swap after validation" --> attachments
     cli -- "pg_restore<br/>--single-transaction" --> pg
@@ -237,6 +252,14 @@ flowchart LR
     class beBackup,cli svc
     class pg,attachments,stage data
 ```
+
+Enterprise uses the unmodified shared frontend. KMS and Object Lock are optional
+backend extensions, gated by the live `enterprise_backup_dr` entitlement on
+configuration writes. KMS policy-read failures refuse backup creation; a
+successfully resolved policy remains fixed for that upload. Object Lock is a
+future-upload policy, not a deletion override: pruning authenticates each
+stored version's retention and legal-hold metadata even after the setting is
+disabled, and refuses deletion when that metadata cannot be read.
 
 The backend runtime image installs `postgresql17-client` in both CE and
 Enterprise runtimes so the online exporter can spawn `pg_dump`. The exporter
