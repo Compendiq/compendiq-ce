@@ -93,7 +93,7 @@ export function TagPopover({
           aria-label="Page tags"
           data-testid="tag-popover-content"
           className={cn(
-            'nm-card-elevated z-50 w-[min(20rem,calc(100vw-2rem))] p-3',
+            'nm-popover-glass z-50 w-[min(20rem,calc(100vw-2rem))] p-3',
             'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
           )}
           // Half of the autofocus mechanism. Child effects run before parent

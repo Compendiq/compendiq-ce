@@ -885,7 +885,7 @@ export function SidebarTreeView({
             // dropdowns, dialogs". This is the canonical case and it was the
             // one thing not using it. nm-card-elevated carries that shadow, a
             // full 1px border and the elevated card surface.
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-card-elevated p-1">
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-popover-glass nm-card-elevated-glass p-1">
               {/* A filter, once the list stops fitting. The dropdown was a
                   capped scroller with no search and no scroll affordance: six
                   spaces plus two headings already filled it here, and a real
@@ -912,7 +912,7 @@ export function SidebarTreeView({
                     }}
                     placeholder="Filter spaces"
                     aria-label="Filter spaces by name"
-                    className="w-full rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-border transition-colors focus:ring-ring"
+                    className="w-full rounded-lg bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-border/60 transition-colors focus:ring-ring"
                   />
                 </div>
               )}
@@ -1023,7 +1023,7 @@ export function SidebarTreeView({
                     navigate(`/spaces/${treeSidebarSpaceKey}/settings`);
                   }}
                   data-testid="space-settings-link"
-                  className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
+                  className="flex w-full items-center gap-1.5 border-t border-border/60 mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
                 >
                   <Settings size={10} />
                   Space settings
@@ -1036,7 +1036,7 @@ export function SidebarTreeView({
                   setSpaceDropdownOpen(false);
                   navigate('/spaces/new');
                 }}
-                className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
+                className="flex w-full items-center gap-1.5 border-t border-border/60 mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
               >
                 <Plus size={10} />
                 New Space

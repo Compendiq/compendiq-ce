@@ -42,7 +42,7 @@ export function PageIconPicker({
         <Popover.Content
           align="start"
           sideOffset={8}
-          className="nm-card-elevated z-50 w-96 p-2.5"
+          className="nm-popover-glass z-50 w-96 p-2.5"
           onEscapeKeyDown={(event) => absorbPortalEscape(event, () => onOpenChange(false))}
           onOpenAutoFocus={(event) => event.preventDefault()}
         >

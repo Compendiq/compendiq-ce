@@ -1227,7 +1227,7 @@ export function ArticleRightPane({
           id="article-rail-overflow"
           aria-label="More page actions"
           data-testid="article-rail-overflow"
-          className="absolute right-full z-30 mr-1 w-56 nm-card-elevated p-1.5"
+          className="absolute right-full z-30 mr-1 w-56 nm-popover-glass p-1.5"
           style={{ top: railOverflowTop }}
         >
                     <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold text-muted-foreground">
@@ -1390,7 +1390,7 @@ export function ArticleRightPane({
             className="absolute right-full top-1 z-30 flex max-h-[70vh] pr-1"
             data-testid="article-outline-flyout"
           >
-            <div className="nm-card-elevated flex min-h-0 w-64 flex-col overflow-hidden">
+            <div className="nm-popover-glass flex min-h-0 w-64 flex-col overflow-hidden">
             <div className="shrink-0 px-3 pb-2 pt-2.5">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground/85">

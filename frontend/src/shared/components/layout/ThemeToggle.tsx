@@ -43,14 +43,14 @@ export function ThemeToggle() {
         <DropdownMenu.Content
           align="end"
           sideOffset={8}
-          className="z-50 min-w-[160px] nm-card-elevated p-1.5"
+          className="z-50 min-w-[160px] nm-popover-glass p-1.5"
         >
           {OPTIONS.map(({ value, label, Icon }) => (
             <DropdownMenu.Item
               key={value}
               onSelect={() => setPreference(value)}
               data-testid={`theme-option-${value}`}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground"
             >
               <Icon size={14} aria-hidden="true" />
               <span className="flex-1">{label}</span>

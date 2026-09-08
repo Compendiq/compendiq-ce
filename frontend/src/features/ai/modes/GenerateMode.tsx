@@ -103,8 +103,8 @@ function ParentPagePicker({
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full nm-card-elevated">
-          <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <div className="absolute z-50 mt-1 w-full nm-popover-glass overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
             <Search size={14} className="text-muted-foreground" />
             <input
               value={search}
@@ -123,7 +123,7 @@ function ParentPagePicker({
                 setSearch('');
               }}
               className={cn(
-                'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
+                'w-full rounded-lg px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
                 !parentId && 'bg-primary/10 text-primary-ink',
               )}
             >
@@ -144,7 +144,7 @@ function ParentPagePicker({
                   setSearch('');
                 }}
                 className={cn(
-                  'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
+                  'w-full rounded-lg px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
                   parentId === page.id && 'bg-primary/10 text-primary-ink',
                 )}
               >

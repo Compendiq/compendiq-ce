@@ -134,7 +134,7 @@ export function LibrarySpaceFilter({ spaces = [], selectedKey, selectedName, onS
         onMouseEnter={() => setActiveIndex(index)}
         onKeyDown={(event) => handleOptionKeyDown(event, index)}
         className={cn(
-          'flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-foreground outline-none transition-colors',
+          'flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-foreground outline-none transition-colors',
           active && 'bg-accent',
         )}
       >
@@ -181,7 +181,7 @@ export function LibrarySpaceFilter({ spaces = [], selectedKey, selectedName, onS
           align="end"
           sideOffset={8}
           collisionPadding={8}
-          className="nm-card-elevated z-50 w-[min(22rem,calc(100vw-1rem))] overflow-hidden p-0"
+          className="nm-popover-glass z-50 w-[min(22rem,calc(100vw-1rem))] overflow-hidden p-0"
           aria-label="Space search scope"
           data-testid="space-filter-menu"
           onOpenAutoFocus={(event) => {
@@ -190,12 +190,12 @@ export function LibrarySpaceFilter({ spaces = [], selectedKey, selectedName, onS
             else optionRefs.current[Math.max(0, visibleOptions.findIndex((space) => space.key === selectedKey))]?.focus();
           }}
         >
-          <div className="border-b border-border px-3 py-2">
+          <div className="border-b border-border/60 px-3 py-2">
             <p className="text-xs font-medium text-muted-foreground">Search scope</p>
           </div>
           {searchable && (
-            <div className="border-b border-border p-2">
-              <div className="flex h-9 items-center gap-2 rounded-md bg-background px-2.5">
+            <div className="border-b border-border/60 p-2">
+              <div className="flex h-9 items-center gap-2 rounded-lg border border-border/60 bg-background px-2.5">
                 <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
                 <input
                   ref={searchRef}

@@ -141,7 +141,7 @@ function ActionItem({ action, selected, onSelect }: {
     <DropdownMenu.Item
       onSelect={() => onSelect(action.id)}
       className={cn(
-        'flex cursor-pointer select-none items-start gap-2.5 rounded-md px-2.5 py-2 outline-none text-foreground transition-colors',
+        'flex cursor-pointer select-none items-start gap-2.5 rounded-lg px-2.5 py-2 outline-none text-foreground transition-colors',
         'data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
         selected && 'bg-accent/60 font-medium',
       )}
@@ -231,7 +231,7 @@ export function AssistantActionSelect({
           align="start"
           sideOffset={6}
           collisionPadding={8}
-          className="nm-card-elevated z-50 max-h-[min(32rem,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto p-1.5"
+          className="nm-popover-glass z-50 max-h-[min(32rem,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto p-1.5"
         >
           {chatActions.length > 0 && (
             <>
@@ -249,7 +249,7 @@ export function AssistantActionSelect({
               this surface's allow-list carries something for it. */}
           {rewriteActions.length > 0 && (
             <>
-              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border/60" />
               <DropdownMenu.Label className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
                 Rewrite skills
               </DropdownMenu.Label>
@@ -261,7 +261,7 @@ export function AssistantActionSelect({
 
           {createActions.length > 0 && (
             <>
-              <DropdownMenu.Separator className="my-1.5 h-px bg-border" />
+              <DropdownMenu.Separator className="my-1.5 h-px bg-border/60" />
               {/* Name the section for the actions this surface actually
                   allows: docked article work omits create-* skills, while
                   full-page AI includes them. */}

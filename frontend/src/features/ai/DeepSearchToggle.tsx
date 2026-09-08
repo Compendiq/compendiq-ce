@@ -147,7 +147,7 @@ export function DeepSearchToggle({
                 disabled={disabled}
                 aria-label="Deep search details and caveats"
                 title="Deep search information"
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border-interactive hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-45 disabled:pointer-events-none"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-transparent text-muted-foreground transition-colors duration-100 hover:border-border hover:bg-accent hover:text-foreground active:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-45 disabled:pointer-events-none"
                 data-testid={`${testId}-info-trigger`}
               >
                 <Info size={13} aria-hidden />
@@ -159,7 +159,7 @@ export function DeepSearchToggle({
                 side="top"
                 sideOffset={6}
                 collisionPadding={8}
-                className="nm-card-elevated z-50 max-w-[280px] p-2.5 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
+                className="nm-popover-glass z-50 max-w-[280px] p-2.5 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
                 data-testid={`${testId}-popover-content`}
               >
                 <p className="mb-1 font-medium text-foreground">Deep search (multi-query expansion)</p>

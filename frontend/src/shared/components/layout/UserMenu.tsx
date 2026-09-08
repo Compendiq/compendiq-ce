@@ -41,16 +41,16 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
             // z-50 sits above the AI sub-header's z-20 sticky strip; without
             // it the portaled menu is clipped behind that strip when the trigger
             // is in the header session cluster.
-            className="z-50 min-w-[180px] nm-card-elevated p-1.5"
+            className="z-50 min-w-[180px] nm-popover-glass p-1.5"
           >
             <DropdownMenu.Label className="flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground">
               <User size={12} />
               Signed in as <span className="font-medium text-foreground">{user?.username}</span>
             </DropdownMenu.Label>
-            <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
+            <DropdownMenu.Separator className="my-1 h-px bg-border/60" />
             <DropdownMenu.Item
               onSelect={() => navigate('/settings')}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
             >
               <Settings size={14} />
               Settings
@@ -63,7 +63,7 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
               // server-side on each /admin/analytics/* endpoint.
               <DropdownMenu.Item
                 onSelect={() => navigate('/admin/analytics')}
-                className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
               >
                 <BarChart3 size={14} />
                 Analytics
@@ -71,7 +71,7 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
             )}
             <DropdownMenu.Item
               onSelect={openShortcuts}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
             >
               <Keyboard size={14} />
               Keyboard Shortcuts
@@ -86,15 +86,15 @@ export function UserMenu({ align = 'end' }: { align?: 'start' | 'end' } = {}) {
                 reopenOnboarding();
                 navigate('/');
               }}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
             >
               <Compass size={14} />
               Getting Started Guide
             </DropdownMenu.Item>
-            <DropdownMenu.Separator className="my-1 h-px bg-foreground/10" />
+            <DropdownMenu.Separator className="my-1 h-px bg-border/60" />
             <DropdownMenu.Item
               onSelect={() => setSignOutOpen(true)}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors"
             >
               <LogOut size={14} />
               Sign out
