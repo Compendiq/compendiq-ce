@@ -1644,6 +1644,41 @@ treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
 per-part and included in completion; a multipart checksum is not SHA-256 of the
 concatenated object bytes.
 
+#### Enterprise replicas and disaster recovery
+
+Enterprise supports a primary plus at most **two additional destinations**.
+Creation serializes the count check, and a run refuses older configurations
+over that cap before uploading. Branches share upstream chunks, write bounded
+slices, and honor backpressure; the cap bounds multipart-buffer amplification,
+not memory already allocated by the archive producer.
+
+Every destination uses its own prefix. The per-run destination result retains
+the **complete object key** that was actually uploaded, so changing a prefix
+later does not rewrite history. A failed replica or a destination removed
+between configuration loading and history insertion does not cancel a healthy
+primary. Failed destinations remain failures; this does not imply independent
+retry scheduling.
+
+Keep each recovery endpoint, bucket, region, complete object key, and credential
+access **outside the database being protected**. `--destination-id` is only a
+convenience while that database is available. To recover without it, supply
+`BACKUP_RESTORE_S3_ENDPOINT`, `BACKUP_RESTORE_S3_BUCKET`, optional region/prefix,
+and `BACKUP_RESTORE_S3_ACCESS_KEY` / `BACKUP_RESTORE_S3_SECRET_KEY` through the
+process environment, then run the EE restore CLI:
+
+```bash
+npx tsx backend/scripts/restore-backup.ts \
+  --object-key 'replica-a/compendiq-backup-20260908T120000Z.enc' --dry-run
+```
+
+The key is complete, not relative to the configured prefix. This path does not
+query `backup_destinations` and works with an empty recovery database. Supply
+the archive's actual passphrase/master key, or AWS/Vault credentials for a KMS
+archive. Only remove `--dry-run` after stopping Fastify traffic and confirming
+the target database and attachment directory.
+
+#### Offline restore (all editions)
+
 Restore is an offline, standalone operation: stop Fastify traffic before a
 non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
 checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`

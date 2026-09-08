@@ -208,9 +208,12 @@ flowchart LR
     publicS3[("Public S3-compatible service")]
     encrypted["Encrypted backup file"]
     kms["EE only: AWS KMS / Vault Transit"]
+    replicas[("EE: up to two replica targets<br/>independent prefixes / outcomes")]
+    recoveryConfig["Offline endpoint + credentials<br/>outside protected database"]
 
     subgraph online["Online backend process"]
         beBackup["Backup exporter<br/>postgresql17-client: pg_dump<br/>constant-memory stream"]
+        dr["EE DR verifier"]
     end
 
     subgraph offline["Standalone restore boundary (Fastify offline)"]
@@ -222,12 +225,19 @@ flowchart LR
     attachments[("Live ATTACHMENTS_DIR<br/>same filesystem as staging")]
 
     pg -- "pg_dump -Fc" --> beBackup
+    sandbox[("Disposable DR database")]
     attachments -- "attachment read streams" --> beBackup
     beBackup -- "30-second ticket download" --> browser
     beBackup -- "validated public HTTP(S)" --> publicS3
     browser -- "EE runtime-gated settings; no cloud credentials" --> beBackup
     beBackup -- "EE: one policy snapshot / wrapped data key" --> kms
     beBackup -- "EE: version retention + hold reads;<br/>exact-version deletion, no bypass" --> publicS3
+    beBackup -- "EE: bounded, backpressured fanout" --> replicas
+    replicas -- "encrypted object; complete destination key" --> cli
+    recoveryConfig -- "no source configuration DB lookup" --> cli
+    publicS3 -- "latest candidate" --> dr
+    dr -- "authenticated manifest age + restore" --> sandbox
+    dr -- "RPO seconds / duration milliseconds" --> pg
 
     encrypted --> cli
     kms -- "EE: unwrap key from archive metadata" --> cli
