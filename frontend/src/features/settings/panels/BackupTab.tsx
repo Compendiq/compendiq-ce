@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type { BackupStatusResponse, UpdateBackupSettingsInput } from '@compendiq/contracts';
+import { BackupStatusResponseSchema, type BackupStatusResponse, type UpdateBackupSettingsInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { PanelHeader } from '../PanelHeader';
+import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
+import { BackupKmsCard } from './BackupKmsCard';
+import { BackupObjectLockCard } from './BackupObjectLockCard';
 
 const S3_FORM_KEYS = [
   's3Enabled',
@@ -54,6 +57,8 @@ function navigateToBackupDownload(url: string) {
 
 export function BackupTab() {
   const queryClient = useQueryClient();
+  const { isEnterprise, hasFeature } = useEnterprise();
+  const backupDrLicensed = isEnterprise && hasFeature('enterprise_backup_dr');
   const [passphrase, setPassphrase] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [form, setForm] = useState<Partial<UpdateBackupSettingsInput>>({});
@@ -76,7 +81,7 @@ export function BackupTab() {
 
   const { data, isLoading, isError, error, isFetching, refetch } = useQuery<BackupStatusResponse>({
     queryKey: ['admin', 'backup'],
-    queryFn: () => apiFetch('/admin/backup'),
+    queryFn: async () => BackupStatusResponseSchema.parse(await apiFetch('/admin/backup')),
     refetchInterval: (query) => {
       const history = query.state.data?.history ?? [];
       if (queuedRun) {
@@ -88,6 +93,7 @@ export function BackupTab() {
       return history.some((run) => run.status === 'running') ? 3_000 : false;
     },
   });
+  const kmsEnabled = data?.kmsEnabled === true;
 
   const matchingQueuedRun = queuedRun
     ? data?.history.find((run) => run.jobId === queuedRun.jobId)
@@ -144,7 +150,7 @@ export function BackupTab() {
     try {
       const ticket = await apiFetch<{ downloadUrl: string }>('/admin/backup/export-ticket', {
         method: 'POST',
-        body: JSON.stringify(passphrase ? { passphrase } : {}),
+        body: JSON.stringify(!kmsEnabled && passphrase ? { passphrase } : {}),
       });
       setPassphrase('');
       navigateToBackupDownload(ticket.downloadUrl);
@@ -216,7 +222,7 @@ export function BackupTab() {
   const hasUnsavedS3Changes = S3_FORM_KEYS.some(
     (key) => form[key] !== undefined && form[key] !== savedS3Form[key],
   );
-  const runDisabledReason = !data.hasMasterKey
+  const runDisabledReason = !data.hasMasterKey && !kmsEnabled
     ? 'Configure BACKUP_ENCRYPTION_KEY before running an S3 backup.'
     : !data.s3.enabled
       ? 'Enable and save S3 uploads before running a backup.'
@@ -284,19 +290,23 @@ export function BackupTab() {
       <section className="space-y-4" aria-labelledby="backup-download-heading">
         <h3 id="backup-download-heading" className="text-lg font-semibold">Download backup</h3>
         <p className="text-sm text-muted-foreground">
-          {data.hasMasterKey
-            ? 'Encrypted with BACKUP_ENCRYPTION_KEY. Optionally set a passphrase to encrypt this download with PBKDF2 instead.'
-            : 'Set a passphrase of at least 12 characters, or configure BACKUP_ENCRYPTION_KEY on the server.'}
+          {kmsEnabled
+            ? 'Encrypted with the configured KMS provider. A local master key or passphrase is not required.'
+            : data.hasMasterKey
+              ? 'Encrypted with BACKUP_ENCRYPTION_KEY. Optionally set a passphrase to encrypt this download with PBKDF2 instead.'
+              : 'Set a passphrase of at least 12 characters, or configure BACKUP_ENCRYPTION_KEY on the server.'}
         </p>
         {data.lockHeld && (
           <p className="text-sm text-warning" role="status">
             A backup is already running.
           </p>
         )}
+        <label htmlFor="backup-passphrase" className="block text-sm font-medium">Download passphrase (optional)</label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <input
             id="backup-passphrase"
             type="password"
+            disabled={kmsEnabled}
             value={passphrase}
             onChange={(e) => setPassphrase(e.target.value)}
             placeholder="Optional passphrase"
@@ -431,6 +441,15 @@ export function BackupTab() {
           </p>
         )}
       </section>
+
+      {backupDrLicensed && (
+        <>
+          <hr className="border-border" />
+          <BackupKmsCard />
+          <hr className="border-border" />
+          <BackupObjectLockCard config={data.objectLock} stale={isError} />
+        </>
+      )}
 
       <hr className="border-border" />
 

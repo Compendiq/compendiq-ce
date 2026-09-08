@@ -1609,6 +1609,41 @@ until `pg_dump` closes with exit code `0`.
   One cluster-wide lock (`worker:lock:backup`) prevents concurrent dumps.
   History refreshes while a run is active.
 
+#### Enterprise KMS and immutable storage
+
+The **same CE frontend image** includes these controls; they render only for a
+valid Enterprise license with `enterprise_backup_dr`. Backend support is still
+required. A server that omits an optional capability does not acquire it merely
+because the frontend is newer.
+
+- **Envelope encryption:** choose AWS KMS or Vault Transit, save the key
+  identifier, then test the saved configuration. Unsaved settings cannot be
+  tested or rotated. Credentials stay in the backend environment, not this form.
+  AWS uses its default credential chain, including renewable workload/instance
+  roles; profile and web-identity files need read-only container mounts.
+  Vault uses `VAULT_TOKEN`, with `VAULT_ADDR` and optional `VAULT_NAMESPACE`.
+  See `.env.example` for credential-chain inputs and the EE compose file for
+  forwarding. KMS-only downloads, manual S3 runs, and schedules require neither
+  `BACKUP_ENCRYPTION_KEY` nor a passphrase. A failed policy read or KMS request
+  fails the backup rather than silently selecting legacy encryption.
+- **Object Lock (WORM):** save separately from S3 settings. Choose Compliance
+  or Governance, 1–3650 days or 1–10 whole years, and optional legal hold.
+  A year is 365 days; changing the unit to years visibly rounds up.
+  Compliance retention cannot be shortened. Disabling the setting affects
+  **future uploads only**: existing version retention and legal holds survive.
+  Pruning reads each version's retention/hold metadata, skips protected versions,
+  and deletes expired/unlocked versions by their exact version ID. It never
+  sends Governance bypass and never creates a delete marker to hide a retained
+  backup. Unreadable policy or protection metadata fails closed.
+
+For version-aware pruning, grant `s3:ListBucketVersions`,
+`s3:GetBucketObjectLockConfiguration`, `s3:GetObjectRetention`,
+`s3:GetObjectLegalHold`, `s3:GetObjectVersion`, and `s3:DeleteObjectVersion`,
+in addition to upload/list permissions. Missing metadata-read permission is not
+treated as evidence that an object is unlocked. Multipart SHA-256 checksums are
+per-part and included in completion; a multipart checksum is not SHA-256 of the
+concatenated object bytes.
+
 Restore is an offline, standalone operation: stop Fastify traffic before a
 non-dry-run restore, and run `backend/scripts/restore-backup.ts` from a source
 checkout with `postgresql17-client` (`pg_restore`) installed. `POSTGRES_URL`
