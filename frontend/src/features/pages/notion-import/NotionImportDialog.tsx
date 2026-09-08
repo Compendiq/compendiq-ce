@@ -531,7 +531,7 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
   const handleImport = async () => {
     if (importPending || !spaceKey || summary.importIds.length === 0) return;
     const batches = chunkPageIds(summary.importIds);
-    const allItems: NotionImportItem[] = [];
+    const allItems = new Map<string, NotionImportItem>();
     let processed = 0;
 
     setBatchProgress({
@@ -560,17 +560,24 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
           databaseModes: requestDatabaseModes(nodes, selected, databaseModes),
         });
 
-        allItems.push(...response.items);
+        for (const item of response.items) {
+          const key = item.notionPageId.replace(/-/g, '').toLowerCase();
+          const previous = allItems.get(key);
+          // A parent can import a descendant before its explicit later batch.
+          // Keep the creation result instead of listing it twice as already imported.
+          if (previous?.status === 'success' && item.status === 'already_imported') continue;
+          allItems.set(key, item);
+        }
         processed += batch.length;
       }
 
       if (!shouldCommitImportResult(stepRef.current, openRef.current)) return;
       restoreFocusAfterImport.current = true;
-      setResultItems(allItems);
+      setResultItems([...allItems.values()]);
       setStep('result');
     } catch (err) {
-      if (allItems.length > 0) {
-        setResultItems(allItems);
+      if (allItems.size > 0) {
+        setResultItems([...allItems.values()]);
         setStep('result');
       }
       toast.error(errorMessage(err));
@@ -966,6 +973,11 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                 <p data-testid="notion-import-confirm-copy" className="text-sm text-foreground">
                   {confirmCopy}
                 </p>
+                <p className="text-sm text-muted-foreground">
+                  Selected pages include their embedded child pages and database contents, even when
+                  those children are not individually selected. Databases set to Skip stay excluded.
+                  Property-only databases become tables; pages with content remain articles.
+                </p>
                 <div className="rounded-md border border-border/70 bg-card p-3">
                   <label className="flex cursor-pointer items-start gap-2.5 text-xs text-foreground select-none">
                     <input
@@ -978,7 +990,8 @@ export function NotionImportDialog({ open, onClose }: NotionImportDialogProps) {
                     <div>
                       <span className="font-medium">Update existing pages with latest Notion content</span>
                       <p className="mt-0.5 text-muted-foreground">
-                        Re-syncs previously imported pages, updating their content and re-running AI embeddings without changing page IDs.
+                        Replaces previously imported content with Notion content, including local edits,
+                        without changing page IDs. Old database-row articles are not automatically deleted.
                       </p>
                     </div>
                   </label>

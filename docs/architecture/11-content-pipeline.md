@@ -13,7 +13,7 @@ representations that flow through the rest of the system.
 | **Plain text** | `pages.body_text` | FTS (`tsvector`), snippets, coverage probe |
 | **Markdown** | no page column — derived per call; **persisted as `page_embeddings.chunk_text`** for embedded pages since #1265 | LLM prompts (Ollama / OpenAI); **embedding/chunking input** since #1265 (`htmlToEmbeddingText`); chunk_text reaches RAG context, citations and (flattened) search snippets |
 | **Uploaded document** | not stored — discarded after extraction | LLM reference material (AI Improve / AI Generate upload) |
-| **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text` and local-attachment intents; a `table`-mode database's `body_html` is built by `renderDatabaseTable()` instead, since there are no blocks to convert. Never a live sync and never `pages.source = 'notion'` |
+| **Notion blocks** | not stored — converted on import | One-shot Notion migrate (#1459). `convertNotionBlocks()` writes `body_html` / `body_text`, child-pages macros and local-attachment intents. `renderDatabaseTable()` places property-only databases in their host article, or a standalone database article when there is no imported host. Never a live sync and never `pages.source = 'notion'` |
 | **Yjs BYTEA** | `page_collaborative_docs.doc_state` | Live collab CRDT. Full `Y.encodeStateAsUpdate`. Not Redis. |
 
 ## Collaborative snapshot vs commit (#1445)
@@ -49,7 +49,9 @@ flowchart LR
     ED["Editor (TipTap v3)<br/>HTML"]
 
     UP["Upload<br/>pdf · docx · odt · rtf · md · txt"]
-    NT["Notion<br/>blocks"]
+    NT["Notion<br/>metadata + blocks"]
+    NP["Import plan<br/>normalized identity + native hierarchy"]
+    NC["Articles + child-pages macros<br/>or parent property tables"]
 
     CF -- "confluenceToHtml()" --> DB
     DB -- "htmlToConfluence()" --> CF
@@ -57,7 +59,9 @@ flowchart LR
     LLM -- "markdownToHtml()" --> DB
     DB <--> ED
     UP -- "extractDocumentText()" --> LLM
-    NT -- "convertNotionBlocks()" --> DB
+    NT -- "discover owned children; classify every row" --> NP
+    NP -- "allocate parents before children" --> NC
+    NC -- "convertNotionBlocks() / renderDatabaseTable()" --> DB
 
     classDef ext fill:#fff,stroke:#333
     classDef data fill:#eef6ff,stroke:#4a90e2
@@ -465,14 +469,21 @@ not a fourth editor format and not a `pages.source = 'notion'` row.
 `backend/src/domains/knowledge/services/notion-block-converter.ts` takes
 already-fetched Notion block objects (nested `children` attached by the
 caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
-download intents, and a skip report. It never calls `api.notion.com`.
+download intents, and a skip report. It never calls `api.notion.com`, and that
+is enforced rather than asserted: `backend/eslint.config.js` restricts the
+global `fetch` and any HTTP-client import in that one file, so a violation fails
+lint instead of slipping past a regex over the module's own source.
 
-`notion-import-service.ts` (#1465) is that orchestrator: given a confirmed
-selection and a local destination, it creates **standalone** pages (never
-`pages.source = 'notion'`), keeps hierarchy among selected pages, stores
-`notion_page_id` for idempotency, and writes image bytes through
-`putLocalAttachment`. This conversion step only spells the URL the store
-already serves:
+`notion-import-service.ts` (#1465) plans page and database identities together
+before creating **standalone** pages. The selected root keeps its body and
+database/page parents are allocated before children. Actual `child_page` and
+`child_database` blocks expand owned descendants; ordinary links and mentions
+do not. An owner-scoped advisory lock protects overlapping discoveries alongside
+the selected-ID locks. UUID case and hyphens are normalized; titles never identify
+duplicates. Every planned result, including discovered failures, reaches the
+route's audit/cache handling and the result screen. Later UI batches merge results
+by normalized identity. Images are written through `putLocalAttachment`; the
+converter only spells the URL the store already serves:
 
 `buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
 → `/api/local-attachments/{pageId}/{file}`.
@@ -490,9 +501,10 @@ already serves:
 | `divider` | `<hr>` |
 | `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
 | `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
-| `child_page`, `link_to_page`, page mentions | `<a href="/pages/{id}">` when that Notion page id is in this run's imported set; otherwise the Notion URL. `link_to_page` databases always stay Notion URLs |
+| `child_page` | One existing `div.confluence-children-macro` per parent for successfully imported direct children (`data-depth="1"`, `data-sort="title"`). Nested columns share that one list. Nonchild or unavailable pages remain links |
+| `link_to_page`, page mentions | `<a href="/pages/{id}">` for imported identities, otherwise the Notion URL. These references never create or reparent articles; database links stay Notion URLs |
 | `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside one is enumerated and rendered like any other |
-| `child_database` (inline database) | `<table>` built by `renderDatabaseTable()` from the rows `fetchBlocksDeep()` queried for that block, with an `<h3>` title unless it is `New database` / `Untitled`. Columns come from the database schema, falling back to the union of row property keys. A database whose rows could not be read (or that has none) renders nothing and is listed in `skips` |
+| `child_database` | Property-only rows become a plain `<table>` in the host, with an optional `<h3>` title. Article-bearing inline databases without their own body place row articles directly below the host and use Child pages. Wiki databases and databases with a body retain their own article below the host; their rows stay beneath it. A table is rendered only at its owning article, never both host and container |
 | `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
 
 Rich-text annotations map to `<strong>` / `<em>` / `<del>` / `<code>` / `<a>`.
@@ -505,23 +517,45 @@ Notion item is never rewritten to an internal page link.
 A Notion database reaches Compendiq as one of two shapes, chosen per database
 by `databaseModes` on the import request (`skip` writes nothing at all):
 
-- **`table`** — the database becomes **one** page whose `notion_page_id` is the
-  database id. `readFlattenableRows()` pages every row and
-  `renderDatabaseTable()` builds the `<table>` into `body_html` ahead of the
-  lead paragraph; the selected row pages are then re-marked `skip` with
-  `Included in the database table`, so a database that became one table never
-  also arrives as its own pages.
-- **`pages`** — the database becomes a container page
-  (`ensureDatabaseContainerPage()`) and each selected row becomes an article
-  nested under it, its properties rendered as the metadata callout. This is the
-  default for a wiki (`isWikiDatabase()`), and it is also the fallback whenever
-  a row turns out to hold page content or cannot be read — `table` mode is
-  verified over every row, not over the tree's sample, so flattening can never
-  silently drop a body. A row *holds* content when any probed block carries
-  visible text, is media or a child page, or **still has children**: a blank
-  toggle or callout wrapping prose is content, not a leftover row template. The
-  probe reads `NOTION_ROW_PROBE_BLOCKS` (8) blocks, because an unread remainder
-  is `has_more`, which counts as content and would refuse the flatten.
+- **`table`** — `readFlattenableRows()` probes rows until one carries a body —
+  the first such row already refuses the flatten, and each probe is a paced
+  Notion request — then `renderDatabaseTable()` renders the properties. Rows it
+  paged are handed back so a downgrade to articles places them without a second
+  `queryDatabaseAll`. An embedded database without
+  its own body folds into the parent article; no database or row article is
+  created for that table, including rows sent in a later request batch. Without
+  an imported host, a standalone database owns its table article. A database
+  with its own body retains that body and owns its table rather than duplicating
+  the table on its parent.
+- **`pages`** — wiki databases retain a container article, including any home
+  body. Databases found in a selected body's `child_database` blocks enumerate
+  their rows. A database selected on its own in Pages mode retains the
+  selected-row scope. A row with content or an unreadable body must never be
+  flattened away: media, child pages, visible text, nested blocks and `has_more`
+  all count as content during the eight-block probe.
+
+**Folding is the default for an embedded database, never an override of a
+stated mode.** An embedded database with no body of its own and no mode on the
+request folds into its host — property-only rows as a table, article-bearing
+rows as children of the host, with no empty container in between. An
+**explicit** `pages` mode keeps that database's own article with its rows
+beneath it, host or not, and skips the flatten probe entirely: the picker
+renders a Table | Pages | Skip control for every selected database
+(`requestDatabaseModes` sends the effective mode for each one), so treating
+"appears in a host body" as `table` made that control decorative on every
+nested database.
+
+Explicit `skip` modes travel even without a selected database ID, preventing
+body discovery from importing an excluded database. Existing completed article
+bodies are unchanged unless `overwriteExisting` is requested; hierarchy can be
+repaired independently. Previously imported row articles are not automatically
+deleted when a database now folds into a table.
+
+**Discovery is bounded.** `NOTION_DISCOVERY_LIMIT` (2000) caps the pages one
+request may pull in beyond its own selection; past it a discovered page is
+reported as `skip` with `NOTION_DISCOVERY_LIMIT_REASON` rather than imported
+silently or dropped. An explicitly selected id is never refused, and the run is
+idempotent, so selecting the refused branch directly finishes it.
 
 `renderDatabaseTable()` is the **single** table builder. The inline
 `child_database` block renderer and the top-level `table`-mode import both call

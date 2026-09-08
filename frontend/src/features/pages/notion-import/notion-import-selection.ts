@@ -262,9 +262,9 @@ export function selectedImportIds(
 }
 
 /**
- * The mode to send for every database in the request. Explicit beats implicit:
- * without it the server re-derives a default from the database alone and can
- * land on a different shape than the row the operator just read.
+ * The effective mode for selected databases, plus explicit exclusions. A
+ * skipped database has no selected id, but the server still needs its exclusion
+ * when it discovers that database inside a selected parent's body.
  */
 export function requestDatabaseModes(
   nodes: NotionTreeNode[],
@@ -273,7 +273,7 @@ export function requestDatabaseModes(
 ): DatabaseModes {
   const out: DatabaseModes = {};
   walk(nodes, (node) => {
-    if (isDatabaseNode(node) && selected.has(node.id)) {
+    if (isDatabaseNode(node) && (selected.has(node.id) || effectiveDatabaseMode(node, modes) === 'skip')) {
       out[node.id] = effectiveDatabaseMode(node, modes);
     }
   });

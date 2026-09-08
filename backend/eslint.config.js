@@ -118,6 +118,40 @@ export default tseslint.config(
     },
   },
   {
+    // The block converter is a pure function of already-fetched Notion objects:
+    // `docs/architecture/11-content-pipeline.md` states it never calls
+    // api.notion.com, and it is the last gate before `body_html` reaches
+    // storage. That invariant used to be a regex scan of this file's own source
+    // inside its test suite — a test asserting source text, which passes for a
+    // module that imports a client under any name the regex missed. Lint
+    // enforces it here instead, where a violating import fails the build.
+    files: ['src/domains/knowledge/services/notion-block-converter.ts'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'fetch',
+          message: 'notion-block-converter must not perform HTTP — it converts blocks the caller already fetched.',
+        },
+      ],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            '@notionhq/client',
+            'undici',
+            'node:http',
+            'node:https',
+            './notion-client.js',
+          ].map((name) => ({
+            name,
+            message: 'notion-block-converter must not perform HTTP — it converts blocks the caller already fetched.',
+          })),
+        },
+      ],
+    },
+  },
+  {
     ignores: ['dist/', 'node_modules/', '*.config.*'],
   },
 );

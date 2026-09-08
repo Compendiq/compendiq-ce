@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { convertNotionBlocks, formatWikiMetadataCallout } from './notion-block-converter.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
 import { buildPageImageUrl } from '../../../core/services/image-references.js';
+import { htmlToYDoc, yDocToHtml } from '../../../core/services/collab-schema.js';
 
 const LOCAL_PAGE_ID = 42;
 
@@ -242,6 +242,128 @@ describe('convertNotionBlocks', () => {
       new Map([[pageId, 7]]),
     );
     expect(result.bodyHtml).toContain('<a href="/pages/7">Nested notes</a>');
+  });
+
+  it('preserves the direct-children macro through sanitization and collaborative save/load', () => {
+    const pageId = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
+    const blocks = [block(pageId, 'child_page', { title: 'Imported child' })];
+    const options = {
+      localPageId: LOCAL_PAGE_ID,
+      childPageIds: new Set(['aaaaaaaabbbbccccddddeeeeeeeeeeee']),
+    };
+    const result = convertNotionBlocks(blocks, options);
+    const doc = htmlToYDoc(result.bodyHtml);
+    try {
+      const savedHtml = yDocToHtml(doc);
+      expect(savedHtml).toContain('class="confluence-children-macro"');
+      expect(savedHtml).toContain('data-depth="1"');
+      expect(savedHtml).toContain('data-sort="title"');
+      expect(savedHtml).toContain('data-macro-name="children"');
+      expect(savedHtml).not.toContain('href=');
+    } finally {
+      doc.destroy();
+    }
+    // Rendering another parent must not inherit the first parent's emission state.
+    expect(convertNotionBlocks(blocks, options).bodyHtml).toContain('confluence-children-macro');
+  });
+
+  it('emits only one macro across nested columns, child pages, and article databases', () => {
+    const childId = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
+    const rowId = '11111111-2222-3333-4444-555555555555';
+    const result = convertNotionBlocks([
+      block('columns', 'column_list', {
+        children: [
+          block('left', 'column', {
+            children: [
+              block(childId, 'child_page', { title: 'First child' }, {
+                children: [block('child-body', 'paragraph', { rich_text: [rich('Do not flatten child body')] })],
+              }),
+            ],
+          }),
+          block('right', 'column', {
+            children: [
+              block('nested-columns', 'column_list', {
+                children: [
+                  block('nested', 'column', {
+                    children: [
+                      block('articles', 'child_database', { title: 'Articles' }, {
+                        databasePageIds: [rowId],
+                        children: [block('row-body', 'paragraph', { rich_text: [rich('Do not flatten row body')] })],
+                      }),
+                      block(rowId, 'child_page', { title: 'Repeated row reference' }),
+                    ],
+                  }),
+                ],
+              }),
+              block('properties', 'child_database', { title: 'Ports' }, {
+                databaseColumns: ['Port'],
+                databaseRows: [{ properties: { Port: { type: 'number', number: 22 } } }],
+              }),
+              block('prose', 'paragraph', { rich_text: [rich('Keep parent prose')] }),
+            ],
+          }),
+        ],
+      }),
+      block(childId, 'child_page', { title: 'Repeated child reference' }),
+    ], {
+      localPageId: LOCAL_PAGE_ID,
+      childPageIds: new Set(['aaaaaaaabbbbccccddddeeeeeeeeeeee', rowId]),
+    });
+
+    expect(result.bodyHtml.match(/class="confluence-children-macro"/g)).toHaveLength(1);
+    expect(result.bodyHtml).not.toContain('href=');
+    expect(result.bodyHtml).not.toContain('Do not flatten');
+    expect(result.bodyHtml).toContain('<td>22</td>');
+    expect(result.bodyHtml).toContain('<p>Keep parent prose</p>');
+    expect(result.skips).toEqual([]);
+  });
+
+  it('keeps unimported children and imported nonchildren as links, not child indexes', () => {
+    const childId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const otherId = '11111111-2222-3333-4444-555555555555';
+    const missingId = '99999999-8888-7777-6666-555555555555';
+    const result = convertNotionBlocks([
+      block(otherId, 'child_page', { title: 'Imported elsewhere' }),
+      block(missingId, 'child_page', { title: 'Not imported' }),
+      block('linked-child', 'link_to_page', { type: 'page_id', page_id: childId }),
+    ], {
+      localPageId: LOCAL_PAGE_ID,
+      importedPages: new Map([[otherId, 7], [childId, 8]]),
+      childPageIds: new Set([childId]),
+    });
+
+    expect(result.bodyHtml).not.toContain('confluence-children-macro');
+    expect(result.bodyHtml).toContain('<a href="/pages/7">Imported elsewhere</a>');
+    expect(result.bodyHtml).toContain('<a href="https://www.notion.so/99999999888877776666555555555555">Not imported</a>');
+    expect(result.bodyHtml).toContain('<a href="/pages/8">');
+  });
+
+  it('uses article database rows to trigger the same macro only for imported direct children', () => {
+    const rowId = 'AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE';
+    const unrelatedId = '11111111-2222-3333-4444-555555555555';
+    const database = block('db-1', 'child_database', { title: 'Articles' }, {
+      databasePageIds: [rowId],
+    });
+    const unrelated = convertNotionBlocks([database], {
+      localPageId: LOCAL_PAGE_ID,
+      importedPages: new Map([[rowId, 7]]),
+      childPageIds: new Set([unrelatedId]),
+    });
+    expect(unrelated.bodyHtml).not.toContain('confluence-children-macro');
+    expect(unrelated.bodyHtml).toContain('<a href="https://www.notion.so/db1">Articles</a>');
+
+    const direct = convertNotionBlocks([
+      database,
+      block(rowId, 'child_page', { title: 'Row article' }),
+      block('db-2', 'child_database', { title: 'Another view' }, { databasePageIds: [rowId] }),
+    ], {
+      localPageId: LOCAL_PAGE_ID,
+      childPageIds: new Set(['aaaaaaaabbbbccccddddeeeeeeeeeeee']),
+    });
+    expect(direct.bodyHtml.match(/class="confluence-children-macro"/g)).toHaveLength(1);
+    expect(direct.bodyHtml).not.toContain('<table>');
+    expect(direct.bodyHtml).not.toContain('href=');
+    expect(direct.skips).toEqual([]);
   });
 
   it('renders child_database with attached rows into an HTML table on the host page', () => {
@@ -585,15 +707,3 @@ describe('formatWikiMetadataCallout', () => {
   });
 });
 
-describe('notion-block-converter isolation', () => {
-  it('never talks to api.notion.com or issues HTTP from the converter module', () => {
-    const src = readFileSync(new URL('./notion-block-converter.ts', import.meta.url), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-    expect(src).not.toMatch(/api\.notion\.com/);
-    expect(src).not.toMatch(/\bfetch\s*\(/);
-    expect(src).not.toMatch(/@notionhq\/client/);
-    expect(src).not.toMatch(/\bundici\b/);
-    expect(src).toContain("from 'isomorphic-dompurify'");
-  });
-});

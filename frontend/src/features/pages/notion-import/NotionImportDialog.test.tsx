@@ -531,7 +531,7 @@ describe('NotionImportDialog database mode switch', () => {
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
   });
 
-  it('sends the effective mode of every selected database, and omits skipped ones', async () => {
+  it('sends database modes and exclusions while leaving skipped ids out of selection', async () => {
     givenHappyPath({
       tree: {
         nodes: [
@@ -566,13 +566,47 @@ describe('NotionImportDialog database mode switch', () => {
     const post = calls.find((c) => c.method === 'POST' && /\/notion\/import$/.test(c.url));
     const body = JSON.parse(post!.body ?? '{}') as Record<string, unknown>;
     expect(body.pageIds).toEqual(['handbook', 'crm', 'playbooks', 'play-1']);
-    expect(body.databaseModes).toEqual({ crm: 'table', playbooks: 'pages' });
-    expect(body.databaseModes).not.toHaveProperty('archive');
+    expect(body.databaseModes).toEqual({ crm: 'table', playbooks: 'pages', archive: 'skip' });
     expect(body.overwriteExisting).toBe(true);
   });
 });
 
+// These specs render 51- and 201-node trees, and the first drives a two-batch
+// import through one. That is seconds of jsdom work, and the 5s default was a
+// coin flip once the whole suite runs in parallel.
+const LARGE_WORKSPACE_TIMEOUT = 20_000;
+
 describe('NotionImportDialog large workspace rendering', () => {
+  it('shows a discovered child once when its explicit later batch reports already imported', async () => {
+    const nodes = Array.from({ length: 201 }, (_, i) => pageNode(`p-${i}`, `Article ${i}`));
+    givenHappyPath({ tree: { nodes } });
+    let batch = 0;
+    routes.unshift({
+      match: /\/notion\/import$/,
+      method: 'POST',
+      respond: () => ({
+        body: {
+          items: batch++ === 0
+            ? nodes.map((node, i) => ({ notionPageId: node.id, status: 'success', localPageId: i + 1 }))
+            : [{ notionPageId: 'P200', status: 'already_imported', localPageId: 201 }],
+        },
+      }),
+    });
+    renderDialog();
+    await connectWithDummyToken();
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    fireEvent.click(screen.getByRole('button', { name: /continue/i }));
+    await screen.findByTestId('notion-import-confirm-copy');
+    fireEvent.change(screen.getByLabelText(/space/i), { target: { value: 'notes' } });
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }));
+    const results = await screen.findByTestId('notion-import-result');
+    expect(within(results).getAllByRole('listitem')).toHaveLength(201);
+    const child = within(results).getByRole('link', { name: 'Article 200' });
+    expect(child).toHaveAttribute('href', '/pages/201');
+    expect(child.closest('li')).toHaveTextContent('imported');
+    expect(child.closest('li')).not.toHaveTextContent('already imported');
+  }, LARGE_WORKSPACE_TIMEOUT);
+
   it('renders root groups in bounded batches and exposes the remainder', async () => {
     givenHappyPath({
       tree: {
@@ -588,7 +622,7 @@ describe('NotionImportDialog large workspace rendering', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show 1 more page' }));
     expect(screen.getByRole('checkbox', { name: 'Root page 50' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /show .* more page/i })).toBeNull();
-  });
+  }, LARGE_WORKSPACE_TIMEOUT);
 
   it('drops stale selections before enforcing the page cap after a tree refresh', async () => {
     givenHappyPath({

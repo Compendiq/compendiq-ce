@@ -455,13 +455,14 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(childRequests()).toEqual([{ blockId: 'row-listed', pageSize: NOTION_ROW_PROBE_BLOCKS }]);
   });
 
-  it('spends no row sample on a wiki database — its rows are articles by definition', async () => {
+  it('keeps an inline wiki selectable as an article container without sampling its rows', async () => {
     const nodes = await treeFor({
       validToken: TOKEN,
       searchResults: [
         {
           object: 'database',
           id: 'linux-wiki',
+          is_inline: true,
           parent: { type: 'workspace', workspace: true },
           title: richTitle('Linux'),
           properties: {
@@ -497,6 +498,45 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
       rowContent: 'unknown',
       recommendedMode: 'pages',
     });
+    expect(childRequests()).toEqual([]);
+  });
+
+  it('keeps ordinary inline database rows selectable without probing the host or row bodies', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'host',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Host'),
+        },
+        {
+          object: 'database',
+          id: 'inline',
+          is_inline: true,
+          title: richTitle('Inline table'),
+          parent: { type: 'page_id', page_id: 'host' },
+        },
+        {
+          object: 'page',
+          id: 'row',
+          parent: { type: 'database_id', database_id: 'inline' },
+          properties: titleProp('Row with an article body'),
+        },
+      ],
+    });
+
+    expect(nodes).toMatchObject([{
+      id: 'host',
+      children: [{
+        id: 'inline',
+        type: 'unsupported',
+        selectable: false,
+        reasonCode: 'inline_database',
+        children: [{ id: 'row', type: 'page', selectable: true, isDatabaseRow: true }],
+      }],
+    }]);
     expect(childRequests()).toEqual([]);
   });
 
@@ -1056,6 +1096,237 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     const linux = findById(nodes as TreeNode[], 'linux-wiki');
     expect(linux).toBeDefined();
     expect(linux?.children.map((c) => c.id)).toContain('tmux');
+  });
+
+  it('recovers an omitted ancestor chain through an inline wiki up to its workspace root', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [{
+        object: 'page',
+        id: 'article',
+        parent: { type: 'database_id', database_id: 'wiki' },
+        properties: titleProp('Article'),
+      }],
+      databases: {
+        wiki: {
+          object: 'database',
+          id: 'wiki',
+          is_inline: true,
+          title: richTitle('Knowledge Base'),
+          parent: { type: 'page_id', page_id: 'department' },
+          properties: { Verification: { type: 'verification' } },
+        },
+      },
+      pages: {
+        department: {
+          object: 'page',
+          id: 'department',
+          parent: { type: 'page_id', page_id: 'workspace-home' },
+          properties: titleProp('Department'),
+        },
+        'workspace-home': {
+          object: 'page',
+          id: 'workspace-home',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Home'),
+        },
+      },
+    });
+
+    expect(nodes).toMatchObject([{
+      id: 'workspace-home',
+      children: [{
+        id: 'department',
+        children: [{
+          id: 'wiki',
+          type: 'database',
+          selectable: true,
+          isWiki: true,
+          children: [{ id: 'article', selectable: true }],
+        }],
+      }],
+    }]);
+    expect(childRequests()).toEqual([]);
+    expect(server!.requests.some((request) => request.url.includes('/query'))).toBe(false);
+  });
+
+  it('recovers an omitted block host and its ancestors without reading page bodies', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [{
+        object: 'page',
+        id: 'nested',
+        parent: { type: 'block_id', block_id: 'toggle' },
+        properties: titleProp('Nested'),
+      }],
+      blocks: {
+        toggle: {
+          object: 'block',
+          id: 'toggle',
+          type: 'toggle',
+          parent: { type: 'page_id', page_id: 'host' },
+        },
+      },
+      pages: {
+        host: {
+          object: 'page',
+          id: 'host',
+          parent: { type: 'page_id', page_id: 'home' },
+          properties: titleProp('Host'),
+        },
+        home: {
+          object: 'page',
+          id: 'home',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Home'),
+        },
+      },
+    });
+
+    expect(nodes).toMatchObject([{
+      id: 'home',
+      children: [{ id: 'host', children: [{ id: 'nested' }] }],
+    }]);
+    expect(childRequests()).toEqual([]);
+  });
+
+  it('resolves an omitted sub-item parent before applying native database ownership', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [{
+        object: 'page',
+        id: 'modules',
+        parent: { type: 'database_id', database_id: 'wiki' },
+        properties: {
+          ...titleProp('Modules'),
+          'Parent item': { type: 'relation', relation: [{ id: 'ansible' }] },
+        },
+      }],
+      pages: {
+        ansible: {
+          object: 'page',
+          id: 'ansible',
+          parent: { type: 'database_id', database_id: 'wiki' },
+          properties: titleProp('Ansible'),
+        },
+      },
+      databases: {
+        wiki: {
+          object: 'database',
+          id: 'wiki',
+          title: richTitle('Wiki'),
+          parent: { type: 'workspace', workspace: true },
+          properties: { Verification: { type: 'verification' } },
+        },
+      },
+    });
+
+    expect(nodes).toMatchObject([{
+      id: 'wiki',
+      children: [{ id: 'ansible', children: [{ id: 'modules' }] }],
+    }]);
+    expect(childRequests()).toEqual([]);
+    expect(server!.requests.filter((request) => request.url === '/v1/databases/wiki')).toHaveLength(1);
+  });
+
+  it('deduplicates UUID spellings and keeps full wiki metadata over a child-database block', async () => {
+    const wikiId = 'abcdef12-1234-5678-9abc-def123456789';
+    const compactWikiId = wikiId.replaceAll('-', '').toUpperCase();
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'block',
+          id: compactWikiId,
+          type: 'child_database',
+          child_database: { title: 'Wiki' },
+          parent: { type: 'workspace', workspace: true },
+        },
+        {
+          object: 'database',
+          id: wikiId,
+          title: richTitle('Wiki'),
+          is_inline: true,
+          properties: { Verification: { type: 'verification' } },
+          parent: { type: 'workspace', workspace: true },
+        },
+        {
+          object: 'page',
+          id: 'aabbccdd-1234-5678-9abc-def123456789',
+          properties: titleProp('Article'),
+          parent: { type: 'database_id', database_id: compactWikiId },
+        },
+        {
+          object: 'page',
+          id: 'AABBCCDD123456789ABCDEF123456789',
+          properties: titleProp('Article duplicate'),
+          parent: { type: 'database_id', database_id: wikiId },
+        },
+      ],
+    });
+
+    expect(nodes).toMatchObject([{
+      id: wikiId,
+      type: 'database',
+      selectable: true,
+      isWiki: true,
+      rowCount: 1,
+      children: [{ title: 'Article' }],
+    }]);
+    expect(flatten(nodes as TreeNode[])).toHaveLength(2);
+    expect(server!.requests.filter((request) => request.method === 'GET')).toEqual([]);
+  });
+
+  it.each(['native', 'relation'] as const)('keeps every page reachable when %s parent edges form a normalized cycle', async (kind) => {
+    const ids = ['aabbccdd-1234-5678-9abc-def123456789', 'bbccddee-1234-5678-9abc-def123456789'];
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: ids.map((id, index) => {
+        const parentId = ids[1 - index].replaceAll('-', '').toUpperCase();
+        return {
+          object: 'page',
+          id,
+          parent: kind === 'native'
+            ? { type: 'page_id', page_id: parentId }
+            : { type: 'workspace', workspace: true },
+          properties: {
+            ...titleProp(id),
+            ...(kind === 'relation' ? { 'Parent item': { type: 'relation', relation: [{ id: parentId }] } } : {}),
+          },
+        };
+      }),
+    });
+
+    const parsed = NotionTreeResponseSchema.parse({ nodes });
+    expect(parsed.nodes).toHaveLength(1);
+    expect(flatten(parsed.nodes as TreeNode[]).map((node) => node.id).sort()).toEqual([...ids].sort());
+    expect(childRequests()).toEqual([]);
+    expect(server!.requests.filter((request) => request.method === 'GET')).toEqual([]);
+  });
+
+  it('stops ancestor discovery when an omitted parent points back to its child', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [{
+        object: 'page',
+        id: 'aabbccdd-1234-5678-9abc-def123456789',
+        parent: { type: 'page_id', page_id: 'parent' },
+        properties: titleProp('Child'),
+      }],
+      pages: {
+        parent: {
+          object: 'page',
+          id: 'parent',
+          parent: { type: 'page_id', page_id: 'AABBCCDD123456789ABCDEF123456789' },
+          properties: titleProp('Parent'),
+        },
+      },
+    });
+
+    expect(nodes).toHaveLength(1);
+    expect(flatten(nodes as TreeNode[]).map((node) => node.title).sort()).toEqual(['Child', 'Parent']);
+    expect(server!.requests.filter((request) => request.method === 'GET').map((request) => request.url))
+      .toEqual(['/v1/pages/parent']);
   });
 
   it('attaches a child when the missing parent is a database that GET /v1/pages 400s', async () => {
