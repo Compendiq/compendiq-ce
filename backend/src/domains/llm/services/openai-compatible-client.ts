@@ -29,7 +29,11 @@ export interface ProviderConfig {
 
 interface LlmModel { name: string; }
 interface HealthResult { connected: boolean; error?: string; }
-interface StreamChunk { content: string; done: boolean; }
+export interface StreamChunk {
+  content: string;
+  done: boolean;
+  usage?: { promptTokens?: number; completionTokens?: number };
+}
 
 /** Wire shape shared by chat `message` and stream `delta` (#1453). */
 interface CompletionText {
@@ -452,7 +456,7 @@ export async function* streamChat(
       const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: headers(cfg),
-        body: JSON.stringify({ model, messages, stream: true, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
+        body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true }, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
         dispatcher: dispatcherFor(cfg),
         signal,
       });
@@ -492,7 +496,21 @@ export async function* streamChat(
           yield { content: '', done: true }; return;
         }
         try {
-          const parsed = JSON.parse(data) as { choices?: Array<{ delta?: CompletionText }> };
+          const parsed = JSON.parse(data) as {
+            choices?: Array<{ delta?: CompletionText }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number };
+          };
+          if (parsed.usage) {
+            const promptTokens = parsed.usage.prompt_tokens;
+            const completionTokens = parsed.usage.completion_tokens;
+            yield {
+              content: '', done: false,
+              usage: {
+                ...(Number.isSafeInteger(promptTokens) && promptTokens! >= 0 ? { promptTokens } : {}),
+                ...(Number.isSafeInteger(completionTokens) && completionTokens! >= 0 ? { completionTokens } : {}),
+              },
+            };
+          }
           const delta = parsed.choices?.[0]?.delta;
           const reasoning = opts?.thinking ? reasoningText(delta) : '';
           const content = visibleText(delta);

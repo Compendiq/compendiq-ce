@@ -17,6 +17,7 @@ import {
   nonThinkingExtras,
   type ProviderConfig,
 } from './openai-compatible-client.js';
+import { emitLlmAudit, estimateTokens } from './llm-audit-hook.js';
 
 export const INLINE_COMPLETION_STOP = ['\n', '\n\n', '```'] as const;
 export const INLINE_COMPLETION_TIMEOUT_MS = 10_000;
@@ -38,6 +39,8 @@ export interface InlineCompletionResult {
 export interface InlineCompletionOptions {
   /** Test seam and future internal override; the route uses the fixed default. */
   timeoutMs?: number;
+  /** Only authenticated interactive requests opt into the inference audit. */
+  auditUserId?: string;
 }
 
 /** Models whose completion endpoint conventionally understands PRE/SUF/MID. */
@@ -115,9 +118,20 @@ export async function requestInlineCompletion(
     opts.timeoutMs ?? INLINE_COMPLETION_TIMEOUT_MS,
   );
 
-  return withSpan(
+  const auditStart = Date.now();
+  const inputMessages = 'messages' in requestBody
+    ? requestBody.messages
+    : [{ role: 'user', content: fim }];
+  let rawOutput = '';
+  let reportedUsage: InlineCompletionResult['usage'];
+  let dispatched = false;
+  let failure: unknown;
+  try {
+  return await withSpan(
     'llm.inline_completion',
     () => getProviderBreaker(cfg.providerId).execute(async () => {
+      signal.throwIfAborted();
+      dispatched = true;
       const res = await undiciFetch(`${cfg.baseUrl}/${endpoint}`, {
         method: 'POST',
         headers: providerRequestInfra.headers(cfg),
@@ -140,6 +154,10 @@ export async function requestInlineCompletion(
       const raw = strategy === 'fim'
         ? body.choices?.[0]?.text
         : body.choices?.[0]?.message?.content;
+      reportedUsage = body.usage
+        ? { promptTokens: body.usage.prompt_tokens, completionTokens: body.usage.completion_tokens }
+        : undefined;
+      if (typeof raw === 'string') rawOutput = raw;
       if (typeof raw !== 'string') {
         throw new LlmHttpError(
           'inlineCompletion',
@@ -147,15 +165,9 @@ export async function requestInlineCompletion(
           'provider response carried no completion text',
         );
       }
-      const usage = body.usage
-        ? {
-            promptTokens: body.usage.prompt_tokens,
-            completionTokens: body.usage.completion_tokens,
-          }
-        : undefined;
       let completion = normalizeInlineCompletion(raw);
       if (/\s$/u.test(input.prefix)) completion = completion.replace(/^[\t ]+/u, '');
-      return { completion, usage, strategy };
+      return { completion, usage: reportedUsage, strategy };
     }),
     {
       'llm.provider_id': cfg.providerId,
@@ -163,4 +175,21 @@ export async function requestInlineCompletion(
       'llm.inline_completion.strategy': strategy,
     },
   );
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    if (opts.auditUserId && dispatched) {
+      emitLlmAudit({
+        userId: opts.auditUserId, action: 'chat', model, provider: cfg.providerId,
+        inputTokens: reportedUsage?.promptTokens ?? estimateTokens(inputMessages.map((m) => m.content).join('')),
+        outputTokens: reportedUsage?.completionTokens ?? estimateTokens(rawOutput),
+        inputMessages: inputMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+        retrievedChunkIds: [],
+        durationMs: Date.now() - auditStart,
+        status: failure ? 'error' : 'success',
+        ...(failure ? { errorMessage: signal.aborted ? 'Client disconnected' : 'Inline completion failed' } : {}),
+      });
+    }
+  }
 }

@@ -185,6 +185,19 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Next paced start and the slot after it. Reservation is pure so the
+ * interval ladder can be pinned without HTTP arrival jitter.
+ */
+export function reserveNotionStartSlot(
+  now: number,
+  nextSlotAt: number,
+  minIntervalMs: number,
+): { start: number; nextSlotAt: number } {
+  const start = Math.max(now, nextSlotAt);
+  return { start, nextSlotAt: start + minIntervalMs };
+}
+
+/**
  * Walk cursor pagination until `has_more` is false. Caps pages so a
  * stuck cursor cannot loop forever. Used by later import PRs.
  */
@@ -229,9 +242,9 @@ export class NotionClient {
    */
   private async waitForSlot(): Promise<void> {
     const now = Date.now();
-    const start = Math.max(now, this.nextSlotAt);
-    this.nextSlotAt = start + this.minIntervalMs;
-    await sleep(start - now);
+    const reserved = reserveNotionStartSlot(now, this.nextSlotAt, this.minIntervalMs);
+    this.nextSlotAt = reserved.nextSlotAt;
+    await sleep(reserved.start - now);
   }
 
   /**

@@ -5,6 +5,9 @@ import {
   UpdateBackupSettingsSchema,
   BackupStatusResponseSchema,
   BackupRunSchema,
+  BackupObjectLockConfigSchema,
+  BackupKmsConfigSchema,
+  UpdateBackupKmsSchema,
 } from './backup.js';
 
 describe('BackupExportTicketRequestSchema', () => {
@@ -49,6 +52,16 @@ describe('UpdateBackupSettingsSchema', () => {
     expect(() => UpdateBackupSettingsSchema.parse({ intervalHours: 0 })).toThrow();
     expect(() => UpdateBackupSettingsSchema.parse({ intervalHours: 169 })).toThrow();
   });
+
+  it('preserves optional enterprise policy patches and rejects invalid retention', () => {
+    const patch = { objectLockEnabled: true, objectLockMode: 'GOVERNANCE', objectLockRetentionDays: 730, objectLockLegalHold: true };
+    expect(UpdateBackupSettingsSchema.parse(patch)).toEqual(patch);
+    expect(UpdateBackupSettingsSchema.safeParse({ objectLockRetentionDays: 0 }).success).toBe(false);
+    expect(UpdateBackupSettingsSchema.safeParse({ objectLockRetentionDays: 3651 }).success).toBe(false);
+    expect(UpdateBackupSettingsSchema.safeParse({ objectLockRetentionDays: 1.5 }).success).toBe(false);
+    expect(UpdateBackupSettingsSchema.safeParse({ objectLockMode: 'unknown' }).success).toBe(false);
+    expect(UpdateBackupSettingsSchema.safeParse({ objectLockEnabled: 'true' }).success).toBe(false);
+  });
 });
 
 describe('BackupRunSchema', () => {
@@ -74,7 +87,31 @@ describe('BackupRunSchema', () => {
 });
 
 describe('BackupStatusResponseSchema', () => {
-  it('requires hasMasterKey and history', () => {
-    expect(() => BackupStatusResponseSchema.parse({})).toThrow();
+  it('keeps legacy status fields compatible without inventing enterprise readiness', () => {
+    const status = {
+      hasMasterKey: false, lockHeld: false,
+      s3: { enabled: false, endpoint: '', bucket: '', region: '', accessKey: '', secretKey: '', prefix: '', forcePathStyle: false, hasAccessKey: false, hasSecretKey: false },
+      schedule: { enabled: false, intervalHours: 24, retentionCount: 7, retentionDays: 30, lastRunAt: null },
+      history: [],
+    };
+    expect(BackupStatusResponseSchema.parse(status)).toEqual(status);
+    const objectLock = { enabled: true, mode: 'COMPLIANCE', retentionDays: 3650, legalHold: false };
+    expect(BackupStatusResponseSchema.parse({ ...status, kmsEnabled: true, objectLock })).toEqual({ ...status, kmsEnabled: true, objectLock });
+    expect(BackupStatusResponseSchema.safeParse({ ...status, kmsEnabled: 'true' }).success).toBe(false);
+    expect(BackupObjectLockConfigSchema.safeParse({ ...objectLock, retentionDays: -1 }).success).toBe(false);
+  });
+});
+
+describe('Backup KMS contracts', () => {
+  it('accepts partial provider changes without allowing credential writes', () => {
+    expect(UpdateBackupKmsSchema.parse({ provider: 'vault', vaultAddr: 'https://vault.example.com' })).toEqual({ provider: 'vault', vaultAddr: 'https://vault.example.com' });
+    expect(UpdateBackupKmsSchema.safeParse({ vaultToken: 'secret' }).success).toBe(false);
+    expect(UpdateBackupKmsSchema.safeParse({ credentialsPresent: true }).success).toBe(false);
+    expect(UpdateBackupKmsSchema.safeParse({ provider: 'unknown' }).success).toBe(false);
+  });
+
+  it('refuses incomplete provider responses instead of rendering a disabled policy', () => {
+    expect(BackupKmsConfigSchema.safeParse({ provider: 'none' }).success).toBe(false);
+    expect(BackupKmsConfigSchema.safeParse({ provider: 'none', keyId: '', awsRegion: '', vaultAddr: '', vaultNamespace: '', credentialsPresent: false }).success).toBe(true);
   });
 });

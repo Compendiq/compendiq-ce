@@ -136,6 +136,18 @@ describe.skipIf(!dbAvailable)('GET /api/models/client-assets (#1418)', () => {
     expect(response.body).toBe('CDEF');
   });
 
+  it('serves HEAD metadata without a body for a community asset', async () => {
+    await writeAsset('hunspell-en_US', 'en_US.aff', 'ABCDEFGH');
+    const response = await app.inject({
+      method: 'HEAD',
+      url: '/api/models/client-assets/hunspell-en_US/en_US.aff',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-length']).toBe('8');
+    expect(response.headers['accept-ranges']).toBe('bytes');
+    expect(response.body).toBe('');
+  });
+
   it('404s a missing file', async () => {
     const response = await app.inject({
       method: 'GET',
@@ -173,6 +185,10 @@ describe.skipIf(!dbAvailable)('GET /api/models/client-assets (#1418)', () => {
     canQuery = false;
     const response = await app.inject({ method: 'GET', url: '/api/models/client-assets' });
     expect(response.statusCode).toBe(403);
+    const download = await app.inject({
+      method: 'GET', url: '/api/models/client-assets/hunspell-en_US/en_US.aff',
+    });
+    expect(download.statusCode).toBe(403);
   });
 });
 
@@ -191,6 +207,13 @@ describe('GET /api/models/client-assets unauthenticated (#1418 SPEC-045)', () =>
 
   it('does not 200 without auth', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/models/client-assets' });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('requires authentication on implicit HEAD file requests too', async () => {
+    const response = await app.inject({
+      method: 'HEAD', url: '/api/models/client-assets/hunspell-en_US/en_US.aff',
+    });
     expect(response.statusCode).toBe(401);
   });
 });

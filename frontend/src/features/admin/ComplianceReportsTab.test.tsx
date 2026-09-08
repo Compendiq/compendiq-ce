@@ -2,7 +2,7 @@
  * Unit tests for ComplianceReportsTab.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { REPORT_IDS } from '@compendiq/contracts';
@@ -33,7 +33,7 @@ function createWrapper() {
   };
 }
 
-// Use the canonical 7-id tuple from @compendiq/contracts so this test
+// Use the canonical tuple from @compendiq/contracts so this test
 // stays in lockstep with the registry / route validator / tab catalogue
 // (gh-pr-reviewer CE #393 INFO). `[...REPORT_IDS]` strips the `readonly`
 // modifier the tuple carries; the test mock only needs the values.
@@ -91,7 +91,7 @@ afterEach(() => {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe('ComplianceReportsTab', () => {
-  it('renders all 7 reports from the local catalogue', async () => {
+  it('renders the shared report catalogue', async () => {
     setupCatalogue({});
     render(<ComplianceReportsTab />, { wrapper: createWrapper() });
 
@@ -114,7 +114,7 @@ describe('ComplianceReportsTab', () => {
     await waitFor(() => {
       expect(screen.getByTestId('badge-available-user_access')).toBeTruthy();
     });
-    // The other 6 should carry the coming-soon badge.
+    // Unwired reports retain their unavailable state.
     expect(screen.getByTestId('badge-coming-soon-ai_usage')).toBeTruthy();
     expect(screen.getByTestId('badge-coming-soon-sync_data_flow')).toBeTruthy();
     expect(screen.getByTestId('badge-coming-soon-data_retention')).toBeTruthy();
@@ -133,6 +133,61 @@ describe('ComplianceReportsTab', () => {
 
     const unwiredBtn = screen.getByTestId('generate-ai_usage') as HTMLButtonElement;
     expect(unwiredBtn.disabled).toBe(true);
+  });
+
+  it('keeps governance unavailable when an older server omits it', async () => {
+    const olderReports = ALL_REPORTS.filter((id) => id !== 'model_governance');
+    const fetchSpy = setupCatalogue({ catalogue: olderReports, available: olderReports });
+    render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+
+    const card = await screen.findByTestId('compliance-report-card-model_governance');
+    const generate = within(card).getByRole('button', { name: 'Generate & download' });
+    expect(generate).toBeDisabled();
+    expect(within(card).getByLabelText('From')).toBeDisabled();
+    fireEvent.click(generate);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/generate'))).toBe(false);
+    expect(screen.getByTestId('generate-ai_usage')).toBeEnabled();
+  });
+
+  it('downloads governance only when the running backend makes it available', async () => {
+    const requestBodies: unknown[] = [];
+    const fetchSpy = setupCatalogue({ available: ['model_governance'] });
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.endsWith('/api/admin/compliance-reports')) {
+        return new Response(JSON.stringify({
+          catalogue: ALL_REPORTS,
+          available: ['model_governance'],
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/api/admin/compliance-reports/generate')) {
+        requestBodies.push(JSON.parse(String(init?.body)));
+        expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer test-token');
+        return new Response(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': 'attachment; filename="model-governance.zip"',
+          },
+        });
+      }
+      return new Response('not mocked', { status: 500 });
+    });
+    const download = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(<ComplianceReportsTab />, { wrapper: createWrapper() });
+    const card = await screen.findByTestId('compliance-report-card-model_governance');
+    fireEvent.change(within(card).getByLabelText('From'), { target: { value: '2026-04-01T00:00' } });
+    fireEvent.change(within(card).getByLabelText('To'), { target: { value: '2026-04-28T00:00' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Generate & download' }));
+
+    await waitFor(() => expect(download).toHaveBeenCalledOnce());
+    expect(requestBodies).toEqual([{
+      reportId: 'model_governance',
+      from: new Date('2026-04-01T00:00').toISOString(),
+      to: new Date('2026-04-28T00:00').toISOString(),
+    }]);
+    expect(document.querySelector('a[download="model-governance.zip"]')).not.toBeNull();
+    expect(screen.getByTestId('generate-ai_usage')).toBeDisabled();
+    download.mockRestore();
   });
 
   it('rejects ranges where from >= to with an inline validation message', async () => {
@@ -350,8 +405,8 @@ describe('ComplianceReportsTab', () => {
     expect(screen.getByTestId('compliance-reports-retry')).toBeTruthy();
   });
 
-  it('renders the EE-gated message when the catalogue endpoint returns 404', async () => {
-    setupCatalogue({ status: 404 });
+  it.each([402, 403, 404])('offers no report actions when the catalogue is unavailable (%s)', async (status) => {
+    setupCatalogue({ status });
     render(<ComplianceReportsTab />, { wrapper: createWrapper() });
 
     await waitFor(() => {

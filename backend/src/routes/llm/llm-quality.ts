@@ -6,6 +6,7 @@ import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache
 import { AnalyzeQualityRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   assembleContextIfNeeded,
   checkCacheWithLock,
@@ -75,9 +76,17 @@ export async function llmQualityRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: sanitized },
       ];
-      const generator = streamChat(qualityConfig, resolvedModel, qualityMessages, undefined, { thinking: body.thinking });
-
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply,
+        (signal) => streamChat(qualityConfig, resolvedModel, qualityMessages, signal, { thinking: body.thinking }),
+        undefined, {
+          llmCache, cacheKey,
+          audit: {
+            userId, action: 'quality', model: resolvedModel, provider: qualityConfig.providerId,
+            inputTokens: estimateTokens(qualityMessages.map((m) => m.content).join('')),
+            inputMessages: qualityMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: [],
+          },
+        });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }

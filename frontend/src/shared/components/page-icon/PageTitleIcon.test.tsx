@@ -57,10 +57,14 @@ describe('PageTitleIcon', () => {
     expect(screen.getByRole('tab', { name: /Emoji/i })).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tab', { name: /Upload/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Logos/i })).toBeInTheDocument();
-    expect(screen.getByTestId('page-icon-lucide-grid').querySelectorAll('button').length).toBeGreaterThan(200);
+    expect(screen.getByTestId('page-icon-lucide-grid').querySelectorAll('button').length).toBeGreaterThan(600);
     fireEvent.click(screen.getByRole('tab', { name: /Logos/i }));
     expect(screen.getByTestId('page-icon-brand-grid')).toBeInTheDocument();
     expect(screen.getByLabelText('Docker')).toBeInTheDocument();
+    expect(screen.getByLabelText('Microsoft')).toBeInTheDocument();
+    expect(screen.getByLabelText('IBM')).toBeInTheDocument();
+    expect(screen.getByLabelText('Apple')).toBeInTheDocument();
+    expect(screen.getByLabelText('Google')).toBeInTheDocument();
   });
 
   it('shows the existing mark as Change page icon', () => {
