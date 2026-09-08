@@ -22,6 +22,7 @@ import {
   type HunspellAssetId,
 } from '@compendiq/contracts';
 import { clientModelAssetsDir } from './client-model-assets.js';
+import { assertClientModelHubEgressAllowed } from './client-model-asset-policy.js';
 
 const HUB_URL = 'https://huggingface.co';
 
@@ -68,6 +69,7 @@ export async function searchClientModels(
   url.searchParams.set('sort', 'downloads');
   url.searchParams.set('limit', '20');
 
+  await assertClientModelHubEgressAllowed();
   const res = await fetchImpl(url);
   if (!res.ok) {
     throw new Error(`Hugging Face search failed (${res.status})`);
@@ -118,6 +120,7 @@ async function loadOnnxTree(
   fetchImpl: HubFetch,
 ): Promise<{ entries: HubTreeEntry[]; error?: string }> {
   const url = `${HUB_URL}/api/models/${repo}/tree/main/onnx`;
+  await assertClientModelHubEgressAllowed();
   const res = await fetchImpl(url);
   if (!res.ok) {
     return {
@@ -174,13 +177,14 @@ export async function installClientModel(
   const localId = hfRepoToLocalAssetId(parsedRepo);
   installStatus = { status: 'running', repo: parsedRepo, loaded: 0, total: 0, error: null };
 
+  const partial = path.join(root, `.partial-${localId}`);
+  try {
   const { entries, error } = await loadOnnxTree(parsedRepo, fetchImpl);
   const q4 = entries.find((e) => e.path === 'onnx/model_q4.onnx' && e.type !== 'directory');
   const bytes = Math.max(0, Math.trunc(q4?.lfs?.size ?? q4?.size ?? 0));
   if (error || !q4 || bytes > MAX_CLIENT_ONNX_Q4_BYTES) {
     const reason = error
       ?? (!q4 ? 'No onnx/model_q4.onnx in this repo' : 'q4 weights exceed 1 GiB');
-    installStatus = { status: 'failed', repo: parsedRepo, loaded: 0, total: 0, error: reason };
     throw new Error(reason);
   }
 
@@ -193,13 +197,12 @@ export async function installClientModel(
     error: null,
   };
 
-  const partial = path.join(root, `.partial-${localId}`);
   await fs.rm(partial, { recursive: true, force: true });
   await fs.mkdir(partial, { recursive: true });
 
-  try {
     for (const file of CLIENT_ONNX_INSTALL_FILES) {
       const url = `${HUB_URL}/${parsedRepo}/resolve/main/${file}`;
+      await assertClientModelHubEgressAllowed();
       const res = await fetchImpl(url);
       if (res.status === 404) {
         if (REQUIRED_ONNX.has(file)) throw new Error(`Missing required file ${file}`);
@@ -327,6 +330,7 @@ export async function installHunspellModel(
 
   try {
     for (const file of source.files) {
+      await assertClientModelHubEgressAllowed();
       const res = await fetchImpl(file.url);
       if (!res.ok || !res.body) {
         throw new Error(`Download failed for ${file.name} (${res.status})`);

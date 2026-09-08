@@ -474,7 +474,7 @@ export function BubbleMenuContent({
       ref={rootRef}
       data-testid="editor-bubble-menu"
       className={cn(
-        'flex nm-card-elevated',
+        'flex nm-popover-glass overflow-hidden',
         isExpanded && improvePanelPosition === 'above' ? 'flex-col-reverse' : 'flex-col',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95',
       )}
@@ -490,7 +490,7 @@ export function BubbleMenuContent({
           aria-controls={commentOpen ? commentPanelId : undefined}
           data-testid="bubble-comment-trigger"
           className={cn(
-            'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
+            'flex h-8 items-center gap-1 rounded-lg px-2 text-sm font-medium transition-colors',
             'text-foreground/80 hover:bg-muted hover:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
             commentOpen && 'bg-muted text-foreground',
@@ -511,7 +511,7 @@ export function BubbleMenuContent({
             aria-controls={aiOpen ? aiPanelId : undefined}
             data-testid="bubble-ai-trigger"
             className={cn(
-              'flex h-8 items-center gap-1 rounded px-2 text-sm font-medium transition-colors',
+              'flex h-8 items-center gap-1 rounded-lg px-2 text-sm font-medium transition-colors',
               'text-primary hover:bg-primary/10',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
               aiOpen && 'bg-primary/10',
@@ -526,7 +526,7 @@ export function BubbleMenuContent({
       {!isExpanded && dropsMacros && (
         <p
           data-testid="bubble-menu-macro-notice"
-          className="w-72 border-t border-border px-3 py-2 text-xs text-muted-foreground"
+          className="w-72 border-t border-border/60 px-3 py-2 text-xs text-muted-foreground"
         >
           {MACRO_NOTICE}
         </p>
@@ -545,7 +545,7 @@ export function BubbleMenuContent({
           isSubmitting={isSubmittingComment}
           className={cn(
             'w-full max-w-[calc(100vw-24px)]',
-            improvePanelPosition === 'above' ? 'border-b border-border' : 'border-t border-border',
+            improvePanelPosition === 'above' ? 'border-b border-border/60' : 'border-t border-border/60',
           )}
         />
       )}

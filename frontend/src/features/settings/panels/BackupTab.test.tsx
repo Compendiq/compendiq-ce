@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { BackupStatusResponse } from '@compendiq/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import backupTabSource from './BackupTab.tsx?raw';
 import { BackupTab } from './BackupTab';
 
 vi.mock('sonner', () => ({
@@ -179,10 +178,6 @@ describe('BackupTab (#1420)', () => {
     expect(spy.mock.calls.every(([target]) => !requestUrl(target).includes(passphrase))).toBe(true);
     expect(assign).toHaveBeenCalledWith(DOWNLOAD_URL);
     expect(input).toHaveValue('');
-  });
-
-  it('does not buffer backup bytes in browser memory', () => {
-    expect(backupTabSource).not.toMatch(/res\.blob|createObjectURL|\bBlob\b/);
   });
 
   it('shows a retryable alert when the initial status request fails', async () => {

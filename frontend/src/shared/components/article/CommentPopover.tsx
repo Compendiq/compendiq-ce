@@ -353,7 +353,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
         left: `${left}px`,
       }}
       className={cn(
-        'z-50 w-84 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-card p-3 text-card-foreground nm-card-elevated',
+        'z-50 w-84 max-w-[calc(100vw-24px)] nm-popover-glass p-3 text-card-foreground',
         'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95 duration-100',
         className,
       )}
@@ -390,7 +390,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
           onClick={() => setOpen(false)}
           aria-label="Close note popover"
           data-testid="popover-close-btn"
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="rounded-lg p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
         >
           <X size={14} />
         </button>
@@ -407,7 +407,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
       {/* Quoted highlight snippet */}
       {effectiveComment?.anchorData?.quote && (
         <div
-          className="mt-2 flex items-start gap-1.5 rounded border-l-2 border-border-interactive bg-muted/50 px-2 py-1 text-xs italic text-muted-foreground"
+          className="mt-2 flex items-start gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 py-1 text-xs italic text-muted-foreground"
           data-testid="popover-comment-quote"
         >
           <Quote size={11} className="mt-0.5 shrink-0 opacity-70" />
@@ -466,7 +466,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
               return (
                 <div
                   key={reply.id}
-                  className="rounded bg-muted/30 p-2 text-xs"
+                  className="rounded-lg bg-muted/30 p-2 text-xs"
                   data-testid={`popover-reply-${reply.id}`}
                 >
                   <div className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground mb-1">
@@ -498,7 +498,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             }}
             placeholder="Write a reply… (Cmd+Enter to send)"
             rows={2}
-            className="w-full rounded border border-border-interactive bg-background p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full rounded-lg border border-border bg-background/80 p-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             autoFocus
             data-testid="popover-reply-input"
           />
@@ -506,14 +506,14 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             <button
               type="button"
               onClick={() => setShowReplyForm(false)}
-              className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="rounded-lg px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={!replyText.trim() || addReply.isPending}
-              className="rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="rounded-lg bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="popover-reply-submit-btn"
             >
               {addReply.isPending ? 'Sending…' : 'Reply'}
@@ -532,7 +532,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
                 setShowReplyForm(true);
                 setTimeout(() => textareaRef.current?.focus(), 50);
               }}
-              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               data-testid="popover-reply-toggle-btn"
             >
               <CornerDownRight size={12} />
@@ -546,7 +546,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
               onClick={handleToggleResolve}
               disabled={toggleResolve.isPending}
               className={cn(
-                'flex items-center gap-1 rounded px-2 py-1 transition-colors',
+                'flex items-center gap-1 rounded-lg px-2 py-1 transition-colors',
                 isResolved
                   ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
                   : 'text-foreground hover:bg-muted',
@@ -574,7 +574,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             <button
               type="button"
               onClick={handleRemoveHighlight}
-              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
               title="Remove note highlight from document"
               data-testid="popover-remove-highlight-btn"
             >
@@ -588,7 +588,7 @@ export function CommentPopover({ pageId, editor, className }: CommentPopoverProp
             <button
               type="button"
               onClick={handleOpenInSidebar}
-              className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               title="Open page notes inspector"
               data-testid="popover-open-sidebar-btn"
             >

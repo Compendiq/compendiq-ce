@@ -13,7 +13,7 @@ import { useDeleteConversation } from './use-conversation-mutations';
  * `nm-action-destructive` on top — the one inline destructive treatment.
  */
 const MENU_ITEM =
-  'flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors';
+  'flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground outline-none hover:bg-foreground/5 hover:text-foreground data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground transition-colors';
 
 export interface ConversationRowMenuProps {
   conversation: ConversationSummary;
@@ -80,7 +80,7 @@ export function ConversationRowMenu({
           <DropdownMenu.Content
             align="end"
             sideOffset={4}
-            className="z-50 min-w-[160px] nm-card-elevated p-1"
+            className="z-50 min-w-[160px] nm-popover-glass p-1.5"
             onEscapeKeyDown={(event) => absorbPortalEscape(event, () => onOpenChange(false))}
             onCloseAutoFocus={(event) => {
               if (handoffPendingRef.current) {

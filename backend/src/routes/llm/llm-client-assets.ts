@@ -7,8 +7,10 @@ import {
   clientAssetEtag,
   listClientAssetManifest,
   parseBytesRange,
+  resolveClientAssetPath,
   statClientAsset,
 } from '../../core/services/client-model-assets.js';
+import { resolvePolicyClientAsset } from '../../core/services/client-model-asset-policy.js';
 
 function isTruthyAdminFlag(raw: string | undefined | null): boolean {
   if (!raw) return false;
@@ -45,34 +47,46 @@ export async function llmClientAssetRoutes(fastify: FastifyInstance) {
       if (parsedId.success && clientAssetKind(parsedId.data) === 'onnx' && !(await slmEnabled())) {
         return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
       }
-      const found = await statClientAsset(request.params.modelId, file);
-      if (!found) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
+      const resolved = resolveClientAssetPath(request.params.modelId, file);
+      if (!resolved.ok) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
+      const verified = await resolvePolicyClientAsset(resolved.modelId, resolved.file);
+      try {
+        const local = verified ? null : await statClientAsset(resolved.modelId, resolved.file);
+        const found = verified ?? (local && {
+          size: local.size,
+          etag: clientAssetEtag(local.mtimeMs, local.size),
+          stream: async (range?: { start: number; end: number }) => createReadStream(local.abs, range),
+        });
+        if (!found) return reply.code(404).send({ error: 'Not Found', statusCode: 404 });
 
-      const range = parseBytesRange(request.headers.range, found.size);
-      if (range === 'unsatisfiable') {
-        reply.header('Content-Range', `bytes */${found.size}`);
-        return reply.code(416).send({ error: 'Range Not Satisfiable', statusCode: 416 });
+        const range = parseBytesRange(request.headers.range, found.size);
+        if (range === 'unsatisfiable') {
+          reply.header('Content-Range', `bytes */${found.size}`);
+          return reply.code(416).send({ error: 'Range Not Satisfiable', statusCode: 416 });
+        }
+
+        const etag = found.etag;
+        reply.header('Content-Type', 'application/octet-stream');
+        reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
+        reply.header('ETag', etag);
+        reply.header('Accept-Ranges', 'bytes');
+
+        if (range === 'full' && request.headers['if-none-match'] === etag) {
+          return reply.code(304).send();
+        }
+
+        if (range === 'full') {
+          reply.header('Content-Length', found.size);
+          return reply.send(await found.stream());
+        }
+
+        reply.code(206);
+        reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
+        reply.header('Content-Length', range.end - range.start + 1);
+        return reply.send(await found.stream(range));
+      } finally {
+        await verified?.dispose();
       }
-
-      const etag = clientAssetEtag(found.mtimeMs, found.size);
-      reply.header('Content-Type', 'application/octet-stream');
-      reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
-      reply.header('ETag', etag);
-      reply.header('Accept-Ranges', 'bytes');
-
-      if (range === 'full' && request.headers['if-none-match'] === etag) {
-        return reply.code(304).send();
-      }
-
-      if (range === 'full') {
-        reply.header('Content-Length', found.size);
-        return reply.send(createReadStream(found.abs));
-      }
-
-      reply.code(206);
-      reply.header('Content-Range', `bytes ${range.start}-${range.end}/${found.size}`);
-      reply.header('Content-Length', range.end - range.start + 1);
-      return reply.send(createReadStream(found.abs, { start: range.start, end: range.end }));
     },
   );
 }

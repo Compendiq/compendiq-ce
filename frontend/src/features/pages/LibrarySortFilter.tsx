@@ -106,7 +106,7 @@ export function LibrarySortFilter({ value, onChange, className, hasSearchQuery =
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="nm-card-elevated z-50 w-48 overflow-hidden p-0"
+          className="nm-popover-glass z-50 w-48 overflow-hidden p-0"
           aria-label="Sort pages"
           data-testid="sort-filter-menu"
           onOpenAutoFocus={(event) => {
@@ -115,7 +115,7 @@ export function LibrarySortFilter({ value, onChange, className, hasSearchQuery =
             optionRefs.current[index]?.focus();
           }}
         >
-          <div className="border-b border-border px-3 py-2">
+          <div className="border-b border-border/60 px-3 py-2">
             <p className="text-xs font-medium text-muted-foreground">Sort order</p>
           </div>
           <div
@@ -139,7 +139,7 @@ export function LibrarySortFilter({ value, onChange, className, hasSearchQuery =
                   onMouseEnter={() => setActiveIndex(index)}
                   onKeyDown={(e) => handleOptionKeyDown(e, index)}
                   className={cn(
-                    'flex min-h-8 w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground outline-none transition-colors',
+                    'flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground outline-none transition-colors',
                     (active || selected) && 'bg-accent',
                   )}
                 >

@@ -18,6 +18,8 @@ import {
   loadStagedImage,
   ImageStagingUnavailableError,
 } from '../../core/services/image-staging.js';
+import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
+import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 
 export { sanitizeLlmInput };
 
@@ -227,12 +229,14 @@ export function sendCachedSSE(
 export async function streamSSE(
   request: { raw: import('http').IncomingMessage },
   reply: FastifyReply,
-  generator: AsyncGenerator<{ content: string; done: boolean }>,
+  generator: AsyncGenerator<StreamChunk> | ((signal: AbortSignal) => AsyncGenerator<StreamChunk>),
   extras?: Record<string, unknown>,
   options?: {
     llmCache?: LlmCache;
     cacheKey?: string;
     postProcess?: (content: string) => OutputSanitizeResult;
+    /** Only provider-dispatched calls pass audit metadata; cache hits bypass this helper. */
+    audit?: Omit<LlmAuditEntry, 'outputTokens' | 'durationMs' | 'status' | 'errorMessage' | 'outputText'>;
     /**
      * Gate on the cache write (runs on the post-processed content). Return
      * false to skip caching — e.g. the Improve route's layout-token guard,
@@ -255,7 +259,8 @@ export async function streamSSE(
   const onClose = () => {
     controller.abort();
   };
-  request.raw.on('close', onClose);
+  reply.raw.on('close', onClose);
+  if (reply.raw.destroyed || request.raw.aborted) controller.abort();
 
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -266,9 +271,19 @@ export async function streamSSE(
   });
 
   let fullContent = '';
+  let outputCharacters = 0;
+  let usage: StreamChunk['usage'];
+  let streamError: unknown;
+  const auditStart = Date.now();
+  let dispatched = false;
 
   try {
-    for await (const chunk of generator) {
+    if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
+    const chunks = typeof generator === 'function' ? generator(controller.signal) : generator;
+    dispatched = true;
+    for await (const chunk of chunks) {
+      outputCharacters += chunk.content.length;
+      if (chunk.usage) usage = { ...usage, ...chunk.usage };
       if (controller.signal.aborted) {
         logger.debug('SSE stream aborted by client disconnect');
         break;
@@ -305,6 +320,7 @@ export async function streamSSE(
       );
     }
   } catch (err) {
+    streamError = err;
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
     } else {
@@ -312,7 +328,19 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
     }
   } finally {
-    request.raw.removeListener('close', onClose);
+    if (options?.audit && dispatched) {
+      emitLlmAudit({
+        ...options.audit,
+        inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
+        outputTokens: usage?.completionTokens ?? Math.ceil(outputCharacters / 4),
+        durationMs: Date.now() - auditStart,
+        status: streamError || controller.signal.aborted ? 'error' : 'success',
+        ...(streamError || controller.signal.aborted
+          ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
+          : {}),
+      });
+    }
+    reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }
 

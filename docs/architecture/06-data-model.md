@@ -395,6 +395,35 @@ its own row as `running`, offline restore reconciles every restored `running`
 row to `failed` with a finish time and the error `Backup interrupted by restore`
 after migrations and before reporting restore success.
 
+Enterprise migration 900 adds `backup_destinations` and
+`backup_destination_results`. The primary is a runtime mirror of the CE S3
+settings with a unique partial `is_primary` index; additional destinations
+store encrypted credentials. Migration 902 adds the nullable per-result
+`object_key`, the exact key under that destination's prefix. Historical keys
+stay null because a current prefix cannot reconstruct what was used earlier.
+The service serializes creation to admit at most two secondaries, and refuses
+over-limit legacy configurations before starting uploads.
+
+```mermaid
+erDiagram
+    backup_runs ||--o{ backup_destination_results : "run_id / CASCADE"
+    backup_destinations ||--o{ backup_destination_results : "destination_id / CASCADE"
+    backup_destination_results {
+        uuid run_id PK,FK
+        uuid destination_id PK,FK
+        text object_key "nullable; actual destination key"
+        text status
+        bigint uploaded_bytes
+        timestamptz completed_at
+    }
+```
+
+Enterprise migration 901 stores DR evidence in `backup_dr_verifications`.
+Its nullable text `run_id` and `destination_id` are provenance, not foreign
+keys. `rpo_seconds` is age from the authenticated manifest; `duration_ms` is
+elapsed verification time. Unknown measurements remain null and report as
+empty cells, never as retention counts/days or fabricated zeroes.
+
 `llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
 
@@ -406,9 +435,19 @@ control when an already-assigned feature may run; they cannot select or
 override a provider.
 
 Inline-completion prompts and completions are intentionally absent from
-`llm_audit_log`. The feature writes only aggregate request and token counters to
-fixed Redis hash fields; no user, page, prefix, suffix, or completion is part of
-those keys or values.
+`llm_audit_log`. Aggregate Redis telemetry keeps fixed request/token fields,
+with no user, page, prefix, suffix or completion in its keys or values.
+The inference audit hook additionally records user-attributed token counts for
+EE quota accounting, never inline plaintext even when full-text auditing is on.
+
+EE model registry migration 906 adds immutable `generation` and
+`storage_location` to `enterprise_model_assets`, plus owner-scoped
+`enterprise_model_uploads` for staged manifests. Publication changes the
+registry pointer only after the entire generation is staged. Historical rows
+have unknown storage identity and require re-import rather than reconstruction
+from current settings. Migration 905's nullable audit artifact fields preserve
+supplied observations; the report compares them with the current registry.
+The asset ID is a logical reference, not a foreign key or execution attestation.
 
 **`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
 title and section into the embedded text was tried, measured, and **not

@@ -8,6 +8,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
+  CLIENT_ASSET_UPLOAD_CHUNK_BYTES,
+  MAX_HUNSPELL_ASSET_BYTES,
   ClientAssetIdSchema,
   HUNSPELL_ASSET_IDS,
   HubLocalAssetIdSchema,
@@ -21,6 +23,7 @@ import {
   type ClientAssetManifest,
 } from '@compendiq/contracts';
 import { CLIENT_MODEL_STORE_DIRNAME } from './attachment-store.js';
+import { listPolicyClientAssets } from './client-model-asset-policy.js';
 
 const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
 
@@ -135,6 +138,12 @@ export async function listClientAssetManifest(
     });
   }
 
+  for (const registered of await listPolicyClientAssets(slmEnabled)) {
+    const index = models.findIndex((model) => model.id === registered.id);
+    if (index === -1) models.push(registered);
+    else models[index] = registered;
+  }
+
   const installedOnnx = models.filter((m) => m.kind === 'onnx' && m.installed);
   const hubInstalled = installedOnnx.filter((m) => m.id !== LEGACY_CLIENT_MODEL_ID);
   const activeModelId = hubInstalled[0]?.id ?? installedOnnx[0]?.id ?? null;
@@ -165,9 +174,6 @@ export async function statClientAsset(
     return null;
   }
 }
-
-export const CLIENT_ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
-export const MAX_HUNSPELL_ASSET_BYTES = 32 * 1024 * 1024;
 
 function maxUploadBytes(modelId: string): number {
   return clientAssetKind(modelId) === 'hunspell'

@@ -7,6 +7,7 @@ import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache
 import { GenerateDiagramRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   checkCacheWithLock,
   sendCachedSSE,
@@ -95,9 +96,17 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: userContent },
       ];
-      const generator = streamChat(chatConfig, resolvedModel, diagramMessages, undefined, { thinking: body.thinking });
-
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply,
+        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking }),
+        undefined, {
+          llmCache, cacheKey,
+          audit: {
+            userId: request.userId, action: 'diagram', model: resolvedModel, provider: chatConfig.providerId,
+            inputTokens: estimateTokens(diagramMessages.map((m) => m.content).join('')),
+            inputMessages: diagramMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: [],
+          },
+        });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   PAGE_LUCIDE_ICON_IDS,
+  PAGE_BRAND_ICON_IDS,
   UpdatePageIconSchema,
   PageIconSchema,
   isPageLucideIconId,
+  isPageBrandIconId,
 } from './page-icon.js';
 
 describe('PageIconSchema', () => {
@@ -74,16 +76,33 @@ describe('PAGE_LUCIDE_ICON_IDS', () => {
   });
 
   it('covers a broad page-mark set, not a short starter list', () => {
-    expect(PAGE_LUCIDE_ICON_IDS.length).toBeGreaterThanOrEqual(290);
+    expect(PAGE_LUCIDE_ICON_IDS.length).toBeGreaterThanOrEqual(600);
+  });
+
+  it('includes newly expanded navigation, devices, and creation icons', () => {
+    expect(isPageLucideIconId('arrow-right')).toBe(true);
+    expect(isPageLucideIconId('arrow-up-right')).toBe(true);
+    expect(isPageLucideIconId('monitor-smartphone')).toBe(true);
+    expect(isPageLucideIconId('shield-x')).toBe(true);
+    expect(isPageLucideIconId('chart-column')).toBe(true);
+    expect(isPageLucideIconId('send')).toBe(true);
+    expect(isPageLucideIconId('pencil')).toBe(true);
   });
 });
 
 describe('brand marks', () => {
-  it('accepts a catalogue logo', () => {
-    expect(UpdatePageIconSchema.parse({ icon: { kind: 'brand', value: 'docker' } }).icon).toEqual({
-      kind: 'brand',
-      value: 'docker',
-    });
+  it('accepts catalogue logos including major IT companies', () => {
+    for (const slug of ['docker', 'microsoft', 'ibm', 'apple', 'google', 'amazon', 'oracle', 'sap', 'cisco', 'intel', 'nvidia']) {
+      expect(UpdatePageIconSchema.parse({ icon: { kind: 'brand', value: slug } }).icon).toEqual({
+        kind: 'brand',
+        value: slug,
+      });
+      expect(isPageBrandIconId(slug)).toBe(true);
+    }
+  });
+
+  it('covers an extensive IT company and tech brand catalogue', () => {
+    expect(PAGE_BRAND_ICON_IDS.length).toBeGreaterThanOrEqual(200);
   });
 
   it('rejects an unknown logo slug', () => {

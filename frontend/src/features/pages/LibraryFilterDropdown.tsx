@@ -184,7 +184,7 @@ export function LibraryFilterDropdown({
             align="start"
             sideOffset={4}
             collisionPadding={8}
-            className="nm-card-elevated z-50 w-[max(var(--radix-popover-trigger-width),12rem)] max-w-[calc(100vw-2rem)] overflow-hidden p-0 text-xs shadow-overlay"
+            className="nm-popover-glass z-50 w-[max(var(--radix-popover-trigger-width),12rem)] max-w-[calc(100vw-2rem)] overflow-hidden p-0 text-xs"
             data-testid={testId ? `${testId}-menu` : 'filter-dropdown-menu'}
             aria-label={label || 'Filter options'}
             onOpenAutoFocus={(event) => {
@@ -198,14 +198,14 @@ export function LibraryFilterDropdown({
             }}
           >
             {label && (
-              <div className="border-b border-border px-3 py-2">
+              <div className="border-b border-border/60 px-3 py-2">
                 <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">{label}</p>
               </div>
             )}
 
             {searchable && options.length > 6 && (
-              <div className="border-b border-border p-1.5">
-                <div className="flex h-8 items-center gap-1.5 rounded-md bg-background px-2">
+              <div className="border-b border-border/60 p-1.5">
+                <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-background px-2">
                   <Search size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
                   <input
                     ref={searchInputRef}
@@ -258,7 +258,7 @@ export function LibraryFilterDropdown({
                       onKeyDown={(e) => handleOptionKeyDown(e, index)}
                       data-testid={testId ? `${testId}-option-${opt.value || 'all'}` : undefined}
                       className={cn(
-                        'flex min-h-8 w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs outline-none transition-colors',
+                        'flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs outline-none transition-colors',
                         (active || selected) && 'bg-accent text-foreground',
                         !active && !selected && 'text-foreground hover:bg-accent/60',
                       )}

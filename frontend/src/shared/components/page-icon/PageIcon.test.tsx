@@ -24,8 +24,10 @@ describe('PageIcon', () => {
   });
 
   it('renders a brand logo for a catalogue slug', () => {
-    const { container } = render(<PageIcon icon={{ kind: 'brand', value: 'docker' }} pageId="1" />);
-    expect(container.querySelector('svg')).toBeTruthy();
+    for (const slug of ['docker', 'microsoft', 'ibm', 'apple', 'google', 'amazon']) {
+      const { container } = render(<PageIcon icon={{ kind: 'brand', value: slug }} pageId="1" />);
+      expect(container.querySelector('svg')).toBeTruthy();
+    }
   });
 
   it('renders nothing for an unknown brand slug', () => {

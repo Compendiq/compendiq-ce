@@ -45,11 +45,21 @@ export const BackupScheduleConfigSchema = z.object({
 });
 export type BackupScheduleConfig = z.infer<typeof BackupScheduleConfigSchema>;
 
+export const BackupObjectLockConfigSchema = z.object({
+  enabled: z.boolean(),
+  mode: z.enum(['COMPLIANCE', 'GOVERNANCE']),
+  retentionDays: z.number().int().min(1).max(3650),
+  legalHold: z.boolean(),
+});
+export type BackupObjectLockConfig = z.infer<typeof BackupObjectLockConfigSchema>;
+
 export const BackupStatusResponseSchema = z.object({
   hasMasterKey: z.boolean(),
+  kmsEnabled: z.boolean().optional(),
   lockHeld: z.boolean(),
   s3: BackupS3ConfigSchema,
   schedule: BackupScheduleConfigSchema,
+  objectLock: BackupObjectLockConfigSchema.optional(),
   history: z.array(BackupRunSchema),
 });
 export type BackupStatusResponse = z.infer<typeof BackupStatusResponseSchema>;
@@ -67,6 +77,10 @@ export const UpdateBackupSettingsSchema = z.object({
   intervalHours: z.number().int().min(1).max(168).optional(),
   retentionCount: z.number().int().min(1).max(100).optional(),
   retentionDays: z.number().int().min(1).max(365).optional(),
+  objectLockEnabled: z.boolean().optional(),
+  objectLockMode: BackupObjectLockConfigSchema.shape.mode.optional(),
+  objectLockRetentionDays: BackupObjectLockConfigSchema.shape.retentionDays.optional(),
+  objectLockLegalHold: z.boolean().optional(),
 });
 export type UpdateBackupSettingsInput = z.infer<typeof UpdateBackupSettingsSchema>;
 
@@ -92,3 +106,25 @@ export const BackupTriggerResponseSchema = z.object({
   jobId: z.string(),
 });
 export type BackupTriggerResponse = z.infer<typeof BackupTriggerResponseSchema>;
+
+export const UpdateBackupKmsSchema = z.object({
+  provider: z.enum(['none', 'aws', 'vault']).optional(),
+  keyId: z.string().max(2048).optional(),
+  awsRegion: z.string().max(64).optional(),
+  vaultAddr: z.string().max(2048).optional(),
+  vaultNamespace: z.string().max(256).optional(),
+}).strict();
+export type UpdateBackupKmsInput = z.infer<typeof UpdateBackupKmsSchema>;
+
+export const BackupKmsConfigSchema = UpdateBackupKmsSchema.required().extend({
+  credentialsPresent: z.boolean(),
+});
+export type BackupKmsConfig = z.infer<typeof BackupKmsConfigSchema>;
+
+export const BackupKmsTestResponseSchema = z.object({
+  ok: z.literal(true),
+  keyArn: z.string(),
+});
+export const BackupKmsRotateResponseSchema = z.object({
+  ok: z.literal(true),
+});

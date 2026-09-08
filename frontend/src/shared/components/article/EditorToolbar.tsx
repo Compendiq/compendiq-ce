@@ -53,8 +53,8 @@ import { cn } from '../../lib/cn';
 
 /* ------------------------------------------------------------------ menus -- */
 
-/** Radix menu surface. `nm-card-elevated` is the app's one real shadow. */
-const MENU_CONTENT = 'z-50 min-w-[13rem] nm-card-elevated p-1.5';
+/** Radix menu surface. `nm-popover-glass` is the floating glass surface with overlay shadow. */
+const MENU_CONTENT = 'z-50 min-w-[13rem] nm-popover-glass p-1.5';
 
 /**
  * A menu row. Denser than `UserMenu`'s (13px/6px against its 14px/8px) because
@@ -62,7 +62,7 @@ const MENU_CONTENT = 'z-50 min-w-[13rem] nm-card-elevated p-1.5';
  * row is ADR-010's own list-row density, not a new metric.
  */
 const MENU_ITEM =
-  'flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] ' +
+  'flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ' +
   'text-muted-foreground outline-none ' +
   'data-[highlighted]:bg-foreground/10 data-[highlighted]:text-foreground ' +
   'data-[state=open]:bg-foreground/10 data-[state=open]:text-foreground';
@@ -82,7 +82,7 @@ const menuTriggerClass = (open: boolean) =>
     'inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[13px] transition-colors duration-75',
     'outline-2 outline-offset-2 outline-transparent focus-visible:outline-ring',
     open
-      ? 'border-border-interactive bg-background text-foreground'
+      ? 'border-border bg-background text-foreground'
       : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
   );
 
@@ -526,8 +526,8 @@ function InsertMenu({
           align="start"
           sideOffset={6}
           className={cn(
-            'z-50 nm-card-elevated outline-none',
-            pending === 'emoji' ? 'w-80 p-2.5 rounded-lg border border-border'
+            'z-50 nm-popover-glass outline-none',
+            pending === 'emoji' ? 'w-80 p-2.5'
               : pending === 'color' ? 'w-auto p-2.5'
                 : 'w-64 p-3',
           )}
