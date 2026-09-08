@@ -798,14 +798,24 @@ through the existing info-panel node but carries `data-macro-name="panel"` and
 arbitrary direct text parameters through the editor, so write-back emits
 `ac:name="panel"` rather than permanently coercing it to `info`.
 
-**Notion import discovery is metadata-only.** `GET /api/notion/tree` builds the
-picker hierarchy from Notion Search and resolves Search-listed `block_id` parents, but
-must never list every page body's blocks: the retired walk spent up to 80 serial calls
-against Notion's 3 req/s limit before a large workspace could render. The picker groups
-descendants behind disclosures, mounts them only when expanded, and reveals root pages
-in batches of 50. Selecting a parent atomically selects every selectable descendant;
-oversized groups are refused rather than partially selected, and a refreshed tree prunes
-selection IDs that are no longer present before enforcing the 200-page cap.
+**Notion picker discovery is metadata-only.** `GET /api/notion/tree` resolves
+accessible native, relation and block-host ancestors omitted from Search without
+listing every page body; existing bounded row probes only advise table defaults.
+Inline wiki databases remain selectable. Normalize UUID spelling, not titles,
+and reject cyclic edges without losing nodes. The picker batches confirmed IDs
+into requests of up to 200; explicit database exclusions travel with every batch.
+
+**Notion import plans before persisting.** Pages and databases share parent-first
+allocation, preserving the selected root and wiki home bodies. Actual embedded
+child pages/databases expand their owned descendants; mentions never imply
+ownership. Property-only embedded databases fold into parent tables, never also
+row articles, including later row-only batches. Article-bearing rows keep their
+bodies and correct parent; wiki containers remain articles. Successfully imported
+direct children use one existing Child pages macro per parent. Return discovered
+outcomes too, for failure reporting, cache invalidation and audit. Per-owner plus
+selected-ID locks protect dynamic overlaps. Re-import preserves bodies unless
+overwrite is requested; never automatically delete older row articles or local
+edits to remove duplicates.
 
 **That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**
 `waitForSlot` reserves the next *start* 334 ms out, and it reserves

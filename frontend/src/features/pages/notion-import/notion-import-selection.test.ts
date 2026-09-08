@@ -459,7 +459,7 @@ describe('requestDatabaseModes', () => {
     expect(requestDatabaseModes(TREE, new Set(['handbook']))).toEqual({});
   });
 
-  it('omits a skipped database because nothing can select it', () => {
+  it('preserves exclusions when importing a parent that can rediscover the database', () => {
     const modes: DatabaseModes = { archive: 'skip' };
     const selected = new Set(allImportIds(TREE, modes));
 
@@ -467,6 +467,10 @@ describe('requestDatabaseModes', () => {
     expect(requestDatabaseModes(TREE, selected, modes)).toEqual({
       crm: 'table',
       playbooks: 'pages',
+      archive: 'skip',
+    });
+    expect(requestDatabaseModes(TREE, new Set(['handbook']), { crm: 'skip' })).toEqual({
+      crm: 'skip',
     });
   });
 });

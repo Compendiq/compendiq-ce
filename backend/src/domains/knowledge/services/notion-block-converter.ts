@@ -17,7 +17,7 @@ import { htmlToText } from '../../../core/services/content-converter.js';
 import { buildPageImageUrl } from '../../../core/services/image-references.js';
 import { canStoreLocalFilename } from '../../../core/services/local-attachment-service.js';
 
-/** Same XSS bar as Markdown import (`pages-import.ts`), plus task-list attrs. */
+/** Same XSS bar as Markdown import, plus task-list and child-pages macro attrs. */
 const SANITIZE_CONFIG = {
   ALLOWED_TAGS: [
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -32,9 +32,13 @@ const SANITIZE_CONFIG = {
   ALLOWED_ATTR: [
     'href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel',
     'data-type', 'data-checked', 'start',
+    'data-depth', 'data-sort', 'data-macro-name',
   ],
   ALLOW_DATA_ATTR: false,
 };
+
+export const NOTION_CHILDREN_MACRO_HTML =
+  '<div class="confluence-children-macro" data-depth="1" data-sort="title" data-macro-name="children">[Children pages listed here]</div>';
 
 const SUPPORTED_TYPES = new Set([
   'heading_1',
@@ -70,6 +74,8 @@ export interface NotionBlock {
   type: string;
   has_children?: boolean;
   children?: NotionBlock[];
+  /** Article-bearing database rows imported separately instead of flattened. */
+  databasePageIds?: string[];
   [key: string]: unknown;
 }
 
@@ -129,6 +135,8 @@ export interface NotionConvertOptions {
    * `/pages/{localId}`; everything else stays a Notion URL.
    */
   importedPages?: ReadonlyMap<string, number>;
+  /** Successfully imported direct children of this page, not all imported pages. */
+  childPageIds?: ReadonlySet<string>;
 }
 
 export interface NotionConversionResult {
@@ -141,6 +149,8 @@ export interface NotionConversionResult {
 interface ConvertCtx {
   localPageId: number;
   importedPages: Map<string, number>;
+  childPageIds: ReadonlySet<string>;
+  childrenMacroRendered: boolean;
   attachments: NotionAttachmentIntent[];
   skips: NotionConversionSkip[];
 }
@@ -149,9 +159,15 @@ export function convertNotionBlocks(
   blocks: readonly NotionBlock[],
   options: NotionConvertOptions,
 ): NotionConversionResult {
+  const childPageIds = new Set<string>();
+  if (options.childPageIds) {
+    for (const id of options.childPageIds) childPageIds.add(normalizeNotionId(id));
+  }
   const ctx: ConvertCtx = {
     localPageId: options.localPageId,
     importedPages: indexImportedPages(options.importedPages),
+    childPageIds,
+    childrenMacroRendered: false,
     attachments: [],
     skips: [],
   };
@@ -431,9 +447,16 @@ function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
   const data = payload(block, 'child_page');
   const title = typeof data.title === 'string' ? data.title : 'Untitled';
   const notionId = typeof block.id === 'string' ? block.id : '';
+  if (ctx.childPageIds.has(normalizeNotionId(notionId))) return renderChildrenMacro(ctx);
   const href = resolvePageHref(notionId, undefined, ctx) ?? (notionId ? notionWebUrl(notionId) : '');
   if (!href) return `<p>${escapeHtml(title)}</p>`;
   return `<p><a href="${escapeHtml(href)}">${escapeHtml(title)}</a></p>`;
+}
+
+function renderChildrenMacro(ctx: ConvertCtx): string {
+  if (ctx.childrenMacroRendered) return '';
+  ctx.childrenMacroRendered = true;
+  return NOTION_CHILDREN_MACRO_HTML;
 }
 
 /**
@@ -491,6 +514,16 @@ export function renderDatabaseTable(input: {
 }
 
 function renderChildDatabase(block: NotionBlock, ctx: ConvertCtx): string {
+  if (block.databasePageIds?.length) {
+    if (block.databasePageIds.some((id) => ctx.childPageIds.has(normalizeNotionId(id)))) {
+      return renderChildrenMacro(ctx);
+    }
+    const data = payload(block, 'child_database');
+    const title = typeof data.title === 'string' ? data.title : 'Untitled';
+    return typeof block.id === 'string'
+      ? `<p><a href="${escapeHtml(notionWebUrl(block.id))}">${escapeHtml(title)}</a></p>`
+      : `<p>${escapeHtml(title)}</p>`;
+  }
   const rows = Array.isArray(block.databaseRows) ? block.databaseRows : [];
   if (rows.length === 0) {
     skip(block, ctx);
