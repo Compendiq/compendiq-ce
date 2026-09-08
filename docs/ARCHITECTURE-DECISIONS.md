@@ -797,11 +797,17 @@ no shadow left to fall back on.
   reverses v0.5's "card surfaces are background images" consequence**: a
   Tailwind `hover:bg-*` composes normally again, and the trap is designed out
   rather than documented around.
-- **No lift, no scale, no glass.** `translateY` on hover and `scale` on press
+- **No lift, no scale.** `translateY` on hover and `scale` on press
   are removed from both the utilities and the components. The `--glass-*` tokens
-  resolve onto `--color-*`; `backdrop-blur` survives **only** on modal scrims,
+  resolve onto `--color-*` and must not be revived as in-page chrome.
+  `backdrop-blur` on a Tailwind class survives **only** on modal scrims,
   where it is a specific effect rather than decoration standing in for
-  hierarchy. 307 fractional `border-border/NN` opacities collapse to one
+  hierarchy. Floating popovers and dropdowns use `nm-popover-glass`: the same
+  `--color-border-interactive` overlay edge and `--shadow-overlay` as
+  `nm-card-elevated` (Paper Raised shares Pane, so the edge is WCAG 1.4.11),
+  plus a translucent fill and 10px blur that `prefers-reduced-transparency`
+  strips. Dialogs stay opaque `nm-card-elevated`. Blur is not a substitute
+  for the measured edge. 307 fractional `border-border/NN` opacities collapse to one
   measurable hairline, and 56 translucent `bg-card/NN` panes become opaque —
   a translucent pane's text contrast cannot be computed, which is the thing the
   theme tests exist to guarantee.

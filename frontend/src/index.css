@@ -555,11 +555,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      11.25 px outliers (nav pills, stat-card labels) up to a legible floor. */
   --font-size-xs: 0.8125rem;
 
-  /* Retired glass tokens, resolved onto the flat system.
+  /* Retired in-page glass tokens, resolved onto the flat system.
 
-     There is no glass here: translucency and backdrop-blur were decoration
-     standing in for hierarchy, and blur behind dense 13px text is both the
-     most expensive thing the compositor does and the least readable.
+     In-page chrome has no glass: translucency and backdrop-blur were
+     decoration standing in for hierarchy, and blur behind dense 13px text is
+     both the most expensive thing the compositor does and the least readable.
+     These `--glass-*` tokens stay resolved onto `--color-*` and must not be
+     revived as a second glass system.
+
+     Floating popovers are the one exception: `nm-popover-glass` keeps the
+     measured interactive overlay edge (WCAG 1.4.11) and `--shadow-overlay`,
+     and `prefers-reduced-transparency` strips its blur and translucency.
 
      The ~80 `bg-[var(--glass-*)]` callsites are left in place deliberately.
      Every ROLE they encode is still correct ("hover tint for a nav pill",
@@ -1362,8 +1368,12 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 
 /* "Elevated" now means an OVERLAY — a popover, dropdown, dialog, command
-   palette or toast that floats above the page. It is the only surface in the
+   palette or toast that floats above the page. It is the only role in the
    system carrying a shadow, and that shadow has an offset and a soft blur.
+
+   Opaque overlays (dialogs, palettes, toasts) wear `nm-card-elevated`.
+   Floating popovers and dropdowns wear `nm-popover-glass`. Both keep the
+   interactive edge and `--shadow-overlay`.
 
    In-page panes that merely want emphasis must NOT reach for this: they are
    `nm-card` and earn their prominence from position, spacing and heading
@@ -1380,35 +1390,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   box-shadow: var(--shadow-overlay);
 }
 
-/* Floating editor popover & popup glass surfaces.
-   Features a softened hairline boundary (quiet translucent hairline color-mix
-   reducing contrast from var(--color-border-interactive)), subtle glassmorphism
-   with 10px backdrop blur over an 85% translucent elevated card background,
-   softer modern rounded-xl (12px / 0.75rem) corner radius, and the single system
-   overlay shadow. */
+/* Floating popovers and dropdowns. Same overlay contract as `nm-card-elevated`
+   (interactive ≥3:1 edge + `--shadow-overlay`) because Paper Raised == Pane.
+   Translucent fill and 10px blur sit on top of that contract, not in place of
+   it. `prefers-reduced-transparency` strips them. Radius is `--radius-xl`
+   (10px), the top of the workspace scale — not a hardcoded 12px. */
 @utility nm-popover-glass {
-  border-radius: 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  background-color: var(--color-card-elevated);
-  background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: var(--shadow-overlay);
-}
-
-@utility nm-popup-glass {
-  border-radius: 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-  background-color: var(--color-card-elevated);
-  background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  box-shadow: var(--shadow-overlay);
-}
-
-@utility nm-card-elevated-glass {
-  border-radius: 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-interactive);
   background-color: var(--color-card-elevated);
   background-color: color-mix(in srgb, var(--color-card-elevated) 85%, transparent);
   backdrop-filter: blur(10px);
@@ -1975,8 +1964,6 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-card,
   .nm-card-elevated,
   .nm-popover-glass,
-  .nm-popup-glass,
-  .nm-card-elevated-glass,
   .nm-card-interactive,
   .nm-toolbar,
   .nm-sidebar,
@@ -1997,6 +1984,15 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   .nm-pill-active {
     border-color: Highlight;
     color: Highlight;
+  }
+}
+
+/* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
+@media (prefers-reduced-transparency: reduce) {
+  .nm-popover-glass {
+    background-color: var(--color-card-elevated);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }
 

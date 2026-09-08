@@ -1518,8 +1518,8 @@ describe('SidebarTreeNode memoization', () => {
     const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('space-selector-toggle'));
 
-    const dropdown = container.querySelector('.absolute.z-50, [class*="nm-card-elevated"]');
-    expect(dropdown?.className).toContain('nm-card-elevated');
+    const dropdown = container.querySelector('.absolute.z-50, [class*="nm-popover-glass"]');
+    expect(dropdown?.className).toContain('nm-popover-glass');
     // nm-sidebar is the PANEL CHASSIS utility (background: var(--color-background)
     // + border-RIGHT only), so wearing it made this floating layer paint the
     // exact colour of the panel it covers, edged on one side. Measured in

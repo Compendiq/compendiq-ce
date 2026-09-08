@@ -872,7 +872,7 @@ export function SidebarTreeView({
             <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
           {spaceDropdownOpen && (
-            // `nm-card-elevated`, not `nm-sidebar`. nm-sidebar is the PANEL
+            // `nm-popover-glass`, not `nm-sidebar`. nm-sidebar is the PANEL
             // CHASSIS utility — `background: var(--color-background)` plus a
             // border-RIGHT — so this floating layer was painting the same
             // colour as the panel it covers and edging it on one side only.
@@ -882,10 +882,10 @@ export function SidebarTreeView({
             //
             // ADR-010 keeps exactly one real shadow, --shadow-overlay, for
             // "content that genuinely floats above the page: popovers,
-            // dropdowns, dialogs". This is the canonical case and it was the
-            // one thing not using it. nm-card-elevated carries that shadow, a
-            // full 1px border and the elevated card surface.
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-popover-glass nm-card-elevated-glass p-1">
+            // dropdowns, dialogs". This is the canonical case. nm-popover-glass
+            // carries that shadow, the measured interactive edge, and the
+            // elevated card surface.
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-popover-glass p-1">
               {/* A filter, once the list stops fitting. The dropdown was a
                   capped scroller with no search and no scroll affordance: six
                   spaces plus two headings already filled it here, and a real
