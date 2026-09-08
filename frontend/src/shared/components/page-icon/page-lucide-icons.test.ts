@@ -9,4 +9,15 @@ describe('page lucide catalogue', () => {
     );
     expect(missing).toEqual([]);
   });
+
+  it('has an expanded icon count covering 600+ icons', () => {
+    expect(PAGE_LUCIDE_ICONS.length).toBeGreaterThanOrEqual(600);
+  });
+
+  it('resolves newly expanded icons', () => {
+    expect(getPageLucideIcon('arrow-right')).toBeTruthy();
+    expect(getPageLucideIcon('monitor-smartphone')).toBeTruthy();
+    expect(getPageLucideIcon('shield-x')).toBeTruthy();
+    expect(getPageLucideIcon('pencil')).toBeTruthy();
+  });
 });
