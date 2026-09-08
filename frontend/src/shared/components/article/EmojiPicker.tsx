@@ -402,7 +402,7 @@ export function EmojiPicker({ editor, className }: EmojiPickerProps) {
           sideOffset={6}
           aria-label="Emoji Picker"
           data-testid="emoji-picker-content"
-          className="z-50 w-80 nm-card-elevated p-2.5 outline-none rounded-lg border border-border"
+          className="z-50 w-80 nm-popover-glass p-2.5 outline-none"
           onOpenAutoFocus={(e) => {
             e.preventDefault();
             const el = e.currentTarget as HTMLElement;

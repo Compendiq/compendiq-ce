@@ -286,7 +286,7 @@ export function EditorBlockMenu({
           {/* General Block Actions: Duplicate, Delete (for non-table blocks) */}
           {!isTable && (
             <>
-              <div role="separator" aria-orientation="horizontal" className="my-1 mx-1.5 h-px bg-border" />
+              <div role="separator" aria-orientation="horizontal" className="my-1 mx-1.5 h-px bg-border/60" />
 
               <div className="flex flex-col gap-0.5">
                 <button
@@ -294,7 +294,7 @@ export function EditorBlockMenu({
                   onClick={duplicateBlock}
                   data-testid="block-menu-duplicate"
                   className={cn(
-                    'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground/90 transition-colors',
+                    'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground/90 transition-colors',
                     'hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                   )}
                 >
@@ -310,7 +310,7 @@ export function EditorBlockMenu({
                   onClick={deleteBlock}
                   data-testid="block-menu-delete"
                   className={cn(
-                    'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors',
+                    'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors',
                     'nm-action-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-destructive',
                   )}
                 >
@@ -335,7 +335,7 @@ export function EditorBlockMenu({
                 aria-controls={aiOpen ? aiPanelId : undefined}
                 data-testid="block-ai-trigger"
                 className={cn(
-                  'flex w-full items-center justify-between gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors',
+                  'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs font-medium transition-colors',
                   'text-status-ai hover:bg-status-ai/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-status-ai',
                 )}
               >
@@ -384,7 +384,7 @@ export function EditorBlockMenu({
 
       {/* Clean Footer */}
       {!aiOpen && (
-        <div className="mt-1 px-2.5 py-1.5 border-t border-border text-[11px] text-muted-foreground flex items-center justify-between rounded-b-md">
+        <div className="mt-1 px-2.5 py-1.5 border-t border-border/60 text-[11px] text-muted-foreground flex items-center justify-between rounded-b-xl">
           <span className="truncate">Block: <strong className="font-medium text-foreground">{label}</strong></span>
           <span className="font-mono opacity-70 shrink-0">Esc</span>
         </div>
@@ -453,7 +453,7 @@ export function EditorBlockHandle({ editor }: { editor: EditorType }) {
               aria-label={`${blockLabel(target.node)} block actions`}
               data-testid="editor-block-menu-content"
               className={cn(
-                'nm-card-elevated z-50 overflow-hidden rounded-lg',
+                'nm-popover-glass z-50 overflow-hidden',
                 'motion-safe:animate-in motion-safe:fade-in-0 duration-75',
               )}
               onFocusOutside={(event) => event.preventDefault()}

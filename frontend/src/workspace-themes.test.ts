@@ -445,17 +445,43 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // an overlay has no value step at all. Its edge is the measured interactive
   // token plus the offset shadow — never the structural rule.
   it('separates a Raised overlay from the white pane with the interactive edge', () => {
-    const elevated = extractBlock(css, '@utility nm-card-elevated {');
-    expect(elevated, 'the overlay edge must be the measured interactive token').toMatch(
-      /border:\s*1px solid var\(--color-border-interactive\)/,
-    );
-    expect(elevated, 'and it keeps the one real shadow').toMatch(
-      /box-shadow:\s*var\(--shadow-overlay\)/,
-    );
+    for (const name of ['nm-card-elevated', 'nm-popover-glass'] as const) {
+      const elevated = extractBlock(css, `@utility ${name} {`);
+      expect(elevated, `${name}: the overlay edge must be the measured interactive token`).toMatch(
+        /border:\s*1px solid var\(--color-border-interactive\)/,
+      );
+      expect(elevated, `${name} keeps the one real shadow`).toMatch(
+        /box-shadow:\s*var\(--shadow-overlay\)/,
+      );
+    }
     expect(
       token(lightBlock, '--color-card-elevated'),
       'Raised still shares Pane in Paper — if that changes, revisit the edge',
     ).toBe(token(lightBlock, '--color-card'));
+  });
+
+  it.each([
+    ['graphite', darkBlock],
+    ['paper', lightBlock],
+  ])('keeps %s popup text and edges readable over document images', (theme, block) => {
+    const glass = extractBlock(css, '@utility nm-popover-glass {');
+    const fill = /background-color:\s*color-mix\(in srgb,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)/.exec(glass);
+    if (!fill) throw new Error('Cannot resolve the popup fill and opacity');
+    const opacity = Number(fill[2]) / 100;
+    // Black and white bound the backgrounds a document image can contribute,
+    // including with blur disabled. Measuring the opaque token misses this.
+    for (const backdrop of ['#000000', '#ffffff']) {
+      const background = composite(token(block, fill[1]), opacity, backdrop);
+      for (const foreground of ['--color-foreground', '--color-muted-foreground']) {
+        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, 4.5);
+      }
+      expectContrast(
+        `${theme} popup edge over ${backdrop}`,
+        token(block, '--color-border-interactive'),
+        background,
+        3,
+      );
+    }
   });
 
   // Selection is carried by this edge plus weight on top of the deeper fill.
@@ -923,11 +949,14 @@ describe('Flat depth model', () => {
     ).toEqual([]);
   });
 
-  // Exactly one surface may float, and it is the one that genuinely leaves the
-  // page: popovers, dropdowns, dialogs, the command palette.
-  it('only nm-card-elevated carries the overlay shadow', () => {
-    const elevated = extractBlock(css, '@utility nm-card-elevated {');
-    expect(elevated).toMatch(/box-shadow:\s*var\(--shadow-overlay\)/);
+  // Exactly two surfaces may float, and they are the ones that genuinely leave
+  // the page: opaque dialogs (`nm-card-elevated`) and floating popovers
+  // (`nm-popover-glass`). In-flow chrome must not borrow the overlay shadow.
+  it('only overlay utilities carry the overlay shadow', () => {
+    for (const name of ['nm-card-elevated', 'nm-popover-glass'] as const) {
+      const elevated = extractBlock(css, `@utility ${name} {`);
+      expect(elevated).toMatch(/box-shadow:\s*var\(--shadow-overlay\)/);
+    }
     for (const name of inFlow) {
       const block = extractBlock(css, `@utility ${name} {`);
       expect(block, `${name} must not use the overlay shadow`).not.toMatch(/--shadow-overlay/);

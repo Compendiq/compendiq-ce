@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { extractBlock } from './test-utils';
 
 /**
  * `workspace-themes.test.ts` computes its verdicts from `index.css`, which is
@@ -12,14 +13,16 @@ import { join, relative } from 'node:path';
  * that Paper rendered as white-on-white, and the pinned article cards still
  * rotated in 3D under the cursor. Every one of those passed a green CSS suite.
  *
- * So this file sweeps the sources. The rules it enforces are ADR-010 v0.6's:
+ * So this file sweeps the sources. The rules it enforces are ADR-010 v0.6's,
+ * with the overlay-glass exception:
  *
  *   - Depth is a value step plus a 1px hairline. The single overlay shadow is
- *     `--shadow-overlay`, carried by `nm-card-elevated`. Tailwind's shadow scale
- *     is not part of the system.
- *   - No lift, no scale, no glass. `backdrop-blur` survives ONLY on a modal
- *     scrim, where it is a specific effect rather than decoration standing in
- *     for hierarchy.
+ *     `--shadow-overlay`, carried by `nm-card-elevated` and `nm-popover-glass`.
+ *     Tailwind's shadow scale is not part of the system.
+ *   - No lift, no scale. In-page chrome has no glass. `backdrop-blur` in TSX
+ *     survives ONLY on a modal scrim. CSS `backdrop-filter: blur` on an
+ *     `@utility` is only `nm-popover-glass`, which keeps the interactive overlay
+ *     edge and drops blur under `prefers-reduced-transparency`.
  *   - Surfaces are flat colours, not gradients.
  *   - Borders come from tokens, so they track the theme. A literal `border-white/N`
  *     is invisible on Paper's white card.
@@ -943,6 +946,36 @@ describe('the component layer is as flat as the token layer', () => {
       offenders,
       'blur survives only on `fixed inset-0` modal scrims, never on an in-flow pane',
     ).toEqual([]);
+  });
+
+  it('CSS @utility backdrop-filter blur is only nm-popover-glass', () => {
+    const css = stripComments(readFileSync(join(SRC, 'index.css'), 'utf8'));
+    const offenders: string[] = [];
+    for (const m of css.matchAll(/@utility\s+(\S+)\s*\{/g)) {
+      const name = m[1]!;
+      const block = extractBlock(css, `@utility ${name} {`);
+      if (/backdrop-filter:\s*blur/.test(block) && name !== 'nm-popover-glass') {
+        offenders.push(name);
+      }
+    }
+    expect(
+      offenders,
+      'only nm-popover-glass may blur behind an overlay; in-page utilities stay opaque',
+    ).toEqual([]);
+    const glass = extractBlock(css, '@utility nm-popover-glass {');
+    expect(glass, 'nm-popover-glass is the overlay glass surface').toMatch(
+      /backdrop-filter:\s*blur/,
+    );
+    expect(glass, 'and it keeps the measured interactive edge').toMatch(
+      /border:\s*1px solid var\(--color-border-interactive\)/,
+    );
+  });
+
+  it('nm-popover-glass drops blur under prefers-reduced-transparency', () => {
+    const css = stripComments(readFileSync(join(SRC, 'index.css'), 'utf8'));
+    const block = extractBlock(css, '@media (prefers-reduced-transparency: reduce) {');
+    expect(block, 'the reduced-transparency rule must exist').toMatch(/\.nm-popover-glass/);
+    expect(block, 'blur must be none, not a quieter blur').toMatch(/backdrop-filter:\s*none/);
   });
 
   it('no gradient is used as a surface', () => {

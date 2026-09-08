@@ -190,10 +190,10 @@ export function NotificationBell() {
         <Popover.Content
           align="end"
           sideOffset={8}
-          className="z-50 w-[360px] nm-card-elevated"
+          className="z-50 w-[360px] nm-popover-glass overflow-hidden"
         >
           {/* Title bar */}
-          <div className="border-b border-border px-3 py-2.5">
+          <div className="border-b border-border/60 px-3 py-2.5">
             <span className="text-sm font-semibold">Notifications</span>
           </div>
 

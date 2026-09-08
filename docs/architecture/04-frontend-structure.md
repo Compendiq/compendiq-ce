@@ -656,16 +656,25 @@ the backend side.
   is measured ≥3:1 against every surface it lands on (WCAG 1.4.11). With the
   extrusion gone there is no shadow to fall back on, so this border is the
   whole of what survives `forced-colors: active`.
-- **Flat surface system** (ADR-010 v0.6): the sixteen `nm-*` `@utility`
+- **Flat surface system** (ADR-010 v0.6): the `nm-*` `@utility`
   classes are kept by name — `nm-card`, `nm-card-elevated`,
+  `nm-popover-glass`,
   `nm-card-interactive`, `nm-card-hover`, `nm-toolbar`, `nm-sidebar`,
   `nm-header`, `nm-pill-active`, `nm-button-primary`, `nm-button-destructive`,
   `nm-button-ghost`, `nm-icon-button`, `nm-composer`, `nm-input`, `nm-select`,
   `nm-select-md` — because 107 files reference them and redefining them in
-  place reskins every route at once. Each is now a flat definition: value step
+  place reskins every route at once. Each in-flow surface is a flat definition: value step
   plus 1px border, no extrusion, no lift, no press scale. **Exactly one real
-  shadow exists** (`--shadow-overlay`, on `nm-card-elevated` only) for content
+  shadow exists** (`--shadow-overlay`, on `nm-card-elevated` and
+  `nm-popover-glass`) for content
   that genuinely floats above the page: popovers, dialogs, the command palette.
+  Popovers take `nm-popover-glass`: interactive edge, 95% elevated-surface
+  fill and 10px blur. Theme tests require ≥4.5:1 text and ≥3:1 edge contrast
+  after compositing over black and white images in both themes.
+  `prefers-reduced-transparency` makes the fill opaque and removes blur;
+  dialogs stay opaque `nm-card-elevated`. Search rows in narrow popovers
+  need `min-w-0` on flex inputs and `shrink-0` on icons so typing scrolls
+  within the input rather than shifting and clipping the whole popup.
 - **Theme preference follows the OS by default** (`system | dark | light`). The
   preference is persisted; the resolved palette is not, so a stale value cannot
   outrank the live OS reading.

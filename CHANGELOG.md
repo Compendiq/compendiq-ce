@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Floating popovers retain readable text and edges over document images in both themes while preserving the glass treatment. The AI-generated page's parent picker no longer clips its search icon and options when typing at narrow widths (#1577).
 - Enterprise integration fixes: browser model assets honor verified registry policy on downloads and public-hub requests; summaries, diagrams, quality analysis and inline completions emit inference usage without charging cache replays or retaining inline plaintext. The shared compliance UI now includes Model Governance Evidence when the backend makes it available.
 - Enterprise backup controls now ship in the shared CE frontend rather than an unpublished EE frontend overlay. Licensed KMS configuration, testing/rotation, and Object Lock controls use optional shared contracts; Community sessions remain inert. KMS-only readiness no longer masquerades as a configured local master key.
 - Browser regression fixes found while enabling E2E CI: word-by-word inline completion updates its remaining ghost text, legacy theme storage preserves light/dark preference during hydration, and the Library's New Page shortcut hint uses the button's accessible foreground (#1543).
