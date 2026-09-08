@@ -11,6 +11,7 @@ import {
   NotionError,
   isNotionObjectMissing,
   paginateAll,
+  reserveNotionStartSlot,
   setNotionApiBaseUrlForTests,
 } from './notion-client.js';
 
@@ -273,9 +274,12 @@ describe('NotionClient (fake Notion HTTP)', () => {
 
     await Promise.all(ids.map((id) => client.getPage(id)));
 
-    const starts = server.requests.map((r) => r.startedAt);
-    // Four starts, three 80ms gaps. Unpaced they all land inside a few ms.
-    expect(starts[3]! - starts[0]!).toBeGreaterThanOrEqual(3 * 80 - 20);
+    const starts = [...server.requests.map((r) => r.startedAt)].sort((a, b) => a - b);
+    // Reservations are 0, 80, 160, 240ms. The fake server stamps HTTP arrival,
+    // which lags the reservation: the first request sleeps 0 and then contends
+    // for the event loop, compressing the span. Unpaced, all four land inside
+    // a few ms. The 80ms ladder itself is pinned on reserveNotionStartSlot.
+    expect(starts[3]! - starts[0]!).toBeGreaterThanOrEqual(80);
   });
 
   it('paces starts without serializing them, so callers keep their own concurrency', async () => {
@@ -292,6 +296,23 @@ describe('NotionClient (fake Notion HTTP)', () => {
     // A client that serialized on completion instead of pacing starts peaks at
     // 1 here and makes every caller-side pLimit(5) inert (#1553).
     expect(server.peakConcurrentLookups).toBeGreaterThan(2);
+  });
+});
+
+describe('reserveNotionStartSlot', () => {
+  it('hands concurrent callers consecutive intervals from the same now', () => {
+    let nextSlotAt = 0;
+    const starts: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const reserved = reserveNotionStartSlot(1_000, nextSlotAt, 80);
+      nextSlotAt = reserved.nextSlotAt;
+      starts.push(reserved.start);
+    }
+    expect(starts).toEqual([1000, 1080, 1160, 1240]);
+  });
+
+  it('starts immediately when the previous slot is already in the past', () => {
+    expect(reserveNotionStartSlot(5_000, 1_000, 80)).toEqual({ start: 5000, nextSlotAt: 5080 });
   });
 });
 
