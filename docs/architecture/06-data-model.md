@@ -435,9 +435,19 @@ control when an already-assigned feature may run; they cannot select or
 override a provider.
 
 Inline-completion prompts and completions are intentionally absent from
-`llm_audit_log`. The feature writes only aggregate request and token counters to
-fixed Redis hash fields; no user, page, prefix, suffix, or completion is part of
-those keys or values.
+`llm_audit_log`. Aggregate Redis telemetry keeps fixed request/token fields,
+with no user, page, prefix, suffix or completion in its keys or values.
+The inference audit hook additionally records user-attributed token counts for
+EE quota accounting, never inline plaintext even when full-text auditing is on.
+
+EE model registry migration 906 adds immutable `generation` and
+`storage_location` to `enterprise_model_assets`, plus owner-scoped
+`enterprise_model_uploads` for staged manifests. Publication changes the
+registry pointer only after the entire generation is staged. Historical rows
+have unknown storage identity and require re-import rather than reconstruction
+from current settings. Migration 905's nullable audit artifact fields preserve
+supplied observations; the report compares them with the current registry.
+The asset ID is a logical reference, not a foreign key or execution attestation.
 
 **`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
 title and section into the embedded text was tried, measured, and **not

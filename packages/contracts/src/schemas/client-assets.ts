@@ -110,6 +110,38 @@ export function clientAssetRequiredFiles(id: ClientAssetId): readonly string[] {
 }
 
 export const MAX_CLIENT_ONNX_Q4_BYTES = 1024 * 1024 * 1024;
+export const CLIENT_ASSET_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+export const MAX_HUNSPELL_ASSET_BYTES = 32 * 1024 * 1024;
+
+export const RegistryManifestFileSchema = z.object({
+  path: z.string(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  sizeBytes: z.number().int().positive().max(MAX_CLIENT_ONNX_Q4_BYTES),
+}).strict();
+export type RegistryManifestFile = z.infer<typeof RegistryManifestFileSchema>;
+
+/** Offline imports publish exactly the packages the same-origin browser loader understands. */
+export const RegistryImportSchema = z.object({
+  assetId: ClientAssetIdSchema,
+  name: z.string().trim().min(1).max(200),
+  version: z.string().trim().min(1).max(64),
+  kind: ClientAssetKindSchema,
+  files: z.array(RegistryManifestFileSchema).min(1).max(32),
+}).strict().superRefine((input, ctx) => {
+  const allowed = clientAssetFiles(input.assetId);
+  const paths = new Set(input.files.map((file) => file.path));
+  if (input.kind !== clientAssetKind(input.assetId)
+      || paths.size !== input.files.length
+      || input.files.some((file) => !allowed.includes(file.path))
+      || clientAssetRequiredFiles(input.assetId).some((file) => !paths.has(file))) {
+    ctx.addIssue({ code: 'custom', message: 'Bundle must match the browser asset id, kind and required file paths' });
+  }
+  const limit = input.kind === 'hunspell' ? MAX_HUNSPELL_ASSET_BYTES : MAX_CLIENT_ONNX_Q4_BYTES;
+  if (input.files.reduce((total, file) => total + file.sizeBytes, 0) > limit) {
+    ctx.addIssue({ code: 'custom', message: 'Bundle exceeds the client asset size limit' });
+  }
+});
+export type RegistryImport = z.infer<typeof RegistryImportSchema>;
 
 export const RECOMMENDED_CLIENT_MODELS = [
   { repo: 'onnx-community/Qwen2.5-0.5B-Instruct', label: 'Qwen2.5 0.5B Instruct' },

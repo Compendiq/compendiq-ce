@@ -157,7 +157,13 @@ export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
  * unsafe operational surprise, so an unassigned row means ghost text is off.
  */
 export async function resolveInlineCompletionUsecase(): Promise<Resolved | null> {
-  return resolveExplicitOnlyUsecase('inline_completion');
+  const assigned = await resolveExplicitOnlyUsecase('inline_completion');
+  if (!assigned) return null;
+  // Remain opt-in, but an explicitly enabled interactive request must honour
+  // EE's text-generation policy (including an exhausted department fallback).
+  const override = await getEnterprisePlugin().resolveUsecaseOverride?.('inline_completion');
+  if (!override) return assigned;
+  return { config: await loadProviderConfig(override.providerId), model: override.model };
 }
 
 /**

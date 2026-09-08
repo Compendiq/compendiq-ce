@@ -32,6 +32,7 @@ export function abortOnPrematureResponseClose(
     if (!response.writableEnded) controller.abort();
   };
   response.once('close', onClose);
+  if (response.destroyed && !response.writableEnded) controller.abort();
   return () => response.removeListener('close', onClose);
 }
 
@@ -117,6 +118,7 @@ export async function llmInlineCompletionRoutes(fastify: FastifyInstance) {
           resolved.model,
           input,
           controller.signal,
+          { auditUserId: request.userId },
         );
         // Usage is deliberately best-effort and off the response path. A slow
         // or unavailable Redis must not add latency to editor keystrokes.
