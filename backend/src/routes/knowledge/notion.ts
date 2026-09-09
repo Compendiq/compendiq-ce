@@ -2,14 +2,20 @@ import type { FastifyInstance } from 'fastify';
 import {
   ConnectNotionSchema,
   NotionConnectionResponseSchema,
+  NotionImportAcceptedSchema,
   NotionImportRequestSchema,
-  NotionImportResponseSchema,
+  NotionImportStatusSchema,
   NotionTreeResponseSchema,
 } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { logger } from '../../core/utils/logger.js';
 import { NotionClient, NotionError } from '../../domains/knowledge/services/notion-client.js';
 import { fetchNotionWorkspaceTree } from '../../domains/knowledge/services/notion-tree.js';
+import {
+  getNotionImportStatus,
+  setNotionImportStatus,
+} from '../../domains/knowledge/services/notion-import-job.js';
 import {
   NotionImportError,
   runNotionImport,
@@ -99,6 +105,10 @@ export async function notionRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.get('/notion/import/status', async (request) => {
+    return NotionImportStatusSchema.parse(await getNotionImportStatus(request.userId));
+  });
+
   fastify.post('/notion/import', async (request, reply) => {
     const body = NotionImportRequestSchema.parse(request.body);
     const token = await getDecryptedNotionToken(request.userId);
@@ -109,58 +119,66 @@ export async function notionRoutes(fastify: FastifyInstance) {
         statusCode: 400,
       });
     }
-    try {
-      const client = new NotionClient(token);
-      const items = await runNotionImport({
-        userId: request.userId,
-        client,
-        pageIds: body.pageIds,
-        spaceKey: body.spaceKey,
-        parentId: body.parentId,
-        visibility: body.visibility,
-        overwriteExisting: body.overwriteExisting,
-        databaseModes: body.databaseModes,
+    const current = await getNotionImportStatus(request.userId);
+    if (current.status === 'importing') {
+      return reply.status(409).send({
+        error: 'ClientError',
+        message: 'Notion import already in progress',
+        statusCode: 409,
       });
-      const created = items.filter((i) => i.status === 'success');
-      if (created.length > 0) {
-        if (body.visibility === 'shared') {
-          await cache.invalidateAcrossUsers('pages');
-        } else {
-          await cache.invalidate(request.userId, 'pages');
-        }
-      }
-      for (const item of created) {
-        await logAuditEvent(
-          request.userId,
-          item.updated ? 'PAGE_UPDATED' : 'PAGE_CREATED',
-          'page',
-          String(item.localPageId),
-          { source: 'standalone', notionPageId: item.notionPageId },
-          request,
-        );
-      }
-      await cache.invalidate(request.userId, 'notion_tree');
-      return NotionImportResponseSchema.parse({ items });
-    } catch (err) {
-      if (err instanceof NotionImportError) {
-        const bodyOut = { error: 'ClientError', message: err.message, statusCode: err.statusCode };
-        expectNoSecret(bodyOut, token);
-        return reply.status(err.statusCode).send(bodyOut);
-      }
-      if (err instanceof NotionError && err.statusCode >= 400) {
-        const status =
-          err.statusCode === 503 || err.statusCode === 529
-            ? 503
-            : err.statusCode >= 500
-              ? 502
-              : err.statusCode;
-        const bodyOut = { error: 'ClientError', message: err.message, statusCode: status };
-        expectNoSecret(bodyOut, token);
-        return reply.status(status).send(bodyOut);
-      }
-      throw err;
     }
+
+    const accepted = NotionImportAcceptedSchema.parse({ status: 'importing' });
+    const userId = request.userId;
+    await setNotionImportStatus(userId, { status: 'importing' });
+
+    void (async () => {
+      try {
+        const client = new NotionClient(token);
+        const items = await runNotionImport({
+          userId,
+          client,
+          pageIds: body.pageIds,
+          spaceKey: body.spaceKey,
+          parentId: body.parentId,
+          visibility: body.visibility,
+          overwriteExisting: body.overwriteExisting,
+          databaseModes: body.databaseModes,
+        });
+        const created = items.filter((i) => i.status === 'success');
+        if (created.length > 0) {
+          if (body.visibility === 'shared') {
+            await cache.invalidateAcrossUsers('pages');
+          } else {
+            await cache.invalidate(userId, 'pages');
+          }
+        }
+        for (const item of created) {
+          await logAuditEvent(
+            userId,
+            item.updated ? 'PAGE_UPDATED' : 'PAGE_CREATED',
+            'page',
+            String(item.localPageId),
+            { source: 'standalone', notionPageId: item.notionPageId },
+          );
+        }
+        await cache.invalidate(userId, 'notion_tree');
+        expectNoSecret(items, token);
+        await setNotionImportStatus(userId, { status: 'complete', items });
+      } catch (err) {
+        logger.error({ err, userId }, 'Notion import failed');
+        const raw =
+          err instanceof NotionImportError || err instanceof NotionError
+            ? err.message
+            : 'Notion import failed';
+        const message = token && raw.includes(token) ? 'Notion import failed' : raw;
+        await setNotionImportStatus(userId, { status: 'error', error: message });
+      }
+    })();
+
+    return reply.status(202).send(accepted);
   });
+
 }
 
 /** Defense in depth: a 4xx body must never include the pasted secret. */

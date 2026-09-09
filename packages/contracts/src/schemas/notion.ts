@@ -197,3 +197,34 @@ export const NotionImportResponseSchema = z
   })
   .strict();
 export type NotionImportResponse = z.infer<typeof NotionImportResponseSchema>;
+
+/** POST /api/notion/import accepted the run; results live on GET …/status. */
+export const NotionImportAcceptedSchema = z
+  .object({
+    status: z.literal('importing'),
+  })
+  .strict();
+export type NotionImportAccepted = z.infer<typeof NotionImportAcceptedSchema>;
+
+/**
+ * Background import job. The POST used to wait for every paced Notion call
+ * inside one HTTP request; nginx `proxy_read_timeout 300` then answered 504
+ * while the importer kept running. Status is the result channel.
+ */
+export const NotionImportStatusSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('idle') }).strict(),
+  z.object({ status: z.literal('importing') }).strict(),
+  z
+    .object({
+      status: z.literal('complete'),
+      items: z.array(NotionImportItemSchema),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('error'),
+      error: z.string().min(1),
+    })
+    .strict(),
+]);
+export type NotionImportStatus = z.infer<typeof NotionImportStatusSchema>;

@@ -480,8 +480,12 @@ database/page parents are allocated before children. Actual `child_page` and
 `child_database` blocks expand owned descendants; ordinary links and mentions
 do not. An owner-scoped advisory lock protects overlapping discoveries alongside
 the selected-ID locks. UUID case and hyphens are normalized; titles never identify
-duplicates. Every planned result, including discovered failures, reaches the
-route's audit/cache handling and the result screen. Later UI batches merge results
+duplicates. Every planned result, including discovered failures, is stored on
+the per-user import job (`GET /api/notion/import/status`) after
+`POST /api/notion/import` returns 202 — audit, cache invalidation and the
+result screen read that status, not the POST. The POST used to wait for every
+paced Notion call inside one HTTP request; nginx `proxy_read_timeout 300` then
+answered 504 while the importer kept running. Later UI batches merge results
 by normalized identity. Images are written through `putLocalAttachment`; the
 converter only spells the URL the store already serves:
 

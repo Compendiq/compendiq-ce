@@ -4,8 +4,10 @@ import {
   NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
   NotionConnectionResponseSchema,
+  NotionImportAcceptedSchema,
   NotionImportRequestSchema,
   NotionImportResponseSchema,
+  NotionImportStatusSchema,
   NotionTreeResponseSchema,
 } from './notion.js';
 
@@ -266,5 +268,36 @@ describe('NotionImportResponseSchema', () => {
         token: 'secret_should_not_pass',
       }),
     ).toThrow();
+  });
+});
+
+describe('NotionImportAcceptedSchema', () => {
+  it('is only the 202 body — no items, no token', () => {
+    expect(NotionImportAcceptedSchema.parse({ status: 'importing' })).toEqual({ status: 'importing' });
+    expect(() => NotionImportAcceptedSchema.parse({ status: 'importing', items: [] })).toThrow();
+    expect(() => NotionImportAcceptedSchema.parse({ status: 'complete', items: [] })).toThrow();
+  });
+});
+
+describe('NotionImportStatusSchema', () => {
+  it('discriminates idle, importing, complete, and error without a token', () => {
+    expect(NotionImportStatusSchema.parse({ status: 'idle' })).toEqual({ status: 'idle' });
+    expect(NotionImportStatusSchema.parse({ status: 'importing' })).toEqual({ status: 'importing' });
+    expect(
+      NotionImportStatusSchema.parse({
+        status: 'complete',
+        items: [{ notionPageId: 'p1', status: 'success', localPageId: 9 }],
+      }),
+    ).toEqual({
+      status: 'complete',
+      items: [{ notionPageId: 'p1', status: 'success', localPageId: 9 }],
+    });
+    expect(NotionImportStatusSchema.parse({ status: 'error', error: 'Notion resource not found' })).toEqual({
+      status: 'error',
+      error: 'Notion resource not found',
+    });
+    expect(() => NotionImportStatusSchema.parse({ status: 'complete' })).toThrow();
+    expect(() => NotionImportStatusSchema.parse({ status: 'error' })).toThrow();
+    expect(() => NotionImportStatusSchema.parse({ status: 'idle', token: 'secret' })).toThrow();
   });
 });

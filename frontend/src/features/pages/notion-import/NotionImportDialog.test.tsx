@@ -204,8 +204,14 @@ function givenHappyPath(opts: { tree?: unknown; importItems?: NotionImportItem[]
     {
       match: /\/notion\/import$/,
       method: 'POST',
+      respond: () => ({ status: 202, body: { status: 'importing' } }),
+    },
+    {
+      match: /\/notion\/import\/status$/,
+      method: 'GET',
       respond: () => ({
         body: {
+          status: 'complete',
           items: opts.importItems ?? [
             { notionPageId: 'handbook', status: 'success', localPageId: 11 },
             { notionPageId: 'nested', status: 'skip', reason: NOTION_UNSUPPORTED_LABEL },
@@ -582,10 +588,11 @@ describe('NotionImportDialog large workspace rendering', () => {
     givenHappyPath({ tree: { nodes } });
     let batch = 0;
     routes.unshift({
-      match: /\/notion\/import$/,
-      method: 'POST',
+      match: /\/notion\/import\/status$/,
+      method: 'GET',
       respond: () => ({
         body: {
+          status: 'complete',
           items: batch++ === 0
             ? nodes.map((node, i) => ({ notionPageId: node.id, status: 'success', localPageId: i + 1 }))
             : [{ notionPageId: 'P200', status: 'already_imported', localPageId: 201 }],
@@ -924,7 +931,7 @@ describe('NotionImportDialog destination and lock', () => {
     const held = deferResponse();
     givenHappyPath();
     routes = routes.map((route) =>
-      (route.method ?? 'GET') === 'POST' && route.match.test('/notion/import')
+      (route.method ?? 'GET') === 'GET' && route.match.test('/notion/import/status')
         ? { ...route, respond: () => held.promise }
         : route,
     );
@@ -947,6 +954,7 @@ describe('NotionImportDialog destination and lock', () => {
 
     held.resolve({
       body: {
+        status: 'complete',
         items: [
           { notionPageId: 'handbook', status: 'success', localPageId: 11 },
           { notionPageId: 'nested', status: 'skip', reason: NOTION_UNSUPPORTED_LABEL },

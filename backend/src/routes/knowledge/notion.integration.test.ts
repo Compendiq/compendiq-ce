@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { cacheStore } = vi.hoisted(() => ({
@@ -6,6 +7,8 @@ const { cacheStore } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../core/services/redis-cache.js', () => ({
+  getRedisClient: () => null,
+  setRedisClient: vi.fn(),
   RedisCache: class {
     async get(userId: string, type: string, identifier: string) {
       return cacheStore.get(`${userId}:${type}:${identifier}`) ?? null;
@@ -31,6 +34,7 @@ import { query } from '../../core/db/postgres.js';
 import { decryptPat, isEncryptedSecretFormat } from '../../core/utils/crypto.js';
 import { startFakeNotionServer, type FakeNotionServer } from '../../domains/knowledge/services/__fixtures__/fake-notion-server.js';
 import { setNotionApiBaseUrlForTests } from '../../domains/knowledge/services/notion-client.js';
+import { resetNotionImportStatusForTests } from '../../domains/knowledge/services/notion-import-job.js';
 import { buildKnowledgeTestApp, insertUser } from './pages.test-helpers.js';
 import { notionRoutes } from './notion.js';
 
@@ -39,6 +43,7 @@ const TOKEN = 'secret_route_ntn_must_never_appear_on_get';
 
 beforeEach(() => {
   cacheStore.clear();
+  resetNotionImportStatusForTests();
 });
 
 describe.skipIf(!dbAvailable)('GET/PUT/DELETE /api/notion/connection (#1462)', () => {
@@ -463,6 +468,41 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     });
   }
 
+  type ImportItem = {
+    notionPageId: string;
+    status: string;
+    localPageId?: number;
+    reason?: string;
+    importedAs?: string;
+  };
+
+  async function importUntilComplete(
+    instance: FastifyInstance,
+    payload: Record<string, unknown>,
+  ): Promise<{ items: ImportItem[] }> {
+    const post = await instance.inject({
+      method: 'POST',
+      url: '/api/notion/import',
+      payload,
+    });
+    expect(post.statusCode).toBe(202);
+    expect(post.json()).toEqual({ status: 'importing' });
+    expect(post.body).not.toContain(TOKEN);
+    const done = await vi.waitFor(
+      async () => {
+        const res = await instance.inject({ method: 'GET', url: '/api/notion/import/status' });
+        const body = res.json() as { status: string; items?: ImportItem[]; error?: string };
+        expect(body.status).not.toBe('importing');
+        return body;
+      },
+      { timeout: 10_000, interval: 20 },
+    );
+    expect(done.status).toBe('complete');
+    expect(Array.isArray(done.items)).toBe(true);
+    return { items: done.items as ImportItem[] };
+  }
+
+
   it('returns 400 when Notion is not connected and never echoes a secret', async () => {
     const instance = await app();
     try {
@@ -482,22 +522,11 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     const instance = await app();
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
-      const res = await instance.inject({
-        method: 'POST',
-        url: '/api/notion/import',
-        payload: { pageIds: ['crm', 'notes'], visibility: 'private', databaseModes: { crm: 'table' } },
+      const body = await importUntilComplete(instance, {
+        pageIds: ['crm', 'notes'],
+        visibility: 'private',
+        databaseModes: { crm: 'table' },
       });
-      expect(res.statusCode).toBe(200);
-      expect(res.body).not.toContain(TOKEN);
-      const body = res.json() as {
-        items: Array<{
-          notionPageId: string;
-          status: string;
-          localPageId?: number;
-          reason?: string;
-          importedAs?: string;
-        }>;
-      };
       expect(Object.keys(body).sort()).toEqual(['items']);
       const byId = Object.fromEntries(body.items.map((i) => [i.notionPageId, i]));
       expect(byId.crm).toMatchObject({ status: 'success', importedAs: 'table' });
@@ -518,17 +547,13 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
       expect(page.rows[0]).toMatchObject({ source: 'standalone', visibility: 'private' });
       expect(page.rows[0]!.body_html).toContain('Imported via route');
 
-      const again = await instance.inject({
-        method: 'POST',
-        url: '/api/notion/import',
-        payload: { pageIds: ['notes'] },
-      });
-      expect(again.json().items[0]).toMatchObject({
+      const again = await importUntilComplete(instance, { pageIds: ['notes'] });
+      expect(again.items[0]).toMatchObject({
         notionPageId: 'notes',
         status: 'already_imported',
         localPageId: byId.notes!.localPageId,
       });
-      expect(again.body).not.toContain(TOKEN);
+
 
       const get = await instance.inject({ method: 'GET', url: '/api/notion/connection' });
       expect(get.json()).toEqual({ hasToken: true });
@@ -545,12 +570,7 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
       const first = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
       expect(first.statusCode).toBe(200);
       server.requests.length = 0;
-      const imported = await instance.inject({
-        method: 'POST',
-        url: '/api/notion/import',
-        payload: { pageIds: ['notes'], visibility: 'private' },
-      });
-      expect(imported.statusCode).toBe(200);
+      await importUntilComplete(instance, { pageIds: ['notes'], visibility: 'private' });
       const after = await instance.inject({ method: 'GET', url: '/api/notion/tree' });
       expect(after.statusCode).toBe(200);
       expect(server.requests.filter((r) => r.url.includes('/v1/search')).length).toBeGreaterThan(0);
@@ -569,13 +589,12 @@ describe.skipIf(!dbAvailable)('POST /api/notion/import (#1465)', () => {
     const instance = await app();
     try {
       await instance.inject({ method: 'PUT', url: '/api/notion/connection', payload: { token: TOKEN } });
-      const res = await instance.inject({
-        method: 'POST',
-        url: '/api/notion/import',
-        payload: { pageIds: ['notes'], visibility: 'private', overwriteExisting: true },
+      const res = await importUntilComplete(instance, {
+        pageIds: ['notes'],
+        visibility: 'private',
+        overwriteExisting: true,
       });
-      expect(res.statusCode).toBe(200);
-      expect(res.json().items[0]).toMatchObject({
+      expect(res.items[0]).toMatchObject({
         notionPageId: 'notes',
         status: 'success',
         localPageId: pageId,

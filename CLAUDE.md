@@ -817,6 +817,14 @@ selected-ID locks protect dynamic overlaps. Re-import preserves bodies unless
 overwrite is requested; never automatically delete older row articles or local
 edits to remove duplicates.
 
+**Notion import is not request-scoped.** `POST /api/notion/import` returns 202
+and runs `runNotionImport` off the request. `GET /api/notion/import/status` is
+the result. A Knowledge Base with nested pages outruns nginx
+`proxy_read_timeout 300` at Notion's 3 req/s; waiting on the POST is the FTS
+rebuild 504 (browser error, work continues). Never put paced Notion traffic
+back on that HTTP request. A second POST while status is `importing` is 409.
+
+
 **That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**
 `waitForSlot` reserves the next *start* 334 ms out, and it reserves
 synchronously — before any `await` — so concurrent callers each take their own
