@@ -78,7 +78,7 @@ describe('SearchableSelect', () => {
     expect(onChange).toHaveBeenCalledWith('bge-m3');
   });
 
-  it('syncs with backing select on change event', () => {
+  it('syncs with backing select on change event and assigns id and aria-describedby to trigger', () => {
     const onChange = vi.fn();
     render(
       <SearchableSelect
@@ -92,8 +92,12 @@ describe('SearchableSelect', () => {
       />,
     );
 
+    const trigger = screen.getByTestId('model-control');
+    expect(trigger).toHaveAttribute('id', 'provider-listed-models');
+    expect(trigger).toHaveAttribute('aria-describedby', 'provider-listed-models-help');
+
     const backingSelect = screen.getByTestId('model');
-    expect(backingSelect).toHaveAttribute('id', 'provider-listed-models');
+    expect(backingSelect).toHaveAttribute('id', 'provider-listed-models-backing');
     expect(backingSelect).toHaveAttribute('aria-describedby', 'provider-listed-models-help');
     expect(backingSelect).toHaveClass('sr-only');
 
@@ -102,6 +106,38 @@ describe('SearchableSelect', () => {
 
     fireEvent.change(backingSelect, { target: { value: '' } });
     expect(onChange).toHaveBeenCalledWith('');
+  });
+
+  it('focuses and opens the select when an associated label is clicked', () => {
+    render(
+      <div>
+        <label htmlFor="model-select">Choose Model</label>
+        <SearchableSelect
+          id="model-select"
+          value=""
+          options={sampleOptions}
+          onChange={() => {}}
+          testId="model"
+        />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByText('Choose Model'));
+    expect(screen.getByTestId('model-menu')).toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole('searchbox'));
+  });
+  it('renders option buttons with tabIndex -1 to preserve clean tab order', () => {
+    render(
+      <SearchableSelect
+        value=""
+        options={sampleOptions}
+        onChange={() => {}}
+        testId="model"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('model-control'));
+    expect(screen.getByTestId('model-option-bge-m3')).toHaveAttribute('tabindex', '-1');
   });
 
   it('shows emptyMessage when the filter matches nothing', () => {

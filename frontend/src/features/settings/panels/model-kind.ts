@@ -18,8 +18,7 @@ export function filterModelsForKind(
   kind: ModelKindFilter | undefined,
   selected: string | null,
 ): string[] {
-  if (!kind) return [...names];
-  const matches = kind === 'rerank' ? isRerankModel : isEmbeddingModel;
+  const matches = !kind ? () => true : kind === 'rerank' ? isRerankModel : isEmbeddingModel;
   const keepSelected = Boolean(selected);
   const filtered = names.filter((n) => matches(n) || (keepSelected && n === selected));
   if (keepSelected && selected && !filtered.includes(selected)) {

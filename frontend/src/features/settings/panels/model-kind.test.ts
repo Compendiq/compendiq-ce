@@ -38,6 +38,13 @@ describe('filterModelsForKind', () => {
     expect(filterModelsForKind(MIXED, undefined, 'bge-m3')).toEqual([...MIXED]);
   });
 
+  it('appends a selected id not in the list when kind is undefined', () => {
+    expect(filterModelsForKind(MIXED, undefined, 'custom-chat-model')).toEqual([
+      ...MIXED,
+      'custom-chat-model',
+    ]);
+  });
+
   it('keeps original order for embedding matches', () => {
     expect(filterModelsForKind(MIXED, 'embedding', null)).toEqual(['bge-m3', 'nomic-embed-text']);
   });

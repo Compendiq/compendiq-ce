@@ -141,7 +141,7 @@ export function SearchableSelect({
   return (
     <div className={cn('relative w-full', className)}>
       <select
-        id={id}
+        id={id ? `${id}-backing` : undefined}
         data-testid={testId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -169,16 +169,18 @@ export function SearchableSelect({
         <Popover.Trigger asChild>
           <button
             type="button"
+            id={id}
             disabled={disabled}
             data-testid={testId ? `${testId}-control` : undefined}
             aria-label={`${accessibleLabel}, current: ${displayLabel}`}
+            aria-describedby={describedBy}
             aria-haspopup="listbox"
             aria-expanded={open}
             aria-controls={open ? listboxId : undefined}
             className={cn(
               'flex h-8 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border border-border-interactive bg-card px-2.5 text-[0.8125rem] leading-none text-foreground outline-none transition-colors',
               'hover:bg-accent',
-              'focus-visible:border-primary focus-visible:shadow-[0_0_0_1px_var(--color-primary)]',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               isSelected && 'font-medium',
               open && 'border-border-interactive bg-accent',
               disabled && 'cursor-not-allowed opacity-50 hover:bg-card',
@@ -264,6 +266,7 @@ export function SearchableSelect({
                         optionRefs.current[index] = el;
                       }}
                       type="button"
+                      tabIndex={-1}
                       role="option"
                       aria-selected={selected}
                       onClick={() => selectOption(opt.value)}
