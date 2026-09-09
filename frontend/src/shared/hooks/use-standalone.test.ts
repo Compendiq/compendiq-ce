@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import {
   useTemplates,
+  useTemplate,
+  useCreateTemplate,
+  useUpdateTemplate,
+  useDeleteTemplate,
   useComments,
   useTrash,
   useRestorePage,
@@ -67,6 +71,66 @@ describe('use-standalone hooks', () => {
       const url = (mock.mock.calls[0][0] as string);
       expect(url).toContain('scope=global');
       expect(url).toContain('category=guide');
+    });
+  });
+
+  describe('useTemplate', () => {
+    it('fetches a single template by id', async () => {
+      const mock = mockFetch({ id: 7, title: 'Cornell Notes', bodyHtml: '<h1>Notes</h1>' });
+      const { result } = renderHook(() => useTemplate(7), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      expect(result.current.data?.title).toBe('Cornell Notes');
+      expect(mock.mock.calls[0][0] as string).toContain('/templates/7');
+    });
+
+    it('does not fetch when id is undefined', () => {
+      const mock = mockFetch({});
+      const { result } = renderHook(() => useTemplate(undefined), { wrapper: createWrapper() });
+      expect(result.current.fetchStatus).toBe('idle');
+      expect(mock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('useCreateTemplate', () => {
+    it('POSTs the template body and invalidates the templates list', async () => {
+      const mock = mockFetch({ id: 3, title: 'Sprint notes' });
+      const { result } = renderHook(() => useCreateTemplate(), { wrapper: createWrapper() });
+      await result.current.mutateAsync({
+        title: 'Sprint notes',
+        bodyHtml: '<p>Hello</p>',
+        bodyJson: '{"type":"doc"}',
+      });
+      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/templates');
+      expect(opts.method).toBe('POST');
+      expect(JSON.parse(opts.body as string)).toEqual({
+        title: 'Sprint notes',
+        bodyHtml: '<p>Hello</p>',
+        bodyJson: '{"type":"doc"}',
+      });
+    });
+  });
+
+  describe('useUpdateTemplate', () => {
+    it('PUTs changed fields to /templates/:id', async () => {
+      const mock = mockFetch({ id: 3, title: 'Renamed' });
+      const { result } = renderHook(() => useUpdateTemplate(), { wrapper: createWrapper() });
+      await result.current.mutateAsync({ id: 3, title: 'Renamed' });
+      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/templates/3');
+      expect(opts.method).toBe('PUT');
+      expect(JSON.parse(opts.body as string)).toEqual({ title: 'Renamed' });
+    });
+  });
+
+  describe('useDeleteTemplate', () => {
+    it('DELETEs /templates/:id', async () => {
+      const mock = mockFetch({ ok: true });
+      const { result } = renderHook(() => useDeleteTemplate(), { wrapper: createWrapper() });
+      await result.current.mutateAsync(3);
+      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/templates/3');
+      expect(opts.method).toBe('DELETE');
     });
   });
 

@@ -100,7 +100,18 @@ an access denial discards them until a successful authorized read.
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
 
-You can also start a page from a template (e.g. Meeting Notes, Incident Report, How-to Guide, ADR, Runbook) via the **Use Template** button on the New Page screen.
+You can also start a page from a template (Meeting Notes, Incident Report, How-to Guide, ADR, Runbook, Cornell Notes, plus any templates you or an admin created) via the **Use Template** button on the New Page screen. Shared templates and your own templates are listed separately. If the editor already has content, **Save current as template** stores it as a personal template (admins can tick **Share with everyone**).
+
+### Page templates
+
+Templates are starter layouts for new pages.
+
+1. Open **Settings → Knowledge → Templates**.
+2. **New template** opens a title, optional description/category/icon, and the editor for the body.
+3. Your templates appear under **My templates**. Only you can use, edit, or delete them.
+4. **Shared templates** are visible to everyone. Only an administrator can create a shared template (the **Share with everyone** checkbox), or edit and delete shared ones.
+
+Cornell Notes is a built-in shared template: a two-column **Cues | Notes** table plus a **Summary** at the bottom. Fill notes during the session, cues when you review, and the summary last.
 
 ### Importing from Notion
 

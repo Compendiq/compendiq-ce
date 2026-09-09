@@ -82,7 +82,7 @@ vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
   useInlineCompletionAvailability: () => ({ data: true }),
 }));
 
-const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   // Live HTML the fake editor owns. setContent (template apply) and the
   // textarea's onChange (typing) both write here; getHTML reads it — mirroring
   // the real Editor now that the body is read off the instance, not synced to
@@ -92,10 +92,22 @@ const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsy
   return {
     editorHtml: html,
     mockSetContent: setContent,
-    mockEditorInstance: { commands: { setContent }, getHTML: () => html.current },
+    mockEditorInstance: {
+      commands: { setContent },
+      getHTML: () => html.current,
+      getJSON: () => ({ type: 'doc', content: html.current ? [{ type: 'paragraph' }] : [] }),
+    },
     mockUseTemplateMutateAsync: vi.fn(),
+    mockCreateTemplateMutateAsync: vi.fn(),
     mockImportMutateAsync: vi.fn(),
-    templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
+    templatesState: { items: [] as {
+      id: number;
+      title: string;
+      category: string | null;
+      isGlobal?: boolean;
+      description?: string | null;
+      icon?: string | null;
+    }[] },
   };
 });
 
@@ -103,6 +115,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   // GET /api/templates returns a bare array — mirror the real wire shape.
   useTemplates: () => ({ data: templatesState.items, isLoading: false }),
   useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
+  useCreateTemplate: () => ({ mutateAsync: mockCreateTemplateMutateAsync, isPending: false }),
   useImportMarkdown: () => ({ mutateAsync: mockImportMutateAsync, isPending: false }),
   useLocalSpaces: () => ({
     data: [
@@ -191,6 +204,7 @@ describe('NewPagePage', () => {
     mockCreateMutateAsync.mockClear();
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
+    mockCreateTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
     mockToastError.mockClear();
     mockToastSuccess.mockClear();
@@ -1040,6 +1054,66 @@ describe('NewPagePage', () => {
           expect.objectContaining({ bodyHtml: '<p>Template body</p>' }),
         );
       });
+    });
+
+    it('groups templates into Shared and Mine and shows icon plus description', async () => {
+      templatesState.items.push(
+        { id: 1, title: 'Meeting Notes', category: 'meetings', isGlobal: true, description: 'Agenda and decisions', icon: '📅' },
+        { id: 2, title: 'My standup', category: 'notes', isGlobal: false, description: 'Personal daily notes', icon: '✅' },
+      );
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      expect(await screen.findByText('Shared templates')).toBeInTheDocument();
+      expect(screen.getByText('My templates')).toBeInTheDocument();
+      expect(screen.getByText('Agenda and decisions')).toBeInTheDocument();
+      expect(screen.getByText('Personal daily notes')).toBeInTheDocument();
+      expect(screen.getByText('📅')).toBeInTheDocument();
+      expect(screen.getByText('✅')).toBeInTheDocument();
+      expect(screen.getByText('Shared')).toBeInTheDocument();
+      expect(screen.getByText('Mine')).toBeInTheDocument();
+    });
+
+    it('offers Save current as template when the live editor body is non-empty', async () => {
+      mockCreateTemplateMutateAsync.mockResolvedValueOnce({ id: 9, title: 'From editor' });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Live body</p>' } });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      fireEvent.click(await screen.findByTestId('save-current-as-template-btn'));
+      fireEvent.change(screen.getByTestId('save-template-title-input'), { target: { value: 'From editor' } });
+      fireEvent.click(screen.getByTestId('save-template-submit-btn'));
+
+      await waitFor(() => {
+        expect(mockCreateTemplateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'From editor',
+            bodyHtml: '<p>Live body</p>',
+            bodyJson: expect.any(String),
+          }),
+        );
+      });
+    });
+
+    it('hides Save current as template when the editor is empty', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      expect(await screen.findByTestId('template-gallery-modal')).toBeInTheDocument();
+      expect(screen.queryByTestId('save-current-as-template-btn')).not.toBeInTheDocument();
+    });
+
+    it('prefills template title from current page title when saving current as template', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Incident Postmortem' } });
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Some notes</p>' } });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      fireEvent.click(await screen.findByTestId('save-current-as-template-btn'));
+      const titleInput = screen.getByTestId('save-template-title-input') as HTMLInputElement;
+      expect(titleInput.value).toBe('My Incident Postmortem');
     });
   });
 

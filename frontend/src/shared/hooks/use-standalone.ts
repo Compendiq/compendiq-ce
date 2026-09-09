@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { TrashListResponse } from '@compendiq/contracts';
+import type { TrashListResponse, Template, TemplateSummary, CreateTemplateInput, UpdateTemplateInput } from '@compendiq/contracts';
 import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -14,8 +14,16 @@ export function useTemplates(filters?: { scope?: string; category?: string }) {
       if (filters?.category) params.set('category', filters.category);
       const qs = params.toString();
       // GET /api/templates returns a bare array, not an { items, total } envelope.
-      return apiFetch<Template[]>(`/templates${qs ? `?${qs}` : ''}`);
+      return apiFetch<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ''}`);
     },
+  });
+}
+
+export function useTemplate(id: number | undefined) {
+  return useQuery({
+    queryKey: ['templates', id],
+    queryFn: () => apiFetch<Template>(`/templates/${id}`),
+    enabled: typeof id === 'number',
   });
 }
 
@@ -25,6 +33,47 @@ export function useUseTemplate() {
       apiFetch<{ bodyJson: string; bodyHtml: string }>(`/templates/${templateId}/use`, {
         method: 'POST',
       }),
+  });
+}
+
+export function useCreateTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreateTemplateInput) =>
+      apiFetch<Template>('/templates', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
+  });
+}
+
+export function useUpdateTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: UpdateTemplateInput & { id: number }) =>
+      apiFetch<Template>(`/templates/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
+  });
+}
+
+export function useDeleteTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/templates/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
   });
 }
 
@@ -308,18 +357,6 @@ export function useRoles() {
 }
 
 // ======== Types ========
-
-interface Template {
-  id: number;
-  title: string;
-  bodyJson: string;
-  bodyHtml: string;
-  category: string | null;
-  isGlobal: boolean;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
 interface Comment {
   id: number;

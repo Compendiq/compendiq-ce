@@ -22,6 +22,7 @@ const AiPromptsTab = lazy(() => import('./panels/AiPromptsTab').then((m) => ({ d
 const ThemeTab = lazy(() => import('./ThemeTab').then((m) => ({ default: m.ThemeTab })));
 const EditorPreferencesTab = lazy(() => import('./EditorPreferencesTab').then((m) => ({ default: m.EditorPreferencesTab })));
 const LabelManager = lazy(() => import('./LabelManager').then((m) => ({ default: m.LabelManager })));
+const TemplatesTab = lazy(() => import('./panels/TemplatesTab').then((m) => ({ default: m.TemplatesTab })));
 const LicenseStatusCard = lazy(() => import('../admin/LicenseStatusCard').then((m) => ({ default: m.LicenseStatusCard })));
 
 const SpacesSyncWrapper = lazy(() => import('./wrappers/SpacesSyncWrapper').then((m) => ({ default: m.SpacesSyncWrapper })));
@@ -75,6 +76,7 @@ const PANELS: Readonly<Record<string, PanelRenderer>> = {
     />
   ),
   'knowledge/labels': () => <LabelManager />,
+  'knowledge/templates': () => <TemplatesTab />,
 
   // AI
   'ai/models': () => <AiModelsWrapper />,

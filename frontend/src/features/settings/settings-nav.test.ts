@@ -109,6 +109,15 @@ describe('SETTINGS_NAV shape', () => {
     const paths = SETTINGS_NAV.flatMap((g) => g.items.map((i) => `/settings/${g.id}/${i.id}`));
     expect(new Set(paths).size).toBe(paths.length);
   });
+
+  it('exposes Templates to every user in Knowledge, after Labels', () => {
+    const knowledge = SETTINGS_NAV.find((group) => group.id === 'knowledge');
+    expect(knowledge?.items.map((item) => item.id)).toEqual(['spaces', 'labels', 'templates']);
+    const templates = knowledge?.items.find((item) => item.id === 'templates');
+    expect(templates).toEqual(expect.objectContaining({ id: 'templates', label: 'Templates' }));
+    expect(templates).not.toHaveProperty('adminOnly');
+    expect(canSeeItem(templates!, ctx({ isAdmin: false }))).toBe(true);
+  });
 });
 
 describe('SETTINGS_PANELS', () => {
