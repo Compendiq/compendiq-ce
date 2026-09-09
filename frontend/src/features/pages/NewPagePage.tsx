@@ -890,7 +890,7 @@ function GalleryGroup({
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <p className="font-medium">{tpl.title}</p>
-                  <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">{badge}</span>
+                  <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-xs font-medium uppercase text-muted-foreground">{badge}</span>
                 </div>
                 {tpl.description && (
                   <p className="text-xs text-muted-foreground">{tpl.description}</p>
