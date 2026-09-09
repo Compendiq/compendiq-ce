@@ -1,11 +1,27 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import type { NotionImportRequest, NotionTreeResponse } from '@compendiq/contracts';
+import type { NotionImportRequest, NotionImportResponse, NotionTreeResponse } from '@compendiq/contracts';
 import {
   NotionConnectionResponseSchema,
-  NotionImportResponseSchema,
+  NotionImportStatusSchema,
   NotionTreeResponseSchema,
 } from '@compendiq/contracts';
-import { apiFetch } from '../../../shared/lib/api';
+import { ApiError, apiFetch } from '../../../shared/lib/api';
+
+const IMPORT_POLL_MS = 1000;
+
+async function waitForNotionImport(): Promise<NotionImportResponse> {
+  for (;;) {
+    const status = NotionImportStatusSchema.parse(await apiFetch('/notion/import/status'));
+    if (status.status === 'complete') return { items: status.items };
+    if (status.status === 'error') throw new ApiError(502, status.error);
+    if (status.status === 'idle') {
+      throw new ApiError(502, 'Notion import did not start');
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, IMPORT_POLL_MS);
+    await promise;
+  }
+}
 
 async function applyConnection(queryClient: QueryClient, status: { hasToken: boolean }) {
   await queryClient.cancelQueries({ queryKey: ['notion'] });
@@ -83,13 +99,13 @@ export function useNotionTree(enabled: boolean) {
 export function useRunNotionImport() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (body: NotionImportRequest) =>
-      NotionImportResponseSchema.parse(
-        await apiFetch('/notion/import', {
-          method: 'POST',
-          body: JSON.stringify(body),
-        }),
-      ),
+    mutationFn: async (body: NotionImportRequest) => {
+      await apiFetch('/notion/import', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      return waitForNotionImport();
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['pages'] });
       void queryClient.invalidateQueries({ queryKey: ['notion', 'tree'] });

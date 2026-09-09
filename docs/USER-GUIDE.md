@@ -125,7 +125,7 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 
    Rows beneath a *Table* database read **Included in the table above** and are not separately selectable. Everything beneath a *Skip* database reads **Excluded — stays in Notion**. If you force *Table* on a database whose scan found row content, the picker shows an amber caution: *Some rows have page content — the whole database imports as pages instead*.
 3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
-4. Run the import. Pages that already exist locally are reported as already imported rather than duplicated.
+4. Run the import. The server keeps working after the request returns; a large Knowledge Base can take several minutes because Notion allows about three requests per second. Stay on the confirm step until the result appears. Refreshing or closing the tab does not cancel it — re-open **Import from Notion** later and pages that already exist locally are reported as already imported rather than duplicated.
 
 **Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
 

@@ -35,7 +35,8 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `GET/PUT /api/settings` | User settings (Confluence URL, PAT, model selection) |
 | `GET/PUT/DELETE /api/notion/connection` | Notion internal integration token (`hasToken` only; secret never returned) |
 | `GET /api/notion/tree` | Authenticated Notion workspace tree (pages **and** databases selectable; a database carries `recommendedMode` `table`/`pages` plus `rowContent`, `isWiki`, `rowCount`, `columns`; Board layouts and other unsupported types carry `skipReason`; Board cards remain selectable articles) |
-| `POST /api/notion/import` | One-shot import of selected Notion pages and databases as standalone pages (`databaseModes` picks `skip`/`table`/`pages` per database; per-item success / skip / fail / already_imported plus `importedAs` `page`/`article`/`table`) |
+| `POST /api/notion/import` | Start a one-shot import of selected Notion pages and databases as standalone pages (202 `{ status: 'importing' }`; `databaseModes` picks `skip`/`table`/`pages` per database). Results are not on this response. |
+| `GET /api/notion/import/status` | Background import job (`idle` / `importing` / `complete` with per-item success / skip / fail / already_imported plus `importedAs` `page`/`article`/`table` / `error`) |
 | `GET/POST/PUT/DELETE /api/pages/*` | Page CRUD, versions, tags, embeddings, duplicates, export/import |
 | `GET /api/spaces` | Confluence space listing and selection |
 | `POST /api/sync` | Manual sync trigger |
