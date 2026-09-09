@@ -281,7 +281,13 @@ jobs:
         run: cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
 
       - name: Install Chromium and system dependencies
-        run: npx playwright install --with-deps chromium
+        run: |
+          # GHA Ubuntu images ship google-chrome.list. Playwright --with-deps
+          # runs apt-get update; dl.google.com Hash Sum mismatch aborts the
+          # install. Playwright Chromium does not use that package.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome*.list
+          npx playwright install --with-deps chromium
 
       - name: Test E2E helpers
         run: npx vitest run --config e2e/vitest.config.ts
