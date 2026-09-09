@@ -166,7 +166,10 @@ export type AuditAction =
   | 'BACKUP_EXPORT_FAILED'
   | 'BACKUP_UPLOADED'
   | 'BACKUP_SETTINGS_CHANGED'
-  | 'BACKUP_S3_TESTED';
+  | 'BACKUP_S3_TESTED'
+  | 'TEMPLATE_CREATED'
+  | 'TEMPLATE_UPDATED'
+  | 'TEMPLATE_DELETED';
 
 interface AuditLogEntry {
   id: string;

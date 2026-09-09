@@ -41,7 +41,7 @@ Access tokens are obtained via the login endpoint and have a configurable expiry
 | `POST /api/sync` | Manual sync trigger |
 | `POST /api/llm/*` | LLM operations (improve, generate, summarize, ask, PDF extract) |
 | `GET /api/embeddings/status` | Embedding pipeline status |
-| `GET/POST /api/templates/*` | Knowledge base templates |
+| `GET/POST/PUT/DELETE /api/templates/*` | Knowledge base templates (personal + admin-global) |
 | `GET/POST /api/comments/*` | Page comments |
 | `GET /api/analytics/*` | Content analytics and search analytics |
 | `GET/POST /api/verification/*` | Page verification/review workflow |

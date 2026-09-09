@@ -79,6 +79,7 @@ export const SETTINGS_NAV = [
       // Wrapper: Spaces / Sync / Conflict Policy (EE) / Conflicts (EE).
       navItem('spaces', 'Spaces & Sync'),
       navItem('labels', 'Labels', { adminOnly: true }),
+      navItem('templates', 'Templates'),
     ],
   },
   {

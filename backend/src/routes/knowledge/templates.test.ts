@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../../core/db/postgres.js';
 
@@ -232,5 +233,63 @@ describe.skipIf(!dbAvailable)('Templates (DB)', () => {
 
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0].title).toBe('Eng Template');
+  });
+
+  it('should allow the owner to update their template', async () => {
+    const ins = await query<{ id: number }>(
+      `INSERT INTO templates (title, body_json, body_html, created_by)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      ['Owner Draft', '{"type":"doc","content":[]}', '<p>draft</p>', userId],
+    );
+    const templateId = ins.rows[0].id;
+
+    await query(
+      `UPDATE templates
+       SET title = $1, body_html = $2, updated_at = NOW()
+       WHERE id = $3 AND created_by = $4`,
+      ['Owner Revised', '<p>revised</p>', templateId, userId],
+    );
+
+    const result = await query<{ title: string; body_html: string }>(
+      'SELECT title, body_html FROM templates WHERE id = $1',
+      [templateId],
+    );
+    expect(result.rows[0].title).toBe('Owner Revised');
+    expect(result.rows[0].body_html).toBe('<p>revised</p>');
+  });
+
+  it('should not let a second user see another user personal templates', async () => {
+    await query(
+      `INSERT INTO templates (title, body_json, body_html, created_by)
+       VALUES ($1, $2, $3, $4)`,
+      ['Secret Personal', '{}', '<p></p>', userId],
+    );
+
+    const otherView = await query<{ title: string }>(
+      'SELECT title FROM templates WHERE is_global = TRUE OR created_by = $1',
+      [adminUserId],
+    );
+    expect(otherView.rows.map((r) => r.title)).not.toContain('Secret Personal');
+
+    const ownerView = await query<{ title: string }>(
+      'SELECT title FROM templates WHERE is_global = TRUE OR created_by = $1',
+      [userId],
+    );
+    expect(ownerView.rows.map((r) => r.title)).toContain('Secret Personal');
+  });
+});
+
+describe('112_template_refresh.sql', () => {
+  it('contains Cornell Notes and the five built-in titles', () => {
+    const src = readFileSync(
+      new URL('../../core/db/migrations/112_template_refresh.sql', import.meta.url),
+      'utf8',
+    );
+    expect(src).toContain('Cornell Notes');
+    expect(src).toContain('Meeting Notes');
+    expect(src).toContain('Incident Report');
+    expect(src).toContain('How-to Guide');
+    expect(src).toContain('Architecture Decision Record');
+    expect(src).toContain('Runbook');
   });
 });

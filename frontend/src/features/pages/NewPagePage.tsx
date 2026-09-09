@@ -5,7 +5,7 @@ import { Save, Upload, LayoutTemplate, Globe, Lock, X, ChevronDown, Sparkles, Lo
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCreatePage } from '../../shared/hooks/use-pages';
 import { useSpaces } from '../../shared/hooks/use-spaces';
-import { useTemplates, useUseTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
+import { useTemplates, useUseTemplate, useCreateTemplate, useImportMarkdown, useLocalSpaces } from '../../shared/hooks/use-standalone';
 import { Editor, EditorToolbar, EditorContextToolbars, clearDraft } from '../../shared/components/article/Editor';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { LocationPicker } from '../../shared/components/LocationPicker';
@@ -25,6 +25,8 @@ import { useSettings } from '../../shared/hooks/use-settings';
 import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 import { NotionImportDialog } from './notion-import/NotionImportDialog';
 import { prefetchNotionConnection } from './notion-import/use-notion-import';
+import { useAuthStore } from '../../stores/auth-store';
+import type { TemplateSummary } from '@compendiq/contracts';
 
 const NEW_PAGE_DRAFT_KEY = 'new-page';
 
@@ -646,6 +648,7 @@ export function NewPagePage() {
       {/* Template Gallery Modal */}
       {showTemplateGallery && (
         <TemplateGallery
+          editor={editorInstance}
           onSelect={(html) => {
             editorInstance?.commands.setContent(html, { emitUpdate: true });
             setPendingLabels([]);
@@ -679,9 +682,33 @@ export function NewPagePage() {
   );
 }
 
-function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => void; onClose: () => void }) {
+function templateBodyIsNonEmpty(html: string | undefined | null): boolean {
+  if (!html) return false;
+  return html.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim().length > 0;
+}
+
+function TemplateGallery({
+  editor,
+  onSelect,
+  onClose,
+}: {
+  editor: EditorType | null;
+  onSelect: (html: string) => void;
+  onClose: () => void;
+}) {
   const { data: templatesData, isLoading } = useTemplates();
   const useTemplateMutation = useUseTemplate();
+  const createTemplate = useCreateTemplate();
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  const [savingCurrent, setSavingCurrent] = useState(false);
+  const [saveTitle, setSaveTitle] = useState('');
+  const [shareWithEveryone, setShareWithEveryone] = useState(false);
+
+  const liveHtml = editor?.getHTML() ?? '';
+  const canSaveCurrent = templateBodyIsNonEmpty(liveHtml);
+
+  const mine = (templatesData ?? []).filter((tpl) => !tpl.isGlobal);
+  const shared = (templatesData ?? []).filter((tpl) => tpl.isGlobal);
 
   const handleUse = async (templateId: number) => {
     try {
@@ -690,6 +717,28 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
       toast.success('Template applied');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to apply template');
+    }
+  };
+
+  const handleSaveCurrent = async () => {
+    const trimmed = saveTitle.trim();
+    if (!trimmed) {
+      toast.error('Title is required');
+      return;
+    }
+    try {
+      await createTemplate.mutateAsync({
+        title: trimmed,
+        bodyHtml: liveHtml,
+        bodyJson: JSON.stringify(editor?.getJSON() ?? { type: 'doc', content: [] }),
+        ...(isAdmin ? { isGlobal: shareWithEveryone } : {}),
+      });
+      toast.success('Template saved');
+      setSavingCurrent(false);
+      setSaveTitle('');
+      setShareWithEveryone(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save template');
     }
   };
 
@@ -713,6 +762,67 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
               <X size={18} />
             </Dialog.Close>
           </div>
+          {canSaveCurrent && !savingCurrent && (
+            <button
+              type="button"
+              onClick={() => setSavingCurrent(true)}
+              className="nm-button-secondary mb-4 w-full"
+              data-testid="save-current-as-template-btn"
+            >
+              Save current as template
+            </button>
+          )}
+          {savingCurrent && (
+            <form
+              className="mb-4 space-y-3 rounded-lg border border-border p-3"
+              data-testid="save-current-template-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleSaveCurrent();
+              }}
+            >
+              <label htmlFor="save-template-title" className="block text-sm font-medium">Title</label>
+              <input
+                id="save-template-title"
+                type="text"
+                value={saveTitle}
+                onChange={(e) => setSaveTitle(e.target.value)}
+                className="nm-input w-full"
+                required
+                data-testid="save-template-title-input"
+              />
+              {isAdmin && (
+                <label htmlFor="save-template-share" className="flex items-center gap-2">
+                  <input
+                    id="save-template-share"
+                    type="checkbox"
+                    checked={shareWithEveryone}
+                    onChange={(e) => setShareWithEveryone(e.target.checked)}
+                    className="accent-primary h-4 w-4"
+                    data-testid="save-template-share-checkbox"
+                  />
+                  <span className="text-sm">Share with everyone</span>
+                </label>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  className="nm-button-primary"
+                  disabled={createTemplate.isPending || !saveTitle.trim()}
+                  data-testid="save-template-submit-btn"
+                >
+                  Save template
+                </button>
+                <button
+                  type="button"
+                  className="nm-button-ghost"
+                  onClick={() => setSavingCurrent(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
           {isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 3 }).map((_, i) => (
@@ -722,28 +832,74 @@ function TemplateGallery({ onSelect, onClose }: { onSelect: (html: string) => vo
           ) : !templatesData?.length ? (
             <p className="py-8 text-center text-sm text-muted-foreground">No templates available</p>
           ) : (
-            <div className="max-h-80 space-y-2 overflow-y-auto">
-              {templatesData.map((tpl) => (
-                <button
-                  key={tpl.id}
-                  onClick={() => handleUse(tpl.id)}
-                  disabled={useTemplateMutation.isPending}
-                  className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
-                >
-                  <div>
-                    <p className="font-medium">{tpl.title}</p>
-                    {tpl.category && (
-                      <span className="text-xs text-muted-foreground">{tpl.category}</span>
-                    )}
-                  </div>
-                  <LayoutTemplate size={16} className="text-muted-foreground" />
-                </button>
-              ))}
+            <div className="max-h-80 space-y-4 overflow-y-auto">
+              <GalleryGroup
+                heading="Shared templates"
+                badge="Shared"
+                templates={shared}
+                pending={useTemplateMutation.isPending}
+                onUse={handleUse}
+              />
+              <GalleryGroup
+                heading="My templates"
+                badge="Mine"
+                templates={mine}
+                pending={useTemplateMutation.isPending}
+                onUse={handleUse}
+              />
             </div>
           )}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+function GalleryGroup({
+  heading,
+  badge,
+  templates,
+  pending,
+  onUse,
+}: {
+  heading: string;
+  badge: string;
+  templates: TemplateSummary[];
+  pending: boolean;
+  onUse: (id: number) => void;
+}) {
+  if (templates.length === 0) return null;
+  return (
+    <section>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
+      <div className="space-y-2">
+        {templates.map((tpl) => (
+          <button
+            key={tpl.id}
+            onClick={() => onUse(tpl.id)}
+            disabled={pending}
+            className="nm-card-interactive flex w-full items-center justify-between p-3 text-left"
+          >
+            <div className="flex min-w-0 items-start gap-2">
+              {tpl.icon && <span className="text-lg" aria-hidden>{tpl.icon}</span>}
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="font-medium">{tpl.title}</p>
+                  <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">{badge}</span>
+                </div>
+                {tpl.description && (
+                  <p className="text-xs text-muted-foreground">{tpl.description}</p>
+                )}
+                {tpl.category && (
+                  <span className="text-xs text-muted-foreground">{tpl.category}</span>
+                )}
+              </div>
+            </div>
+            <LayoutTemplate size={16} className="shrink-0 text-muted-foreground" />
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
