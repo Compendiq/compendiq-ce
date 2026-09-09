@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import type { LlmProvider, LlmProviderInput } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { Button } from '../../../shared/components/Button';
+import { SearchableSelect } from '../../../shared/components/SearchableSelect';
 import {
   PROVIDER_PRESETS,
   type ProviderPreset,
@@ -348,20 +349,19 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             <label htmlFor="provider-listed-models" className="block text-sm">
               Listed models
             </label>
-            <select
+            <SearchableSelect
               id="provider-listed-models"
-              className="nm-select-md mt-1 w-full"
+              className="mt-1 w-full"
               value={listedModels.includes(defaultModel) ? defaultModel : ''}
-              onChange={(e) => setDefaultModel(e.target.value)}
-              aria-describedby="provider-listed-models-help"
-            >
-              <option value="">Select a model</option>
-              {listedModels.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+              onChange={setDefaultModel}
+              ariaLabel="Listed models"
+              describedBy="provider-listed-models-help"
+              testId="provider-listed-models"
+              options={[
+                { value: '', label: 'Select a model' },
+                ...listedModels.map((m) => ({ value: m, label: m })),
+              ]}
+            />
             <p id="provider-listed-models-help" className="mt-1 text-[11px] text-muted-foreground">
               Choosing one writes the default model. You can still type an id above if the host did
               not list it.

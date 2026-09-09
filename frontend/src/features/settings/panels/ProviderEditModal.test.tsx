@@ -660,4 +660,27 @@ describe('ProviderEditModal — Test connection', () => {
     expect(screen.queryByText('gpt-4o-from-first-host')).toBeNull();
     expect(screen.getByTestId('provider-test-result')).not.toHaveTextContent(/connected/i);
   });
+
+  it('opens the listed-models menu and selects by option click', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/admin/llm-providers/test') && (init as RequestInit)?.method === 'POST') {
+        return jsonResponse({
+          connected: true,
+          models: ['gpt-4o', 'gpt-4.1-mini'],
+          sampleModelsCount: 2,
+        });
+      }
+      return jsonResponse({ message: 'unmocked' }, 404);
+    });
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    fireEvent.change(apiKeyInput(), { target: { value: 'sk-dummy-not-a-real-key' } });
+    fireEvent.click(testConnectionButton());
+    await screen.findByRole('combobox', { name: /listed models/i });
+    fireEvent.click(screen.getByTestId('provider-listed-models-control'));
+    fireEvent.click(screen.getByTestId('provider-listed-models-option-gpt-4o'));
+    expect(defaultModelInput().value).toBe('gpt-4o');
+  });
 });
