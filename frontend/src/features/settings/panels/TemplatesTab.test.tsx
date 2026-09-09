@@ -218,4 +218,30 @@ describe('TemplatesTab', () => {
       expect(del).toBeTruthy();
     });
   });
+
+  it('does not show edit or delete buttons on shared templates for a regular user, even if created by them', async () => {
+    const sharedCreatedByUser = {
+      ...sharedTemplate,
+      id: 3,
+      title: 'Shared by me',
+      createdBy: USER.id,
+      isGlobal: true,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse([personalTemplate, sharedCreatedByUser]));
+    render(<TemplatesTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('edit-template-1')).toBeInTheDocument());
+    expect(screen.getByTestId('delete-template-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('edit-template-3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('delete-template-3')).not.toBeInTheDocument();
+  });
+
+  it('shows edit and delete buttons on shared templates for an admin', async () => {
+    useAuthStore.getState().setAuth('test-token', ADMIN);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse([personalTemplate, sharedTemplate]));
+    render(<TemplatesTab />, { wrapper: createWrapper() });
+
+    await waitFor(() => expect(screen.getByTestId('edit-template-2')).toBeInTheDocument());
+    expect(screen.getByTestId('delete-template-2')).toBeInTheDocument();
+  });
 });

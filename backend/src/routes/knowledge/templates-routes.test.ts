@@ -315,7 +315,7 @@ describe('Template routes - authenticated', () => {
     expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
-  it('should return 404 when another user updates a template', async () => {
+  it('should return 403 when a non-admin updates a global template', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [templateRow({ created_by: OTHER_USER_ID, is_global: true })],
     });
@@ -326,10 +326,26 @@ describe('Template routes - authenticated', () => {
       payload: { title: 'Hijack' },
     });
 
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toContain('Only admins can modify global templates');
     expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
+  it('should return 403 when a non-admin owner updates their template after it is made global', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [templateRow({ created_by: TEST_USER_ID, is_global: true })],
+    });
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/templates/1',
+      payload: { title: 'Hijack' },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toContain('Only admins can modify global templates');
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
+  });
   it('should return 404 when updating a missing template', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -361,16 +377,27 @@ describe('Template routes - authenticated', () => {
     );
   });
 
-  it('should return 404 when another user deletes a template', async () => {
+  it('should return 403 when a non-admin deletes a global template', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [templateRow({ created_by: OTHER_USER_ID, is_global: true })],
     });
 
     const res = await app.inject({ method: 'DELETE', url: '/api/templates/1' });
-    expect(res.statusCode).toBe(404);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toContain('Only admins can delete global templates');
     expect(mockLogAuditEvent).not.toHaveBeenCalled();
   });
 
+  it('should return 403 when a non-admin owner deletes their template after it is made global', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [templateRow({ created_by: TEST_USER_ID, is_global: true })],
+    });
+
+    const res = await app.inject({ method: 'DELETE', url: '/api/templates/1' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toContain('Only admins can delete global templates');
+    expect(mockLogAuditEvent).not.toHaveBeenCalled();
+  });
   it('should return 404 when deleting a missing template', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 

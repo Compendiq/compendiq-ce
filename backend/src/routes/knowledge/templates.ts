@@ -83,7 +83,7 @@ export async function templateRoutes(fastify: FastifyInstance) {
     }
 
     if (category) {
-      sql += ` AND category = $${paramIdx}`;
+      sql += ` AND category = $${paramIdx++}`;
       values.push(category);
     }
 
@@ -199,6 +199,9 @@ export async function templateRoutes(fastify: FastifyInstance) {
     }
 
     const current = existing.rows[0]!;
+    if (current.is_global && !isAdmin) {
+      throw fastify.httpErrors.forbidden('Only admins can modify global templates');
+    }
     if (current.created_by !== userId && !isAdmin) {
       throw fastify.httpErrors.notFound('Template not found');
     }
@@ -293,6 +296,9 @@ export async function templateRoutes(fastify: FastifyInstance) {
     }
 
     const current = existing.rows[0]!;
+    if (current.is_global && !isAdmin) {
+      throw fastify.httpErrors.forbidden('Only admins can delete global templates');
+    }
     if (current.created_by !== userId && !isAdmin) {
       throw fastify.httpErrors.notFound('Template not found');
     }

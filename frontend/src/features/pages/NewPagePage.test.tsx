@@ -1103,6 +1103,18 @@ describe('NewPagePage', () => {
       expect(await screen.findByTestId('template-gallery-modal')).toBeInTheDocument();
       expect(screen.queryByTestId('save-current-as-template-btn')).not.toBeInTheDocument();
     });
+
+    it('prefills template title from current page title when saving current as template', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Incident Postmortem' } });
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Some notes</p>' } });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      fireEvent.click(await screen.findByTestId('save-current-as-template-btn'));
+      const titleInput = screen.getByTestId('save-template-title-input') as HTMLInputElement;
+      expect(titleInput.value).toBe('My Incident Postmortem');
+    });
   });
 
   it('keeps Cancel and the identity row in the sticky header', async () => {

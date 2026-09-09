@@ -81,7 +81,7 @@ export function TemplatesTab() {
   }, [editingTemplate]);
 
   const canManage = useCallback(
-    (tpl: TemplateSummary) => isAdmin || tpl.createdBy === userId,
+    (tpl: TemplateSummary) => isAdmin || (!tpl.isGlobal && tpl.createdBy === userId),
     [isAdmin, userId],
   );
 

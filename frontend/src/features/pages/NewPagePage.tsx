@@ -649,6 +649,7 @@ export function NewPagePage() {
       {showTemplateGallery && (
         <TemplateGallery
           editor={editorInstance}
+          defaultTitle={title}
           onSelect={(html) => {
             editorInstance?.commands.setContent(html, { emitUpdate: true });
             setPendingLabels([]);
@@ -689,10 +690,12 @@ function templateBodyIsNonEmpty(html: string | undefined | null): boolean {
 
 function TemplateGallery({
   editor,
+  defaultTitle,
   onSelect,
   onClose,
 }: {
   editor: EditorType | null;
+  defaultTitle?: string;
   onSelect: (html: string) => void;
   onClose: () => void;
 }) {
@@ -701,7 +704,7 @@ function TemplateGallery({
   const createTemplate = useCreateTemplate();
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
   const [savingCurrent, setSavingCurrent] = useState(false);
-  const [saveTitle, setSaveTitle] = useState('');
+  const [saveTitle, setSaveTitle] = useState(() => defaultTitle?.trim() ?? '');
   const [shareWithEveryone, setShareWithEveryone] = useState(false);
 
   const liveHtml = editor?.getHTML() ?? '';
@@ -735,7 +738,7 @@ function TemplateGallery({
       });
       toast.success('Template saved');
       setSavingCurrent(false);
-      setSaveTitle('');
+      setSaveTitle(defaultTitle?.trim() ?? '');
       setShareWithEveryone(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save template');
@@ -765,8 +768,10 @@ function TemplateGallery({
           {canSaveCurrent && !savingCurrent && (
             <button
               type="button"
-              onClick={() => setSavingCurrent(true)}
-              className="nm-button-secondary mb-4 w-full"
+              onClick={() => {
+                setSaveTitle(defaultTitle?.trim() ?? '');
+                setSavingCurrent(true);
+              }}
               data-testid="save-current-as-template-btn"
             >
               Save current as template
