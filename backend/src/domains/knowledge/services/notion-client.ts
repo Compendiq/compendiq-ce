@@ -24,6 +24,13 @@ export const DEFAULT_NOTION_API_BASE_URL = 'https://api.notion.com';
 /** Notion-Version header. See module doc. */
 export const NOTION_VERSION = '2022-06-28';
 /**
+ * Views (table / board / …) exist only on Notion-Version 2025-09-03+. The rest
+ * of this client stays on {@link NOTION_VERSION} so Search still returns
+ * `database` objects. Board detection is fail-soft: a 404/400 here means
+ * "not a board", never a failed tree.
+ */
+export const NOTION_VIEWS_VERSION = '2025-09-03';
+/**
  * Notion request-limits: retry 429/529 (and idempotent 5xx) this many
  * times including the first attempt.
  * @see https://developers.notion.com/reference/request-limits
@@ -283,7 +290,10 @@ export class NotionClient {
     }
   }
 
-  private async fetchJson<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  private async fetchJson<T>(
+    path: string,
+    init: { method?: string; body?: unknown; notionVersion?: string } = {},
+  ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     validateUrl(url);
 
@@ -291,7 +301,7 @@ export class NotionClient {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: 'application/json',
-      'Notion-Version': NOTION_VERSION,
+      'Notion-Version': init.notionVersion ?? NOTION_VERSION,
     };
     if (init.body !== undefined) {
       headers['Content-Type'] = 'application/json';
@@ -407,6 +417,50 @@ export class NotionClient {
     return paginateAll((cursor) =>
       this.queryDatabase(databaseId, { startCursor: cursor ?? undefined, pageSize: 100 }),
     );
+  }
+
+  /**
+   * True when any view on this database is a Board. Uses the views API version
+   * only; 404/400/empty means the database is not a board.
+   */
+  async databaseHasBoardView(databaseId: string): Promise<boolean> {
+    try {
+      const list = await this.fetchJson<{ results?: Array<Record<string, unknown>> }>(
+        `/v1/views?database_id=${encodeURIComponent(databaseId)}`,
+        { notionVersion: NOTION_VIEWS_VERSION },
+      );
+      const results = Array.isArray(list.results) ? list.results : [];
+      for (const ref of results) {
+        if (!ref || typeof ref !== 'object') continue;
+        if (ref.type === 'board') return true;
+        const configuration = ref.configuration;
+        if (
+          configuration
+          && typeof configuration === 'object'
+          && !Array.isArray(configuration)
+          && (configuration as { type?: unknown }).type === 'board'
+        ) {
+          return true;
+        }
+      }
+      for (const ref of results.slice(0, 8)) {
+        const id = ref && typeof ref === 'object' && typeof ref.id === 'string' ? ref.id : null;
+        if (!id) continue;
+        try {
+          const view = await this.fetchJson<{ type?: string }>(
+            `/v1/views/${encodeURIComponent(id)}`,
+            { notionVersion: NOTION_VIEWS_VERSION },
+          );
+          if (view.type === 'board') return true;
+        } catch (err) {
+          if (err instanceof NotionError && err.statusCode === 401) throw err;
+        }
+      }
+    } catch (err) {
+      if (err instanceof NotionError && err.statusCode === 401) throw err;
+      return false;
+    }
+    return false;
   }
 
   async getBlock(blockId: string): Promise<Record<string, unknown>> {

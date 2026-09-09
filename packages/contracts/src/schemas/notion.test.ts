@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ConnectNotionSchema,
+  NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
   NotionConnectionResponseSchema,
   NotionImportRequestSchema,
@@ -85,6 +86,38 @@ describe('NotionTreeResponseSchema', () => {
     expect(skipped.selectable).toBe(false);
     if (skipped.selectable) throw new Error('expected skipped node');
     expect(skipped.skipReason).toBe(NOTION_UNSUPPORTED_LABEL);
+  });
+
+  it('accepts a Board database marked incompatible with selectable row children', () => {
+    expect(NOTION_BOARD_REASON).toBe('Board view is not compatible — import cards as articles');
+    const tree = NotionTreeResponseSchema.parse({
+      nodes: [
+        {
+          id: 'sprint',
+          title: 'Sprint board',
+          type: 'unsupported',
+          selectable: false,
+          skipReason: NOTION_BOARD_REASON,
+          reasonCode: 'board_layout',
+          children: [
+            {
+              id: 'card-1',
+              title: 'Ship login',
+              type: 'page',
+              selectable: true,
+              isDatabaseRow: true,
+              children: [],
+            },
+          ],
+        },
+      ],
+    });
+    const board = tree.nodes[0]!;
+    expect(board.type).toBe('unsupported');
+    expect(board.selectable).toBe(false);
+    if (board.selectable) throw new Error('expected skipped node');
+    expect(board.skipReason).toBe(NOTION_BOARD_REASON);
+    expect(board.children[0]).toMatchObject({ type: 'page', selectable: true, isDatabaseRow: true });
   });
 
   it('accepts a selectable database carrying its import shape', () => {

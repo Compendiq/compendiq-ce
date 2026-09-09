@@ -40,6 +40,11 @@ export interface FakeNotionState {
   databaseQueryResults?: Record<string, Array<Record<string, unknown>>>;
   /** Status to return for the query endpoint instead of a row list. */
   databaseQueryErrors?: Record<string, number>;
+  /**
+   * Views for `GET /v1/views?database_id=` / `GET /v1/views/:id`. Used to
+   * classify Board layouts without putting `layout` on the database object.
+   */
+  views?: Record<string, Array<Record<string, unknown>>>;
   /** GET paths (e.g. `/files/img.png`) served as attachment bytes. */
   files?: Record<string, { contentType: string; body: Buffer | string }>;
   /** Pause GET page/database/block lookups so tests can observe in-flight concurrency. */
@@ -270,6 +275,31 @@ export async function startFakeNotionServer(state: FakeNotionState): Promise<Fak
         next_cursor: hasMore ? String(next) : null,
         has_more: hasMore,
       });
+      return;
+    }
+
+    if (method === 'GET' && path === '/v1/views') {
+      const databaseId = parsed.searchParams.get('database_id');
+      const views = databaseId ? (state.views?.[databaseId] ?? []) : [];
+      send(res, 200, {
+        object: 'list',
+        results: views.map((view) => ({ object: 'view', id: view.id, ...(typeof view.type === 'string' ? { type: view.type } : {}) })),
+        next_cursor: null,
+        has_more: false,
+      });
+      return;
+    }
+
+    const viewMatch = /^\/v1\/views\/([^/]+)$/.exec(path);
+    if (method === 'GET' && viewMatch) {
+      const id = viewMatch[1]!;
+      const all = Object.values(state.views ?? {}).flat();
+      const view = all.find((item) => item.id === id);
+      if (!view) {
+        send(res, 404, { object: 'error', status: 404, code: 'object_not_found', message: 'Not found' });
+        return;
+      }
+      send(res, 200, { object: 'view', ...view });
       return;
     }
 

@@ -120,6 +120,7 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 
 - Data sources — they point at content the pinned Notion API cannot resolve. A linked view of a database Search already returned as the source database is not listed twice.
 - Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
+- **Board** databases — Compendiq is not a Kanban board. The picker marks the Board (and a page that only hosts an inline Board) with *Board view is not compatible — import cards as articles*. Tick the Board row to select its cards; each card imports as an article under a parent article named after the Notion page that contains the database.
 
 **Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.
 

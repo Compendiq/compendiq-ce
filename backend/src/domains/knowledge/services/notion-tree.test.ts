@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
+import { NOTION_BOARD_REASON, NOTION_UNSUPPORTED_LABEL, NotionTreeResponseSchema } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import {
   NOTION_RATE_LIMIT_MAX_ATTEMPTS,
@@ -11,6 +11,7 @@ import {
   NOTION_ROW_PROBE_BLOCKS,
   NOTION_ROW_SAMPLE_SIZE,
   fetchNotionWorkspaceTree,
+  isBoardLayout,
   rowHasBodyContent,
 } from './notion-tree.js';
 
@@ -1475,6 +1476,120 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     expect(server!.peakConcurrentLookups).toBeGreaterThan(1);
     expect(flatten(nodes as TreeNode[]).filter((n) => n.id.startsWith('child-'))).toHaveLength(8);
   });
+
+  it('marks a Board-layout database incompatible and keeps its cards selectable', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'ops',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Ops'),
+        },
+        {
+          object: 'database',
+          id: 'sprint',
+          parent: { type: 'page_id', page_id: 'ops' },
+          title: richTitle('Sprint'),
+          layout: 'board',
+        },
+        {
+          object: 'page',
+          id: 'card-a',
+          parent: { type: 'database_id', database_id: 'sprint' },
+          properties: titleProp('Ship login'),
+        },
+      ],
+    });
+
+    const sprint = findById(nodes as TreeNode[], 'sprint');
+    const card = findById(nodes as TreeNode[], 'card-a');
+    const ops = findById(nodes as TreeNode[], 'ops');
+    expect(sprint).toMatchObject({
+      type: 'unsupported',
+      selectable: false,
+      reasonCode: 'board_layout',
+      skipReason: NOTION_BOARD_REASON,
+    });
+    expect(card).toMatchObject({ type: 'page', selectable: true, isDatabaseRow: true, title: 'Ship login' });
+    expect(sprint?.children.map((c) => c.id)).toEqual(['card-a']);
+    expect(ops).toMatchObject({ type: 'page', selectable: true });
+  });
+
+  it('marks the host page of an inline Board incompatible', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'page',
+          id: 'projects',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Projects'),
+        },
+        {
+          object: 'database',
+          id: 'kanban',
+          parent: { type: 'page_id', page_id: 'projects' },
+          is_inline: true,
+          title: richTitle('Delivery'),
+          layout: 'board',
+        },
+        {
+          object: 'page',
+          id: 'card-1',
+          parent: { type: 'database_id', database_id: 'kanban' },
+          properties: titleProp('Write RFC'),
+        },
+      ],
+    });
+
+    expect(findById(nodes as TreeNode[], 'projects')).toMatchObject({
+      type: 'unsupported',
+      selectable: false,
+      reasonCode: 'board_host',
+      skipReason: NOTION_BOARD_REASON,
+    });
+    expect(findById(nodes as TreeNode[], 'kanban')).toMatchObject({
+      type: 'unsupported',
+      reasonCode: 'board_layout',
+    });
+    expect(findById(nodes as TreeNode[], 'card-1')).toMatchObject({
+      type: 'page',
+      selectable: true,
+      isDatabaseRow: true,
+    });
+  });
+
+  it('detects a Board from the views API when the database object has no layout field', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'tracker',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Tracker'),
+        },
+        {
+          object: 'page',
+          id: 'card-1',
+          parent: { type: 'database_id', database_id: 'tracker' },
+          properties: titleProp('Card'),
+        },
+      ],
+      views: {
+        tracker: [{ id: 'view-board', type: 'board', name: 'Board' }],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'tracker')).toMatchObject({
+      type: 'unsupported',
+      reasonCode: 'board_layout',
+      skipReason: NOTION_BOARD_REASON,
+    });
+    expect(findById(nodes as TreeNode[], 'card-1')).toMatchObject({ selectable: true, isDatabaseRow: true });
+  });
 });
 
 describe('rowHasBodyContent', () => {
@@ -1527,5 +1642,21 @@ describe('rowHasBodyContent', () => {
 
   it('still counts an unread remainder as body content', () => {
     expect(rowHasBodyContent(list([{ type: 'paragraph', paragraph: { rich_text: [] } }], true))).toBe(true);
+  });
+});
+
+describe('isBoardLayout', () => {
+  it('reads layout, views, and format.board_* without treating a wiki as a board', () => {
+    expect(isBoardLayout({ object: 'database', layout: 'board' })).toBe(true);
+    expect(isBoardLayout({ object: 'database', layout: { type: 'board' } })).toBe(true);
+    expect(isBoardLayout({ object: 'database', views: [{ type: 'board' }] })).toBe(true);
+    expect(isBoardLayout({ object: 'database', format: { board_columns: [] } })).toBe(true);
+    expect(isBoardLayout({ object: 'database', type: 'board' })).toBe(true);
+    expect(isBoardLayout({ object: 'database', layout: 'table' })).toBe(false);
+    expect(isBoardLayout({
+      object: 'database',
+      layout: 'board',
+      properties: { Verification: { type: 'verification' } },
+    })).toBe(true);
   });
 });

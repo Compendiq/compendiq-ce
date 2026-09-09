@@ -18,14 +18,16 @@
  */
 import pLimit from 'p-limit';
 import {
+  NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeDatabaseNode,
   type NotionTreeNode,
+  type NotionTreeSkippedNode,
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { NotionClient, isNotionObjectMissing, type NotionListResponse } from './notion-client.js';
 
-export { NOTION_UNSUPPORTED_LABEL };
+export { NOTION_BOARD_REASON, NOTION_UNSUPPORTED_LABEL };
 
 /**
  * A non-wiki inline database belongs to its host: property-only rows become a
@@ -158,6 +160,66 @@ export function isWikiDatabase(item: Record<string, unknown>): boolean {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function layoutTypeOf(value: unknown): string | null {
+  if (typeof value === 'string') return value.toLowerCase();
+  if (isRecord(value) && typeof value.type === 'string') return value.type.toLowerCase();
+  return null;
+}
+
+/**
+ * True when the Notion object is a Board layout. The pinned 2022-06-28
+ * retrieve-database payload has no view type; tests and any extra fields
+ * (`layout`, `views`, `format.board_*`) are enough, and the tree also probes
+ * `GET /v1/views` fail-soft.
+ */
+export function isBoardLayout(item: Record<string, unknown>): boolean {
+  if (layoutTypeOf(item.layout) === 'board') return true;
+  if (item.object === 'database' && layoutTypeOf(item.type) === 'board') return true;
+  if (Array.isArray(item.views)) {
+    for (const view of item.views) {
+      if (layoutTypeOf(view) === 'board') return true;
+      if (isRecord(view) && layoutTypeOf(view.type) === 'board') return true;
+    }
+  }
+  const format = isRecord(item.format) ? item.format : null;
+  if (format) {
+    if (layoutTypeOf(format.type) === 'board') return true;
+    if ('board_columns' in format || 'board_groups' in format || 'board_columns2' in format) return true;
+  }
+  return false;
+}
+
+function toSkippedBoardNode(
+  node: NotionTreeNode,
+  reasonCode: 'board_layout' | 'board_host',
+): NotionTreeSkippedNode {
+  return {
+    id: node.id,
+    title: node.title,
+    type: 'unsupported',
+    selectable: false,
+    skipReason: NOTION_BOARD_REASON,
+    reasonCode,
+    ...('url' in node && typeof node.url === 'string' ? { url: node.url } : {}),
+    children: node.children,
+  };
+}
+
+function replaceNode(nodes: Map<string, NotionTreeNode>, next: NotionTreeNode): void {
+  const key = normalizeId(next.id);
+  const previous = nodes.get(key);
+  nodes.set(key, next);
+  if (!previous || previous === next) return;
+  for (const candidate of nodes.values()) {
+    const index = candidate.children.indexOf(previous);
+    if (index >= 0) candidate.children[index] = next;
+  }
+}
+
 function toNode(item: Record<string, unknown>): NotionTreeNode | null {
   if (typeof item.id !== 'string' || item.id.length === 0) return null;
   const title = extractTitle(item);
@@ -184,6 +246,20 @@ function toNode(item: Record<string, unknown>): NotionTreeNode | null {
       selectable: false,
       skipReason: NOTION_UNSUPPORTED_LABEL,
       reasonCode: 'data_source',
+      ...extras,
+      children: [],
+    };
+  }
+  // A Board is never a local Kanban. Mark it incompatible up front when the
+  // object already carries a layout; `classifyBoardLayouts` catches the rest.
+  if (!isWikiDatabase(item) && isBoardLayout(item)) {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_BOARD_REASON,
+      reasonCode: 'board_layout',
       ...extras,
       children: [],
     };
@@ -379,6 +455,7 @@ export async function fetchNotionWorkspaceTree(
     if (parent) attach(parent, node, attached);
   }
 
+  await classifyBoardLayouts(client, nodes, rawByKey);
   await classifyDatabases(client, nodes);
 
   if (options.userId) {
@@ -469,6 +546,62 @@ function richTextHasContent(value: unknown): boolean {
  * same reason; a picker that 500s over advisory copy is worse than one that
  * recommends articles.
  */
+async function classifyBoardLayouts(
+  client: NotionClient,
+  nodes: Map<string, NotionTreeNode>,
+  rawByKey: Map<string, Record<string, unknown>>,
+): Promise<void> {
+  const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+  const candidates: NotionTreeNode[] = [];
+  for (const node of nodes.values()) {
+    if (node.type === 'database') candidates.push(node);
+    if (
+      node.type === 'unsupported'
+      && (node.reasonCode === 'inline_database' || node.reasonCode === 'child_database')
+    ) {
+      candidates.push(node);
+    }
+  }
+  await Promise.all(
+    candidates.map((node) =>
+      limit(async () => {
+        const current = nodes.get(normalizeId(node.id));
+        if (!current) return;
+        const raw = rawByKey.get(normalizeId(current.id));
+        if (raw && (isWikiDatabase(raw) || isBoardLayout(raw))) {
+          if (raw && !isWikiDatabase(raw) && isBoardLayout(raw)) {
+            replaceNode(nodes, toSkippedBoardNode(current, 'board_layout'));
+          }
+          return;
+        }
+        try {
+          if (await client.databaseHasBoardView(current.id)) {
+            const live = nodes.get(normalizeId(current.id));
+            if (live) replaceNode(nodes, toSkippedBoardNode(live, 'board_layout'));
+          }
+        } catch {
+          // Fail-soft: a views lookup must never fail the picker.
+        }
+      }),
+    ),
+  );
+
+  for (const node of [...nodes.values()]) {
+    if (node.type !== 'unsupported' || node.reasonCode !== 'board_layout') continue;
+    const raw = rawByKey.get(normalizeId(node.id));
+    if (!raw) continue;
+    const inline = raw.is_inline === true || (raw.object === 'block' && raw.type === 'child_database');
+    if (!inline) continue;
+    const parent = isRecord(raw.parent) ? raw.parent : null;
+    const pageId = parent?.type === 'page_id' && typeof parent.page_id === 'string' ? parent.page_id : null;
+    if (!pageId) continue;
+    const host = nodes.get(normalizeId(pageId));
+    if (host && host.type === 'page') {
+      replaceNode(nodes, toSkippedBoardNode(host, 'board_host'));
+    }
+  }
+}
+
 async function classifyDatabases(client: NotionClient, nodes: Map<string, NotionTreeNode>): Promise<void> {
   const databases: NotionTreeDatabaseNode[] = [];
   for (const node of nodes.values()) {

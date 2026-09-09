@@ -504,7 +504,7 @@ converter only spells the URL the store already serves:
 | `child_page` | One existing `div.confluence-children-macro` per parent for successfully imported direct children (`data-depth="1"`, `data-sort="title"`). Nested columns share that one list. Nonchild or unavailable pages remain links |
 | `link_to_page`, page mentions | `<a href="/pages/{id}">` for imported identities, otherwise the Notion URL. These references never create or reparent articles; database links stay Notion URLs |
 | `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside one is enumerated and rendered like any other |
-| `child_database` | Property-only rows become a plain `<table>` in the host, with an optional `<h3>` title. Article-bearing inline databases without their own body place row articles directly below the host and use Child pages. Wiki databases and databases with a body retain their own article below the host; their rows stay beneath it. A table is rendered only at its owning article, never both host and container |
+| `child_database` | Property-only rows become a plain `<table>` in the host, with an optional `<h3>` title. Article-bearing inline databases without their own body place row articles directly below the host and use Child pages. Wiki databases and databases with a body retain their own article below the host; their rows stay beneath it. A table is rendered only at its owning article, never both host and container. A **Board** layout is omitted from the host body — never a table, never a Kanban — and its cards import as articles under a parent named after the containing Notion page |
 | `unsupported` (buttons, boards/whiteboards, …), `meeting_notes`, `video`, and any other unmapped type | **omitted** — listed in `skips`, no stub, no flatten |
 
 Rich-text annotations map to `<strong>` / `<em>` / `<del>` / `<code>` / `<a>`.
@@ -513,6 +513,11 @@ import (script tags and `javascript:` URLs stripped). A skipped or unselected
 Notion item is never rewritten to an internal page link.
 
 ### Two database shapes (#1465)
+
+A Notion **Board** is not a third shape. It is incompatible: the database is
+not imported, Compendiq does not grow a Kanban, and selected row pages import
+as articles under a parent article named after the Notion page that contains
+the board.
 
 A Notion database reaches Compendiq as one of two shapes, chosen per database
 by `databaseModes` on the import request (`skip` writes nothing at all):

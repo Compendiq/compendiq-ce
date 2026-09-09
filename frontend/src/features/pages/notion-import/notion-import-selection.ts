@@ -164,6 +164,7 @@ export function formatNodeBadge(node: NotionTreeNode): string {
   if (node.reasonCode === 'data_source') return 'Data source';
   if (node.reasonCode === 'inline_database') return 'Inline database';
   if (node.reasonCode === 'child_database') return 'Nested database';
+  if (node.reasonCode === 'board_layout' || node.reasonCode === 'board_host') return 'Board';
   if (node.reasonCode && node.reasonCode !== 'unsupported') {
     return node.reasonCode.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
   }

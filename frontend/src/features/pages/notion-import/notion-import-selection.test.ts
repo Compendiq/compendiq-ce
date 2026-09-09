@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
   type NotionTreeDatabaseNode,
   type NotionTreeNode,
@@ -266,6 +267,27 @@ describe('describeNode', () => {
       action: 'Whiteboards have no local shape yet',
     });
   });
+
+  it('marks a Board layout incompatible while its cards stay importable articles', () => {
+    const card = row('card-1', 'Ship login');
+    const board = unsupported('sprint', 'Sprint', {
+      skipReason: NOTION_BOARD_REASON,
+      reasonCode: 'board_layout',
+      children: [card],
+    });
+    expect(describeNode(board)).toEqual({
+      supported: false,
+      badge: 'Board',
+      action: NOTION_BOARD_REASON,
+    });
+    expect(describeNode(card)).toEqual({
+      supported: true,
+      badge: 'Database row',
+      action: 'Imports as an article',
+    });
+    expect(selectableIdsInGroup(board)).toEqual(['card-1']);
+    expect(toggleSelectedPageGroup(new Set(), board).selected).toEqual(new Set(['card-1']));
+  });
 });
 
 describe('describeNode cautions', () => {
@@ -490,6 +512,8 @@ describe('formatNodeBadge', () => {
     expect(badgeFor('data_source')).toBe('Data source');
     expect(badgeFor('inline_database')).toBe('Inline database');
     expect(badgeFor('child_database')).toBe('Nested database');
+    expect(badgeFor('board_layout')).toBe('Board');
+    expect(badgeFor('board_host')).toBe('Board');
     expect(badgeFor('canvas')).toBe('Canvas');
     expect(badgeFor('audio_block')).toBe('Audio block');
     expect(badgeFor('ai_block')).toBe('Ai block');
