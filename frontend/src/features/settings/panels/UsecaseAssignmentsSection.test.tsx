@@ -327,4 +327,114 @@ describe('UsecaseAssignmentsSection', () => {
     expect(matches.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Ollama \/ bge-m3/)).toBeTruthy();
   });
+
+  it('filters embedding and rerank model options from a mixed provider list', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/llm-providers/') && url.includes('/models')) {
+        return new Response(
+          JSON.stringify([
+            { name: 'qwen3:4b' },
+            { name: 'bge-m3' },
+            { name: 'gpt-4o-mini' },
+            { name: 'bge-reranker-v2-m3' },
+            { name: 'nomic-embed-text' },
+          ]),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+    const assignments = makeAssignments();
+    assignments.rerank = {
+      ...assignments.rerank,
+      providerId: providerA.id,
+      resolved: { providerId: providerA.id, providerName: providerA.name, model: '' },
+    };
+    render(
+      <UsecaseAssignmentsSection
+        assignments={assignments}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(
+        Array.from((screen.getByTestId('usecase-chat-model') as HTMLSelectElement).options).map(
+          (o) => o.value,
+        ),
+      ).toEqual(['', 'qwen3:4b', 'bge-m3', 'gpt-4o-mini', 'bge-reranker-v2-m3', 'nomic-embed-text']);
+    });
+
+    const valuesOf = (testId: string) =>
+      Array.from((screen.getByTestId(testId) as HTMLSelectElement).options).map((o) => o.value);
+
+    const embedding = valuesOf('usecase-embedding-model');
+    expect(embedding).toContain('bge-m3');
+    expect(embedding).toContain('nomic-embed-text');
+    expect(embedding).not.toContain('qwen3:4b');
+    expect(embedding).not.toContain('gpt-4o-mini');
+    expect(embedding).not.toContain('bge-reranker-v2-m3');
+
+    const rerank = valuesOf('usecase-rerank-model');
+    expect(rerank).toContain('bge-reranker-v2-m3');
+    expect(rerank).not.toContain('qwen3:4b');
+    expect(rerank).not.toContain('gpt-4o-mini');
+    expect(rerank).not.toContain('bge-m3');
+    expect(rerank).not.toContain('nomic-embed-text');
+  });
+
+  it('keeps every model in the chat dropdown and hides non-matches while searching', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/llm-providers/') && url.includes('/models')) {
+        return new Response(
+          JSON.stringify([
+            { name: 'qwen3:4b' },
+            { name: 'bge-m3' },
+            { name: 'gpt-4o-mini' },
+            { name: 'bge-reranker-v2-m3' },
+            { name: 'nomic-embed-text' },
+          ]),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(
+        Array.from((screen.getByTestId('usecase-chat-model') as HTMLSelectElement).options).map(
+          (o) => o.value,
+        ),
+      ).toEqual(['', 'qwen3:4b', 'bge-m3', 'gpt-4o-mini', 'bge-reranker-v2-m3', 'nomic-embed-text']);
+    });
+
+    fireEvent.click(screen.getByTestId('usecase-chat-model-control'));
+    const search = screen.getByRole('searchbox', { name: /chat model/i });
+    fireEvent.change(search, { target: { value: 'gpt' } });
+    expect(screen.getByTestId('usecase-chat-model-option-gpt-4o-mini')).toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-qwen3:4b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-bge-m3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-bge-reranker-v2-m3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-nomic-embed-text')).not.toBeInTheDocument();
+  });
 });
