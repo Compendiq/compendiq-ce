@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Notion Board databases are marked incompatible on import. Compendiq does not become a Kanban: the board itself is not imported, and selected cards become articles under a parent named after the Notion page that contains the database.
 - Searchable model picker on Settings → AI Models. Use-case model dropdowns and the provider listed-models picker are a custom searchable list instead of a native select. Embedding and Rerank rows pre-filter to embedding and reranking models.
 - Playwright browser tests now run in PR Check against a freshly provisioned PostgreSQL/Redis stack. CI reports executed/skipped counts, rejects selected skips, and retains failure reports and traces; only the three explicitly documented external-service specs are excluded (#1543).
 - Article-native Connections (#1314): reading views, including bodyless articles, show directed links, parent/child pages, and up to five ranked recommendations with persisted-score and shared-label evidence. Missing embeddings do not hide structural connections. The existing focused two-hop graph now supports standalone pages and excludes inaccessible intermediaries. Authenticated, content-free audit events record visible panel visits and navigation for the documented four-week adoption review; Graph remains in navigation.

@@ -12,7 +12,7 @@ import {
 } from '../../../test-db-helper.js';
 import { getPool, query } from '../../../core/db/postgres.js';
 import { NOTION_IMPORT_LOCK_KEY } from '../../../core/db/advisory-locks.js';
-import { NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
+import { NOTION_BOARD_REASON, NOTION_UNSUPPORTED_LABEL, type NotionImportItem } from '@compendiq/contracts';
 import { startFakeNotionServer, type FakeNotionServer } from './__fixtures__/fake-notion-server.js';
 import { NotionClient, setNotionApiBaseUrlForTests } from './notion-client.js';
 import {
@@ -1354,6 +1354,145 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
       { notionPageId: 'crm', status: 'skip', reason: 'Database is excluded from import' },
     ]);
     expect((await query('SELECT 1 FROM pages')).rows).toHaveLength(0);
+  });
+
+  it('skips a Board database and does not flatten it into a table', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: { sprint: crmDatabase({ id: 'sprint', title: [{ type: 'text', plain_text: 'Sprint' }], layout: 'board' }) },
+      pages: {
+        'card-a': {
+          object: 'page',
+          id: 'card-a',
+          parent: { type: 'database_id', database_id: 'sprint' },
+          properties: titleProp('Ship login'),
+        },
+      },
+      blockChildren: { 'card-a': [paragraph('c1', 'Login checklist')] },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['sprint'],
+      visibility: 'private',
+      databaseModes: { sprint: 'table' },
+    });
+
+    expect(items).toEqual([
+      { notionPageId: 'sprint', status: 'skip', reason: NOTION_BOARD_REASON },
+    ]);
+    expect((await query('SELECT 1 FROM pages')).rows).toHaveLength(0);
+  });
+
+  it('imports Board cards as articles under a namesake of the containing Notion page', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      databases: {
+        sprint: crmDatabase({
+          id: 'sprint',
+          title: [{ type: 'text', plain_text: 'Sprint' }],
+          layout: 'board',
+          parent: { type: 'workspace', workspace: true },
+        }),
+      },
+      pages: {
+        'card-a': {
+          object: 'page',
+          id: 'card-a',
+          parent: { type: 'database_id', database_id: 'sprint' },
+          properties: titleProp('Ship login'),
+        },
+        'card-b': {
+          object: 'page',
+          id: 'card-b',
+          parent: { type: 'database_id', database_id: 'sprint' },
+          properties: titleProp('Write RFC'),
+        },
+      },
+      blockChildren: {
+        'card-a': [paragraph('c1', 'Login checklist')],
+        'card-b': [paragraph('c2', 'RFC draft')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['card-a', 'card-b'],
+      visibility: 'private',
+    });
+
+    const byId = Object.fromEntries(items.map((item) => [item.notionPageId, item]));
+    expect(byId['card-a']).toMatchObject({ status: 'success', importedAs: 'article' });
+    expect(byId['card-b']).toMatchObject({ status: 'success', importedAs: 'article' });
+    expect(byId.sprint).toMatchObject({ status: 'success', importedAs: 'page' });
+
+    const pages = await query<{ title: string; notion_page_id: string; parent_id: string | null; body_html: string }>(
+      'SELECT title, notion_page_id, parent_id, body_html FROM pages ORDER BY title',
+    );
+    const container = pages.rows.find((row) => row.notion_page_id === 'sprint')!;
+    expect(container.title).toBe('Sprint');
+    expect(container.body_html).toContain('Imported from the Notion board');
+    expect(container.body_html).not.toContain('<table>');
+    const cards = pages.rows.filter((row) => row.notion_page_id !== 'sprint');
+    expect(cards).toHaveLength(2);
+    expect(cards.every((row) => row.parent_id === String(byId.sprint.localPageId))).toBe(true);
+  });
+
+  it('nests inline Board cards under an article named after the host Notion page', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        projects: {
+          object: 'page',
+          id: 'projects',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Projects'),
+        },
+        'card-1': {
+          object: 'page',
+          id: 'card-1',
+          parent: { type: 'database_id', database_id: 'kanban' },
+          properties: titleProp('Write RFC'),
+        },
+      },
+      databases: {
+        kanban: crmDatabase({
+          id: 'kanban',
+          title: [{ type: 'text', plain_text: 'Delivery' }],
+          layout: 'board',
+          is_inline: true,
+          parent: { type: 'page_id', page_id: 'projects' },
+        }),
+      },
+      blockChildren: {
+        'card-1': [paragraph('c1', 'RFC draft')],
+      },
+    });
+
+    const items = await runNotionImport({
+      userId,
+      client,
+      pageIds: ['card-1'],
+      visibility: 'private',
+    });
+
+    const byId = Object.fromEntries(items.map((item) => [item.notionPageId, item]));
+    expect(byId['card-1']).toMatchObject({ status: 'success', importedAs: 'article' });
+    expect(byId.projects).toMatchObject({ status: 'success', importedAs: 'page' });
+    expect(byId.kanban).toMatchObject({ status: 'skip', reason: NOTION_BOARD_REASON });
+
+    const pages = await query<{ title: string; notion_page_id: string; parent_id: string | null; body_html: string }>(
+      'SELECT title, notion_page_id, parent_id, body_html FROM pages',
+    );
+    const host = pages.rows.find((row) => row.notion_page_id === 'projects')!;
+    expect(host.title).toBe('Projects');
+    expect(host.body_html).toContain('Imported from the Notion board “Delivery”');
+    expect(host.body_html).not.toContain('<table>');
+    const card = pages.rows.find((row) => row.notion_page_id === 'card-1')!;
+    expect(card.parent_id).toBe(String(byId.projects.localPageId));
+    expect(pages.rows.some((row) => row.notion_page_id === 'kanban')).toBe(false);
   });
 
   it('defaults a wiki database to a container page whose lead says wiki, not database', async () => {

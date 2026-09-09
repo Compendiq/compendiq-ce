@@ -26,6 +26,14 @@ export type NotionConnectionResponse = z.infer<typeof NotionConnectionResponseSc
 export const NOTION_UNSUPPORTED_LABEL = 'Not supported — stays in Notion' as const;
 
 /**
+ * Picker copy for a Notion database whose layout is Board. Compendiq has no
+ * Kanban surface: the board itself is not imported. Row pages remain
+ * selectable as articles under a parent named after the containing Notion page.
+ */
+export const NOTION_BOARD_REASON =
+  'Board view is not compatible — import cards as articles' as const;
+
+/**
  * How a selected Notion database is imported.
  *
  * - `table` — one local page whose body is the rows × properties table. Only

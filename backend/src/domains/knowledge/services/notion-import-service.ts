@@ -16,6 +16,7 @@
  * outcome is returned for audit, cache invalidation and failure reporting.
  */
 import {
+  NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
   type NotionDatabaseMode,
   type NotionImportItem,
@@ -40,6 +41,7 @@ import {
 import {
   NOTION_ROW_PROBE_BLOCKS,
   extractParentRelationId,
+  isBoardLayout,
   isWikiDatabase,
   rowHasBodyContent,
 } from './notion-tree.js';
@@ -113,6 +115,66 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   const databaseHosts = new Map<string, string>();
   const childHosts = new Map<string, string>();
   const tableDatabases = new Set<string>();
+  const boardByKey = new Map<string, Record<string, unknown>>();
+
+  async function ensureBoardContainer(database: Record<string, unknown>): Promise<string | null> {
+    const hostId = boardHostId(database);
+    if (!hostId) return null;
+    const hostKey = normalizeNotionId(hostId);
+    if (jobs.some((job) => normalizeNotionId(job.id) === hostKey)) return hostId;
+    const imported = importedPages.get(hostKey);
+    if (typeof imported === 'number') return hostId;
+    const existingHost = await findImportedPage(input.userId, hostId);
+    if (existingHost?.complete) {
+      importedPages.set(hostKey, existingHost.id);
+      return hostId;
+    }
+
+    const boardTitle = extractTitle(database);
+    let hostPage: Record<string, unknown> = database;
+    let title = boardTitle;
+    let parentNotionId = parentPageIdOf(database);
+    if (hostKey !== normalizeNotionId(typeof database.id === 'string' ? database.id : '')) {
+      const page = await getPageQuietly(input.client, hostId);
+      if (page) {
+        hostPage = page;
+        title = extractTitle(page);
+        parentNotionId = parentPageIdOf(page);
+      } else {
+        hostPage = {
+          object: 'page',
+          id: hostId,
+          parent: isRecord(database.parent) ? database.parent : { type: 'workspace', workspace: true },
+        };
+      }
+    }
+
+    items.delete(queued.get(hostKey) ?? hostId);
+    if (!queued.has(hostKey)) queued.set(hostKey, hostId);
+    const existing = existingHost ?? await findImportedPage(input.userId, hostId);
+    jobs.push({
+      id: hostId,
+      page: hostPage,
+      title,
+      parentNotionId,
+      reuseId: existing?.id,
+      reuseComplete: existing?.complete === true,
+      boardContainer: true,
+      boardTitle,
+      blocks: [],
+    });
+    if (existing?.complete && !input.overwriteExisting) {
+      importedPages.set(hostKey, existing.id);
+      items.set(hostId, { notionPageId: hostId, status: 'already_imported', localPageId: existing.id });
+      alreadyImported.push({
+        notionPageId: hostId,
+        localPageId: existing.id,
+        parentNotionId,
+        page: hostPage,
+      });
+    }
+    return hostId;
+  }
 
   async function enqueue(id: string, page?: Record<string, unknown>): Promise<void> {
     const key = normalizeNotionId(id);
@@ -130,9 +192,17 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       items.set(id, { notionPageId: id, status: 'skip', reason: NOTION_DISCOVERY_LIMIT_REASON });
       return;
     }
-    const classified: Classified = page
+    let classified: Classified = page
       ? page.object === 'database' ? { kind: 'database', database: page } : { kind: 'page', page }
       : await classifySelection(input.client, id);
+    if (classified.kind === 'database' && await isBoardDatabase(input.client, classified.database)) {
+      classified = { kind: 'board', database: classified.database };
+    }
+    if (classified.kind === 'board') {
+      boardByKey.set(key, classified.database);
+      items.set(id, { notionPageId: id, status: 'skip', reason: NOTION_BOARD_REASON });
+      return;
+    }
     if (classified.kind === 'fail' || classified.kind === 'skip') {
       const existing = await findImportedPage(input.userId, id);
       if (existing?.complete && !input.overwriteExisting) {
@@ -167,9 +237,29 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     // A later request batch may contain only a row of an inline table. Recover
     // its database and an already imported host before deciding to make an
     // article, rather than bypassing the table decision made in the first batch.
-    if (typeof databaseParent === 'string' && !queued.has(normalizeNotionId(databaseParent))) {
-      const database = await classifySelection(input.client, databaseParent);
-      if (database.kind === 'database') await enqueue(databaseParent, database.database);
+    if (typeof databaseParent === 'string') {
+      const parentKey = normalizeNotionId(databaseParent);
+      if (!queued.has(parentKey) && !boardByKey.has(parentKey)) {
+        const database = await classifySelection(input.client, databaseParent);
+        if (database.kind === 'board') {
+          boardByKey.set(parentKey, database.database);
+          queued.set(parentKey, databaseParent);
+          items.set(databaseParent, { notionPageId: databaseParent, status: 'skip', reason: NOTION_BOARD_REASON });
+        } else if (database.kind === 'database') {
+          if (await isBoardDatabase(input.client, database.database)) {
+            boardByKey.set(parentKey, database.database);
+            queued.set(parentKey, databaseParent);
+            items.set(databaseParent, { notionPageId: databaseParent, status: 'skip', reason: NOTION_BOARD_REASON });
+          } else {
+            await enqueue(databaseParent, database.database);
+          }
+        }
+      }
+      const board = boardByKey.get(parentKey);
+      if (board) {
+        const hostId = await ensureBoardContainer(board);
+        if (hostId) job.parentNotionId = hostId;
+      }
     }
     if (job.database && parent?.type === 'page_id' && typeof parent.page_id === 'string' &&
         !queued.has(normalizeNotionId(parent.page_id))) {
@@ -209,7 +299,8 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   const keepsOwnArticle = (key: string): boolean => modes.get(key) === 'pages';
 
   async function planDatabase(job: ImportJob): Promise<void> {
-    if (!job.database) return;
+    if (!job.database || job.boardContainer) return;
+    if (isBoardLayout(job.database) || boardByKey.has(normalizeNotionId(job.id))) return;
     const key = normalizeNotionId(job.id);
     const hosted = databaseHosts.has(key);
     const mode = modes.get(key) ?? (explicitlySelected.has(key) ? 'table' : 'pages');
@@ -235,6 +326,10 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   for (let index = 0; index < jobs.length; index++) {
     const job = jobs[index]!;
     try {
+      if (job.boardContainer) {
+        job.blocks = [];
+        continue;
+      }
       try {
         job.blocks = await fetchBlocksDeep(input.client, job.id);
       } catch (err) {
@@ -495,7 +590,12 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       });
       const wikiProps = extractWikiPageProperties(job.page);
       let { bodyHtml, bodyText } = job.database ? converted : wikiConvertedBody(job.page, converted);
-      if (job.database) {
+      if (job.boardContainer) {
+        const boardName = job.boardTitle || job.title;
+        const lead = `Imported from the Notion board “${boardName}”.`;
+        bodyHtml = `<p class="text-muted-foreground italic">${escapeHtml(lead)}</p>`;
+        bodyText = lead;
+      } else if (job.database) {
         const lead = databaseContainerBody(job.database, job.title);
         const tableHtml = job.flatten?.kind === 'table'
           ? renderDatabaseTable({ columns: job.flatten.columns, rows: job.flatten.rows })
@@ -606,6 +706,8 @@ interface ImportJob {
   database?: Record<string, unknown>;
   flatten?: FlattenAttempt;
   foldedInto?: string;
+  boardContainer?: boolean;
+  boardTitle?: string;
 }
 
 
@@ -775,6 +877,7 @@ async function abandonPage(pageId: number, destinationParentId: string | null): 
 type Classified =
   | { kind: 'page'; page: Record<string, unknown> }
   | { kind: 'database'; database: Record<string, unknown> }
+  | { kind: 'board'; database: Record<string, unknown> }
   | { kind: 'skip'; reason: string }
   | { kind: 'fail'; reason: string };
 
@@ -787,13 +890,16 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
       return { kind: 'skip', reason: NOTION_UNSUPPORTED_LABEL };
     }
     if (page.object === 'database') {
+      if (await isBoardDatabase(client, page)) return { kind: 'board', database: page };
       return { kind: 'database', database: page };
     }
     return { kind: 'page', page };
   } catch (err) {
     if (isNotionObjectMissing(err)) {
       try {
-        return { kind: 'database', database: await client.getDatabase(id) };
+        const database = await client.getDatabase(id);
+        if (await isBoardDatabase(client, database)) return { kind: 'board', database };
+        return { kind: 'database', database };
       } catch (dbErr) {
         return { kind: 'fail', reason: failReason(dbErr) };
       }
@@ -982,6 +1088,32 @@ async function readFlattenableRows(
 
 function isTrashed(item: Record<string, unknown>): boolean {
   return item.in_trash === true || item.archived === true;
+}
+
+function boardHostId(database: Record<string, unknown>): string {
+  const parent = isRecord(database.parent) ? database.parent : null;
+  if (parent?.type === 'page_id' && typeof parent.page_id === 'string') return parent.page_id;
+  return typeof database.id === 'string' ? database.id : '';
+}
+
+async function isBoardDatabase(
+  client: NotionClient,
+  item: Record<string, unknown>,
+): Promise<boolean> {
+  if (isWikiDatabase(item)) return false;
+  if (isBoardLayout(item)) return true;
+  const id = typeof item.id === 'string' ? item.id : '';
+  if (!id) return false;
+  return client.databaseHasBoardView(id);
+}
+
+async function getPageQuietly(client: NotionClient, id: string): Promise<Record<string, unknown> | null> {
+  try {
+    return await client.getPage(id);
+  } catch (err) {
+    if (isNotionObjectMissing(err)) return null;
+    throw err;
+  }
 }
 
 
