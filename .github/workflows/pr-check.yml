@@ -282,12 +282,15 @@ jobs:
 
       - name: Install Chromium and system dependencies
         run: |
-          # GHA Ubuntu images ship google-chrome.list. Playwright --with-deps
-          # runs apt-get update; dl.google.com Hash Sum mismatch aborts the
-          # install. Playwright Chromium does not use that package.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
-                     /etc/apt/sources.list.d/google-chrome*.list
-          npx playwright install --with-deps chromium
+          # GHA Ubuntu images ship a Google Chrome apt source (.list or
+          # .sources). Playwright --with-deps runs apt-get update; a Hash Sum
+          # mismatch from dl.google.com aborts the install. Playwright
+          # Chromium does not use that package.
+          sudo find /etc/apt -iname '*google*' -print -delete
+          npx playwright install --with-deps chromium || {
+            echo "::warning::apt deps failed; installing Chromium without --with-deps"
+            npx playwright install chromium
+          }
 
       - name: Test E2E helpers
         run: npx vitest run --config e2e/vitest.config.ts
