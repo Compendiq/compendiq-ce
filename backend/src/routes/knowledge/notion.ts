@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   ConnectNotionSchema,
   NotionConnectionResponseSchema,
@@ -14,7 +14,10 @@ import { NotionClient, NotionError } from '../../domains/knowledge/services/noti
 import { fetchNotionWorkspaceTree } from '../../domains/knowledge/services/notion-tree.js';
 import {
   getNotionImportStatus,
+  releaseNotionImportLock,
   setNotionImportStatus,
+  startNotionImportHeartbeat,
+  tryStartNotionImport,
 } from '../../domains/knowledge/services/notion-import-job.js';
 import {
   NotionImportError,
@@ -119,8 +122,13 @@ export async function notionRoutes(fastify: FastifyInstance) {
         statusCode: 400,
       });
     }
-    const current = await getNotionImportStatus(request.userId);
-    if (current.status === 'importing') {
+    const userId = request.userId;
+    const auditRequest = {
+      ip: request.ip,
+      headers: { 'user-agent': request.headers['user-agent'] },
+    } as FastifyRequest;
+    const lockId = await tryStartNotionImport(userId);
+    if (!lockId) {
       return reply.status(409).send({
         error: 'ClientError',
         message: 'Notion import already in progress',
@@ -129,8 +137,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
     }
 
     const accepted = NotionImportAcceptedSchema.parse({ status: 'importing' });
-    const userId = request.userId;
-    await setNotionImportStatus(userId, { status: 'importing' });
+    const stopHeartbeat = startNotionImportHeartbeat(userId, lockId);
 
     void (async () => {
       try {
@@ -160,6 +167,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
             'page',
             String(item.localPageId),
             { source: 'standalone', notionPageId: item.notionPageId },
+            auditRequest,
           );
         }
         await cache.invalidate(userId, 'notion_tree');
@@ -173,6 +181,9 @@ export async function notionRoutes(fastify: FastifyInstance) {
             : 'Notion import failed';
         const message = token && raw.includes(token) ? 'Notion import failed' : raw;
         await setNotionImportStatus(userId, { status: 'error', error: message });
+      } finally {
+        stopHeartbeat();
+        await releaseNotionImportLock(userId, lockId);
       }
     })();
 
