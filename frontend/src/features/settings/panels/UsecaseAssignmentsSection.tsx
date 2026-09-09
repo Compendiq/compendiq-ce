@@ -6,6 +6,8 @@ import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
+import { SearchableSelect } from '../../../shared/components/SearchableSelect';
+import { filterModelsForKind, type ModelKindFilter } from './model-kind';
 import { Info } from 'lucide-react';
 
 const USECASE_LABELS: Record<LlmUsecase, string> = {
@@ -224,6 +226,8 @@ export function UsecaseAssignmentsSection({
                 onChange={(m) => update(u, { model: m })}
                 testId={`usecase-${u}-model`}
                 inheritLabel="Inherit provider's model"
+                ariaLabel={`${USECASE_LABELS[u]} model`}
+                kind={u === 'embedding' ? 'embedding' : u === 'rerank' ? 'rerank' : undefined}
               />
               <span className="flex items-center gap-2 text-muted-foreground text-xs">
                 {assignedButUnresolvable
@@ -284,31 +288,37 @@ function ModelPicker({
   onChange,
   testId,
   inheritLabel,
+  ariaLabel,
+  kind,
 }: {
   providerId: string;
   value: string | null;
   onChange: (m: string | null) => void;
   testId: string;
   inheritLabel: string;
+  ariaLabel: string;
+  kind?: ModelKindFilter;
 }) {
   const { data: models = [] } = useQuery<{ name: string }[]>({
     queryKey: ['provider-models', providerId],
     queryFn: () => apiFetch(`/admin/llm-providers/${providerId}/models`),
     enabled: !!providerId && providerId !== NIL_UUID,
   });
+  const names = filterModelsForKind(
+    models.map((m) => m.name),
+    kind,
+    value,
+  );
   return (
-    <select
-      className="nm-select-md"
+    <SearchableSelect
       value={value ?? ''}
-      onChange={(e) => onChange(e.target.value || null)}
-      data-testid={testId}
-    >
-      <option value="">{inheritLabel}</option>
-      {models.map((m) => (
-        <option key={m.name} value={m.name}>
-          {m.name}
-        </option>
-      ))}
-    </select>
+      options={[
+        { value: '', label: inheritLabel },
+        ...names.map((name) => ({ value: name, label: name })),
+      ]}
+      onChange={(next) => onChange(next || null)}
+      testId={testId}
+      ariaLabel={ariaLabel}
+    />
   );
 }
