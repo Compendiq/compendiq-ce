@@ -130,8 +130,9 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       return hostId;
     }
 
+    const boardTitle = extractTitle(database);
     let hostPage: Record<string, unknown> = database;
-    let title = extractTitle(database);
+    let title = boardTitle;
     let parentNotionId = parentPageIdOf(database);
     if (hostKey !== normalizeNotionId(typeof database.id === 'string' ? database.id : '')) {
       const page = await getPageQuietly(input.client, hostId);
@@ -159,6 +160,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       reuseId: existing?.id,
       reuseComplete: existing?.complete === true,
       boardContainer: true,
+      boardTitle,
       blocks: [],
     });
     if (existing?.complete && !input.overwriteExisting) {
@@ -589,7 +591,8 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       const wikiProps = extractWikiPageProperties(job.page);
       let { bodyHtml, bodyText } = job.database ? converted : wikiConvertedBody(job.page, converted);
       if (job.boardContainer) {
-        const lead = `Imported from the Notion board “${job.title}”.`;
+        const boardName = job.boardTitle || job.title;
+        const lead = `Imported from the Notion board “${boardName}”.`;
         bodyHtml = `<p class="text-muted-foreground italic">${escapeHtml(lead)}</p>`;
         bodyText = lead;
       } else if (job.database) {
@@ -704,6 +707,7 @@ interface ImportJob {
   flatten?: FlattenAttempt;
   foldedInto?: string;
   boardContainer?: boolean;
+  boardTitle?: string;
 }
 
 

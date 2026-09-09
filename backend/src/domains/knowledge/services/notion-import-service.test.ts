@@ -1488,7 +1488,7 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     );
     const host = pages.rows.find((row) => row.notion_page_id === 'projects')!;
     expect(host.title).toBe('Projects');
-    expect(host.body_html).toContain('Imported from the Notion board');
+    expect(host.body_html).toContain('Imported from the Notion board “Delivery”');
     expect(host.body_html).not.toContain('<table>');
     const card = pages.rows.find((row) => row.notion_page_id === 'card-1')!;
     expect(card.parent_id).toBe(String(byId.projects.localPageId));

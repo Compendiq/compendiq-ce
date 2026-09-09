@@ -568,10 +568,9 @@ async function classifyBoardLayouts(
         const current = nodes.get(normalizeId(node.id));
         if (!current) return;
         const raw = rawByKey.get(normalizeId(current.id));
-        if (raw && (isWikiDatabase(raw) || isBoardLayout(raw))) {
-          if (raw && !isWikiDatabase(raw) && isBoardLayout(raw)) {
-            replaceNode(nodes, toSkippedBoardNode(current, 'board_layout'));
-          }
+        if (raw && isWikiDatabase(raw)) return;
+        if (raw && isBoardLayout(raw)) {
+          replaceNode(nodes, toSkippedBoardNode(current, 'board_layout'));
           return;
         }
         try {

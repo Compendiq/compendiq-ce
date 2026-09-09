@@ -1590,6 +1590,29 @@ describe('fetchNotionWorkspaceTree (fake Notion HTTP)', () => {
     });
     expect(findById(nodes as TreeNode[], 'card-1')).toMatchObject({ selectable: true, isDatabaseRow: true });
   });
+
+  it('detects a Board from an individual view probe returning configuration.type', async () => {
+    const nodes = await treeFor({
+      validToken: TOKEN,
+      searchResults: [
+        {
+          object: 'database',
+          id: 'tracker-config',
+          parent: { type: 'workspace', workspace: true },
+          title: richTitle('Configured Tracker'),
+        },
+      ],
+      views: {
+        'tracker-config': [{ id: 'view-cfg', configuration: { type: 'board' } }],
+      },
+    });
+
+    expect(findById(nodes as TreeNode[], 'tracker-config')).toMatchObject({
+      type: 'unsupported',
+      reasonCode: 'board_layout',
+      skipReason: NOTION_BOARD_REASON,
+    });
+  });
 });
 
 describe('rowHasBodyContent', () => {

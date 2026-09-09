@@ -437,8 +437,8 @@ export class NotionClient {
         if (
           configuration
           && typeof configuration === 'object'
-          && !Array.isArray(configuration)
-          && (configuration as { type?: unknown }).type === 'board'
+          && 'type' in configuration
+          && configuration.type === 'board'
         ) {
           return true;
         }
@@ -447,11 +447,20 @@ export class NotionClient {
         const id = ref && typeof ref === 'object' && typeof ref.id === 'string' ? ref.id : null;
         if (!id) continue;
         try {
-          const view = await this.fetchJson<{ type?: string }>(
+          const view = await this.fetchJson<{ type?: string; configuration?: unknown }>(
             `/v1/views/${encodeURIComponent(id)}`,
             { notionVersion: NOTION_VIEWS_VERSION },
           );
           if (view.type === 'board') return true;
+          const configuration = view.configuration;
+          if (
+            configuration
+            && typeof configuration === 'object'
+            && 'type' in configuration
+            && configuration.type === 'board'
+          ) {
+            return true;
+          }
         } catch (err) {
           if (err instanceof NotionError && err.statusCode === 401) throw err;
         }
