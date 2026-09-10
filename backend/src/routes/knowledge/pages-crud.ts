@@ -1775,7 +1775,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // transaction — best-effort, never fatal (same pattern as unsyncSpace).
     if (existingPage.confluence_id) {
       try {
-        await cleanPageAttachments(userId, existingPage.confluence_id);
+        await cleanPageAttachments(existingPage.confluence_id);
       } catch (attachErr) {
         logger.warn(
           { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: attachErr instanceof Error ? attachErr.message : String(attachErr) },
@@ -2260,7 +2260,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             txClient.release();
           }
           // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
-          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(id))));
           // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
           // and is a second pass rather than a line inside the one above
           // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it

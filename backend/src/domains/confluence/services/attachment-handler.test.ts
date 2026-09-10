@@ -790,14 +790,14 @@ describe('attachment-handler', () => {
     it('returns true when directory has files', async () => {
       vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(['file1.png', 'file2.jpg']);
 
-      const result = await hasLocalAttachments('user-1', 'page-1');
+      const result = await hasLocalAttachments('page-1');
       expect(result).toBe(true);
     });
 
     it('returns false when directory is empty', async () => {
       vi.mocked(fs.readdir as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
 
-      const result = await hasLocalAttachments('user-1', 'page-1');
+      const result = await hasLocalAttachments('page-1');
       expect(result).toBe(false);
     });
 
@@ -806,7 +806,7 @@ describe('attachment-handler', () => {
         Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
       );
 
-      const result = await hasLocalAttachments('user-1', 'page-1');
+      const result = await hasLocalAttachments('page-1');
       expect(result).toBe(false);
     });
   });
@@ -860,7 +860,7 @@ describe('attachment-handler', () => {
 <ac:image><ri:attachment ri:filename="b.jpg" /></ac:image>`;
 
       // fs.access rejects by default (ENOENT) — all files missing
-      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      const missing = await getMissingAttachments('page-1', body);
       expect(missing).toEqual(['a.png', 'b.jpg']);
     });
 
@@ -870,7 +870,7 @@ describe('attachment-handler', () => {
       // Simulate file exists
       vi.mocked(fs.access).mockResolvedValueOnce(undefined);
 
-      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      const missing = await getMissingAttachments('page-1', body);
       expect(missing).toEqual([]);
     });
 
@@ -883,12 +883,12 @@ describe('attachment-handler', () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
 
-      const missing = await getMissingAttachments('user-1', 'page-1', body);
+      const missing = await getMissingAttachments('page-1', body);
       expect(missing).toEqual(['missing.png']);
     });
 
     it('returns empty for content with no expected attachments', async () => {
-      const missing = await getMissingAttachments('user-1', 'page-1', '<p>No images</p>');
+      const missing = await getMissingAttachments('page-1', '<p>No images</p>');
       expect(missing).toEqual([]);
     });
   });
@@ -1129,7 +1129,7 @@ describe('attachment-handler', () => {
       const data = Buffer.from('exact-match');
       vi.mocked(fs.readFile).mockResolvedValueOnce(data);
 
-      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+      const result = await readAttachment('page-1', 'logo.png');
 
       expect(result).toEqual(data);
     });
@@ -1147,7 +1147,7 @@ describe('attachment-handler', () => {
         'logo.xref-abc123def456.png',
       ]);
 
-      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+      const result = await readAttachment('page-1', 'logo.png');
 
       expect(result).toEqual(xrefData);
     });
@@ -1159,7 +1159,7 @@ describe('attachment-handler', () => {
         'other-image.png',
       ]);
 
-      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+      const result = await readAttachment('page-1', 'logo.png');
 
       expect(result).toBeNull();
     });
@@ -1171,7 +1171,7 @@ describe('attachment-handler', () => {
         Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
       );
 
-      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+      const result = await readAttachment('page-1', 'logo.png');
 
       expect(result).toBeNull();
     });
@@ -1185,7 +1185,7 @@ describe('attachment-handler', () => {
         'logo.xref-abc123def456.jpg',  // wrong extension
       ]);
 
-      const result = await readAttachment('user-1', 'page-1', 'logo.png');
+      const result = await readAttachment('page-1', 'logo.png');
 
       expect(result).toBeNull();
     });

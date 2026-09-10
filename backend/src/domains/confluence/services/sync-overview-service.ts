@@ -33,7 +33,6 @@ function mergeCounts(target: AssetSyncCounts, source: AssetSyncCounts): void {
 }
 
 async function summarizeAssets(
-  userId: string,
   pageId: string,
   filenames: string[],
 ): Promise<{ counts: AssetSyncCounts; missingFiles: string[] }> {
@@ -42,7 +41,7 @@ async function summarizeAssets(
     return { counts: emptyCounts(), missingFiles: [] };
   }
 
-  const exists = await Promise.all(unique.map((filename) => attachmentExists(userId, pageId, filename)));
+  const exists = await Promise.all(unique.map((filename) => attachmentExists(pageId, filename)));
   const cached = exists.filter(Boolean).length;
   const missingFiles = unique.filter((_, index) => !exists[index]);
 
@@ -148,8 +147,8 @@ export async function getSyncOverview(userId: string): Promise<SyncOverviewRespo
     }
 
     const [{ counts: imageCounts, missingFiles: missingImages }, { counts: drawioCounts, missingFiles: missingDrawio }] = await Promise.all([
-      summarizeAssets(userId, row.page_id, imageFiles),
-      summarizeAssets(userId, row.page_id, drawioFiles),
+      summarizeAssets(row.page_id, imageFiles),
+      summarizeAssets(row.page_id, drawioFiles),
     ]);
 
     mergeCounts(space.images, imageCounts);

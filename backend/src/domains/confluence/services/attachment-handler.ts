@@ -101,7 +101,7 @@ export async function cacheAttachment(
 /**
  * Check if an attachment exists locally.
  */
-export async function attachmentExists(userId: string, pageId: string, filename: string): Promise<boolean> {
+export async function attachmentExists(pageId: string, filename: string): Promise<boolean> {
   try {
     await fs.access(safeAttachmentPath(pageId, filename));
     return true;
@@ -628,7 +628,7 @@ export async function writeAttachmentCache(
  * Used by sync-service to decide whether to retry attachment downloads
  * for pages whose content version hasn't changed.
  */
-export async function hasLocalAttachments(_userId: string, pageId: string): Promise<boolean> {
+export async function hasLocalAttachments(pageId: string): Promise<boolean> {
   const dir = attachmentDir(pageId);
   try {
     const entries = await fs.readdir(dir);
@@ -658,7 +658,6 @@ export function getExpectedAttachmentFilenames(bodyStorage: string, currentSpace
  * Returns the list of filenames that are expected but NOT present on disk.
  */
 export async function getMissingAttachments(
-  userId: string,
   pageId: string,
   bodyStorage: string,
   currentSpaceKey?: string,
@@ -668,7 +667,7 @@ export async function getMissingAttachments(
 
   const missing: string[] = [];
   for (const filename of expected) {
-    const exists = await attachmentExists(userId, pageId, filename);
+    const exists = await attachmentExists(pageId, filename);
     if (!exists) missing.push(filename);
   }
   return missing;
@@ -678,7 +677,7 @@ export async function getMissingAttachments(
  * Clean up all attachments for a page.
  * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
-export async function cleanPageAttachments(_userId: string, pageId: string): Promise<void> {
+export async function cleanPageAttachments(pageId: string): Promise<void> {
   const dir = attachmentDir(pageId);
   try {
     await fs.rm(dir, { recursive: true, force: true });

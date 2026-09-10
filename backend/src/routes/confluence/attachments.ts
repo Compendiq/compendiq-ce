@@ -144,7 +144,7 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     // from a missing attachment to the client, while logging the rejection.
     let data: Buffer | null;
     try {
-      data = await readAttachment(userId, pageId, filename);
+      data = await readAttachment(pageId, filename);
     } catch (err) {
       if (isAttachmentValidationError(err)) {
         logger.warn(

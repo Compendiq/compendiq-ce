@@ -358,7 +358,7 @@ describe('syncPage attachment cache invalidation', () => {
     await syncUser('user-cache-clear');
 
     const { cleanPageAttachments } = await import('./attachment-handler.js');
-    expect(cleanPageAttachments).toHaveBeenCalledWith('user-cache-clear', 'page-1');
+    expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
   });
 
   it('does not clear attachment cache for brand-new pages', async () => {

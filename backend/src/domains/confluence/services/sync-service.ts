@@ -572,9 +572,8 @@ async function softDeleteVanishedPage(
       await tombstoneCollabRoomAfterCommit(row.id);
     }
     counts.pagesDeleted++;
-    // Attachment dirs are keyed by confluence_id; cleanPageAttachments ignores
-    // its first arg (same call shape detectDeletedPages uses).
-    await cleanPageAttachments('', confluenceId);
+    // Attachment dirs are keyed by confluence_id.
+    await cleanPageAttachments(confluenceId);
     await clearPageFailures(confluenceId);
     logger.info(
       { spaceKey, confluenceId, reason },
@@ -685,7 +684,7 @@ async function syncPage(
     // Page content hasn't changed, but check if all expected attachments are cached.
     // Previous syncs may have failed to download some/all attachments (transient errors).
     // Compare expected filenames (from XHTML) against files on disk, per-file.
-    const missing = await getMissingAttachments(userId, page.id, bodyStorage, spaceKey);
+    const missing = await getMissingAttachments(page.id, bodyStorage, spaceKey);
     if (missing.length === 0 && !htmlChanged) {
       // Content + attachments both fully up to date. Still re-evaluate the
       // Confluence-side view restrictions: they can change independently of
@@ -719,7 +718,7 @@ async function syncPage(
 
         // Track which are still missing
         const stillMissing = new Set(
-          await getMissingAttachments(userId, page.id, bodyStorage, spaceKey),
+          await getMissingAttachments(page.id, bodyStorage, spaceKey),
         );
         for (const f of retriable) {
           if (stillMissing.has(f)) {
@@ -764,7 +763,7 @@ async function syncPage(
   // Clear stale attachment cache when an existing page has a new version,
   // so updated diagrams/images are re-downloaded rather than served from cache.
   if (existing.rows.length > 0) {
-    await cleanPageAttachments(userId, page.id);
+    await cleanPageAttachments(page.id);
     // Reset failure tracking — new version may have fixed broken attachments
     await clearPageFailures(page.id);
   }
@@ -1514,7 +1513,7 @@ async function syncMissingAttachments(
     if (pagesResult.rows.length === 0) break;
 
     for (const row of pagesResult.rows) {
-      const allMissing = await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey);
+      const allMissing = await getMissingAttachments(row.confluence_id, row.body_storage, spaceKey);
       if (allMissing.length === 0) continue;
 
       // Filter out attachments that have exceeded the failure threshold
@@ -1542,7 +1541,7 @@ async function syncMissingAttachments(
 
         // Check which are still missing and update failure counts
         const stillMissing = new Set(
-          await getMissingAttachments(userId, row.confluence_id, row.body_storage, spaceKey),
+          await getMissingAttachments(row.confluence_id, row.body_storage, spaceKey),
         );
 
         for (const f of retriable) {
@@ -1743,7 +1742,7 @@ async function detectDeletedPages(
     for (const row of deleted.rows) {
       await tombstoneCollabRoomAfterCommit(row.id);
     }
-    await cleanPageAttachments('', confluenceId);
+    await cleanPageAttachments(confluenceId);
     await clearPageFailures(confluenceId);
     counts.pagesDeleted++;
   }
@@ -1837,7 +1836,7 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
       await discardPageIconForDeletedPage(id);
       await tombstoneCollabRoomAfterCommit(id);
       if (!confluence_id) continue;
-      await cleanPageAttachments('', confluence_id);
+      await cleanPageAttachments(confluence_id);
       await clearPageFailures(confluence_id);
     }
     logger.info({ spaceKey, purged: result.rowCount }, 'Purged expired soft-deleted pages');
@@ -1901,7 +1900,7 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
   for (const p of pages.rows) {
     const attachmentKey = p.confluence_id ?? String(p.id);
     try {
-      await cleanPageAttachments('', attachmentKey);
+      await cleanPageAttachments(attachmentKey);
     } catch (err) {
       logger.warn({ err, pageId: p.id, attachmentKey, spaceKey }, 'unsyncSpace: attachment cleanup failed (continuing)');
     }

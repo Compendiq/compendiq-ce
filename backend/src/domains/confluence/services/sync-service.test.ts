@@ -570,7 +570,7 @@ describe('sync-service', () => {
 
       await syncUser('user-1');
 
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'page-orphan');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('page-orphan');
     });
 
     it('skips reconciliation when another run already claimed the space this cycle (#706 dedupe)', async () => {
@@ -709,8 +709,8 @@ describe('sync-service', () => {
 
       await syncUser('user-1');
 
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-1');
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-2');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('purged-1');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('purged-2');
       expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-1');
       expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-2');
     });
