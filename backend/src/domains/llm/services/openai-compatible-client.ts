@@ -8,7 +8,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 // accept a real `Response`.
 import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
-import { providerResourceUrl } from './provider-url.js';
+import { listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -272,12 +272,26 @@ export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
     'llm.list_models',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'models'), {
-          headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
-        });
-        if (!res.ok) throw new LlmHttpError('listModels', res.status, await errorDetail(res));
-        const body = await res.json() as { data?: Array<{ id: string }> };
-        return (body.data ?? []).map((m) => ({ name: m.id }));
+        const urls = listModelsCandidateUrls(cfg.baseUrl);
+        let last404: LlmHttpError | null = null;
+        for (const url of urls) {
+          const res = await undiciFetch(url, {
+            headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
+          });
+          if (res.ok) {
+            const body = await res.json() as { data?: Array<{ id: string }> };
+            return (body.data ?? []).map((m) => ({ name: m.id }));
+          }
+          const err = new LlmHttpError(
+            'listModels', res.status, await errorDetail(res), res.status === 404,
+          );
+          if (res.status === 404) {
+            last404 = err;
+            continue;
+          }
+          throw err;
+        }
+        throw last404 ?? new LlmHttpError('listModels', 404, 'no /models catalog');
       }),
     ),
     { 'llm.provider_id': cfg.providerId },

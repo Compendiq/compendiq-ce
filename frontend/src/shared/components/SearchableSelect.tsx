@@ -22,6 +22,8 @@ export interface SearchableSelectProps {
   className?: string;
   disabled?: boolean;
   describedBy?: string;
+  /** When set, a typed id that is not in `options` can be committed. */
+  allowCustom?: boolean;
 }
 
 export function SearchableSelect({
@@ -38,6 +40,7 @@ export function SearchableSelect({
   className,
   disabled = false,
   describedBy,
+  allowCustom = false,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -54,9 +57,27 @@ export function SearchableSelect({
     );
   }, [options, query, searchable]);
 
+  const customOption = useMemo((): SearchableSelectOption | null => {
+    if (!allowCustom) return null;
+    const typed = query.trim();
+    if (!typed) return null;
+    if (options.some((opt) => opt.value === typed)) return null;
+    return { value: typed, label: `Use “${typed}”` };
+  }, [allowCustom, options, query]);
+
+  const menuOptions = useMemo(
+    () => (customOption ? [...filteredOptions, customOption] : filteredOptions),
+    [customOption, filteredOptions],
+  );
+
+  const backingOptions = useMemo(() => {
+    if (!value || options.some((opt) => opt.value === value)) return options;
+    return [...options, { value, label: value }];
+  }, [options, value]);
+
   const selectedOption = useMemo(
-    () => options.find((opt) => opt.value === value),
-    [options, value],
+    () => backingOptions.find((opt) => opt.value === value),
+    [backingOptions, value],
   );
 
   const displayLabel = selectedOption ? selectedOption.label : placeholder;
@@ -65,9 +86,9 @@ export function SearchableSelect({
   const listboxId = testId ? `${testId}-options` : `searchable-select-options-${generatedId}`;
 
   useEffect(() => {
-    const idx = filteredOptions.findIndex((opt) => opt.value === value);
+    const idx = menuOptions.findIndex((opt) => opt.value === value);
     setActiveIndex(idx >= 0 ? idx : 0);
-  }, [filteredOptions, open, value]);
+  }, [menuOptions, open, value]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -84,12 +105,12 @@ export function SearchableSelect({
 
   const moveActive = useCallback(
     (nextIndex: number, moveFocus: boolean) => {
-      const bounded = Math.max(0, Math.min(nextIndex, filteredOptions.length - 1));
+      const bounded = Math.max(0, Math.min(nextIndex, menuOptions.length - 1));
       setActiveIndex(bounded);
       optionRefs.current[bounded]?.scrollIntoView?.({ block: 'nearest' });
       if (moveFocus) optionRefs.current[bounded]?.focus();
     },
-    [filteredOptions.length],
+    [menuOptions.length],
   );
 
   const handleOptionKeyDown = useCallback(
@@ -105,17 +126,17 @@ export function SearchableSelect({
         moveActive(0, true);
       } else if (event.key === 'End') {
         event.preventDefault();
-        moveActive(filteredOptions.length - 1, true);
+        moveActive(menuOptions.length - 1, true);
       } else if (event.key === 'Enter') {
         event.preventDefault();
-        const option = filteredOptions[index];
+        const option = menuOptions[index];
         if (option) selectOption(option.value);
       } else if (event.key === 'Escape') {
         event.preventDefault();
         close();
       }
     },
-    [close, filteredOptions, moveActive, selectOption],
+    [close, menuOptions, moveActive, selectOption],
   );
 
   const handleSearchKeyDown = useCallback(
@@ -128,14 +149,14 @@ export function SearchableSelect({
         moveActive(activeIndex - 1, false);
       } else if (event.key === 'Enter') {
         event.preventDefault();
-        const option = filteredOptions[activeIndex];
+        const option = menuOptions[activeIndex];
         if (option) selectOption(option.value);
       } else if (event.key === 'Escape') {
         event.preventDefault();
         close();
       }
     },
-    [activeIndex, close, filteredOptions, moveActive, selectOption],
+    [activeIndex, close, menuOptions, moveActive, selectOption],
   );
 
   return (
@@ -151,7 +172,7 @@ export function SearchableSelect({
         tabIndex={-1}
         className="sr-only"
       >
-        {options.map((opt) => (
+        {backingOptions.map((opt) => (
           <option key={opt.value || '__empty__'} value={opt.value}>
             {opt.label}
           </option>
@@ -213,7 +234,7 @@ export function SearchableSelect({
               if (searchable) {
                 searchInputRef.current?.focus();
               } else {
-                const idx = Math.max(0, filteredOptions.findIndex((opt) => opt.value === value));
+                const idx = Math.max(0, menuOptions.findIndex((opt) => opt.value === value));
                 optionRefs.current[idx]?.focus();
               }
             }}
@@ -253,10 +274,10 @@ export function SearchableSelect({
               aria-label={accessibleLabel}
               className="max-h-60 overflow-y-auto p-1 space-y-0.5"
             >
-              {filteredOptions.length === 0 ? (
+              {menuOptions.length === 0 ? (
                 <p className="px-3 py-4 text-center text-xs text-muted-foreground">{emptyMessage}</p>
               ) : (
-                filteredOptions.map((opt, index) => {
+                menuOptions.map((opt, index) => {
                   const selected = opt.value === value;
                   const active = index === activeIndex;
                   return (

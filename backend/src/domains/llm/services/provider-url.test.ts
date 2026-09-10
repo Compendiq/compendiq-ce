@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { providerResourceUrl } from './provider-url.js';
+import { listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 
 describe('providerResourceUrl', () => {
   it('appends the resource onto an OpenAI-compatible root', () => {
@@ -23,15 +23,31 @@ describe('providerResourceUrl', () => {
     );
   });
 
-  it('swaps a stored embeddings path to /models for listModels', () => {
+  it('lists models under a stored embeddings endpoint, not the chat catalog', () => {
     expect(providerResourceUrl('https://openrouter.ai/api/v1/embeddings', 'models')).toBe(
-      'https://openrouter.ai/api/v1/models',
+      'https://openrouter.ai/api/v1/embeddings/models',
     );
   });
+});
 
-  it('strips /chat/completions before /completions when swapping', () => {
-    expect(
-      providerResourceUrl('https://api.openai.com/v1/chat/completions', 'embeddings'),
-    ).toBe('https://api.openai.com/v1/embeddings');
+describe('listModelsCandidateUrls', () => {
+  it('is just /models on an OpenAI-compatible root', () => {
+    expect(listModelsCandidateUrls('https://openrouter.ai/api/v1')).toEqual([
+      'https://openrouter.ai/api/v1/models',
+    ]);
+  });
+
+  it('tries nested embeddings/models then the sibling /models', () => {
+    expect(listModelsCandidateUrls('https://openrouter.ai/api/v1/embeddings')).toEqual([
+      'https://openrouter.ai/api/v1/embeddings/models',
+      'https://openrouter.ai/api/v1/models',
+    ]);
+  });
+
+  it('tries nested rerank/models then the sibling /models', () => {
+    expect(listModelsCandidateUrls('https://openrouter.ai/api/v1/rerank')).toEqual([
+      'https://openrouter.ai/api/v1/rerank/models',
+      'https://openrouter.ai/api/v1/models',
+    ]);
   });
 });
