@@ -8,7 +8,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 // accept a real `Response`.
 import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
-import { listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
+import { filterListedModels, listModelsCandidateUrls, providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -273,25 +273,30 @@ export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
         const urls = listModelsCandidateUrls(cfg.baseUrl);
-        let last404: LlmHttpError | null = null;
+        let lastMiss: LlmHttpError | null = null;
         for (const url of urls) {
           const res = await undiciFetch(url, {
             headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
           });
           if (res.ok) {
-            const body = await res.json() as { data?: Array<{ id: string }> };
-            return (body.data ?? []).map((m) => ({ name: m.id }));
+            const body = await res.json() as { data?: Array<{
+              id: string;
+              architecture?: { output_modalities?: string[] };
+            }> };
+            return filterListedModels(cfg.baseUrl, body.data ?? []);
           }
+          const retryable = res.status === 404
+            || (res.status === 400 && url.includes('output_modalities='));
           const err = new LlmHttpError(
-            'listModels', res.status, await errorDetail(res), res.status === 404,
+            'listModels', res.status, await errorDetail(res), retryable,
           );
-          if (res.status === 404) {
-            last404 = err;
+          if (retryable) {
+            lastMiss = err;
             continue;
           }
           throw err;
         }
-        throw last404 ?? new LlmHttpError('listModels', 404, 'no /models catalog');
+        throw lastMiss ?? new LlmHttpError('listModels', 404, 'no /models catalog');
       }),
     ),
     { 'llm.provider_id': cfg.providerId },

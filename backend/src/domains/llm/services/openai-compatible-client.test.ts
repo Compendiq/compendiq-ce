@@ -48,14 +48,28 @@ describe('openai-compatible-client — nested embeddings/models catalog', () => 
   let nestBase: string;
   beforeAll(async () => {
     nestSrv = createServer((req, res) => {
-      if (req.url === '/v1/embeddings/models') {
+      const raw = req.url ?? '';
+      const path = raw.split('?')[0];
+      const modality = new URL(raw, 'http://local').searchParams.get('output_modalities');
+      if (path === '/v1/embeddings/models') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: [{ id: 'openai/text-embedding-3-small' }] }));
         return;
       }
-      if (req.url === '/v1/models') {
+      if (path === '/v1/models' && modality === 'rerank') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ data: [{ id: 'openai/gpt-4o-mini' }] }));
+        res.end(JSON.stringify({ data: [{ id: 'cohere/rerank-v3.5' }] }));
+        return;
+      }
+      if (path === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'openai/gpt-4o-mini' },
+            { id: 'cohere/rerank-v3.5' },
+            { id: 'openai/text-embedding-3-small' },
+          ],
+        }));
         return;
       }
       res.writeHead(404);
@@ -76,13 +90,49 @@ describe('openai-compatible-client — nested embeddings/models catalog', () => 
     expect(r.map((m) => m.name)).toEqual(['openai/text-embedding-3-small']);
   });
 
-  it('falls back to sibling /models when nested /rerank/models 404s', async () => {
+  it('lists only rerank models for a stored …/rerank URL, not the  chat catalog', async () => {
     const r = await listModels({
       ...cfg,
       providerId: 'nested-rerank',
       baseUrl: `${nestBase}/rerank`,
     });
-    expect(r.map((m) => m.name)).toEqual(['openai/gpt-4o-mini']);
+    expect(r.map((m) => m.name)).toEqual(['cohere/rerank-v3.5']);
+  });
+});
+
+describe('openai-compatible-client — rerank URL filters the chat catalog by name', () => {
+  let srvMix: Server;
+  let mixBase: string;
+  beforeAll(async () => {
+    srvMix = createServer((req, res) => {
+      const path = (req.url ?? '').split('?')[0];
+      if (path === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          data: [
+            { id: 'openai/gpt-4o-mini' },
+            { id: 'qwen/qwen3-reranker-8b' },
+            { id: 'openai/text-embedding-3-small' },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => srvMix.listen(0, r));
+    const { port } = srvMix.address() as AddressInfo;
+    mixBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => srvMix.close(() => r())));
+
+  it('does not return the chat catalog for a stored /rerank URL', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'rerank-name-filter',
+      baseUrl: `${mixBase}/rerank`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['qwen/qwen3-reranker-8b']);
   });
 });
 
