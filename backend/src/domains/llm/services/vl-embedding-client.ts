@@ -56,6 +56,7 @@
 import { fetch as undiciFetch } from 'undici';
 import { logger } from '../../../core/utils/logger.js';
 import { enqueue } from './llm-queue.js';
+import { providerResourceUrl } from './provider-url.js';
 import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { withSpan } from '../../../telemetry.js';
 import {
@@ -249,7 +250,7 @@ async function embedOne(
     () =>
       enqueue((signal) =>
         getProviderBreaker(cfg.providerId).execute(async () => {
-          const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
+          const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
             method: 'POST',
             headers: providerRequestInfra.headers(cfg),
             body: JSON.stringify(body),

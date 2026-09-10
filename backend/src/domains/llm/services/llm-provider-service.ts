@@ -2,6 +2,7 @@ import { query, getPool } from '../../../core/db/postgres.js';
 import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
 import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
 import { invalidateProviderCapabilities } from './model-capabilities.js';
+import { PROVIDER_RESOURCE_SUFFIXES } from './provider-url.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -74,59 +75,41 @@ export async function getProviderById(id: string): Promise<ProviderConfigRow | n
   return r.rows[0] ? rowToConfig(r.rows[0]) : null;
 }
 
-/** OpenAI-compatible resource paths operators paste from provider docs. */
-const RESOURCE_SUFFIXES = [
-  '/chat/completions',
-  '/embeddings',
-  '/completions',
-  '/models',
-  '/rerank',
-] as const;
-
-function stripResourceSuffix(pathname: string): string {
-  let path = pathname.replace(/\/+$/, '');
-  // Prior normalizer appended /v1 onto …/embeddings, so a re-save of that
-  // stored URL must drop the extra version before the resource suffix.
-  if (path.endsWith('/v1')) {
-    const withoutVersion = path.slice(0, -'/v1'.length);
-    if (RESOURCE_SUFFIXES.some((suffix) => withoutVersion.endsWith(suffix))) {
-      path = withoutVersion;
-    }
+/**
+ * Drop a trailing `/v1` that the old "does not end with /v1" normalizer
+ * appended onto a pasted resource (`…/embeddings/v1`). Keep the resource.
+ */
+function healStrayVersionOnResource(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  if (!trimmed.endsWith('/v1')) return trimmed;
+  const withoutVersion = trimmed.slice(0, -'/v1'.length);
+  if (PROVIDER_RESOURCE_SUFFIXES.some((suffix) => withoutVersion.endsWith(suffix))) {
+    return withoutVersion;
   }
-  for (;;) {
-    const hit = RESOURCE_SUFFIXES.find((suffix) => path.endsWith(suffix));
-    if (!hit) return path;
-    path = path.slice(0, -hit.length).replace(/\/+$/, '');
-  }
+  return trimmed;
 }
 
-const API_VERSION_SEGMENT = /^v\d+[a-z0-9.]*$/i;
-
 /**
- * Provider base URLs are the OpenAI-compatible root. The client appends
- * `/embeddings`, `/chat/completions`, `/rerank`, etc. onto whatever we store.
- *
- * Bare hosts get `/v1`. A path that already has a version segment (`/v1`,
- * `/v1beta`) is left alone — the previous `ends with /v1` test rewrote
- * `https://openrouter.ai/api/v1/embeddings/` to `…/embeddings/v1`. Known
- * resource suffixes are stripped so a pasted docs endpoint becomes that root.
+ * Store the operator's URL. Trailing slashes are trimmed. Bare hosts get `/v1`.
+ * `/embeddings` and `/rerank` are kept — the client must not be given a
+ * rewritten root when the operator pasted the endpoint they want called.
  */
 export function normalizeBaseUrl(raw: string): string {
   const trimmed = raw.trim();
   try {
     const u = new URL(trimmed);
-    let path = stripResourceSuffix(u.pathname);
-    if (!path.split('/').some((seg) => API_VERSION_SEGMENT.test(seg))) {
-      path = `${path.replace(/\/+$/, '')}/v1`;
-    }
+    let path = healStrayVersionOnResource(u.pathname);
+    const segments = path.split('/').filter(Boolean);
+    if (segments.length === 0) path = '/v1';
     u.pathname = path || '/v1';
     u.search = '';
     u.hash = '';
     return u.href.replace(/\/+$/, '');
   } catch {
-    let s = trimmed.replace(/\/+$/, '');
-    s = stripResourceSuffix(s);
-    if (!s.split('/').some((seg) => API_VERSION_SEGMENT.test(seg))) s += '/v1';
+    let s = healStrayVersionOnResource(trimmed.replace(/\/+$/, ''));
+    if (!s.includes('://')) return s;
+    const afterProto = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    if (!afterProto.includes('/')) s += '/v1';
     return s;
   }
 }

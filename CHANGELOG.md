@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Settings → AI Models no longer appends `/v1` onto a provider URL that already
-  has an API version. Pasting `https://openrouter.ai/api/v1/embeddings/` used to
-  store `…/embeddings/v1`, which 404s; known endpoint suffixes are stripped so
-  the stored URL is the OpenAI-compatible root the client appends `/embeddings`
-  and `/chat/completions` onto.
+- Provider URLs are stored as typed. Pasting
+  `https://openrouter.ai/api/v1/embeddings` or `…/v1/rerank` no longer strips
+  the resource or appends another `/v1`. Bare hosts still get `/v1`. The client
+  does not append `/embeddings` or `/rerank` when the stored URL already ends
+  with that path.
 - Settings → AI Models no longer snaps Preset to Custom when the operator
   pastes or edits an embeddings URL. Keep current keeps the chosen hosted
   preset with the typed URL; a stored `…/v1/embeddings` path infers that host

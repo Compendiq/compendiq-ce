@@ -72,6 +72,17 @@ describe('rerank-client (#1104)', () => {
     expect(out.map((r) => r.relevanceScore)).toEqual([0.9, 0.5, 0.2]);
   });
 
+  it('posts to a stored …/rerank URL without appending /rerank again', async () => {
+    respondWith([{ index: 0, relevance_score: 0.7 }]);
+    const out = await rerank(
+      { ...cfg(), baseUrl: `${baseUrl}/rerank` },
+      'bge-reranker-v2-m3',
+      'q',
+      ['a'],
+    );
+    expect(out).toEqual([{ index: 0, relevanceScore: 0.7 }]);
+  });
+
   it('truncates documents to RERANK_DOC_MAX_CHARS before sending', async () => {
     respondWith([{ index: 0, relevance_score: 0.5 }]);
     await rerank(cfg(), 'm', 'q', ['x'.repeat(RERANK_DOC_MAX_CHARS + 500)]);

@@ -215,8 +215,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
-    // Normalize to the OpenAI-compatible root. Bare hosts get /v1; a pasted
-    // endpoint like /v1/embeddings is not given a second /v1.
+    // Store as typed. Bare hosts get /v1; a pasted /v1/embeddings path is kept.
     let baseUrl = (body.baseUrl ?? '').trim();
     if (!baseUrl) {
       baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';

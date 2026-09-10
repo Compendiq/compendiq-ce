@@ -17,6 +17,7 @@ import {
   nonThinkingExtras,
   type ProviderConfig,
 } from './openai-compatible-client.js';
+import { providerResourceUrl } from './provider-url.js';
 import { emitLlmAudit, estimateTokens } from './llm-audit-hook.js';
 
 export const INLINE_COMPLETION_STOP = ['\n', '\n\n', '```'] as const;
@@ -132,7 +133,7 @@ export async function requestInlineCompletion(
     () => getProviderBreaker(cfg.providerId).execute(async () => {
       signal.throwIfAborted();
       dispatched = true;
-      const res = await undiciFetch(`${cfg.baseUrl}/${endpoint}`, {
+      const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, endpoint), {
         method: 'POST',
         headers: providerRequestInfra.headers(cfg),
         body: JSON.stringify(requestBody),

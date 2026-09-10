@@ -11,20 +11,30 @@ describe('normalizeBaseUrl', () => {
     expect(normalizeBaseUrl('https://openrouter.ai/api/v1/')).toBe('https://openrouter.ai/api/v1');
   });
 
-  it('does not append /v1 onto a pasted embeddings endpoint', () => {
-    // The previous `/v1$` test rewrote this to …/embeddings/v1, which 404s.
-    // The client posts `${baseUrl}/embeddings`, so the stored root must be /api/v1.
-    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/embeddings/')).toBe(
-      'https://openrouter.ai/api/v1',
+  it('keeps a pasted embeddings endpoint', () => {
+    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/embeddings')).toBe(
+      'https://openrouter.ai/api/v1/embeddings',
     );
-    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/embeddings/v1')).toBe(
-      'https://openrouter.ai/api/v1',
+    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/embeddings/')).toBe(
+      'https://openrouter.ai/api/v1/embeddings',
     );
   });
 
-  it('strips /chat/completions without treating /completions as the suffix first', () => {
+  it('keeps a pasted rerank endpoint', () => {
+    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/rerank')).toBe(
+      'https://openrouter.ai/api/v1/rerank',
+    );
+  });
+
+  it('heals a previously stored …/embeddings/v1 back to the embeddings path', () => {
+    expect(normalizeBaseUrl('https://openrouter.ai/api/v1/embeddings/v1')).toBe(
+      'https://openrouter.ai/api/v1/embeddings',
+    );
+  });
+
+  it('keeps /chat/completions when pasted', () => {
     expect(normalizeBaseUrl('https://api.openai.com/v1/chat/completions')).toBe(
-      'https://api.openai.com/v1',
+      'https://api.openai.com/v1/chat/completions',
     );
   });
 

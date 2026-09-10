@@ -8,6 +8,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 // accept a real `Response`.
 import type { ReadableStream } from 'node:stream/web';
 import { enqueue } from './llm-queue.js';
+import { providerResourceUrl } from './provider-url.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
@@ -271,7 +272,7 @@ export async function listModels(cfg: ProviderConfig): Promise<LlmModel[]> {
     'llm.list_models',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/models`, {
+        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'models'), {
           headers: headers(cfg), dispatcher: dispatcherFor(cfg), signal,
         });
         if (!res.ok) throw new LlmHttpError('listModels', res.status, await errorDetail(res));
@@ -415,7 +416,7 @@ export async function chat(
     'llm.chat',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({
@@ -453,7 +454,7 @@ export async function* streamChat(
   const res = await withSpan(
     'llm.stream_chat.dispatch',
     () => getProviderBreaker(cfg.providerId).execute(async () => {
-      const r = await undiciFetch(`${cfg.baseUrl}/chat/completions`, {
+      const r = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'chat/completions'), {
         method: 'POST',
         headers: headers(cfg),
         body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true }, ...thinkingExtras(cfg.baseUrl, model, opts?.thinking) }),
@@ -548,7 +549,7 @@ export async function generateEmbedding(
     'llm.embeddings',
     () => enqueue((signal) =>
       getProviderBreaker(cfg.providerId).execute(async () => {
-        const res = await undiciFetch(`${cfg.baseUrl}/embeddings`, {
+        const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, 'embeddings'), {
           method: 'POST',
           headers: headers(cfg),
           body: JSON.stringify({ model, input }),
