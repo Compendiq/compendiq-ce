@@ -1,0 +1,26 @@
+name: Sync EE Submodule
+
+# Notify EE immediately after CE dev advances so its pinned CE submodule can
+# validate and follow the new HEAD without polling.
+on:
+  push:
+    branches: [dev]
+
+# EE_REPOSITORY_DISPATCH_TOKEN is a fine-grained PAT restricted to
+# Compendiq/compendiq-ee with Contents: write. The workflow needs no permission
+# from CE's repository-scoped GITHUB_TOKEN.
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Notify EE of CE dev update
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch CE update to EE
+        env:
+          GH_TOKEN: ${{ secrets.EE_REPOSITORY_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/Compendiq/compendiq-ee/dispatches \
+            --method POST \
+            -f event_type=ce-dev-updated \
+            -f "client_payload[sha]=$GITHUB_SHA"

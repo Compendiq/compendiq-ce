@@ -82,7 +82,7 @@ describe('ServiceStatus', () => {
       expect(screen.getByText('LLM provider "LMStudio" is unreachable')).toBeInTheDocument();
     });
 
-    const settingsLink = screen.getByRole('link', { name: 'Check LLM settings' });
+    const settingsLink = screen.getByRole('link', { name: 'Check AI Models settings' });
     expect(settingsLink).toHaveAttribute('href', '/settings/ai/models');
   });
 

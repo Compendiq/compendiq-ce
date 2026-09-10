@@ -37,6 +37,8 @@ const makeSearchResponse = (overrides: Partial<{
   mode: string;
   hasEmbeddings: boolean;
   warning: string;
+  embeddingCoverage: number | null;
+  degradedReason: string | null;
 }> = {}) => ({
   items: [
     {
@@ -192,6 +194,77 @@ describe('useSearch', () => {
     expect(result.current.immediateResults[0].title).toBe('Redis Guide');
   });
 
+  // ── Score semantics (#1117) ────────────────────────────────────────────
+  //
+  // `score` carries whatever unit the mode produced (ts_rank / cosine / RRF
+  // fusion) and must not be rendered. `similarity` is the cosine, and its
+  // absence must survive as null rather than collapsing to 0 — a 0 renders as
+  // "0%" for a page nobody ever measured.
+
+  it('keeps similarity null when the response omits it (keyword mode)', async () => {
+    mockFetch(makeSearchResponse({
+      items: [{ id: 42, title: 'Redis Guide', spaceKey: 'DEV', snippet: '', rank: 0.9 }],
+      mode: 'keyword',
+      hasEmbeddings: true,
+    }));
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'keyword' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
+
+    expect(result.current.immediateResults[0].similarity).toBeNull();
+    // `score` still falls back to rank so ordering is preserved.
+    expect(result.current.immediateResults[0].score).toBe(0.9);
+  });
+
+  // These two go through the HYBRID leg deliberately. Only the semantic and
+  // hybrid branches of /api/search emit `similarity` at all — a keyword-mode
+  // fixture carrying one would contradict the contract the same PR documented,
+  // and would exercise a response the server cannot produce.
+  it('maps similarity through, distinct from the fusion score', async () => {
+    mockFetch(
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({
+        items: [{ id: 7, title: 'Hybrid Hit', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
+        mode: 'hybrid',
+        hasEmbeddings: true,
+      }),
+    );
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'hybrid' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
+
+    expect(result.current.enhancedResults![0].similarity).toBe(0.71);
+    expect(result.current.enhancedResults![0].score).toBe(0.0328);
+  });
+
+  it('preserves an explicit null similarity from a full-text-only hybrid row', async () => {
+    mockFetch(
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({
+        items: [{ id: 8, title: 'FTS only', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
+        mode: 'hybrid',
+        hasEmbeddings: true,
+      }),
+    );
+
+    const { result } = renderHook(
+      () => useSearch({ query: 'redis', mode: 'hybrid' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isLoadingEnhanced).toBe(false));
+
+    expect(result.current.enhancedResults![0].similarity).toBeNull();
+  });
+
   it('returns enhancedResults from hybrid endpoint response', async () => {
     mockFetch(
       makeSearchResponse({ items: [{ id: 1, title: 'Keyword Result', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
@@ -210,7 +283,11 @@ describe('useSearch', () => {
     expect(result.current.enhancedResults![0].title).toBe('Vector Result');
   });
 
-  it('returns hasEmbeddings:false when response.hasEmbeddings is false', async () => {
+  it('ignores hasEmbeddings on a keyword response — the probe never ran there (#1117)', async () => {
+    // A production keyword response always reports hasEmbeddings: true, so
+    // this fixture is impossible live — the hook must not read the field from
+    // it. The measured signal arrives on the enhanced response only (see the
+    // degraded-signal describe below).
     mockFetch(makeSearchResponse({ hasEmbeddings: false }));
 
     const { result } = renderHook(
@@ -220,7 +297,7 @@ describe('useSearch', () => {
 
     await waitFor(() => expect(result.current.isLoadingImmediate).toBe(false));
 
-    expect(result.current.hasEmbeddings).toBe(false);
+    expect(result.current.hasEmbeddings).toBe(true);
   });
 
   it('hasEmbeddings defaults to true before first response arrives', () => {
@@ -424,5 +501,69 @@ describe('useSearch', () => {
     expect(url).toContain('dateTo=2026-02-01');
     // FE field `labels` maps to backend query param `tags` (comma-encoded)
     expect(url).toContain('tags=kb%2Cops');
+  });
+});
+
+// ── Degraded-retrieval signal (#1117 stage 2) ───────────────────────────────
+
+describe('useSearch degraded-retrieval signal (#1117)', () => {
+  it('derives the signal from the enhanced response, never the keyword one', async () => {
+    // Production-realistic split: the immediate query is ALWAYS mode=keyword,
+    // where the backend skips the coverage probe and reports
+    // hasEmbeddings: true unconditionally. Deriving from the immediate
+    // response is why the old no-embeddings banner could never fire outside
+    // tests — only the semantic/hybrid response carries the measured signal.
+    mockFetch(
+      makeSearchResponse({ hasEmbeddings: true, embeddingCoverage: null, degradedReason: null }),
+      makeSearchResponse({
+        mode: 'semantic',
+        hasEmbeddings: true,
+        embeddingCoverage: 0.42,
+        degradedReason: 'partial_embeddings',
+      }),
+    );
+
+    const { result } = renderHook(() => useSearch({ query: 'runbook', mode: 'semantic' }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(
+      () => expect(result.current.degradedReason).toBe('partial_embeddings'),
+      { timeout: 2000 },
+    );
+    expect(result.current.embeddingCoverage).toBe(0.42);
+    expect(result.current.hasEmbeddings).toBe(true);
+  });
+
+  it('reports zero embeddings from the enhanced response despite an optimistic keyword one', async () => {
+    mockFetch(
+      makeSearchResponse({ hasEmbeddings: true, embeddingCoverage: null, degradedReason: null }),
+      makeSearchResponse({
+        mode: 'keyword', // backend downgraded the effective mode
+        hasEmbeddings: false,
+        embeddingCoverage: 0,
+        degradedReason: 'no_embeddings',
+      }),
+    );
+
+    const { result } = renderHook(() => useSearch({ query: 'runbook', mode: 'hybrid' }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.hasEmbeddings).toBe(false), { timeout: 2000 });
+    expect(result.current.degradedReason).toBe('no_embeddings');
+    expect(result.current.embeddingCoverage).toBe(0);
+  });
+
+  it('keyword mode reports the signal unmeasured, not healthy', async () => {
+    mockFetch(makeSearchResponse({ hasEmbeddings: true }));
+
+    const { result } = renderHook(() => useSearch({ query: 'runbook', mode: 'keyword' }), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.immediateResults.length).toBe(1), { timeout: 2000 });
+    expect(result.current.embeddingCoverage).toBeNull();
+    expect(result.current.degradedReason).toBeNull();
   });
 });

@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { PageIcon, SettablePageIcon } from '@compendiq/contracts';
 import { apiFetch } from '../lib/api';
+import { useOnboardingActions } from './use-onboarding';
 
 export type EmbeddingStatus = 'not_embedded' | 'embedding' | 'embedded' | 'failed';
 export type QualityStatus = 'pending' | 'analyzing' | 'analyzed' | 'failed' | 'skipped';
@@ -39,6 +41,7 @@ interface PageSummary {
   summaryStatus?: SummaryStatus;
   source: 'confluence' | 'standalone';
   visibility: 'private' | 'shared';
+  icon?: PageIcon | null;
 }
 
 interface PageDetail extends PageSummary {
@@ -51,6 +54,8 @@ interface PageDetail extends PageSummary {
   summaryError: string | null;
   /** Creator's user id — set for standalone pages, null for Confluence-synced. */
   createdByUserId?: string | number | null;
+  /** Last human verification stamp (`pages.verified_at`). */
+  verifiedAt?: string | null;
 }
 
 interface PaginatedPages {
@@ -137,7 +142,10 @@ export function usePages(params: PageFilters = {}) {
 
 export interface PageTreeItem {
   id: string;
-  spaceKey: string;
+  // Null for a standalone page created outside any local space (the "unfiled
+  // page" path) — the backend persists space_key as NULL there, so this was
+  // a type lie before it was fixed alongside the sidebar disambiguator bug.
+  spaceKey: string | null;
   title: string;
   pageType: PageType;
   parentId: string | null;
@@ -147,6 +155,7 @@ export interface PageTreeItem {
   labels: string[];
   lastModifiedAt: string | null;
   embeddingDirty: boolean;
+  icon?: PageIcon | null;
 }
 
 interface PageTreeResponse {
@@ -198,6 +207,10 @@ export function usePage(id: string | undefined) {
 
 export function useCreatePage() {
   const queryClient = useQueryClient();
+  // #1402: the Getting Started checklist's "Create or edit a page" milestone.
+  // Hooked here rather than at the New Page form because every creation path —
+  // the form, a template, a Markdown import — lands on this mutation.
+  const { markComplete } = useOnboardingActions();
   return useMutation({
     mutationFn: (data: { spaceKey: string; title: string; bodyHtml: string; parentId?: string; pageType?: PageType; source?: string }) =>
       apiFetch<{ id: string; title: string; version: number }>('/pages', {
@@ -207,12 +220,14 @@ export function useCreatePage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pages'] });
       queryClient.invalidateQueries({ queryKey: ['spaces'] });
+      markComplete('pageCreatedOrEdited');
     },
   });
 }
 
 export function useUpdatePage() {
   const queryClient = useQueryClient();
+  const { markComplete } = useOnboardingActions();
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string; title: string; bodyHtml: string; version?: number }) =>
       apiFetch<{ id: string; title: string; version: number }>(`/pages/${id}`, {
@@ -232,9 +247,71 @@ export function useUpdatePage() {
         queryClient.setQueryData(['pages', variables.id], context.previous);
       }
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
       queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['pages'], refetchType: 'none' });
+      // The no-error path only: `onSettled` also runs after `onError` rolled
+      // the optimistic edit back, and a save that did not land is not a
+      // milestone (#1402).
+      if (!err) markComplete('pageCreatedOrEdited');
+    },
+  });
+}
+
+export function useUpdatePageIcon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      icon,
+    }: {
+      id: string;
+      icon: SettablePageIcon | null;
+    }) =>
+      apiFetch<{ icon: PageIcon | null }>(`/pages/${id}/icon`, {
+        method: 'PATCH',
+        body: JSON.stringify({ icon }),
+      }),
+    onMutate: async ({ id, icon }) => {
+      await queryClient.cancelQueries({ queryKey: ['pages', id] });
+      const previous = queryClient.getQueryData<PageDetail>(['pages', id]);
+      queryClient.setQueryData<PageDetail>(['pages', id], (old) =>
+        old ? { ...old, icon } : old,
+      );
+      queryClient.setQueriesData<PageTreeResponse>({ queryKey: ['pages', 'tree'] }, (old) => {
+        if (!old?.items) return old;
+        return {
+          ...old,
+          items: old.items.map((item) => (item.id === id ? { ...item, icon } : item)),
+        };
+      });
+      return { previous };
+    },
+    onError: (_err, variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['pages', variables.id], context.previous);
+      }
+    },
+    onSettled: (_data, _err, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['pages', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
+export function useUploadPageIcon() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, dataUri }: { id: string; dataUri: string }) =>
+      apiFetch<{ icon: PageIcon | null }>(`/pages/${id}/icon-image`, {
+        method: 'POST',
+        body: JSON.stringify({ dataUri }),
+      }),
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData<PageDetail>(['pages', variables.id], (old) =>
+        old ? { ...old, icon: data.icon } : old,
+      );
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
     },
   });
 }
@@ -312,10 +389,16 @@ export function isZeroEmbeddings(status: EmbeddingStatusData | undefined): boole
   return !!status && status.totalPages > 0 && status.embeddedPages === 0;
 }
 
-export function useEmbeddingStatus() {
+/**
+ * `enabled` gates both the fetch and its 3s processing poll. AiProvider passes
+ * false while no AI surface is mounted — it lives in AppLayout now, so an
+ * ungated query there would poll on every route in the app.
+ */
+export function useEmbeddingStatus(enabled = true) {
   return useQuery<EmbeddingStatusData>({
     queryKey: ['embeddings', 'status'],
     queryFn: () => apiFetch('/embeddings/status'),
+    enabled,
     refetchInterval: (query) => {
       return query.state.data?.isProcessing ? 3000 : false;
     },
@@ -326,13 +409,16 @@ export function useEmbeddingStatus() {
 
 export interface PinnedPage {
   id: string;
-  spaceKey: string;
+  // Same nullability as PageTreeItem.spaceKey — an unfiled standalone page
+  // can be pinned too, and its space_key is NULL in the DB.
+  spaceKey: string | null;
   title: string;
   author: string | null;
   lastModifiedAt: string | null;
   excerpt: string;
   pinnedAt: string;
   pinOrder: number;
+  icon?: PageIcon | null;
 }
 
 interface PinnedPagesResponse {
@@ -344,7 +430,11 @@ export function usePinnedPages() {
   return useQuery<PinnedPagesResponse>({
     queryKey: ['pages', 'pinned'],
     queryFn: () => apiFetch('/pages/pinned'),
-    staleTime: 60_000, // lightweight query (max 8 items) — avoid refetching on every mount
+    // A hand-curated per-user list with SQL-truncated excerpts, so it stays
+    // cheap even unbounded (#1130 removed the 8-pin cap) — but there is no
+    // ceiling on the row count any more, so cache it rather than refetching on
+    // every mount.
+    staleTime: 60_000,
   });
 }
 
@@ -362,7 +452,12 @@ export function usePinPage() {
         old
           ? {
               ...old,
-              items: [...old.items, { id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }],
+              // Prepended, not appended: the server returns
+              // `ORDER BY pinned_at DESC`, so a new pin is the *first* item.
+              // Appending put it last, which since #1130 means it lands beyond
+              // the collapsed cut-off — the card vanishes until the refetch
+              // moves it to the top.
+              items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: old.items.length + 1 }, ...old.items],
               total: old.total + 1,
             }
           : { items: [{ id: pageId, spaceKey: '', title: '', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: new Date().toISOString(), pinOrder: 1 }], total: 1 },

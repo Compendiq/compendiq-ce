@@ -10,6 +10,7 @@ Your company fronts every internal service with a centrally-managed nginx instan
 - A vanity hostname like `compendiq.corp.example.com`
 - X-Forwarded-* headers preserved end-to-end (for rate-limit buckets + audit logs to show real client IPs)
 - Server-Sent Events working (the LLM streams via SSE — buffering breaks them)
+- Collaborative editing WebSockets reaching `/api/collab/` (HTTP/1.1 Upgrade — the server-scope `Connection ""` that keeps SSE alive is hostile to Upgrade unless a dedicated location overrides it)
 - Large diagrams and pasted images uploading without hitting a 413 at the proxy
 
 ## Architecture
@@ -57,7 +58,9 @@ server {
     ssl_certificate_key /etc/ssl/private/compendiq.key;
 
     # Compendiq can emit large diagram + attachment uploads — raise the cap.
-    client_max_body_size 30m;
+    # Keep this at or above the bundled frontend edge (44m), or yours becomes
+    # the binding limit and large draw.io saves die on your 413, not the app's.
+    client_max_body_size 44m;
 
     # SSE streaming (LLM chat). Buffering breaks server-sent events.
     proxy_buffering     off;
@@ -73,8 +76,42 @@ server {
     proxy_set_header X-Forwarded-Host  $host;
 
     # HTTP/1.1 + keep-alive so SSE connections aren't force-closed.
+    # This empty Connection is **hostile to WebSocket Upgrade** — the
+    # dedicated `/api/collab/` location below must set Connection
+    # "Upgrade" itself. Leaving collab under this server-level header
+    # is a silent failure (the 101 never happens).
     proxy_http_version 1.1;
     proxy_set_header Connection "";
+
+    # Collaborative editing (Yjs). Must sit in this vhost — not only as
+    # a sibling snippet that still inherits Connection "". Any
+    # `proxy_set_header` inside a location discards the server-level
+    # set, so Host / X-Forwarded-* are restated here.
+    #
+    # HTTP/2: `listen 443 ssl http2` still accepts HTTP/1.1 on the same
+    # port. Browsers' `WebSocket()` uses HTTP/1.1 Upgrade (RFC 6455),
+    # **not** RFC 8441 Extended CONNECT. `/api/collab/` must be reachable
+    # as HTTP/1.1 to the next hop. Terminating HTTP/2 here and speaking
+    # HTTP/1.1 to Compendiq (`proxy_http_version 1.1`) is the intended
+    # shape. Do not attach HTTP/2 push or a buffering module to this
+    # location.
+    location /api/collab/ {
+        proxy_pass http://127.0.0.1:8081;
+
+        proxy_http_version      1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_read_timeout      3600s;
+        proxy_send_timeout      3600s;
+        proxy_buffering         off;
+        proxy_cache             off;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8081;
@@ -122,13 +159,22 @@ Check `FRONTEND_URL` matches the exact scheme + host + port the browser is using
 nginx is buffering the SSE response. Confirm `proxy_buffering off;` is inside the `server` block and that there's no global `proxy_buffering on;` overriding it. Restart nginx after editing.
 
 **3. Uploads larger than 1 MB (default nginx body cap) return 413.**
-Raise `client_max_body_size 30m;` (or more) in the `server` block. 30 MB is enough for a 25 MB draw.io diagram + JSON overhead; tune higher if your users paste larger images.
+Raise `client_max_body_size 44m;` (or more) in the `server` block.
+
+44 MB is not a round guess — it is the smallest value that clears the largest body the backend itself will accept. Attachments travel as base64 inside JSON, which inflates them by a third: a local attachment at its 25 MB binary cap is **34,952,536 bytes** on the wire, and a draw.io save carries a 10 MB PNG *and* 25 MB of XML in one body — **40,195,416 bytes**. The routes declare `bodyLimit`s of 35 MB and 40 MiB to match. Anything below that and nginx rejects a request the app would have accepted.
+
+> Earlier revisions of this page recommended `30m` on the grounds that it covered "a 25 MB draw.io diagram + JSON overhead". That was wrong: 30m is 31,457,280 bytes, below both figures above. If you are running that value, raise it.
+
+There are **two** nginx layers in this topology: yours, and the one inside the Compendiq frontend container. The bundled edge sets `client_max_body_size 44m` on `/api/` (`frontend/nginx.conf`), so the **lower of the two wins** — set yours to at least 44m. Releases before that setting existed capped every `/api/` request at nginx's 1 MB default no matter what the outer proxy allowed, so upgrade the frontend image if a correctly-configured outer proxy still 413s.
 
 **4. Audit log shows the nginx loopback IP instead of the real client IP.**
 `trustProxy` is already enabled in Compendiq, so the issue is usually nginx not forwarding the real IP. Confirm `X-Forwarded-For` is set in the `proxy_set_header` list above. Restart Compendiq after the nginx reload if the log keeps showing `127.0.0.1`.
 
 **5. 502 Bad Gateway from nginx.**
 Compendiq isn't actually listening on `127.0.0.1:8081`. Run `ss -tlnp | grep 8081` on the proxy host; if the port isn't bound, fix the compose `ports:` line and restart.
+
+**6. Collaborative editing never connects (browser shows 1006; no `101 Switching Protocols`).**
+The `/api/collab/` location inherited `proxy_set_header Connection "";` from the server block. Confirm the location sets `Connection "Upgrade"` and `Upgrade $http_upgrade` itself — a sibling snippet that still sits under the empty Connection is the failure this header exists to prevent. If the 101 happens and then the socket dies at ~60s, raise `proxy_read_timeout` / `proxy_send_timeout` (the bundled edge uses 3600s). If the next hop is HTTP/2-only, that is RFC 8441 Extended CONNECT, which browsers' `WebSocket()` does not speak — terminate HTTP/2 at this nginx and `proxy_http_version 1.1` to Compendiq.
 
 ## Server-Sent Events (SSE) streaming routes
 
@@ -160,6 +206,41 @@ location ~ ^/api/(pages/[^/]+/presence|llm/) {
 
 Without this block, corporate nginx deployments with `proxy_buffering on;` in the base config will silently break both presence SSE (viewer avatars never update) and LLM streaming (chat responses arrive as one blob or time out). Adding the block is cheap insurance even if the server-level `proxy_buffering off;` is already present — the explicit location wins regardless of what other config snippets do elsewhere.
 
+## Collaborative editing (WebSocket) `/api/collab/`
+
+The step-2 vhost already contains this location. It is **not** optional the way the SSE snippet above is: the server-level `proxy_set_header Connection "";` that keeps SSE alive strips the `Upgrade` hop-by-hop header, so a collab socket that inherits it never 101s.
+
+Copy this block **above** `location /` if you did not take the vhost verbatim. It must set `Connection "Upgrade"` itself — putting a `/api/collab/` location that still inherits the empty Connection is a silent failure.
+
+```nginx
+# Yjs collab gateway: GET /api/collab/:pageId
+# Browsers use HTTP/1.1 Upgrade (RFC 6455), not RFC 8441 Extended CONNECT.
+# `listen … http2` is fine: nginx still accepts HTTP/1.1 on the same port,
+# and `proxy_http_version 1.1` is the hop to Compendiq. Do not force HTTP/2
+# to the next hop, and do not attach HTTP/2 push / buffering here.
+location /api/collab/ {
+    proxy_pass http://127.0.0.1:8081;
+
+    proxy_http_version      1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "Upgrade";
+    proxy_read_timeout      3600s;
+    proxy_send_timeout      3600s;
+    proxy_buffering         off;
+    proxy_cache             off;
+
+    # Restate forwarded headers: any proxy_set_header in a location
+    # discards the server-level set (including Connection "").
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+}
+```
+
+The bundled frontend nginx has the same sibling (`location ^~ /api/collab/` in `frontend/nginx.conf`). The **outer** proxy is the one that has to override `Connection ""`; the bundled edge never sets that header.
+
 ## Verification
 
 ```bash
@@ -170,7 +251,7 @@ curl -I https://compendiq.corp.example.com/api/health
 ```
 
 If you also want to confirm SSE isn't being buffered end-to-end, exercise the LLM ask endpoint.
-`POST /api/llm/ask` requires `question` and `model` (see `AskRequestSchema` in `packages/contracts/src/schemas/llm.ts`) — pick a model from `GET /api/llm/models` or the Settings → LLM page. Replace `<TOKEN>` with a valid JWT (grab one from your browser's DevTools → Application → Local Storage → `compendiq-auth` → `state.accessToken` after logging in):
+`POST /api/llm/ask` requires `question` and `model` (see `AskRequestSchema` in `packages/contracts/src/schemas/llm.ts`) — pick a model from `GET /api/llm/models` or the Settings → AI → AI Models page. Replace `<TOKEN>` with a valid JWT (grab one from your browser's DevTools → Application → Local Storage → `compendiq-auth` → `state.accessToken` after logging in):
 
 ```bash
 curl -N -H "Authorization: Bearer <TOKEN>" \

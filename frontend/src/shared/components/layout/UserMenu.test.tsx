@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { UserMenu } from './UserMenu';
 
 const mockLogoutApi = vi.fn().mockResolvedValue(undefined);
+const mockApiFetch = vi.fn();
 const mockNavigate = vi.fn();
 
 vi.mock('react-router-dom', async () => {
@@ -33,35 +35,37 @@ vi.mock('../../../stores/keyboard-shortcuts-store', () => ({
     }),
 }));
 
-const mockSetSingleKeyShortcutsEnabled = vi.fn();
-let mockSingleKeyShortcutsEnabled = true;
-vi.mock('../../../stores/ui-store', () => ({
-  useUiStore: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      singleKeyShortcutsEnabled: mockSingleKeyShortcutsEnabled,
-      setSingleKeyShortcutsEnabled: mockSetSingleKeyShortcutsEnabled,
-    }),
-}));
-
 vi.mock('../../lib/api', () => ({
   logoutApi: (...args: unknown[]) => mockLogoutApi(...args),
+  // #1402: "Getting Started Guide" reopens the checklist through
+  // `PUT /settings`. Network boundary only.
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}));
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 function renderUserMenu() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter>
-      <UserMenu />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <UserMenu />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
 describe('UserMenu', () => {
   beforeEach(() => {
     mockLogoutApi.mockClear();
+    mockApiFetch.mockReset();
+    mockApiFetch.mockResolvedValue({});
     mockNavigate.mockClear();
     mockOpenShortcuts.mockClear();
-    mockSetSingleKeyShortcutsEnabled.mockClear();
-    mockSingleKeyShortcutsEnabled = true;
     // Default to a non-admin signed-in user; admin tests opt in.
     mockUser = { username: 'testuser' };
   });
@@ -70,15 +74,18 @@ describe('UserMenu', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders the user avatar and username', () => {
+  it('renders an avatar-only trigger named for the signed-in user', () => {
     renderUserMenu();
     expect(screen.getByText('T')).toBeInTheDocument();
-    expect(screen.getByText('testuser')).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'testuser menu' });
+    expect(trigger).toBeInTheDocument();
+    // Username lives in the menu, not beside the avatar.
+    expect(trigger).not.toHaveTextContent('testuser');
   });
 
   it('renders a trigger button with menu role', () => {
     renderUserMenu();
-    const trigger = screen.getByRole('button');
+    const trigger = screen.getByRole('button', { name: 'testuser menu' });
     expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
   });
 
@@ -143,25 +150,45 @@ describe('UserMenu', () => {
     });
   });
 
-  it('shows single-key shortcuts toggle in dropdown', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByText('Single-key shortcuts')).toBeInTheDocument();
+
+  /**
+   * #1402: the checklist is dismissible, so it needs a way back. The User Menu
+   * is where "Keyboard Shortcuts" already lives, and it is the only always-
+   * available surface on every route.
+   */
+  describe('Getting Started Guide', () => {
+    async function openMenu() {
+      renderUserMenu();
+      const trigger = screen.getByRole('button', { name: 'testuser menu' });
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+      await vi.waitFor(() => expect(trigger).toHaveAttribute('data-state', 'open'));
+    }
+
+    it('offers the item between Keyboard Shortcuts and Sign out', async () => {
+      await openMenu();
+      const labels = screen.getAllByRole('menuitem').map((item) => item.textContent?.trim());
+      expect(labels).toContain('Getting Started Guide');
+      expect(labels.indexOf('Getting Started Guide')).toBeGreaterThan(
+        labels.findIndex((l) => l?.startsWith('Keyboard Shortcuts')),
+      );
+      expect(labels.indexOf('Getting Started Guide')).toBeLessThan(labels.indexOf('Sign out'));
+    });
+
+    it('reopens the checklist and takes the user to the overview it lives on', async () => {
+      await openMenu();
+      fireEvent.click(screen.getByText('Getting Started Guide'));
+
+      await waitFor(() =>
+        expect(mockApiFetch).toHaveBeenCalledWith('/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ onboardingState: { dismissed: false } }),
+        }),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith('/');
     });
   });
 
-  it('renders single-key toggle as a switch element', async () => {
-    renderUserMenu();
-    const trigger = screen.getByRole('button');
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
-    await vi.waitFor(() => {
-      expect(screen.getByRole('switch', { name: /single-key shortcuts/i })).toBeInTheDocument();
-    });
-  });
-
-  it('calls logoutApi when Sign out is selected', async () => {
+  it('asks before signing out, and only then calls logoutApi', async () => {
     renderUserMenu();
     const trigger = screen.getByRole('button');
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
@@ -170,12 +197,29 @@ describe('UserMenu', () => {
       expect(trigger).toHaveAttribute('data-state', 'open');
     });
 
-    const signOut = screen.getByText('Sign out');
-    fireEvent.click(signOut);
+    fireEvent.click(screen.getByText('Sign out'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
+
+    const dialog = await screen.findByTestId('confirm-dialog');
+    expect(dialog).toHaveTextContent('Sign out?');
+    fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await vi.waitFor(() => {
       expect(mockLogoutApi).toHaveBeenCalled();
     });
+  });
+
+  it('does not sign out when the confirm is cancelled', async () => {
+    renderUserMenu();
+    const trigger = screen.getByRole('button');
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+    await vi.waitFor(() => {
+      expect(trigger).toHaveAttribute('data-state', 'open');
+    });
+    fireEvent.click(screen.getByText('Sign out'));
+    await screen.findByTestId('confirm-dialog');
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    expect(mockLogoutApi).not.toHaveBeenCalled();
   });
 
   // /admin/analytics is mounted at App.tsx:165 but no UI links to it.
@@ -244,16 +288,15 @@ describe('UserMenu', () => {
     }
   });
 
-  // Task 5 — avatar initial bubble is brand chrome (not an AI affordance), so
-  // it must route to ink-action and not amber. The Playwright contrast spec in
-  // Task 6 will catch the colour combo at run-time; this guards the contract
-  // at the unit level so a future regression can't quietly re-amber it.
-  it('user avatar uses ink-action, not amber (avatar is brand chrome, not AI)', () => {
+  // Identity, not an action: Steel is reserved for actions. Neutral chip, never
+  // amber (AI) and never the filled accent.
+  it('user avatar is a neutral chip, not an accent or amber mark', () => {
     mockUser = { username: 'simon', role: 'user' };
     renderUserMenu();
     const avatar = screen.getByTestId('user-avatar-initial');
     expect(avatar.className).not.toMatch(/text-primary|bg-primary/);
-    expect(avatar.className).toMatch(/bg-action/);
-    expect(avatar.className).toMatch(/text-action-foreground/);
+    expect(avatar.className).not.toMatch(/bg-action|text-action/);
+    expect(avatar.className).toMatch(/bg-muted/);
+    expect(avatar.className).toMatch(/text-foreground/);
   });
 });

@@ -69,8 +69,9 @@ vi.mock('./routes/llm/llm-conversations.js', () => ({ llmConversationRoutes: noo
 vi.mock('./routes/llm/llm-embeddings.js', () => ({ llmEmbeddingRoutes: noopRoute }));
 vi.mock('./routes/llm/llm-models.js', () => ({ llmModelRoutes: noopRoute }));
 vi.mock('./routes/llm/llm-admin.js', () => ({ llmAdminRoutes: noopRoute }));
-vi.mock('./routes/llm/llm-pdf.js', () => ({ llmPdfRoutes: noopRoute }));
+vi.mock('./routes/llm/extract-document.js', () => ({ extractDocumentRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-crud.js', () => ({ pagesCrudRoutes: noopRoute }));
+vi.mock('./routes/knowledge/pages-icon.js', () => ({ pagesIconRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-versions.js', () => ({ pagesVersionRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-tags.js', () => ({ pagesTagRoutes: noopRoute }));
 vi.mock('./routes/knowledge/pages-embeddings.js', () => ({ pagesEmbeddingRoutes: noopRoute }));
@@ -409,6 +410,51 @@ describe('buildApp — error handler information leakage', () => {
     expect(body.error).toBe('InternalServerError');
     // Should NOT expose the actual error message for 500 errors
     expect(body.message).toBe('Internal Server Error');
+
+    await app.close();
+  });
+
+  it('forwards only allow-listed collab error codes', async () => {
+    process.env.NODE_ENV = 'development';
+    const { buildApp } = await import('./app.js');
+    const app = await buildApp();
+
+    app.get('/test/leaky-code', async () => {
+      throw Object.assign(new Error('hidden'), { statusCode: 400, code: 'internal_topology' });
+    });
+    app.get('/test/collab-code', async () => {
+      throw Object.assign(new Error('session'), { statusCode: 409, code: 'collab_session_active' });
+    });
+    app.get('/test/confluence-code', async () => {
+      throw Object.assign(new Error('remote'), { statusCode: 409, code: 'confluence_modified' });
+    });
+    app.get('/test/confluence-versions', async () => {
+      throw Object.assign(new Error('remote'), {
+        statusCode: 409,
+        code: 'confluence_modified',
+        remoteVersion: 9,
+        localVersion: 7,
+      });
+    });
+
+    const leaky = await app.inject({ method: 'GET', url: '/test/leaky-code' });
+    expect(leaky.statusCode).toBe(400);
+    expect(leaky.json().code).toBeUndefined();
+
+    const collab = await app.inject({ method: 'GET', url: '/test/collab-code' });
+    expect(collab.statusCode).toBe(409);
+    expect(collab.json().code).toBe('collab_session_active');
+
+    const conf = await app.inject({ method: 'GET', url: '/test/confluence-code' });
+    expect(conf.statusCode).toBe(409);
+    expect(conf.json().code).toBe('confluence_modified');
+
+    const versions = await app.inject({ method: 'GET', url: '/test/confluence-versions' });
+    expect(versions.json()).toMatchObject({
+      code: 'confluence_modified',
+      remoteVersion: 9,
+      localVersion: 7,
+    });
 
     await app.close();
   });

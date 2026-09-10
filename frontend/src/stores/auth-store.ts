@@ -6,6 +6,23 @@ import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 migrateStorageKey('kb-auth', 'compendiq-auth');
 migrateStorageKey('atlasmind-auth', 'compendiq-auth');
 
+/**
+ * Zustand persist rehydrates asynchronously. ProtectedRoute's boot skeleton
+ * would otherwise paint the guest header for a returning session on every
+ * reload until hydration lands. Read the persisted flag synchronously; the
+ * store remains source of truth for routing once it has hydrated.
+ */
+export function peekPersistedSession(): boolean {
+  try {
+    const raw = localStorage.getItem('compendiq-auth');
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as { state?: { isAuthenticated?: boolean } };
+    return parsed.state?.isAuthenticated === true;
+  } catch {
+    return false;
+  }
+}
+
 interface User {
   id: string;
   username: string;

@@ -11,6 +11,8 @@ erDiagram
     users ||--o{ pages : "owns"
     users ||--o{ page_embeddings : "owns"
     users ||--o{ llm_conversations : "owns"
+    users ||--o{ retrieval_benchmark_runs : "requests"
+    users ||--o{ embedding_compare_judgements : "judges (#1260; SET NULL — the fixture outlives its author)"
     users ||--o{ notifications : "receives"
     users ||--o{ audit_log : "generates"
     users ||--o{ comments : "authors"
@@ -18,10 +20,12 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
+    pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
     pages ||--o{ spaces : "is custom home of (#352)"
+    pages ||--o| page_collaborative_docs : "live CRDT state (#1411)"
 
     roles ||--o{ group_memberships : "granted via"
     groups ||--o{ group_memberships : "has"
@@ -55,6 +59,22 @@ erDiagram
         text theme
         int sync_interval_min
         timestamptz confluence_pat_prompt_dismissed_at "PAT onboarding banner dismissed (#771)"
+        bool inline_completion_enabled "personal ghost-text preference (#1417)"
+        text inline_completion_delay "fast | balanced | deliberate | manual (#1417)"
+        text inline_completion_mode "word | full (personal default)"
+        bool inline_completion_code_only "suppress suggestions outside code blocks (#1417)"
+        jsonb onboarding_state "checklist flags, merge-not-overwrite on write (#1402)"
+        text notion_integration_token "AES-256-GCM Notion internal integration token (#1462)"
+    }
+
+    spaces {
+        int id PK
+        text space_key UK
+        text space_name
+        text source "confluence | local"
+        timestamptz last_synced
+        int custom_home_page_id FK
+        int deletion_reconcile_cursor "last attempted pages.id; wraps across batches (#1439)"
     }
 
     pages {
@@ -69,15 +89,26 @@ erDiagram
         int version
         int parent_id FK
         text source "confluence | standalone"
+        text notion_page_id "idempotency for one-shot Notion import (#1465); NULL unless imported. source stays standalone"
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
+        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
         text_array expected_image_files "cached asset filenames; NULL => recompute (#887)"
         text_array expected_drawio_files "cached draw.io filenames; NULL => recompute (#887)"
         timestamptz deleted_at
+    }
+
+    page_collaborative_docs {
+        int page_id PK,FK "ON DELETE CASCADE"
+        bytea doc_state "Y.encodeStateAsUpdate persist form"
+        bytea state_vector "nullable until first persist"
+        int version "persistence generation NOT pages.version"
+        timestamptz created_at
+        timestamptz updated_at
     }
 
     page_versions {
@@ -99,8 +130,22 @@ erDiagram
         int page_id FK
         int chunk_index
         text chunk_text
-        vector embedding "1024 dims (bge-m3)"
+        vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
         jsonb metadata
+    }
+
+    page_image_embeddings {
+        bigint id PK
+        int page_id FK "ON DELETE CASCADE"
+        text source "confluence | local — which attachment store the key resolves in"
+        text attachment_key "filename inside that store"
+        text sha256 "content address of the embedded bytes; the re-scan skip"
+        text format "sniffed: png | jpeg | webp | gif"
+        int width "nullable; header-declared only"
+        int height "nullable; header-declared only"
+        text model "provider model id that produced the vector"
+        vector embedding "vector(n) or halfvec(n) — n is the probed IMAGE model's width; no HNSW until the probe"
+        timestamptz created_at
     }
 
     page_relationships {
@@ -111,14 +156,51 @@ erDiagram
         double score
     }
 
+    deterministic_relationship_dirty {
+        int page_id PK "no FK; deleted identities survive; 0 means upgrade backfill"
+        bigint revision "deterministic_relationship_revision sequence"
+        boolean full_rebuild "identity changes can affect unrelated pairs"
+    }
+
     llm_conversations {
         uuid id PK
         uuid user_id FK
+        int page_ref FK "ON DELETE SET NULL — page a dock conversation started from (#1361)"
         text model
         text title
-        jsonb messages
+        text title_source "question | generated | user (#1361)"
+        jsonb messages "[{role, content, refused?, sources?}]"
         timestamptz created_at
         timestamptz updated_at
+    }
+
+    retrieval_benchmark_runs {
+        uuid id PK
+        uuid requested_by FK
+        text status "queued | running | completed | failed"
+        jsonb config "query source and limits; kind=shadow-compare marks a #1260 comparison run"
+        int progress_done
+        int progress_total
+        jsonb result "compact ids, titles and timings"
+        text error
+        timestamptz created_at
+        timestamptz started_at
+        timestamptz completed_at
+    }
+
+    embedding_compare_judgements {
+        uuid id PK
+        text query_hash "sha256 of LOWER(TRIM(query)) — respellings converge"
+        text query_text
+        text live_provider_id "by VALUE, no FK — must outlive the provider row"
+        text live_model
+        text candidate_provider_id
+        text candidate_model
+        text judged_side "live | candidate | neither | both"
+        int_array live_page_ids "what was on screen when judged"
+        int_array candidate_page_ids
+        uuid judged_by FK "SET NULL — part of the unique key since 109 (#1527)"
+        timestamptz created_at "the judged-at stamp; bumped on every re-judge"
     }
 
     comments {
@@ -168,9 +250,22 @@ erDiagram
     }
 
     admin_settings {
-        text key PK
-        text value
-        text type "json | text"
+        text setting_key PK "includes backup_s3_*, schedule, retention, last-run keys"
+        text setting_value "S3 credentials are AES-256-GCM ciphertext"
+        timestamptz updated_at
+    }
+
+    backup_runs {
+        uuid id PK
+        timestamptz created_at
+        timestamptz finished_at
+        text destination "download | s3"
+        text status "running | success | failed"
+        bigint bytes
+        text object_key
+        text error
+        text triggered_by "nullable user id text; null for schedule"
+        text job_id "nullable BullMQ job id"
     }
 
     roles {
@@ -226,10 +321,19 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
+    }
+
+    llm_providers ||--o{ llm_model_capabilities : "probed for (CASCADE)"
+    llm_model_capabilities {
+        uuid provider_id PK,FK "ON DELETE CASCADE (#1154)"
+        text model PK
+        bool vision "NULL = probed, undetermined"
+        timestamptz probed_at
+        text probe_error "nullable"
     }
 
     users ||--o{ llm_audit_log : "may originate"
@@ -251,15 +355,223 @@ erDiagram
     }
 ```
 
+**Deterministic relationship freshness (#1314, migration 111).** The
+`pages_deterministic_relationship_dirty` trigger records committed content,
+label, hierarchy and identity changes in `deterministic_relationship_dirty`.
+There is deliberately no page FK: deletion must invalidate old references.
+An upgrade inserts the full-rebuild sentinel. Authorized Connections and
+focused-graph reads settle pending work through the same deterministic
+materializer used by embedding recomputation; clean reads only check for
+pending work. No embedding provider is needed. The transaction advisory lock
+`RELATIONSHIP_ADVISORY_LOCK_ID` serializes materializers, and revision-matched
+deletion preserves mutations committed during a rebuild. Failed production
+rolls back both evidence and queue consumption. Semantic evidence is preserved.
+`relationship_parent_key` follows the source-sensitive hierarchy key;
+`relationship_parent_id` resolves exactly one live parent, never an ambiguous
+cross-namespace match. Its live-page expression index supports that lookup.
+
+Backup configuration is stored as rows in `admin_settings`, not as a separate
+wide table. Migration 107 seeds `backup_s3_enabled`, `backup_s3_endpoint`,
+`backup_s3_bucket`, `backup_s3_region`, `backup_s3_access_key`,
+`backup_s3_secret_key`, `backup_s3_prefix`, `backup_s3_force_path_style`,
+`backup_schedule_enabled`, `backup_interval_hours`,
+`backup_retention_count`, and `backup_retention_days`;
+`backup_last_run_at` is written after a successful S3 run. Access and secret
+keys are encrypted before persistence. Updates write every provided backup
+key through one PostgreSQL transaction, so a partial configuration cannot
+commit.
+
+`backup_runs` is written by scheduled and manually triggered S3 jobs and
+drives the admin history/status view. Its destination constraint also admits
+`download`, while current ticket-download outcomes are recorded in
+`audit_log`. The row stores lifecycle status, byte count, S3 object key, error,
+trigger attribution, and the exact BullMQ `job_id` used to correlate a queued
+request with its history row. Migration 108 adds the nullable `job_id` column
+and a partial lookup index; null remains valid for pre-migration history and
+legacy scheduled runs. `triggered_by` is deliberately nullable text rather than
+a user foreign key so scheduled runs and historical actor identifiers remain
+representable. Because an in-flight S3 archive necessarily snapshots
+its own row as `running`, offline restore reconciles every restored `running`
+row to `failed` with a finish time and the error `Backup interrupted by restore`
+after migrations and before reporting restore success.
+
+Enterprise migration 900 adds `backup_destinations` and
+`backup_destination_results`. The primary is a runtime mirror of the CE S3
+settings with a unique partial `is_primary` index; additional destinations
+store encrypted credentials. Migration 902 adds the nullable per-result
+`object_key`, the exact key under that destination's prefix. Historical keys
+stay null because a current prefix cannot reconstruct what was used earlier.
+The service serializes creation to admit at most two secondaries, and refuses
+over-limit legacy configurations before starting uploads.
+
+```mermaid
+erDiagram
+    backup_runs ||--o{ backup_destination_results : "run_id / CASCADE"
+    backup_destinations ||--o{ backup_destination_results : "destination_id / CASCADE"
+    backup_destination_results {
+        uuid run_id PK,FK
+        uuid destination_id PK,FK
+        text object_key "nullable; actual destination key"
+        text status
+        bigint uploaded_bytes
+        timestamptz completed_at
+    }
+```
+
+Enterprise migration 901 stores DR evidence in `backup_dr_verifications`.
+Its nullable text `run_id` and `destination_id` are provenance, not foreign
+keys. `rpo_seconds` is age from the authenticated manifest; `duration_ms` is
+elapsed verification time. Unknown measurements remain null and report as
+empty cells, never as retention counts/days or fabricated zeroes.
+
+`llm_conversations` carries `llm_conversations_user_updated_idx (user_id,
+updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
+
+`inline_completion` is one of three non-inheriting use cases, alongside
+`rerank` and `image_embedding`. Its seeded assignment has null provider/model,
+which means the feature is disabled until an administrator explicitly assigns
+both a usable provider and model. The personal `user_settings` fields only
+control when an already-assigned feature may run; they cannot select or
+override a provider.
+
+Inline-completion prompts and completions are intentionally absent from
+`llm_audit_log`. Aggregate Redis telemetry keeps fixed request/token fields,
+with no user, page, prefix, suffix or completion in its keys or values.
+The inference audit hook additionally records user-attributed token counts for
+EE quota accounting, never inline plaintext even when full-text auditing is on.
+
+EE model registry migration 906 adds immutable `generation` and
+`storage_location` to `enterprise_model_assets`, plus owner-scoped
+`enterprise_model_uploads` for staged manifests. Publication changes the
+registry pointer only after the entire generation is staged. Historical rows
+have unknown storage identity and require re-import rather than reconstruction
+from current settings. Migration 905's nullable audit artifact fields preserve
+supplied observations; the report compares them with the current registry.
+The asset ID is a logical reference, not a foreign key or execution attestation.
+
+**`chunk_text` is what gets embedded, verbatim (#1108).** Prefixing the page
+title and section into the embedded text was tried, measured, and **not
+shipped** — but read what the measurement does and does not say before
+re-proposing it.
+
+What it says: on #1102's 262-page corpus and 144-query fixture, the prefix
+produced **no credible benefit**. Recall@5 moved 5 wins / 3 losses on
+Qwen3-Embedding-4B — McNemar exact p = 0.73, i.e. noise — and was flat on
+`bge-m3`.
+
+What it does **not** say: that the prefix is harmful. Recall@1 fell by exactly
+four queries on each model (86→82 and 101→97). Four is below what any paired
+test can call: `mcnemarExactTwoSided(0, 4)` is 0.125, and `metrics.ts` says so
+by name. MRR moved with those same four queries, and `pairedSignificance`
+returns no verdict for a graded score at all. So the honest conclusion is
+"unproven, and not worth the cost", not "it hurts".
+
+Three caveats mattered more than the numbers **at the time of that
+measurement** (pre-#1265, when the chunker was dead code):
+
+1. **The section half never fired.** `section_title === page_title` for all 488
+   chunks, because `htmlToText` stripped the `#` markers before `chunkText`'s
+   heading regex saw them — so what was measured was a bare page title, not
+   `"{title} — {section}"`.
+2. **The prefix was ~0.6% of the embedded text**, not the ~1.6% the configured
+   chunk size implies, because most chunks reached `CHUNK_HARD_LIMIT` (6000)
+   rather than the 1500-char target — same root cause.
+3. **The corpus is OSS markdown documentation**, whose pages usually open with
+   their own title. Real Confluence pages need not, which is exactly the case
+   the prefix was meant to serve.
+
+**The "re-measure after the chunker actually splits" trigger has fired:**
+#1265 (PR #1266) made the structure-aware chunker live — the embedding input
+is Markdown from `htmlToEmbeddingText(body_html)`, sections split at real
+headings, `section_title` carries real (flattened) heading prose, and the
+chunking change alone measured Recall@1 0.3889 → 0.5069 / MRR 0.5830 → 0.6501
+on the #1102 fixture. The title-prefix question specifically (this section's
+subject) remains open and re-measurable with real sections now; reproduce
+with `backend/scripts/compare-embedding-variants.mts`. Note its Qwen arms now
+build the query preamble from `query-instruction.ts`'s exported `RETRIEVAL_TASK`
+rather than from a hardcoded copy of Qwen's stock web-search task, so a re-run
+measures the prefix that ships and its absolute numbers may shift a little
+against the ones recorded above. `query-instruction.test.ts` holds that by
+pinning the call to two arguments — the task is reachable only through the
+default parameter, so it cannot be overridden back to the stock wording while
+the harness still calls the shipping formatter.
+
+The invariant that work exposed is kept regardless: **every document-side embed
+must send the model byte-identical text** — the live embed in `embedPage`, its
+shadow dual-write, and #1116's backfill. A divergence changes the embedded text
+and the model in the same swap, with identical dimensions and row counts to
+show for it; `shadow-migration-service.integration.test.ts` pins the paths
+together, which matters most for #1114's query-side prefix.
+
 ## Notable conventions
 
 - **User ownership is pervasive.** Almost every table carries `user_id`
   (UUID, FK → `users.id`) — Compendiq is multi-tenant at the user level.
-- **pgvector.** `page_embeddings.embedding` defaults to `vector(1024)` with
-  an HNSW index (`m=16`, `ef_construction=200`) for cosine similarity, sized
-  for `bge-m3`. The column type and index path are **dimension-driven** and
-  rewritten by `enqueueReembedAll({ newDimensions })` when the admin switches
-  the embedding model:
+- **`retrieval_benchmark_runs` is shared by two run kinds (#1260), and ONE
+  module owns its lifecycle.** The production benchmark writes its config
+  as-is; the shadow comparison marks its rows `config.kind = 'shadow-compare'`.
+  Insert, claim, progress + heartbeat, complete, fail, the stale sweep and the
+  fetch all live in `domains/llm/eval/benchmark-run-lifecycle.ts`, and the
+  fetch takes the expected `kind` as a REQUIRED argument — each surface answers
+  null for the other's rows, in both directions. That symmetry is not
+  decoration: a compare report has no `baseline`, so serving one through the
+  benchmark GET throws in `BenchmarkSummary` and blanks the Retrieval panel,
+  and it carries sampled production query text. The stale sweep is likewise
+  kind-aware, because failing a comparison with "start a new benchmark" names
+  a run its admin never started. A compare run is additionally scoped to
+  `requested_by` on read: its report carries page titles retrieved under that
+  admin's own ACL (`visiblePagesPredicate` admits their private standalone
+  pages). The 091 one-active partial unique index is deliberately NOT scoped
+  by kind: both runs spend the shared LLM queue, so one at a time is the
+  point, and the 092 heartbeat recovery covers both.
+- **`embedding_compare_judgements` is the accumulating fixture (#1260 Mode
+  2).** One row per (normalised query hash, live PAIR, candidate PAIR, JUDGE)
+  — provider id AND model on each side, because the same model name behind a
+  different provider is a different index whose page-id arrays must not be
+  pooled into the earlier migration's verdict, and because re-hosting one
+  model would otherwise collapse both sides onto one row. Both are recorded by
+  VALUE, with no FK to `llm_providers` and no FK to the run: a judgement must
+  survive the run, the migration and the provider row that produced it, which
+  is what makes the second evaluation of the same pair cheaper than the first.
+  One admin re-judging their own query replaces their row (upsert on the unique
+  key); the page-id arrays record what was on screen when the human judged and
+  are deliberately not FK-checked against `pages`.
+  **`judged_by` joined the unique key in migration 109 (#1527), and the
+  one-trial-per-query invariant moved to the READ path.** Before 109 the key
+  had no admin dimension, so the last judge of a query physically OVERWROTE the
+  earlier judge's `live_page_ids` / `candidate_page_ids` / `judged_by` —
+  irrecoverably, because those arrays come from `vectorSearch(adminUserId, …)`
+  filtered through `visiblePagesPredicate`, i.e. they are that admin's view and
+  nobody else's. Now every judge's row persists. The reason the key had no
+  judge in the first place still holds — one query is one trial and McNemar
+  counts trials, so reading two rows for one query would inflate both N and the
+  significance drawn from it — so `judgementsForReport` collapses the read to
+  `DISTINCT ON (query_hash) … ORDER BY query_hash, created_at DESC, id DESC`:
+  exactly one row per query, the most recently judged one, taken WHOLE.
+  `created_at` is the judged-at stamp (the upsert bumps it to `NOW()` on every
+  re-judge; there is no `judged_at` column) and `id DESC` totals the order when
+  two judgements share a microsecond. So the verdict reports ONE named judge's
+  visibility scope per trial rather than a per-column blend of two admins'
+  arrays, N stays the count of DISTINCT judged queries, and every other judge's
+  row is retained on disk for audit and simply not read. The index is
+  deliberately DEFAULT (NULLS DISTINCT), never `UNIQUE NULLS NOT DISTINCT`:
+  `judged_by` is `ON DELETE SET NULL`, so under NULLS NOT DISTINCT deleting the
+  second of two admins who judged one query would collide the SET NULL with the
+  first orphan's key and make the admin undeletable. A cross-judge aggregation
+  rule (majority? weighted?) remains a different feature; "newest wins" is the
+  rule this schema implements.
+- **pgvector — the column type is dimension-driven, not one model's shape.**
+  `page_embeddings.embedding` always carries a *declared* width — 006 shipped
+  `vector(768)`, 048 re-typed it to `vector(1024)` — but the schema does not
+  *fix* one: that declaration is where the migrations leave a fresh install, and
+  a model swap re-types the column. The embedding
+  pair is resolved from `llm_usecase_assignments` (the `embedding` use case,
+  ADR-021) and the width is **probed from the model**, not typed by an
+  operator: the shadow migration embeds the literal text `probe` and takes
+  `vectors[0].length`. That number is stored in
+  `admin_settings.embedding_dimensions` and picks the column type and index
+  path via `columnTypeFor`, rewritten by `enqueueReembedAll({ newDimensions })`
+  (destructive) or by #1116's shadow swap (non-destructive):
 
   | Dimensions  | Column type   | Index                                           |
   |-------------|---------------|-------------------------------------------------|
@@ -267,10 +579,183 @@ erDiagram
   | `2001–4000` | `halfvec(n)`  | HNSW `halfvec_cosine_ops` (float16, ~50% size)  |
   | `n > 4000`  | `vector(n)`   | no index (sequential scan; warning logged)      |
 
+  Both indexed tiers build with `m = 16`, `ef_construction = 200` for cosine
+  similarity; only the opclass changes.
+
   pgvector 0.8 caps HNSW at 2000 dims for `vector` and 4000 dims for `halfvec`;
   larger models (e.g. `qwen3-embedding:8b` at 4096) fall to the seq-scan tier.
-  Query-time `ef_search` is set per request. Source of truth:
+  Query-time `ef_search` is set per request, floored at
+  `admin_settings.rag_ef_search` (#1285 — default 100, edited in
+  Settings → AI Models → Retrieval; the `RAG_EF_SEARCH` environment variable it
+  replaced is a deprecated bootstrap fallback). Source of truth:
   `backend/src/domains/llm/services/embedding-service.ts` (`enqueueReembedAll`).
+
+  **Which model, in practice.** `bge-m3` at 1024 (`vector(1024)` + HNSW) is the
+  **bootstrap shape**, and only the *width* half of it is shipped by the code:
+  migration 048 types the column `vector(1024)` and writes
+  `admin_settings.embedding_dimensions = '1024'`, with the deprecated
+  `EMBEDDING_DIMENSIONS` env read only if that row goes missing. The *model* half
+  is not — `EMBEDDING_MODEL` has had no effect since migration 054 (it is logged
+  as deprecated and never read), nothing seeds a `bge-m3` assignment on a fresh
+  install, and `resolveUsecase('embedding')` therefore falls through to the
+  default provider's `default_model` until an admin assigns the use case in
+  Settings → AI Models. `bge-m3` is the model `.env.example` tells an operator
+  to pull, matching the width the schema ships.
+  **Qwen3-Embedding-4B at 2560 native is the measured recommendation**
+  for production (#1114): that lands on the `halfvec(2560)` +
+  `halfvec_cosine_ops` tier — at that width fp16 is not a fallback but the only
+  indexed representation pgvector offers, and it was measured harmless at the
+  vector level. Ingest is ~10× slower per chunk, so the cutover is a scheduling
+  decision, run through #1116's shadow path rather than the destructive one.
+  The numbers, the caveats and the open operational items are in
+  `docs/ARCHITECTURE-DECISIONS.md`, ADR-012's `#1114` amendment. Nothing in this
+  file should be read as "the column is 1024 wide".
+- **Shadow re-embed columns (#1116, transient).** During a zero-downtime model
+  change (`shadow-migration-service.ts`), `page_embeddings.embedding_next` and
+  `pages.page_avg_embedding_next` exist as **runtime-created** nullable columns
+  typed at the server-probed dimension of the NEW model (same tier table as
+  above; there is deliberately no numbered migration — the type is only known
+  at probe time). `embedPage` dual-writes both columns while the backfill runs;
+  the swap is one transaction of column/index RENAMEs under an explicit
+  `lock_timeout` with bounded retries (live→`_prev`, `_next`→live, the prev
+  column's NOT NULL dropped because post-swap inserts never provide it), which
+  also repoints the `embedding` use-case assignment and `embedding_dimensions`.
+  `_prev` columns hold the old vectors for rollback until cleanup drops them
+  and restores the live column's NOT NULL. Migration state lives in
+  `admin_settings.embedding_shadow_migration`. A schema snapshot can therefore
+  legitimately contain `_next`/`_prev` variants of both vector columns; the
+  destructive `enqueueReembedAll({newDimensions})` path refuses to run while
+  that state row exists (and vice versa). Runbook:
+  `docs/runbooks/shadow-reembed.md`.
+- **The image index is a separate table (#1115) — `P0 schema, typed at probe
+  time in P1, populated from P2`.** `page_image_embeddings` holds one vector per
+  referenced image per page, produced by a *different* model from a *different*
+  ADR-021 use case (`image_embedding`), and `pages.image_embedding_dirty` is its
+  own dirty flag. Migration `093` ships the shape, P1 gives it its real type and
+  index, and **P2 fills it**: `image-embedding-service.ts` upserts one row per
+  image the page's `body_html` references, keyed `(page_id, source,
+  attachment_key)` — where `source` follows the URL PREFIX in that body, never
+  `confluence_id IS NULL`, because a relocated page has no `confluence_id` and
+  its bytes in the local store. `sha256` is what makes a re-scan cheap: an
+  unchanged file keeps its row and costs no request. **P3 reads it** —
+  `image-leg-search.ts` kNN-searches this table under the same
+  `visiblePagesPredicate` the vector leg uses and fuses the result as a third
+  RRF leg; **P4 reads the BYTES behind it**, attaching up to
+  `rag_answer_max_images` of the matched pictures to the chat request. A row
+  never becomes a `SearchResult` itself: an image-reached page enters ranking as
+  its own `chunk_index 0` chunk, or as a title-synthesised one. Four properties
+  are deliberate:
+  - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
+    `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
+    `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
+    sibling assembly all conditional. A separate table keeps every one of them
+    text-only by construction, and it is the only shape that can hold two
+    different probed widths at once.
+  - **The declared `vector(…)` width in the migration is a placeholder, and
+    the index is built at PROBE TIME.** The live type follows the image model's
+    probed width through the same tiering the text column uses
+    (`core/db/vector-column-tier.ts`, shared with the destructive re-embed, the
+    shadow path and the eval seeder), and **the migration ships no HNSW index at
+    all** — the opclass is unknown until the probe answers. Assigning the
+    `image_embedding` use case runs the probe and then
+    `ensureImageEmbeddingColumn(dims, {providerId, model, baseUrl,
+    targetDimensions})` (P1), which retypes the column and creates
+    `page_image_embeddings_embedding_hnsw_idx` under the same bounded-lock DDL
+    discipline as the shadow columns above. Above 4000 dimensions there is no
+    index and the settings panel says so — with the remedy beside it, since
+    `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
+    *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
+    the client asks). `admin_settings.image_embedding_dimensions` and
+    `…_index_model` record what the live index was built for — the second as the
+    full identity string `provider:model@baseUrl#dims`, which is the only thing
+    that can tell two same-width spaces apart. `…_probe` holds the last probe's
+    verdict, and it is admin-only: its `error` is the provider's own body
+    (#1184's rule).
+  - **A model change here truncates and re-scans.** No shadow swap: the leg is
+    disabled while the index is empty, so text retrieval is never degraded, and
+    images are cheap to redo (content-addressed by `sha256`). The trigger is the
+    probed width **or** the recorded `provider:model@baseUrl#dims` changing — two
+    models at the same width are two incompatible spaces, and a column type
+    cannot tell them apart; the base URL is there because a provider row's
+    endpoint can move without its id changing, and the model is the *resolved*
+    one, pinned into the assignment row at probe time so it cannot follow
+    `provider.default_model` around.
+  - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
+    An attachment can change under an unchanged page version — sync's
+    version-unchanged branch is exactly that case — and then the images must be
+    re-embedded and the text must not. P2 raises it at every write that can move
+    an image, in two shapes: the ATTACHMENT writers call
+    `core/services/image-embedding-dirty.ts` (the two sync attachment writers,
+    `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
+    `cleanPageAttachments`), while the BODY writers raise the column inline in
+    the UPDATE they already own, gated on `body_html` alone (the sync upsert,
+    the conflict-policy update, both relocate directions, the four `body_html`
+    writers in `routes/knowledge/pages-crud.ts`, `restoreVersion` and both
+    branches of `POST /llm/improvements/apply` — the last two matter because a
+    restore and an Apply are the two ways a page's `img` set moves with no
+    attachment write to notice it). It is CLEARED only
+    by a page whose scan had no failure, so the flag is the retry queue as well
+    as the work queue. Design of record: ADR-025.
+- **The attachment stores are filesystem-only, and #1349 gives them a
+  reconciler.** Two trees under `ATTACHMENTS_DIR`:
+  `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on
+  standalone pages land here keyed by PK, so the keyspace is SHARED with
+  Confluence ids) and `local/<page_id>/<file>` (the local store, whose metadata
+  rows are `local_attachments`). Three intake paths write and only page-scoped
+  cleanups delete; `local_attachments`' CASCADE removes rows, never files. The
+  standalone hard-delete and trash purge now remove both directories, plus the
+  page's `page-icons/<pk>/` mark, which nothing but the icon route itself ever
+  removed and which no sweep will ever collect
+  (`core/services/standalone-attachment-cleanup.ts`). The mark is keyed by
+  `pages.id` alone, so the same removal rides every other HARD delete too —
+  the Confluence delete route (single and bulk), sync's 30-day
+  `purgeDeletedPages` and `unsyncSpace`, through
+  `discardPageIconForDeletedPage` — each of them behind its own COMMITTED row
+  delete (`DELETE … RETURNING id`), never on a cleanup transaction's rollback
+  branch, where the page still exists and the mark is its only copy. And never
+  a soft delete, which is restorable. `<pk>/` in the shared tree, by contrast, is removed only when no
+  page claims `confluence_id = <pk>` AND the directory is older than a 5-minute
+  grace window, because deleting a shared-keyspace directory can evict a live
+  Confluence page's whole cache, and during a FIRST sync the claim does not
+  exist yet (attachments are downloaded before the `pages` INSERT). Everything else is
+  the admin-triggered, dry-run-first orphan sweep
+  (`domains/confluence/services/attachment-sweep-service.ts`, surfaced on
+  Settings → Knowledge → Spaces & Sync → Sync schedule): the two stores are walked separately
+  and the RESERVED root entries are skipped by name
+  (`ATTACHMENT_ROOT_RESERVED_DIRNAMES` — `local/` and the page-icon store
+  `page-icons/`; both match the Confluence tree's key pattern, so a naive walk
+  lists a whole other store as one orphan and a live run deletes it), a directory is
+  orphaned only when NO page row — trashed included — claims its key AND none
+  of its files carries a kept filename (the keep-set outranks the directory
+  verdict; a keep-intersecting pageless directory is skipped whole and
+  counted as keep-protected), and a
+  file only against a GLOBAL per-store keep-set fed from every body text in
+  the system (pages `body_html`/`draft_body_html`/`body_storage`/
+  `draft_body_storage` live and
+  trashed, `page_versions`, `pending_sync_versions`, `templates`, `comments`,
+  and `llm_conversations.messages` — #1361 persists a matched image's
+  `attachmentUrl` per assistant turn),
+  with BOTH page storage-format columns additionally run through
+  `getExpectedAttachmentFilenames` (#1525 — storage format names Confluence
+  attachments by `ri:filename`/`diagramName`, which no `/api/attachments/…`
+  URL regex can match, so the enumerator is the only pass that can see those.
+  Storage format is not URL-free, though: `htmlToConfluence` rewrites only
+  `img[src^="/api/attachments/"]`, so an `/api/local-attachments/…` img
+  survives conversion verbatim and the URL pass over the same column DOES
+  find it — which is why the draft column gets BOTH halves, not just the
+  enumerator. Forward protection either way, since no writer populates
+  `draft_body_storage` today and a draft's diagram already reaches
+  `draft_body_html` as an `/api/attachments/…` URL),
+  because attachment URLs are copied verbatim between bodies. A 24h mtime
+  grace window covers sync/paste races (both write files before the row that
+  references them), only image-like files are per-file candidates in the
+  Confluence tree (non-image lazily-cached attachments have no enumerator),
+  local rows whose FILE is missing are counted, never deleted, and a live run
+  refuses against an empty-on-disk store the database still references. Files
+  a live run deletes take their `page_image_embeddings` rows with them and
+  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  `admin_settings` JSON rows (`attachment_sweep_last_run`,
+  `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each
   page's average chunk vector, written by `embedPage` inside the same
   transaction as the chunk inserts, with its own HNSW index
@@ -280,13 +765,16 @@ erDiagram
   top-K nearest-neighbour edges from this index scoped to the changed pages,
   instead of AVG-ing the whole `page_embeddings` table and doing an index-less
   pairwise scan on every embedding run.
-- **Encryption at rest.** `user_settings.confluence_pat` is stored as a
-  ciphertext blob (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
-  log or expose it to the frontend. The AES key is derived via HKDF-SHA256
+- **Encryption at rest.** `user_settings.confluence_pat` and
+  `user_settings.notion_integration_token` (#1462) are stored as
+  ciphertext blobs (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never
+  log or expose them to the frontend (`hasConfluencePat` / `hasToken`
+  only). The AES key is derived via HKDF-SHA256
   over the full passphrase (#738); pre-HKDF ciphertexts (`v{N}:` /
   unversioned) remain decryptable. The `smtp_pass` row in `admin_settings`
   uses the same versioned helpers — legacy plaintext rows are detected on
-  startup and re-encrypted in place.
+  startup and re-encrypted in place. Key rotation
+  (`POST /admin/rotate-encryption-key`) sweeps the Notion token with the PAT.
 - **`admin_settings`** is a key-value bag used for server-wide config
   that must survive restarts and be editable at runtime — notably the
   `license_key` (populated by the EE plugin) and the `embedding_dimensions`
@@ -295,11 +783,28 @@ erDiagram
 - **LLM providers are rows, not env vars.** The `llm_providers` table
   stores one row per configured upstream endpoint (ADR-021). Exactly one
   row has `is_default = TRUE`. The `llm_usecase_assignments` table maps
-  each of `chat | summary | quality | auto_tag | embedding` to a
+  each of `chat | summary | quality | auto_tag | embedding | rerank` (#1104; rerank disabled when unassigned, never defaulted) to a
   `(provider_id, model)` pair. `model` may be `NULL` to inherit the
   provider's `default_model`; the whole row may be absent to inherit the
   default provider + its default model. The resolver caches this lookup
   and invalidates on provider writes via `llm-cache-bus.ts`.
+- **`llm_model_capabilities`** (migration 087, #1154) records a probed
+  `vision` verdict per `(provider_id, model)` — never per provider, since one
+  host commonly serves both a vision-capable and a text-only model. Unlike
+  `llm_usecase_assignments`' `ON DELETE RESTRICT`, its FK to `llm_providers`
+  is `ON DELETE CASCADE`: capability is derived data that should vanish with
+  its provider, not user configuration that should block a delete. `vision`
+  is nullable and `NULL` is a distinct, meaningful state ("probed, couldn't
+  tell") from `FALSE` ("definitively rejected the image") — see ADR-021's
+  `#1154` amendment for the full verdict table. `getVisionCapability`
+  (`domains/llm/services/model-capabilities.ts`) reads this table without
+  ever blocking on a probe; `refreshVisionCapability` writes it, called from
+  the admin save path and the manual re-probe route (#1184). `probe_error`
+  carries the provider's own error body and is readable only through
+  admin-gated routes: `readVisionCapabilityDetail` backs
+  `GET /admin/llm-usecases/chat/vision-capability` and
+  `POST /admin/llm-usecases/chat/reprobe-vision`, while the non-admin
+  `GET /llm/usecase-default` exposes the `vision` verdict alone.
 - **`audit_log`** captures auth events, license changes, RBAC mutations,
   and high-value LLM calls (prompt-injection flags, failed sanitization).
 - **User FK policies on hard delete** (migration 062): `audit_log.user_id`,
@@ -310,6 +815,14 @@ erDiagram
   the target to the `__system__` sentinel user
   (`00000000-0000-0000-0000-000000000000`) inside the same transaction
   before issuing the `DELETE FROM users`.
+- **`page_collaborative_docs` is 1:1 with `pages` (#1411 / #1443).** `page_id`
+  is the PK and an `ON DELETE CASCADE` FK. `doc_state` is the full
+  `Y.encodeStateAsUpdate` persist form (Redis fan-out is incremental and
+  never this column). `version` is the BYTEA write generation for crash
+  recovery — it is **not** `pages.version` and is never shown to editors.
+  Rows appear on first collab join; there is no backfill. The feature flag
+  `admin_settings.collab_editing_enabled` defaults to `'0'`. Topology:
+  [`12-realtime-collaboration.md`](./12-realtime-collaboration.md).
 - **Soft delete** on `pages.deleted_at` — the Trash feature filters on this.
   Standalone pages in the trash are hard-deleted after 30 days
   (`purgeExpiredStandalonePages` in `data-retention-service.ts`, run by the

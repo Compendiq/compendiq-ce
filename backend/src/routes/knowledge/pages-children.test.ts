@@ -124,12 +124,14 @@ describe('GET /api/pages/:id/children', () => {
       confluenceId: 'child-1',
       title: 'Child One',
       spaceKey: 'DEV',
+      icon: null,
     });
     expect(body.children[1]).toEqual({
       id: 30,
       confluenceId: 'child-2',
       title: 'Child Two',
       spaceKey: 'DEV',
+      icon: null,
     });
   });
 

@@ -35,7 +35,13 @@ vi.mock('../../core/services/rate-limit-service.js', () => ({
   getRateLimits: vi.fn().mockResolvedValue({ admin: { max: 9999 } }),
 }));
 
+const mockLoggerWarn = vi.fn();
+vi.mock('../../core/utils/logger.js', () => ({
+  logger: { info: vi.fn(), error: vi.fn(), warn: (...args: unknown[]) => mockLoggerWarn(...args), debug: vi.fn() },
+}));
+
 import { llmEmbeddingProbeRoutes } from './llm-embedding-probe.js';
+import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 
 let app: FastifyInstance;
 
@@ -67,6 +73,7 @@ afterAll(async () => {
 beforeEach(() => {
   mockGenerateEmbedding.mockReset();
   mockGetProviderById.mockReset();
+  mockLoggerWarn.mockReset();
 });
 
 describe('POST /api/admin/embedding/probe', () => {
@@ -137,5 +144,43 @@ describe('POST /api/admin/embedding/probe', () => {
     });
     expect(r.statusCode).toBe(200);
     expect(r.json()).toEqual({ dimensions: 0, error: 'boom' });
+  });
+
+  // #1185: since generateEmbedding now throws LlmHttpError, its `.message` no
+  // longer folds in the provider's raw body (see llm-http-error.ts) — the body
+  // lives on `.detail` and is logged, not returned. This route is admin-gated
+  // so the prior exposure was minor, but the shape should still match the
+  // body-free-message pattern #1181 established for chat().
+  it('returns a body-free message and logs the detail when generateEmbedding throws LlmHttpError', async () => {
+    mockGetProviderById.mockResolvedValue({
+      id: 'p1',
+      name: 'A',
+      baseUrl: 'http://a/v1',
+      apiKey: null,
+      authType: 'none',
+      verifySsl: true,
+      defaultModel: 'bge-m3',
+    });
+    const providerBody = 'internal registry trace: host=10.0.4.12 secretpath=/var/models';
+    mockGenerateEmbedding.mockRejectedValue(new LlmHttpError('generateEmbedding', 400, providerBody));
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/admin/embedding/probe',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ providerId: '11111111-1111-4111-8111-111111111111', model: 'x' }),
+    });
+
+    expect(r.statusCode).toBe(200);
+    const json = r.json();
+    expect(json.dimensions).toBe(0);
+    expect(json.error).toBe('generateEmbedding HTTP 400');
+    expect(json.error).not.toContain(providerBody);
+
+    // The detail still reaches the server log an admin can go looking for.
+    expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+    const [logPayload] = mockLoggerWarn.mock.calls[0]!;
+    expect(logPayload.detail).toBe(providerBody);
+    expect(logPayload.status).toBe(400);
   });
 });

@@ -1,14 +1,48 @@
 import { describe, it, expect } from 'vitest';
-import { Editor } from '@tiptap/core';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { Editor, mergeAttributes } from '@tiptap/core';
+import { DOMSerializer } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import { Image } from '@tiptap/extension-image';
-import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex } from './article-extensions';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { Details, DetailsSummary, Panel, DrawioDiagram, ConfluenceToc, ConfluenceStatus, ConfluenceChildren, ConfluenceAttachments, ConfluenceLayout, ConfluenceLayoutSection, ConfluenceLayoutCell, ConfluenceSection, ConfluenceColumn, UnknownMacro, LAYOUT_PRESETS, Figure, Figcaption, TableCaption, FigureIndex, TableIndex, ExtendedTable, BlockShortcutsExtension } from './article-extensions';
+import { CompendiqTableView } from './table-layout-view';
 
 // Helper to extract parseHTML rules from a TipTap extension config
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getParseRules(ext: any) {
   return ext.config.parseHTML?.call({ name: ext.name, options: {}, storage: {}, parent: undefined });
 }
+
+// GHSA-cp6q-959q-f8rh: guard the dependency boundary used by custom renderHTML
+// implementations, not a claim that arbitrary editor JSON reaches this helper.
+describe('TipTap attribute serialization security', () => {
+  it('keeps JSON-origin prototype attributes out of serialized DOM while merging ordinary attributes', () => {
+    const input = JSON.parse(`{
+      "__proto__": {
+        "data-inherited-canary": "present",
+        "src": "x-invalid://canary",
+        "onerror": "void 0"
+      },
+      "class": "panel imported",
+      "style": "color: blue"
+    }`);
+    const attrs = mergeAttributes(
+      { class: 'panel', style: 'color: red; text-align: center' },
+      input,
+    );
+    const { dom } = DOMSerializer.renderSpec(document, ['img', attrs]);
+
+    expect(dom).not.toHaveAttribute('data-inherited-canary');
+    expect(dom).not.toHaveAttribute('src');
+    expect(dom).not.toHaveAttribute('onerror');
+    expect(Object.getPrototypeOf(attrs)).toBe(Object.prototype);
+    expect(attrs['data-inherited-canary']).toBeUndefined();
+    expect(dom).toHaveClass('panel', 'imported');
+    expect(dom).toHaveStyle({ color: 'rgb(0, 0, 255)', textAlign: 'center' });
+  });
+});
 
 describe('article-extensions', () => {
   describe('Details', () => {
@@ -24,6 +58,144 @@ describe('article-extensions', () => {
     });
   });
 
+  // #1211: the backend stamps data-macro-name / data-macro-params on
+  // <details> so the reverse pass can write back the right ac:name once a
+  // second macro maps to this element (#1129). ProseMirror serializes only
+  // DECLARED attributes — if Details stopped declaring these, an editor save
+  // would strip them and the write-back would silently rewrite a foreign
+  // macro into a native expand. These cases pin survival through a real
+  // editor load → serialize round-trip, the failure mode invisible to
+  // backend-only tests.
+  describe('Details macro identity (#1211)', () => {
+    function createDetailsEditor(content: string) {
+      return new Editor({ extensions: [StarterKit, Details, DetailsSummary], content });
+    }
+
+    it('carries data-macro-name and data-macro-params through an editor round-trip', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand" ' +
+          'data-macro-params="{&quot;breakout-mode&quot;:&quot;wide&quot;}">' +
+          '<summary>T</summary><p>B</p></details>',
+      );
+      const output = editor.getHTML();
+      expect(output).toContain('data-macro-name="ui-expand"');
+      expect(output).toContain('data-macro-params=');
+      expect(output).toContain('breakout-mode');
+      editor.destroy();
+    });
+
+    it('paints the live toggle class without serializing it', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.view.dom.querySelector('details')).toHaveClass('cq-expand');
+      expect(editor.getHTML()).not.toContain('cq-expand');
+      editor.destroy();
+    });
+
+    it('omits both attributes when absent (editor-created sections stay bare)', () => {
+      const editor = createDetailsEditor('<details><summary>T</summary><p>B</p></details>');
+      const output = editor.getHTML();
+      expect(output).toContain('<details');
+      expect(output).not.toContain('data-macro-name');
+      expect(output).not.toContain('data-macro-params');
+      editor.destroy();
+    });
+
+    // #1129: `open` is the SOLE carrier of Refined UI Expand's default-open
+    // state — the backend forward pass consumes the macro's `expanded`
+    // parameter into it and deletes it from data-macro-params, so nothing else
+    // holds that value. An editor save that dropped the attribute would write
+    // every default-open section back to Confluence collapsed.
+    it('carries the open attribute through an editor round-trip', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand" open><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('leaves a collapsed section collapsed', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.view.dom.querySelector('details')).not.toHaveAttribute('open');
+      editor.destroy();
+    });
+
+    it('does not persist a title click in edit mode', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      const details = editor.view.dom.querySelector('details')!;
+      const summary = editor.view.dom.querySelector('summary')!;
+      expect(details).not.toHaveAttribute('open');
+      summary.click();
+      expect(details).toHaveAttribute('open');
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('persists UI Expand default-open only through setDetailsOpen', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(true);
+      expect(editor.getHTML()).toMatch(/<details[^>]*\sopen\b/);
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: false })).toBe(true);
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('refuses setDetailsOpen on a native expand', () => {
+      const editor = createDetailsEditor(
+        '<details data-macro-name="expand"><summary>T</summary><p>B</p></details>',
+      );
+      expect(editor.commands.setDetailsOpen({ pos: 0, open: true })).toBe(false);
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+      editor.destroy();
+    });
+
+    it('keeps a reader toggle ephemeral instead of changing the document', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content:
+          '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+        editable: false,
+      });
+      const details = editor.view.dom.querySelector('details')!;
+      const summary = editor.view.dom.querySelector('summary')!;
+
+      expect(details).not.toHaveAttribute('open');
+      summary.click();
+      expect(details).toHaveAttribute('open');
+      expect(editor.getHTML()).not.toMatch(/<details[^>]*\sopen\b/);
+
+      summary.click();
+      expect(details).not.toHaveAttribute('open');
+      editor.destroy();
+    });
+
+    it('preserves interactive descendants inside a read-only summary', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content:
+          '<details data-macro-name="ui-expand"><summary>' +
+          '<a href="#linked-section">Linked title</a></summary><p>B</p></details>',
+        editable: false,
+      });
+      const details = editor.view.dom.querySelector('details')!;
+      const link = editor.view.dom.querySelector('summary a')!;
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+
+      expect(link.dispatchEvent(event)).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(details).not.toHaveAttribute('open');
+      editor.destroy();
+    });
+  });
+
   describe('DetailsSummary', () => {
     it('has correct name', () => {
       expect(DetailsSummary.name).toBe('detailsSummary');
@@ -33,6 +205,161 @@ describe('article-extensions', () => {
       const parseRules = getParseRules(DetailsSummary);
       expect(parseRules).toBeDefined();
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'summary' }));
+    });
+  });
+
+  // #1227: an untitled section stores nothing, so the label it shows has to be
+  // painted on. A ProseMirror decoration stamps `data-expand-placeholder` and
+  // CSS renders it — never a node attribute, or the label would serialize into
+  // body_html and become the fabricated `title` parameter all over again.
+  describe('DetailsSummary placeholder (#1227)', () => {
+    function mount(content: string, editable = true) {
+      return new Editor({ extensions: [StarterKit, Details, DetailsSummary], content, editable });
+    }
+    const placeholderOf = (editor: Editor) =>
+      editor.view.dom.querySelector('summary')?.getAttribute('data-expand-placeholder');
+
+    it('labels an empty summary with the native expand default', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.destroy();
+    });
+
+    it('labels an empty ui-expand summary with Refined\'s own string', () => {
+      // Measured on Refined's public DC demo: no ellipsis, unlike the native
+      // macro. The near-collision is real, so pin both.
+      const editor = mount('<details data-macro-name="ui-expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand');
+      editor.destroy();
+    });
+
+    it('falls back to a generic label for an unstamped or unknown section', () => {
+      // Pre-#1211 body_html and editor-created sections carry no stamp;
+      // guessing a third-party macro's wording would be the same fabrication
+      // in the UI that this issue removed from the storage format.
+      for (const tag of ['<details>', '<details data-macro-name="some-vendor-expand">']) {
+        const editor = mount(`${tag}<summary></summary><p>B</p></details>`);
+        expect(placeholderOf(editor)).toBe('Click to expand');
+        editor.destroy();
+      }
+    });
+
+    it('leaves a titled summary alone', () => {
+      const editor = mount('<details data-macro-name="expand"><summary>Real</summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBeNull();
+      editor.destroy();
+    });
+
+    it('labels an empty summary in read view too', () => {
+      // ArticleViewer mounts the same node with `editable: false`, and an
+      // untitled section has to read the same on the page as it does in the
+      // editor. Decorations render in both modes; CSS `:empty` matches in
+      // neither, which is why this is not a stylesheet-only change.
+      const editor = mount(
+        '<details data-macro-name="expand"><summary></summary><p>B</p></details>',
+        false,
+      );
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.destroy();
+    });
+
+    it('never serializes the label into the document', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(editor.getHTML()).not.toContain('data-expand-placeholder');
+      expect(editor.getHTML()).not.toContain('Click here to expand');
+      editor.destroy();
+    });
+
+    it('names an empty summary for assistive tech without storing the name', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(editor.view.dom.querySelector('summary')?.getAttribute('aria-label')).toBe(
+        'Click here to expand...',
+      );
+      expect(editor.getHTML()).not.toContain('aria-label');
+      editor.destroy();
+    });
+
+    it('stops labelling as soon as the user types a title', () => {
+      const editor = mount('<details data-macro-name="expand"><summary></summary><p>B</p></details>');
+      expect(placeholderOf(editor)).toBe('Click here to expand...');
+      editor.commands.insertContentAt(2, 'Typed');
+      expect(placeholderOf(editor)).toBeNull();
+      expect(editor.getHTML()).toContain('<summary>Typed</summary>');
+      editor.destroy();
+    });
+
+    // PDF export is the other renderer that has to supply these labels: it is
+    // server-side pdf-lib, so neither the decoration nor the stylesheet
+    // reaches it, and #1227 left it printing untitled sections with no header
+    // row at all. Backend and frontend share only `@compendiq/contracts`, so
+    // the map is duplicated in `pdf-service.ts` — parsed here so a change to
+    // one copy fails by name instead of drifting silently. (Same
+    // read-the-other-workspace idiom as `nginx-api-body-limit.test.ts`.)
+    it('agrees with the copy the PDF exporter renders from', () => {
+      const parseLabels = (source: string, mapName: string, fallbackName: string) => {
+        const body = new RegExp(`${mapName}[^=]*=\\s*\\{([^}]*)\\}`).exec(source)?.[1];
+        expect(body, `${mapName} is gone or no longer an object literal`).toBeTruthy();
+        const labels: Record<string, string> = {};
+        for (const [, key, value] of body!.matchAll(/'?([\w-]+)'?:\s*'([^']*)'/g)) {
+          labels[key] = value;
+        }
+        const fallback = new RegExp(`${fallbackName}\\s*=\\s*'([^']*)'`).exec(source)?.[1];
+        expect(fallback, `${fallbackName} is gone`).toBeTruthy();
+        return { labels, fallback };
+      };
+
+      const here = parseLabels(
+        readFileSync(resolve(__dirname, 'article-extensions.ts'), 'utf-8'),
+        'EXPAND_PLACEHOLDER_LABELS',
+        'DEFAULT_EXPAND_PLACEHOLDER',
+      );
+      const pdf = parseLabels(
+        readFileSync(
+          resolve(__dirname, '../../../../../backend/src/core/services/pdf-service.ts'),
+          'utf-8',
+        ),
+        'EXPAND_DEFAULT_LABELS',
+        'DEFAULT_EXPAND_LABEL',
+      );
+
+      // Not just equal to each other — equal to the measured strings, so a
+      // matching pair of wrong edits still fails.
+      expect(here.labels).toEqual({
+        expand: 'Click here to expand...',
+        'ui-expand': 'Click here to expand',
+      });
+      expect(pdf.labels).toEqual(here.labels);
+      expect(here.fallback).toBe('Click to expand');
+      expect(pdf.fallback).toBe(here.fallback);
+    });
+  });
+
+  // #1227: this is why every <details> the backend produces carries a
+  // <summary>, empty or not. `Details.content` is 'detailsSummary block*' — a
+  // REQUIRED first child — so a summary-less section cannot parse as written
+  // and its body is lifted out to become a sibling of an emptied section. The
+  // next save would push that loss to Confluence. Characterizing it here keeps
+  // the invariant honest: if this ever stops ejecting, the backend's
+  // always-emit-a-summary rule can be revisited on evidence rather than memory.
+  describe('summary-less <details> ejects its body (#1227 invariant)', () => {
+    it('lifts the body out of a section with no summary', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content: '<details data-macro-name="expand"><p>body</p></details>',
+      });
+      const html = editor.getHTML();
+      expect(html).toContain('<summary></summary></details>');
+      expect(html).toMatch(/<\/details>\s*<p>body<\/p>/);
+      editor.destroy();
+    });
+
+    it('keeps the body inside when the summary is present but empty', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Details, DetailsSummary],
+        content: '<details data-macro-name="expand"><summary></summary><p>body</p></details>',
+      });
+      expect(editor.getHTML()).toMatch(/<summary><\/summary>\s*<p>body<\/p>\s*<\/details>/);
+      editor.destroy();
     });
   });
 
@@ -49,6 +376,23 @@ describe('article-extensions', () => {
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.panel-warning' }));
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.panel-note' }));
       expect(parseRules).toContainEqual(expect.objectContaining({ tag: 'div.panel-tip' }));
+    });
+
+    it('preserves a native panel macro identity and parameters through editor serialization', () => {
+      const editor = new Editor({
+        extensions: [StarterKit, Panel],
+        content:
+          '<div class="panel-info" data-macro-name="panel" ' +
+          'data-macro-params="{&quot;title&quot;:&quot;Operations&quot;,&quot;custom-option&quot;:&quot;keep me&quot;}">' +
+          '<p>Panel body</p></div>',
+      });
+
+      const output = editor.getHTML();
+      expect(output).toContain('class="panel-info"');
+      expect(output).toContain('data-macro-name="panel"');
+      expect(output).toContain('data-macro-params=');
+      expect(output).toContain('custom-option');
+      editor.destroy();
     });
   });
 
@@ -157,7 +501,7 @@ describe('article-extensions', () => {
       const addAttributes = ConfluenceChildren.config.addAttributes;
       const attrs = addAttributes?.call({ name: 'confluenceChildren', options: {}, storage: {}, parent: undefined });
       expect(attrs).toBeDefined();
-      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+      const expectedParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
       for (const param of expectedParams) {
         expect(attrs).toHaveProperty(param);
         expect(attrs[param].default).toBeNull();
@@ -178,6 +522,7 @@ describe('article-extensions', () => {
             'data-page': 'My Page',
             'data-style': 'h3',
             'data-excerpttype': 'rich',
+            'data-columns': '2',
             'data-macro-name': 'ui-children',
           };
           return map[name.toLowerCase()] ?? null;
@@ -191,6 +536,7 @@ describe('article-extensions', () => {
       expect(attrs.page.parseHTML(mockElement)).toBe('My Page');
       expect(attrs.style.parseHTML(mockElement)).toBe('h3');
       expect(attrs.excerptType.parseHTML(mockElement)).toBe('rich');
+      expect(attrs.columns.parseHTML(mockElement)).toBe('2');
       expect(attrs['macro-name'].parseHTML(mockElement)).toBe('ui-children');
     });
   });
@@ -209,6 +555,7 @@ describe('article-extensions', () => {
           page: null,
           style: null,
           excerptType: null,
+          columns: '2',
           'macro-name': 'ui-children',
         },
       };
@@ -223,6 +570,7 @@ describe('article-extensions', () => {
       expect(content).toBe('[Children pages listed here]');
       expect(attrs['data-sort']).toBe('title');
       expect(attrs['data-depth']).toBe('0');
+      expect(attrs['data-columns']).toBe('2');
       expect(attrs['data-macro-name']).toBe('ui-children');
       // Null attrs should not appear
       expect(attrs).not.toHaveProperty('data-reverse');
@@ -676,3 +1024,256 @@ describe('TableIndex node', () => {
     editor.destroy();
   });
 });
+
+describe('BlockShortcutsExtension', () => {
+  it('duplicates the active block via duplicateBlock command', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, BlockShortcutsExtension],
+      content: '<p>First block</p><p>Second block</p>',
+    });
+
+    editor.commands.setTextSelection(3);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    expect(editor.getHTML()).toBe('<p>First block</p><p>First block</p><p>Second block</p>');
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a confluenceColumn without duplicating the whole section', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn, BlockShortcutsExtension],
+      content: `
+        <div class="confluence-section">
+          <div class="confluence-column">
+            <p>Column 1 Paragraph A</p>
+            <p>Column 1 Paragraph B</p>
+          </div>
+          <div class="confluence-column">
+            <p>Column 2 Paragraph</p>
+          </div>
+        </div>
+      `,
+    });
+
+    // Place selection inside "Column 1 Paragraph A"
+    const doc = editor.state.doc;
+    let targetPos = 0;
+    doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Column 1 Paragraph A')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    // Assert that the paragraph was duplicated inside Column 1, and only 1 confluenceSection exists
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Column 1 Paragraph A</p><p>Column 1 Paragraph A</p><p>Column 1 Paragraph B</p>');
+    const sectionCount = (html.match(/class="confluence-section"/g) || []).length;
+    expect(sectionCount).toBe(1);
+    editor.destroy();
+  });
+
+  it('duplicates a heading inside a confluenceColumn', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn, BlockShortcutsExtension],
+      content: `
+        <div class="confluence-section">
+          <div class="confluence-column">
+            <h2>Column Subheading</h2>
+            <p>Description</p>
+          </div>
+        </div>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Column Subheading')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<h2>Column Subheading</h2><h2>Column Subheading</h2><p>Description</p>');
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a panel container', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, Panel, BlockShortcutsExtension],
+      content: `
+        <div class="panel-info">
+          <p>Important info line 1</p>
+        </div>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Important info line 1')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Important info line 1</p><p>Important info line 1</p>');
+    const panelCount = (html.match(/class="panel-info"/g) || []).length;
+    expect(panelCount).toBe(1);
+    editor.destroy();
+  });
+
+  it('duplicates a block inside a details (expand) container', () => {
+    const editor = new Editor({
+      extensions: [StarterKit, Details, DetailsSummary, BlockShortcutsExtension],
+      content: `
+        <details>
+          <summary>Overview</summary>
+          <p>Detail item 1</p>
+        </details>
+      `,
+    });
+
+    let targetPos = 0;
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text?.includes('Detail item 1')) {
+        targetPos = pos + 2;
+        return false;
+      }
+      return true;
+    });
+
+    editor.commands.setTextSelection(targetPos);
+    const result = editor.commands.duplicateBlock();
+    expect(result).toBe(true);
+
+    const html = editor.getHTML();
+    expect(html).toContain('<p>Detail item 1</p><p>Detail item 1</p>');
+    const detailsCount = (html.match(/<details/g) || []).length;
+    expect(detailsCount).toBe(1);
+    editor.destroy();
+  });
+});
+
+describe('Block in blocks: rich block nesting inside column containers', () => {
+  it('supports diverse blocks (tables, panels, code blocks, quotes, lists, details) inside columns', () => {
+    const html = `
+      <div class="confluence-section">
+        <div class="confluence-column" data-cell-width="50%">
+          <h2>Left Column</h2>
+          <p>Intro paragraph</p>
+          <blockquote><p>A nested quote</p></blockquote>
+          <div class="panel-info"><p>Panel inside column</p></div>
+          <table data-layout="default">
+            <tbody>
+              <tr><th>Header</th></tr>
+              <tr><td>Data</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="confluence-column" data-cell-width="50%">
+          <pre><code>console.log('code in column');</code></pre>
+          <ul>
+            <li><p>List item in column</p></li>
+          </ul>
+          <details>
+            <summary>Expand in column</summary>
+            <p>Hidden body</p>
+          </details>
+        </div>
+      </div>
+    `;
+
+    const editor = new Editor({
+      extensions: [
+        StarterKit,
+        ExtendedTable,
+        TableRow,
+        TableCell,
+        TableHeader,
+        Panel,
+        Details,
+        DetailsSummary,
+        ConfluenceSection,
+        ConfluenceColumn,
+      ],
+      content: html,
+    });
+
+    const doc = editor.getJSON();
+    const section = doc.content?.find((n) => n.type === 'confluenceSection');
+    expect(section).toBeDefined();
+    expect(section?.content?.length).toBe(2);
+
+    const leftCol = section?.content?.[0];
+    const rightCol = section?.content?.[1];
+
+    expect(leftCol?.type).toBe('confluenceColumn');
+    expect(leftCol?.attrs?.cellWidth).toBe('50%');
+    const leftBlockTypes = leftCol?.content?.map((n) => n.type);
+    expect(leftBlockTypes).toEqual(['heading', 'paragraph', 'blockquote', 'panel', 'table']);
+
+    expect(rightCol?.type).toBe('confluenceColumn');
+    const rightBlockTypes = rightCol?.content?.map((n) => n.type);
+    expect(rightBlockTypes).toEqual(['codeBlock', 'bulletList', 'details']);
+
+    editor.destroy();
+  });
+
+  it('supports nested sections inside a column', () => {
+    const html = `
+      <div class="confluence-section">
+        <div class="confluence-column">
+          <p>Outer column top</p>
+          <div class="confluence-section" data-border="true">
+            <div class="confluence-column"><p>Inner Col 1</p></div>
+            <div class="confluence-column"><p>Inner Col 2</p></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const editor = new Editor({
+      extensions: [StarterKit, ConfluenceSection, ConfluenceColumn],
+      content: html,
+    });
+
+    const doc = editor.getJSON();
+    const outerSection = doc.content?.find((n) => n.type === 'confluenceSection');
+    const outerColumn = outerSection?.content?.[0];
+    expect(outerColumn?.type).toBe('confluenceColumn');
+
+    const innerSection = outerColumn?.content?.find((n) => n.type === 'confluenceSection');
+    expect(innerSection).toBeDefined();
+    expect(innerSection?.attrs?.border).toBe('true');
+    expect(innerSection?.content?.length).toBe(2);
+
+    editor.destroy();
+  });
+});
+
+describe('ExtendedTable options', () => {
+  it('keeps required TableOptions and uses CompendiqTableView', () => {
+    expect(ExtendedTable.options.HTMLAttributes).toEqual(expect.any(Object));
+    expect(ExtendedTable.options.View).toBe(CompendiqTableView);
+  });
+});
+
+

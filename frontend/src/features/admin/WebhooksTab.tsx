@@ -41,6 +41,7 @@ import { WEBHOOK_EVENT_TYPES } from '@compendiq/contracts';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // We bypass `apiFetch` for the same reason as IpAllowlistTab: the backend
@@ -111,7 +112,7 @@ export function WebhooksTab() {
   if (!isEnterprise || !hasFeature('webhook_push')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="webhooks-not-licensed"
       >
@@ -191,7 +192,7 @@ function WebhooksTabInner() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold">
+          <h1 className="flex items-center gap-2 text-lg font-semibold">
             <Webhook size={22} className="text-action" />
             Webhook endpoints
           </h1>
@@ -201,24 +202,23 @@ function WebhooksTabInner() {
             receiver must verify it before trusting the payload.
           </p>
         </div>
-        <button
-          type="button"
+        <Button
           onClick={() => setModal({ kind: 'create' })}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="webhooks-new-btn"
         >
-          <Plus size={14} />
           New webhook
-        </button>
+        </Button>
       </div>
 
       {/* Non-dismissible notice about signing */}
       <div
         role="alert"
-        className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+        className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
         data-testid="webhooks-signing-notice"
       >
-        <Shield size={18} className="mt-0.5 shrink-0 text-amber-400" />
+        <Shield size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-sm">
           Receivers <strong>must verify the signature header</strong> before
           processing a delivery. See <em>USER-GUIDE → Webhook Signing</em> for
@@ -235,7 +235,7 @@ function WebhooksTabInner() {
         </div>
       ) : subscriptions.length === 0 ? (
         <div
-          className="rounded-lg border border-border/40 bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
+          className="rounded-lg border border-border bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
           data-testid="webhooks-empty"
         >
           No webhook endpoints configured.
@@ -347,7 +347,7 @@ function SubscriptionRow({
 
   return (
     <li
-      className="rounded-lg border border-border/40 bg-card/50 p-4 backdrop-blur-sm"
+      className="rounded-lg border border-border bg-card p-4"
       data-testid={`webhook-row-${sub.id}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -368,7 +368,7 @@ function SubscriptionRow({
             </div>
             {sub.hasSecondarySecret && (
               <span
-                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300"
+                className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-xs text-warning"
                 data-testid={`webhook-rotation-chip-${sub.id}`}
                 title={
                   sub.secretSecondaryAddedAt
@@ -407,7 +407,7 @@ function SubscriptionRow({
                 data-testid={`webhook-last-delivery-${sub.id}`}
               >
                 {last.status === 'success' ? (
-                  <CheckCircle2 size={12} className="text-emerald-400" />
+                  <CheckCircle2 size={12} className="text-success" />
                 ) : (
                   <XCircle size={12} className="text-destructive" />
                 )}
@@ -500,18 +500,18 @@ function DialogShell({
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
             widthClass ?? 'max-w-lg',
           )}
           aria-describedby={undefined}
           data-testid={testid}
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="text-base font-semibold">{title}</Dialog.Title>
             <Dialog.Close asChild>
               <button
                 type="button"
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close"
                 data-testid={`${testid}-close`}
               >
@@ -705,7 +705,7 @@ function CreateEditDialog({
               'grid grid-cols-2 gap-2 rounded-md border bg-foreground/[0.02] p-2',
               inlineError?.field === 'eventTypes'
                 ? 'border-destructive'
-                : 'border-border/40',
+                : 'border-border',
             )}
             data-testid="webhook-events-select"
           >
@@ -800,27 +800,27 @@ function CreateEditDialog({
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
-        <button
-          type="button"
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           Cancel
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={() => {
             setInlineError(null);
             mutation.mutate();
           }}
           disabled={!canSubmit || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={mutation.isPending}
+          variant="primary"
+          size="sm"
           data-testid="webhook-save-btn"
         >
-          {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
           {mode === 'create' ? 'Create' : 'Save'}
-        </button>
+        </Button>
       </div>
     </DialogShell>
   );
@@ -882,8 +882,8 @@ function RotateSecretDialog({
       testid="webhook-rotate-dialog"
     >
       <div className="space-y-4">
-        <div className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-100">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-400" />
+        <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-warning">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
           <p className="text-xs">
             Both the current and new secret will sign deliveries for 24 hours,
             then the previous secret is retired automatically. Receivers must
@@ -929,7 +929,7 @@ function RotateSecretDialog({
 
         {result && (
           <div
-            className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-100"
+            className="rounded-lg border border-success/30 bg-success/5 p-3 text-xs text-success"
             data-testid="webhook-rotate-result"
           >
             <div className="flex items-center gap-2 font-medium">
@@ -954,28 +954,28 @@ function RotateSecretDialog({
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
-        <button
-          type="button"
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           {result ? 'Done' : 'Cancel'}
-        </button>
+        </Button>
         {!result && (
-          <button
-            type="button"
+          <Button
             onClick={() => {
               setError(null);
               mutation.mutate();
             }}
             disabled={!canSubmit || mutation.isPending}
-            className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            isLoading={mutation.isPending}
+            variant="primary"
+            size="sm"
             data-testid="webhook-rotate-submit-btn"
           >
-            {mutation.isPending && <Loader2 size={14} className="animate-spin" />}
             Rotate secret
-          </button>
+          </Button>
         )}
       </div>
     </DialogShell>
@@ -1049,7 +1049,7 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
             className={cn(
               'rounded-lg border p-3 text-xs',
               result.status === 'success'
-                ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-100'
+                ? 'border-success/30 bg-success/5 text-success'
                 : 'border-destructive/40 bg-destructive/5 text-destructive',
             )}
             data-testid="webhook-test-result"
@@ -1100,32 +1100,29 @@ function TestDeliveryDialog({ subscription, onClose }: TestDialogProps) {
         )}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
-        <button
-          type="button"
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
+        <Button
           onClick={onClose}
-          className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+          variant="ghost"
+          size="sm"
         >
           Close
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={() => {
             setResult(null);
             setError(null);
             mutation.mutate();
           }}
           disabled={!eventType || mutation.isPending}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={mutation.isPending}
+          variant="primary"
+          size="sm"
+          leftIcon={!mutation.isPending ? <TestTube2 size={14} /> : undefined}
           data-testid="webhook-test-submit-btn"
         >
-          {mutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <TestTube2 size={14} />
-          )}
           Send test
-        </button>
+        </Button>
       </div>
     </DialogShell>
   );
@@ -1167,7 +1164,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
         </div>
       ) : deliveries.length === 0 ? (
         <div
-          className="rounded-lg border border-border/40 bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
+          className="rounded-lg border border-border bg-foreground/[0.02] p-6 text-center text-sm text-muted-foreground"
           data-testid="webhook-history-empty"
         >
           No deliveries recorded yet.
@@ -1175,7 +1172,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
       ) : (
         <table className="w-full text-xs" data-testid="webhook-history-table">
           <thead className="text-left text-muted-foreground">
-            <tr className="border-b border-border/40">
+            <tr className="border-b border-border">
               <th className="pb-2 pl-1 pr-2 font-medium">#</th>
               <th className="pb-2 pr-2 font-medium">Status</th>
               <th className="pb-2 pr-2 font-medium">HTTP</th>
@@ -1196,7 +1193,7 @@ function DeliveryHistoryDialog({ subscription, onClose }: HistoryDialogProps) {
         </table>
       )}
 
-      <div className="mt-5 flex items-center justify-end border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}
@@ -1222,7 +1219,7 @@ function DeliveryRow({
     <>
       <tr
         onClick={onToggle}
-        className="cursor-pointer border-b border-border/20 hover:bg-foreground/[0.03]"
+        className="cursor-pointer border-b border-border hover:bg-foreground/[0.03]"
         data-testid={`webhook-delivery-row-${delivery.id}`}
       >
         <td className="py-2 pl-1 pr-2 font-mono">{delivery.attemptNumber}</td>
@@ -1269,10 +1266,10 @@ function DeliveryRow({
 
 function StatusChip({ status }: { status: WebhookDelivery['status'] }) {
   const styles: Record<WebhookDelivery['status'], string> = {
-    success: 'bg-emerald-500/15 text-emerald-300',
+    success: 'bg-success/15 text-success',
     failure: 'bg-destructive/15 text-destructive',
-    timeout: 'bg-amber-500/15 text-amber-300',
-    ssrf_blocked: 'bg-purple-500/15 text-purple-300',
+    timeout: 'bg-warning/15 text-warning',
+    ssrf_blocked: 'bg-status-ai/15 text-status-ai',
   };
   return (
     <span
@@ -1329,7 +1326,7 @@ function DeleteConfirmDialog({
           ?
         </div>
       </div>
-      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border/50 pt-4">
+      <div className="mt-5 flex items-center justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           onClick={onClose}

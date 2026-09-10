@@ -9,6 +9,7 @@ const mockProcessDirtyPages = vi.fn();
 const mockReEmbedAll = vi.fn();
 const mockResetFailedEmbeddings = vi.fn();
 const mockEmbedPage = vi.fn();
+const mockAssertNoShadowMigration = vi.hoisted(() => vi.fn(async (): Promise<void> => {}));
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   getEmbeddingStatus: (...args: unknown[]) => mockGetEmbeddingStatus(...args),
   processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
@@ -16,6 +17,7 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
   resetFailedEmbeddings: (...args: unknown[]) => mockResetFailedEmbeddings(...args),
   embedPage: (...args: unknown[]) => mockEmbedPage(...args),
+  assertNoShadowMigration: (...args: unknown[]) => mockAssertNoShadowMigration(...args),
 }));
 
 // --- Mock: postgres query ---
@@ -226,6 +228,32 @@ describe('POST /api/admin/re-embed - admin access', () => {
     await app.close();
   });
 
+  it('refuses to the admin\'s face during a shadow migration, instead of logging it (review r9)', async () => {
+    // reEmbedAll() is fired-and-forgotten here, so its own guard would throw
+    // into a .catch(log) while the admin read "Re-embedding started".
+    const app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.decorate('authenticate', async (request: { userId: string; userRole: string }) => {
+      request.userId = 'admin-user';
+      request.userRole = 'admin';
+    });
+    app.decorate('requireAdmin', async () => {});
+    app.decorate('redis', {});
+    app.decorateRequest('userId', '');
+    await app.register(llmEmbeddingRoutes, { prefix: '/api' });
+    await app.ready();
+
+    const err = new Error('A shadow migration is in progress') as Error & { statusCode: number };
+    err.statusCode = 409;
+    mockAssertNoShadowMigration.mockRejectedValueOnce(err);
+
+    const response = await app.inject({ method: 'POST', url: '/api/admin/re-embed' });
+
+    expect(response.statusCode).toBe(409);
+    expect(mockReEmbedAll).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it('should start re-embedding when called by admin', async () => {
     const app = Fastify({ logger: false });
     await app.register(sensible);
@@ -256,4 +284,6 @@ describe('POST /api/admin/re-embed - admin access', () => {
     expect(body.message).toContain('Re-embedding started');
     await app.close();
   });
+
+
 });

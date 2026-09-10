@@ -18,9 +18,10 @@
 import { useMutation } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
-import { Check, Loader2, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { DiffView } from '../../shared/components/article/DiffView';
 import { fetchJson } from '../../shared/lib/fetch-json';
+import { Button } from '../../shared/components/Button';
 import type { SyncConflict } from './SyncConflictsPage';
 
 interface ResolveBody {
@@ -67,10 +68,10 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-border/50 bg-background shadow-2xl"
+          className="fixed left-1/2 top-1/2 z-50 grid h-[85vh] w-[95vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 grid-rows-[auto_1fr_auto] overflow-hidden nm-card-elevated"
           data-testid="sync-conflict-resolve-dialog"
         >
-          <div className="flex items-start justify-between border-b border-border/50 p-4">
+          <div className="flex items-start justify-between border-b border-border p-4">
             <div className="min-w-0 flex-1">
               <Dialog.Title className="truncate text-base font-semibold">
                 Resolve conflict — {conflict.pageTitle}
@@ -82,7 +83,7 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
               </Dialog.Description>
             </div>
             <Dialog.Close
-              className="rounded-md p-1.5 text-muted-foreground hover:bg-foreground/5 disabled:opacity-50"
+              className="nm-icon-button"
               disabled={isPending}
               data-testid="sync-conflict-resolve-close-btn"
               aria-label="Close"
@@ -102,36 +103,36 @@ export function SyncConflictResolveDialog({ conflict, onClose, onResolved }: Pro
             />
           </div>
 
-          <div className="flex items-center justify-end gap-2 border-t border-border/50 p-4">
-            <button
-              type="button"
+          {/* Footer actions */}
+          <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
+            <Button
               onClick={onClose}
               disabled={isPending}
-              className="rounded-md border border-border/50 px-4 py-2 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-50"
+              variant="ghost"
               data-testid="sync-conflict-resolve-cancel-btn"
             >
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={() => resolveMutation.mutate({ resolution: 'local' })}
               disabled={isPending}
-              className="flex items-center gap-1.5 rounded-md border border-border/50 px-4 py-2 text-sm hover:bg-foreground/5 disabled:opacity-50"
+              isLoading={isPending}
+              variant="secondary"
+              leftIcon={!isPending ? <Check size={14} /> : undefined}
               data-testid="sync-conflict-resolve-keep-local-btn"
             >
-              {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
               Keep local
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={() => resolveMutation.mutate({ resolution: 'remote' })}
               disabled={isPending}
-              className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={isPending}
+              variant="primary"
+              leftIcon={!isPending ? <Check size={14} /> : undefined}
               data-testid="sync-conflict-resolve-take-remote-btn"
             >
-              {isPending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
               Take Confluence
-            </button>
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

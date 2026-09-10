@@ -83,7 +83,7 @@ export function TrialBanner() {
       className={cn(
         'mt-2 flex items-center gap-2 rounded-md border px-3 py-2 text-sm',
         tone === 'destructive' && 'border-destructive/30 bg-destructive/15 text-destructive',
-        tone === 'warning' && 'border-amber-500/30 bg-amber-500/15 text-amber-900 dark:text-amber-200',
+        tone === 'warning' && 'border-warning/30 bg-warning/15 text-warning',
         tone === 'info' && 'border-border bg-muted/50 text-muted-foreground',
       )}
     >

@@ -6,15 +6,27 @@ import { migrateStorageKey } from '../shared/lib/migrate-storage-key';
 migrateStorageKey('kb-ui', 'compendiq-ui');
 migrateStorageKey('atlasmind-ui', 'compendiq-ui');
 
+export const ARTICLE_SIDEBAR_MIN_WIDTH = 400;
+export const ARTICLE_SIDEBAR_MAX_WIDTH = 1200;
+export const ARTICLE_SIDEBAR_DEFAULT_WIDTH = 400;
+
 interface UiState {
   sidebarCollapsed: boolean;
   treeSidebarCollapsed: boolean;
   treeSidebarSpaceKey: string | undefined;
   treeSidebarWidth: number;
   articleSidebarCollapsed: boolean;
+  /**
+   * Below `xl` the inspector starts collapsed so the article keeps the
+   * workspace. Wide layouts still use `articleSidebarCollapsed`. This flag
+   * is the laptop expand (layout presets, Alt+I, the expand control).
+   */
+  articleSidebarLaptopExpanded: boolean;
   articleSidebarWidth: number;
-  /** When false, single-key shortcuts (no Ctrl/Alt) are suppressed (WCAG 2.1.4). */
-  singleKeyShortcutsEnabled: boolean;
+  /** A personal editing preference, not a per-document action — belongs in
+   *  Settings, not on a permanent slot in the editor toolbar (see
+   *  ThemeTab.tsx's "Editor" section). */
+  vimModeEnabled: boolean;
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleTreeSidebar: () => void;
@@ -23,9 +35,13 @@ interface UiState {
   setTreeSidebarWidth: (width: number) => void;
   toggleArticleSidebar: () => void;
   setArticleSidebarCollapsed: (collapsed: boolean) => void;
+  setArticleSidebarLaptopExpanded: (expanded: boolean) => void;
   setArticleSidebarWidth: (width: number) => void;
-  setSingleKeyShortcutsEnabled: (enabled: boolean) => void;
+  setVimModeEnabled: (enabled: boolean) => void;
 }
+
+export const COLLAPSED_TREE_SIDEBAR_WIDTH = 40;
+
 
 export const useUiStore = create<UiState>()(
   persist(
@@ -33,10 +49,28 @@ export const useUiStore = create<UiState>()(
       sidebarCollapsed: false,
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
-      treeSidebarWidth: 256,
+      // 280, not 256: at 256 a level-1 leaf gave its title 158px while real
+      // Confluence titles routinely need 250-400px, so 43 of 57 rendered rows
+      // truncated — with no `title`, no hover card and no keyboard path to the
+      // hidden text. The row gutter was rebuilt to reclaim ~35px of that (see
+      // SidebarTreeNode); this carries the remaining 24. Both halves are needed:
+      // widening alone just moves the panel's cost onto the article.
+      treeSidebarWidth: 282,
       articleSidebarCollapsed: false,
-      articleSidebarWidth: 280,
-      singleKeyShortcutsEnabled: true,
+      articleSidebarLaptopExpanded: false,
+      // 400 is both the default and minimum: the Assistant's labelled skill
+      // control and four-view tab strip need this width to remain legible,
+      // while the article still retains its enforced 640px reading measure on
+      // the wide layouts where the expanded inspector is available.
+      articleSidebarWidth: ARTICLE_SIDEBAR_DEFAULT_WIDTH,
+      // Carries over anyone's existing preference from the old standalone
+      // localStorage key the toolbar toggle used to write directly. Safe as a
+      // one-time plain read (not a full migrateStorageKey, which expects a
+      // JSON-shaped store, not a raw 'true'/'false' string): zustand persist
+      // merges this initial value under any already-persisted `compendiq-ui`
+      // blob, and blobs written before this field existed simply don't have
+      // `vimModeEnabled` yet, so the merge falls through to this default.
+      vimModeEnabled: typeof window !== 'undefined' && localStorage.getItem('compendiq-vim-mode') === 'true',
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
       toggleTreeSidebar: () => set((s) => ({ treeSidebarCollapsed: !s.treeSidebarCollapsed })),
@@ -45,9 +79,31 @@ export const useUiStore = create<UiState>()(
       setTreeSidebarWidth: (width) => set({ treeSidebarWidth: Math.max(180, Math.min(600, width)) }),
       toggleArticleSidebar: () => set((s) => ({ articleSidebarCollapsed: !s.articleSidebarCollapsed })),
       setArticleSidebarCollapsed: (collapsed) => set({ articleSidebarCollapsed: collapsed }),
-      setArticleSidebarWidth: (width) => set({ articleSidebarWidth: Math.max(200, Math.min(500, width)) }),
-      setSingleKeyShortcutsEnabled: (enabled) => set({ singleKeyShortcutsEnabled: enabled }),
+      setArticleSidebarLaptopExpanded: (expanded) => set({ articleSidebarLaptopExpanded: expanded }),
+      setArticleSidebarWidth: (width) => set({
+        articleSidebarWidth: Math.max(
+          ARTICLE_SIDEBAR_MIN_WIDTH,
+          Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, width),
+        ),
+      }),
+      setVimModeEnabled: (enabled) => set({ vimModeEnabled: enabled }),
     }),
-    { name: 'compendiq-ui' },
+    {
+      name: 'compendiq-ui',
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<UiState>;
+        const persistedWidth = typeof persisted.articleSidebarWidth === 'number'
+          ? persisted.articleSidebarWidth
+          : currentState.articleSidebarWidth;
+        return {
+          ...currentState,
+          ...persisted,
+          articleSidebarWidth: Math.max(
+            ARTICLE_SIDEBAR_MIN_WIDTH,
+            Math.min(ARTICLE_SIDEBAR_MAX_WIDTH, persistedWidth),
+          ),
+        };
+      },
+    },
   ),
 );

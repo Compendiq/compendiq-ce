@@ -18,6 +18,15 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': ['warn', { allow: ['warn', 'error'] }],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "TSTypeReference[typeName.name='ReturnType']:has(TSTypeParameterInstantiation > TSTypeQuery > TSQualifiedName[left.name='vi'][right.name='spyOn'])",
+          message:
+            "ReturnType<typeof vi.spyOn> resolves to 'any' under vitest 4 typings (the last overload with erased type parameters), so mistyped mock values compile clean and no tsconfig in this repo typechecks test files to catch it. Use 'MockInstance<typeof fn>' (import type { MockInstance } from 'vitest') instead.",
+        },
+      ],
     },
   },
   {

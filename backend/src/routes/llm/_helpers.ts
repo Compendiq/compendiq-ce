@@ -1,4 +1,4 @@
-import { FastifyReply } from 'fastify';
+import { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { logger } from '../../core/utils/logger.js';
@@ -6,12 +6,20 @@ import { sanitizeLlmInput } from '../../core/utils/sanitize-llm-input.js';
 import {
   getSystemPrompt, SystemPromptKey,
   LANGUAGE_PRESERVATION_INSTRUCTION,
+  type ChatContentPart,
 } from '../../domains/llm/services/prompts.js';
 import { LlmCache, type CachedLlmResponse } from '../../domains/llm/services/llm-cache.js';
 import { getAiGuardrails, getAiOutputRules, SWISS_SPELLING_INSTRUCTION } from '../../core/services/ai-safety-service.js';
 import { sanitizeLlmOutput, type OutputSanitizeResult } from '../../core/utils/sanitize-llm-output.js';
 import { assembleSubPageContext, getMultiPagePromptSuffix } from '../../domains/confluence/services/subpage-context.js';
 import { htmlToMarkdown, protectMedia } from '../../core/services/content-converter.js';
+import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
+import {
+  loadStagedImage,
+  ImageStagingUnavailableError,
+} from '../../core/services/image-staging.js';
+import { emitLlmAudit, type LlmAuditEntry } from '../../domains/llm/services/llm-audit-hook.js';
+import type { StreamChunk } from '../../domains/llm/services/openai-compatible-client.js';
 
 export { sanitizeLlmInput };
 
@@ -27,8 +35,13 @@ export const EMBEDDING_RATE_LIMIT = { config: { rateLimit: { max: async () => (a
 // Maximum input size to prevent abuse (100KB)
 export const MAX_INPUT_LENGTH = 100_000;
 
-// Maximum PDF text length sent to LLM (~20K tokens, safe for most model context windows)
-export const MAX_PDF_TEXT_FOR_LLM = 80_000;
+/**
+ * Ceiling on any single uploaded-document body folded into a prompt (~20K
+ * tokens, safe for most model context windows). Applies to Generate's
+ * `documentText` and Improve's `referenceText` alike — both are "a document the
+ * user attached", and neither may crowd out the page being worked on.
+ */
+export const MAX_DOCUMENT_TEXT_FOR_LLM = 80_000;
 
 /**
  * Assemble page context for LLM consumption, optionally including sub-pages.
@@ -178,12 +191,20 @@ export async function checkCacheWithLock(
 }
 
 /**
- * Send a cached SSE response as a single chunk and end the stream.
+ * Send a terminal SSE turn — one content chunk, an optional final frame, end
+ * of stream. Every "answer without an LLM call" path shares this shape: the
+ * cache hits (the original callers, hence the name and the `cached: true`
+ * default) and the #1105 confidence refusal (`{ cached: false }` — nothing
+ * was cached, and the flag would be a lie a future consumer might read).
+ * Keep the copies OUT of route files: a cross-cutting SSE change applied
+ * here and missed in a hand-rolled twin turns the least-exercised branch
+ * into the one differently-framed response (#1268 review).
  */
 export function sendCachedSSE(
   reply: FastifyReply,
   content: string,
   extras?: Record<string, unknown>,
+  opts?: { cached?: boolean },
 ): void {
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -192,7 +213,9 @@ export function sendCachedSSE(
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  reply.raw.write(`data: ${JSON.stringify({ content, done: true, cached: true })}\n\n`);
+  const contentFrame: Record<string, unknown> = { content, done: true };
+  if (opts?.cached !== false) contentFrame.cached = true;
+  reply.raw.write(`data: ${JSON.stringify(contentFrame)}\n\n`);
   if (extras) {
     reply.raw.write(`data: ${JSON.stringify({ ...extras, done: true, final: true })}\n\n`);
   }
@@ -206,12 +229,14 @@ export function sendCachedSSE(
 export async function streamSSE(
   request: { raw: import('http').IncomingMessage },
   reply: FastifyReply,
-  generator: AsyncGenerator<{ content: string; done: boolean }>,
+  generator: AsyncGenerator<StreamChunk> | ((signal: AbortSignal) => AsyncGenerator<StreamChunk>),
   extras?: Record<string, unknown>,
   options?: {
     llmCache?: LlmCache;
     cacheKey?: string;
     postProcess?: (content: string) => OutputSanitizeResult;
+    /** Only provider-dispatched calls pass audit metadata; cache hits bypass this helper. */
+    audit?: Omit<LlmAuditEntry, 'outputTokens' | 'durationMs' | 'status' | 'errorMessage' | 'outputText'>;
     /**
      * Gate on the cache write (runs on the post-processed content). Return
      * false to skip caching — e.g. the Improve route's layout-token guard,
@@ -234,7 +259,8 @@ export async function streamSSE(
   const onClose = () => {
     controller.abort();
   };
-  request.raw.on('close', onClose);
+  reply.raw.on('close', onClose);
+  if (reply.raw.destroyed || request.raw.aborted) controller.abort();
 
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -245,9 +271,19 @@ export async function streamSSE(
   });
 
   let fullContent = '';
+  let outputCharacters = 0;
+  let usage: StreamChunk['usage'];
+  let streamError: unknown;
+  const auditStart = Date.now();
+  let dispatched = false;
 
   try {
-    for await (const chunk of generator) {
+    if (controller.signal.aborted) throw new DOMException('Client disconnected', 'AbortError');
+    const chunks = typeof generator === 'function' ? generator(controller.signal) : generator;
+    dispatched = true;
+    for await (const chunk of chunks) {
+      outputCharacters += chunk.content.length;
+      if (chunk.usage) usage = { ...usage, ...chunk.usage };
       if (controller.signal.aborted) {
         logger.debug('SSE stream aborted by client disconnect');
         break;
@@ -284,6 +320,7 @@ export async function streamSSE(
       );
     }
   } catch (err) {
+    streamError = err;
     if (controller.signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
       logger.debug('SSE stream aborted by client disconnect');
     } else {
@@ -291,7 +328,19 @@ export async function streamSSE(
       reply.raw.write(`data: ${JSON.stringify({ error: 'Stream error', done: true })}\n\n`);
     }
   } finally {
-    request.raw.removeListener('close', onClose);
+    if (options?.audit && dispatched) {
+      emitLlmAudit({
+        ...options.audit,
+        inputTokens: usage?.promptTokens ?? options.audit.inputTokens,
+        outputTokens: usage?.completionTokens ?? Math.ceil(outputCharacters / 4),
+        durationMs: Date.now() - auditStart,
+        status: streamError || controller.signal.aborted ? 'error' : 'success',
+        ...(streamError || controller.signal.aborted
+          ? { errorMessage: controller.signal.aborted ? 'Client disconnected' : 'Stream error' }
+          : {}),
+      });
+    }
+    reply.raw.removeListener('close', onClose);
     reply.raw.end();
   }
 
@@ -329,4 +378,71 @@ export async function buildOutputPostProcessor(
       ...rules,
       verifiedSources,
     });
+}
+
+/**
+ * #1154: gate on vision capability, then load the staged image as a content
+ * part.
+ *
+ * Shared by /llm/generate and /llm/improve so the 422 and 410 semantics exist
+ * in exactly one place — an earlier draft inlined this in both routes, which
+ * would have let the two drift apart.
+ *
+ * Order matters: the capability check runs before the Redis lookup, so a
+ * refusal costs neither a load nor a provider round-trip.
+ */
+export async function resolveImagePart(
+  fastify: FastifyInstance,
+  userId: string,
+  imageHandle: string,
+  providerId: string,
+  model: string,
+): Promise<{ part: ChatContentPart; hash: string }> {
+  const vision = await getVisionCapability(providerId, model);
+  if (vision === false) {
+    throw fastify.httpErrors.unprocessableEntity(
+      `The model assigned to chat (${model}) cannot accept images. ` +
+      'Assign a vision-capable model in Settings → AI Models.',
+    );
+  }
+  if (vision !== true) {
+    // `null` is "not established yet", not "established as no" — saying it
+    // cannot accept images would assert something the server has not checked.
+    // Still refused: fail closed, but tell the truth about why.
+    throw fastify.httpErrors.unprocessableEntity(
+      `Image support for the model assigned to chat (${model}) has not been ` +
+      'confirmed yet. Try again shortly, or assign a known vision-capable ' +
+      'model in Settings → AI Models.',
+    );
+  }
+
+  let staged;
+  try {
+    staged = await loadStagedImage(userId, imageHandle);
+  } catch (err) {
+    // A read against an unreachable Redis is not an expiry. "Attach it again"
+    // would send the user into a re-upload that also fails — the staging route
+    // already answers 503 for the same condition on the write side.
+    if (err instanceof ImageStagingUnavailableError) {
+      throw fastify.httpErrors.serviceUnavailable(
+        'Image staging is temporarily unavailable. Try again in a moment.',
+      );
+    }
+    throw err;
+  }
+  if (!staged) {
+    throw fastify.httpErrors.gone('The staged image has expired. Attach it again.');
+  }
+
+  return {
+    part: {
+      type: 'image_url',
+      image_url: {
+        url: `data:image/${staged.format};base64,${staged.bytes.toString('base64')}`,
+      },
+    },
+    // The handle *is* the sha256 of the bytes, so it doubles as the cache
+    // input. If handles ever stop being content-addressed, hash the bytes here.
+    hash: imageHandle,
+  };
 }

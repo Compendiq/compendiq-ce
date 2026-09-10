@@ -24,6 +24,7 @@ import {
 } from '../../../test-db-helper.js';
 import { isRedisAvailable } from '../../../test-redis-helper.js';
 import { query } from '../../../core/db/postgres.js';
+import { prefixedRedisChannel } from '../../../core/utils/prefixed-redis-channel.js';
 import {
   initCacheBus,
   close as closeCacheBus,
@@ -93,7 +94,7 @@ describe.skipIf(!integrationGate)(
         await podBSubscriber.connect();
 
         let podBSawMessage = false;
-        await podBSubscriber.subscribe('admin:llm:settings', () => {
+        await podBSubscriber.subscribe(prefixedRedisChannel('admin:llm:settings'), () => {
           podBSawMessage = true;
         });
 

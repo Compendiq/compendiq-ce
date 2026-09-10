@@ -24,14 +24,20 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { getPool, query } from '../../core/db/postgres.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { PAGE_ICON_STORE_DIRNAME } from '../../core/services/page-icon-store.js';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../core/db/advisory-locks.js';
 
 // --- Boundary mocks (everything else is real) ---
 
@@ -176,6 +182,58 @@ async function unblockPageDeletes(): Promise<void> {
   await query('DROP FUNCTION IF EXISTS test_block_page_delete()');
 }
 
+/**
+ * #1349 fixer r1 — the page-icon store on REAL disk.
+ *
+ * `discardPageIconForDeletedPage` is an `rm -rf` of `page-icons/<pages.id>/`
+ * and migrations 095/096 persist only the sha, so those bytes are the only
+ * copy: the store's own contract says "call it only where the ROW is gone".
+ * These helpers let the delete tests assert the disk outcome of BOTH branches
+ * (row destroyed → mark collected; transaction rolled back → mark kept),
+ * which is only meaningful against the real `fs.rm` and the real trigger.
+ */
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+
+function iconDir(pageId: number): string {
+  return path.join(attachmentsDir, PAGE_ICON_STORE_DIRNAME, String(pageId));
+}
+
+async function seedIcon(pageId: number): Promise<void> {
+  await fs.mkdir(iconDir(pageId), { recursive: true });
+  await fs.writeFile(path.join(iconDir(pageId), `${'a'.repeat(64)}.png`), 'mark-bytes');
+}
+
+async function iconExists(pageId: number): Promise<boolean> {
+  try {
+    await fs.stat(path.join(iconDir(pageId), `${'a'.repeat(64)}.png`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForAttachmentMutationWaiter(blockerPid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_locks
+          WHERE locktype = 'advisory'
+            AND mode = 'ShareLock'
+            AND NOT granted
+            AND classid = 0
+            AND objid = $1
+            AND $2 = ANY(pg_blocking_pids(pid))
+       ) AS waiting`,
+      [ATTACHMENT_SNAPSHOT_LOCK_ID, blockerPid],
+    );
+    if (result.rows[0]?.waiting) return true;
+    await nextEventLoopTurn();
+  }
+  return false;
+}
+
 // --- Tests ---
 
 describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergence (#766)', () => {
@@ -183,6 +241,11 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
 
   beforeAll(async () => {
     await setupTestDb();
+
+    // Real disk for the icon store; path resolution there is call-time.
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cq-delete-atomicity-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
 
     app = Fastify({ logger: false });
     await app.register(sensible);
@@ -207,6 +270,9 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
   afterAll(async () => {
     await app.close();
     await teardownTestDb();
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+    await fs.rm(attachmentsDir, { recursive: true, force: true });
   });
 
   beforeEach(async () => {
@@ -222,9 +288,46 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
 
   // ── single delete ─────────────────────────────────────────────────────────
 
+  it('keeps a permanent standalone delete and its directory cleanup behind one snapshot barrier', async () => {
+    const pageId = await insertStandalone('Barrier delete', userId, 'private');
+    const localDir = path.join(attachmentsDir, 'local', String(pageId));
+    await fs.mkdir(localDir, { recursive: true });
+    await fs.writeFile(path.join(localDir, 'diagram.png'), 'bytes');
+
+    const holder = await getPool().connect();
+    await holder.query('SELECT pg_advisory_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+    const blockerPid = await holder
+      .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
+      .then((result) => result.rows[0]!.pid);
+    let unlocked = false;
+    try {
+      const pending = app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${pageId}?permanent=true`,
+      });
+      expect(await waitForAttachmentMutationWaiter(blockerPid)).toBe(true);
+      expect(await getRowById(pageId)).not.toBeNull();
+      await expect(fs.stat(path.join(localDir, 'diagram.png'))).resolves.toBeTruthy();
+
+      await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      unlocked = true;
+      const response = await pending;
+
+      expect(response.statusCode).toBe(200);
+      expect(await getRowById(pageId)).toBeNull();
+      await expect(fs.stat(localDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      if (!unlocked) {
+        await holder.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+      }
+      holder.release();
+    }
+  });
+
   it('hard-deletes the row and pins when the Confluence delete succeeds', async () => {
     const pageId = await insertPage('conf-ok');
     await insertPin(pageId);
+    await seedIcon(pageId);
     mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-ok' });
@@ -234,6 +337,8 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(await getRow('conf-ok')).toBeNull();
     const pins = await query('SELECT 1 FROM pinned_pages WHERE page_id = $1', [pageId]);
     expect(pins.rowCount).toBe(0);
+    // The row really is gone, so the mark has no owner left (#1349).
+    expect(await iconExists(pageId)).toBe(false);
   });
 
   it('(b) leaves the article fully intact when the Confluence delete fails — intent rolled back, neither side changed', async () => {
@@ -267,7 +372,8 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
   });
 
   it('(a) upstream delete succeeds but the local hard-delete fails → article is hidden (soft-deleted), never a live orphan; sync purge converges it', async () => {
-    await insertPage('conf-strand');
+    const strandedId = await insertPage('conf-strand');
+    await seedIcon(strandedId);
     mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     await blockPageDeletes();
@@ -283,6 +389,12 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
       expect(row).not.toBeNull();
       expect(row!.deleted_at).not.toBeNull();
       expect(await liveCount('conf-strand')).toBe(0);
+
+      // #1349 fixer r1: the transaction ROLLED BACK, so the row is still there
+      // and still carries `icon_kind = 'image'`. Discarding the mark here would
+      // destroy the only copy of the user's bytes for a page that still exists
+      // — the icon store's own contract is "call it only where the ROW is gone".
+      expect(await iconExists(strandedId)).toBe(true);
     } finally {
       await unblockPageDeletes();
     }
@@ -299,14 +411,19 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     await purgeDeletedPages(purgeClient as never, 'DEV');
     expect(purgeClient.getPage).toHaveBeenCalledWith('conf-strand');
     expect(await getRow('conf-strand')).toBeNull();
+    // …and only THERE, after a committed DELETE, is the mark collected — so
+    // deferring it on the rollback branch leaks nothing permanently (#1349).
+    expect(await iconExists(strandedId)).toBe(false);
   });
 
   // ── bulk delete ───────────────────────────────────────────────────────────
 
   it('bulk: success + 404 are removed, a 5xx page stays fully live (intent rolled back per page)', async () => {
-    await insertPage('bulk-ok');
-    await insertPage('bulk-5xx');
+    const okId = await insertPage('bulk-ok');
+    const failedId = await insertPage('bulk-5xx');
     await insertPage('bulk-404');
+    await seedIcon(okId);
+    await seedIcon(failedId);
     const deletePage = vi.fn().mockImplementation((id: string) => {
       if (id === 'bulk-5xx') return Promise.reject(new ConfluenceError('Confluence API error: HTTP 503', 503));
       if (id === 'bulk-404') return Promise.reject(new ConfluenceError('Resource not found', 404));
@@ -335,11 +452,15 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(survivor).not.toBeNull();
     expect(survivor!.deleted_at).toBeNull();
     expect(await liveCount('bulk-5xx')).toBe(1);
+    // Marks follow their rows: destroyed for the page the commit removed, kept
+    // for the page that survived upstream failure (#1349).
+    expect(await iconExists(okId)).toBe(false);
+    expect(await iconExists(failedId)).toBe(true);
   });
 
   it('bulk (a): upstream deletes succeed but local cleanup fails → rows hidden (soft-deleted), never live orphans', async () => {
-    await insertPage('bulk-strand-1');
-    await insertPage('bulk-strand-2');
+    const strandedIds = [await insertPage('bulk-strand-1'), await insertPage('bulk-strand-2')];
+    for (const id of strandedIds) await seedIcon(id);
     mockGetClientForUser.mockResolvedValue({ deletePage: vi.fn().mockResolvedValue(undefined) });
 
     await blockPageDeletes();
@@ -361,6 +482,9 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
         expect(row!.deleted_at).not.toBeNull();
         expect(await liveCount(cid)).toBe(0);
       }
+      // Rolled back → every row is still alive, so every mark must still be on
+      // disk; `purgeDeletedPages` collects them after its own committed DELETE.
+      for (const id of strandedIds) expect(await iconExists(id)).toBe(true);
     } finally {
       await unblockPageDeletes();
     }

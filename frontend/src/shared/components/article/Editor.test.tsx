@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, screen, fireEvent } from '@testing-library/react';
+import { render, waitFor, screen, fireEvent, act } from '@testing-library/react';
 
 vi.mock('../hooks/use-is-light-theme', () => ({
   useIsLightTheme: () => false,
@@ -7,6 +7,13 @@ vi.mock('../hooks/use-is-light-theme', () => ({
 
 vi.mock('../../lib/api', () => ({
   apiFetch: vi.fn(),
+  apiFetchBlob: vi.fn(),
+  ApiError: class ApiError extends Error {
+    constructor(public statusCode: number, message: string) {
+      super(message);
+      this.name = 'ApiError';
+    }
+  },
 }));
 
 const mockFetchAuthenticatedBlob = vi.fn();
@@ -27,33 +34,33 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import { Editor, EditorToolbar, clearDraft } from './Editor';
+import { Editor, clearDraft } from './Editor';
 import type { Editor as EditorType } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
+import { CellSelection, cellAround } from '@tiptap/pm/tables';
+import { handleTableCellClick, handleTableCellTripleClick } from './table-cell-selection';
+import { useUiStore } from '../../../stores/ui-store';
 
-// Minimal mock of a TipTap Editor instance for toolbar-level tests
-function createMockEditor(): EditorType {
-  const chainProxy: Record<string, unknown> = new Proxy(
-    { run: vi.fn() } as Record<string, unknown>,
-    {
-      get(_target, prop: string) {
-        if (prop === 'run') return vi.fn();
-        return () => chainProxy;
-      },
-    },
-  );
+/**
+ * The toolbar's long tail lives behind the Insert menu now. Radix menus open on
+ * pointerdown; click is fired too so the helper survives a swap to Popover.
+ */
+function openInsertMenu() {
+  const trigger = screen.getByTestId('insert-menu-trigger');
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' });
+  fireEvent.click(trigger);
+}
 
-  return {
-    chain: () => chainProxy,
-    can: () =>
-      new Proxy(
-        {},
-        { get() { return () => true; } },
-      ),
-    isActive: () => false,
-    getAttributes: () => ({}),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as EditorType;
+/** Opens the Insert menu and then one of its variant submenus. */
+function openInsertSubmenu(name: string) {
+  openInsertMenu();
+  fireEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${name}`) }));
+}
+
+/** Opens the Insert menu and picks one of its top-level items. */
+function chooseInsertItem(name: string) {
+  openInsertMenu();
+  fireEvent.click(screen.getByRole('menuitem', { name }));
 }
 
 describe('Editor', () => {
@@ -65,6 +72,25 @@ describe('Editor', () => {
     // The NodeView describe overrides this with mockResolvedValue('blob:…')
     // for tests that DO care.
     mockFetchAuthenticatedBlob.mockResolvedValue(null);
+    useUiStore.setState({ vimModeEnabled: false });
+  });
+
+  // Vim mode used to be a controlled prop / internal localStorage toggle
+  // living on the toolbar; it now reads the shared ui-store preference set
+  // from Settings -> Appearance (see ui-store.ts's vimModeEnabled and
+  // ThemeTab.tsx's toggle) so every open editor picks it up together.
+  it('activates vim mode from the shared ui-store preference, not a prop', async () => {
+    useUiStore.setState({ vimModeEnabled: true });
+    render(<Editor content="<p>seed</p>" editable={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vim-mode-indicator')).toBeInTheDocument();
+    });
+  });
+
+  it('does not show the vim indicator when the preference is off', () => {
+    render(<Editor content="<p>seed</p>" editable={true} />);
+    expect(screen.queryByTestId('vim-mode-indicator')).not.toBeInTheDocument();
   });
 
   it('signals dirty via a boolean onChange, not a serialized HTML string (#954)', async () => {
@@ -136,7 +162,10 @@ describe('Editor', () => {
     expect(classes).not.toMatch(/before:bg-background/);
   });
 
-  it('renders Insert Layout toolbar button', async () => {
+  it('offers the column layout presets from the Insert menu', async () => {
+    // Was a bare "a button whose title mentions layout" check. The presets now
+    // live in a submenu, so assert the presets themselves rather than a trigger
+    // that could exist while opening onto nothing.
     const { container } = render(
       <Editor content="<p>Test</p>" editable={true} />,
     );
@@ -145,16 +174,11 @@ describe('Editor', () => {
       expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
     });
 
-    // Find the toolbar region: look for a group of buttons inside the editor wrapper
-    const buttons = container.querySelectorAll('button');
-    const layoutButton = Array.from(buttons).find(
-      (btn) =>
-        btn.title?.toLowerCase().includes('layout') ||
-        btn.textContent?.toLowerCase().includes('layout'),
-    );
+    openInsertSubmenu('Column layout');
 
-    // The Insert Layout button must exist in the toolbar
-    expect(layoutButton).toBeTruthy();
+    for (const label of ['Two equal', 'Left sidebar', 'Right sidebar', 'Three equal', 'Side panels']) {
+      expect(screen.getByRole('menuitem', { name: label })).toBeInTheDocument();
+    }
   });
 
   it('loads the MermaidBlock extension', async () => {
@@ -287,8 +311,8 @@ describe('Editor', () => {
     ])('inserts a %s panel that serializes to .%s', async (label, className) => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle(label));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: label }));
 
       expect(editor.getHTML()).toContain(`class="${className}"`);
     });
@@ -296,8 +320,8 @@ describe('Editor', () => {
     it('places the caret inside the new panel so the user can type immediately', async () => {
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       // isActive('panel') alone is true for any panel at any depth, so it
       // wouldn't catch the caret landing in the wrong (e.g. outer) panel.
@@ -319,8 +343,8 @@ describe('Editor', () => {
         expect(editor).not.toBeNull();
       });
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor!.isActive('panel')).toBe(true);
       expect(editor!.state.selection.$from.parent.textContent).toBe('');
@@ -330,8 +354,8 @@ describe('Editor', () => {
       const editor = await renderEditorWithToolbar();
       editor.commands.setTextSelection(3);
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor.isActive('panel')).toBe(true);
       expect(editor.state.selection.$from.parent.textContent).toBe('');
@@ -357,8 +381,8 @@ describe('Editor', () => {
       // Caret between "Exi" and "sting" inside the existing panel's paragraph.
       editor!.commands.setTextSelection(5);
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Tip'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Tip' }));
 
       const { $from } = editor!.state.selection;
       expect($from.parent.textContent).toBe('');
@@ -380,8 +404,8 @@ describe('Editor', () => {
       // line here that needs a default.
       const editor = await renderEditorWithToolbar();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(editor.getHTML()).toMatch(/<div[^>]*class="panel-info"[^>]*><p><\/p><\/div>/);
     });
@@ -390,8 +414,8 @@ describe('Editor', () => {
       const editor = await renderEditorWithToolbar();
       expect(editor).not.toBeNull();
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Info'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Info' }));
 
       expect(screen.queryByTitle('Warning')).not.toBeInTheDocument();
     });
@@ -430,12 +454,82 @@ describe('Editor', () => {
         expect(editor).not.toBeNull();
       });
 
-      fireEvent.click(screen.getByTitle('Insert Panel'));
-      fireEvent.click(screen.getByTitle('Tip'));
+      openInsertSubmenu('Panel');
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Tip' }));
 
       const html = editor!.getHTML();
       expect(html).toContain('class="panel-tip"');
       expect(html).not.toContain('paneltype');
+    });
+  });
+
+  // #1227: the toolbar used to seed the literal `Click to expand` into the
+  // summary, which an editor save then wrote to Confluence as a real `title`
+  // parameter — the same fabricated title the backend fix removes, just
+  // sourced from here instead. New sections are untitled, and the caret lands
+  // in the empty summary so typing a real one is the obvious next move.
+  describe('insert expand section (#1227)', () => {
+    async function renderEditorWithToolbar(content = '<p>Test</p>') {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content={content} editable={true} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    it('inserts a section with an empty summary and no fabricated title', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      chooseInsertItem('Expand section');
+
+      const html = editor.getHTML();
+      expect(html).toContain('<summary></summary>');
+      expect(html).not.toContain('Click to expand');
+      expect(html).not.toContain('Content here...');
+    });
+
+    it('places the caret inside the empty summary', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      chooseInsertItem('Expand section');
+
+      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+    });
+
+    it('turns the first keystrokes into a real title', async () => {
+      const editor = await renderEditorWithToolbar();
+
+      chooseInsertItem('Expand section');
+      editor.commands.insertContent('My section');
+
+      expect(editor.getHTML()).toContain('<summary>My section</summary>');
+    });
+
+    it('places the caret in the new section when inserting into an existing one', async () => {
+      // Details nests the same way Panel does (#1140), so the same
+      // last-match-at-or-before walk is needed to reach the inner section
+      // rather than the outer one the caret started in.
+      const editor = await renderEditorWithToolbar(
+        '<details><summary>Outer</summary><p>inner body</p></details>',
+      );
+      editor.commands.setTextSelection(11);
+
+      chooseInsertItem('Expand section');
+
+      expect(editor.state.selection.$from.parent.type.name).toBe('detailsSummary');
+      expect(editor.state.selection.$from.parent.textContent).toBe('');
+      expect(editor.getHTML()).toContain('<summary>Outer</summary>');
+    });
+
+    it('does not offer a second insert for Refined UI Expand', async () => {
+      await renderEditorWithToolbar();
+      openInsertMenu();
+      expect(screen.queryByRole('menuitem', { name: 'UI Expand' })).toBeNull();
+      expect(screen.getByRole('menuitem', { name: 'Expand section' })).toBeInTheDocument();
     });
   });
 
@@ -721,6 +815,12 @@ describe('Editor', () => {
       const apiModule = await import('../../lib/api');
       mockApiFetch = apiModule.apiFetch as ReturnType<typeof vi.fn>;
       mockApiFetch.mockReset();
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        return undefined;
+      });
       // Sticky default so the NodeView's auth fetch (which fires for any
       // /api/attachments src inserted into the editor) doesn't crash on
       // `.then(undefined)`.
@@ -749,7 +849,15 @@ describe('Editor', () => {
     }
 
     it('rewrites a single http(s) img src via /pages/:id/images/import', async () => {
-      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported.png' });
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          return { url: '/api/attachments/42/imported.png' };
+        }
+        return undefined;
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -774,7 +882,15 @@ describe('Editor', () => {
     });
 
     it('rewrites a data: URI img via /pages/:id/images (existing upload endpoint)', async () => {
-      mockApiFetch.mockResolvedValueOnce({ url: '/api/attachments/42/imported-data.png' });
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images') {
+          return { url: '/api/attachments/42/imported-data.png' };
+        }
+        return undefined;
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -816,13 +932,18 @@ describe('Editor', () => {
         expect(img?.getAttribute('data-import-failed')).toBe('true');
       });
       // No upload calls — relative paths are not auto-importable.
-      expect(mockApiFetch).not.toHaveBeenCalled();
+      expect(mockApiFetch.mock.calls.filter(([p]) => p !== '/client-inference/policy')).toEqual([]);
     });
 
     it('marks failed http(s) imports with data-import-failed', async () => {
       // /import returns null (apiFetch throws on non-2xx; our helper catches
       // and returns null, which the rewriter treats as failure).
-      mockApiFetch.mockRejectedValueOnce(new Error('502 Bad Gateway'));
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        throw new Error('502 Bad Gateway');
+      });
 
       render(<Editor content="<p>seed</p>" editable={true} pageId="42" />);
       await waitFor(() => {
@@ -879,15 +1000,23 @@ describe('Editor', () => {
       // that no upload was attempted: without a pageId we have nowhere to
       // store the bytes.
       await new Promise((r) => setTimeout(r, 50));
-      expect(mockApiFetch).not.toHaveBeenCalled();
+      expect(mockApiFetch.mock.calls.filter(([p]) => p !== '/client-inference/policy')).toEqual([]);
     });
 
     it('reports mixed outcomes via the toast (warning when some imports fail)', async () => {
       // Two http(s) img tags: first import succeeds, second fails. The toast
       // helper should land on `toast.warning` with the X-of-Y message.
-      mockApiFetch
-        .mockResolvedValueOnce({ url: '/api/attachments/42/ok.png' })
-        .mockRejectedValueOnce(new Error('502 Bad Gateway'));
+      mockApiFetch.mockImplementation(async (path: string) => {
+        if (path === '/client-inference/policy') {
+          return { active: false, mode: 'allowed', allowedModels: [], enforceWebGpuOnly: false };
+        }
+        if (path === '/pages/42/images/import') {
+          const n = mockApiFetch.mock.calls.filter(([p]) => p === '/pages/42/images/import').length;
+          if (n <= 1) return { url: '/api/attachments/42/ok.png' };
+          throw new Error('502 Bad Gateway');
+        }
+        return undefined;
+      });
 
       const sonner = await import('sonner');
       const warningSpy = sonner.toast.warning as ReturnType<typeof vi.fn>;
@@ -909,6 +1038,336 @@ describe('Editor', () => {
         );
       });
     });
+  });
+
+  describe('table cell selection (#1135)', () => {
+    // What this is actually fixing: prosemirror-tables' own `tableEditing`
+    // plugin already claims handleTripleClick and answers it with a
+    // `CellSelection`. `CellSelection.prototype.visible === false`, so
+    // ProseMirror deliberately hides the browser selection and expects the
+    // app to paint `.selectedCell` instead — a class this app has never
+    // styled. The net effect for the user is a triple-click that highlights
+    // nothing beyond whatever the preceding double-click grabbed. Installing
+    // our handler in `editorProps` preempts the plugin (view.someProp reads
+    // direct props before plugin props) and produces an ordinary, visible
+    // TextSelection over the cell's whole content.
+    //
+    // ProseMirror resolves a real triple click into a document position with
+    // `view.posAtCoords`, which needs layout boxes jsdom never produces — a
+    // `detail: 3` MouseEvent dispatched at the DOM dies there, before any
+    // handler runs. So these tests resolve the position themselves and reach
+    // the handler exactly the way prosemirror-view does internally, through
+    // `view.someProp('handleTripleClick', …)`. That lookup only finds the
+    // function if it is genuinely installed in `editorProps`, so the wiring
+    // is under test too, not just the handler body.
+    const TABLE_HTML = [
+      '<table><tbody>',
+      '<tr><th><p>Head one</p><p>Head two</p></th><td><p>First para</p><p>Second para</p></td></tr>',
+      '<tr><td><p>Only para</p></td><td><p></p></td></tr>',
+      '</tbody></table>',
+      '<p>Outside paragraph</p>',
+    ].join('');
+
+    // A cell holding a block atom and no textblock at all. `tableCell` content
+    // is `block+` and the image node is `group: 'block'`, so this is a legal
+    // shape — and the one the sync pipeline actually produces:
+    // content-converter's `image.replaceWith(img)` turns `<td><ac:image/></td>`
+    // into `<td><img/></td>` with no wrapping paragraph.
+    const ATOM_CELL_HTML = [
+      '<p>Lead paragraph</p>',
+      '<table><tbody>',
+      '<tr><td><img src="shot.png" alt="shot"></td><td><p>Next cell</p></td></tr>',
+      '</tbody></table>',
+    ].join('');
+
+    async function renderEditorWithTable(editable = true) {
+      let editor: EditorType | null = null;
+      render(
+        <Editor content={TABLE_HTML} editable={editable} onEditorReady={(e) => { editor = e; }} />,
+      );
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
+      return editor!;
+    }
+
+    /** Document position inside the first text node containing `needle`. */
+    function posInText(editor: EditorType, needle: string): number {
+      let found = -1;
+      editor.state.doc.descendants((node, pos) => {
+        if (found !== -1) return false;
+        const at = node.isText ? (node.text ?? '').indexOf(needle) : -1;
+        if (at !== -1) {
+          found = pos + at + 1;
+          return false;
+        }
+        return true;
+      });
+      if (found === -1) throw new Error(`no text node containing "${needle}"`);
+      return found;
+    }
+
+    /** Document position inside the nth table cell, counting cells in document order. */
+    function posInCell(editor: EditorType, index: number): number {
+      const cellStarts: number[] = [];
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') cellStarts.push(pos);
+        return true;
+      });
+      const start = cellStarts[index];
+      if (start === undefined) throw new Error(`no cell at index ${index}`);
+      // +1 enters the cell, +1 more enters its first child block.
+      return start + 2;
+    }
+
+    /** Run the editor's registered handleTripleClick at `pos`. */
+    function tripleClickAt(editor: EditorType, pos: number, button = 0): boolean {
+      const { view } = editor;
+      const event = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        button,
+        detail: 3,
+      });
+      return view.someProp('handleTripleClick', (f) => f(view, pos, event)) === true;
+    }
+
+    describe('triple-click', () => {
+
+    /**
+     * prosemirror-tables answers this gesture with a `CellSelection`, which
+     * spans the same range and so yields the same `textBetween` — the whole
+     * reason its highlight is invisible is that it is not a TextSelection.
+     * Asserting on the text alone therefore cannot tell the fix from the bug.
+     */
+    function isPlainTextSelection(editor: EditorType): boolean {
+      return editor.state.selection instanceof TextSelection
+        && editor.state.selection.constructor === TextSelection;
+    }
+
+    function selectedText(editor: EditorType): string {
+      const { from, to } = editor.state.selection;
+      return editor.state.doc.textBetween(from, to, '\n');
+    }
+
+    it('selects every block in a multi-paragraph cell, not just the clicked one', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
+      // Not a CellSelection: that is what makes the highlight visible.
+      expect(isPlainTextSelection(editor)).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+    });
+
+    it('makes it a visible TextSelection, not the invisible CellSelection', async () => {
+      const editor = await renderEditorWithTable();
+
+      tripleClickAt(editor, posInText(editor, 'First para'));
+
+      // The selection must be a plain TextSelection — a CellSelection has
+      // `visible === false` and would render as no highlight at all here.
+      expect(editor.state.selection).toBeInstanceOf(TextSelection);
+      expect(editor.state.selection.visible).toBe(true);
+    });
+
+    it('selects the whole cell when the click lands in the second paragraph', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Second para'))).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+    });
+
+    it('spans exactly the cell content — no table structure either side', async () => {
+      const editor = await renderEditorWithTable();
+      const cellStart = posInCell(editor, 1) - 1; // position of the cell's first block
+
+      tripleClickAt(editor, posInText(editor, 'First para'));
+
+      const cell = editor.state.doc.nodeAt(cellStart - 1);
+      expect(cell?.type.name).toBe('tableCell');
+      expect(editor.state.selection.from).toBe(cellStart + 1);
+      expect(editor.state.selection.to).toBe(cellStart + cell!.content.size - 1);
+    });
+
+    it('treats a header cell the same as a body cell', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Head two'))).toBe(true);
+      expect(selectedText(editor)).toBe('Head one\nHead two');
+    });
+
+    it('still selects just that paragraph in a single-paragraph cell', async () => {
+      const editor = await renderEditorWithTable();
+
+      expect(tripleClickAt(editor, posInText(editor, 'Only para'))).toBe(true);
+      expect(selectedText(editor)).toBe('Only para');
+      expect(editor.state.selection).toBeInstanceOf(TextSelection);
+    });
+
+    it('leaves the selection inside an empty cell without throwing', async () => {
+      const editor = await renderEditorWithTable();
+      const emptyCell = posInCell(editor, 3);
+
+      expect(() => tripleClickAt(editor, emptyCell)).not.toThrow();
+      expect(selectedText(editor)).toBe('');
+      expect(editor.state.selection.empty).toBe(true);
+      expect(editor.state.selection.from).toBe(emptyCell);
+    });
+
+        // A cell with no textblock has no valid text position inside it, so
+    // `TextSelection.between` searches OUTWARD and lands in a neighbouring
+    // block. Returning `true` on that would suppress every fallback and
+    // teleport the caret out of the table — strictly worse than the
+    // prosemirror-tables CellSelection this handler replaces, which at least
+    // spans the cell and copies its content.
+    // ProseMirror's own defaultTripleClick bails on `event.button != 0`. This
+    // handler runs before it, so without the same guard it would answer a
+    // triple right-click — the gesture that opens a context menu.
+    //
+    // Asserted against the exported handler rather than through `someProp`:
+    // when ours declines, the lookup continues to prosemirror-tables' plugin
+    // handler, which does not guard the button either. That is pre-existing
+    // behaviour on `dev` and is not this change's to fix — what matters is
+    // that we stop making it worse.
+    it.each([[1, 'middle'], [2, 'right']])('declines button %i (%s) inside a cell', async (button) => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(false);
+    });
+
+    it('still answers the left button', async () => {
+      const editor = await renderEditorWithTable();
+      const pos = posInText(editor, 'First para');
+      const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, detail: 3 });
+
+      expect(handleTableCellTripleClick(editor.view, pos, event)).toBe(true);
+    });
+
+    it('declines a cell that holds only a block atom, rather than selecting outside it', async () => {
+      let editor: EditorType | null = null;
+      render(<Editor content={ATOM_CELL_HTML} onEditorReady={(e) => { editor = e; }} />);
+      await waitFor(() => { expect(editor).not.toBeNull(); });
+      const ed = editor!;
+
+      // Locate the image-only cell and a position inside it.
+      let cellPos = -1;
+      let cellNode: ReturnType<typeof ed.state.doc.nodeAt> = null;
+      ed.state.doc.descendants((node, pos) => {
+        if (cellPos !== -1) return false;
+        if (node.type.name === 'tableCell' && node.firstChild?.type.name === 'image') {
+          cellPos = pos;
+          cellNode = node;
+          return false;
+        }
+        return true;
+      });
+      expect(cellPos).toBeGreaterThan(-1);
+
+      const contentStart = cellPos + 1;
+      const contentEnd = contentStart + cellNode!.content.size;
+
+      const handled = tripleClickAt(ed, contentStart);
+
+      // Either it declines (letting prosemirror-tables answer), or it selects
+      // within the cell. What it must never do is move the selection out.
+      const { from, to } = ed.state.selection;
+      if (handled) {
+        expect(from).toBeGreaterThanOrEqual(contentStart);
+        expect(to).toBeLessThanOrEqual(contentEnd);
+      } else {
+        expect(handled).toBe(false);
+      }
+    });
+
+it('declines a click outside any table so ProseMirror\'s default runs', async () => {
+      const editor = await renderEditorWithTable();
+      const before = editor.state.selection;
+
+      expect(tripleClickAt(editor, posInText(editor, 'Outside paragraph'))).toBe(false);
+      // Returning false must also mean we did not touch the selection.
+      expect(editor.state.selection.from).toBe(before.from);
+      expect(editor.state.selection.to).toBe(before.to);
+    });
+
+    // A non-editable Editor, which is the mode ArticleViewer runs in — but not
+    // ArticleViewer itself. Its own wiring is asserted in
+    // `ArticleViewer.test.tsx`, because it builds a separate `useEditor` with
+    // separate `editorProps` and would not inherit these.
+    it('works when the editor is not editable', async () => {
+      const editor = await renderEditorWithTable(false);
+
+      expect(editor.isEditable).toBe(false);
+      expect(tripleClickAt(editor, posInText(editor, 'First para'))).toBe(true);
+      expect(selectedText(editor)).toBe('First para\nSecond para');
+      expect(isPlainTextSelection(editor)).toBe(true);
+    });
+  });
+
+  describe('table cell click & range selection (#1135)', () => {
+    it('creates CellSelection on Shift+Click between cells in the same table', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      // Place selection in first cell
+      editor.commands.setTextSelection(pos1);
+
+      // Shift+Click in second cell
+      const shiftClickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, shiftKey: true });
+      const handled = handleTableCellClick(editor.view, pos2, shiftClickEvent);
+
+      expect(handled).toBe(true);
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+    });
+
+    it('preserves multi-cell selection on drag release click', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      // Manually set a multi-cell selection spanning two cells
+      const $c1 = cellAround(editor.state.doc.resolve(pos1))!;
+      const $c2 = cellAround(editor.state.doc.resolve(pos2))!;
+      editor.view.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.state.doc, $c1.pos, $c2.pos)));
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+
+      // Mouse release click on cell 1
+      const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      const handled = handleTableCellClick(editor.view, pos1, clickEvent);
+
+      expect(handled).toBe(true);
+      expect(editor.state.selection instanceof CellSelection).toBe(true);
+    });
+
+    it('declines normal click in a single cell so ProseMirror caret placement runs', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+
+      // Regular click without Shift key or multi-cell selection
+      const normalClickEvent = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, shiftKey: false });
+      const handled = handleTableCellClick(editor.view, pos1, normalClickEvent);
+
+      expect(handled).toBe(false);
+    });
+
+    it('attaches perimeter classes to multi-cell selection decorations for Notion-style border', async () => {
+      const editor = await renderEditorWithTable();
+      const pos1 = posInText(editor, 'First para');
+      const pos2 = posInText(editor, 'Only para');
+
+      const $c1 = cellAround(editor.state.doc.resolve(pos1))!;
+      const $c2 = cellAround(editor.state.doc.resolve(pos2))!;
+      editor.view.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.state.doc, $c1.pos, $c2.pos)));
+
+      const cell1 = editor.view.dom.querySelector('td:has(p:first-child)') || editor.view.dom.querySelectorAll('td')[0];
+      const cell2 = editor.view.dom.querySelectorAll('td')[1];
+
+      expect(cell1?.classList.contains('selectedCell')).toBe(true);
+      expect(cell2?.classList.contains('selectedCell')).toBe(true);
+    });
+  });
   });
 
   describe('drag handle (#49)', () => {
@@ -938,6 +1397,31 @@ describe('Editor', () => {
       expect(dragHandle).toBeFalsy();
     });
 
+    // #1179 — the handle now hosts the block context menu. Kept shallow on
+    // purpose: the drag-handle plugin resolves its node from `mousemove`
+    // coordinates and `getBoundingClientRect`, so it never tracks a node under
+    // jsdom and the menu itself can never open here. `EditorBlockMenu.test.tsx`
+    // drives the menu body directly against a real editor instead.
+    it('renders the block-menu trigger inside the handle in edit mode', async () => {
+      render(<Editor content="<p>Hello</p>" editable={true} />);
+
+      const trigger = await screen.findByTestId('drag-handle-trigger');
+      expect(trigger.closest('.drag-handle')).toBeTruthy();
+      expect(trigger.getAttribute('title')).toBe('Drag to move · Click for block actions');
+      // Closed: nothing declares the open state, so the CSS reveal is inert.
+      expect(trigger.getAttribute('data-block-menu-open')).toBeNull();
+    });
+
+    it('does not render the block-menu trigger in read-only mode', async () => {
+      const { container } = render(<Editor content="<p>Hello</p>" editable={false} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('[class*="tiptap"]')).toBeTruthy();
+      });
+
+      expect(screen.queryByTestId('drag-handle-trigger')).toBeNull();
+    });
+
     // CSS guards. The original bug was a dead selector — `[style*="display:
     // block"]` — that never matched because the upstream TipTap extension
     // toggles `visibility`, not `display`. We want to catch any future
@@ -961,6 +1445,23 @@ describe('Editor', () => {
         // (browsers serialize as either `visibility: hidden` or, rarely,
         // `visibility:hidden`).
         expect(css).toMatch(/\.drag-handle:not\(\[style\*="visibility:\s*hidden"\]\):not\(\[style\*="visibility:hidden"\]\)/);
+      });
+
+      // #1179 — the block menu is portalled to <body>, so the pointer leaves
+      // the handle the moment it moves onto the menu and the hover reveal drops
+      // away. Without an open-state reveal the handle fades out from under the
+      // menu it just opened. This is the CSS half of that contract; the React
+      // half (`data-block-menu-open`) is asserted above.
+      it('keeps the handle visible while its block menu is open', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { resolve } = await import('node:path');
+        const cssPath = resolve(__dirname, '../../../index.css');
+        const css = readFileSync(cssPath, 'utf8').replace(/\s+/g, ' ');
+
+        const selector = '.drag-handle:has([data-block-menu-open="true"])';
+        expect(css).toContain(selector);
+        const body = css.slice(css.indexOf('{', css.indexOf(selector)) + 1);
+        expect(body.slice(0, body.indexOf('}'))).toMatch(/opacity:\s*1\s*!important/);
       });
 
       it('shows the handle when no visibility is set and hides it when visibility: hidden is set (behavioural)', () => {
@@ -1066,201 +1567,97 @@ describe('draft auto-save flush on unmount (#877)', () => {
     // The unmount flush must skip the suppressed key — no resurrection.
     expect(localStorage.getItem('draft:page-877-suppress')).toBeNull();
   });
-});
 
-describe('EditorToolbar — header numbering toggle', () => {
-  beforeEach(() => {
-    localStorage.clear();
+  it('renders and toggles task list items interactively', async () => {
+    let editor: EditorType | null = null;
+    render(
+      <Editor
+        content='<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox"><span></span></label><div><p>Task 1</p></div></li></ul>'
+        editable={true}
+        onEditorReady={(e) => { editor = e; }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).not.toBeNull();
+    });
+
+    const checkbox = screen.getByRole('checkbox');
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    await waitFor(() => {
+      expect(editor!.getHTML()).toContain('data-checked="true"');
+    });
   });
 
-  it('renders a header numbering toggle button when props are provided', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+  describe('Slash command block insertion', () => {
+    it('renders slash menu and inserts heading on slash command selection', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content="<p>/</p>"
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
 
-    expect(screen.getByTitle('Toggle Header Numbering')).toBeInTheDocument();
-  });
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
 
-  it('shows active styling when headerNumbering is true', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={true} onToggleHeaderNumbering={toggle} />);
+      act(() => {
+        editor!.commands.setTextSelection(2);
+      });
 
-    const btn = screen.getByTitle('Toggle Header Numbering');
-    // Editor-toolbar active-state uses ink-action (Task 5 — amber reserved for AI affordances).
-    expect(btn.className).toContain('bg-action');
-  });
+      await waitFor(() => {
+        expect(screen.getByTestId('slash-command-menu')).toBeInTheDocument();
+      });
 
-  it('shows inactive styling when headerNumbering is false', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+      const h1Option = screen.getByTestId('slash-cmd-item-h1');
+      act(() => {
+        fireEvent.click(h1Option);
+      });
 
-    const btn = screen.getByTitle('Toggle Header Numbering');
-    expect(btn.className).not.toContain('bg-primary');
-  });
+      await waitFor(() => {
+        expect(editor!.getHTML()).toContain('<h1></h1>');
+        expect(editor!.getText()).not.toContain('/h1');
+      });
+    });
 
-  it('calls onToggleHeaderNumbering when the button is clicked', () => {
-    const editor = createMockEditor();
-    const toggle = vi.fn();
-    render(<EditorToolbar editor={editor} headerNumbering={false} onToggleHeaderNumbering={toggle} />);
+    it('inserts a table via slash menu in Editor', async () => {
+      let editor: EditorType | null = null;
+      render(
+        <Editor
+          content="<p>/table</p>"
+          editable={true}
+          onEditorReady={(e) => { editor = e; }}
+        />,
+      );
 
-    fireEvent.click(screen.getByTitle('Toggle Header Numbering'));
-    expect(toggle).toHaveBeenCalledTimes(1);
-  });
+      await waitFor(() => {
+        expect(editor).not.toBeNull();
+      });
 
-  it('does not render the toggle button when onToggleHeaderNumbering is absent', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
+      act(() => {
+        editor!.commands.setTextSelection(7);
+      });
 
-    expect(screen.queryByTitle('Toggle Header Numbering')).not.toBeInTheDocument();
-  });
+      await waitFor(() => {
+        expect(screen.getByTestId('slash-command-menu')).toBeInTheDocument();
+      });
 
-  // ---------- #353 toolbar grouping + bigger color pickers ----------
+      const tableOption = screen.getByTestId('slash-cmd-item-table');
+      act(() => {
+        fireEvent.click(tableOption);
+      });
 
-  it('renders the toolbar groups in the conventional order (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    // Inline → block → lists → insert → captions → colors → utilities.
-    const groups = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-testid^="toolbar-group-"]'),
-    ).map((el) => el.dataset.testid);
-
-    expect(groups).toEqual([
-      'toolbar-group-inline',
-      'toolbar-group-block',
-      'toolbar-group-lists',
-      'toolbar-group-insert',
-      'toolbar-group-captions',
-      'toolbar-group-colors',
-      'toolbar-group-utilities',
-    ]);
-  });
-
-  it('places both color pickers inside the colors group (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const group = screen.getByTestId('toolbar-group-colors');
-    expect(group).toHaveAttribute('role', 'group');
-    expect(group).toHaveAttribute('aria-label', 'colors');
-    expect(group.querySelectorAll('[data-testid="color-picker-trigger"]').length).toBe(2);
-  });
-
-  it('separates groups with role=separator dividers (#353)', () => {
-    const editor = createMockEditor();
-    const { container } = render(<EditorToolbar editor={editor} />);
-
-    // Six segments → at least five separators between them.
-    const separators = container.querySelectorAll('[role="separator"]');
-    expect(separators.length).toBeGreaterThanOrEqual(5);
-  });
-
-  it('color-picker triggers meet the 32x32 minimum target size (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers.length).toBe(2);
-    for (const trigger of triggers) {
-      // Tailwind h-9 w-9 maps to 36×36 (1rem = 16px) — comfortably above
-      // the issue's 32×32 minimum.
-      expect(trigger.className).toMatch(/(?:^|\s)h-9(?:\s|$)/);
-      expect(trigger.className).toMatch(/(?:^|\s)w-9(?:\s|$)/);
-    }
-  });
-
-  it('color-picker triggers expose a tooltip and aria-label (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    expect(triggers[0]).toHaveAttribute('title', 'Text Color');
-    expect(triggers[0]).toHaveAttribute('aria-label', 'Text Color');
-    expect(triggers[1]).toHaveAttribute('title', 'Highlight (Ctrl+Shift+H)');
-    expect(triggers[1]).toHaveAttribute('aria-label', 'Highlight (Ctrl+Shift+H)');
-  });
-
-  it('color-picker swatches meet the 24x24 minimum after opening the picker (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const triggers = screen.getAllByTestId('color-picker-trigger');
-    fireEvent.click(triggers[0]!);
-
-    const swatches = screen.getAllByTestId('color-picker-swatch');
-    expect(swatches.length).toBeGreaterThanOrEqual(8);
-    for (const sw of swatches) {
-      // h-7 w-7 → 28×28 (above the issue's 24×24 minimum).
-      expect(sw.className).toMatch(/(?:^|\s)h-7(?:\s|$)/);
-      expect(sw.className).toMatch(/(?:^|\s)w-7(?:\s|$)/);
-      // Each swatch must carry an accessible name (its colour label).
-      expect(sw.getAttribute('aria-label')).toBeTruthy();
-    }
-  });
-
-  it('exposes the toolbar landmark with an accessible name (#353)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-    const toolbar = screen.getByRole('toolbar', { name: 'Page editor toolbar' });
-    expect(toolbar).toBeInTheDocument();
-  });
-
-  // ---------- #955 toolbar toggle buttons expose pressed state ----------
-
-  it('exposes aria-pressed on active and inactive toggle buttons (#955)', () => {
-    // Screen readers announce a toggle button's on/off state via aria-pressed.
-    // Without it, users can't tell whether Bold (or any formatting toggle) is
-    // currently applied. Build a mock editor whose selection is inside bold
-    // text so Bold reads active and Italic reads inactive.
-    const base = createMockEditor();
-    const editor = {
-      ...base,
-      isActive: (name: string) => name === 'bold',
-    } as unknown as EditorType;
-    render(<EditorToolbar editor={editor} />);
-
-    const boldBtn = screen.getByTitle('Bold (Ctrl+B)');
-    const italicBtn = screen.getByTitle('Italic (Ctrl+I)');
-    expect(boldBtn).toHaveAttribute('aria-pressed', 'true');
-    expect(italicBtn).toHaveAttribute('aria-pressed', 'false');
-  });
-
-  // ---------- #1134 insert-panel picker ----------
-
-  it('renders the Insert Panel trigger inside the insert group (#1134)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    const trigger = screen.getByTitle('Insert Panel');
-    expect(screen.getByTestId('toolbar-group-insert')).toContainElement(trigger);
-  });
-
-  it('offers all four Confluence panel types once opened (#1134)', () => {
-    // The backend converter and the .panel-* styles both cover
-    // info/warning/note/tip, so the picker must not strand three of them.
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    // Closed by default — no picking surface until the user asks for it.
-    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTitle('Insert Panel'));
-
-    for (const label of ['Info', 'Warning', 'Note', 'Tip']) {
-      expect(screen.getByTitle(label)).toBeInTheDocument();
-    }
-  });
-
-  it('closes the panel picker on an outside click (#1134)', () => {
-    const editor = createMockEditor();
-    render(<EditorToolbar editor={editor} />);
-
-    fireEvent.click(screen.getByTitle('Insert Panel'));
-    expect(screen.getByTitle('Info')).toBeInTheDocument();
-
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByTitle('Info')).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(editor!.getHTML()).toContain('<table');
+        expect(editor!.getText()).not.toContain('/table');
+      });
+    });
   });
 });
+

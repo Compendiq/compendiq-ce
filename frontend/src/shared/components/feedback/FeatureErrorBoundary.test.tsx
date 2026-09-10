@@ -152,9 +152,11 @@ describe('FeatureErrorBoundary', () => {
     );
 
     const fallback = screen.getByTestId('feature-error-fallback');
-    expect(fallback.className).toContain('backdrop-blur-md');
-    expect(fallback.className).toContain('bg-card/80');
-    expect(fallback.className).toContain('border-white/10');
+    expect(fallback.className).toContain('bg-card');
+    // A token hairline, not a hardcoded `border-white/10` — that one was white
+    // on Paper's white card, so the fallback lost its edge in the light theme.
+    expect(fallback.className).toContain('border-border');
+    expect(fallback.className).not.toContain('border-white/');
   });
 
   it('does not affect siblings when one feature boundary catches an error', () => {
@@ -170,5 +172,20 @@ describe('FeatureErrorBoundary', () => {
     expect(screen.getByTestId('feature-error-fallback')).toBeInTheDocument();
     expect(screen.getByTestId('sibling')).toBeInTheDocument();
     expect(screen.getByText('I am still here')).toBeInTheDocument();
+  });
+
+  it('renders custom fallback when provided and a child throws', () => {
+    render(
+      <FeatureErrorBoundary
+        featureName="Version Preview"
+        fallback={<div data-testid="custom-fallback">Custom raw text fallback</div>}
+      >
+        <ThrowingChild />
+      </FeatureErrorBoundary>,
+    );
+
+    expect(screen.getByTestId('custom-fallback')).toBeInTheDocument();
+    expect(screen.getByText('Custom raw text fallback')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-error-fallback')).not.toBeInTheDocument();
   });
 });

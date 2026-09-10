@@ -11,6 +11,8 @@ const mockClient = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
+  /** #1285 — what `getRagEfSearch` resolves to for the current test. */
+  ragEfSearch: 100,
   query: vi.fn(),
   getPool: vi.fn(),
   providerGenerateEmbedding: vi.fn(),
@@ -22,7 +24,8 @@ const mocks = vi.hoisted(() => ({
     },
     model: 'bge-m3',
   }),
-  htmlToText: vi.fn(),
+  htmlToEmbeddingText: vi.fn(),
+  htmlToText: vi.fn(() => ''),
   toSql: vi.fn().mockReturnValue('[0.1,0.2]'),
   acquireEmbeddingLock: vi.fn().mockResolvedValue('fake-lock-id-for-tests'),
   releaseEmbeddingLock: vi.fn().mockResolvedValue(undefined),
@@ -63,8 +66,23 @@ vi.mock('./openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// #1116: the shadow-migration seam. These unit tests exercise the live embed
+// pipeline against a scripted query mock; the shadow path has its own
+// integration suite, so it is inert here (no active migration).
+vi.mock('./shadow-migration-service.js', () => ({
+  getActiveShadowTarget: vi.fn().mockResolvedValue(null),
+  getShadowMigrationState: vi.fn().mockResolvedValue(null),
+  shadowStateFingerprint: vi.fn().mockReturnValue('none'),
+  shadowEpochFromClient: vi.fn().mockResolvedValue('none'),
+}));
+
 vi.mock('../../../core/services/content-converter.js', () => ({
-  htmlToText: mocks.htmlToText,
+  htmlToEmbeddingText: mocks.htmlToEmbeddingText,
+  // embedPage's short-markdown fallback (#1265 review M1) imports this too.
+  htmlToText: (...args: unknown[]) => mocks.htmlToText(...args),
+  // embedPage's embeddability floor flattens the markdown first (#1265);
+  // identity keeps the mocked lengths meaningful.
+  markdownToSnippetText: vi.fn((s: string) => s),
 }));
 
 vi.mock('pgvector', () => ({
@@ -113,6 +131,11 @@ vi.mock('../../../core/services/admin-settings-service.js', () => ({
   // Issue #257 — retention read during enqueueReembedAll. We delegate to
   // mocks.query so existing `mockResolvedValueOnce({ rows: [...] })` seeding
   // in enqueueReembedAll retention tests keeps working.
+  // #1285 — the ef_search FLOOR is an `admin_settings` row now, read through
+  // this service by `efSearchFor`. Mocked here (the whole module is), and
+  // driven per test by `mocks.ragEfSearch` so the relationship kNN can be
+  // shown to follow the knob rather than a constant.
+  getRagEfSearch: vi.fn(async () => mocks.ragEfSearch),
   getReembedHistoryRetention: vi.fn(async () => {
     const r = await mocks.query(
       "SELECT setting_value FROM admin_settings WHERE setting_key='reembed_history_retention'",
@@ -143,11 +166,16 @@ import {
   DIRTY_PAGE_BATCH_SIZE,
   type EmbeddingProgressEvent,
 } from './embedding-service.js';
+import { clampEfSearch } from './hnsw-ef-search.js';
 import {
   getProviderBreaker,
   invalidateProviderBreaker,
 } from '../../../core/services/circuit-breaker.js';
 import { getSharedLlmSettings } from '../../../core/services/admin-settings-service.js';
+// Real (unmocked) import — `openai-compatible-client.js` is mocked above, but
+// `llm-http-error.ts` is its own module so LlmHttpError instances constructed
+// here are real `instanceof` matches against what embedding-service.ts imports.
+import { LlmHttpError } from './llm-http-error.js';
 
 /** Helper to create a fake dirty page row */
 function makePage(id: string, numId = 1) {
@@ -185,8 +213,8 @@ describe('embedding-service', () => {
     // Holder-epoch guard renew-if-mine (issue #913): default still-ours.
     mocks.refreshEmbeddingLock.mockResolvedValue(FAKE_LOCK_ID);
     mocks.enqueueJob.mockResolvedValue('reembed-all');
-    // Default: htmlToText returns non-trivial text so embedPage proceeds
-    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    // Default: htmlToEmbeddingText returns non-trivial text so embedPage proceeds
+    mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
     // Default: getSharedLlmSettings returns standard Ollama settings
     vi.mocked(getSharedLlmSettings).mockResolvedValue({
       llmProvider: 'ollama',
@@ -320,8 +348,19 @@ describe('embedding-service', () => {
       expect(chunks).toHaveLength(0);
     });
 
-    it('should split on heading boundaries', () => {
+    it('packs small adjacent sections into one chunk titled by the opening section (#1265)', () => {
       const text = '## Section One\nSome content here.\n## Section Two\nMore content here.';
+      const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
+      // Two tiny sections fit the 1,500-char target together — one chunk,
+      // not one per heading; Section Two's heading stays visible in the text.
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].metadata.section_title).toBe('Section One');
+      expect(chunks[0].text).toContain('## Section Two');
+    });
+
+    it('splits sections into separate chunks once they cannot pack under the target', () => {
+      const big = (label: string) => `## ${label}\n${`${label} body sentence with enough words to matter. `.repeat(25)}`;
+      const text = `${big('Section One')}\n${big('Section Two')}`;
       const chunks = chunkText(text, 'Title', 'SPACE', 'conf-1');
       expect(chunks.length).toBeGreaterThanOrEqual(2);
       expect(chunks[0].metadata.section_title).toBe('Section One');
@@ -356,177 +395,82 @@ describe('embedding-service', () => {
   });
 
   describe('computePageRelationships', () => {
-    // Transaction call order on mockClient (#362 added parent_child INSERT):
-    // [0]=BEGIN, [1]=SET LOCAL statement_timeout, [2]=DELETE,
-    // [3]=similarity CTE, [4]=label CTE, [5]=parent_child INSERT, [6]=COMMIT
 
-    it('should delete existing relationships then compute new ones', async () => {
-      // Set up 7 specific client.query responses matching the transaction order
-      mockClient.query
-        .mockResolvedValueOnce({ rows: [] })                                           // BEGIN
-        .mockResolvedValueOnce({ rows: [] })                                           // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                             // DELETE
-        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-2', score: 0.85 }], rowCount: 1 })  // similarity INSERT
-        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-3', score: 0.5 }], rowCount: 1 })   // label INSERT
-        .mockResolvedValueOnce({ rows: [{ page_id_1: 'page-1', page_id_2: 'page-4' }], rowCount: 1 })               // parent_child INSERT (#362)
-        .mockResolvedValueOnce({ rows: [] });                                          // COMMIT
+    // The page_avg_embedding kNN is an HNSW probe, and an HNSW probe returns at
+    // most `ef_search` rows no matter what its LIMIT says. This transaction set
+    // statement_timeout and nothing else, so it ran at PostgreSQL's default 40
+    // while the RAG vector leg ran at >= 100 — a recall gap that surfaces as
+    // missing edges in page_relationships, never as an error. Asserting on the
+    // SQL actually handed to the client (not on a computed constant) is what
+    // makes this fail when the SET is removed.
+    describe('hnsw.ef_search (relationship kNN recall)', () => {
+      /** The `SET LOCAL hnsw.ef_search` statement issued inside the transaction, if any. */
+      function efSearchStatement(): string | undefined {
+        return mockClient.query.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string')
+          .find((sql) => sql.includes('hnsw.ef_search'));
+      }
 
-      const totalEdges = await computePageRelationships();
+      it('sets hnsw.ef_search on the transaction, at the RAG floor and never at the pgvector default', async () => {
+        await computePageRelationships();
 
-      expect(totalEdges).toBe(3);
-      expect(mockClient.query).toHaveBeenCalledTimes(7);
-      expect(mocks.query).not.toHaveBeenCalled();
+        const stmt = efSearchStatement();
+        expect(stmt).toBeDefined();
+        // SET LOCAL, not SET: the setting must die with the transaction rather
+        // than ride the pooled connection into whatever borrows it next.
+        expect(stmt).toMatch(/^SET LOCAL hnsw\.ef_search = \d+$/);
 
-      // calls[0] = BEGIN
-      expect(mockClient.query.mock.calls[0][0]).toBe('BEGIN');
-      // calls[1] = SET LOCAL statement_timeout
-      expect(mockClient.query.mock.calls[1][0]).toBe('SET LOCAL statement_timeout = 120000');
-      // calls[2] = DELETE (global, no params)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
-      expect(deleteCall).toContain('DELETE FROM page_relationships');
-      // calls[5] = parent_child INSERT (#362)
-      const parentChildCall = mockClient.query.mock.calls[5][0] as string;
-      expect(parentChildCall).toContain("'parent_child'");
-      // calls[6] = COMMIT
-      expect(mockClient.query.mock.calls[6][0]).toBe('COMMIT');
+        const ef = Number(stmt!.match(/= (\d+)$/)![1]);
+        // Same floor as retrieval, and the same value `efSearchFor` derives
+        // for TOP_K — one definition, not a second knob that can drift.
+        expect(ef).toBe(mocks.ragEfSearch);
+        expect(ef).toBe(clampEfSearch(5, mocks.ragEfSearch)); // TOP_K
+        // The bug this pins: PostgreSQL's default is 40.
+        expect(ef).toBeGreaterThan(40);
+        expect(ef).toBeLessThanOrEqual(1000); // pgvector's ceiling
+      });
+
+      it('follows the rag_ef_search knob rather than a compiled-in constant (#1285)', async () => {
+        // The floor used to be `process.env.RAG_EF_SEARCH`, read at module
+        // load: this path could not follow a change without a restart, and the
+        // panel that owns every knob around it did not mention it. Raising the
+        // row has to move this probe on the next run.
+        mocks.ragEfSearch = 400;
+        try {
+          await computePageRelationships();
+          expect(efSearchStatement()).toBe('SET LOCAL hnsw.ef_search = 400');
+        } finally {
+          mocks.ragEfSearch = 100;
+        }
+      });
+
+      it('sets it before the similarity kNN runs and inside the transaction', async () => {
+        await computePageRelationships();
+
+        const sqls = mockClient.query.mock.calls
+          .map((call) => call[0])
+          .filter((sql): sql is string => typeof sql === 'string');
+        const beginAt = sqls.indexOf('BEGIN');
+        const efAt = sqls.findIndex((sql) => sql.includes('hnsw.ef_search'));
+        const knnAt = sqls.findIndex((sql) => sql.includes('embedding_similarity'));
+
+        expect(beginAt).toBeGreaterThanOrEqual(0);
+        expect(efAt).toBeGreaterThan(beginAt); // SET LOCAL outside a transaction is a no-op
+        expect(knnAt).toBeGreaterThan(efAt);   // and after the probe would be useless
+      });
+
+      it('interpolates a bare integer — no bind params, which SET cannot take', async () => {
+        await computePageRelationships();
+
+        const efCall = mockClient.query.mock.calls.find(
+          (call) => typeof call[0] === 'string' && (call[0] as string).includes('hnsw.ef_search'),
+        );
+        expect(efCall![0]).not.toContain('$');
+        expect(efCall![1]).toBeUndefined();
+      });
     });
 
-    it('should not use userId (global shared tables)', async () => {
-      // Use default catch-all from beforeEach
-      await computePageRelationships();
-
-      // calls[2] = DELETE has no params (global clear)
-      const deleteCall = mockClient.query.mock.calls[2][0] as string;
-      expect(deleteCall).toContain('DELETE FROM page_relationships');
-      // calls[3] = similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (null for changedPageIds)
-      expect(mockClient.query.mock.calls[3][1]).toBeDefined();
-      expect(mockClient.query.mock.calls[3][1][2]).toBeNull(); // changedPageIds = null (full recompute)
-      // calls[4] = label overlap uses $1 (null for changedPageIds)
-      expect(mockClient.query.mock.calls[4][1]).toBeDefined();
-      expect(mockClient.query.mock.calls[4][1][0]).toBeNull(); // changedPageIds = null
-      // pool query() is NOT used
-      expect(mocks.query).not.toHaveBeenCalled();
-    });
-
-    it('should return 0 when no relationships found', async () => {
-      // Default catch-all returns { rows: [], rowCount: 0 } for all calls
-      const totalEdges = await computePageRelationships();
-
-      expect(totalEdges).toBe(0);
-    });
-
-    it('should use parameterized SQL (no string concatenation)', async () => {
-      await computePageRelationships();
-
-      // Embedding similarity INSERT uses $1 (TOP_K), $2 (SIMILARITY_THRESHOLD), $3 (changedPageIds)
-      const similarityCall = mockClient.query.mock.calls.find(
-        (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
-      );
-      expect(similarityCall).toBeDefined();
-      expect(similarityCall![0]).toContain('$1');
-      expect(similarityCall![1]).toBeDefined();
-      expect(mocks.query).not.toHaveBeenCalled();
-    });
-
-    it('ROLLBACK when similarity INSERT fails: client released, error propagates', async () => {
-      mockClient.query
-        .mockResolvedValueOnce({ rows: [] })                                     // BEGIN
-        .mockResolvedValueOnce({ rows: [] })                                     // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                       // DELETE
-        .mockRejectedValueOnce(new Error('pgvector error'))                     // similarity INSERT fails
-        .mockResolvedValueOnce({ rows: [] });                                    // ROLLBACK
-
-      await expect(computePageRelationships()).rejects.toThrow('pgvector error');
-
-      // ROLLBACK was called
-      const rollbackCall = mockClient.query.mock.calls.find(
-        (call) => call[0] === 'ROLLBACK',
-      );
-      expect(rollbackCall).toBeDefined();
-      // COMMIT was NOT called
-      const commitCall = mockClient.query.mock.calls.find(
-        (call) => call[0] === 'COMMIT',
-      );
-      expect(commitCall).toBeUndefined();
-      // client was released
-      expect(mockClient.release).toHaveBeenCalledTimes(1);
-    });
-
-    it('should pass SIMILARITY_THRESHOLD=0.4 to the similarity query', async () => {
-      await computePageRelationships();
-
-      // calls[3] = similarity CTE INSERT with params [TOP_K, SIMILARITY_THRESHOLD, null]
-      const similarityCall = mockClient.query.mock.calls.find(
-        (call) => typeof call[0] === 'string' && (call[0] as string).includes('embedding_similarity'),
-      );
-      expect(similarityCall).toBeDefined();
-      // $2 is the similarity threshold
-      expect(similarityCall![1][1]).toBe(0.4);
-    });
-
-    it('should delete only affected rows when changedPageIds is provided (incremental)', async () => {
-      // 8 query slots: BEGIN, SET LOCAL, DELETE (directed similarity edges),
-      // DELETE (symmetric edges), similarity INSERT, label INSERT,
-      // parent_child INSERT (#362), COMMIT. Each must be explicitly mocked so the
-      // assertions below pin the bind params for the new edge type instead of
-      // relying on the beforeEach catch-all (which would silently absorb a missing
-      // slot and let a regression slip through).
-      // #916: the incremental delete is split — directed embedding_similarity
-      // edges are pruned source-side only (page_id_1 = ANY), while symmetric
-      // edge types are deleted on both sides — so there are now TWO DELETE slots.
-      mockClient.query
-        .mockResolvedValueOnce({ rows: [] })                                                          // BEGIN
-        .mockResolvedValueOnce({ rows: [] })                                                          // SET LOCAL statement_timeout
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE directed embedding_similarity WHERE page_id_1 = ANY($1)
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 })                                             // DELETE symmetric edges WHERE page_id_1 = ANY($1) OR page_id_2 = ANY($1)
-        .mockResolvedValueOnce({ rows: [{ page_id_1: 1, page_id_2: 2, score: 0.9 }], rowCount: 1 })   // similarity INSERT
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // label INSERT
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 })                                             // parent_child INSERT (#362)
-        .mockResolvedValueOnce({ rows: [] });                                                         // COMMIT
-
-      const totalEdges = await computePageRelationships([1, 3]);
-
-      expect(totalEdges).toBe(1);
-      // Sanity: pin the slot count so a future producer that adds another query
-      // can't quietly shift the assertions below to the wrong call index.
-      expect(mockClient.query).toHaveBeenCalledTimes(8);
-
-      // #916: directed similarity edges are pruned SOURCE-SIDE ONLY. This delete
-      // must target relationship_type = 'embedding_similarity' and match only
-      // page_id_1 = ANY($1) — never page_id_2 — so reverse edges Y→X owned by an
-      // unchanged page Y survive.
-      const directedDeleteCall = mockClient.query.mock.calls[2][0] as string;
-      expect(directedDeleteCall).toContain("relationship_type = 'embedding_similarity'");
-      expect(directedDeleteCall).toContain('page_id_1 = ANY($1)');
-      expect(directedDeleteCall).not.toContain('page_id_2');
-      expect(mockClient.query.mock.calls[2][1]).toEqual([[1, 3]]);
-
-      // #916: all symmetric edge types are deleted on BOTH sides and must
-      // explicitly exclude the directed embedding_similarity type.
-      const symmetricDeleteCall = mockClient.query.mock.calls[3][0] as string;
-      expect(symmetricDeleteCall).toContain("relationship_type <> 'embedding_similarity'");
-      expect(symmetricDeleteCall).toContain('page_id_1 = ANY($1)');
-      expect(symmetricDeleteCall).toContain('page_id_2 = ANY($1)');
-      expect(mockClient.query.mock.calls[3][1]).toEqual([[1, 3]]);
-
-      // similarity query $3 should be changedPageIds
-      const similarityCall = mockClient.query.mock.calls[4];
-      expect(similarityCall[1][2]).toEqual([1, 3]);
-
-      // label query $1 should be changedPageIds
-      const labelCall = mockClient.query.mock.calls[5];
-      expect(labelCall[1][0]).toEqual([1, 3]);
-
-      // parent_child query (#362) $1 should be changedPageIds — pins the
-      // incremental contract for the new edge type.
-      const parentChildCall = mockClient.query.mock.calls[6];
-      expect(parentChildCall[0]).toContain("'parent_child'");
-      expect(parentChildCall[1][0]).toEqual([1, 3]);
-
-      // COMMIT must be the final call (would silently fall through to the
-      // beforeEach catch-all if the slot count above were wrong).
-      expect(mockClient.query.mock.calls[7][0]).toBe('COMMIT');
-    });
   });
 
   describe('processDirtyPages', () => {
@@ -638,6 +582,24 @@ describe('embedding-service', () => {
       expect(mocks.query).toHaveBeenCalledTimes(2);
     });
 
+    it('emits a terminal completion event when no dirty pages exist', async () => {
+      mockChunkSettings();
+      mocks.query.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const onProgress = vi.fn();
+
+      await processDirtyPages('user-1', onProgress);
+
+      expect(onProgress).toHaveBeenCalledOnce();
+      expect(onProgress).toHaveBeenCalledWith({
+        type: 'complete',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        percentage: 100,
+        errors: [],
+      });
+    });
+
     it('should process a small batch of pages (fewer than batch size)', async () => {
       mockChunkSettings();
       // COUNT query
@@ -717,8 +679,14 @@ describe('embedding-service', () => {
 
       // Every batch's embedding call rejects with an oversized-input error whose
       // body carries the context-length signal — embedPage skips every batch.
+      // Production-shaped: generateEmbedding throws LlmHttpError with the body
+      // on `.detail` (#1185), not folded into `.message`, and bypassCircuitBreaker
+      // true on a 400 (#867) — this must exercise the same `instanceof
+      // LlmHttpError` branch isContextLengthError takes in production, per the
+      // PR #1214 review (a plain Error here would only prove the message-based
+      // fallback still works).
       mocks.providerGenerateEmbedding.mockRejectedValue(
-        new Error('generateEmbedding HTTP 400: input length exceeds the context length'),
+        new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length', true),
       );
 
       const promise = processDirtyPages('livelock-user');
@@ -1242,8 +1210,8 @@ describe('embedding-service', () => {
   });
 
   it('should not infinite-loop when all pages are too short to embed', async () => {
-    // htmlToText returns text shorter than 20 chars -> embedPage skips
-    mocks.htmlToText.mockReturnValue('short');
+    // htmlToEmbeddingText returns text shorter than 20 chars -> embedPage skips
+    mocks.htmlToEmbeddingText.mockReturnValue('short');
 
     const pages = [makePage('short-1'), makePage('short-2')];
 
@@ -1292,14 +1260,30 @@ describe('embedPage', () => {
     mockClient.release.mockResolvedValue(undefined);
     mocks.getPool.mockReturnValue({ connect: vi.fn().mockResolvedValue(mockClient) });
     mocks.toSql.mockReturnValue('[0.1,0.2]');
-    mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+    mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
     mocks.providerGenerateEmbedding.mockImplementation((_userId: string, texts: string[]) =>
       Promise.resolve(texts.map(() => new Array(1024).fill(0.1))),
     );
   });
 
+  it('embeds via the text-form fallback when the Markdown lands under the floor (#1265 M1)', async () => {
+    // A macro-placeholder page: Markdown shrinks below 20 chars but the text
+    // form is long — the page must EMBED (the coverage probe counts it), not
+    // settle. No test covered the positive half of the fallback before
+    // (#1266 review r2, M-6).
+    // Once-queued so the long fallback text cannot leak into the sibling
+    // short/empty-page tests, which rely on the default empty fallback.
+    mocks.htmlToEmbeddingText.mockReturnValueOnce('[Children pages]');
+    mocks.htmlToText.mockReturnValueOnce('Children pages listed here with enough rendered text to matter');
+
+    const count = await embedPage('user-1', 105, 'Macro Page', 'DEV', '<div>macro</div>');
+
+    expect(count).toBeGreaterThan(0);
+    expect(mocks.htmlToText).toHaveBeenCalledWith('<div>macro</div>');
+  });
+
   it('should mark page as not dirty when text is too short', async () => {
-    mocks.htmlToText.mockReturnValue('tiny');
+    mocks.htmlToEmbeddingText.mockReturnValue('tiny');
     mocks.query.mockResolvedValue({ rows: [] });
 
     const result = await embedPage('user-1', 101, 'Short Page', 'DEV', '<p>tiny</p>');
@@ -1315,8 +1299,8 @@ describe('embedPage', () => {
     );
   });
 
-  it('should mark page as not dirty when htmlToText returns empty string', async () => {
-    mocks.htmlToText.mockReturnValue('');
+  it('should mark page as not dirty when the extracted text is empty', async () => {
+    mocks.htmlToEmbeddingText.mockReturnValue('');
     mocks.query.mockResolvedValue({ rows: [] });
 
     const result = await embedPage('user-1', 102, 'Empty Page', 'DEV', '<p></p>');
@@ -1341,6 +1325,77 @@ describe('embedPage', () => {
     // No client interaction at all — old embeddings are untouched
     expect(mockClient.query).not.toHaveBeenCalled();
     expect(mockClient.release).not.toHaveBeenCalled();
+  });
+
+  // ── #1114 pre-flight dimension check ─────────────────────────────────────────
+  //
+  // The live path had no width validation: a model repoint that changed the
+  // vector length was caught only by pgvector at the Phase 2 INSERT, i.e. after
+  // the whole page had been embedded and paid for, and reported as a cast error
+  // naming neither the model nor either width. These pin that it now fails in
+  // Phase 1 — before BEGIN — and that an unreadable catalog does not block work.
+
+  /** Make the catalog lookup answer `dims` (or nothing, for the null case). */
+  function catalogReturns(dims: number | null) {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (typeof sql === 'string' && sql.includes('atttypmod')) {
+        return { rows: dims === null ? [] : [{ atttypmod: dims }] };
+      }
+      return { rows: [] };
+    });
+  }
+
+  it('#1114: a wrong-width model fails before Phase 2 and names both widths', async () => {
+    catalogReturns(1024);
+    // Provider now answers 2560-wide — the Qwen3 case this check exists for.
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).rejects.toThrow(
+      /returned 2560-dimensional vectors but the .* column holds 1024/,
+    );
+
+    // The point of the check: it fires in Phase 1, so no transaction is opened
+    // and the page's existing embeddings are never even DELETEd.
+    expect(mockClient.query).not.toHaveBeenCalled();
+    expect(mockClient.release).not.toHaveBeenCalled();
+  });
+
+  it('#1114: the error names the model and the remedy, not a pgvector cast', async () => {
+    catalogReturns(1024);
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    const err = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>').catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).toBe('EmbeddingDimensionMismatchError');
+    // This is the LOG-side message, so it may name the model and both widths.
+    // The user-facing string is a fixed constant produced by
+    // toUserFacingEmbeddingError — pinned in embedding-error-message.test.ts,
+    // because this column is written through that sanitizer, not from here.
+    expect((err as Error).message).toContain('bge-m3');
+    expect((err as Error).message).toContain('2560');
+    expect((err as Error).message).toContain('1024');
+  });
+
+  it('#1114: a matching width embeds normally', async () => {
+    catalogReturns(1024);
+    // Default provider mock is already 1024-wide.
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).resolves.toBeGreaterThan(0);
+    expect(mockClient.query).toHaveBeenCalled();
+  });
+
+  it('#1114: an unreadable catalog does not block embedding (fails open)', async () => {
+    // No atttypmod row — the INSERT stays the backstop it always was, and a
+    // catalog we cannot read must not stop the corpus being embedded.
+    catalogReturns(null);
+    mocks.providerGenerateEmbedding.mockImplementation((_u: string, texts: string[]) =>
+      Promise.resolve(texts.map(() => new Array(2560).fill(0.1))),
+    );
+
+    await expect(embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>')).resolves.toBeGreaterThan(0);
   });
 
   it('Phase 2 INSERT failure: ROLLBACK called, client released', async () => {
@@ -1391,6 +1446,13 @@ describe('embedPage', () => {
     const count = await embedPage('u1', 1, 'Title', 'DEV', '<p>Content</p>');
 
     expect(count).toBeGreaterThan(0);
+    // The converter must receive the page's body_html — no test asserted the
+    // argument before, so a wrong-argument refactor stayed green (#1265).
+    // The second argument is the log context the fallback warn carries.
+    expect(mocks.htmlToEmbeddingText).toHaveBeenCalledWith('<p>Content</p>', {
+      pageId: 1,
+      pageTitle: 'Title',
+    });
 
     const calls = mockClient.query.mock.calls.map((c) => c[0] as string);
 
@@ -1421,12 +1483,12 @@ describe('chunkText', () => {
     });
   });
 
-  it('should split on heading boundaries', () => {
+  it('packs two tiny sections into one chunk titled by the first (#1265)', () => {
     const text = '# Introduction\nSome intro text.\n\n# Details\nMore details here.';
     const chunks = chunkText(text, 'My Doc', 'SPACE', 'doc-1');
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks).toHaveLength(1);
     expect(chunks[0].metadata.section_title).toBe('Introduction');
-    expect(chunks[1].metadata.section_title).toBe('Details');
+    expect(chunks[0].text).toContain('# Details');
   });
 
   it('should return empty array for empty text', () => {
@@ -1456,19 +1518,79 @@ describe('chunkText', () => {
   });
 
   it('should respect custom chunkOverlap parameter (zero overlap)', () => {
-    // Two paragraphs, small chunk size, zero overlap
-    const paragraph1 = 'First paragraph content here. '.repeat(5);
-    const paragraph2 = 'Second paragraph content here. '.repeat(5);
+    // Two paragraphs with distinct, non-overlapping wording (no shared
+    // substrings), small chunk size, zero overlap.
+    const paragraph1 = 'alpha-word '.repeat(5) + 'ALPHATAIL';
+    const paragraph2 = 'beta-word '.repeat(5) + 'BETATAIL';
     const text = `${paragraph1}\n\n${paragraph2}`;
 
     // With zero overlap the chunks should be independent
     const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 30, 0);
-    expect(chunks.length).toBeGreaterThanOrEqual(1);
-    // With zero overlap no chunk should start with words from previous chunk's tail
-    // (this is a structural check — all chunks should be non-empty)
+    expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.text.length).toBeGreaterThan(0);
     }
+    // With zero overlap, no chunk should carry the trailing text of the
+    // previous chunk forward — a real duplication assertion, not merely
+    // non-empty chunks (#1271: the buggy slice(-0) === slice(0) carried the
+    // whole previous chunk forward).
+    expect(chunks[0]!.text).toContain('ALPHATAIL');
+    expect(chunks[0]!.text).not.toContain('BETATAIL');
+    expect(chunks[1]!.text).toContain('BETATAIL');
+    expect(chunks[1]!.text).not.toContain('ALPHATAIL');
+    expect(chunks[1]!.text).not.toContain('alpha-word');
+  });
+
+  it('#1271: chunkOverlap 0 must not carry the whole previous chunk (slice(-0) bug)', () => {
+    // A single oversized section (no headings, so splitMarkdownSections
+    // returns it as one section) made of several distinct paragraphs, each
+    // tagged with its own unique marker word and padded well past
+    // MIN_FLUSH_CHARS so every paragraph flushes as its own chunk boundary.
+    // chunkSize=100 tokens -> maxChars=300, so total text (~1100 chars) is
+    // well over chunkSize * CHARS_PER_TOKEN * 3 = 900 chars.
+    const markers = ['MARKERONE', 'MARKERTWO', 'MARKERTHREE', 'MARKERFOUR'];
+    // Marker sits at the END of each paragraph, matching where a tail-carry
+    // would pick it up — the bug carries the END of the previous chunk into
+    // the start of the next one.
+    const paragraphs = markers.map(
+      (marker) => `${'filler-word '.repeat(35)}${marker}`,
+    );
+    const text = paragraphs.join('\n\n');
+
+    const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 100, 0);
+    expect(chunks.length).toBeGreaterThan(1);
+
+    // With overlap 0, no marker should leak into a chunk other than the one
+    // whose paragraph it belongs to — slice(-0) === slice(0) carries the
+    // ENTIRE previous chunk forward, which would make every marker after
+    // the first appear in two (or more) chunks.
+    for (const marker of markers) {
+      const chunksContainingMarker = chunks.filter((c) => c.text.includes(marker));
+      expect(chunksContainingMarker).toHaveLength(1);
+    }
+
+    // Concatenated chunk length should be close to the input length, not
+    // inflated by carried-forward duplication.
+    const totalChunkChars = chunks.reduce((sum, c) => sum + c.text.length, 0);
+    expect(totalChunkChars).toBeLessThan(text.length * 1.5);
+  });
+
+  it('#1271: overlap > 0 still carries a tail (contrast case)', () => {
+    const markers = ['MARKERONE', 'MARKERTWO', 'MARKERTHREE', 'MARKERFOUR'];
+    const paragraphs = markers.map(
+      (marker) => `${'filler-word '.repeat(35)}${marker}`,
+    );
+    const text = paragraphs.join('\n\n');
+
+    const chunks = chunkText(text, 'Title', 'DEV', 'page-1', 100, 20);
+    expect(chunks.length).toBeGreaterThan(1);
+
+    // With overlap > 0, at least one marker should appear in more than one
+    // chunk (the tail of one chunk carried into the start of the next).
+    const someMarkerDuplicated = markers.some(
+      (marker) => chunks.filter((c) => c.text.includes(marker)).length > 1,
+    );
+    expect(someMarkerDuplicated).toBe(true);
   });
 
   describe('splitByWords', () => {
@@ -1519,6 +1641,71 @@ describe('chunkText', () => {
       expect(isContextLengthError(null)).toBe(false);
       expect(isContextLengthError({ message: 'context length' })).toBe(false);
     });
+
+    // #1185: generateEmbedding now throws LlmHttpError, whose `.message` is a
+    // bare `generateEmbedding HTTP 400` — the body lives on `.detail` instead
+    // (see llm-http-error.ts). These prove the field-based path production
+    // code actually exercises, not just the message-string fallback above
+    // (kept for any caller/mock still throwing a plain Error).
+    describe('LlmHttpError field-based matching (production path)', () => {
+      it('returns true when a 400 detail names the oversized-input signal', () => {
+        // Deliberately does NOT also contain "context length" — every other
+        // truthy case below does, so without this one the 'input length
+        // exceeds' disjunct could be deleted and every test here would still
+        // pass (PR #1214 review mutation-testing finding).
+        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the maximum allowed');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns true when a 400 detail contains "context length" in different wording', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'Error: context length exceeded for this model');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('is case-insensitive on the detail', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'INPUT LENGTH EXCEEDS THE CONTEXT LENGTH');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns false for a 400 whose detail is unrelated', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'invalid request body');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      // PR #1214 review: the pre-#1185 message-fallback branch had a third
+      // term — `msg.includes('http 400') && msg.includes('context')` — that
+      // the LlmHttpError branch dropped. That term is what caught OpenAI's
+      // machine code `context_length_exceeded` (underscored, so it contains
+      // neither 'input length exceeds' nor 'context length') and prose like
+      // "exceeds the model's context window". Losing it flips those
+      // providers from skip-and-preserve (#821/#867) to fail-the-page.
+      it('returns true for a 400 whose detail names the machine code context_length_exceeded', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, '{"error":{"code":"context_length_exceeded"}}');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns true for a 400 whose detail says "exceeds the model\'s context window"', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, "This request exceeds the model's context window.");
+        expect(isContextLengthError(err)).toBe(true);
+      });
+
+      it('returns false for a non-400 status even if the detail mentions context length', () => {
+        const err = new LlmHttpError('generateEmbedding', 500, 'context length exceeded');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      it('returns false when the detail is empty (no provider body)', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, '');
+        expect(isContextLengthError(err)).toBe(false);
+      });
+
+      it('does NOT rely on `.message`, which no longer carries the body', () => {
+        const err = new LlmHttpError('generateEmbedding', 400, 'input length exceeds the context length');
+        // Sanity check on the load-bearing assumption: message is body-free.
+        expect(err.message).toBe('generateEmbedding HTTP 400');
+        expect(isContextLengthError(err)).toBe(true);
+      });
+    });
   });
 
   describe('chunkText — CHUNK_HARD_LIMIT enforcement', () => {
@@ -1568,7 +1755,7 @@ describe('chunkText', () => {
       mocks.query.mockReset();
       mocks.providerGenerateEmbedding.mockReset();
       mocks.toSql.mockReset();
-      mocks.htmlToText.mockReset();
+      mocks.htmlToEmbeddingText.mockReset();
       // Re-apply defaults
       mockClient.query.mockResolvedValue({ rows: [], rowCount: 0 });
       mockClient.release.mockResolvedValue(undefined);
@@ -1580,17 +1767,28 @@ describe('chunkText', () => {
     });
 
     it('skips an oversized batch (HTTP 400 context-length) and continues embedding remaining batches', async () => {
-      // Make htmlToText return enough text to produce multiple chunks
-      const textWith3Chunks = Array.from(
-        { length: 3 },
-        (_, i) => `## Section ${i}\n${'content '.repeat(10)}`,
+      // Twelve ~1,450-char sections: too big to pack pairwise (2x > the
+      // 1,500-char target), so chunkText yields 12 chunks = TWO provider
+      // batches at batchSize 10. The old 3-chunk fixture fit one batch, so
+      // "continues with remaining batches" was asserted against a run that
+      // had no remaining batches (and passed with >= 0 — vacuous, #1265
+      // verification finding 11).
+      const textWith12Chunks = Array.from(
+        { length: 12 },
+        (_, i) => `## Section ${i}\n${`content for section ${i} `.repeat(65)}`,
       ).join('\n');
-      mocks.htmlToText.mockReturnValue(textWith3Chunks);
+      mocks.htmlToEmbeddingText.mockReturnValue(textWith12Chunks);
 
       // Phase 2 (BEGIN/DELETE/INSERT×N/UPDATE/COMMIT) handled by mockClient.query default
       // Pool query is NOT used in Phase 2
 
-      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+      // Production-shaped: generateEmbedding throws LlmHttpError with the
+      // body on `.detail` (#1185) and bypassCircuitBreaker true on a 400
+      // (#867) — a plain Error here would only exercise
+      // isContextLengthError's message-fallback branch, not the
+      // `instanceof LlmHttpError` branch production actually hits (PR #1214
+      // review).
+      const contextErr = new LlmHttpError('generateEmbedding', 400, 'input length exceeds context length', true);
 
       // First batch (chunks 0..9) throws a context-length error in Phase 1
       // Second batch succeeds in Phase 1 — then Phase 2 runs atomically
@@ -1602,14 +1800,16 @@ describe('chunkText', () => {
 
       // Should not throw even though first batch failed
       const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
-      // Some chunks should have been embedded (from the successful second batch)
-      expect(count).toBeGreaterThanOrEqual(0);
+      // The second batch (chunks 10-11) must actually land: a regression that
+      // stops after a skipped batch returns 0, which the old >= 0 accepted.
+      expect(count).toBe(2);
     });
 
     it('rethrows non-context-length errors from embedPage', async () => {
-      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
-      // Phase 1 throws a server error — no client is opened, no pool query needed
-      const serverErr = new Error('HTTP 500 - internal server error');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some content for the page that is long enough');
+      // Phase 1 throws a server error — no client is opened, no pool query needed.
+      // Production-shaped LlmHttpError, not a plain Error (#1185 / PR #1214 review).
+      const serverErr = new LlmHttpError('generateEmbedding', 500, 'internal server error');
       mocks.providerGenerateEmbedding.mockRejectedValueOnce(serverErr);
 
       await expect(
@@ -1621,10 +1821,12 @@ describe('chunkText', () => {
     });
 
     it('when EVERY batch is skipped (all context-length): preserves embeddings, leaves page dirty/failed, no DELETE or embedded UPDATE', async () => {
-      mocks.htmlToText.mockReturnValue('Some content for the page that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some content for the page that is long enough');
 
-      // Every Phase 1 batch rejects with a context-length error → allEmbeddings stays empty
-      const contextErr = new Error('HTTP 400 - input length exceeds context length');
+      // Every Phase 1 batch rejects with a context-length error → allEmbeddings
+      // stays empty. Production-shaped LlmHttpError with bypassCircuitBreaker
+      // true on a 400 (#867) — see #1185 / PR #1214 review.
+      const contextErr = new LlmHttpError('generateEmbedding', 400, 'input length exceeds context length', true);
       mocks.providerGenerateEmbedding.mockRejectedValue(contextErr);
 
       const count = await embedPage('user-1', 101, 'Page', 'DEV', '<p>content</p>');
@@ -1783,7 +1985,7 @@ describe('chunkText', () => {
       mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.forceReleaseEmbeddingLock.mockResolvedValue({ released: true, previousHolderEpoch: null });
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
-      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({
         llmProvider: 'ollama',
         ollamaModel: 'qwen3.5',
@@ -1976,7 +2178,7 @@ describe('chunkText', () => {
       mocks.isEmbeddingLocked.mockResolvedValue(false);
       mocks.listActiveEmbeddingLocks.mockResolvedValue([]);
       mocks.invalidateGraphCache.mockResolvedValue(undefined);
-      mocks.htmlToText.mockReturnValue('Some substantial page content for embedding that is long enough');
+      mocks.htmlToEmbeddingText.mockReturnValue('Some substantial page content for embedding that is long enough');
       vi.mocked(getSharedLlmSettings).mockResolvedValue({
         llmProvider: 'ollama',
         ollamaModel: 'qwen3.5',

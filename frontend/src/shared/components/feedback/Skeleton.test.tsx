@@ -139,34 +139,35 @@ describe('PageViewSkeleton', () => {
     expect(screen.getByTestId('page-view-skeleton')).toBeInTheDocument();
   });
 
-  it('renders toolbar skeleton with back button and title placeholders', () => {
+  it('renders a context-strip skeleton mirroring the real 48px bar, not a toolbar row', () => {
     const { container } = render(<PageViewSkeleton />);
-    // Toolbar row: back button (1) + title (1) + 4 action buttons = 6
-    const toolbarSkeletons = container.querySelectorAll('[data-testid="page-view-skeleton"] > div:first-child .skeleton');
-    expect(toolbarSkeletons.length).toBe(6);
+    // Provenance chips (3) + action buttons (3) = 6, in the same
+    // `min-h-[calc(3rem-1px)]` strip PageViewPage's real header uses.
+    const strip = container.querySelector('[data-testid="page-view-skeleton"] > div:first-child');
+    expect(strip?.className).toContain('min-h-[calc(3rem-1px)]');
+    expect(strip!.querySelectorAll('.skeleton').length).toBe(6);
   });
 
-  it('renders metadata bar inside a nm-card', () => {
+  it('never renders an nm-card — the current layout is flat, not carded (#P2)', () => {
+    // PageViewSkeleton used to wrap its metadata bar and content in `nm-card`,
+    // a layout PageViewPage stopped rendering; a card-shaped loading state
+    // for a flat page produced a visible jump on every navigation.
     const { container } = render(<PageViewSkeleton />);
-    const glassCards = container.querySelectorAll('.nm-card');
-    // Metadata bar (1) + content area (1) = at least 2 glass-cards
-    expect(glassCards.length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelectorAll('.nm-card').length).toBe(0);
   });
 
-  it('renders content area with heading and paragraph skeleton lines', () => {
+  it('renders title, tags, AI Summary card and body prose skeleton lines', () => {
     const { container } = render(<PageViewSkeleton />);
-    // Total skeleton elements should be substantial (toolbar + metadata + content + sidebar)
     const allSkeletons = container.querySelectorAll('.skeleton');
-    expect(allSkeletons.length).toBeGreaterThanOrEqual(20);
+    expect(allSkeletons.length).toBeGreaterThanOrEqual(15);
   });
 
-  it('renders sidebar skeleton for table of contents', () => {
+  it('does not render a right-hand table-of-contents column — that is ArticleRightPane, a separate panel', () => {
+    // The old skeleton hardcoded a 256px (`w-64`) inner TOC sidebar that no
+    // longer exists on this route; the outline now lives entirely inside
+    // ArticleRightPane, out of this component's scope.
     const { container } = render(<PageViewSkeleton />);
-    // Sidebar has lg:block class (hidden on small screens)
-    const sidebar = container.querySelector('.lg\\:block');
-    expect(sidebar).toBeInTheDocument();
-    const sidebarSkeletons = sidebar!.querySelectorAll('.skeleton');
-    expect(sidebarSkeletons.length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelector('.w-64')).not.toBeInTheDocument();
   });
 });
 

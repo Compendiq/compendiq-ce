@@ -30,6 +30,10 @@ async function getDefaultProviderConfig(): Promise<ProviderConfig | null> {
   };
 }
 
+// 'rerank' is deliberately absent from the two usecase query enums below:
+// these endpoints resolve via resolveUsecase, whose default-provider fallback
+// is exactly wrong for rerank — an unassigned rerank means the stage is
+// DISABLED (#1104). The settings UI lists models per-provider instead.
 export async function llmModelRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 

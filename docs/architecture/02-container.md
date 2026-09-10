@@ -23,9 +23,16 @@ flowchart TB
             wemb["Embedding worker"]
             wqual["Quality worker"]
             wsum["Summary worker"]
+            wbackup["Backup worker"]
         end
 
-        pg[("<b>postgres</b><br/>PostgreSQL 17 + pgvector<br/>(HNSW, 1024-dim embeddings)")]
+        subgraph backup_download["Backup download (in-process)"]
+            direction LR
+            bticket["Export ticket service<br/>30-second Redis capability"]
+            bredeem["Public capability redemption<br/>single-use GET + archive stream"]
+        end
+
+        pg[("<b>postgres</b><br/>PostgreSQL 17 + pgvector<br/>(HNSW; embedding width follows the model)")]
         redis[("<b>redis</b><br/>Redis 8<br/>cache, queue, locks, rate limit")]
 
         mcp["<b>mcp-docs</b><br/>Documentation sidecar<br/>(MCP server)"]
@@ -36,6 +43,11 @@ flowchart TB
     fe  -- "REST + SSE<br/>/api/*" --> be
 
     be --> workers
+    be --> backup_download
+    fe -- "authenticated POST<br/>/api/admin/backup/export-ticket" --> bticket
+    fe -- "public same-origin GET<br/>/api/backup/download/:ticket" --> bredeem
+    bticket -- "SET EX 30" --> redis
+    bredeem -- "atomic GET + DEL" --> redis
     be -- "SQL (pg pool)" --> pg
     be -- "RESP" --> redis
     be -- "HTTP + shared-secret token<br/>(x-mcp-docs-token, required in prod)" --> mcp
@@ -51,8 +63,8 @@ flowchart TB
     classDef side fill:#fff4e5,stroke:#e5a23c,color:#222
     class confluence,ollama,openai ext
     class pg,redis data
-    class fe,be app
-    class mcp,searx,workers side
+    class fe,be,bticket,bredeem app
+    class mcp,searx,workers,backup_download side
 ```
 
 The `backend → mcp-docs` call is authenticated with a shared-secret token
@@ -61,6 +73,22 @@ network isolation. The sidecar runs `NODE_ENV=production` and **fails closed**
 — `/mcp` returns `401` until the token is set on both services (`/health`
 stays open). See [`05-deployment.md`](./05-deployment.md) → MCP sidecar
 authentication.
+
+Backup downloads use two in-process backend components. The admin-only POST
+creates a 256-bit ticket in Redis; the browser then navigates through the
+frontend proxy to the public GET route. That GET has no JWT hook because a
+top-level navigation cannot attach the access-token header. Instead, the
+30-second ticket is the single-use bearer capability and Redis consumption is
+atomic. The URL contains neither backup bytes nor a passphrase.
+
+**The postgres box carries no vector width on purpose.** `page_embeddings.embedding`
+is typed from the *resolved* embedding model's probed width, not from a constant:
+`vector(n)` + HNSW up to 2000 dims, `halfvec(n)` + `halfvec_cosine_ops` from 2001
+to 4000, unindexed above that. `bge-m3` at 1024 is the bootstrap default and
+**Qwen3-Embedding-4B at 2560 (`halfvec`) is the measured recommendation** (#1114);
+switching between them changes the column type, so it goes through #1116's shadow
+path rather than a redeploy. Details in [`06-data-model.md`](./06-data-model.md)
+and ADR-012's `#1114` amendment.
 
 ## Containers at a glance
 
@@ -73,7 +101,7 @@ authentication.
 | mcp-docs  | MCP server (Node) | 3100 | `ghcr.io/compendiq/compendiq-ce-mcp-docs` |
 | searxng   | Python meta search | 8080 | `ghcr.io/compendiq/compendiq-ce-searxng` |
 
-Each Compendiq image carries three tag classes published by the GitHub Actions Docker workflow: `:latest` (refreshed on every push to `main` — recommended default for production), `:X.Y.Z` and `:X.Y` (e.g. `:0.6.2` / `:0.6`; refreshed on every `v*` release tag — pin these for exact-version reproducibility), and `:dev` (refreshed on every push to `dev` — useful for staging / smoke environments). The shared `compendiq-ce-frontend` image is consumed by both Community and Enterprise editions; there is no separate `compendiq-ee-frontend` image.
+Each Compendiq image carries three tag classes published by the GitHub Actions Docker workflow: `:latest` (refreshed on every push to `main` — recommended default for production), `:X.Y.Z` and `:X.Y` (e.g. `:0.6.2` / `:0.6`; refreshed on every `v*` release tag — pin these for exact-version reproducibility), and `:dev` (refreshed on every push to `dev` — useful for staging / smoke environments). `:dev` and `:latest` are linux/amd64 only (arm64 is published on `v*` tags); `docker/docker-compose.yml` pins `platform: linux/amd64` on the four Compendiq services so Apple Silicon pulls request that manifest. The shared `compendiq-ce-frontend` image is consumed by both Community and Enterprise editions; there is no separate `compendiq-ee-frontend` image.
 
 ## Background workers
 
@@ -87,6 +115,8 @@ container. They are started from `backend/src/index.ts` via
 - **Embedding worker** — consumes dirty pages (`pages.embedding_dirty=true`).
 - **Quality worker** — rates page clarity/completeness.
 - **Summary worker** — auto-summarizes pages.
+- **Backup worker** — checks the persisted schedule, then streams one
+  cluster-locked encrypted archive to a configured public S3 endpoint.
 
 ## Shared contracts
 

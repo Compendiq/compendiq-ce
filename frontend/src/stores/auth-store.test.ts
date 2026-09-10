@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { waitFor } from '@testing-library/react';
-import { useAuthStore } from './auth-store';
+import { peekPersistedSession, useAuthStore } from './auth-store';
 
 // BroadcastChannel instances created by individual tests. Closed in afterEach
 // so a stray async message can't leak into the next test.
@@ -44,6 +44,17 @@ describe('auth-store', () => {
     expect(stored.state.accessToken).toBeUndefined();
     expect(stored.state.isAuthenticated).toBe(true);
     expect(stored.state.user.username).toBe('alice');
+  });
+
+  it('peeks a persisted session without waiting for rehydrate', () => {
+    expect(peekPersistedSession()).toBe(false);
+    localStorage.setItem(
+      'compendiq-auth',
+      JSON.stringify({ state: { isAuthenticated: true, user: { id: '1', username: 'a', role: 'user' } }, version: 1 }),
+    );
+    expect(peekPersistedSession()).toBe(true);
+    localStorage.setItem('compendiq-auth', 'not-json');
+    expect(peekPersistedSession()).toBe(false);
   });
 
   it('never writes the access or refresh token to localStorage OR sessionStorage', () => {

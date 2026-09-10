@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { LlmProvider, UsecaseAssignments } from '@compendiq/contracts';
+import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN } from '@compendiq/contracts';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -50,6 +51,26 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: providerA.id, providerName: providerA.name, model: 'bge-m3' },
     },
+    rerank: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
+    // #1115 — unassigned, like rerank: the image leg never inherits, so the
+    // row renders with the strip and without a probe. It belongs in the
+    // fixture because the schema requires it, and the section renders `null`
+    // for a row the document omits — which silently took the truncation field
+    // out of every test in this file.
+    image_embedding: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
+    inline_completion: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -67,12 +88,54 @@ describe('UsecaseAssignmentsSection', () => {
     useAuthStore.getState().clearAuth();
   });
 
-  it('renders all 5 use-cases including embedding', () => {
+  it('renders the embedding action under the Embedding row, not above the form', () => {
     const Wrapper = createWrapper();
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+        embeddingAction={<button type="button">Start re-embed</button>}
+      />,
+      { wrapper: Wrapper },
+    );
+    const row = screen.getByTestId('usecase-row-embedding');
+    expect(within(row).getByRole('button', { name: /start re-embed/i })).toBeInTheDocument();
+  });
+
+  it('renders the rerank row with disabled-not-inherited semantics (#1104)', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.getByText('Rerank')).toBeTruthy();
+    // The unassigned option must NOT read "Inherit default" — unassigned
+    // rerank means the stage is off, and the copy has to say so.
+    const select = screen.getByTestId('usecase-rerank-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toBe('Disabled (no reranking)');
+    expect(screen.getByLabelText('rerank-info')).toBeTruthy();
+  });
+
+  it('renders every contract-defined use case', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -82,6 +145,28 @@ describe('UsecaseAssignmentsSection', () => {
     expect(screen.getByText('Quality worker')).toBeTruthy();
     expect(screen.getByText('Auto-tag')).toBeTruthy();
     expect(screen.getByText('Embedding')).toBeTruthy();
+    expect(screen.getByText('Inline completion')).toBeTruthy();
+  });
+
+  it('renders inline completion as disabled with accessible model guidance', () => {
+    const Wrapper = createWrapper();
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    const select = screen.getByTestId('usecase-inline_completion-provider') as HTMLSelectElement;
+    expect(select.options[0]!.text).toBe('Disabled (no inline suggestions)');
+    fireEvent.click(screen.getByRole('button', { name: 'About the inline-completion model' }));
+    expect(screen.getByTestId('inline-completion-info-content')).toHaveTextContent(
+      'Assign a small, always-warm model',
+    );
   });
 
   it('provider dropdown shows Inherit + all providers', () => {
@@ -89,7 +174,10 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -116,7 +204,10 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -130,7 +221,10 @@ describe('UsecaseAssignmentsSection', () => {
     render(
       <UsecaseAssignmentsSection
         assignments={updated}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -143,12 +237,88 @@ describe('UsecaseAssignmentsSection', () => {
     });
   });
 
+  /**
+   * #1115 final review, nit 2 — the truncation field is controlled by `LlmTab`,
+   * and until now the only clamp ran at Save. That left the field showing a
+   * number that was not the one about to be sent. The component's own contract
+   * is what this pins: on BLUR it reports the clamped value back, and on every
+   * keystroke before that it reports exactly what was typed — a per-keystroke
+   * clamp rewrites `4` to `64` and makes `4000`, the largest indexable width,
+   * unreachable from an empty field.
+   */
+  it('reports the truncation width clamped on blur and verbatim while typing', () => {
+    const Wrapper = createWrapper();
+    const onImageTargetDimensionsChange = vi.fn();
+    const { rerender } = render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    const field = screen.getByTestId('image-embedding-target-dimensions');
+
+    // Mid-entry: passed through untouched, below the floor and all.
+    fireEvent.change(field, { target: { value: '4' } });
+    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(4);
+
+    // Blur settles it on the value that will actually be sent.
+    rerender(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={4}
+        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
+    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(
+      IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
+    );
+
+    // An in-range width is left alone, and an empty field still means "native".
+    rerender(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={4000}
+        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
+    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(4000);
+
+    rerender(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
+    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(null);
+  });
+
   it('shows resolved provider/model summary', () => {
     const Wrapper = createWrapper();
     render(
       <UsecaseAssignmentsSection
         assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -156,5 +326,115 @@ describe('UsecaseAssignmentsSection', () => {
     const matches = screen.getAllByText(/Ollama \/ qwen3:4b/);
     expect(matches.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/Ollama \/ bge-m3/)).toBeTruthy();
+  });
+
+  it('filters embedding and rerank model options from a mixed provider list', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/llm-providers/') && url.includes('/models')) {
+        return new Response(
+          JSON.stringify([
+            { name: 'qwen3:4b' },
+            { name: 'bge-m3' },
+            { name: 'gpt-4o-mini' },
+            { name: 'bge-reranker-v2-m3' },
+            { name: 'nomic-embed-text' },
+          ]),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+    const assignments = makeAssignments();
+    assignments.rerank = {
+      ...assignments.rerank,
+      providerId: providerA.id,
+      resolved: { providerId: providerA.id, providerName: providerA.name, model: '' },
+    };
+    render(
+      <UsecaseAssignmentsSection
+        assignments={assignments}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(
+        Array.from((screen.getByTestId('usecase-chat-model') as HTMLSelectElement).options).map(
+          (o) => o.value,
+        ),
+      ).toEqual(['', 'qwen3:4b', 'bge-m3', 'gpt-4o-mini', 'bge-reranker-v2-m3', 'nomic-embed-text']);
+    });
+
+    const valuesOf = (testId: string) =>
+      Array.from((screen.getByTestId(testId) as HTMLSelectElement).options).map((o) => o.value);
+
+    const embedding = valuesOf('usecase-embedding-model');
+    expect(embedding).toContain('bge-m3');
+    expect(embedding).toContain('nomic-embed-text');
+    expect(embedding).not.toContain('qwen3:4b');
+    expect(embedding).not.toContain('gpt-4o-mini');
+    expect(embedding).not.toContain('bge-reranker-v2-m3');
+
+    const rerank = valuesOf('usecase-rerank-model');
+    expect(rerank).toContain('bge-reranker-v2-m3');
+    expect(rerank).not.toContain('qwen3:4b');
+    expect(rerank).not.toContain('gpt-4o-mini');
+    expect(rerank).not.toContain('bge-m3');
+    expect(rerank).not.toContain('nomic-embed-text');
+  });
+
+  it('keeps every model in the chat dropdown and hides non-matches while searching', async () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as URL).toString();
+      if (url.includes('/admin/llm-providers/') && url.includes('/models')) {
+        return new Response(
+          JSON.stringify([
+            { name: 'qwen3:4b' },
+            { name: 'bge-m3' },
+            { name: 'gpt-4o-mini' },
+            { name: 'bge-reranker-v2-m3' },
+            { name: 'nomic-embed-text' },
+          ]),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('[]', { headers: { 'Content-Type': 'application/json' } });
+    });
+    render(
+      <UsecaseAssignmentsSection
+        assignments={makeAssignments()}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(
+        Array.from((screen.getByTestId('usecase-chat-model') as HTMLSelectElement).options).map(
+          (o) => o.value,
+        ),
+      ).toEqual(['', 'qwen3:4b', 'bge-m3', 'gpt-4o-mini', 'bge-reranker-v2-m3', 'nomic-embed-text']);
+    });
+
+    fireEvent.click(screen.getByTestId('usecase-chat-model-control'));
+    const search = screen.getByRole('searchbox', { name: /chat model/i });
+    fireEvent.change(search, { target: { value: 'gpt' } });
+    expect(screen.getByTestId('usecase-chat-model-option-gpt-4o-mini')).toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-qwen3:4b')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-bge-m3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-bge-reranker-v2-m3')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('usecase-chat-model-option-nomic-embed-text')).not.toBeInTheDocument();
   });
 });

@@ -46,6 +46,21 @@ describe('AutoTagger', () => {
     expect(screen.getByText('Auto-tag')).toBeInTheDocument();
   });
 
+  it('accepts an explicit accessible name for icon-only hosts', () => {
+    render(
+      <AutoTagger
+        pageId="page-1"
+        currentLabels={[]}
+        model="qwen3.5"
+        aria-label="Auto-tag"
+        className="[&>span]:hidden"
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.getByRole('button', { name: 'Auto-tag' })).toBeInTheDocument();
+  });
+
   it('shows loading state while auto-tagging', async () => {
     // Never-resolving promise for loading state test
     vi.spyOn(globalThis, 'fetch').mockReturnValue(

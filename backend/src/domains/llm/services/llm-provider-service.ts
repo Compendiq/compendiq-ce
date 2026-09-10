@@ -1,6 +1,7 @@
 import { query, getPool } from '../../../core/db/postgres.js';
 import { decryptPat, encryptPat } from '../../../core/utils/crypto.js';
 import { bumpProviderCacheVersion, emitProviderDeleted } from './cache-bus.js';
+import { invalidateProviderCapabilities } from './model-capabilities.js';
 import type { LlmProvider, LlmProviderInput, LlmProviderUpdate } from '@compendiq/contracts';
 
 /** Internal row shape returned from PG — includes the encrypted api_key. */
@@ -113,6 +114,10 @@ export async function updateProvider(id: string, patch: LlmProviderUpdate): Prom
     `UPDATE llm_providers SET ${sets.join(', ')} WHERE id=$${i} RETURNING *`, vals,
   );
   await bumpProviderCacheVersion();
+  // #1154: a changed base_url or api_key can put an entirely different model
+  // behind the same name, so the cached capability verdicts for this provider
+  // are no longer trustworthy. Drop them and let the read path re-probe.
+  await invalidateProviderCapabilities(id);
   return r.rows[0] ? rowToDto(r.rows[0]) : null;
 }
 

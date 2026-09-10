@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { Button } from '../../shared/components/Button';
 import { SyncConflictResolveDialog } from './SyncConflictResolveDialog';
 
 export interface SyncConflict {
@@ -60,7 +61,7 @@ export function SyncConflictsPage() {
   if (!isEnterprise || !hasFeature('sync_conflict_resolution')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="sync-conflicts-not-licensed"
       >
@@ -106,7 +107,7 @@ function SyncConflictsPageInner() {
       data-testid="sync-conflicts-page"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <GitMerge size={20} className="text-muted-foreground" />
           Sync conflicts
         </h1>
@@ -119,10 +120,10 @@ function SyncConflictsPageInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="sync-conflicts-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The sync conflict API isn&apos;t registered on this deployment.
             The Enterprise overlay that exposes{' '}
@@ -148,10 +149,10 @@ function SyncConflictsPageInner() {
       {/* Empty state */}
       {!error && data && data.conflicts.length === 0 && (
         <div
-          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border/40 bg-foreground/[0.02] p-8 text-center"
+          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-foreground/[0.02] p-8 text-center"
           data-testid="sync-conflicts-empty"
         >
-          <CheckCircle2 size={32} className="text-emerald-400" />
+          <CheckCircle2 size={32} className="text-success" />
           <div>
             <div className="text-sm font-medium">No conflicts pending</div>
             <div className="mt-1 text-xs text-muted-foreground">
@@ -181,15 +182,15 @@ function SyncConflictsPageInner() {
                   <span> · detected {new Date(c.detectedAt).toLocaleString()}</span>
                 </div>
               </div>
-              <button
-                type="button"
+              <Button
                 onClick={() => setSelected(c)}
-                className="inline-flex items-center gap-1.5 rounded-md border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                variant="secondary"
+                size="sm"
+                leftIcon={<GitMerge size={12} />}
                 data-testid={`sync-conflict-review-btn-${c.id}`}
               >
-                <GitMerge size={12} />
                 Review
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

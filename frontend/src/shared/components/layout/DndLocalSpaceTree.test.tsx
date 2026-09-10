@@ -5,13 +5,23 @@ import DndLocalSpaceTree from './DndLocalSpaceTree';
 import type { DndLocalSpaceTreeProps } from './DndLocalSpaceTree';
 import type { TreeNode } from './sidebar-types';
 
-// Mock @dnd-kit so we can test component logic without the full DnD runtime
+// Mock @dnd-kit so we can test component logic without the full DnD runtime.
+// useSortableSpy is `vi.hoisted` so both the mock factory (hoisted above
+// imports by vitest) and the tests below can reference the same instance —
+// tests inspect its call args to verify the component wires `handle`
+// correctly, since the real library's activator-instrumentation behavior
+// (the thing that regressed — see DndLocalSpaceTree.tsx) is exactly what this
+// mock replaces and therefore cannot exercise on its own.
+const { useSortableSpy } = vi.hoisted(() => ({
+  useSortableSpy: vi.fn((_input: unknown) => ({ ref: { current: null }, isDragging: false })),
+}));
+
 vi.mock('@dnd-kit/react', () => ({
   DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
 vi.mock('@dnd-kit/react/sortable', () => ({
-  useSortable: () => ({ ref: { current: null }, isDragging: false }),
+  useSortable: (input: unknown) => useSortableSpy(input),
   isSortable: () => false,
 }));
 
@@ -54,6 +64,12 @@ function renderTree(overrides: Partial<DndLocalSpaceTreeProps> = {}) {
     toggleExpand: vi.fn(),
     activePageId: undefined,
     reorderPage: { mutate: vi.fn() },
+    // Roving-tabindex is computed by the parent SidebarTreeView in real usage
+    // (sidebar-tree-keyboard.ts has its own test coverage); here it's just a
+    // prop this component threads down to each row.
+    rovingId: 'p1',
+    onRowFocus: vi.fn(),
+    onRowKeyDown: vi.fn(),
   };
 
   const props = { ...defaultProps, ...overrides };
@@ -71,6 +87,7 @@ function renderTree(overrides: Partial<DndLocalSpaceTreeProps> = {}) {
 describe('DndLocalSpaceTree', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    useSortableSpy.mockClear();
   });
 
   it('renders all root-level pages', () => {
@@ -89,16 +106,66 @@ describe('DndLocalSpaceTree', () => {
     expect(screen.getByText('Child of Two')).toBeInTheDocument();
   });
 
-  it('shows drag handle for each node', () => {
-    renderTree();
-    const handles = screen.getAllByLabelText('Drag to reorder');
-    expect(handles.length).toBeGreaterThanOrEqual(2);
+  // The grip is now the SCOPED drag activator (`handle: handleRef`), which is
+  // what keeps dnd-kit's real accessibility instrumentation off the row
+  // itself. It must carry its own accessible name — aria-hidden would be a
+  // WCAG violation on an element the library makes keyboard-focusable — and
+  // must never be reachable via the tree's own roving tabindex (rovingId only
+  // ever targets a role="treeitem" row, never this handle).
+  it('shows a drag grip on each node, labelled and not aria-hidden', () => {
+    const { container } = renderTree();
+    const grips = container.querySelectorAll('span.cursor-grab');
+    expect(grips.length).toBeGreaterThanOrEqual(2);
+    for (const grip of grips) {
+      expect(grip).not.toHaveAttribute('aria-hidden');
+      expect(grip.getAttribute('aria-label')).toMatch(/^Reorder /);
+    }
+  });
+
+  // Regression guard for the bug the critique found: without an explicit
+  // `handle`, @dnd-kit/dom's Accessibility plugin instruments
+  // `draggable.handle ?? draggable.element` — i.e. falls back to whatever
+  // `sortable.ref` is attached to, the whole row — with role="button",
+  // tabindex="0", aria-pressed/aria-grabbed. That silently overwrote every
+  // row's role="treeitem"/roving-tabindex wiring, so Tab landed on an
+  // unlabelled drag wrapper instead of a page link and Enter/arrow keys did
+  // nothing. The real library is mocked out here, so this asserts the
+  // component's *contract with it* — that `handle` is wired to the grip
+  // node, not left unset — rather than the library's runtime DOM mutation,
+  // which only the live app can exercise.
+  it('scopes the drag activator to the grip handle, not the whole row', () => {
+    const { container } = renderTree();
+    expect(useSortableSpy).toHaveBeenCalled();
+    const call = useSortableSpy.mock.calls[0]![0] as { handle?: { current: unknown } };
+    expect(call.handle).toBeDefined();
+    expect(call.handle!.current).toBe(container.querySelector('.cursor-grab'));
   });
 
   it('navigates to page on click', () => {
     renderTree();
     fireEvent.click(screen.getByText('Page One'));
     expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
+  });
+
+  // Clicking a parent's title used to toggle expansion unconditionally before
+  // navigating, so opening an already-expanded section collapsed the very
+  // children the click was meant to reach — non-idempotently, since the same
+  // click expanded or collapsed depending on prior state. It must still open
+  // a *collapsed* parent (helpful); an already-open one should just navigate.
+  it('does not collapse an already-expanded parent when its title is clicked', () => {
+    const toggleExpand = vi.fn();
+    renderTree({ toggleExpand, expandedIds: new Set(['p2']) });
+    fireEvent.click(screen.getByText('Page Two'));
+    expect(toggleExpand).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p2');
+  });
+
+  it('still expands a collapsed parent when its title is clicked', () => {
+    const toggleExpand = vi.fn();
+    renderTree({ toggleExpand });
+    fireEvent.click(screen.getByText('Page Two'));
+    expect(toggleExpand).toHaveBeenCalledWith('p2');
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p2');
   });
 
   it('calls toggleExpand on expand button click for parent nodes', () => {
@@ -116,8 +183,102 @@ describe('DndLocalSpaceTree', () => {
     expect(guide).toHaveClass('indent-guide');
   });
 
+  // ---------------------------------------------------------------------
+  // Parity with SidebarTreeNode.
+  //
+  // These two trees are the SAME panel — the rail swaps one for the other when
+  // you change the selected space's source — so a user switching spaces must
+  // not see the tree change shape. The active row is where they had drifted:
+  // this one was `nm-pill-active text-action font-medium scale-[1.01]` against
+  // the other's `nav-selection font-medium`. Different field, accent text the
+  // other has none of, and a transform ADR-010 retired outright ("no lift, no
+  // scale, no glass"). Selecting a page in a local space nudged the row 1%
+  // larger and lit it with the accent; selecting one in a Confluence space did neither.
+  // ---------------------------------------------------------------------
+
+  it('gives the active row the same treatment as the plain tree', () => {
+    const { container } = renderTree({ activePageId: 'p1' });
+    const row = container.querySelector<HTMLElement>('[data-page-id="p1"]')!;
+
+    expect(row.className).toContain('nav-selection');
+    expect(row.className).toContain('font-medium');
+    expect(row.className).toContain('outline-none');
+    // The three that made it a different control from its twin.
+    expect(row.className).not.toContain('nm-pill-active');
+    expect(row.className).not.toContain('text-action');
+    expect(row.className).not.toMatch(/\bscale-/);
+  });
+
+  it('never applies a transform to a row, active or not', () => {
+    // ADR-010 bans lift and scale outright: hover and press are background and
+    // border changes. A row is the highest-frequency surface in the app, so a
+    // transform here is also the most expensive one to reintroduce.
+    const { container } = renderTree({ activePageId: 'p1' });
+    for (const row of container.querySelectorAll('[data-page-id]')) {
+      expect(row.className).not.toMatch(/\b(scale|translate)-/);
+    }
+  });
+
+  it('shares the plain tree\'s gutter geometry exactly, now that the grip lives on the trailing edge', () => {
+    const { container } = renderTree({ expandedIds: new Set(['p2']) });
+
+    // The chevron takes the leftmost slot in BOTH trees (level*12 + 2), so the
+    // disclosure control does not move when the space source changes.
+    const chevron = screen.getByLabelText('Collapse');
+    expect(chevron.className).toContain('absolute');
+    expect(chevron.className).toContain('size-6');
+    expect(chevron.className).toContain('z-10');
+    expect(chevron.style.left).toBe('2px');
+
+    // Same indent-guide formula as SidebarTreeNode: level*12 + 8.
+    expect(screen.getByLabelText('Collapse Page Two').style.left).toBe('8px');
+
+    // 28px gutter, identical to the plain tree — the grip moved to the row's
+    // trailing edge (pr-7), which has no competing control, so it no longer
+    // needs a share of the left gutter. No leaf placeholder or per-row file
+    // icon in either tree.
+    const leaf = container.querySelector<HTMLElement>('[data-page-id="p1"]')!;
+    expect(leaf.style.paddingLeft).toBe('28px');
+    expect(leaf.className).toContain('pr-7');
+    expect(container.querySelector('.w-\\[20px\\]')).toBeNull();
+    expect(leaf.querySelectorAll('svg')).toHaveLength(1); // the grip, nothing else
+  });
+
+  // Regression guard for the truncation fix: the grip is a real 24x24 target
+  // (WCAG 2.5.8) positioned off the row's trailing edge, not sharing the left
+  // indent gutter with the chevron.
+  it('positions the grip on the trailing edge as a 24x24 target, not in the left gutter', () => {
+    const { container } = renderTree();
+    const grip = container.querySelector<HTMLElement>('.cursor-grab')!;
+    expect(grip.className).toContain('h-6');
+    expect(grip.className).toContain('w-6');
+    expect(grip.className).toContain('right-0.5');
+    expect(grip.style.left).toBe('');
+  });
+
   it('is the default export (compatible with React.lazy)', () => {
     expect(typeof DndLocalSpaceTree).toBe('function');
+  });
+
+  // aria-selected is the ARIA APG tree pattern's own signal for "the current
+  // item" — the active row used to convey it visually only (fill + weight),
+  // so which page was open never reached assistive tech.
+  it('marks the active row aria-selected and every other row aria-selected="false"', () => {
+    const { container } = renderTree({ activePageId: 'p1' });
+    const rows = container.querySelectorAll('[role="treeitem"]');
+    const active = Array.from(rows).find((r) => r.getAttribute('data-page-id') === 'p1')!;
+    const inactive = Array.from(rows).find((r) => r.getAttribute('data-page-id') === 'p2')!;
+    expect(active.getAttribute('aria-selected')).toBe('true');
+    expect(inactive.getAttribute('aria-selected')).toBe('false');
+  });
+
+  // No row attribute exposed a title clipped by `truncate`, and no other
+  // reachable affordance recovered it — see the twin note in
+  // SidebarTreeView.test.tsx.
+  it('gives every row a title attribute matching the page title', () => {
+    renderTree();
+    const row = screen.getByText('Page One').closest('[role="treeitem"]')!;
+    expect(row.getAttribute('title')).toBe('Page One');
   });
 
   // #707: the scroll-into-view logic lives in the parent SidebarTreeView and
@@ -203,6 +364,81 @@ describe('DndLocalSpaceTree', () => {
     });
   });
 
+  // #856: only the row matching `rovingId` is a tab stop; every other row is
+  // tabIndex -1 so Tab no longer costs one stop per page in the tree.
+  describe('roving tabindex (#856)', () => {
+    it('gives only the rovingId row tabIndex 0, the rest -1', () => {
+      renderTree({ rovingId: 'p2' });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      const rowTwo = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      expect(rowOne.getAttribute('tabindex')).toBe('-1');
+      expect(rowTwo.getAttribute('tabindex')).toBe('0');
+    });
+
+    // P1 follow-up to #1340: dnd-kit's Accessibility plugin makes the grip a
+    // real keyboard drag activator by writing tabindex="0" onto it
+    // unconditionally, independent of `rovingId` — so every row's grip was
+    // its own permanent tab stop and a 5-row tree cost 6 Tab presses to leave
+    // instead of the plain tree's 1 (confirmed live: Tab walked grip -> grip
+    // -> grip, never reaching a second row's own treeitem). Only the roving
+    // row's grip should be tabbable, same contract as the treeitem itself.
+    it('gives only the rovingId row\'s grip tabIndex 0, the rest -1', () => {
+      const { container } = renderTree({ rovingId: 'p2' });
+      const gripOne = container.querySelector<HTMLElement>('[data-page-id="p1"] .cursor-grab')!;
+      const gripTwo = container.querySelector<HTMLElement>('[data-page-id="p2"] .cursor-grab')!;
+      expect(gripOne.getAttribute('tabindex')).toBe('-1');
+      expect(gripTwo.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('moves the tabbable grip when rovingId changes', () => {
+      const { container, rerender } = renderTree({ rovingId: 'p1' });
+      expect(container.querySelector('[data-page-id="p1"] .cursor-grab')!.getAttribute('tabindex')).toBe('0');
+      expect(container.querySelector('[data-page-id="p2"] .cursor-grab')!.getAttribute('tabindex')).toBe('-1');
+
+      rerender(
+        <MemoryRouter>
+          <DndLocalSpaceTree
+            tree={[makeNode('p1', 'Page One'), makeNode('p2', 'Page Two', [makeNode('p2-c1', 'Child of Two')])]}
+            expandedIds={new Set<string>()}
+            toggleExpand={vi.fn()}
+            activePageId={undefined}
+            reorderPage={{ mutate: vi.fn() }}
+            rovingId="p2"
+            onRowFocus={vi.fn()}
+            onRowKeyDown={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+
+      expect(container.querySelector('[data-page-id="p1"] .cursor-grab')!.getAttribute('tabindex')).toBe('-1');
+      expect(container.querySelector('[data-page-id="p2"] .cursor-grab')!.getAttribute('tabindex')).toBe('0');
+    });
+
+    it('calls onRowFocus with the row id when a row is focused', () => {
+      const onRowFocus = vi.fn();
+      renderTree({ onRowFocus });
+      const rowTwo = screen.getByText('Page Two').closest('[role="treeitem"]')!;
+      fireEvent.focus(rowTwo);
+      expect(onRowFocus).toHaveBeenCalledWith('p2');
+    });
+
+    it('routes ArrowDown/ArrowUp on a row to onRowKeyDown with the row id', () => {
+      const onRowKeyDown = vi.fn();
+      renderTree({ onRowKeyDown });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(rowOne, { key: 'ArrowDown' });
+      expect(onRowKeyDown).toHaveBeenCalledWith(expect.anything(), 'p1');
+    });
+
+    it('does not call onRowKeyDown for Enter/Space (handled locally as navigation)', () => {
+      const onRowKeyDown = vi.fn();
+      renderTree({ onRowKeyDown });
+      const rowOne = screen.getByText('Page One').closest('[role="treeitem"]')!;
+      fireEvent.keyDown(rowOne, { key: 'Enter' });
+      expect(onRowKeyDown).not.toHaveBeenCalled();
+    });
+  });
+
   // #880 (code-review follow-up): rows carry role="treeitem" but had no
   // role="tree" ancestor and nested-children wrappers lacked role="group", so
   // every treeitem was orphaned (axe-critical aria-required-parent). The row
@@ -223,5 +459,27 @@ describe('DndLocalSpaceTree', () => {
       expect(group).not.toBeNull();
       expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
     });
+  });
+
+  // #1361: the conversations pane owns the rail on AI routes, so this tree has
+  // no AI branch left. It was the third `/ai?pageId=` producer.
+  it('navigates to the page even when an AI route is open (#1361)', () => {
+    render(
+      <MemoryRouter initialEntries={['/ai']}>
+        <DndLocalSpaceTree
+          tree={[makeNode('p1', 'Page One')]}
+          expandedIds={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          reorderPage={{ mutate: vi.fn() }}
+          rovingId="p1"
+          onRowFocus={vi.fn()}
+          onRowKeyDown={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByText('Page One'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/p1');
   });
 });

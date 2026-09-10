@@ -19,6 +19,9 @@
  * actually asserting (which local rows get soft-deleted, and which are spared).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   setupTestDb,
   truncateAllTables,
@@ -258,27 +261,54 @@ describe.skipIf(!dbAvailable)('sync-service deletion reconciliation (#706)', () 
     expect(counts.pagesDeleted).toBe(1);
   });
 
-  it('defers the WHOLE run (zero soft-deletes) when candidates exceed MAX_DELETION_CONFIRMATIONS=200', async () => {
-    // 201 local rows, none present in the live listing — e.g. a permission change
-    // suddenly hid a large subtree from this principal. The cap must trip BEFORE any
-    // confirmation fetch so we neither hammer Confluence nor risk a mass false delete.
+  it('processes at most MAX_DELETION_CONFIRMATIONS=200 candidates per run and leaves the rest (#1439)', async () => {
+    // 201 local rows, all confirmed gone. The cap bounds confirmation fetches
+    // this cycle; skipping the WHOLE run when candidates > cap is the #1439
+    // production stall (431 ITE pages deferred forever because the set never
+    // shrinks). Processing every candidate in one run would also fail this
+    // test — that re-opens unbounded Confluence GETs.
     const ids = Array.from({ length: 201 }, (_, i) => `cap-${i}`);
     for (const id of ids) await insertPage(id, 'DEV');
 
-    // Even though every candidate would confirm as a 404, the cap defers first.
     const client = makeClient({ liveIds: [], goneForGetPage: ids });
     const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
 
     await detectDeletedPages(client as never, 'DEV', counts);
 
-    // No confirmation fetches and nothing soft-deleted — the run is deferred whole.
-    expect(client.getPageCalls).toEqual([]);
-    expect(counts.pagesDeleted).toBe(0);
+    expect(client.getPageCalls).toHaveLength(200);
+    expect(counts.pagesDeleted).toBe(200);
     const remaining = await query<{ n: string }>(
       'SELECT COUNT(*) AS n FROM pages WHERE space_key = $1 AND deleted_at IS NULL',
       ['DEV'],
     );
-    expect(parseInt(remaining.rows[0]!.n, 10)).toBe(201);
+    expect(parseInt(remaining.rows[0]!.n, 10)).toBe(1);
+  });
+
+  it('advances past a full batch of surviving candidates on the next cycle (#1439)', async () => {
+    await query(
+      `INSERT INTO spaces (space_key, space_name)
+       VALUES ('DEV', 'Development')`,
+    );
+    const survivingIds = Array.from({ length: 200 }, (_, i) => `restricted-${i}`);
+    for (const id of [...survivingIds, 'gone-after-cap']) await insertPage(id, 'DEV');
+
+    const client = makeClient({
+      liveIds: [],
+      presentForGetPage: survivingIds,
+      goneForGetPage: ['gone-after-cap'],
+    });
+    const counts = { pagesCreated: 0, pagesUpdated: 0, pagesDeleted: 0 };
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    expect(client.getPageCalls).toEqual(survivingIds);
+    expect(counts.pagesDeleted).toBe(0);
+
+    await detectDeletedPages(client as never, 'DEV', counts);
+    const secondCycleCalls = client.getPageCalls.slice(200);
+    expect(secondCycleCalls).toHaveLength(200);
+    expect(secondCycleCalls[0]).toBe('gone-after-cap');
+    expect(await getDeletedAt('gone-after-cap')).not.toBeNull();
+    expect(counts.pagesDeleted).toBe(1);
   });
 
   it('reconciles normally at the cap boundary (exactly 200 candidates)', async () => {
@@ -452,6 +482,45 @@ describe.skipIf(!dbAvailable)('purgeDeletedPages upstream gone-confirmation (#76
     await purgeDeletedPages(client as never, 'DEV');
 
     expect(await rowExists('purge-403')).toBe(true);
+  });
+
+  /**
+   * Fixer r1 — the purge's `discardPageIconForDeletedPage(id)` was pinned by
+   * nothing: removing it left every sync suite green, although the
+   * `RETURNING id, confluence_id` this PR added exists solely for that line.
+   *
+   * The #1349 sweep is structurally forbidden to walk `page-icons/` (a
+   * reserved root name), so an event-driven delete is the ONLY thing that ever
+   * collects an uploaded mark. Real bytes on a real temp `ATTACHMENTS_DIR`,
+   * and a live sibling's icon has to survive — a `rm -rf` of the store would
+   * pass a test that only checked the deleted page's directory.
+   */
+  it('takes the purged page’s icon with it and leaves a live page’s alone', async () => {
+    const iconRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'purge-icons-'));
+    const previousDir = process.env.ATTACHMENTS_DIR;
+    process.env.ATTACHMENTS_DIR = iconRoot;
+    try {
+      const purgedId = await insertPage('purge-icon', 'DEV');
+      const liveId = await insertPage('live-icon', 'DEV');
+      await softDelete('purge-icon', THIRTY_ONE_DAYS);
+      for (const id of [purgedId, liveId]) {
+        await fs.mkdir(path.join(iconRoot, 'page-icons', String(id)), { recursive: true });
+        await fs.writeFile(path.join(iconRoot, 'page-icons', String(id), 'abc123.png'), 'icon');
+      }
+
+      const client = makeClient({ liveIds: ['live-icon'], goneForGetPage: ['purge-icon'] });
+      await purgeDeletedPages(client as never, 'DEV');
+
+      expect(await rowExists('purge-icon')).toBe(false);
+      await expect(fs.stat(path.join(iconRoot, 'page-icons', String(purgedId)))).rejects.toThrow();
+      await expect(
+        fs.stat(path.join(iconRoot, 'page-icons', String(liveId), 'abc123.png')),
+      ).resolves.toBeTruthy();
+    } finally {
+      if (previousDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = previousDir;
+      await fs.rm(iconRoot, { recursive: true, force: true });
+    }
   });
 
   it('leaves rows younger than 30 days untouched (no confirmation fetch)', async () => {

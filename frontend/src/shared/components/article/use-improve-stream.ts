@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { streamSSE } from '../../lib/sse';
 import type { ImprovementType } from '@compendiq/contracts';
+import { getClientInferenceManager } from '../../lib/client-inference/client-inference-manager';
 
 /**
  * #708 — Lightweight SSE consumer for the editor bubble menu's inline AI
@@ -70,6 +71,23 @@ export function useImproveStream(): UseImproveStreamResult {
     setStatus('streaming');
     setOutput('');
     setError(null);
+
+    const task = type === 'grammar'
+      ? 'grammar'
+      : type === 'completeness'
+        ? 'completeness'
+        : 'clarity';
+    const local = await getClientInferenceManager().decideRewrite({
+      text: content,
+      task,
+      instruction,
+      signal: controller.signal,
+    });
+    if (local.kind === 'local') {
+      setOutput(local.text);
+      setStatus('done');
+      return;
+    }
 
     let accumulated = '';
     try {

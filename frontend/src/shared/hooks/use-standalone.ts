@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { TrashListResponse } from '@compendiq/contracts';
+import type { TrashListResponse, Template, TemplateSummary, CreateTemplateInput, UpdateTemplateInput } from '@compendiq/contracts';
 import { apiFetch, ApiError, refreshAccessTokenOnce } from '../lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 
@@ -14,8 +14,16 @@ export function useTemplates(filters?: { scope?: string; category?: string }) {
       if (filters?.category) params.set('category', filters.category);
       const qs = params.toString();
       // GET /api/templates returns a bare array, not an { items, total } envelope.
-      return apiFetch<Template[]>(`/templates${qs ? `?${qs}` : ''}`);
+      return apiFetch<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ''}`);
     },
+  });
+}
+
+export function useTemplate(id: number | undefined) {
+  return useQuery({
+    queryKey: ['templates', id],
+    queryFn: () => apiFetch<Template>(`/templates/${id}`),
+    enabled: typeof id === 'number',
   });
 }
 
@@ -25,6 +33,47 @@ export function useUseTemplate() {
       apiFetch<{ bodyJson: string; bodyHtml: string }>(`/templates/${templateId}/use`, {
         method: 'POST',
       }),
+  });
+}
+
+export function useCreateTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreateTemplateInput) =>
+      apiFetch<Template>('/templates', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
+  });
+}
+
+export function useUpdateTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...data }: UpdateTemplateInput & { id: number }) =>
+      apiFetch<Template>(`/templates/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
+  });
+}
+
+export function useDeleteTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/templates/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['templates'] });
+    },
   });
 }
 
@@ -201,33 +250,40 @@ export function useExportPdf() {
 
 // ======== Markdown Import ========
 
+export interface MarkdownPreview {
+  title: string;
+  bodyHtml: string;
+  labels: string[];
+}
+
+/**
+ * Convert an uploaded Markdown file into editor-ready HTML (#1133).
+ *
+ * `POST /api/pages/import/preview` persists nothing — the caller loads the
+ * result into the editor and the normal `POST /api/pages` create does the save,
+ * with the space, parent and visibility the user actually chose. Hence no cache
+ * invalidation here: no page exists yet.
+ *
+ * Conversion stays on the server because `markdownToHtml` is the canonical
+ * pipeline entry point (ADR-003) and has no frontend counterpart.
+ */
 export function useImportMarkdown() {
-  const queryClient = useQueryClient();
-  // Backend route is POST /api/pages/import (see backend pages-import.ts); it
-  // returns a batch envelope and always files standalone imports under the
-  // '_standalone' space, so spaceKey is not accepted.
   return useMutation({
     mutationFn: (data: { markdown: string; title: string }) =>
-      apiFetch<{
-        imported: number;
-        total: number;
-        articles: { id: string; title: string; success: boolean }[];
-      }>('/pages/import', {
+      apiFetch<MarkdownPreview>('/pages/import/preview', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pages'] });
-    },
   });
 }
 
 // ======== Local Spaces ========
 
-export function useLocalSpaces() {
+export function useLocalSpaces(enabled = true) {
   return useQuery({
     queryKey: ['local-spaces'],
     queryFn: () => apiFetch<LocalSpace[]>('/spaces/local'),
+    enabled,
   });
 }
 
@@ -301,18 +357,6 @@ export function useRoles() {
 }
 
 // ======== Types ========
-
-interface Template {
-  id: number;
-  title: string;
-  bodyJson: string;
-  bodyHtml: string;
-  category: string | null;
-  isGlobal: boolean;
-  createdBy: string;
-  createdAt: string;
-  updatedAt: string;
-}
 
 interface Comment {
   id: number;

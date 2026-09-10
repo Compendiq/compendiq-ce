@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -273,6 +273,71 @@ describe('docker/docker-compose.yml container hardening (#1050)', () => {
   );
 });
 
+describe('docker/docker-compose.yml CE image platform', () => {
+  // `:dev` / `:latest` images are linux/amd64 only (arm64 ships on v* tags).
+  // Without an explicit platform, `docker compose pull` on Apple Silicon
+  // requests arm64 and 404s — searxng was the first to fail because its
+  // local cache was already a different digest.
+  it.each(['frontend', 'backend', 'mcp-docs', 'searxng'])(
+    'pins %s to linux/amd64 so :dev pulls succeed on Apple Silicon',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).toMatch(
+        /^\s+platform:\s*linux\/amd64\s*$/m,
+      );
+    },
+  );
+});
+
+describe('docker/docker-compose.yml is a GHCR pull file', () => {
+  const imageServices = ['frontend', 'backend', 'mcp-docs', 'searxng'] as const;
+
+  it.each(imageServices)(
+    'does not declare build: on %s (source builds live in docker-compose.build.yml)',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).not.toMatch(/^\s+build:/m);
+    },
+  );
+
+  it.each(imageServices)(
+    'pins %s to ghcr.io with COMPENDIQ_VERSION (default dev)',
+    (service) => {
+      expect(extractServiceBlock(composeProd, service)).toMatch(
+        new RegExp(
+          `^\\s+image:\\s*ghcr\\.io/compendiq/compendiq-ce-${service}:\\$\\{COMPENDIQ_VERSION:-dev\\}\\s*$`,
+          'm',
+        ),
+      );
+    },
+  );
+});
+
+describe('docker/docker-compose.build.yml source-build override', () => {
+  const buildComposePath = join(repoRoot, 'docker', 'docker-compose.build.yml');
+
+  it('exists next to docker-compose.yml', () => {
+    expect(existsSync(buildComposePath)).toBe(true);
+  });
+
+  it.each([
+    ['frontend', '..', 'frontend/Dockerfile'],
+    ['backend', '..', 'backend/Dockerfile'],
+    ['mcp-docs', '..', 'mcp-docs/Dockerfile'],
+    ['searxng', './searxng', 'Dockerfile'],
+  ] as const)('builds %s from context %s dockerfile %s', (service, context, dockerfile) => {
+    const composeBuild = readFileSync(buildComposePath, 'utf8');
+    const block = extractServiceBlock(composeBuild, service);
+    expect(block).toMatch(/^\s+build:/m);
+    expect(block).toContain(`context: ${context}`);
+    expect(block).toContain(`dockerfile: ${dockerfile}`);
+  });
+
+  it('passes login-page build args to the frontend image', () => {
+    const frontend = extractServiceBlock(readFileSync(buildComposePath, 'utf8'), 'frontend');
+    expect(frontend).toContain('VITE_LOGIN_VARIANT');
+    expect(frontend).toContain('VITE_LOGIN_VARIANT_PICKER');
+  });
+});
+
 describe('docker/docker-compose.dev.yml security invariants', () => {
   it('publishes data-tier ports on loopback only', () => {
     const hostIps = [...composeDev.matchAll(/host_ip:\s*(\S+)/g)].map((m) => m[1]);
@@ -451,6 +516,19 @@ describe('.dockerignore excludes nested env secrets from build contexts', () => 
     expect(patterns).toContain('**/.env');
     expect(patterns).toContain('**/.env.*');
   });
+
+  it('ignores the Python tool venv and bytecode .gitignore also excludes (#1115)', () => {
+    // `tools/vl-embedding-shim/` is a Python tool, so its README has every
+    // developer create a venv holding mlx/torch wheels measured in gigabytes
+    // INSIDE the checkout. docker-compose.build.yml builds with `context: ..`,
+    // so without these the wheels are tarred up and streamed to the daemon on
+    // every local source build. .gitignore carries the same block, and a repo
+    // can easily carry one half and not the other — this is the other half.
+    const patterns = dockerignore.split('\n').map((line) => line.trim());
+    for (const pattern of ['**/.venv', '**/__pycache__', '**/.pytest_cache', '**/*.egg-info']) {
+      expect(patterns).toContain(pattern);
+    }
+  });
 });
 
 describe('.env.example stays authoritative for env vars the backend reads', () => {
@@ -468,9 +546,91 @@ describe('.env.example stays authoritative for env vars the backend reads', () =
   });
 });
 
+describe('FTS_LANGUAGE is retired, not merely undocumented (#1114)', () => {
+  // The keyword-index language lives in `admin_settings.fts_language` and is
+  // edited in Settings → AI Models → Retrieval. The env var was inert on every
+  // migrated instance — migration 049 seeds that row before the first request,
+  // so the `?? process.env.FTS_LANGUAGE` fallback could never be reached —
+  // which is precisely how a German corpus stays indexed with `simple` while
+  // its operator believes the deployment honoured their setting.
+  it('is not passed into the backend container', () => {
+    expect(extractServiceBlock(composeProd, 'backend')).not.toContain('FTS_LANGUAGE');
+  });
+
+  it('is not seeded by the installer either', () => {
+    expect(installSh).not.toContain('FTS_LANGUAGE');
+  });
+
+  it('is marked removed in .env.example and points at the panel that replaced it', () => {
+    // Not merely deleted: an operator upgrading with FTS_LANGUAGE already in
+    // their .env needs to be told where the setting went, not left to wonder
+    // why the line vanished.
+    expect(envExample, 'FTS_LANGUAGE must not read as a live tunable').not.toMatch(
+      /^#?\s*FTS_LANGUAGE=/m,
+    );
+    expect(envExample).toMatch(/\(Removed\)\s*FTS_LANGUAGE/);
+    expect(envExample).toContain('Settings → AI Models → Retrieval');
+  });
+});
+
 describe('.github/workflows/pr-check.yml runs validation for every author', () => {
   it('does not skip typecheck/lint/test/hoist checks for Dependabot PRs', () => {
     expect(prCheckWorkflow).not.toContain('dependabot[bot]');
+  });
+});
+
+/**
+ * Extract a top-level GitHub Actions job block (`  <id>:` under `jobs:`).
+ * Same indent rule as extractServiceBlock: stop at the next 0- or 2-space key.
+ */
+function extractWorkflowJob(workflowText: string, jobId: string): string {
+  const lines = workflowText.split('\n');
+  const jobsAt = lines.findIndex((line) => line === 'jobs:');
+  expect(jobsAt, 'jobs: block not found').toBeGreaterThanOrEqual(0);
+  const start = lines.findIndex((line, i) => i > jobsAt && line === `  ${jobId}:`);
+  expect(start, `job "${jobId}" not found`).toBeGreaterThanOrEqual(0);
+  const block: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (/^ {0,2}\S/.test(line)) break;
+    block.push(line);
+  }
+  return block.join('\n');
+}
+
+describe('.github/workflows/pr-check.yml keeps the Tests job off the frontend and off coverage', () => {
+  const testsJob = extractWorkflowJob(prCheckWorkflow, 'test');
+  const frontendJob = extractWorkflowJob(prCheckWorkflow, 'frontend-test');
+
+  it('runs frontend tests as their own job so they do not wait on backend coverage', () => {
+    expect(frontendJob).toMatch(/name:\s*Frontend Tests/);
+    expect(frontendJob).toMatch(/npm test -w frontend/);
+    expect(frontendJob).toMatch(/npm run build -w @compendiq\/contracts/);
+    expect(frontendJob).not.toMatch(/postgres:/);
+    expect(testsJob).not.toMatch(/npm test -w frontend/);
+  });
+
+  it('runs backend tests on the PR path without coverage instrumentation', () => {
+    expect(testsJob).toMatch(/npm test -w backend/);
+    expect(testsJob).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
+    expect(prCheckWorkflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
+  });
+
+  it('still builds contracts and runs the contracts suite on the backend Tests job', () => {
+    expect(testsJob).toMatch(/npm run build -w @compendiq\/contracts/);
+    expect(testsJob).toMatch(/npm test -w @compendiq\/contracts/);
+  });
+});
+
+describe('.github/workflows keeps hosted CI off backend coverage instrumentation', () => {
+  const workflowsDir = join(repoRoot, '.github', 'workflows');
+  const workflowFiles = readdirSync(workflowsDir).filter(
+    (name) => name.endsWith('.yml') || name.endsWith('.yaml'),
+  );
+
+  it.each(workflowFiles)('does not run test:coverage in %s', (file) => {
+    const workflow = readFileSync(join(workflowsDir, file), 'utf8');
+    expect(workflow).not.toMatch(/^\s*run:\s+npm run test:coverage\b/m);
   });
 });
 
@@ -510,6 +670,24 @@ describe('docker/Dockerfile.enterprise keeps the GitHub token out of image layer
     }
 
     expect(dockerfileEnterprise).toMatch(/--mount=type=secret,id=github_token/);
+  });
+});
+
+describe('.github/workflows/sync-ee-submodule.yml dispatches CE dev updates to EE', () => {
+  const workflowPath = join(repoRoot, '.github', 'workflows', 'sync-ee-submodule.yml');
+
+  it('sends the CE commit SHA through the authenticated repository dispatch contract', () => {
+    expect(existsSync(workflowPath), 'CE-to-EE dispatch workflow is missing').toBe(true);
+
+    const workflow = readFileSync(workflowPath, 'utf8');
+    const onBlock = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
+
+    expect(onBlock).toMatch(/^\s*push:\s*\n\s+branches:\s*\[dev\]$/m);
+    expect(onBlock).not.toMatch(/\bmain\b/);
+    expect(workflow).toContain('GH_TOKEN: ${{ secrets.EE_REPOSITORY_DISPATCH_TOKEN }}');
+    expect(workflow).toContain('repos/Compendiq/compendiq-ee/dispatches');
+    expect(workflow).toContain('event_type=ce-dev-updated');
+    expect(workflow).toContain('client_payload[sha]=$GITHUB_SHA');
   });
 });
 

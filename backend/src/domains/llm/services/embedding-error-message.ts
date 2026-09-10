@@ -9,13 +9,108 @@
  * what a user is allowed to see for a failed embedding.
  */
 
+import { LlmHttpError } from './llm-http-error.js';
+
+/**
+ * The `embedding` use case resolved to a model whose vectors do not fit the
+ * live `page_embeddings.embedding` column (#1114).
+ *
+ * Its own type because the two audiences need different text. The `message`
+ * here is the OPERATOR/log form and names the model and both widths; the
+ * user-facing string comes from `toUserFacingEmbeddingError` below, which — as
+ * this module's header says — never lets raw text through.
+ *
+ * It lives in this module rather than in `embedding-service.ts` so the mapper
+ * can recognise it by type instead of by string sniffing: `embedding-service`
+ * already imports this file, so the reverse import would close a cycle, and
+ * matching on `err.name` would silently stop working under a rename.
+ */
+export class EmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly model: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `Embedding model "${model}" returned ${received}-dimensional vectors but the ` +
+      `page_embeddings.embedding column holds ${expected}. Nothing was written.`,
+    );
+    this.name = 'EmbeddingDimensionMismatchError';
+  }
+}
+
+/**
+ * The `image_embedding` leg answered a width the image index is not typed for
+ * (#1115 P2, review r1).
+ *
+ * Reachable and PERMANENT rather than transient, which is why it is a named
+ * type and not a generic provider failure: `ensureImageEmbeddingColumn`
+ * retypes the column and records the identity in one transaction, and that DDL
+ * is *guarded* — a failed `ALTER` answers 200 with a warning naming Re-check
+ * (ADR-025). The assignment is then live at the new pair while the column and
+ * the recorded width are still the old one's, so every page with an image
+ * would otherwise raise a raw pgvector dimension error out of the INSERT,
+ * abort the whole scan, and record nothing on the card.
+ *
+ * Caught before the write instead, so the page is a counted failure and the
+ * remedy — Re-check on the Image embedding row — reaches the operator.
+ */
+export class ImageEmbeddingDimensionMismatchError extends Error {
+  constructor(
+    readonly model: string,
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `Image embedding model "${model}" returned ${received}-dimensional vectors but the ` +
+      `page_image_embeddings.embedding column is typed to ${expected}. Nothing was written.`,
+    );
+    this.name = 'ImageEmbeddingDimensionMismatchError';
+  }
+}
+
 /**
  * Convert any thrown embedding error into a short, safe, user-facing message.
  * Never returns the raw upstream text — every branch, including the fallback,
  * yields a fixed constant string.
+ *
+ * #1185 moved the provider's body off `generateEmbedding`'s thrown `.message`
+ * (`generateEmbedding HTTP 400: <body>`) onto `LlmHttpError.detail`, leaving
+ * `.message` a bare `generateEmbedding HTTP 400`. Every needle below that
+ * comes from the *body* (LM Studio's "no models loaded", "too long",
+ * "context length", body-worded rate-limit/auth text) was going dead for the
+ * production error type because this function only ever read `.message`.
+ * Folding `.detail` in alongside `.message` for `LlmHttpError` restores that
+ * without duplicating the needle lists — a plain `Error` (e.g. a raw network
+ * failure from undici, thrown before `generateEmbedding` ever sees a
+ * response) still only has `.message`, so that fallback stays.
  */
 export function toUserFacingEmbeddingError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  // #1114 — checked FIRST, and by type. This is the one embedding failure that
+  // is not the provider's fault: the provider answered perfectly well, with a
+  // vector the configured column cannot store. It matches none of the needles
+  // below, so without this branch it fell to the generic tail and told the
+  // operator "provider error, see server logs" — wrong about the cause and
+  // pointing away from the fix, which is in Settings, not the provider.
+  //
+  // Fixed constant, like every other branch: the widths and the model name
+  // stay in the log-side `message`.
+  if (err instanceof EmbeddingDimensionMismatchError) {
+    return 'The embedding model produces vectors of a different size than the stored index. '
+      + 'Change the model back, or run a zero-downtime re-embed from Settings → AI Models.';
+  }
+
+  // #1115 P2 — a different index, and therefore a different remedy. The image
+  // index rebuilds itself from Re-check on the Image embedding row; there is
+  // no shadow-migration path for it (ADR-025 D7: it truncates and re-scans).
+  if (err instanceof ImageEmbeddingDimensionMismatchError) {
+    return 'The image embedding model produces vectors of a different size than the image index. '
+      + 'Press Re-check on the Image embedding row in Settings → AI Models to rebuild it.';
+  }
+
+  const raw = err instanceof LlmHttpError
+    ? `${err.message} ${err.detail}`
+    : err instanceof Error ? err.message : String(err);
   const m = raw.toLowerCase();
 
   // Connectivity / circuit-breaker: the provider is unreachable.

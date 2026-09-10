@@ -8,6 +8,7 @@ import {
 import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types (match backend data-retention-service.ts) ───────────────────────────
@@ -120,16 +121,17 @@ function AdminAccessDeniedRetentionSection() {
               className="w-28 rounded-md bg-foreground/5 px-2 py-1 text-sm outline-none focus:ring-1 focus:ring-primary"
               data-testid="admin-denied-retention-input"
             />
-            <button
-              type="button"
+            <Button
               onClick={() => draft !== undefined && save.mutate(draft)}
               disabled={!hasChange || save.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={save.isPending}
+              variant="secondary"
+              size="sm"
+              leftIcon={!save.isPending ? <Save size={14} /> : undefined}
               data-testid="admin-denied-retention-save-btn"
             >
-              {save.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
               Save
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -235,11 +237,11 @@ export function DataRetentionTab() {
           <m.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+            className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
           >
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
             <div>
-              <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+              <div className="text-sm font-medium text-warning">Enterprise Feature</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 Extended multi-table retention policies, preview, and on-demand purge
                 require an enterprise license with the Data Retention feature enabled.
@@ -317,7 +319,7 @@ export function DataRetentionTab() {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Table</th>
                 <th className="px-4 py-3 font-medium">Retention (days)</th>
                 <th className="px-4 py-3 font-medium">Enabled</th>
@@ -349,7 +351,7 @@ export function DataRetentionTab() {
                       className={cn(
                         'rounded px-2 py-0.5 text-xs font-medium',
                         policy.enabled
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-success/10 text-success'
                           : 'bg-foreground/10 text-muted-foreground',
                       )}
                       data-testid={`retention-enabled-${policy.tableName}`}
@@ -399,12 +401,12 @@ export function DataRetentionTab() {
           className="nm-card overflow-hidden"
           data-testid="preview-results"
         >
-          <div className="border-b border-border/50 px-4 py-2.5 text-xs font-medium text-muted-foreground">
+          <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
             Dry Run — rows that would be deleted
           </div>
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-2 font-medium">Table</th>
                 <th className="px-4 py-2 font-medium">Retention (days)</th>
                 <th className="px-4 py-2 font-medium">Rows</th>
@@ -426,8 +428,8 @@ export function DataRetentionTab() {
                       row.estimatedRows < 0
                         ? 'bg-destructive/10 text-destructive'
                         : row.estimatedRows > 0
-                          ? 'bg-amber-500/10 text-amber-400'
-                          : 'bg-emerald-500/10 text-emerald-400',
+                          ? 'bg-warning/10 text-warning'
+                          : 'bg-success/10 text-success',
                     )}>
                       {row.estimatedRows < 0 ? 'error' : row.estimatedRows.toLocaleString()}
                     </span>
@@ -492,16 +494,17 @@ export function DataRetentionTab() {
       )}
 
       {/* Save button */}
-      <div className="flex items-center justify-end border-t border-border/50 pt-4">
-        <button
+      <div className="flex items-center justify-end border-t border-border pt-4">
+        <Button
           onClick={handleSave}
           disabled={saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           data-testid="data-retention-save-btn"
         >
-          {saveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save Policy
-        </button>
+        </Button>
       </div>
     </div>
   );

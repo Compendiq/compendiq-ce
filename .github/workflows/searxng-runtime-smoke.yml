@@ -1,0 +1,31 @@
+name: SearXNG Runtime Smoke
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "docker/searxng/**"
+      - "docker/docker-compose.yml"
+      - "scripts/install.sh"
+      - ".github/workflows/searxng-runtime-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: searxng-runtime-smoke-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  offline-fallback:
+    name: Offline tracker fallback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Builds against the current upstream image. The strict patcher makes
+      # upstream module drift fail at build time; the runtime step then blocks
+      # all networking and proves the bundled rules still clean a real URL.
+      - name: Build and exercise the derived image offline
+        run: docker/searxng/smoke-offline-fallback.sh

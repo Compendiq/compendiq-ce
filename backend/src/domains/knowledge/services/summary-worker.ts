@@ -15,8 +15,9 @@
  *   (e.g. admin set provider=openai but no openai_model / usecase model),
  *   pending pages are transitioned to `'skipped'` rather than sitting
  *   stuck in `'pending'`. Admin recovery paths, in order of preference:
- *     1. Set a model: Settings → LLM → Use case assignments → Summary,
- *        or set the shared `openai_model` / `ollama_model` field.
+ *     1. Set a model for the Summary use case (Settings → AI Models,
+ *        Use case assignments), or set the shared `openai_model` /
+ *        `ollama_model` field.
  *     2. Hit `POST /api/llm/summary-rescan` (admin-only) — calls
  *        `rescanAllSummaries()` which resets pages for re-summarization
  *        and fires an immediate batch.
@@ -413,7 +414,7 @@ export async function runSummaryBatch(
     );
     logger.warn(
       { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No summary provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
+      'No summary provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must POST /api/llm/summary-rescan to reprocess after fixing the config.',
     );
     return { processed: 0, errors: 0 };
   }

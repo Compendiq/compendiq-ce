@@ -199,6 +199,28 @@ describe.skipIf(!dbAvailable)(
       expect(decryptPat(pat)).toBe('new-pat');
     });
 
+    it('re-encrypts notion_integration_token so it stays decryptable after the old key is removed (#1462)', async () => {
+      await query(`INSERT INTO user_settings (user_id, notion_integration_token) VALUES ($1, $2)`, [
+        adminId,
+        encryptPat('notion-secret'),
+      ]);
+
+      process.env.PAT_ENCRYPTION_KEY_V1 = 'versioned-key-one-at-least-32-chars!!';
+
+      const res = await app.inject({ method: 'POST', url: '/api/admin/rotate-encryption-key' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ rotated: 1, skipped: 0, errors: 0, total: 1 });
+
+      const stored = (
+        await query<{ notion_integration_token: string }>(
+          `SELECT notion_integration_token FROM user_settings WHERE user_id = $1`,
+          [adminId],
+        )
+      ).rows[0]!.notion_integration_token;
+      expect(stored).toMatch(/^h1:/);
+      expect(decryptPat(stored)).toBe('notion-secret');
+    });
+
     it('ignores an empty smtp_pass row (cleared password is not a secret)', async () => {
       await seedSmtpPass('');
 

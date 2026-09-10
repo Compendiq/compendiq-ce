@@ -1,17 +1,30 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
+import { render, screen, fireEvent, waitFor, act, cleanup, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom';
+import { toast } from 'sonner';
 import { PagesPage } from './PagesPage';
+import { FIND_LABEL, FIND_PLACEHOLDER } from './pages-find';
+import { installVirtualizerRectShim } from '../../test-utils';
+import { CONFLUENCE_SETTINGS_PATH, SPACES_SETTINGS_PATH } from '../../shared/lib/routes';
 
-function createWrapper() {
+// No <Toaster/> is mounted in these unit tests (it lives at the app root,
+// main.tsx), so a real `toast()` call renders nothing this suite can query.
+// Mocked as a callable-with-methods stub so both `toast(...)` (the #945
+// clear-filters undo toast) and `toast.success(...)` (the embedding-complete
+// toast elsewhere in this file) keep working without a real Toaster.
+vi.mock('sonner', () => ({
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
+
+function createWrapper(initialEntries: string[] = ['/']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={initialEntries}>
           {/* Provide the scroll container that PagesPage looks for via
               document.querySelector('[data-scroll-container]') */}
           <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
@@ -54,6 +67,11 @@ const mockFilterOptions = {
 const mockSpaces = [
   { key: 'DEV', name: 'Development', type: 'global' },
 ];
+
+async function chooseSpace(name = 'Development') {
+  fireEvent.click(screen.getByTestId('space-filter-control'));
+  fireEvent.click(await screen.findByRole('option', { name: new RegExp(`^${name}`) }));
+}
 
 const mockEmbeddingStatusIdle = {
   totalPages: 50,
@@ -111,8 +129,33 @@ function mockFetchWithEmbeddingStatus(embeddingStatus: typeof mockEmbeddingStatu
   });
 }
 
+/**
+ * The shape `GET /pages` answers with, named once so fixtures and helpers can
+ * refer to the contract rather than to `makeManyPages`'s implementation.
+ */
+interface MockPagesResponse {
+  items: Array<{
+    id: string;
+    spaceKey: string;
+    title: string;
+    version: number;
+    parentId: string | null;
+    labels: string[];
+    author: string;
+    lastModifiedAt: string;
+    lastSynced: string;
+    embeddingDirty: boolean;
+    embeddingStatus: 'embedded';
+    embeddedAt: string;
+  }>;
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 /** Generate N mock page items for large-list tests */
-function makeManyPages(n: number) {
+function makeManyPages(n: number): MockPagesResponse {
   return {
     items: Array.from({ length: n }, (_, i) => ({
       id: `page-${i + 1}`,
@@ -163,7 +206,20 @@ const mockPinnedResponse = {
 
 const emptyPinnedResponse = { items: [], total: 0 };
 
-function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
+/**
+ * Settings for a user whose Confluence really is connected — a PAT plus at
+ * least one selected space.
+ *
+ * #1402 phase 3 branches the browse-empty state on exactly that pair, so the
+ * `{}` default below now means "nothing connected at all" and the tests that
+ * assert the *other* branch's copy must say so.
+ */
+const mockConnectedSettings = { hasConfluencePat: true, selectedSpaces: ['DEV'] };
+
+function mockFetchWithPages(
+  pagesResponse: MockPagesResponse,
+  settings: Record<string, unknown> = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = typeof input === 'string' ? input : (input as Request).url;
     if (url.includes('/embeddings/status')) {
@@ -192,7 +248,7 @@ function mockFetchWithPages(pagesResponse: ReturnType<typeof makeManyPages>) {
       });
     }
     if (url.includes('/settings')) {
-      return new Response(JSON.stringify({}), {
+      return new Response(JSON.stringify(settings), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -242,31 +298,20 @@ function mockFetchWithPinnedPages(pinnedResponse: typeof mockPinnedResponse | ty
 }
 
 describe('PagesPage', () => {
-  // Mock element dimensions so @tanstack/react-virtual can compute visible items in jsdom
-  const originalGetBCR = Element.prototype.getBoundingClientRect;
+  let restoreRects: () => void;
 
   beforeEach(() => {
+    localStorage.clear();
     mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-
-    // Give the scroll container a usable height for the virtualizer
-    Element.prototype.getBoundingClientRect = function () {
-      if (this.hasAttribute?.('data-scroll-container')) {
-        return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-      }
-      // For virtual list items measured by the virtualizer
-      if (this.hasAttribute?.('data-index')) {
-        return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
-      }
-      return originalGetBCR.call(this);
-    };
+    restoreRects = installVirtualizerRectShim();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    Element.prototype.getBoundingClientRect = originalGetBCR;
+    restoreRects();
   });
 
-  it('renders KPI cards at the top of the page', () => {
+  it('renders ambient corpus KPIs in the Library header alongside New Page', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('kpi-cards')).toBeInTheDocument();
     expect(screen.getByTestId('kpi-total-articles')).toBeInTheDocument();
@@ -276,17 +321,79 @@ describe('PagesPage', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toBeInTheDocument();
   });
 
+  it('keeps New Page out of the 48px header slot and moves Trash out of the title row', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('new-page-button').closest('#app-header-slot')).toBeNull();
+    expect(screen.getByTestId('new-page-button').closest('header')).toBeNull();
+    expect(screen.queryByTestId('trash-link')).not.toBeInTheDocument();
+    expect(screen.getByText('Library').parentElement).toContainElement(screen.getByTestId('new-page-button'));
+  });
+
   it('renders the page title, search input, and filter controls', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByText('Pages')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Search pages...')).toBeInTheDocument();
+    expect(screen.getByText('Library')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toBeInTheDocument();
+    expect(screen.getByLabelText(FIND_LABEL)).toBeInTheDocument();
     expect(screen.getByTestId('advanced-filters-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('library-filter-panel')).not.toHaveClass('bg-background', 'border');
+    expect(screen.getByTestId('page-search-field')).toHaveClass('w-full', 'library-search-surface');
+  });
+
+  it('frames browse results as one table-like work surface, without a ring', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    await screen.findByText('Test Page');
+    const panel = screen.getByTestId('library-results-panel');
+    expect(panel).toHaveClass('overflow-hidden', 'rounded-lg', 'bg-card');
+    // The clip, the radius, the Chrome header band and the row dividers draw
+    // this list; the ring came off on 2026-08-31 (ADR-010). The source
+    // guard lives in app-shell-layout.test.ts.
+    expect(panel).not.toHaveClass('border');
+  });
+
+  it('shows the space name on a list row, not only the key', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByText('Test Page');
+    const row = screen.getByTestId('article-hover-page-1');
+    expect(row).toHaveTextContent('Development');
+    expect(row).not.toHaveTextContent('DEV');
+  });
+
+  it('puts pinned pages before the list search', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(mockPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const search = screen.getByLabelText(FIND_LABEL);
+    const pinned = await screen.findByTestId('pinned-articles-section');
+    expect(
+      pinned.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('makes New Page the filled primary action on this route', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const newPage = screen.getByTestId('new-page-button');
+    expect(newPage.className).toContain('nm-button-primary');
+    expect(newPage.className).not.toContain('nm-button-ghost');
+  });
+
+  it('opens the Notion import wizard from a ghost control beside New Page', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const importBtn = screen.getByTestId('import-notion-button');
+    expect(importBtn.className).toContain('nm-button-ghost');
+    expect(importBtn.className).not.toContain('nm-button-primary');
+    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
+    fireEvent.click(importBtn);
+    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connect Notion' })).toBeInTheDocument();
   });
 
   it('renders the advanced filters toggle button', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     const btn = screen.getByTestId('advanced-filters-toggle');
     expect(btn).toBeInTheDocument();
+    expect(btn).toHaveAccessibleName('Filters');
+    expect(btn).toHaveAttribute('title', 'Filters');
     expect(btn).toHaveTextContent('Filters');
   });
 
@@ -325,14 +432,17 @@ describe('PagesPage', () => {
     expect(badge).toHaveTextContent('1');
   });
 
-  it('shows clear filters button when filters are active', () => {
+  it('shows the "Clear all" pill-row control when filters are active (harden pass: the panel no longer duplicates it)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-    expect(screen.getByTestId('clear-filters')).toBeInTheDocument();
+    expect(screen.getByTestId('clear-all-pill-filters')).toBeInTheDocument();
+    // The panel's own duplicate "Clear filters" button is gone — one control,
+    // not two disagreeing on label and visual weight (polish pass, 2026-08-17).
+    expect(screen.queryByTestId('clear-filters')).not.toBeInTheDocument();
   });
 
-  it('clears all advanced filters when clear button is clicked', () => {
+  it('clears all advanced filters when "Clear all" is clicked, and shows a 5s undo toast', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
@@ -341,12 +451,45 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
 
     // Click clear
-    fireEvent.click(screen.getByTestId('clear-filters'));
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
 
     // Verify filters are reset
     expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
     expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('');
-    expect(screen.queryByTestId('clear-filters')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('clear-all-pill-filters')).not.toBeInTheDocument();
+
+    expect(toast).toHaveBeenCalledWith('Filters cleared', expect.objectContaining({
+      duration: 5000,
+      action: expect.objectContaining({ label: 'Undo' }),
+    }));
+  });
+
+  it('"Undo" on the clear-filters toast restores the cleared filters', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+
+    // No <Toaster/> is mounted in this suite, so there is no rendered "Undo"
+    // button to click — invoke the action the mocked toast() was called
+    // with, exactly as a real Toaster would when the user clicks it.
+    const call = vi.mocked(toast).mock.calls.at(-1);
+    act(() => {
+      call?.[1]?.action?.onClick?.(new MouseEvent('click') as unknown as Event);
+    });
+
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
+  });
+
+  it('the "Clear all" control is never styled as destructive (clearing filters loses no data)', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+    const clearAll = screen.getByTestId('clear-all-pill-filters');
+    expect(clearAll.className).not.toContain('destructive');
   });
 
   it('renders freshness filter options', () => {
@@ -427,33 +570,71 @@ describe('PagesPage', () => {
 
     const section = await screen.findByTestId('pinned-articles-section');
     expect(section).toBeInTheDocument();
-    expect(screen.getByText('Pinned Pages')).toBeInTheDocument();
+    expect(screen.getByText('Pinned pages')).toBeInTheDocument();
     expect(screen.getByText('Getting Started Guide')).toBeInTheDocument();
     expect(screen.getByText('Deployment Runbook')).toBeInTheDocument();
   });
 
-  it('does not render pinned articles section when user has no pinned pages', async () => {
-    vi.restoreAllMocks();
-    mockFetchWithPinnedPages(emptyPinnedResponse);
-    render(<PagesPage />, { wrapper: createWrapper() });
-
-    // Wait for page list to render so all queries are settled
-    await screen.findByText('Test Page');
-    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
-  });
-
-  it('renders pinned articles section before the filters section', async () => {
+  it('removes pinned content from the active-search path so results follow the query', async () => {
     vi.restoreAllMocks();
     mockFetchWithPinnedPages(mockPinnedResponse);
     render(<PagesPage />, { wrapper: createWrapper() });
 
-    const section = await screen.findByTestId('pinned-articles-section');
-    const filtersToggle = screen.getByTestId('advanced-filters-toggle');
+    expect(await screen.findByTestId('pinned-articles-section')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'deployment' } });
 
-    // Pinned section should appear before the filters in the DOM
-    const comparison = section.compareDocumentPosition(filtersToggle);
-    // Node.DOCUMENT_POSITION_FOLLOWING = 4 means filtersToggle follows section
-    expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+    const filters = screen.getByTestId('library-filter-panel');
+    const results = screen.getByTestId('library-results-region');
+    expect(filters.compareDocumentPosition(results) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('does not render a pinned section when the user has no pinned pages', async () => {
+    vi.restoreAllMocks();
+    mockFetchWithPinnedPages(emptyPinnedResponse);
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    await screen.findByText('Test Page');
+    expect(screen.queryByTestId('pinned-articles-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
+  });
+
+  it('gives the page search a prominent, bounded command surface', () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const surface = screen.getByTestId('page-search-field');
+    expect(surface).toHaveClass(
+      'w-full',
+      'library-search-surface',
+      'rounded-xl',
+      'flex-col',
+      'sm:flex-row',
+    );
+    expect(surface).toContainElement(screen.getByRole('button', { name: /filter by space/i }));
+    expect(surface).toContainElement(screen.getByRole('button', { name: 'Filters' }));
+    expect(screen.getByTestId('advanced-filters-toggle')).toHaveClass('h-11', 'sm:h-8');
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    expect(screen.getByTestId('search-mode-hybrid')).toHaveClass('min-h-11', 'sm:min-h-0');
+  });
+
+  it('renders a named custom space menu and a compact advanced-filter control', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const spaceControl = screen.getByTestId('space-filter-control');
+    const filters = screen.getByRole('button', { name: 'Filters' });
+
+    expect(spaceControl).toHaveClass('h-11', 'sm:h-8', 'sm:max-w-48');
+    expect(spaceControl).toHaveAttribute('title', 'All spaces');
+    expect(spaceControl).toHaveAccessibleName('Filter by space, current: All spaces');
+    expect(spaceControl).toHaveTextContent('All spaces');
+    fireEvent.click(spaceControl);
+    expect(await screen.findByTestId('space-filter-menu')).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /^Development/ })).toBeInTheDocument();
+    expect(filters).toHaveClass('library-search-select', 'h-11', 'sm:h-8');
+    expect(filters).not.toHaveClass('nm-button-ghost');
+    expect(filters).toHaveAttribute('title', 'Filters');
+    expect(screen.getByTestId('advanced-filters-chevron')).toBeInTheDocument();
+    expect(filters).toHaveTextContent('Filters');
   });
 
   describe('error state (pages query failed)', () => {
@@ -548,39 +729,573 @@ describe('PagesPage', () => {
   describe('empty state (no pages)', () => {
     const emptyPages = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
 
+    // Confluence is connected in both of these: the "no spaces connected"
+    // branch below is a different diagnosis and carries different copy.
     it('renders EmptyState with "No pages found" title', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
     });
 
     it('shows "Go to Settings" action button when no search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(await screen.findByText('Go to Settings')).toBeInTheDocument();
+      expect(screen.getByText('Create a Page')).toBeInTheDocument();
+    });
+
+    it('keeps the corpus-empty copy verbatim once spaces are connected', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithPages(emptyPages as MockPagesResponse, mockConnectedSettings);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(
+        await screen.findByText('Create a page, or connect a Confluence space to fill this list'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
     });
 
     it('shows "Try a different search term" when search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
-      render(<PagesPage />, { wrapper: createWrapper() });
+      mockFetchWithPages(emptyPages as MockPagesResponse);
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
       // Type in the search box
-      const searchInput = screen.getByPlaceholderText('Search pages...');
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
       expect(await screen.findByText('Try a different search term')).toBeInTheDocument();
     });
 
     it('hides "Go to Settings" action when search is active', async () => {
       vi.restoreAllMocks();
-      mockFetchWithPages(emptyPages as ReturnType<typeof makeManyPages>);
-      render(<PagesPage />, { wrapper: createWrapper() });
-      const searchInput = screen.getByPlaceholderText('Search pages...');
+      mockFetchWithPages(emptyPages as MockPagesResponse);
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
       // Wait for re-render
       await screen.findByText('Try a different search term');
       expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+    });
+
+    // --- Empty state misdiagnosis (harden pass, 2026-08-17) ---
+    //
+    // This branched on `search` alone and never consulted the active
+    // filters: filtering to zero results reported "Sync your Confluence
+    // spaces to see pages here" and sent the user to Settings — the wrong
+    // room for a problem their own filters caused, with no mention of which
+    // filter did it and no way to clear it from this screen.
+    describe('when filters (not corpus emptiness) caused the empty result set', () => {
+      it('names the active filter instead of blaming an unsynced knowledge base', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText(/No pages match Freshness: Stale \(>90 days\)/)).toBeInTheDocument();
+        expect(screen.queryByText('Sync your Confluence spaces to see pages here')).not.toBeInTheDocument();
+      });
+
+      it('shows "Clear filters" instead of "Go to Settings" as the primary action', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText('Clear filters')).toBeInTheDocument();
+        expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
+      });
+
+      it('clicking "Clear filters" in the empty state actually clears the filter', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        const clearAction = await screen.findByText('Clear filters');
+
+        fireEvent.click(clearAction);
+
+        await waitFor(() => {
+          expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+        });
+      });
+
+      it('mentions both the search term and the filter when both are active', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse);
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'zzznotathing' } });
+
+        expect(await screen.findByText('No pages match "zzznotathing" with Freshness: Stale (>90 days)')).toBeInTheDocument();
+      });
+
+      it('summarizes more than 3 active filters instead of listing every label', async () => {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse);
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        await waitFor(() => expect(screen.getByRole('option', { name: 'Alice' })).toBeInTheDocument());
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+        fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
+        fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
+
+        expect(await screen.findByText(/and 1 more/)).toBeInTheDocument();
+      });
+    });
+
+    // --- Which emptiness is this? (#1402 phase 3) -------------------------
+    //
+    // One generic block used to answer several unrelated questions. A user
+    // who has never entered a PAT was told to "create a page, or connect a
+    // Confluence space" and handed a `Go to Settings` button that landed on
+    // the settings root, leaving them to find the Confluence panel themselves
+    // — while a user with three spaces synced and genuinely zero local pages
+    // read the same sentence and was sent to a screen they had already
+    // finished with.
+    //
+    // "No PAT" and "PAT but no spaces" are two more states, not one. The
+    // Getting Started checklist on THIS screen treats them as two separate
+    // milestones and `CONFLUENCE_SETTINGS_PATH` renders only the PAT form, so
+    // collapsing them told a user with a token that they had no token and
+    // sent them to the panel they had already completed.
+    //
+    // All four combinations are fixtured explicitly below, each asserting its
+    // own title AND its own CTA destination — including the one that looks
+    // impossible and is not (`{pat: false, spaces: ['DEV']}`: a PAT cleared
+    // server-side leaves the selections behind), whose absence is what made
+    // the PAT disjunct unfalsifiable in the first place.
+    describe('when the corpus, not a filter, is what is empty', () => {
+      /** Renders the current path so the CTA's destination can be read. */
+      function PathProbe() {
+        const location = useLocation();
+        return <span data-testid="path-probe">{location.pathname}</span>;
+      }
+
+      function renderWithProbe() {
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+        return render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={['/']}>
+              <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+                <PathProbe />
+                <PagesPage />
+              </div>
+            </MemoryRouter>
+          </QueryClientProvider>,
+        );
+      }
+
+      function serve(settings: Record<string, unknown>) {
+        vi.restoreAllMocks();
+        mockFetchWithPages(emptyPages as MockPagesResponse, settings);
+      }
+
+      /**
+       * Every state `GET /settings` can actually report, and what each one is
+       * allowed to say. The CTA destination is part of the claim: a title that
+       * names the right gap while the button lands on the wrong panel is the
+       * bug this table exists to catch.
+       */
+      const matrix = [
+        {
+          name: 'no PAT, no spaces — nothing has been set up',
+          settings: { hasConfluencePat: false, selectedSpaces: [] },
+          title: 'No Confluence spaces connected',
+          cta: 'Connect Confluence',
+          destination: CONFLUENCE_SETTINGS_PATH,
+        },
+        {
+          // Real, not hypothetical: an admin clearing the token server-side
+          // leaves the space selection behind. The token is still the gap.
+          name: 'no PAT but stale selections — the token is still the gap',
+          settings: { hasConfluencePat: false, selectedSpaces: ['DEV'] },
+          title: 'No Confluence spaces connected',
+          cta: 'Connect Confluence',
+          destination: CONFLUENCE_SETTINGS_PATH,
+        },
+        {
+          // The checklist one block up says "Connect your Confluence account"
+          // is DONE for this user; telling them it is not would contradict it.
+          name: 'PAT but nothing selected — the spaces are the gap',
+          settings: { hasConfluencePat: true, selectedSpaces: [] },
+          title: 'No spaces selected',
+          cta: 'Choose spaces',
+          destination: SPACES_SETTINGS_PATH,
+        },
+        {
+          name: 'PAT and spaces — Confluence is fine, the library just is empty',
+          settings: { hasConfluencePat: true, selectedSpaces: ['DEV'] },
+          title: 'No pages found',
+          cta: 'Go to Settings',
+          destination: '/settings',
+        },
+      ] as const;
+
+      /**
+       * Scoped to the empty state, deliberately.
+       *
+       * The Getting Started checklist renders on this same screen and offers
+       * its own `Choose spaces` for the same milestone — Ruling 2 keeps both
+       * and demotes this one rather than deleting either. A page-wide
+       * `getByText` would therefore read the checklist's button and pass no
+       * matter what the empty state said.
+       */
+      async function emptyState() {
+        await screen.findByTestId('empty-state-title');
+        return within(screen.getByTestId('empty-state'));
+      }
+
+      for (const state of matrix) {
+        it(`names the gap: ${state.name}`, async () => {
+          serve(state.settings);
+          render(<PagesPage />, { wrapper: createWrapper() });
+          const block = await emptyState();
+
+          expect(block.getByTestId('empty-state-title')).toHaveTextContent(state.title);
+          expect(block.getByRole('button', { name: state.cta })).toBeInTheDocument();
+          // Exactly one diagnosis at a time — the other three must be absent.
+          for (const other of matrix.filter((m) => m.title !== state.title)) {
+            expect(block.queryByRole('button', { name: other.cta })).not.toBeInTheDocument();
+          }
+        });
+
+        it(`lands the CTA on the right panel: ${state.name}`, async () => {
+          serve(state.settings);
+          renderWithProbe();
+          const block = await emptyState();
+
+          fireEvent.click(block.getByRole('button', { name: state.cta }));
+
+          await waitFor(() =>
+            expect(screen.getByTestId('path-probe')).toHaveTextContent(state.destination),
+          );
+        });
+      }
+
+      it('describes the missing connection rather than blaming an empty corpus', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        expect(
+          await screen.findByText(
+            "Connect your Confluence Data Center instance to sync your team's documentation and knowledge bases.",
+          ),
+        ).toBeInTheDocument();
+        // The old sentence is the other branch's, and must not double up.
+        expect(
+          screen.queryByText('Create a page, or connect a Confluence space to fill this list'),
+        ).not.toBeInTheDocument();
+      });
+
+      it('credits the token it can see when only the spaces are missing', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        expect(
+          await screen.findByText(
+            'Your Confluence account is connected. Choose the spaces to sync and their pages will appear here.',
+          ),
+        ).toBeInTheDocument();
+      });
+
+      // Creating a local page is still the escape hatch for someone who never
+      // intends to connect Confluence at all.
+      it('keeps "Create a Page" beside every unfiltered diagnosis', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        expect(await screen.findByText('Create a Page')).toBeInTheDocument();
+      });
+
+      /**
+       * Ruling 2: the checklist above already asks for this setup with a
+       * ghost CTA, and the header owns `New Page`. The empty state's prompt
+       * speaks second, so `/pages` keeps exactly one filled Steel accent.
+       */
+      it('demotes the setup CTA so it cannot outrank the checklist above it', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
+
+        expect(block.getByRole('button', { name: 'Connect Confluence' })).toHaveClass(
+          'nm-button-secondary',
+        );
+      });
+
+      it('demotes the spaces CTA the same way', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
+
+        expect(block.getByRole('button', { name: 'Choose spaces' })).toHaveClass(
+          'nm-button-secondary',
+        );
+      });
+
+      // The header's `New Page` stays the route's single filled Steel accent.
+      it('leaves the empty state carrying no filled accent at all', async () => {
+        serve({ hasConfluencePat: true, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
+
+        for (const button of block.getAllByRole('button')) {
+          expect(button).not.toHaveClass('nm-button-primary');
+        }
+      });
+
+      /**
+       * An unresolved or failed `GET /settings` is not evidence of anything.
+       *
+       * Both cases below used to render `No Confluence spaces connected` at a
+       * user whose Confluence is fine — a diagnosis derived from a fetch that
+       * had not answered, which on a cold load where `/pages` wins the race is
+       * a real flash of the wrong sentence. Falling through to the generic
+       * copy is the only claim true in every state, and it is the same rule
+       * the `pagesError && !pagesData` branch and `use-onboarding`'s
+       * `settings !== undefined` gate already follow.
+       */
+      describe('when settings are not known', () => {
+        function servePagesOnly(settingsResponse: () => Promise<Response>) {
+          vi.restoreAllMocks();
+          vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+            const url = typeof input === 'string' ? input : (input as Request).url;
+            if (url.includes('/embeddings/status')) {
+              return new Response(JSON.stringify(mockEmbeddingStatusIdle), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/pages/filters')) {
+              return new Response(JSON.stringify(mockFilterOptions), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/spaces')) {
+              return new Response(JSON.stringify(mockSpaces), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/sync/status')) {
+              return new Response(JSON.stringify({ status: 'idle' }), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/pages/pinned')) {
+              return new Response(JSON.stringify({ items: [], total: 0 }), {
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            if (url.includes('/settings')) return settingsResponse();
+            return new Response(JSON.stringify(emptyPages), {
+              headers: { 'Content-Type': 'application/json' },
+            });
+          });
+        }
+
+        it('says nothing about Confluence while /settings is still in flight', async () => {
+          servePagesOnly(() => new Promise<Response>(() => {}));
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No pages found',
+          );
+          expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+          expect(screen.queryByText('Choose spaces')).not.toBeInTheDocument();
+        });
+
+        it('does not turn a failed /settings into a diagnosis', async () => {
+          servePagesOnly(async () => new Response('boom', { status: 500 }));
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No pages found',
+          );
+          expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+          expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
+        });
+
+        // `useSettings()` does no runtime validation, so a 200 missing the
+        // field must not throw during render and take the whole route down.
+        it('survives a settings payload with no selectedSpaces field', async () => {
+          serve({ hasConfluencePat: true });
+          render(<PagesPage />, { wrapper: createWrapper() });
+
+          expect(await screen.findByTestId('empty-state-title')).toHaveTextContent(
+            'No spaces selected',
+          );
+        });
+      });
+
+      it('does not blame the connection when the user\'s own filter emptied the list', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+
+        fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+        expect(await screen.findByText(/No pages match Freshness: Stale/)).toBeInTheDocument();
+        expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+        expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
+      });
+
+      it('does not blame the connection when a search returned nothing', async () => {
+        serve({ hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+          target: { value: 'nonexistent' },
+        });
+
+        expect(await screen.findByText('Try a different search term')).toBeInTheDocument();
+        expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
+        expect(screen.queryByText('No Confluence spaces connected')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  // --- Similarity percentage on search results (#1117) ---
+
+  describe('search result similarity percentage (#1117)', () => {
+    /**
+     * Mock fetch where /search returns the given items.
+     *
+     * `useSearch` fires two requests — a keyword one (phase 1, immediateResults)
+     * and a semantic one (phase 2, enhancedResults) — and the component renders
+     * `enhancedResults ?? immediateResults`. The real keyword branch never emits
+     * `similarity` (routes/knowledge/search.ts builds those items with `rank`
+     * and `snippet` only), so this mock strips it from the keyword reply too.
+     * Serving it on both legs would let these tests pass with the semantic query
+     * failing outright, or with the `??` fallback deleted — a green suite for a
+     * feature that renders nothing in production.
+     */
+    function mockFetchWithSearchItems(items: unknown[]) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          const body = mode === 'keyword'
+            ? items.map((it) =>
+                Object.fromEntries(
+                  Object.entries(it as Record<string, unknown>).filter(([k]) => k !== 'similarity'),
+                ),
+              )
+            : items;
+          return new Response(
+            JSON.stringify({ items: body, total: body.length, page: 1, limit: 10, totalPages: 1, mode, hasEmbeddings: true }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    function renderSearchWith(items: unknown[]) {
+      vi.restoreAllMocks();
+      mockFetchWithSearchItems(items);
+      render(<PagesPage />, { wrapper: createWrapper() });
+      // Semantic mode is load-bearing, but not because of the similarity:
+      // `useSemanticSearch = !!(search && searchMode !== 'keyword')` gates the
+      // whole search-results section, so keyword mode never renders a result
+      // row at all.
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'redis' },
+      });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+    }
+
+    it('renders the similarity, not the ranking score', async () => {
+      // `rank`/`score` here are an RRF fusion value. Rendering those produced
+      // "2%" for a strong match; the similarity is 0.74 -> "74%".
+      renderSearchWith([
+        { id: 1, title: 'Redis Guide', spaceKey: 'DEV', snippet: 'x', rank: 0.0328, score: 0.0328, similarity: 0.74 },
+      ]);
+
+      expect(await screen.findByText('Redis Guide', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.getByText('74%')).toBeInTheDocument();
+      expect(screen.queryByText('3%')).not.toBeInTheDocument();
+    });
+
+    it('renders no percentage when no similarity was measured', async () => {
+      // Keyword mode, or a hybrid row matched only by full-text. A page nobody
+      // measured must show nothing rather than "0%".
+      renderSearchWith([
+        { id: 2, title: 'Keyword Only', spaceKey: 'DEV', snippet: 'x', rank: 0.5, similarity: null },
+      ]);
+
+      expect(await screen.findByText('Keyword Only', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.queryByText('50%')).not.toBeInTheDocument();
+      expect(screen.queryByText('0%')).not.toBeInTheDocument();
+    });
+
+    it('renders no percentage for a negative similarity', async () => {
+      // pgvector cosine distance runs to 2, so `1 - distance` can be negative.
+      // "-40%" is not a useful badge.
+      renderSearchWith([
+        { id: 3, title: 'Opposing Page', spaceKey: 'DEV', snippet: 'x', rank: 0.1, similarity: -0.4 },
+      ]);
+
+      expect(await screen.findByText('Opposing Page', undefined, { timeout: 2000 })).toBeInTheDocument();
+      // Assert the badge is ABSENT, not merely that "-40%" is missing: an
+      // implementation that clamped to 0 would render "0%" and satisfy the
+      // weaker check while still showing a figure for a chunk pointing away
+      // from the query.
+      expect(screen.queryByTitle('Semantic similarity to your query')).not.toBeInTheDocument();
+    });
+
+    it('supports selecting search result rows and triggers bulk action bar', async () => {
+      renderSearchWith([
+        { id: 101, title: 'Search Hit A', spaceKey: 'DEV', snippet: 'snippet a', rank: 0.8, similarity: 0.85 },
+        { id: 102, title: 'Search Hit B', spaceKey: 'OPS', snippet: 'snippet b', rank: 0.7, similarity: 0.75 },
+      ]);
+
+      expect(await screen.findByText('Search Hit A', undefined, { timeout: 2000 })).toBeInTheDocument();
+      expect(screen.getByTestId('select-all-search-pages')).toBeInTheDocument();
+
+      // Click row selection checkbox
+      const checkboxA = screen.getByTestId('page-select-101');
+      fireEvent.click(checkboxA);
+
+      // Bulk action bar should appear
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+      expect(screen.getByTestId('bulk-embed-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-delete-btn')).toBeInTheDocument();
+
+      // Toggle select-all
+      const selectAll = screen.getByTestId('select-all-search-pages');
+      fireEvent.click(selectAll);
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
+
+      // Clear selection
+      fireEvent.click(screen.getByTestId('bulk-clear-btn'));
+      expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
     });
   });
 
@@ -627,12 +1342,119 @@ describe('PagesPage', () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmptySearch(hasEmbeddings);
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'nonexistent topic' },
       });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
       return fetchSpy;
     }
+
+    /** Mock fetch where /search answers mode-aware, production-realistic
+     *  responses: keyword mode never carries the coverage signal, the
+     *  semantic/hybrid response does (#1117). */
+    function mockFetchWithCoverage(opts: {
+      hasEmbeddings: boolean;
+      embeddingCoverage: number | null;
+      degradedReason: 'no_embeddings' | 'partial_embeddings' | null;
+    }) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/search?')) {
+          const mode = new URL(url, 'http://localhost').searchParams.get('mode') ?? 'keyword';
+          const signal =
+            mode === 'keyword'
+              ? { hasEmbeddings: true, embeddingCoverage: null, degradedReason: null }
+              : opts;
+          return new Response(
+            JSON.stringify({
+              items: [{ id: 7, title: 'Runbook', spaceKey: 'DEV', snippet: 'restart', rank: 0.5, similarity: 0.9 }],
+              total: 1, page: 1, limit: 10, totalPages: 1, mode, ...signal,
+            }),
+            { headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (url.includes('/embeddings/status')) {
+          return new Response(JSON.stringify(mockEmbeddingStatusIdle), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/filters')) {
+          return new Response(JSON.stringify(mockFilterOptions), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/spaces')) {
+          return new Response(JSON.stringify(mockSpaces), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/sync/status')) {
+          return new Response(JSON.stringify({ status: 'idle' }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/pages/pinned')) {
+          return new Response(JSON.stringify({ items: [], total: 0 }), { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (url.includes('/settings')) {
+          return new Response(JSON.stringify({}), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response(JSON.stringify(mockPagesResponse), { headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+
+    function renderSemanticSearch() {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'runbook' },
+      });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+    }
+
+    it('partial coverage: degraded banner names the measured percentage (#1117)', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.42, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+
+      const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner).toHaveTextContent('42%');
+      // The zero-embeddings banner is a different state and must not stack.
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+    });
+
+    it('degraded banner never claims 0% or the threshold value at the edges (review r1)', async () => {
+      // 0.0033 coverage must not render "only 0%" (that state is the sibling
+      // zero-embeddings banner's), and 0.949 must not render "95%" — the copy
+      // would contradict the <95% threshold that made it degraded.
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.0033, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner).toHaveTextContent('less than 1%');
+      expect(banner).not.toHaveTextContent('only 0%');
+      cleanup();
+
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.949, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner2 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner2).toHaveTextContent('94%');
+      expect(banner2).not.toHaveTextContent('95%');
+      cleanup();
+
+      // 29/100 embedded must say 29%, not 28 — Math.floor(0.29 * 100) is 28
+      // in binary floating point (review r2).
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 0.29, degradedReason: 'partial_embeddings' });
+      renderSemanticSearch();
+      const banner3 = await screen.findByTestId('degraded-embeddings-warning', undefined, { timeout: 2000 });
+      expect(banner3).toHaveTextContent('29%');
+    });
+
+    it('full coverage: no degraded banner, no zero-embeddings banner (#1117)', async () => {
+      vi.restoreAllMocks();
+      mockFetchWithCoverage({ hasEmbeddings: true, embeddingCoverage: 1, degradedReason: null });
+      renderSemanticSearch();
+
+      // Wait for results to land, then pin the absence of both banners.
+      await screen.findAllByText('Runbook', undefined, { timeout: 2000 });
+      expect(screen.queryByTestId('degraded-embeddings-warning')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
+    });
 
     it('zero embeddings + zero results: empty state acknowledges the keyword fallback and the missing embeddings', async () => {
       renderSemanticSearchWithNoResults(false);
@@ -642,7 +1464,7 @@ describe('PagesPage', () => {
       // the empty state must not imply embedding alone would find a match.
       expect(await screen.findByText('No matching pages', undefined, { timeout: 2000 })).toBeInTheDocument();
       expect(
-        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → LLM and run an embedding pass.'),
+        screen.getByText('Keyword search found no matches. Semantic search is unavailable until pages are embedded — configure an embedding provider in Settings → AI Models and run an embedding pass.'),
       ).toBeInTheDocument();
       expect(screen.getByTestId('no-embeddings-warning')).toBeInTheDocument();
     });
@@ -663,7 +1485,7 @@ describe('PagesPage', () => {
       );
 
       expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No pages found');
-      expect(screen.getByText('Try a different search term or switch to keyword mode')).toBeInTheDocument();
+      expect(screen.getByText('Try a different search term or switch to Keyword')).toBeInTheDocument();
       expect(screen.queryByTestId('no-embeddings-warning')).not.toBeInTheDocument();
       expect(screen.queryByText(/Semantic search is unavailable until pages are embedded/)).not.toBeInTheDocument();
     });
@@ -678,14 +1500,14 @@ describe('PagesPage', () => {
 
   it('shows search clear button when search has text', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...');
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
     fireEvent.change(input, { target: { value: 'test query' } });
     expect(screen.getByTestId('search-clear')).toBeInTheDocument();
   });
 
   it('clears search when clear button is clicked', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'test query' } });
     expect(input.value).toBe('test query');
 
@@ -702,7 +1524,11 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
 
     expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: stale');
+    // Human label, not the raw wire value (polish pass, 2026-08-17) — the
+    // dropdown that set this reads "Stale (>90 days)"; the pill used to
+    // print "stale", forcing the user to translate between two vocabularies
+    // for the same value.
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: Stale (>90 days)');
   });
 
   it('does not show active filter pills when no filters are active', () => {
@@ -716,8 +1542,8 @@ describe('PagesPage', () => {
     fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
     fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
 
-    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: fresh');
-    expect(screen.getByTestId('filter-pill-embeddingStatus')).toHaveTextContent('Embedding: pending');
+    expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: Fresh (<7 days)');
+    expect(screen.getByTestId('filter-pill-embedding')).toHaveTextContent('Embedding: Needs Embedding');
   });
 
   it('removes individual filter when pill is clicked', () => {
@@ -731,7 +1557,7 @@ describe('PagesPage', () => {
 
     // Freshness pill gone, embedding pill remains
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
-    expect(screen.getByTestId('filter-pill-embeddingStatus')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-pill-embedding')).toBeInTheDocument();
 
     // Freshness select reset to empty
     expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
@@ -749,7 +1575,7 @@ describe('PagesPage', () => {
 
     expect(screen.queryByTestId('active-filter-pills')).not.toBeInTheDocument();
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('filter-pill-embeddingStatus')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-pill-embedding')).not.toBeInTheDocument();
   });
 
   // --- Advanced filters ignored in semantic/hybrid search (#945) ---
@@ -774,10 +1600,10 @@ describe('PagesPage', () => {
 
       // Switch to semantic mode and enter a query — the backend now ignores
       // the filter, so the UI must say so.
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
       const notice = await screen.findByTestId('filters-ignored-notice');
       expect(notice).toBeInTheDocument();
@@ -786,29 +1612,249 @@ describe('PagesPage', () => {
 
     it('does not show the notice in semantic mode when no advanced filters are active', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
       expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+  });
+
+  // --- #945 harden pass (2026-08-17) ---
+  //
+  // A design critique of this surface found the Space filter was silently
+  // ignored by semantic/hybrid search exactly like the advanced filters
+  // above, but had no pill, was never counted, and was never named in the
+  // #945 notice — the scoped-to-a-space search kept returning results from
+  // other spaces while the UI reported nothing wrong. The same pass found
+  // the Filters disclosure had no aria-expanded/aria-controls, and that the
+  // "inactive" pill treatment (opacity-50 + aria-disabled on live, clickable
+  // buttons) failed contrast and lied to assistive tech, since the buttons
+  // were never actually disabled.
+  //
+  // #1351 later made the BACKEND actually honor spaceKey in semantic/hybrid
+  // mode (backend/src/domains/llm/services/rag-service.ts). The tests below
+  // were updated in the same change: Space still gets a pill and is still
+  // counted (it is still a real filter), but it is no longer named in the
+  // #945 notice, and its pill no longer points at that notice — naming it
+  // now would be the honesty bug in the opposite direction.
+  describe('#945 harden pass — Space filter honesty, disclosure ARIA, and non-fake-disabled pills', () => {
+    it('the Space filter gets a pill and is counted, but is NOT named in the notice — semantic search now honors it (#1351)', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await chooseSpace();
+
+      const pill = screen.getByTestId('filter-pill-space');
+      expect(pill).toHaveTextContent('Space: Development');
+
+      // Keyword mode: Space genuinely filters results, so no notice yet.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'kubernetes' },
+      });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+      await waitFor(() => expect(screen.getByPlaceholderText(FIND_PLACEHOLDER)).toHaveValue('kubernetes'));
+
+      // Space is the ONLY active filter, and the backend now applies it in
+      // semantic/hybrid mode too — no filter is genuinely ignored, so the
+      // notice must not appear at all.
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+      expect(pill).not.toHaveAttribute('aria-describedby');
+    });
+
+    it('Space stays out of the notice even when another, genuinely-ignored filter triggers it', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      await chooseSpace();
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'kubernetes' },
+      });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toHaveTextContent('Freshness: Stale (>90 days)');
+      expect(notice).not.toHaveTextContent('Space: Development');
+
+      // The Space pill still doesn't point at a notice that isn't about it;
+      // the Freshness pill does.
+      expect(screen.getByTestId('filter-pill-space')).not.toHaveAttribute('aria-describedby');
+      expect(screen.getByTestId('filter-pill-freshness')).toHaveAttribute('aria-describedby', 'filters-paused-notice');
+    });
+
+    it('removing the Space pill clears the space filter and resets the menu trigger', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await chooseSpace();
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('filter-pill-space'));
+
+      expect(screen.queryByTestId('filter-pill-space')).not.toBeInTheDocument();
+      expect(screen.getByTestId('space-filter-control')).toHaveAccessibleName('Filter by space, current: All spaces');
+    });
+
+    it('"Clear all" also clears an active Space filter alongside the advanced ones', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      await chooseSpace();
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+      expect(screen.queryByTestId('filter-pill-space')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    });
+
+    it('the Filters toggle declares its disclosure state via aria-expanded/aria-controls', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const toggle = screen.getByTestId('advanced-filters-toggle');
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(toggle).toHaveAttribute('aria-controls', 'advanced-filters-panel');
+
+      fireEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByTestId('advanced-filters-panel')).toHaveAttribute('id', 'advanced-filters-panel');
+    });
+
+    it('active-filter pills stay fully operable in semantic mode — no opacity/aria-disabled, but they point at the notice', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'kubernetes' },
+      });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      await screen.findByTestId('filters-ignored-notice');
+      const pillsWrap = screen.getByTestId('active-filter-pills');
+      expect(pillsWrap).not.toHaveAttribute('aria-disabled');
+      expect(pillsWrap.className).not.toContain('opacity-50');
+
+      const pill = screen.getByTestId('filter-pill-freshness');
+      expect(pill).toHaveAttribute('aria-describedby', 'filters-paused-notice');
+      expect(pill).not.toBeDisabled();
+
+      // Genuinely clickable, not just visually "enabled" — this is exactly
+      // the check that used to fool automated tooling the same way it
+      // fooled a sighted user.
+      fireEvent.click(pill);
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+    });
+
+    it('announces the honesty notice through a persistent sr-only live region', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      const liveRegion = screen.getByTestId('filters-live-announcer');
+      expect(liveRegion).toHaveAttribute('role', 'status');
+      expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+      expect(liveRegion).toHaveTextContent('');
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'kubernetes' },
+      });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      await screen.findByTestId('filters-ignored-notice');
+      expect(liveRegion).toHaveTextContent(/paused 1 advanced filter/);
+    });
+
+    it('offers a direct switch to Keyword that keeps the active filters', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      fireEvent.click(await screen.findByTestId('use-keyword-with-filters'));
+
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+
+    it('explains that advanced filters become Keyword-only before a Hybrid search starts', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+
+      expect(screen.getByText(/apply while browsing and will pause when Hybrid search starts/i)).toBeInTheDocument();
+      expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 Keyword-only');
+      expect(screen.queryByTestId('search-mode-filter-warning')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
+
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('can clear only filters ignored by semantic search while keeping Space scope', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await chooseSpace();
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      fireEvent.click(await screen.findByTestId('clear-paused-filters'));
+
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+      expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('filters-ignored-notice')).not.toBeInTheDocument();
+    });
+
+    it('summarizes more than 3 genuinely-ignored filters, but never counts Space toward the truncation (#1351)', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      await chooseSpace();
+      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+      fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
+      fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
+      expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'kubernetes' },
+      });
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+      // Space is the 5th active filter overall, but it is honored — so the
+      // notice must summarize the 4 genuinely-ignored ones (freshness,
+      // embedding, quality, author) and truncate THOSE, never mentioning
+      // Space at all.
+      const notice = await screen.findByTestId('filters-ignored-notice');
+      expect(notice).toHaveTextContent('and 1 more');
+      expect(notice).not.toHaveTextContent('Space:');
     });
   });
 
   // --- Visual divider test ---
 
-  it('renders a visual divider between sort and filters toggle', () => {
+  it('parks source behind Filters and puts sort with results', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.getByTestId('sort-filter-divider')).toBeInTheDocument();
+    expect(screen.queryByTestId('filter-source')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    expect(screen.getByTestId('filter-source')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
   });
 
   // --- Grid layout test ---
 
-  it('renders advanced filters in a grid layout', () => {
+  it('groups advanced filters into a compact, named refinement tray', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     const panel = screen.getByTestId('advanced-filters-panel');
-    expect(panel.className).toContain('grid');
-    expect(panel.className).toContain('grid-cols-2');
+    expect(screen.getByRole('heading', { name: 'Refine results' })).toBeInTheDocument();
+    expect(panel.querySelector('.grid')).not.toBeNull();
+    expect(screen.getByRole('group', { name: 'Content' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Status & date' })).toBeInTheDocument();
   });
 
   // --- Accessibility: filter pills as focusable buttons ---
@@ -820,7 +1866,7 @@ describe('PagesPage', () => {
 
     const pill = screen.getByTestId('filter-pill-freshness');
     expect(pill.tagName).toBe('BUTTON');
-    expect(pill).toHaveAttribute('aria-label', 'Remove Freshness: stale filter');
+    expect(pill).toHaveAttribute('aria-label', 'Remove Freshness: Stale (>90 days) filter');
   });
 
   it('filter pills do not contain nested interactive elements', () => {
@@ -837,7 +1883,7 @@ describe('PagesPage', () => {
 
   it('focuses the search input after clearing search', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    const input = screen.getByPlaceholderText('Search pages...') as HTMLInputElement;
+    const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'test query' } });
 
     fireEvent.click(screen.getByTestId('search-clear'));
@@ -846,79 +1892,128 @@ describe('PagesPage', () => {
     expect(document.activeElement).toBe(input);
   });
 
-  // --- Performance: memoized page list items (#521) ---
-
-  // --- Mobile responsive header buttons (#499) ---
-
-  it('wraps header action button text in hidden sm:inline spans for mobile', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    const trashBtn = screen.getByTestId('trash-link');
-    // The button text "Trash" should be in a span with responsive classes
-    const span = trashBtn.querySelector('span');
-    expect(span).toBeTruthy();
-    expect(span?.className).toContain('hidden');
-    expect(span?.className).toContain('sm:inline');
-  });
-
-  it('uses flex-wrap on the header button container', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    const trashBtn = screen.getByTestId('trash-link');
-    const container = trashBtn.parentElement!;
-    expect(container.className).toContain('flex-wrap');
-  });
-
-  // --- Search mode toggle visual differentiation (#506) ---
-
-  describe('search mode toggle (#506)', () => {
-    it('renders three search mode buttons (keyword, semantic, hybrid)', () => {
+  // --- P0 keyboard fix: search must not steal focus on landing (#1270-ish) ---
+  //
+  // Unconditionally focusing the search input on mount killed every
+  // single-key shortcut on the app's own landing route, since
+  // useKeyboardShortcuts correctly suppresses them inside an editable
+  // target. "/" (matching LoginPage's own convention) replaces it as an
+  // explicit, discoverable path to the same field.
+  describe('search input does not steal focus on landing', () => {
+    it('does not focus the search input on mount', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      expect(screen.getByTestId('search-mode-keyword')).toBeInTheDocument();
-      expect(screen.getByTestId('search-mode-semantic')).toBeInTheDocument();
-      expect(screen.getByTestId('search-mode-hybrid')).toBeInTheDocument();
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      expect(document.activeElement).not.toBe(input);
     });
 
-    it('defaults to keyword mode as active', () => {
+    it('focuses the search input on "/"', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const keyword = screen.getByTestId('search-mode-keyword');
-      expect(keyword).toHaveAttribute('aria-pressed', 'true');
-      // Active mode uses ink-action fill (Task 5 — amber reserved for AI affordances; search-mode toggle is non-AI selection).
-      expect(keyword.className).toContain('bg-action');
-      expect(keyword.className).toContain('shadow-md');
-      expect(keyword.className).toContain('ring-1');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      expect(document.activeElement).not.toBe(input);
+
+      fireEvent.keyDown(document, { key: '/' });
+
+      expect(document.activeElement).toBe(input);
+    });
+
+    it('does not hijack "/" while already typing in an editable field', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
+      input.focus();
+      fireEvent.change(input, { target: { value: 'a/b' } });
+
+      fireEvent.keyDown(input, { key: '/' });
+
+      // The event is suppressed inside an editable target, so the character
+      // reaches the field normally rather than being intercepted as a shortcut.
+      expect(input.value).toBe('a/b');
+    });
+  });
+
+  // --- Performance: memoized page list items (#521) ---
+
+  // --- Search mode toggle (#506) ---
+  //
+  // Three search modes: Keyword (Postgres FTS), Semantic (pgvector cosine),
+  // and Hybrid (RRF fusion). Toggle appears directly on the search bar.
+  describe('search mode toggle (#506)', () => {
+    function typeSearch() {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
+        target: { value: 'runbook' },
+      });
+    }
+
+    it('surfaces inline search mode toggle directly in the search bar', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const barToggle = screen.getByTestId('search-mode-toggle');
+      expect(barToggle).toBeInTheDocument();
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('does not duplicate the search strategy in the advanced filters panel', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      expect(screen.queryByTestId('search-strategy-fieldset')).not.toBeInTheDocument();
+      expect(screen.getByTestId('advanced-filters-panel')).not.toContainElement(screen.getByTestId('search-mode-toggle'));
+    });
+
+    it('renders Hybrid and Keyword, with Semantic only when an index exists', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      typeSearch();
+      expect(screen.getByTestId('search-mode-keyword')).toHaveTextContent('Keyword');
+      expect(screen.getByTestId('search-mode-hybrid')).toHaveTextContent('Hybrid');
+      expect(screen.getByTestId('search-mode-semantic')).toHaveTextContent('Semantic');
+    });
+
+    it('defaults to Hybrid as active', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      typeSearch();
+      const hybrid = screen.getByTestId('search-mode-hybrid');
+      expect(hybrid).toHaveAttribute('aria-pressed', 'true');
+      expect(hybrid.className).toContain('library-search-mode-active');
     });
 
     it('marks inactive buttons with aria-pressed=false', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
-      const hybrid = screen.getByTestId('search-mode-hybrid');
+      const keyword = screen.getByTestId('search-mode-keyword');
       expect(semantic).toHaveAttribute('aria-pressed', 'false');
-      expect(hybrid).toHaveAttribute('aria-pressed', 'false');
+      expect(keyword).toHaveAttribute('aria-pressed', 'false');
     });
 
     it('switches active mode on click', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      typeSearch();
       const semantic = screen.getByTestId('search-mode-semantic');
       fireEvent.click(semantic);
 
       expect(semantic).toHaveAttribute('aria-pressed', 'true');
-      // Active mode uses ink-action fill (Task 5).
-      expect(semantic.className).toContain('bg-action');
-      expect(semantic.className).toContain('shadow-md');
+      expect(semantic.className).toContain('library-search-mode-active');
 
       const keyword = screen.getByTestId('search-mode-keyword');
       expect(keyword).toHaveAttribute('aria-pressed', 'false');
-      expect(keyword.className).not.toContain('shadow-md');
+      expect(keyword.className).not.toContain('library-search-mode-active');
     });
 
-    it('active button has stronger visual weight (shadow + ring) vs inactive', () => {
+    // Selection is carried by fill and weight, not by a shadow or a ring —
+    // neither of which this system has outside overlays and focus.
+    it('distinguishes the active segment from the inactive ones', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const active = screen.getByTestId('search-mode-keyword');
-      const inactive = screen.getByTestId('search-mode-semantic');
+      typeSearch();
+      const active = screen.getByTestId('search-mode-hybrid');
+      const inactive = screen.getByTestId('search-mode-keyword');
 
-      expect(active.className).toContain('shadow-md');
-      expect(active.className).toContain('ring-1');
-      expect(inactive.className).not.toContain('shadow-md');
-      expect(inactive.className).not.toContain('ring-1');
+      expect(active.className).toContain('library-search-mode-active');
+      expect(inactive.className).not.toContain('library-search-mode-active');
+      expect(inactive.className).toContain('text-muted-foreground');
+
+      for (const el of [active, inactive]) {
+        expect(el.className).not.toContain('shadow-md');
+        expect(el.className).not.toContain('ring-1');
+      }
     });
   });
 
@@ -930,6 +2025,7 @@ describe('PagesPage', () => {
   describe('source filter (#873)', () => {
     it('renders the Local option with the contract value "standalone", not "local"', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
       expect(localOption).toBeTruthy();
@@ -941,6 +2037,7 @@ describe('PagesPage', () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
@@ -958,10 +2055,11 @@ describe('PagesPage', () => {
 
     it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       const select = screen.getByTestId('filter-source') as HTMLSelectElement;
       fireEvent.change(select, { target: { value: 'standalone' } });
 
-      const pill = screen.getByTestId('filter-pill-sourceFilter');
+      const pill = screen.getByTestId('filter-pill-source');
       expect(pill).toHaveTextContent('Source: Local');
       expect(pill).not.toHaveTextContent('standalone');
     });
@@ -974,11 +2072,20 @@ describe('PagesPage', () => {
   // their controls (no htmlFor/id). Screen readers announced these as unnamed
   // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
   describe('filter control accessible names (#946)', () => {
-    it('top-row space/source/sort selects expose an accessible name', () => {
+    it('top-row space menu exposes an accessible name; source lives in Filters', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      expect(screen.getByRole('combobox', { name: /filter by space/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /filter by space/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /sort pages/i })).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+    });
+
+    // Every other control in the section already had one; the search field —
+    // the sole control the route's own `/` shortcut exists to focus — was the
+    // one exception, named only by its placeholder (polish pass, 2026-08-17).
+    it('the search field exposes an accessible name (was placeholder-only)', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      expect(screen.getByRole('textbox', { name: FIND_LABEL })).toBeInTheDocument();
     });
 
     it('advanced-panel labels are programmatically associated with their controls', () => {
@@ -987,12 +2094,52 @@ describe('PagesPage', () => {
 
       // Role-name / label-text queries only match once htmlFor/id wiring exists.
       expect(screen.getByRole('combobox', { name: /author/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /labels/i })).toBeInTheDocument();
+      expect(screen.getByRole('combobox', { name: /label/i })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: /freshness/i })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: /embedding/i })).toBeInTheDocument();
       expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
       expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
+    });
+  });
+
+  // --- Search box polish (2026-08-17) ---
+  //
+  // The `/` shortcut that focuses this field was completely undiscoverable —
+  // "New Page" carried a visible ShortcutHint chip, this field carried
+  // nothing. And Escape didn't clear a populated field, the one universal
+  // convention on search inputs, leaving only the 18px clear `×` as an exit.
+  describe('search box polish (2026-08-17)', () => {
+    it('shows the "/" shortcut hint when the field is empty, and swaps to the clear button once populated', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(screen.getByText('/')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-clear')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
+
+      expect(screen.getByTestId('search-clear')).toHaveClass('nm-icon-button');
+      expect(screen.queryByText('/')).not.toBeInTheDocument();
+    });
+
+    it('Escape clears a populated search field', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: 'kubernetes' } });
+      expect(input.value).toBe('kubernetes');
+
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      expect(input.value).toBe('');
+    });
+
+    it('Escape on an already-empty search field is a no-op', () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement;
+
+      // Should not throw, and should not, say, clear an unrelated filter.
+      expect(() => fireEvent.keyDown(input, { key: 'Escape' })).not.toThrow();
+      expect(input.value).toBe('');
     });
   });
 
@@ -1015,6 +2162,15 @@ describe('PagesPage', () => {
       // Virtual scrolling should render fewer items than total (only visible + overscan)
       // In jsdom the exact count depends on mocked dimensions; just verify fewer than 200
       expect(items.length).toBeLessThan(200);
+    });
+
+    it('paints library rows as divided rows inside the shared results surface', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const item = await screen.findByTestId('article-hover-page-1');
+      expect(item.className).toContain('border-b');
+      expect(item.className).toContain('border-border');
+      expect(item.className).toContain('hover:bg-accent');
+      expect(item.className).not.toContain('bg-card');
     });
 
   });
@@ -1046,8 +2202,39 @@ describe('PagesPage', () => {
             source: 'standalone',
             visibility,
           },
+          {
+            id: 'cf-companion',
+            spaceKey: 'DEV',
+            title: 'Confluence companion',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Bob',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'confluence',
+          },
+          {
+            id: 'std-companion',
+            spaceKey: '__local__',
+            title: 'Other visibility',
+            version: 1,
+            parentId: null,
+            labels: [],
+            author: 'Alice',
+            lastModifiedAt: '2025-01-15T00:00:00Z',
+            lastSynced: '2025-01-16T00:00:00Z',
+            embeddingDirty: false,
+            embeddingStatus: 'embedded',
+            embeddedAt: '2025-01-16T00:00:00Z',
+            source: 'standalone',
+            visibility: visibility === 'shared' ? 'private' : 'shared',
+          },
         ],
-        total: 1,
+        total: 3,
         page: 1,
         limit: 50,
         totalPages: 1,
@@ -1094,34 +2281,55 @@ describe('PagesPage', () => {
       });
     }
 
-    it('Local badge uses sage tint (AA-pass), not emerald-500', async () => {
+    // Source and visibility are CATEGORIES, not states, so every badge in
+    // this cluster is the same neutral chip and the label/glyph is the
+    // differentiator. Local used to wear the success green and Confluence/
+    // Shared the informational indigo — status vocabulary borrowed for
+    // labels, on the densest scanning surface in the app.
+    //
+    // The fill is the COMPOSITING TINT `bg-foreground/10`, never `bg-muted`:
+    // these rows hover with `bg-accent`, and in Graphite accent == muted
+    // (1.00:1 measured), so a bg-muted chip vanished exactly while being
+    // pointed at. The tint steps up from any ground.
+    //
+    // The label is `text-secondary-foreground`, never muted: the tint darkens
+    // the ground under the 11px label, and muted-fg measured 3.85:1 on a
+    // hovered Paper row — under AA. The secondary ink measures 8.58/7.31:1
+    // (Graphite resting/hovered) and 9.73/7.98:1 (Paper).
+    it('Local badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-local');
+      const badge = (await screen.findAllByTestId('badge-local'))[0];
       expect(badge).toHaveTextContent('Local');
-      expect(badge.className).toMatch(/bg-\[#e7f2e8\]/);
-      expect(badge.className).toMatch(/text-\[#1f5a2a\]/);
-      expect(badge.className).not.toMatch(/emerald-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|emerald-500|amber|warning|yellow/);
     });
 
-    it('Private badge uses neutral gray tint, not amber/primary/warning', async () => {
+    it('Private badge uses the neutral tint, not amber/primary/warning', async () => {
       mockPagesWithStandalone('private');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-private');
+      const badge = (await screen.findAllByTestId('badge-private'))[0];
       expect(badge).toHaveTextContent('Private');
       expect(badge.className).not.toMatch(/amber|warning|yellow|primary/);
-      expect(badge.className).toMatch(/bg-\[#ececea\]/);
-      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
     });
 
-    it('Shared badge uses cool-blue tinted pill (AA-pass), not sky-500', async () => {
+    it('Shared badge is a neutral tint — no borrowed status hue, no bg-muted', async () => {
       mockPagesWithStandalone('shared');
       render(<PagesPage />, { wrapper: createWrapper() });
-      const badge = await screen.findByTestId('badge-shared');
+      const badge = (await screen.findAllByTestId('badge-shared'))[0];
       expect(badge).toHaveTextContent('Shared');
-      expect(badge.className).toMatch(/bg-\[#e6effb\]/);
-      expect(badge.className).toMatch(/text-\[#1c3e72\]/);
-      expect(badge.className).not.toMatch(/sky-500|amber|warning|yellow/);
+      expect(badge.className).toContain('bg-foreground/10');
+      expect(badge.className).toContain('text-secondary-foreground');
+      expect(badge.className).not.toContain('bg-muted');
+      expect(badge.className).not.toContain('text-muted-foreground');
+      expect(badge.className).not.toMatch(/success|info|sky-500|amber|warning|yellow/);
     });
   });
 
@@ -1168,7 +2376,7 @@ describe('PagesPage', () => {
 
     /** Extract the exact `search` param value from every GET /pages?… list
      *  request (ignores /pages/pinned, /pages/filters, /search, etc.). */
-    function pagesSearchValues(fetchSpy: ReturnType<typeof vi.spyOn>): string[] {
+    function pagesSearchValues(fetchSpy: MockInstance<typeof fetch>): string[] {
       return fetchSpy.mock.calls
         .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
         .filter((u) => /\/pages\?/.test(u))
@@ -1176,12 +2384,21 @@ describe('PagesPage', () => {
         .filter((v): v is string => v !== null);
     }
 
+    it('marks Keyword results busy while the input is waiting to settle', () => {
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
+
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'runbook' } });
+
+      expect(screen.getByTestId('search-updating-status')).toHaveTextContent('Updating');
+      expect(screen.getByTestId('library-results-region')).toHaveAttribute('aria-busy', 'true');
+    });
+
     it('debounces keyword search: only the final term fires a /pages request', async () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-      render(<PagesPage />, { wrapper: createWrapper() });
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
-      const input = screen.getByPlaceholderText('Search pages...');
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
       // Four rapid keystrokes — the debounce must collapse them to one request.
       fireEvent.change(input, { target: { value: 'k' } });
       fireEvent.change(input, { target: { value: 'ku' } });
@@ -1208,10 +2425,11 @@ describe('PagesPage', () => {
       const fetchSpy = mockFetchWithSearchAndPages();
       render(<PagesPage />, { wrapper: createWrapper() });
 
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
       // Wait until the debounced semantic search has actually fired.
       await waitFor(
@@ -1251,7 +2469,7 @@ describe('PagesPage', () => {
       /** Every GET /pages?… list request (not /pages/pinned|filters|tree, not
        *  /search), with its parsed `search` and `sort` params — including
        *  requests that carry NO search term (search === null). */
-      function pagesListRequests(fetchSpy: ReturnType<typeof vi.spyOn>) {
+      function pagesListRequests(fetchSpy: MockInstance<typeof fetch>) {
         return fetchSpy.mock.calls
           .map(([firstArg]) => (typeof firstArg === 'string' ? firstArg : (firstArg as Request).url))
           .filter((u) => /\/pages\?/.test(u))
@@ -1264,7 +2482,7 @@ describe('PagesPage', () => {
       it('first keystroke does not fire an immediate sort=relevance request before the 300ms debounce', async () => {
         vi.restoreAllMocks();
         const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-        render(<PagesPage />, { wrapper: createWrapper() });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         // Flush the initial browse-list query (sort=modified, no search).
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -1273,7 +2491,7 @@ describe('PagesPage', () => {
         // One character. onChange flips `sort` to 'relevance' synchronously; the
         // debounced term is still ''. The query sort must track the DEBOUNCED
         // term, so the key must not change and no request may fire yet.
-        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
           target: { value: 'k' },
         });
         // Flush microtasks WITHOUT advancing to the 300ms debounce boundary.
@@ -1290,18 +2508,18 @@ describe('PagesPage', () => {
         await act(async () => { await vi.advanceTimersByTimeAsync(300); });
         const newRequests = pagesListRequests(fetchSpy).slice(baseline.length);
         expect(newRequests).toHaveLength(1);
-        expect(newRequests[0].search).toBe('k');
-        expect(newRequests[0].sort).toBe('relevance');
+        expect(newRequests[0]!.search).toBe('k');
+        expect(newRequests[0]!.sort).toBe('relevance');
       });
 
       it('clear button does not fire a request carrying the stale search term', async () => {
         vi.restoreAllMocks();
         const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
-        render(<PagesPage />, { wrapper: createWrapper() });
+        render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
         await act(async () => { await vi.advanceTimersByTimeAsync(0); });
 
         // Type a term and let its debounced request actually fire.
-        fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+        fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
           target: { value: 'kube' },
         });
         await act(async () => { await vi.advanceTimersByTimeAsync(300); });
@@ -1365,10 +2583,11 @@ describe('PagesPage', () => {
       mockFetchWithMultiplePages(3);
       render(<PagesPage />, { wrapper: createWrapper() });
 
-      fireEvent.click(screen.getByTestId('search-mode-semantic'));
-      fireEvent.change(screen.getByPlaceholderText('Search pages...'), {
+      fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+      fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
       expect(
         await screen.findByRole('button', { name: /previous page/i }, { timeout: 2000 }),
@@ -1385,17 +2604,17 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
 
       const headings = screen.getAllByRole('heading').map((h) => h.textContent);
-      expect(headings).toContain('Pages');
-      expect(headings).toContain('Knowledge base status');
-      expect(headings).toContain('Search and filter pages');
+      expect(headings).toContain('Library');
+      expect(headings).toContain('Filter pages');
       expect(headings).toContain('Page results');
+      expect(headings).not.toContain('Knowledge base status');
     });
 
     it('associates each region with its heading', () => {
       const { container } = render(<PagesPage />, { wrapper: createWrapper() });
 
       const labelled = Array.from(container.querySelectorAll('section[aria-labelledby]'));
-      expect(labelled.length).toBeGreaterThanOrEqual(3);
+      expect(labelled.length).toBeGreaterThanOrEqual(2);
       for (const section of labelled) {
         const id = section.getAttribute('aria-labelledby')!;
         expect(container.querySelector(`#${id}`)).not.toBeNull();
@@ -1418,13 +2637,13 @@ describe('PagesPage', () => {
         </QueryClientProvider>,
       );
 
-      const input = await screen.findByPlaceholderText('Search pages...');
+      const input = await screen.findByPlaceholderText(FIND_PLACEHOLDER);
       expect((input as HTMLInputElement).value).toBe('runbook');
     });
 
     it('starts empty when no search param is present', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
-      const input = await screen.findByPlaceholderText('Search pages...');
+      const input = await screen.findByPlaceholderText(FIND_PLACEHOLDER);
       expect((input as HTMLInputElement).value).toBe('');
     });
   });
@@ -1438,6 +2657,15 @@ describe('PagesPage', () => {
 
       expect(screen.getByTestId('select-all-pages')).toBeInTheDocument();
       expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+    });
+
+    it('provides a permanent master checkbox in the header', async () => {
+      render(<PagesPage />, { wrapper: createWrapper() });
+      await screen.findByText('Test Page');
+
+      const selectAll = screen.getByTestId('select-all-pages');
+      expect(selectAll).toBeInTheDocument();
+      expect(selectAll).not.toBeChecked();
     });
 
     it('reveals the action bar when a row is checked', async () => {
@@ -1648,5 +2876,604 @@ describe('PagesPage', () => {
       await screen.findByText('Test Page');
       expect(screen.queryByTestId('badge-recent')).not.toBeInTheDocument();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Filter persistence across navigation (#1124)
+//
+// Filter, search, sort and pagination state used to be `useState`. Opening an
+// article unmounts PagesPage; coming back re-mounts it with those seeds empty,
+// so the user's filter was silently gone. The state now lives in the URL, which
+// survives that round trip — and makes a filtered view linkable, which is the
+// part a store could not do.
+// ---------------------------------------------------------------------------
+
+describe('PagesPage filter persistence (#1124)', () => {
+  let restoreRects: () => void;
+
+  beforeEach(() => {
+    restoreRects = installVirtualizerRectShim();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRects();
+  });
+
+  /** Renders the current query string so assertions can read the real URL. */
+  function LocationProbe() {
+    const location = useLocation();
+    return <span data-testid="location-probe">{location.pathname + location.search}</span>;
+  }
+
+  function probe() {
+    return screen.getByTestId('location-probe').textContent ?? '';
+  }
+
+  function renderAt(initialEntry: string) {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            <LocationProbe />
+            <PagesPage />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('restores every filter from the URL on mount', async () => {
+    renderAt(
+      '/?space=DEV&source=standalone&author=Alice&labels=howto&freshness=stale' +
+        '&embedding=pending&quality=poor&from=2025-01-01&to=2025-02-01&sort=title&page=2',
+    );
+
+    await screen.findByTestId('advanced-filters-panel');
+    await waitFor(() =>
+      expect(screen.getByTestId('space-filter-control')).toHaveAccessibleName('Filter by space, current: Development'),
+    );
+    expect((screen.getByTestId('filter-source') as HTMLSelectElement).value).toBe('standalone');
+    expect(screen.getByTestId('sort-filter-control')).toHaveTextContent('Title');
+    expect((screen.getByTestId('filter-author') as HTMLSelectElement).value).toBe('Alice');
+    expect((screen.getByTestId('filter-labels') as HTMLSelectElement).value).toBe('howto');
+    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
+    expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('pending');
+    expect((screen.getByTestId('filter-quality') as HTMLSelectElement).value).toBe('poor');
+    expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
+    expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
+  });
+
+  it('sends the restored page number to the API', async () => {
+    const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/?page=3']}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const listCalls = fetchSpy.mock.calls
+        .map(([a]) => (typeof a === 'string' ? a : (a as Request).url))
+        .filter((u) => /\/pages\?/.test(u));
+      expect(listCalls.some((u) => new URL(u, 'http://x').searchParams.get('page') === '3')).toBe(true);
+    });
+  });
+
+  it('opens the advanced panel when the URL carries one of its filters', async () => {
+    renderAt('/?author=Alice');
+    expect(await screen.findByTestId('advanced-filters-panel')).toBeInTheDocument();
+  });
+
+  it('leaves the advanced panel closed for space / search / sort alone', async () => {
+    renderAt('/?space=DEV&search=runbook&sort=title');
+    await waitFor(() => expect(screen.getByTestId('space-filter-control')).toHaveTextContent('Development'));
+    expect(screen.queryByTestId('advanced-filters-panel')).not.toBeInTheDocument();
+  });
+
+  it('writes a filter selection into the URL', async () => {
+    renderAt('/');
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+
+    await waitFor(() => expect(probe()).toContain('source=standalone'));
+  });
+
+  it('drops the param from the URL when the filter is cleared', async () => {
+    renderAt('/?freshness=stale');
+    await screen.findByTestId('filter-pill-freshness');
+
+    fireEvent.click(screen.getByTestId('filter-pill-freshness'));
+
+    await waitFor(() => expect(probe()).not.toContain('freshness'));
+    // …and the URL is clean rather than carrying `freshness=`.
+    expect(probe()).toBe('/');
+  });
+
+  it('clear-all empties the query string', async () => {
+    renderAt('/?author=Alice&freshness=stale&source=standalone');
+    await screen.findByTestId('clear-all-pill-filters');
+
+    fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+
+    await waitFor(() => expect(probe()).toBe('/'));
+  });
+
+  it('returns to page 1 when a filter changes', async () => {
+    renderAt('/?page=4');
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'confluence' } });
+
+    await waitFor(() => expect(probe()).toContain('source=confluence'));
+    expect(probe()).not.toContain('page=');
+  });
+
+  // The whole point of `replace: true`. If each filter change pushed an entry,
+  // Back would undo one filter at a time and never reach the page the user
+  // actually came from.
+  it('replaces history on a filter change instead of pushing', async () => {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        { path: '/elsewhere', element: <div>elsewhere</div> },
+        { path: '/', element: <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div> },
+      ],
+      { initialEntries: ['/elsewhere', '/'], initialIndex: 1 },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
+    await screen.findByTestId('filter-source');
+
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
+    fireEvent.click(screen.getByTestId('sort-filter-control'));
+    fireEvent.click(screen.getByRole('option', { name: 'Title' }));
+    await waitFor(() => expect(router.state.location.search).toContain('sort=title'));
+
+    // Two filter changes, still one entry deep: one Back leaves the overview.
+    await act(async () => { await router.navigate(-1); });
+    expect(router.state.location.pathname).toBe('/elsewhere');
+  });
+
+  // The reported bug, end to end.
+  it('keeps the filter when an article is opened and the user navigates back', async () => {
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createMemoryRouter(
+      [
+        { path: '/', element: <div data-scroll-container style={{ height: 800, overflow: 'auto' }}><PagesPage /></div> },
+        { path: '/pages/:id', element: <div>article view</div> },
+      ],
+      { initialEntries: ['/'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Test Page');
+
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
+
+    // Open an article — this is the navigation that used to wipe the filter.
+    fireEvent.click(await screen.findByText('Test Page'));
+    await screen.findByText('article view');
+
+    await act(async () => { await router.navigate(-1); });
+
+    const restored = await screen.findByTestId('filter-source');
+    expect((restored as HTMLSelectElement).value).toBe('standalone');
+    expect(router.state.location.search).toContain('source=standalone');
+  });
+
+  // `mode`, `page` and `space` moved into the URL with everything else but had
+  // no round-trip coverage of their own.
+  it('round-trips the search mode through the URL', async () => {
+    renderAt('/');
+    fireEvent.change(await screen.findByPlaceholderText(FIND_PLACEHOLDER), {
+      target: { value: 'runbook' },
+    });
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    await screen.findByTestId('search-mode-semantic');
+
+    fireEvent.click(screen.getByTestId('search-mode-semantic'));
+
+    await waitFor(() => expect(probe()).toContain('mode=semantic'));
+  });
+
+  it('restores the search mode from the URL', async () => {
+    renderAt('/?search=runbook&mode=keyword');
+    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+    await waitFor(() => {
+      expect(screen.getByTestId('search-mode-keyword')).toHaveAttribute('aria-pressed', 'true');
+    });
+  });
+
+  it('round-trips the space filter through the URL', async () => {
+    renderAt('/');
+    await chooseSpace();
+
+    await waitFor(() => expect(probe()).toContain('space=DEV'));
+  });
+
+  it('writes the page number when the pagination control is used', async () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    const items = makeManyPages(3).items;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) return json({});
+      return json({ items, total: items.length, page: 1, limit: 3, totalPages: 3 });
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/']}>
+          <div data-scroll-container style={{ height: 800, overflow: 'auto' }}>
+            <LocationProbe />
+            <PagesPage />
+          </div>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    const next = await screen.findByLabelText('Next page');
+    fireEvent.click(next);
+
+    await waitFor(() => expect(probe()).toContain('page=2'));
+  });
+
+  // Holding an arrow key on a date segment fires change at OS key-repeat rate.
+  // Each of those used to be a history write, which browsers throttle.
+  describe('date filters', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('writes the settled date once, not once per adjustment', async () => {
+      renderAt('/');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
+
+      const input = screen.getByTestId('filter-date-from');
+      for (const value of ['2025-01-01', '2025-01-02', '2025-01-03']) {
+        fireEvent.change(input, { target: { value } });
+      }
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      // Mid-flight the control shows the newest value; the URL has not moved.
+      expect((input as HTMLInputElement).value).toBe('2025-01-03');
+      expect(probe()).not.toContain('from=');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(probe()).toContain('from=2025-01-03');
+    });
+
+    it('seeds the date inputs from a deep link', async () => {
+      renderAt('/?from=2025-01-01&to=2025-02-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
+      expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
+    });
+
+    it('clears the date inputs when the filters are cleared', async () => {
+      renderAt('/?from=2025-01-01');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+      expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('');
+      expect(probe()).toBe('/');
+    });
+  });
+
+  describe('search term', () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('writes only the settled term to the URL, not every keystroke', async () => {
+      renderAt('/');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      const input = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      fireEvent.change(input, { target: { value: 'k' } });
+      fireEvent.change(input, { target: { value: 'ku' } });
+      fireEvent.change(input, { target: { value: 'kub' } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      // Mid-flight the box shows the term but the URL has not caught up.
+      expect((input as HTMLInputElement).value).toBe('kub');
+      expect(probe()).not.toContain('search=kub');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(probe()).toContain('search=kub');
+    });
+
+    it('seeds the box from a deep-linked search term', async () => {
+      renderAt('/?search=runbook');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      expect((screen.getByPlaceholderText(FIND_PLACEHOLDER) as HTMLInputElement).value).toBe('runbook');
+    });
+
+    it('removes the term from the URL when the search is cleared', async () => {
+      renderAt('/?search=runbook');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+      fireEvent.click(screen.getByTestId('search-clear'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+
+      expect(probe()).not.toContain('search=');
+    });
+  });
+
+  describe('Keyboard roving navigation and floating bulk dock', () => {
+    it('supports arrow navigation and space selection across virtualized page rows', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+      const secondRowBtn = screen.getByTestId('page-row-button-page-2');
+
+      // Initial roving tabindex: row 0 has tabIndex=0, row 1 has tabIndex=-1
+      expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
+      expect(secondRowBtn).toHaveAttribute('tabIndex', '-1');
+
+      // ArrowDown moves roving tabIndex to row 1
+      fireEvent.keyDown(firstRowBtn, { key: 'ArrowDown' });
+      expect(secondRowBtn).toHaveAttribute('tabIndex', '0');
+
+      // Space on row button toggles selection
+      fireEvent.keyDown(secondRowBtn, { key: ' ' });
+      const bulkBar = await screen.findByTestId('bulk-action-bar');
+      expect(bulkBar).toBeInTheDocument();
+      expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated');
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
+    });
+
+    it('supports contiguous range multi-selection with Shift+ArrowDown', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      // Shift+ArrowDown from row 0 to row 1 extends selection to both items
+      fireEvent.keyDown(firstRowBtn, { key: 'ArrowDown', shiftKey: true });
+      expect(await screen.findByTestId('bulk-action-bar')).toBeInTheDocument();
+      expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('2 pages selected');
+    });
+
+    it('hands off focus from search input to first result row on Enter', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const searchInput = screen.getByPlaceholderText(FIND_PLACEHOLDER);
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+
+      fireEvent.keyDown(searchInput, { key: 'Enter' });
+      expect(document.activeElement).toBe(firstRowBtn);
+    });
+
+    it('supports Home and End keys in browse rows', async () => {
+      mockFetchWithPages(makeManyPages(4));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const firstRowBtn = screen.getByTestId('page-row-button-page-1');
+      const lastRowBtn = screen.getByTestId('page-row-button-page-4');
+
+      fireEvent.keyDown(firstRowBtn, { key: 'End' });
+      expect(lastRowBtn).toHaveAttribute('tabIndex', '0');
+
+      fireEvent.keyDown(lastRowBtn, { key: 'Home' });
+      expect(firstRowBtn).toHaveAttribute('tabIndex', '0');
+    });
+
+    it('exposes ARIA feed semantics with row count, posinset, and setsize', async () => {
+      mockFetchWithPages(makeManyPages(3));
+      render(<PagesPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      const feed = screen.getByRole('feed', { name: 'Pages list' });
+      expect(feed).toHaveAttribute('aria-rowcount', '3');
+
+      const firstRow = feed.querySelector('[data-row-index="0"]');
+      expect(firstRow).toHaveAttribute('role', 'article');
+      expect(firstRow).toHaveAttribute('aria-rowindex', '1');
+      expect(firstRow).toHaveAttribute('aria-posinset', '1');
+      expect(firstRow).toHaveAttribute('aria-setsize', '3');
+    });
+
+    it('binds min and max constraints across modified from/to date inputs', async () => {
+      mockFetchWithPages(makeManyPages(2));
+      renderAt('/?from=2026-08-01&to=2026-08-15');
+
+      const fromInput = await screen.findByTestId('filter-date-from');
+      const toInput = screen.getByTestId('filter-date-to');
+
+      expect(fromInput).toHaveAttribute('max', '2026-08-15');
+      expect(toInput).toHaveAttribute('min', '2026-08-01');
+    });
+
+    it('clamps out-of-bounds page parameter back to page 1 when totalPages shrinks', async () => {
+      mockFetchWithPages({
+        items: makeManyPages(2).items,
+        total: 2,
+        page: 1,
+        limit: 20,
+        totalPages: 1,
+      });
+      renderAt('/?page=5');
+
+      await waitFor(() => {
+        expect(probe()).not.toContain('page=5');
+      });
+    });
+  });
+
+});
+
+/**
+ * #1402: the Getting Started checklist is additive chrome above the tree, a
+ * sibling block between the header and the discovery controls. It must never
+ * stand in front of the page list or replace any of its own states — phase 3
+ * owns the empty-state copy, not this card.
+ */
+describe('PagesPage — Getting Started checklist (#1402)', () => {
+  let restoreRects: () => void;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
+    restoreRects = installVirtualizerRectShim();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreRects();
+  });
+
+  it('sits between the Library header and the search toolbar', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+
+    const card = await screen.findByTestId('onboarding-checklist');
+    const toolbar = screen.getByTestId('library-filter-panel');
+    expect(card.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      screen.getByTestId('new-page-button').compareDocumentPosition(card) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('leaves the page list itself untouched', async () => {
+    render(<PagesPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('onboarding-checklist');
+    // The list still arrives, and the card is not inside it.
+    expect(await screen.findByText('Test Page')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('onboarding-checklist').contains(screen.getByText('Test Page')),
+    ).toBe(false);
+  });
+
+  /**
+   * Dismiss removes the card while the user's focus is on its button. Without
+   * a rehome that drops focus to `<body>` — the failure CLAUDE.md records for
+   * `RetrievalTab`'s Retry — and the keyboard user restarts from the top of
+   * the document with nothing announced.
+   */
+  it('hands focus to the Library heading when the checklist removes itself', async () => {
+    // The shared mock answers `{}` for `/settings` on every method, so a
+    // dismissal could never come back dismissed. This one persists it.
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    dismiss.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    const libraryHeading = screen.getByRole('heading', { name: 'Library' });
+    expect(document.activeElement).toBe(libraryHeading);
+    expect(libraryHeading).toHaveClass('nm-focus-ring');
+  });
+
+  /**
+   * The other half of the same rule (the `RetrievalTab` precedent): the rehome
+   * happens only when the removal really dropped focus to `<body>`. A mouse
+   * click does not move focus to a button on every platform, so the caret can
+   * still be in the search box when the card goes — and yanking it to a heading
+   * is a worse interruption than the one the rehome exists to fix.
+   */
+  it('leaves focus alone when the dismissal did not take it', async () => {
+    let dismissed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/embeddings/status')) return json(mockEmbeddingStatusIdle);
+      if (url.includes('/pages/filters')) return json(mockFilterOptions);
+      if (url.includes('/spaces')) return json(mockSpaces);
+      if (url.includes('/sync/status')) return json({ status: 'idle' });
+      if (url.includes('/pages/pinned')) return json({ items: [], total: 0 });
+      if (url.includes('/settings')) {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body)) as {
+            onboardingState?: { dismissed?: boolean };
+          };
+          if (patch.onboardingState?.dismissed !== undefined) {
+            dismissed = patch.onboardingState.dismissed;
+          }
+          return json({});
+        }
+        return json({ onboardingState: { dismissed } });
+      }
+      return json(mockPagesResponse);
+    });
+
+    render(<PagesPage />, { wrapper: createWrapper() });
+    const dismiss = await screen.findByTestId('onboarding-dismiss');
+    // The caret is in the search box, and the click never takes it.
+    const elsewhere = screen.getByPlaceholderText(/search/i);
+    elsewhere.focus();
+    fireEvent.click(dismiss);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('onboarding-checklist')).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(elsewhere);
   });
 });

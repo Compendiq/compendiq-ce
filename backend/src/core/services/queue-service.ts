@@ -8,6 +8,7 @@
  * Uses ioredis (BullMQ's native client) which coexists with the existing node-redis client.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Queue, Worker, type Job } from 'bullmq';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
@@ -222,10 +223,9 @@ export async function stopQueueWorkers(): Promise<void> {
  *     NOT remove it — the duplicate `add()` is ignored by BullMQ (emitting a
  *     `duplicated` event) and the second caller observes the same jobId.
  *     That's the "collapse concurrent POSTs" semantic.
- *   - This idempotency model is BullMQ-only: legacy mode ignores `opts.jobId`
- *     and runs the processor for every call, so concurrent POSTs do NOT
- *     collapse there — reembed self-guards downstream via the Redis
- *     embedding lock instead.
+ *   - Legacy mode still honors an explicit `opts.jobId`, but it does not
+ *     deduplicate matching ids: every call runs the processor. Without an
+ *     explicit id, each call receives a fresh UUID-based id.
  *
  * When BullMQ is disabled (`USE_BULLMQ=false`) this runs the queue's
  * registered processor inline, fire-and-forget (legacy fallback behaviour).
@@ -237,7 +237,7 @@ export async function enqueueJob(
   opts?: { jobId?: string; removeOnComplete?: number; removeOnFail?: number },
 ): Promise<string> {
   if (!USE_BULLMQ) {
-    const fakeId = opts?.jobId ?? `${queueName}-${Date.now()}`;
+    const fakeId = opts?.jobId ?? `${queueName}-${randomUUID()}`;
     const def = workerDefs.find((d) => d.queueName === queueName);
     if (def) {
       // Fire-and-forget inline execution. We don't await so the caller
@@ -295,7 +295,7 @@ export async function enqueueJob(
   }
 
   const job = await q.add(queueName, data, addOpts);
-  return job.id ?? opts?.jobId ?? `${queueName}-${Date.now()}`;
+  return job.id ?? opts?.jobId ?? `${queueName}-${randomUUID()}`;
 }
 
 /**
@@ -447,6 +447,35 @@ function registerAllWorkers(): void {
       return runReembedAllJob(job);
     },
   });
+
+  // Shadow-migration backfill worker (#1116) — on-demand, enqueued by
+  // `startShadowMigration`. Concurrency 1: one shadow backfill at a time.
+  registerWorkerDef({
+    queueName: 'shadow-reembed',
+    concurrency: 1,
+    processor: async (job: Job) => {
+      // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+      const { runShadowBackfillJob } = await import('../../domains/llm/services/shadow-migration-service.js');
+      const result = await runShadowBackfillJob(job);
+      return typeof result === 'string' ? result : `Backfilled ${result.processed} pages (${result.failed} failed)`;
+    },
+  });
+
+  // Encrypted S3 backup (#1420). Repeat polls "is it due"; on-demand jobs
+  // pass `force: true` and skip the schedule check. Concurrency 1.
+  registerWorkerDef({
+    queueName: 'backup',
+    concurrency: 1,
+    repeatPattern: { every: 15 * 60 * 1000 },
+    processor: async (job: Job) => {
+      const { processBackupJob, runForcedBackup } = await import('./backup-worker.js');
+      const data = job.data as { force?: boolean; triggeredBy?: string | null };
+      if (data.force === true) {
+        return runForcedBackup(data.triggeredBy ?? null, job.id ?? null);
+      }
+      return processBackupJob(job.id ?? null);
+    },
+  });
 }
 
 // ─── Legacy setInterval fallback ─────────────────────────────────────────────
@@ -460,6 +489,7 @@ async function startLegacyWorkers(): Promise<void> {
   const { startSummaryWorker, triggerSummaryBatch } = await import('../../domains/knowledge/services/summary-worker.js');
   const { startTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { startRetentionWorker } = await import('./data-retention-service.js');
+  const { startBackupLegacyWorker } = await import('./backup-worker.js');
 
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   const summaryInterval = parseInt(
@@ -472,6 +502,7 @@ async function startLegacyWorkers(): Promise<void> {
   startSummaryWorker(summaryInterval);
   startTokenCleanupWorker();
   startRetentionWorker();
+  startBackupLegacyWorker();
 
   // Initial batches after 30s delay. The .catch() prevents a batch failure
   // from becoming an unhandled rejection inside the timer callback (#741).
@@ -494,10 +525,12 @@ async function stopLegacyWorkers(): Promise<void> {
   const { stopSummaryWorker } = await import('../../domains/knowledge/services/summary-worker.js');
   const { stopTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { stopRetentionWorker } = await import('./data-retention-service.js');
+  const { stopBackupLegacyWorker } = await import('./backup-worker.js');
 
   stopSyncWorker();
   stopQualityWorker();
   stopSummaryWorker();
   stopTokenCleanupWorker();
   stopRetentionWorker();
+  stopBackupLegacyWorker();
 }

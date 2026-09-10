@@ -1,48 +1,30 @@
 import { memo } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 import {
-  Bot, User, Loader2, MessageSquare, Brain, AlertTriangle,
-  Wand2, ListCollapse, Sparkles, GitBranch, FileText, ShieldCheck, Network,
+  Bot, User, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '../../shared/lib/cn';
 import { ConfidenceBadge } from '../../shared/components/badges/ConfidenceBadge';
+import { RefusalMark, RefusalSourcesLabel, REFUSAL_ANNOUNCEMENT } from './refusal';
 import { AIThinkingBlob } from '../../shared/components/feedback/AIThinkingBlob';
+import { TypingIndicator } from '../../shared/components/feedback/TypingIndicator';
 import { SourceCitations } from './SourceCitations';
 import { CitationChips } from './CitationChips';
+import { averageSourceSimilarity } from './source-confidence';
 import { StreamingMessage } from './StreamingMessage';
-import { AiProvider, useAiContext, type Mode, type Message } from './AiContext';
+import { useAiContext, type Mode, type Message } from './AiContext';
 import {
-  AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE,
-  ImproveTypeSelector, ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
+  AskModeInput, AskExamplePrompts, ASK_EMPTY_TITLE, ASK_EMPTY_SUBTITLE, NO_EMBEDDINGS_NOTICE_ID,
+  ImproveDiffView, ImproveModeInput, IMPROVE_EMPTY_TITLE, improveEmptySubtitle,
   GenerateModeInput, GENERATE_EMPTY_TITLE, GENERATE_EMPTY_SUBTITLE,
-  SummarizeModeInput, SUMMARIZE_EMPTY_TITLE, summarizeEmptySubtitle,
   DiagramTypeSelector, DiagramPreview, DiagramModeInput, DIAGRAM_EMPTY_TITLE, diagramEmptySubtitle,
-  QualityModeInput, QUALITY_EMPTY_TITLE, qualityEmptySubtitle,
 } from './modes';
 import { isZeroEmbeddings } from '../../shared/hooks/use-pages';
-
-// ---------------------------------------------------------------------------
-// Typing indicator: 3 dots with staggered bounce
-// ---------------------------------------------------------------------------
-
-function TypingIndicator() {
-  return (
-    <div className="flex items-center gap-1" data-testid="typing-indicator" aria-label="AI is typing">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="h-1.5 w-1.5 rounded-full bg-primary/60"
-          style={{
-            animation: 'typing-bounce 1.2s ease-in-out infinite',
-            animationDelay: `${i * 0.15}s`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
+import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { AssistantAttachmentsScope } from './AssistantAttachments';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 // ---------------------------------------------------------------------------
 // Memoized message bubble: skips re-render for completed (non-streaming) messages
@@ -55,7 +37,6 @@ interface MessageBubbleProps {
   isStreaming: boolean;
   isThinking: boolean;
   thinkingElapsed: boolean;
-  isLight: boolean;
   shouldReduceMotion: boolean | null;
   /**
    * rAF-batched content of the in-flight answer (#747). Only passed to the
@@ -65,7 +46,7 @@ interface MessageBubbleProps {
 }
 
 const MessageBubble = memo(function MessageBubble({
-  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, isLight, shouldReduceMotion, streamingContent,
+  msg, index, isLast, isStreaming, isThinking, thinkingElapsed, shouldReduceMotion, streamingContent,
 }: MessageBubbleProps) {
   const isLastAssistant = msg.role === 'assistant' && isLast;
   const isStreamingThis = isStreaming && isLastAssistant;
@@ -97,13 +78,19 @@ const MessageBubble = memo(function MessageBubble({
             ? 'bg-primary/10 text-foreground'
             : msg.isError
               ? 'border border-destructive/40 bg-destructive/10'
-              : 'bg-foreground/5',
+              // The #1105 refusal (#1119): the ordinary bubble ground plus a
+              // hairline. A value step and a 1px border is all ADR-010 v0.6
+              // allows for distinguishing a surface, and the "Not answered"
+              // chip inside carries the meaning. No hue — see `refusal.tsx`.
+              : msg.isRefusal
+                ? 'border border-border bg-foreground/5'
+                : 'bg-foreground/5',
         )}
         // No role="alert" here: the role and the error content would arrive
         // in the same render, which AT generally does not announce (MDN alert
         // role). The primed announcer next to the message list handles SR
         // announcement; this bubble is the visual surface only.
-        data-testid={msg.isError ? 'message-error' : undefined}
+        data-testid={msg.isError ? 'message-error' : msg.isRefusal ? 'message-refusal' : undefined}
       >
         {showThinkingBlob && <AIThinkingBlob active />}
         {showTypingIndicator && <TypingIndicator />}
@@ -114,7 +101,7 @@ const MessageBubble = memo(function MessageBubble({
           effectiveContent ? (
             <StreamingMessage content={effectiveContent} isStreaming />
           ) : (!showThinkingBlob && !showTypingIndicator ? (
-            <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+            <div className="prose prose-sm max-w-none">
               <TypingIndicator />
             </div>
           ) : null)
@@ -122,8 +109,16 @@ const MessageBubble = memo(function MessageBubble({
           // Error messages render as plain text (not Markdown) so the
           // destructive color isn't overridden by the prose styles.
           <p className="text-destructive">{msg.content}</p>
+        ) : msg.isRefusal ? (
+          // Plain text, not Markdown: the backend writes one prose sentence
+          // with no Markdown in it, and a refusal is the last place to let a
+          // renderer invent structure over what the server actually said.
+          <>
+            <RefusalMark />
+            <p className="mt-2 whitespace-pre-wrap text-foreground">{msg.content}</p>
+          </>
         ) : (
-          <div className={cn('prose prose-sm max-w-none', !isLight && 'prose-invert')}>
+          <div className="prose prose-sm max-w-none">
             {msg.content ? (
               <Markdown remarkPlugins={[remarkGfm]}>{msg.content}</Markdown>
             ) : null}
@@ -131,12 +126,25 @@ const MessageBubble = memo(function MessageBubble({
         )}
         {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
           <div className="mt-3 space-y-2">
+            {/* Named on a refusal, bare on an answer: an unlabelled chip row
+                under "I am not answering" reads as the sources the answer was
+                built from, which is the reading the backend's own live text
+                goes out of its way to prevent. */}
+            {msg.isRefusal && <RefusalSourcesLabel />}
             <div className="flex items-center gap-2">
               {(() => {
-                const scores = msg.sources!.filter((s) => s.score != null).map((s) => s.score!);
-                if (scores.length === 0) return null;
-                const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-                return <ConfidenceBadge score={avgScore} />;
+                // A refusal gets NO ConfidenceBadge. The badge rates the
+                // sources an answer stands on; here there is no answer, and
+                // "Low confidence" beside a turn that declined to answer reads
+                // as a weak answer rather than none — rating a thing that does
+                // not exist (#1119).
+                if (msg.isRefusal) return null;
+                // null means no similarity was measured (keyword-only hit, a
+                // web source, or a pre-#1117 conversation) — render no badge
+                // rather than a zero, which paints it red.
+                const avgSimilarity = averageSourceSimilarity(msg.sources!);
+                if (avgSimilarity === null) return null;
+                return <ConfidenceBadge score={avgSimilarity} />;
               })()}
               <CitationChips sources={msg.sources!} />
             </div>
@@ -157,28 +165,19 @@ const MessageBubble = memo(function MessageBubble({
   if (prev.msg.id !== next.msg.id) return false;
   if (prev.msg.content !== next.msg.content) return false;
   if (prev.msg.isError !== next.msg.isError) return false;
+  // Without this, the placeholder committed as a refusal keeps the bubble it
+  // was already rendering: `content` changes on the same commit today, so the
+  // bug would only surface for an empty-bodied refusal — a landmine, not a
+  // theoretical.
+  if (prev.msg.isRefusal !== next.msg.isRefusal) return false;
   if (prev.msg.sources !== next.msg.sources) return false;
   if (prev.isLast !== next.isLast) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.streamingContent !== next.streamingContent) return false;
   if (prev.isThinking !== next.isThinking) return false;
   if (prev.thinkingElapsed !== next.thinkingElapsed) return false;
-  if (prev.isLight !== next.isLight) return false;
   return true;
 });
-
-// ---------------------------------------------------------------------------
-// Mode button definitions
-// ---------------------------------------------------------------------------
-
-const MODE_BUTTONS: Array<{ key: Mode; icon: typeof MessageSquare; label: string }> = [
-  { key: 'ask', icon: MessageSquare, label: 'Q&A' },
-  { key: 'improve', icon: Wand2, label: 'Improve' },
-  { key: 'generate', icon: Sparkles, label: 'Generate' },
-  { key: 'summarize', icon: ListCollapse, label: 'Summarize' },
-  { key: 'diagram', icon: GitBranch, label: 'Diagram' },
-  { key: 'quality', icon: ShieldCheck, label: 'Quality' },
-];
 
 // ---------------------------------------------------------------------------
 // Empty state text per mode
@@ -189,9 +188,7 @@ function getEmptyTitle(mode: Mode): string {
     case 'ask': return ASK_EMPTY_TITLE;
     case 'improve': return IMPROVE_EMPTY_TITLE;
     case 'generate': return GENERATE_EMPTY_TITLE;
-    case 'summarize': return SUMMARIZE_EMPTY_TITLE;
     case 'diagram': return DIAGRAM_EMPTY_TITLE;
-    case 'quality': return QUALITY_EMPTY_TITLE;
   }
 }
 
@@ -200,27 +197,39 @@ function getEmptySubtitle(mode: Mode, page: { title: string } | undefined): stri
     case 'ask': return ASK_EMPTY_SUBTITLE;
     case 'improve': return improveEmptySubtitle(page);
     case 'generate': return GENERATE_EMPTY_SUBTITLE;
-    case 'summarize': return summarizeEmptySubtitle(page);
     case 'diagram': return diagramEmptySubtitle(page);
-    case 'quality': return qualityEmptySubtitle(page);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Inner component (consumes AiContext)
+// Page (consumes AiContext)
+//
+// The provider is NOT mounted here: it lives in AppLayout (#1126) so a
+// conversation outlives the route. Mounting one here again would give /ai its
+// own thread map and reintroduce exactly the reset this fixed.
 // ---------------------------------------------------------------------------
 
-function AiAssistantInner() {
+export function AiAssistantPage() {
   const ctx = useAiContext();
   const {
-    mode, setMode, page, pageHasChildren,
+    mode, page,
     messages, messagesEndRef, isStreaming, isThinking, thinkingElapsed,
-    streamingContent,
-    model, models, setModel, modelsError, refetchModels, isLight,
-    includeSubPages, setIncludeSubPages,
-    thinkingMode, setThinkingMode,
+    streamingContent, streamingThreadId, activeThreadId,
     embeddingStatus,
+    threadLoadState, threadLoadError, retryThreadLoad,
   } = ctx;
+
+  // #1361: `isStreaming` / `isThinking` / `streamingContent` are one
+  // provider-wide value each, and this renderer decides "the last bubble is the
+  // in-flight answer" from `isStreaming && isLast`. A question asked on another
+  // thread — the dock on an article, or a conversation left running — would
+  // therefore repaint THIS thread's last answer with that thread's partial
+  // text. `streamingThreadId` is the identity of the thread that asked.
+  //
+  // Only the message bubbles are gated. The announcer, the composer's disabled
+  // state and the Stop control stay provider-wide: a stream really is running.
+  const streamingHere = isStreaming && streamingThreadId === activeThreadId;
+  const thinkingHere = isThinking && streamingThreadId === activeThreadId;
 
   const shouldReduceMotion = useReducedMotion();
 
@@ -234,199 +243,71 @@ function AiAssistantInner() {
       // available scroll height without depending on a `calc(100vh - chrome)`
       // magic number that would drift if the header / service-status banner
       // height changes.
-      className="flex flex-1 flex-col gap-3"
+      //
+      // min-h-0 is the last link of a four-link chain (#1218). A flex item's
+      // automatic minimum size (`min-height: auto`) refuses to shrink below
+      // its content, so any link keeping it stops the whole chain and this
+      // column grows to its messages — leaving AppLayout's padded scroll
+      // container as the thing that scrolls, with live message text passing
+      // through the padding strip above the top bar and below the input bar.
+      // The chain is AppLayout's scroll container -> PageTransition ->
+      // AppLayout's max-width wrapper -> this root -> the message pane's own
+      // scroller below. All four are load-bearing; three of four fixes
+      // nothing. Guarded by name in `src/ai-scroll-chain.test.ts`.
+      className="flex min-h-0 flex-1 flex-col gap-3"
     >
-      {/* Sticky sub-header: mode selector | context + options.
-          Sits at top-0 of the scroll container so it stays visible as
-          messages grow. backdrop-blur on the inner card keeps the surface
-          legible against the live content scrolling under it. An opaque
-          UNDER-mask (bg-background, z-[-1]) sits behind the translucent bar
-          so chat content scrolling up is fully occluded above the tab row
-          (#703). The mask covers exactly the bar's box (inset-0): the bar
-          pins flush at the scrollport top, so there is no gap above it to
-          mask, and extending past the bar's box adds absolute overflow that
-          inflates the page's scrollable height (#769).
+      {/* The route's heading. New chat is NOT here any more (owner request,
+          2026-09-01): the conversations rail carries it — full-width when the
+          rail is expanded, a `SquarePen` glyph when it is collapsed — and two
+          buttons 200px apart doing the same thing made the page's one heading
+          row carry a duplicate. `AiConversationsSidebar` owns it in both of its
+          states, so no width loses the action.
 
-          Visual grammar: two clear groups separated by a thin divider.
-          Group A (left): which mode are we in. Inset segmented control.
-          Group B (right): what's the model + what's the context window +
-            what options are on. Outlined chips of uniform 28 px height. */}
-      <div className="sticky top-0 z-20 isolate -mx-1 space-y-3 bg-background/85 px-1 py-1 backdrop-blur">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 z-[-1] bg-background"
-      />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border border-border/40 bg-card/50 px-3 py-2 backdrop-blur-sm">
-        {/* Group A — mode segmented control */}
-        {/* Horizontally scrollable below the width that fits all six modes.
-            At 390px the row previously cut off mid-word after "Summar…", so
-            Diagram and Quality were unreachable with no scroll cue at all —
-            two of six modes simply did not exist on a phone. snap-x keeps the
-            tabs from resting half-visible; the edge mask signals there is more
-            to the right. Arrow-key navigation still reaches every tab, moving
-            focus with the selection so the focused tab is the visible one. */}
-        <div
-          role="tablist"
-          aria-label="AI mode"
-          data-testid="ai-mode-tablist"
-          className="flex max-w-full snap-x snap-mandatory items-center gap-0.5 overflow-x-auto rounded-lg bg-foreground/[0.04] p-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent_0,black_12px,black_calc(100%-12px),transparent_100%)]"
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-              e.preventDefault();
-              const keys = MODE_BUTTONS.map((b) => b.key);
-              const idx = keys.indexOf(mode);
-              const next = e.key === 'ArrowRight'
-                ? (idx + 1) % keys.length
-                : (idx - 1 + keys.length) % keys.length;
-              const nextKey = keys[next];
-              if (nextKey) {
-                setMode(nextKey);
-                // Move DOM focus along with the selection. These tabs use a
-                // roving tabindex, so selecting without focusing strands focus
-                // on a tab that just became tabIndex={-1} — and once the row
-                // scrolls, off-screen as well: the highlighted tab and the
-                // focused one were different tabs. preventScroll + an explicit
-                // scrollIntoView keeps the correction horizontal, inside the
-                // tablist, instead of letting the browser jump the page.
-                const nextTab = e.currentTarget.querySelector<HTMLElement>(
-                  `[data-mode-tab="${nextKey}"]`,
-                );
-                nextTab?.focus({ preventScroll: true });
-                nextTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-              }
-            }
-          }}
-        >
-          {MODE_BUTTONS.map(({ key, icon: Icon, label }) => (
-            <button
-              key={key}
-              role="tab"
-              data-mode-tab={key}
-              aria-selected={mode === key}
-              tabIndex={mode === key ? 0 : -1}
-              onClick={() => setMode(key)}
-              className={cn(
-                'flex h-7 shrink-0 snap-start items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors',
-                mode === key
-                  // Inset steel-tinted surface (not filled) so the active tab
-                  // doesn't compete with the steel-filled primary CTA in the
-                  // mode's input bar. Steel rather than the AI violet on
-                  // purpose: a mode tab is something you operate, and under
-                  // ADR-010 v0.5 that is exactly what steel means.
-                  ? 'bg-card text-primary-ink shadow-sm ring-1 ring-primary/35 font-medium'
-                  : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-            >
-              <Icon size={14} /> {label}
-            </button>
-          ))}
+          `HeaderHost` renders in the document now: there is no
+          #app-header-slot producer left, no AppHeaderMain to suppress a
+          fallback title, and no data-header-kpis to avoid.
+
+          FIRST CHILD INSIDE the root <m.div>, never a fragment sibling above
+          it, and the root's className must stay a STATIC string literal:
+          `ai-scroll-chain.test.ts:110-126` finds this page's root with
+          /return \(\s*<m\.div([\s\S]*?)>/ and then requires className="…" on
+          it, throwing on either failure — which takes two of its cases down and
+          leaves `scroll-padding-mask.test.ts` describing a strategy nothing
+          enforces. */}
+      <HeaderHost fallbackClassName="mb-1">
+        <div className="flex min-w-0 items-center gap-3">
+          <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">AI</h1>
         </div>
+      </HeaderHost>
 
-        <div className="flex-1" />
+      {/* Diagram's one secondary setting, and nothing else. The durable-option
+          row that used to sit here — a `bg-card` strip holding the single
+          `Think` chip — went into the composer's action row (owner request,
+          2026-09-01, see `ThinkToggle`), which left a full-width card
+          describing the request from 600px above it. With it gone the sticky
+          strip only exists for the mode that has a setting: an empty sticky box
+          would still consume its `py-1` and both gaps out of the message
+          pane's height at every other mode.
 
-        {/* Group B — context + options. Each chip is 28 px tall (h-7),
-            border-border/40 at rest, tinted on active. The divider between
-            the model dropdown and the toggles separates "infrastructure" the
-            user sets once from "context flags" they flip per question. */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          {modelsError ? (
-            // Models fetch failed (LLM provider down / unreachable): surface
-            // the failure with a retry affordance instead of spinning forever.
-            <button
-              type="button"
-              onClick={() => refetchModels()}
-              title="Failed to load models from the LLM provider — click to retry"
-              className="flex h-7 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            >
-              <AlertTriangle size={12} /> Models unavailable — retry
-            </button>
-          ) : models.length === 0 ? (
-            <span className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 px-2.5 text-xs text-muted-foreground">
-              <Loader2 size={12} className="animate-spin" /> Loading models...
-            </span>
-          ) : (
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              aria-label="LLM model"
-              title="LLM model"
-              className="nm-select"
-            >
-              {models
-                .filter((m) => !m.name.includes('embed'))
-                .map((m) => (
-                  <option key={m.name} value={m.name}>{m.name}</option>
-                ))}
-            </select>
-          )}
-
-          {page && (
-            <span
-              className="flex h-7 items-center gap-1.5 rounded-md border border-border/40 bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground"
-              title={`AI context is scoped to "${page.title}"`}
-            >
-              <FileText size={12} />
-              <span className="max-w-[180px] truncate">{page.title}</span>
-            </span>
-          )}
-
-          {page && pageHasChildren && (
-            <label
-              className={cn(
-                'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
-                includeSubPages
-                  ? 'border-primary/45 bg-primary/12 text-primary-ink'
-                  : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-              )}
-              title="Include sub-pages in the AI context"
-            >
-              <input
-                type="checkbox"
-                checked={includeSubPages}
-                onChange={(e) => setIncludeSubPages(e.target.checked)}
-                className="sr-only"
-                aria-label="Include sub-pages"
-              />
-              <Network size={12} />
-              <span>+ Sub-pages</span>
-            </label>
-          )}
-
-          {/* Divider between "what model + what context" and "what options". */}
-          <span aria-hidden className="mx-0.5 h-5 w-px bg-border/50" />
-
-          {/* Thinking mode toggle (#20). Always render the resting surface so
-              the affordance reads as a toggle rather than collapsing into a
-              label-with-icon when off. */}
-          <label
-            className={cn(
-              'flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors',
-              thinkingMode
-                ? 'border-purple-500/45 bg-purple-500/15 text-purple-300'
-                : 'border-border/40 text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-            )}
-            title={thinkingMode
-              ? 'Extended thinking is on — responses take longer but reason more carefully'
-              : 'Enable extended thinking for more thorough responses'}
-          >
-            <input
-              type="checkbox"
-              checked={thinkingMode}
-              onChange={(e) => setThinkingMode(e.target.checked)}
-              className="sr-only"
-              aria-label="Thinking mode"
-            />
-            <Brain size={12} />
-            <span>Think</span>
-          </label>
+          The opaque UNDER-mask (bg-background, z-[-1]) behind the bar is
+          belt-and-braces through the supported viewport range, not
+          load-bearing. It was what occluded chat content scrolling up behind
+          the bar (#703) — but since #1218 the message pane owns the scroller
+          and this column does not scroll, so nothing passes behind it. It
+          covers exactly the bar's box (inset-0), and that constraint still
+          binds: an absolutely positioned mask overflowing the block-end edge
+          creates scrollable overflow in a container that now has none, which is
+          #769's phantom scroll re-opened on a page that had stopped scrolling
+          entirely. */}
+      {mode === 'diagram' && (
+        <div className="sticky top-0 z-20 isolate -mx-1 bg-background px-1 py-1">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[-1] bg-background"
+          />
+          <DiagramTypeSelector />
         </div>
-      </div>
-
-      {/* Mode-specific type selectors — included in the sticky header so
-          they stay alongside the tabs while scrolling. */}
-      {mode === 'improve' && <ImproveTypeSelector />}
-      {mode === 'diagram' && <DiagramTypeSelector />}
-      </div>
+      )}
 
       {/* Primed live region for error announcements. It must exist (empty)
           BEFORE any error so assistive tech watches it for content changes —
@@ -458,7 +339,16 @@ function AiAssistantInner() {
           const lastAnswer = [...messages].reverse().find(
             (msg) => msg.role === 'assistant' && !msg.isError && msg.content,
           );
-          return lastAnswer ? <span key={lastAnswer.id}>Answer ready</span> : null;
+          if (!lastAnswer) return null;
+          // A refusal is the one thing this region must not call an answer
+          // (#1119). It is not an error either, so it stays in the polite
+          // region rather than being routed to the alert one above — a correct
+          // response does not warrant interrupting.
+          return (
+            <span key={lastAnswer.id}>
+              {lastAnswer.isRefusal ? REFUSAL_ANNOUNCEMENT : 'Answer ready'}
+            </span>
+          );
         })()}
       </div>
 
@@ -472,7 +362,7 @@ function AiAssistantInner() {
           laptop lost them entirely, and on mobile they rendered behind the
           composer. min-h-0 lets the flex child actually shrink so the scroll
           container resolves instead of overflowing its parent. */}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-border/40 bg-card/40 backdrop-blur-sm" data-testid="ai-message-pane">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl bg-card" data-testid="ai-message-pane">
         <div className="min-h-[360px] space-y-4 p-5">
           {/* Zero-embeddings notice (#938). Q&A answers via RAG over embedded
               pages; with none embedded, buildRagContext returns "No relevant
@@ -483,18 +373,59 @@ function AiAssistantInner() {
               a misleading answer. */}
           {mode === 'ask' && isZeroEmbeddings(embeddingStatus) && (
             <div
+              // The id is the aria-describedby target of the example-prompt
+              // chips below, which go inert under the same condition — the
+              // banner's text doubles as their programmatic disabled reason.
+              id={NO_EMBEDDINGS_NOTICE_ID}
               data-testid="ai-no-embeddings-notice"
               className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
             >
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <span>
                 Pages not embedded yet — configure an embedding provider in
-                Settings → LLM and run an embedding pass. Until then, Q&amp;A has
-                no knowledge-base context to draw on.
+                Settings → {SETTINGS_PANELS.models.label} and run an embedding pass.
+                Until then, Q&amp;A has no knowledge-base context to draw on.
               </span>
             </div>
           )}
-          {messages.length === 0 && (
+          {/* #1361: a `conv:` thread is fetched, so this pane has two states
+              the draft never had. Neither may fall through to the empty state
+              below — "Ask questions about your knowledge base" over a
+              conversation that is still loading, or that failed to load, says
+              the conversation is empty. */}
+          {threadLoadState === 'loading' && (
+            <div
+              role="status"
+              data-testid="ai-thread-loading"
+              className="flex min-h-[300px] items-center justify-center text-sm text-muted-foreground"
+            >
+              Loading conversation…
+            </div>
+          )}
+          {threadLoadState === 'error' && (
+            // The tree's destructive block, verbatim in intent (ADR-010: red is
+            // failure, amber is degraded — this request FAILED). `threadLoadError`
+            // is ApiError's curated prose, which is the only place the reader
+            // learns why.
+            <div className="flex flex-col items-center px-3 py-8 text-center" role="alert" data-testid="ai-thread-error">
+              <div className="mb-3 rounded-full bg-muted p-2.5">
+                <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+              </div>
+              <p className="text-xs font-medium text-foreground/70">Couldn&rsquo;t load conversation</p>
+              <p className="mt-1 break-words line-clamp-3 text-[11px] text-muted-foreground">
+                {threadLoadError ?? 'The request did not complete.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => retryThreadLoad()}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground"
+              >
+                <RefreshCw size={12} aria-hidden="true" />
+                Retry
+              </button>
+            </div>
+          )}
+          {threadLoadState === 'ready' && messages.length === 0 && (
             <div className="flex min-h-[300px] flex-col items-center justify-center text-center">
               {/* Robot wrapped in a violet aura so the empty state reads as
                   "ready to help", not "page failed to load" (a complaint in
@@ -503,12 +434,13 @@ function AiAssistantInner() {
                   Violet, not steel: under ADR-010 v0.5 --color-status-ai marks
                   "an AI does this" and steel means "you can operate this".
                   This ornament is the former — it is not clickable. */}
-              <div className="relative mb-5 flex h-20 w-20 items-center justify-center">
-                <div className="absolute inset-0 rounded-full bg-status-ai/10 blur-2xl" aria-hidden />
-                <div className="relative flex h-16 w-16 items-center justify-center rounded-full bg-status-ai/12 ring-1 ring-status-ai/25">
-                  <Bot size={32} className="text-status-ai" />
-                </div>
-              </div>
+              {/* A plain glyph, matching the dock's empty state. This was an
+                  80px blurred halo behind a 64px ringed disc behind the icon —
+                  three stacked decorations to say "AI". Violet still carries
+                  that meaning (ADR-010); it does not need a light source, and a
+                  blurred glow is the one effect this system removed everywhere
+                  else. */}
+              <Bot size={28} className="mb-4 text-status-ai" aria-hidden />
               <p className="text-lg font-medium">{getEmptyTitle(mode)}</p>
               <p className="mt-2 max-w-md text-sm text-muted-foreground">{getEmptySubtitle(mode, page)}</p>
               {mode === 'ask' && <AskExamplePrompts />}
@@ -521,15 +453,16 @@ function AiAssistantInner() {
               msg={msg}
               index={i}
               isLast={i === messages.length - 1}
-              isStreaming={isStreaming}
-              isThinking={isThinking}
+              isStreaming={streamingHere}
+              isThinking={thinkingHere}
               thinkingElapsed={thinkingElapsed}
-              isLight={isLight}
               shouldReduceMotion={shouldReduceMotion}
               // #747: only the last bubble receives the batched in-flight
               // content; earlier (committed) bubbles keep a stable prop so
               // the memo comparator skips re-rendering them per flush.
-              streamingContent={i === messages.length - 1 ? streamingContent : undefined}
+              streamingContent={
+                streamingHere && i === messages.length - 1 ? streamingContent : undefined
+              }
             />
           ))}
           <div ref={messagesEndRef} />
@@ -540,40 +473,39 @@ function AiAssistantInner() {
         </div>
       </div>
 
-      {/* Mode-specific input bar — sticky at the bottom of the scroll
-          container, with a translucent backdrop so chat content scrolls
-          legibly behind it. An opaque UNDER-mask (bg-background, z-[-1]) sits
-          behind the translucent bar so chat content scrolling down is fully
-          occluded below the input field + submit button (#703). The mask
-          covers exactly the bar's box (inset-0): the bar pins flush at the
-          scrollport bottom, so nothing can show below it, and an absolutely
-          positioned mask overflowing the block-end edge grows the scroll
-          container's scrollable overflow region — the former -bottom-[100px]
-          extension added ~100px of phantom scroll on every mode (#769). */}
-      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background/85 px-1 py-1 backdrop-blur">
+      {/* Mode-specific input bar — sticky at the bottom of the column, with a
+          translucent backdrop.
+
+          Its opaque UNDER-mask (bg-background, z-[-1]) is belt-and-braces for
+          the same reason as the sub-header's above: it occluded chat content
+          scrolling down behind the bar (#703), but since #1218 the message
+          pane owns the scroller and this column does not scroll through the
+          supported viewport range, so nothing reaches behind it. It goes back
+          to doing real work at the extremes the sub-header's comment records
+          (bars taller than the column, outer scroller re-engaged), and it
+          costs one div, which is why it stays.
+
+          inset-0, and no overhang in either direction. The block-end rule is
+          the sharp one: an absolutely positioned mask past that edge grows the
+          scroll container's scrollable overflow — the former -bottom-[100px]
+          extension added ~100px of phantom scroll on every mode (#769) — and
+          it would now do that to a container whose overflow is zero. The
+          mirrored -bottom-5 this bug was originally filed with is exactly that
+          mistake; the strip it aimed at is gone because nothing scrolls into
+          it, not because something covers it. */}
+      {/* Opaque, no blur — same reasoning as the sub-header above. */}
+      <div className="sticky bottom-0 z-20 isolate -mx-1 bg-background px-1 py-1">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-[-1] bg-background"
         />
-        {mode === 'ask' && <AskModeInput />}
-        {mode === 'improve' && <ImproveModeInput />}
-        {mode === 'generate' && <GenerateModeInput />}
-        {mode === 'summarize' && <SummarizeModeInput />}
-        {mode === 'diagram' && <DiagramModeInput />}
-        {mode === 'quality' && <QualityModeInput />}
+        <AssistantAttachmentsScope>
+          {mode === 'ask' && <AskModeInput />}
+          {mode === 'improve' && <ImproveModeInput />}
+          {mode === 'generate' && <GenerateModeInput />}
+          {mode === 'diagram' && <DiagramModeInput />}
+        </AssistantAttachmentsScope>
       </div>
     </m.div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Public export: wraps inner in AiProvider
-// ---------------------------------------------------------------------------
-
-export function AiAssistantPage() {
-  return (
-    <AiProvider>
-      <AiAssistantInner />
-    </AiProvider>
   );
 }

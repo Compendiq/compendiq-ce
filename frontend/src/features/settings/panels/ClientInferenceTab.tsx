@@ -1,0 +1,418 @@
+import { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as Switch from '@radix-ui/react-switch';
+import { CheckCircle2 } from 'lucide-react';
+import type {
+  AdminSettings,
+  ClientAssetInspect,
+  ClientAssetInstallStatus,
+  ClientAssetManifest,
+  ClientAssetSearchResponse,
+} from '@compendiq/contracts';
+import { apiFetch } from '../../../shared/lib/api';
+import { getClientInferenceManager } from '../../../shared/lib/client-inference/client-inference-manager';
+import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
+import { SETTINGS_PANELS } from '../settings-nav';
+
+const SEARCH_DEBOUNCE_MS = 300;
+const HUNSPELL_MODELS = [
+  { id: 'hunspell-en_US' as const, label: 'English (US)', files: 'en_US.aff, en_US.dic' },
+  { id: 'hunspell-de_DE' as const, label: 'German (DE)', files: 'de_DE.aff, de_DE.dic' },
+];
+
+
+export function ClientInferenceTab() {
+  const queryClient = useQueryClient();
+  const { hasFeature } = useEnterprise();
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const settings = useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch<AdminSettings>('/admin/settings'),
+  });
+  const manifest = useQuery({
+    queryKey: ['client-assets-manifest'],
+    queryFn: () => apiFetch<ClientAssetManifest>('/models/client-assets'),
+  });
+  const search = useQuery({
+    queryKey: ['client-assets-search', debouncedQuery],
+    queryFn: () => apiFetch<ClientAssetSearchResponse>(
+      `/admin/client-assets/search?q=${encodeURIComponent(debouncedQuery)}`,
+    ),
+  });
+
+  const save = useMutation({
+    mutationFn: (clientInferenceEnabled: boolean) => apiFetch('/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ clientInferenceEnabled }),
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+    },
+  });
+  const install = useMutation({
+    mutationFn: async (repo: string) => {
+      const info = await apiFetch<ClientAssetInspect>(
+        `/admin/client-assets/inspect?repo=${encodeURIComponent(repo)}`,
+      );
+      if (!info.ok) throw new Error(info.reason ?? 'Model cannot be installed');
+      return apiFetch<ClientAssetInstallStatus>('/admin/client-assets/install', {
+        method: 'POST',
+        body: JSON.stringify({ repo }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-install'] });
+    },
+  });
+  const installHunspell = useMutation({
+    mutationFn: async (id: 'hunspell-en_US' | 'hunspell-de_DE') => {
+      return apiFetch('/admin/client-assets/hunspell/install', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+    },
+  });
+
+  const installStatus = useQuery({
+    queryKey: ['client-assets-install'],
+    queryFn: () => apiFetch<ClientAssetInstallStatus>('/admin/client-assets/install'),
+    enabled: install.isSuccess,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 1000 : false),
+  });
+
+  useEffect(() => {
+    if (installStatus.data?.status === 'complete') {
+      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+    }
+  }, [installStatus.data?.status, queryClient]);
+  const orgPolicy = useQuery({
+    queryKey: ['client-inference-policy'],
+    queryFn: () => apiFetch<{ active: boolean; mode: string }>('/client-inference/policy'),
+    enabled: hasFeature('org_llm_policy'),
+    staleTime: 30_000,
+  });
+  const orgDisabled = orgPolicy.data?.active === true && orgPolicy.data.mode === 'disabled_server_only';
+
+  const enabled = settings.data?.clientInferenceEnabled ?? false;
+  const onnxInstalled = manifest.data?.models.some((m) => m.kind === 'onnx' && m.installed) ?? false;
+  const probe = getClientInferenceManager().lastProbe();
+  const error = getClientInferenceManager().lastErrorCategory();
+  const hits = search.data?.models ?? [];
+
+  const installedModels = manifest.data?.models.filter((m) => m.installed) ?? [];
+
+  return (
+    <div className="space-y-6">
+      {orgDisabled && (
+        <p
+          role="status"
+          data-testid="client-inference-org-disabled"
+          className="rounded-[var(--radius-lg)] border border-border px-4 py-3 text-sm text-muted-foreground"
+        >
+          Organization policy disables on-device inference. Authors fall through to server models.
+        </p>
+      )}
+      <section aria-labelledby="client-inference-admin-enable">
+        <h3 id="client-inference-admin-enable" className="text-sm font-semibold text-foreground">
+          On-device suggestions
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          Authors also opt in under Settings → {SETTINGS_PANELS.editor.label}. Weights stay
+          on this origin; the browser never fetches Hugging Face.
+        </p>
+        <div className="mt-3 flex items-center justify-between gap-4 rounded-[var(--radius-lg)] border border-border px-4 py-4">
+          <label htmlFor="admin-client-inference" className="text-sm font-medium text-foreground">
+            Enable on-device suggestions
+          </label>
+          <Switch.Root
+            id="admin-client-inference"
+            checked={enabled}
+            disabled={!onnxInstalled || orgDisabled}
+            onCheckedChange={(next) => save.mutate(next)}
+            className="relative h-5 w-9 shrink-0 rounded-full bg-foreground/10 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring data-[state=checked]:bg-action disabled:opacity-40"
+          >
+            <Switch.Thumb className="block h-4 w-4 translate-x-0.5 rounded-full bg-white transition-transform data-[state=checked]:translate-x-4" />
+          </Switch.Root>
+        </div>
+        {!onnxInstalled && (
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            Install the on-device model first (download, upload, or volume copy).
+          </p>
+        )}
+      </section>
+
+      <section aria-labelledby="client-inference-download">
+        <h3 id="client-inference-download" className="text-sm font-semibold text-foreground">
+          Download model
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          The server fetches a transformers.js q4 checkpoint from Hugging Face.
+          Search is limited to text-generation models at or under 1 GiB.
+        </p>
+        <label htmlFor="client-inference-model-query" className="mt-3 block text-sm font-medium text-foreground">
+          On-device model
+        </label>
+        <input
+          id="client-inference-model-query"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="mt-1 w-full rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          placeholder="Search Hugging Face"
+          autoComplete="off"
+        />
+        {debouncedQuery.trim() ? (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Search results
+          </h4>
+        ) : (
+          <h4 className="mt-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Recommended models
+          </h4>
+        )}
+        {hits.length === 0 && debouncedQuery.trim() && !search.isPending ? (
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+            No matching text-generation models found with q4 ONNX weights at or under 1 GiB.
+          </p>
+        ) : (
+          <ul role="listbox" aria-label="Model matches" className="mt-2 divide-y divide-border rounded-[var(--radius-lg)] border border-border overflow-hidden">
+            {hits.map((hit) => (
+              <li key={hit.repo}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selectedRepo === hit.repo}
+                  className={`w-full px-4 py-3 text-left text-sm transition-colors hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset ${selectedRepo === hit.repo ? 'bg-foreground/5' : ''}`}
+                  onClick={() => setSelectedRepo(hit.repo)}
+                >
+                  <span className="font-medium text-foreground">{hit.repo}</span>
+                  {hit.recommended ? (
+                    <span className="ml-2 text-xs text-muted-foreground">recommended</span>
+                  ) : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <button
+          type="button"
+          className="nm-button-ghost mt-3 h-8"
+          disabled={!selectedRepo || install.isPending}
+          onClick={() => {
+            if (selectedRepo) install.mutate(selectedRepo);
+          }}
+        >
+          Download model
+        </button>
+        {installStatus.data?.status === 'running' && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            Downloading… {installStatus.data.loaded} / {installStatus.data.total}
+          </p>
+        )}
+        {installStatus.data?.status === 'failed' && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            {installStatus.data.error ?? 'Install failed'}
+          </p>
+        )}
+        {install.isError && (
+          <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+            {install.error instanceof Error ? install.error.message : 'Install failed'}
+          </p>
+        )}
+      </section>
+
+      <section aria-labelledby="client-inference-hunspell">
+        <h3 id="client-inference-hunspell" className="text-sm font-semibold text-foreground">
+          Spellcheck dictionaries (Hunspell)
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          Download or upload standard Hunspell dictionaries for English and German spell linting in the editor.
+        </p>
+        <ul aria-label="Hunspell dictionaries" className="mt-3 divide-y divide-border rounded-[var(--radius-lg)] border border-border">
+          {HUNSPELL_MODELS.map((item) => {
+            const entry = manifest.data?.models.find((m) => m.id === item.id);
+            const isInstalled = entry?.installed ?? false;
+            const isDownloading = installHunspell.isPending && installHunspell.variables === item.id;
+            return (
+              <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">{item.label}</span>
+                    {isInstalled ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
+                        <CheckCircle2 size={12} />
+                        installed
+                        {entry?.bytes ? ` (${Math.round(entry.bytes / 1024)} KB)` : ''}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-foreground/10 px-2 py-0.5 text-xs text-muted-foreground">
+                        not installed
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {item.id} ({item.files})
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="nm-button-ghost h-8"
+                    disabled={isDownloading}
+                    onClick={() => installHunspell.mutate(item.id)}
+                  >
+                    {isDownloading ? 'Downloading…' : isInstalled ? 'Re-download' : 'Download dictionary'}
+                  </button>
+                  <AssetUpload
+                    modelId={item.id}
+                    onDone={() => {
+                      void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+                    }}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {installHunspell.isError && (
+          <p role="status" className="mt-2 text-xs leading-5 text-destructive">
+            {installHunspell.error instanceof Error ? installHunspell.error.message : 'Dictionary download failed'}
+          </p>
+        )}
+      </section>
+
+      <section aria-labelledby="client-inference-manifest">
+        <h3 id="client-inference-manifest" className="text-sm font-semibold text-foreground">
+          Installed assets
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          Assets currently installed on the server volume and available to clients.
+          Pre-download lives on each author&apos;s Editor card — this tab manages server-side models and dictionaries.
+        </p>
+        {manifest.isPending && !manifest.data && (
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">Looking up installed assets…</p>
+        )}
+        {manifest.isError && !manifest.data && (
+          <p role="status" className="mt-3 text-sm leading-6 text-muted-foreground">
+            Could not read installed assets.{' '}
+            <button
+              type="button"
+              className="nm-button-ghost h-8"
+              onClick={() => { void manifest.refetch(); }}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+        {manifest.data && (
+          installedModels.length === 0 ? (
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">
+              No assets currently installed on the server.
+            </p>
+          ) : (
+            <ul aria-label="Installed assets" className="mt-3 divide-y divide-border rounded-[var(--radius-lg)] border border-border">
+              {installedModels.map((model) => (
+                <li key={model.id} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-medium text-foreground">{model.repo ?? model.id}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        {model.kind}
+                        {' · '}
+                        {model.bytes > 0
+                          ? model.bytes >= 1024 * 1024
+                            ? `${Math.round(model.bytes / (1024 * 1024))} MB`
+                            : `${Math.round(model.bytes / 1024)} KB`
+                          : '0 bytes'}
+                        {model.kind === 'onnx' && !model.available ? ' · unavailable while the flag is off' : ''}
+                      </span>
+                    </div>
+                    <AssetUpload
+                      modelId={model.id}
+                      onDone={() => {
+                        void queryClient.invalidateQueries({ queryKey: ['client-assets-manifest'] });
+                      }}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )
+        )}
+      </section>
+
+      <section aria-labelledby="client-inference-probe">
+        <h3 id="client-inference-probe" className="text-sm font-semibold text-foreground">
+          Last GPU probe
+        </h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          {probe
+            ? `${probe.tier}${probe.adapterName ? ` · ${probe.adapterName}` : ''}`
+            : 'No probe in this browser session yet.'}
+          {error ? ` Last error category: ${error}.` : ''}
+        </p>
+      </section>
+    </div>
+  );
+}
+
+const UPLOAD_CHUNK = 8 * 1024 * 1024;
+
+function assetFileName(name: string): string {
+  if (name === 'model_q4.onnx') return 'onnx/model_q4.onnx';
+  return name;
+}
+
+function AssetUpload({ modelId, onDone }: { modelId: string; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="mt-2">
+      <label className="block text-xs text-muted-foreground">
+        Upload
+        <input
+          type="file"
+          className="ml-2 text-xs"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const dest = assetFileName(file.name);
+            setError(null);
+            void (async () => {
+              try {
+                for (let start = 0; start < file.size; start += UPLOAD_CHUNK) {
+                  const slice = file.slice(start, Math.min(start + UPLOAD_CHUNK, file.size));
+                  const end = start + slice.size - 1;
+                  await apiFetch(`/admin/client-assets/${encodeURIComponent(modelId)}/files/${dest}`, {
+                    method: 'PUT',
+                    headers: {
+                      'Content-Type': 'application/octet-stream',
+                      'Content-Range': `bytes ${start}-${end}/${file.size}`,
+                    },
+                    body: slice,
+                  });
+                }
+                onDone();
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Upload failed');
+              }
+            })();
+          }}
+        />
+      </label>
+      {error ? (
+        <p role="status" className="mt-1 text-xs leading-5 text-muted-foreground">{error}</p>
+      ) : null}
+    </div>
+  );
+}

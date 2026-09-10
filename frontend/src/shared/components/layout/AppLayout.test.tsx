@@ -1,17 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { StrictMode } from 'react';
 import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { AppLayout } from './AppLayout';
+import { useAiContext } from '../../../features/ai/AiContext';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
 import * as keyboardShortcutsModule from '../../hooks/use-keyboard-shortcuts';
 
 // Mock SidebarTreeView to isolate AppLayout tests. It renders a couple of
 // focusable controls so the mobile slide-over focus-trap can be exercised.
 vi.mock('./SidebarTreeView', () => ({
-  SidebarTreeView: ({ onNavigate: _onNavigate }: { onNavigate?: () => void }) => (
+  SidebarTreeView: ({
+    onNavigate: _onNavigate,
+  }: {
+    onNavigate?: () => void;
+  }) => (
     <nav data-testid="sidebar-tree-view">
       <a href="/pages/first">First page</a>
       <a href="/pages/second">Second page</a>
@@ -21,7 +28,28 @@ vi.mock('./SidebarTreeView', () => ({
 }));
 
 vi.mock('../article/ArticleRightPane', () => ({
-  ArticleRightPane: () => <div data-testid="article-right-pane">Article Right Pane</div>,
+  ArticleRightPane: ({
+    inspectorViewRequest,
+    presentation,
+    onRequestClose,
+  }: {
+    inspectorViewRequest?: { view: string; requestId: number } | null;
+    presentation?: 'rail' | 'sheet';
+    onRequestClose?: () => void;
+  }) => (
+    <div
+      data-testid="article-right-pane"
+      data-inspector-view={inspectorViewRequest?.view ?? ''}
+      data-presentation={presentation ?? 'rail'}
+    >
+      Article Right Pane
+      {onRequestClose && (
+        <button type="button" onClick={onRequestClose}>
+          Close inspector
+        </button>
+      )}
+    </div>
+  ),
 }));
 
 vi.mock('./CommandPalette', () => ({
@@ -32,14 +60,29 @@ vi.mock('../badges/ServiceStatus', () => ({
   ServiceStatus: () => null,
 }));
 
-// Self-fetching banner (GET /api/settings) — mock it so AppLayout tests stay
-// hermetic (no unmocked fetch through jsdom).
-vi.mock('../banners/ConfluencePatBanner', () => ({
-  ConfluencePatBanner: () => null,
-}));
-
 vi.mock('./ThemeToggle', () => ({
   ThemeToggle: () => <div data-testid="theme-toggle" />,
+}));
+
+vi.mock('./NotificationBell', () => ({
+  NotificationBell: () => <div data-testid="notification-bell" />,
+}));
+
+vi.mock('./UserMenu', () => ({
+  UserMenu: () => <button type="button" data-testid="user-menu">Account</button>,
+}));
+
+// AppLayout only needs the breakpoint decision in these tests. Keep it
+// synchronous so shortcut-hook spies are not invalidated by a post-mount
+// media-query subscription update; the hook itself has dedicated tests.
+vi.mock('../../hooks/use-media-query', () => ({
+  useMediaQuery: () => window.innerWidth >= 768 && window.innerWidth <= 1439,
+  useIsMobileLayout: () => window.innerWidth < 768,
+  useIsDockWideLayout: () => window.innerWidth >= 1100,
+  useIsInspectorWideLayout: () => window.innerWidth >= 1280,
+  MD_QUERY: '(min-width: 768px)',
+  DOCK_WIDE_QUERY: '(min-width: 1100px)',
+  INSPECTOR_WIDE_QUERY: '(min-width: 1280px)',
 }));
 
 function createWrapper(initialPath = '/') {
@@ -63,9 +106,55 @@ describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useCommandPaletteStore.setState({ isOpen: false });
+    useAiDockStore.setState({ open: false });
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      articleSidebarCollapsed: false,
+    });
+    window.innerWidth = 1024;
     // jsdom does not implement Element.scrollTo — stub it so the scroll-reset
     // useEffect in AppLayout does not throw
     Element.prototype.scrollTo = vi.fn();
+    // The conversations pane mounts on every AI route (#1361) and consumes
+    // AiContext, which wakes AiProvider — so any test rendering /ai now issues
+    // requests. Answer them here, at the network boundary, once for the suite;
+    // tests that assert on requests read this same spy rather than layering a
+    // second one over it.
+    //
+    // `/ai/c/:id` additionally makes AiProvider's own route effect fetch that
+    // one conversation (`GET /llm/conversations/:id`) to hydrate its thread —
+    // independent of whether the pane is mounted. That response is read as a
+    // ConversationDetail (`.messages.filter(...)` runs on it unconditionally),
+    // so the list shape alone crashes that route; branch on the URL so both
+    // shapes are answered correctly.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (/\/llm\/conversations\/[^/?]+$/.test(url)) {
+        return new Response(
+          JSON.stringify({
+            id: 'stub-conversation',
+            title: 'Stub conversation',
+            titleSource: 'question',
+            model: 'stub-model',
+            pageId: null,
+            pageTitle: null,
+            createdAt: new Date(0).toISOString(),
+            updatedAt: new Date(0).toISOString(),
+            messages: [],
+            historyTruncated: false,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ items: [], nextCursor: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('renders header without nav pills (nav moved to sidebar)', () => {
@@ -82,6 +171,27 @@ describe('AppLayout', () => {
     // (they're in the mocked sidebar which doesn't render them)
     expect(header!.querySelector('a[href="/graph"]')).toBeNull();
     expect(header!.querySelector('a[href="/ai"]')).toBeNull();
+  });
+
+  it('does not put a route title in the header', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('h1')).toBeNull();
+  });
+
+  it('keeps route titles out of the header', () => {
+    render(
+      <AppLayout>
+        <div id="from-page" />
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(document.querySelector('header h1')).toBeNull();
   });
 
   it('renders app logo in top header bar on all routes', () => {
@@ -104,69 +214,113 @@ describe('AppLayout', () => {
     expect(screen.getByRole('img', { name: 'Compendiq' })).toBeInTheDocument();
   });
 
-  it('header spans full width above sidebar and content', () => {
-    const { container } = render(
+  it('header sits on the chassis grey, outside the brighter workspace card', () => {
+    render(
       <AppLayout>
-        <div>content</div>
+        <div>article</div>
       </AppLayout>,
-      { wrapper: createWrapper('/') },
+      { wrapper: createWrapper('/pages/123') },
     );
-    // Root container should be flex-col (vertical stacking: header on top)
-    const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('flex-col');
+    const chassis = screen.getByTestId('app-chassis');
+    const shell = screen.getByTestId('app-shell');
+    const workspace = screen.getByTestId('app-workspace');
+    expect(chassis.className).toContain('flex-col');
+    expect(shell.parentElement).toBe(chassis);
 
-    // Header should be a direct child of the root (not nested inside sidebar wrapper)
-    const header = rootDiv.querySelector('header');
+    const header = chassis.querySelector('header');
     expect(header).toBeTruthy();
-    expect(header!.parentElement).toBe(rootDiv);
+    expect(workspace.contains(header!)).toBe(false);
+    expect(workspace.contains(screen.getByTestId('article-right-pane'))).toBe(false);
+    expect(header!.contains(screen.getByTestId('header-session-cluster'))).toBe(true);
   });
 
-  it('renders centered search bar with input-like appearance', () => {
+  it('puts Pages / AI / Graph on the chassis, outside the workspace card', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    expect(screen.getByText('Search pages, commands...')).toBeInTheDocument();
+    const nav = screen.getByTestId('main-nav-chassis');
+    expect(nav).toHaveAccessibleName('Main navigation');
+    expect(screen.getByTestId('app-workspace').contains(nav)).toBe(false);
+    expect(screen.getByRole('link', { name: 'Pages' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'AI chat, full page' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
+    expect(nav.className).toContain('w-[var(--app-nav-rail-width)]');
+    expect(nav.className).toContain('items-center');
+    expect(nav.className).toContain('px-1');
+    const pages = screen.getByRole('link', { name: 'Pages' });
+    const ai = screen.getByRole('link', { name: 'AI chat, full page' });
+    const graph = screen.getByRole('link', { name: 'Graph' });
+    for (const link of [pages, ai, graph]) {
+      expect(link.className).toContain('w-10');
+      expect(link.className).toContain('h-10');
+      expect(link.className).not.toContain('w-full');
+      expect(link.className).not.toContain('w-auto');
+    }
+    const shell = screen.getByTestId('app-shell');
+    expect(shell.className).not.toMatch(/\bgap-/);
+    const logo = screen.getByTestId('header-chassis-slot');
+    expect(logo).toBeInTheDocument();
+    expect(logo.className).toContain('md:ml-3');
+    expect(screen.getByLabelText('Compendiq home')).toBeInTheDocument();
   });
 
-  it('search bar has role="search" landmark and distinct aria-labels', () => {
+  it('keeps the command palette out of persistent header chrome', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('[data-testid="header-find"]')).toBeNull();
+    expect(header.querySelector('[data-testid="header-session-cluster"]')).toBeTruthy();
+  });
+
+  it('separates route content from the surrounding workspace chrome', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    const searchRegion = screen.getByRole('search');
-    expect(searchRegion).toBeInTheDocument();
 
-    // Desktop and mobile search buttons have distinct aria-labels
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn).toBeInTheDocument();
-    expect(mobileBtn).toBeInTheDocument();
+    expect(document.getElementById('main-content')).toHaveClass('app-content-pane');
   });
 
-  it('search buttons have dynamic aria-expanded reflecting command palette state', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
+  it('keeps session chrome in the header landmark', () => {
     render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
-      { wrapper: createWrapper('/') },
+      { wrapper: createWrapper('/ai') },
     );
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn).toHaveAttribute('aria-expanded', 'false');
-    expect(mobileBtn).toHaveAttribute('aria-expanded', 'false');
+    const header = document.querySelector('header')!;
+    expect(header.querySelector('[data-testid="header-session-cluster"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="theme-toggle"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="notification-bell"]')).toBeTruthy();
+    expect(header.querySelector('[data-testid="user-menu"]')).toBeTruthy();
+  });
 
-    // When command palette is open, aria-expanded should be true
-    act(() => {
-      useCommandPaletteStore.setState({ isOpen: true });
+  it('registers Cmd/Ctrl+K to open the command palette', () => {
+    let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
+    vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+      captured = shortcuts;
     });
-    expect(desktopBtn).toHaveAttribute('aria-expanded', 'true');
-    expect(mobileBtn).toHaveAttribute('aria-expanded', 'true');
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const search = captured.find((s) => s.keys.includes('k') && s.mod);
+    expect(search).toBeTruthy();
+    expect(search!.key).toBe('Ctrl+K');
+    useCommandPaletteStore.setState({ isOpen: false });
+    search!.action();
+    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
   });
 
   it('mobile slide-over exposes dialog semantics and closes on Escape', async () => {
@@ -238,19 +392,7 @@ describe('AppLayout', () => {
     expect(document.activeElement).toBe(toggle);
   });
 
-  it('search bar is absolutely centered in header', () => {
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const searchRegion = screen.getByRole('search');
-    expect(searchRegion.className).toContain('absolute');
-    expect(searchRegion.className).toContain('justify-center');
-  });
-
-  it('shows tree sidebar on /pages and /ai, swaps to settings sidebar on /settings', () => {
+  it('shows the tree sidebar on /pages, swaps to the settings sidebar on /settings', () => {
     // Pages root — Pages tree visible
     const { unmount } = render(
       <AppLayout>
@@ -262,17 +404,6 @@ describe('AppLayout', () => {
     expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
     unmount();
 
-    // AI route — Pages tree stays (quick page navigation while chatting)
-    const { unmount: unmount2 } = render(
-      <AppLayout>
-        <div>ai page</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/ai') },
-    );
-    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
-    unmount2();
-
     // Settings route — Pages tree replaced by SettingsSidebar so the main
     // nav strip stays visible alongside the Settings section nav.
     render(
@@ -283,6 +414,79 @@ describe('AppLayout', () => {
     );
     expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
     expect(screen.getByTestId('settings-sidebar')).toBeInTheDocument();
+  });
+
+  // #1361: the Pages tree leaves /ai entirely. Page navigation there is the
+  // command palette and the Pages tab of MainNavStrip; the rail is the
+  // conversation history, mirroring what /settings already does.
+  it('swaps the tree for the conversations pane on /ai and /ai/c/:id', async () => {
+    const { unmount } = render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    expect(await screen.findByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-sidebar')).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <AppLayout>
+        <div>one conversation</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai/c/11111111-1111-4111-8111-111111111111') },
+    );
+    expect(await screen.findByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-tree-view')).not.toBeInTheDocument();
+  });
+
+  it('puts the pane in the mobile drawer and closes it on a New chat tap', async () => {
+    render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+
+    fireEvent.click(screen.getByLabelText('Open navigation menu'));
+    const drawer = await screen.findByRole('dialog', { name: 'Navigation menu' });
+    expect(within(drawer).getByTestId('ai-conversations-sidebar')).toBeInTheDocument();
+
+    // New chat on /ai does not change the pathname, so only the pane's own
+    // onNavigate can close the drawer — the discriminating half of the
+    // "every row and New chat call onNavigate" rule.
+    fireEvent.click(within(drawer).getByTestId('conversations-new-chat'));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Navigation menu' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('fetches the conversation list once on /ai and never on /pages/:id', async () => {
+    const fetchSpy = vi.mocked(globalThis.fetch);
+    const listCalls = () =>
+      fetchSpy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/llm/conversations'));
+
+    fetchSpy.mockClear();
+    const { unmount } = render(
+      <AppLayout>
+        <div>ai page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/ai') },
+    );
+    await screen.findByTestId('ai-conversations-sidebar');
+    await waitFor(() => expect(listCalls()).toHaveLength(1));
+    unmount();
+
+    fetchSpy.mockClear();
+    render(
+      <AppLayout>
+        <div>just a page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/abc') },
+    );
+    await waitFor(() => expect(screen.getByText('just a page')).toBeInTheDocument());
+    expect(listCalls()).toEqual([]);
   });
 
   it('shows tree sidebar on /pages/:id route', () => {
@@ -312,6 +516,73 @@ describe('AppLayout', () => {
       </AppLayout>,
       { wrapper: createWrapper('/pages/123') },
     );
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+  // WCAG 2.4.1 Bypass Blocks (Level A): a keyboard user with no route-level
+  // tree (e.g. /ai, /graph, /settings) had no way past the header at all.
+  it('renders a skip link as the first focusable element, targeting the main content region', () => {
+    render(
+      <AppLayout>
+        <div>page body</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const skipLink = screen.getByText('Skip to content');
+    expect(skipLink.tagName).toBe('A');
+    expect(skipLink.getAttribute('href')).toBe('#main-content');
+
+    const main = document.getElementById('main-content');
+    expect(main).not.toBeNull();
+    expect(main!.tagName).toBe('MAIN');
+    expect(main!.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('gives the skip link\'s target real DOM focusability so activating it actually moves focus', () => {
+    render(
+      <AppLayout>
+        <div>page body</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    const main = document.getElementById('main-content')!;
+    main.focus();
+    expect(document.activeElement).toBe(main);
+  });
+
+  it('does not render a layout preset selector in the shell', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    expect(screen.queryByRole('button', { name: 'Layout presets' })).not.toBeInTheDocument();
+  });
+
+  it('treats the create form as an article route with side panel', () => {
+    render(
+      <AppLayout>
+        <div>new page</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/new') },
+    );
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+
+  it('does not force-collapse the tree when the inspector is open at laptop widths', () => {
+    window.innerWidth = 900;
+    useUiStore.setState({ treeSidebarCollapsed: false, articleSidebarCollapsed: false });
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+
+    expect(screen.getByTestId('sidebar-tree-view')).toBeInTheDocument();
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
@@ -350,16 +621,16 @@ describe('AppLayout', () => {
   });
 
   it('root layout container prevents outer scrolling with overflow-hidden', () => {
-    const { container } = render(
+    render(
       <AppLayout>
         <div>content</div>
       </AppLayout>,
       { wrapper: createWrapper('/') },
     );
-    // The outermost div should clip overflow to prevent body-level scrollbar
-    const rootDiv = container.firstElementChild as HTMLElement;
-    expect(rootDiv.className).toContain('overflow-hidden');
-    expect(rootDiv.className).toContain('h-screen');
+    const chassis = screen.getByTestId('app-chassis');
+    expect(chassis.className).toContain('overflow-hidden');
+    expect(chassis.className).toContain('h-screen');
+    expect(screen.getByTestId('app-shell').className).toContain('overflow-hidden');
   });
 
   it('panel wrapper is edge-to-edge (no padding) for flat chrome layout', () => {
@@ -370,10 +641,49 @@ describe('AppLayout', () => {
       { wrapper: createWrapper('/') },
     );
     const panelWrapper = screen.getByTestId('panel-wrapper');
-    // Was p-3 + gap-2.5 in the v0.4-early floating-chrome layout. Now
-    // edge-to-edge, with the scroll container providing inner padding.
+    // Was p-3 + gap-2.5 in the v0.4-early floating-chrome layout. The
+    // inset shell's rail gutter is a CSS variable on article routes, not
+    // those retired magic classes.
     expect(panelWrapper.className).not.toContain('p-3');
     expect(panelWrapper.className).not.toContain('gap-2.5');
+  });
+
+  it('keeps left nav and main content in one workspace; the inspector sits outside it', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    const workspace = screen.getByTestId('app-workspace');
+    const pane = screen.getByTestId('article-right-pane');
+    const main = document.getElementById('main-content');
+    expect(workspace.contains(screen.getByTestId('sidebar-tree-view'))).toBe(true);
+    expect(workspace.contains(main)).toBe(true);
+    expect(workspace.contains(pane)).toBe(false);
+    expect(screen.getByTestId('panel-wrapper').contains(pane)).toBe(true);
+  });
+
+  it('does not detach the inspector on non-article routes', () => {
+    render(
+      <AppLayout>
+        <div>content</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/') },
+    );
+    expect(screen.getByTestId('app-workspace')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+    expect(screen.getByTestId('panel-wrapper').className).not.toMatch(/app-body-with-rail/);
+  });
+
+  it('applies the rail gutter only on article routes', () => {
+    render(
+      <AppLayout>
+        <div>article</div>
+      </AppLayout>,
+      { wrapper: createWrapper('/pages/123') },
+    );
+    expect(screen.getByTestId('panel-wrapper').className).toMatch(/app-body-with-rail/);
   });
 
   it('has mobile sidebar toggle button', () => {
@@ -401,48 +711,72 @@ describe('AppLayout', () => {
     expect(header!.querySelector('[aria-label="Expand sidebar"]')).toBeNull();
   });
 
-  it('clicking the desktop search button opens the command palette', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    fireEvent.click(desktopBtn);
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
-  });
 
-  it('clicking the mobile search button opens the command palette', () => {
-    useCommandPaletteStore.setState({ isOpen: false });
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    const mobileBtn = screen.getByLabelText('Search');
-    fireEvent.click(mobileBtn);
-    expect(useCommandPaletteStore.getState().isOpen).toBe(true);
-  });
 
-  it('search controls are native button elements (keyboard accessible via Enter/Space)', () => {
-    render(
-      <AppLayout>
-        <div>content</div>
-      </AppLayout>,
-      { wrapper: createWrapper('/') },
-    );
-    // Native <button> elements are keyboard-accessible by default:
-    // browsers fire click on Enter and Space without extra JS.
-    const desktopBtn = screen.getByLabelText('Search knowledge base');
-    const mobileBtn = screen.getByLabelText('Search');
-    expect(desktopBtn.tagName).toBe('BUTTON');
-    expect(mobileBtn.tagName).toBe('BUTTON');
-    // Neither button has tabIndex=-1 which would remove keyboard focus
-    expect(desktopBtn).not.toHaveAttribute('tabindex', '-1');
-    expect(mobileBtn).not.toHaveAttribute('tabindex', '-1');
+  describe('the `.` shortcut', () => {
+    function captureShortcuts(path: string) {
+      let captured: keyboardShortcutsModule.ShortcutDefinition[] = [];
+      vi.spyOn(keyboardShortcutsModule, 'useKeyboardShortcuts').mockImplementation((shortcuts) => {
+        captured = shortcuts;
+      });
+      render(<AppLayout><div>content</div></AppLayout>, { wrapper: createWrapper(path) });
+      return () => captured.find((s) => s.key === '.')!;
+    }
+
+    it('opens the page inspector sheet below md', () => {
+      window.innerWidth = 500;
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+      act(() => dotShortcut().action());
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+    });
+
+    it('closes the page inspector sheet when it is already open', async () => {
+      window.innerWidth = 500;
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      act(() => dotShortcut().action());
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+      });
+    });
+
+    it('still toggles the article pane at md and up', () => {
+      window.innerWidth = 1440;
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(true);
+    });
+
+    it('toggles the laptop expand flag below xl instead of the wide persist', () => {
+      window.innerWidth = 1024;
+      useUiStore.setState({ articleSidebarLaptopExpanded: false });
+      const dotShortcut = captureShortcuts('/pages/page-1');
+
+      act(() => dotShortcut().action());
+
+      expect(useUiStore.getState().articleSidebarLaptopExpanded).toBe(true);
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    });
+
+    it('leaves the pane toggle alone off article routes', () => {
+      useAiDockStore.setState({ open: true });
+      const dotShortcut = captureShortcuts('/');
+
+      act(() => dotShortcut().action());
+
+      expect(useAiDockStore.getState().open).toBe(true);
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(true);
+    });
   });
 
   it('does not register an Escape shortcut (Radix Dialog handles Escape natively)', () => {
@@ -467,5 +801,213 @@ describe('AppLayout', () => {
     expect(escapeShortcut).toBeUndefined();
 
     spy.mockRestore();
+  });
+
+  // AiProvider was hoisted out of the /ai route into the shell (#1126) so a
+  // conversation outlives navigation. Mounting it on every route only works if
+  // it does nothing at all until an AI surface asks for it.
+  describe('AI provider (#1126)', () => {
+    /** Renders the page id the provider resolved — proves the context exists. */
+    function AiConsumerProbe() {
+      const { pageId } = useAiContext();
+      return <span data-testid="ai-consumer">{pageId ?? 'no page'}</span>;
+    }
+
+    /**
+     * The suite-wide beforeEach already answers every request. Reuse that spy —
+     * two layers of fetch mocks would disagree about which one recorded a call.
+     */
+    function spyOnFetch() {
+      const spy = vi.mocked(globalThis.fetch);
+      spy.mockClear();
+      return spy;
+    }
+
+    /** Requests only the AI provider issues. */
+    function aiRequests(spy: ReturnType<typeof spyOnFetch>): string[] {
+      return spy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((url) => /\/(llm|ollama|embeddings)\//.test(url));
+    }
+
+    it('provides the AI context to the whole shell', () => {
+      render(
+        <AppLayout>
+          <AiConsumerProbe />
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      // Resolved from the article route, without a ?pageId= search param.
+      expect(screen.getByTestId('ai-consumer')).toHaveTextContent('abc');
+    });
+
+    it('issues no AI requests on a route with no AI surface mounted', async () => {
+      const fetchSpy = spyOnFetch();
+      render(
+        <AppLayout>
+          <div>just a page</div>
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('just a page')).toBeInTheDocument();
+      });
+      expect(aiRequests(fetchSpy)).toEqual([]);
+
+      fetchSpy.mockRestore();
+    });
+
+    it('issues them once an AI surface mounts (control for the assertion above)', async () => {
+      const fetchSpy = spyOnFetch();
+      render(
+        <AppLayout>
+          <AiConsumerProbe />
+        </AppLayout>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+
+      await waitFor(() => {
+        expect(aiRequests(fetchSpy).length).toBeGreaterThan(0);
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    // Consumer registration is a mount effect, and StrictMode runs it
+    // mount -> cleanup -> mount. Both the gate and the wake-up have to survive
+    // that; the app renders under StrictMode in development.
+    it('holds the gate under StrictMode double-invoked effects', async () => {
+      const inertSpy = spyOnFetch();
+      const { unmount } = render(
+        <StrictMode>
+          <AppLayout>
+            <div>just a page</div>
+          </AppLayout>
+        </StrictMode>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      await waitFor(() => {
+        expect(screen.getByText('just a page')).toBeInTheDocument();
+      });
+      expect(aiRequests(inertSpy)).toEqual([]);
+      unmount();
+
+      // spyOnFetch() below reuses the same shared spy and clears its call
+      // log itself — mockRestore() here would tear down the suite-wide fetch
+      // mock installed in beforeEach, leaving the next spyOnFetch() call with
+      // a non-mock globalThis.fetch to clear.
+      const wokenSpy = spyOnFetch();
+      render(
+        <StrictMode>
+          <AppLayout>
+            <AiConsumerProbe />
+          </AppLayout>
+        </StrictMode>,
+        { wrapper: createWrapper('/pages/abc') },
+      );
+      await waitFor(() => {
+        expect(aiRequests(wokenSpy).length).toBeGreaterThan(0);
+      });
+      wokenSpy.mockRestore();
+    });
+  });
+
+  describe('"show me the assistant" on an article route', () => {
+    /**
+     * `openDock()` is raised by Alt+I and by the inspector's rail button.
+     * AppLayout consumes it at every width on an article route and turns it
+     * into: show the inspector, select Assistant. Below `md` that is the
+     * inspector sheet; at `md` and up it is the detached rail.
+     */
+    beforeEach(() => {
+      useAiDockStore.setState({ open: false });
+      useUiStore.setState({ articleSidebarCollapsed: false });
+    });
+
+    it.each([1440, 1200, 900, 800])(
+      'at %ipx it selects the Assistant tab and lowers the flag',
+      async (width) => {
+        window.innerWidth = width;
+        render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+        act(() => {
+          useAiDockStore.getState().openDock();
+        });
+
+        await waitFor(() => {
+          expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+            'data-inspector-view',
+            'assistant',
+          );
+        });
+        expect(useAiDockStore.getState().open).toBe(false);
+      },
+    );
+
+    it('expands a collapsed inspector rather than asking a rail to show a tab', async () => {
+      window.innerWidth = 1440;
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+      act(() => {
+        useAiDockStore.getState().openDock();
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+      });
+    });
+
+    it('below md it opens the inspector sheet on Assistant and lowers the flag', async () => {
+      window.innerWidth = 500;
+      render(<AppLayout>content</AppLayout>, { wrapper: createWrapper('/pages/abc') });
+
+      act(() => {
+        useAiDockStore.getState().openDock();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-inspector-view',
+        'assistant',
+      );
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+      expect(useAiDockStore.getState().open).toBe(false);
+    });
+  });
+
+  describe('mobile page inspector', () => {
+    it('offers an inspector trigger on article routes below md', () => {
+      window.innerWidth = 500;
+      render(<AppLayout><div>article</div></AppLayout>, { wrapper: createWrapper('/pages/123') });
+
+      expect(screen.getByLabelText('Open page inspector')).toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Page inspector' })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('Open page inspector'));
+      expect(screen.getByRole('dialog', { name: 'Page inspector' })).toBeInTheDocument();
+      expect(screen.getByTestId('article-right-pane')).toHaveAttribute(
+        'data-presentation',
+        'sheet',
+      );
+    });
+
+    it('does not offer the inspector trigger off article routes', () => {
+      window.innerWidth = 500;
+      render(<AppLayout><div>pages</div></AppLayout>, { wrapper: createWrapper('/') });
+      expect(screen.queryByLabelText('Open page inspector')).not.toBeInTheDocument();
+    });
+
+    it('does not offer the inspector trigger at md and up', () => {
+      window.innerWidth = 1024;
+      render(<AppLayout><div>article</div></AppLayout>, { wrapper: createWrapper('/pages/123') });
+      expect(screen.queryByLabelText('Open page inspector')).not.toBeInTheDocument();
+    });
   });
 });

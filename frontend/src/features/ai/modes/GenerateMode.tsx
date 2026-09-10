@@ -1,18 +1,24 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
-import { Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Upload, FileText, AlertTriangle, Globe } from 'lucide-react';
+import { useState, useCallback, useMemo } from 'react';
+import { AlertTriangle, Send, Loader2, Save, Search, ChevronDown, X, FolderOpen, Globe } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useAiContext, nextMessageId } from '../AiContext';
+import { AssistantActionSelect } from '../AssistantActionSelect';
+import { ThinkToggle } from '../ThinkToggle';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
 import { useLocalSpaces } from '../../../shared/hooks/use-standalone';
 import { usePages, useCreatePage, type PageFilters } from '../../../shared/hooks/use-pages';
-import { useExtractPdf, type ExtractPdfResult } from '../../../shared/hooks/use-extract-pdf';
-import { apiFetch } from '../../../shared/lib/api';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
+import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
+import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { PROMPT_MAX_LENGTH } from './prompt-limits';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { improveMarkdownToHtml } from '../../../shared/components/article/improve-markdown';
 import { toast } from 'sonner';
 import { cn } from '../../../shared/lib/cn';
-
-/** Threshold above which the backend truncates PDF text for the LLM context window. */
-const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
+import { Button } from '../../../shared/components/Button';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,13 +28,6 @@ const PDF_TEXT_TRUNCATION_THRESHOLD = 80_000;
 function extractTitleFromMarkdown(md: string): string {
   const match = md.match(/^#{1,3}\s+(.+)$/m);
   return match?.[1]?.trim() ?? '';
-}
-
-/** Format bytes to human-readable size. */
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,8 +71,8 @@ function ParentPagePicker({
         type="button"
         onClick={() => setIsOpen(!isOpen)}
         className={cn(
-          'flex w-full items-center justify-between gap-2 rounded-lg border border-border/40 bg-background/50 px-3 py-1.5 text-left text-sm',
-          'hover:border-border/60 focus:outline-none focus:ring-1 focus:ring-primary/30',
+          'flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-background/50 px-3 py-1.5 text-left text-sm',
+          'hover:border-border focus:outline-none focus:ring-1 focus:ring-ring',
         )}
       >
         <span className={parentId ? 'text-foreground' : 'text-muted-foreground'}>
@@ -104,14 +103,14 @@ function ParentPagePicker({
       </button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-full rounded-lg border border-border/40 bg-card shadow-lg backdrop-blur-md">
-          <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
-            <Search size={14} className="text-muted-foreground" />
+        <div className="absolute z-50 mt-1 w-full nm-popover-glass overflow-hidden">
+          <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
+            <Search size={14} className="shrink-0 text-muted-foreground" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search pages..."
-              className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
               autoFocus
             />
           </div>
@@ -124,7 +123,7 @@ function ParentPagePicker({
                 setSearch('');
               }}
               className={cn(
-                'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
+                'w-full rounded-lg px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
                 !parentId && 'bg-primary/10 text-primary-ink',
               )}
             >
@@ -145,7 +144,7 @@ function ParentPagePicker({
                   setSearch('');
                 }}
                 className={cn(
-                  'w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
+                  'w-full rounded-lg px-3 py-1.5 text-left text-sm transition-colors hover:bg-foreground/5',
                   parentId === page.id && 'bg-primary/10 text-primary-ink',
                 )}
               >
@@ -158,153 +157,6 @@ function ParentPagePicker({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// PDF Upload Zone
-// ---------------------------------------------------------------------------
-
-function PdfUploadZone({
-  extractPdf,
-  onExtracted,
-  pdfData,
-  pdfFilename,
-  onRemove,
-  isExtracting,
-  disabled,
-}: {
-  extractPdf: (file: File) => Promise<ExtractPdfResult>;
-  onExtracted: (result: ExtractPdfResult, filename: string) => void;
-  pdfData: ExtractPdfResult | null;
-  pdfFilename: string | null;
-  onRemove: () => void;
-  isExtracting: boolean;
-  disabled: boolean;
-}) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
-
-  const handleFile = useCallback(async (file: File) => {
-    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      toast.error('Only PDF files are accepted');
-      return;
-    }
-    if (file.size > 20 * 1024 * 1024) {
-      toast.error('File exceeds 20 MB limit');
-      return;
-    }
-    try {
-      const result = await extractPdf(file);
-      onExtracted(result, file.name);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'PDF extraction failed');
-    }
-  }, [extractPdf, onExtracted]);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
-  }, [handleFile]);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    setIsDragOver(false);
-  }, []);
-
-  // Show preview card if PDF is already extracted
-  if (pdfData && pdfFilename) {
-    return (
-      <div
-        className="flex items-start gap-3 rounded-lg border border-border/40 bg-background/50 p-3"
-        data-testid="pdf-preview-card"
-      >
-        <FileText size={20} className="mt-0.5 shrink-0 text-primary" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <span className="truncate">{pdfFilename}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {formatFileSize(pdfData.fileSize)}
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {pdfData.totalPages} {pdfData.totalPages === 1 ? 'page' : 'pages'}
-            </span>
-          </div>
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-            {pdfData.preview}
-          </p>
-          {pdfData.text.length > PDF_TEXT_TRUNCATION_THRESHOLD && (
-            <p className="mt-1 flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400" data-testid="pdf-truncation-warning">
-              <AlertTriangle size={12} />
-              Document will be truncated to ~80K characters for the LLM
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={disabled}
-          aria-label="Remove PDF"
-          className="shrink-0 rounded p-1 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-          data-testid="pdf-remove-button"
-        >
-          <X size={14} />
-        </button>
-      </div>
-    );
-  }
-
-  // Show upload zone
-  return (
-    <div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="application/pdf,.pdf"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-          // Reset so re-selecting the same file triggers onChange
-          e.target.value = '';
-        }}
-        data-testid="pdf-file-input"
-      />
-      <button
-        type="button"
-        onClick={() => fileInputRef.current?.click()}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        disabled={isExtracting || disabled}
-        className={cn(
-          'flex w-full items-center justify-center gap-2 rounded-lg border border-dashed px-4 py-3 text-sm transition-colors',
-          isDragOver
-            ? 'border-primary bg-primary/10 text-primary-ink'
-            : 'border-border/40 text-muted-foreground hover:border-border/60 hover:text-foreground',
-          (isExtracting || disabled) && 'pointer-events-none opacity-50',
-        )}
-        data-testid="pdf-upload-zone"
-      >
-        {isExtracting ? (
-          <>
-            <Loader2 size={16} className="animate-spin" />
-            Extracting text...
-          </>
-        ) : (
-          <>
-            <Upload size={16} />
-            Drop a PDF here or click to browse (max 20 MB)
-          </>
-        )}
-      </button>
     </div>
   );
 }
@@ -453,19 +305,18 @@ export function GenerateSavePanel({
       </div>
 
       <div className="flex items-center gap-2 pt-1">
-        <button
+        <Button
+          type="button"
+          variant="primary"
+          size="md"
           onClick={handleSave}
           disabled={isSaving || !title.trim() || !spaceKey}
-          className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          isLoading={isSaving}
+          leftIcon={<Save size={14} />}
           data-testid="generate-save-button"
         >
-          {isSaving ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           {isSaving ? 'Saving...' : isLocalSpace ? 'Save Locally' : 'Save to Confluence'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -477,11 +328,23 @@ export function GenerateSavePanel({
 
 /**
  * Generate mode: free-text prompt to create a new article via LLM streaming.
- * Optionally upload a PDF to use as source material.
+ * Optionally attach source material — a document (PDF, DOCX, MD, TXT, RTF or
+ * ODT, #1132) and/or an image (#1154).
  * After generation completes, shows a save panel to publish to Confluence.
  */
 export function GenerateModeInput() {
-  const { input, setInput, isStreaming, model, thinkingMode, setMessages, runStream } = useAiContext();
+  return (
+    <AssistantAttachmentsScope>
+      <GenerateModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function GenerateModeInputContent() {
+  const {
+    input, setInput, isStreaming, model, thinkingMode, setThinkingMode, setMessages, runStream,
+    chatVision, chatVisionModel,
+  } = useAiContext();
   const [generatedContent, setGeneratedContent] = useState('');
   const [showSavePanel, setShowSavePanel] = useState(false);
   const [searchWeb, setSearchWeb] = useState(false);
@@ -495,27 +358,26 @@ export function GenerateModeInput() {
   });
   const mcpEnabled = mcpSettings?.enabled ?? false;
 
-  // PDF upload state — a single useExtractPdf instance shared with PdfUploadZone
-  // so that `isExtracting` reflects the same extraction that PdfUploadZone runs
-  // (#940). Two separate instances left the spinner/disabled state stuck.
-  const { extractPdf, isExtracting } = useExtractPdf();
-  const [pdfData, setPdfData] = useState<ExtractPdfResult | null>(null);
-  const [pdfFilename, setPdfFilename] = useState<string | null>(null);
-
-  const handlePdfExtracted = useCallback((result: ExtractPdfResult, filename: string) => {
-    setPdfData(result);
-    setPdfFilename(filename);
-  }, []);
-
-  const handlePdfRemove = useCallback(() => {
-    setPdfData(null);
-    setPdfFilename(null);
-  }, []);
+  // Both attachment slots, all intake routing, the shared drop target and paste
+  // live in the page-owned `useAttachments` controller (#1154). It owns the single `useExtractDocument`
+  // instance the zone's spinner reads (#940), the format and 20 MB gates the
+  // component used to apply, and — new here — the image half.
+  //
+  // `/ai` owns this controller above the action switch, so source material
+  // remains attached when the user selects Generate after composing elsewhere.
+  const attachments = useAssistantAttachments();
+  // Destructured for the send callback's dependency array: the controller
+  // returns a fresh object literal every render, so a `useCallback` depending
+  // on `attachments` itself was rebuilt on every render and memoized nothing.
+  const {
+    documents: attachedDocuments, image: attachedImage, isBusy, removeImage,
+  } = attachments;
 
   const handleGenerate = useCallback(async () => {
-    // Block generation while a PDF extraction is in flight — otherwise the
-    // prompt would be sent without the pdfText that is still being extracted (#940).
-    if (!input.trim() || isStreaming || isExtracting) return;
+    // Block generation while an extraction or an image staging round-trip is in
+    // flight — otherwise the prompt would be sent without the attachment that
+    // is still being prepared (#940, widened to both slots by #1154).
+    if (!input.trim() || isStreaming || isBusy) return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
@@ -524,16 +386,27 @@ export function GenerateModeInput() {
     const prompt = input.trim();
     setInput('');
 
-    const displayMessage = pdfData
-      ? `Generate from PDF (${pdfFilename}): ${prompt}`
+    // The filename already carries the format, so naming it twice ("Generate
+    // from DOCX (notes.docx)") would only be noise.
+    const displayMessage = attachedDocuments.length > 0
+      ? `Generate from ${attachedDocuments.map((document) => document.filename).join(', ')}: ${prompt}`
       : `Generate: ${prompt}`;
-    setMessages([{ id: nextMessageId(), role: 'user', content: displayMessage }]);
+    // Append, not replace (#1126) — matching runStream's seeded turn and Ask.
+    // Generate is the one mode that still builds its own user turn by hand, and
+    // it was the last remaining way for a submit to discard the thread it lands in.
+    // The id is held so the 410 path below can take the turn back out again.
+    const userMessageId = nextMessageId();
+    setMessages((prev) => [...prev, { id: userMessageId, role: 'user', content: displayMessage }]);
     setGeneratedContent('');
     setShowSavePanel(false);
 
     const body: Record<string, unknown> = { prompt, model };
-    if (pdfData) {
-      body.pdfText = pdfData.text;
+    const documentText = buildDocumentReferenceText(attachedDocuments);
+    if (documentText) {
+      body.documentText = documentText;
+    }
+    if (attachedImage) {
+      body.imageHandle = attachedImage.handle;
     }
     if (searchWeb) {
       body.searchWeb = true;
@@ -549,10 +422,44 @@ export function GenerateModeInput() {
           setShowSavePanel(true);
         }
       },
+      // A 410 means the 15-minute staging TTL lapsed between attaching the
+      // image and sending (`routes/llm/_helpers.ts` → `httpErrors.gone`).
+      // Nothing was generated, so the whole send is rolled back rather than
+      // left as a dead turn with an error under it: the image slot is cleared
+      // because that handle is gone for good, and the prompt goes back in the
+      // box so it does not have to be retyped.
+      // Guarded on the image the way the dock's handler is: only the image
+      // path can produce a 410 today, and a 410 from anywhere else is somebody
+      // else's error — it keeps its normal inline treatment rather than being
+      // explained away with an image message that would not be true.
+      onError: (err) => {
+        if (!attachedImage) return false;
+        if (!(err instanceof ApiError) || err.statusCode !== 410) return false;
+        removeImage();
+        setInput(prompt);
+        setMessages((prev) => prev.filter((m) => m.id !== userMessageId));
+        toast.error('The image expired — attach it again.');
+        return true;
+      },
     });
-  }, [input, model, isStreaming, isExtracting, pdfData, pdfFilename, searchWeb, thinkingMode, setInput, setMessages, runStream]);
+  }, [
+    input, model, isStreaming, searchWeb, thinkingMode, setInput, setMessages, runStream,
+    isBusy, attachedDocuments, attachedImage, removeImage,
+  ]);
 
   const handleSubmit = () => handleGenerate();
+
+  const promptRef = useAutoGrowTextarea(input);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Unchanged contract: Enter submits, Shift+Enter inserts a newline. On a
+    // textarea the bare Enter has to be prevented explicitly, otherwise it
+    // submits *and* leaves the browser's own newline behind in the field.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
 
   // Check if there's a completed generation (assistant message with content, not streaming)
   const hasCompletedGeneration = showSavePanel && generatedContent && !isStreaming;
@@ -565,19 +472,30 @@ export function GenerateModeInput() {
           onSaved={() => {
             setShowSavePanel(false);
             setGeneratedContent('');
-            handlePdfRemove();
+            attachments.clearAll();
           }}
         />
       )}
 
-      <div className="mt-3 space-y-3 border-t border-border/40 pt-3">
-        <PdfUploadZone
-          extractPdf={extractPdf}
-          onExtracted={handlePdfExtracted}
-          pdfData={pdfData}
-          pdfFilename={pdfFilename}
-          onRemove={handlePdfRemove}
-          isExtracting={isExtracting}
+      <div className="mt-3 space-y-3 border-t border-border pt-3">
+        {/* No `formats` prop: Generate offers everything the extractor supports
+            (#1132), and the zone derives its accept list and every string it
+            renders from that default.
+
+            `isDragOver` hands the zone the hook's drag state — and with it the
+            drop target itself. The zone's own listeners sat on a button that
+            goes `pointer-events-none` while extracting, so a file dropped mid
+            extraction reached no handler at all and the browser navigated the
+            tab to it, taking the typed prompt with it. */}
+        <DocumentUploadZone
+          onPick={attachments.pickFile}
+          onPickFiles={attachments.pickFiles}
+          extracted={attachedDocuments[0]?.result ?? null}
+          filename={attachedDocuments[0]?.filename ?? null}
+          documents={attachedDocuments}
+          onRemove={attachments.removeDocument}
+          isExtracting={attachments.isExtracting}
+          isDragOver={attachments.isDragOver}
           disabled={isStreaming}
         />
 
@@ -588,30 +506,90 @@ export function GenerateModeInput() {
               checked={searchWeb}
               onChange={(e) => setSearchWeb(e.target.checked)}
               disabled={isStreaming}
-              className="rounded border-border/40"
+              className="rounded border-border"
             />
             <Globe size={14} />
             Search web for reference material
           </label>
         )}
 
-        <div className="nm-composer">
-          <input
+        {/* An advisory, not a refusal: the backend accepts both, and only the
+            resolved model knows whether they fit. Amber is the attention
+            colour under ADR-010 v0.5 and this is exactly that. It sits above
+            the composer so it reads between the two attachments it is about. */}
+        {attachedDocuments.length > 0 && attachments.image && (
+          <p
+            className="flex items-center gap-1.5 text-xs text-warning"
+            data-testid="attachment-context-warning"
+          >
+            <AlertTriangle size={12} className="shrink-0" aria-hidden />
+            Both attachments will be sent — a small model may not fit them.
+          </p>
+        )}
+
+        {/* flex-wrap so ImageAttachZone's row — its preview card plus its own
+            trigger — stacks above the prompt row inside the same box, the way
+            the dock's does. Document order is the only order here: no `order-*`
+            on any child, so the tab sequence matches what the eye reads
+            (WCAG 2.4.3 — see `composerRowClass`). This box holds one zone, not
+            two, but the convention is the same on all three composers. */}
+        <div className="nm-composer flex-wrap">
+          <ImageAttachZone
+            vision={chatVision}
+            visionModel={chatVisionModel}
+            image={attachments.image}
+            onPick={attachments.pickFile}
+            onRemove={attachments.removeImage}
+            isPreparing={attachments.isPreparing}
+            disabled={isStreaming}
+          />
+          {/* Skill select plus `Think`: extended thinking left the page's
+              options row for the composers (owner request, 2026-09-01, see
+              `ThinkToggle`), and `/llm/generate` reads the same provider state,
+              so it stays reachable where the request is composed. */}
+          <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} className="self-end" />
+          <ThinkToggle
+            checked={thinkingMode}
+            onChange={setThinkingMode}
+            disabled={isStreaming}
+            testId="generate-think"
+            className="self-end"
+          />
+          <textarea
+            ref={promptRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
-            placeholder={pdfData ? 'Instructions for generating from PDF...' : 'Describe the page to generate...'}
+            onKeyDown={handleKeyDown}
+            // "this document" rather than the format's name: the format labels
+            // live in DocumentUploadZone's FORMAT_META and copying them here
+            // would give the same string two owners. An attached *image* keeps
+            // the default: "from this document" would be a lie about a PNG.
+            placeholder={attachedDocuments.length > 1
+              ? 'Instructions for generating from these documents...'
+              : attachedDocuments.length === 1
+                ? 'Instructions for generating from this document...'
+                : 'Describe the page to generate...'}
+            maxLength={PROMPT_MAX_LENGTH}
+            rows={1}
             disabled={isStreaming}
-            className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+            // The composer wrapper owns the inset surface, border and focus
+            // ring, so the field stays transparent. resize-none because the
+            // auto-grow hook owns the height — a drag handle would fight it.
+            // min-w-0 so a textarea's intrinsic `cols` width can't push the
+            // composer wider than a narrow viewport.
+            className="min-w-0 grow basis-40 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           />
-          <button
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
             onClick={handleSubmit}
-            disabled={isStreaming || isExtracting || !input.trim() || !model}
+            disabled={isStreaming || attachments.isBusy || !input.trim() || !model}
+            isLoading={isStreaming}
             aria-label={isStreaming ? 'Sending...' : 'Send message'}
-            className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-          >
-            {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          </button>
+            className="shrink-0 self-end h-8 px-3"
+            leftIcon={<Send size={14} />}
+          />
         </div>
       </div>
     </>

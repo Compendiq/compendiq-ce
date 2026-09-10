@@ -486,10 +486,10 @@ describe('sync-service', () => {
           return emptyResult as QueryResult;
         }
 
-        // detectDeletedPages: existing pages in DB
-        if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
+        // detectDeletedPages: existing pages in DB, in cursor order
+        if (sqlStr.includes('SELECT p.id, p.confluence_id') && sqlStr.includes('p.deleted_at IS NULL')) {
           return {
-            rows: dbPageIds.map((id) => ({ confluence_id: id })),
+            rows: dbPageIds.map((id, index) => ({ id: index + 1, confluence_id: id })),
             rowCount: dbPageIds.length, command: '', oid: 0, fields: [],
           } as QueryResult;
         }
@@ -570,7 +570,7 @@ describe('sync-service', () => {
 
       await syncUser('user-1');
 
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'page-orphan');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('page-orphan');
     });
 
     it('skips reconciliation when another run already claimed the space this cycle (#706 dedupe)', async () => {
@@ -709,8 +709,8 @@ describe('sync-service', () => {
 
       await syncUser('user-1');
 
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-1');
-      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('', 'purged-2');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('purged-1');
+      expect(vi.mocked(cleanPageAttachments)).toHaveBeenCalledWith('purged-2');
       expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-1');
       expect(vi.mocked(clearAttachmentFailures)).toHaveBeenCalledWith(mockRedisClient, 'purged-2');
     });

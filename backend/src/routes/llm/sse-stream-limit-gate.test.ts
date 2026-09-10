@@ -38,6 +38,9 @@ const mockGetSystemPrompt = vi.fn().mockReturnValue('sys prompt');
 vi.mock('../../domains/llm/services/prompts.js', () => ({
   getSystemPrompt: (...args: unknown[]) => mockGetSystemPrompt(...args),
   LANGUAGE_PRESERVATION_INSTRUCTION: '',
+  // #1154: none of these routes attach an image in this suite, so content is
+  // always a bare string.
+  contentToText: (content: unknown) => content as string,
 }));
 
 vi.mock('../../domains/llm/services/llm-provider-resolver.js', () => ({
@@ -60,9 +63,41 @@ vi.mock('../../domains/llm/services/openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// Closed stub (#1268 review): the ask route reads the #1105 confidence
+// formula from the retrieval-confidence leaf module (real, dependency-free),
+// so rag-service's heavy module graph stays out of this suite.
+//
+// The row is load-bearing: since #1114's prerequisite `/llm/ask` refuses an
+// EMPTY result set outright, and a refusal never reaches streamChat — with
+// the old `[]` the ask route's success/error/abort cases below would still
+// have gone green without ever exercising the generator they are about.
 vi.mock('../../domains/llm/services/rag-service.js', () => ({
-  hybridSearch: vi.fn().mockResolvedValue([]),
+  hybridSearch: vi.fn().mockResolvedValue([
+    {
+      pageId: 1, confluenceId: 'p1', chunkText: 'grounded text',
+      pageTitle: 'Doc', sectionTitle: 'Sec', spaceKey: 'DEV',
+      score: 0.032, vectorScore: 0.9, keywordRank: null,
+    },
+  ]),
   buildRagContext: vi.fn().mockReturnValue('ctx'),
+}));
+
+// Explicit getter stubs (#1268 review): the real getters carry a
+// module-level 60s cache that pins whatever the first request resolved for
+// the life of the file — a later test exercising the gate against a DB row
+// would pass vacuously.
+vi.mock('../../core/services/admin-settings-service.js', () => ({
+  getRagConfidenceThreshold: vi.fn(async () => 0),
+  getRagConfidenceThresholdRerank: vi.fn(async () => 0),
+  // #1270 m6: the ask route reads the assembly budget into its cache key.
+  getRagContextCharsPerPage: vi.fn(async () => 6000),
+  // #1115 P4: the answer-path image cap. The stub is CLOSED, so a getter the
+  // route starts reading has to be added here — which is the point: a missing
+  // one throws rather than silently resolving to `undefined` and turning a
+  // gate into a coin flip. 0 keeps this suite about the stream limiter: the
+  // fixture row carries no `imageHits`, so the value is unreachable either
+  // way, and 0 says so.
+  getRagAnswerMaxImages: vi.fn(async () => 0),
 }));
 
 vi.mock('../../core/db/postgres.js', () => ({

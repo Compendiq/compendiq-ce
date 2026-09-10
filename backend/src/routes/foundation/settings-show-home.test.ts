@@ -3,7 +3,10 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 
-const mockQuery = vi.fn();
+// Default empty rows so GET /settings' extra admin_settings read
+// (`client_inference_enabled`) cannot 500 a test that only queued the
+// user_settings SELECT — same default as settings.test.ts.
+const mockQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
 
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
@@ -89,11 +92,11 @@ describe('Settings routes – showSpaceHomeContent', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
   });
 
   it('GET /settings returns showSpaceHomeContent=true by default for new users', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // INSERT default
 
     const response = await app.inject({ method: 'GET', url: '/api/settings' });
     const body = JSON.parse(response.body);

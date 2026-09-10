@@ -51,6 +51,12 @@ function manualChunks(id: string): string | undefined {
   // Rolldown ids are normally posix, but normalize separators so a Windows dev
   // build matches `/node_modules/<pkg>/` the same way as linux CI.
   const normalized = id.replace(/\\/g, '/');
+  if (
+    normalized.includes('/node_modules/@huggingface/transformers/')
+    || normalized.includes('/node_modules/onnxruntime-web/')
+  ) {
+    return 'client-inference';
+  }
   if (!normalized.includes('/node_modules/')) return undefined;
   for (const [chunk, packages] of VENDOR_CHUNKS) {
     if (packages.some((pkg) => normalized.includes(`/node_modules/${pkg}/`))) return chunk;
@@ -77,10 +83,21 @@ export default defineConfig({
   },
   server: {
     port: 8081,
+    // Allow serving files from the repository root. The workspace hoists
+    // node_modules there, so when the dev server runs from a git worktree
+    // (`.claude/worktrees/<name>/frontend`) the default allow-list does not
+    // cover it and every @fontsource file 403s — the app then renders in a
+    // system fallback, which silently misreports the typography.
+    fs: {
+      allow: [path.resolve(__dirname, '..'), path.resolve(__dirname, '../../../..')],
+    },
     proxy: {
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:3051',
         changeOrigin: true,
+        // Collaborative editing is GET /api/collab/:pageId (WebSocket).
+        // Without this, `npm run dev` cannot upgrade on the Vite port.
+        ws: true,
       },
     },
   },

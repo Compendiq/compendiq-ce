@@ -46,6 +46,20 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
   cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #1349: the icon store is keyed by `pages.id`, so the bulk hard delete runs
+// a SECOND pass over the numeric ids beside the `confluence_id`-keyed
+// attachment cleanup above. Mocked here so the cell below can see it — the
+// real module writes to `ATTACHMENTS_DIR`.
+// Only the one function is replaced: `attachment-store.ts` imports
+// `PAGE_ICON_STORE_DIRNAME` from this module to build its reserved-name set,
+// and a whole-module stand-in leaves that `undefined`.
+vi.mock('../../core/services/page-icon-store.js', async () => {
+  const actual = await vi.importActual<typeof import('../../core/services/page-icon-store.js')>(
+    '../../core/services/page-icon-store.js',
+  );
+  return { ...actual, discardPageIconForDeletedPage: vi.fn().mockResolvedValue(undefined) };
+});
+
 vi.mock('../../core/services/audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -75,10 +89,18 @@ vi.mock('../../core/utils/logger.js', () => ({
 
 const mockProcessDirtyPages = vi.fn().mockResolvedValue({ processed: 2, errors: 0 });
 const mockIsProcessingUser = vi.fn().mockResolvedValue(false);
+// A factory mock REPLACES the module, so every import the routes reach for has
+// to appear here. `assertShadowRollbackWindowClear` (#1116) is called at the top
+// of POST /pages/bulk/embed; when it was missing from this list the route threw
+// "not a function" and 19 cells in this file failed with a bare 500 — the guard
+// itself was fine.
+const mockAssertShadowRollbackWindowClear = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   processDirtyPages: (...args: unknown[]) => mockProcessDirtyPages(...args),
   isProcessingUser: (...args: unknown[]) => mockIsProcessingUser(...args),
   computePageRelationships: vi.fn().mockResolvedValue(0),
+  assertShadowRollbackWindowClear: (...args: unknown[]) =>
+    mockAssertShadowRollbackWindowClear(...args),
 }));
 
 const mockTriggerQualityBatch = vi.fn().mockResolvedValue(undefined);
@@ -112,6 +134,7 @@ vi.mock('../../core/db/postgres.js', () => ({
 
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
+import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 
 describe('Bulk Pages Routes (Parallelized)', () => {
@@ -168,7 +191,16 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       ],
       rowCount: 2,
     });
-    mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+    // `DELETE FROM pages … RETURNING id` answers with the rows it actually
+    // destroyed, and since #1349 fixer r1 the icon pass keys off exactly that
+    // — so the stub has to model the RETURNING, not hand back an empty set.
+    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
+        const ids = (params?.[0] as number[] | undefined) ?? [];
+        return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
   });
 
   describe('POST /api/pages/bulk/delete', () => {
@@ -310,8 +342,70 @@ describe('Bulk Pages Routes (Parallelized)', () => {
 
       expect(response.statusCode).toBe(200);
       expect(cleanPageAttachments).toHaveBeenCalledTimes(2);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-1');
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
+    });
+
+    /**
+     * Fixer r1 — the BULK arm of the four hard-delete call sites #1349
+     * enumerates was pinned by nothing: removing the pass left every bulk and
+     * delete suite green. The #1349 sweep is structurally forbidden to walk
+     * `page-icons/` (it is a reserved root name), so an event-driven delete is
+     * the ONLY thing that ever collects an uploaded mark — a regression here
+     * leaks files with no other collector.
+     *
+     * The NUMERIC ids: the icon store is keyed by `pages.id`, while the
+     * attachment cleanup beside it is keyed by `confluence_id`, which is why
+     * this is its own pass rather than a line inside that one.
+     */
+    it('takes each hard-deleted page icon too, keyed by pages.id', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
+        rowCount: 2,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledTimes(2);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(1);
+      expect(discardPageIconForDeletedPage).toHaveBeenCalledWith(2);
+      // Never the `confluence_id` the attachment cache is keyed by.
+      expect(discardPageIconForDeletedPage).not.toHaveBeenCalledWith('page-1');
+    });
+
+    /**
+     * Fixer r1 — …and only for the ids the COMMIT actually destroyed. The
+     * cleanup transaction's catch does not rethrow (#766), so a rolled-back
+     * bulk cleanup used to fall through into the icon pass and `rm -rf` the
+     * marks of pages whose rows all survived (soft-deleted, restorable). Real
+     * Postgres + a real BEFORE DELETE trigger cover the same branch in
+     * `pages-crud-delete-atomicity.integration.test.ts`.
+     */
+    it('keeps every icon when the bulk cleanup transaction rolled back', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence' }, { id: 2, confluence_id: 'page-2', source: 'confluence' }],
+        rowCount: 2,
+      });
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
+          return Promise.reject(new Error('simulated post-upstream DB failure'));
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(discardPageIconForDeletedPage).not.toHaveBeenCalled();
     });
 
     it('should delete mixed standalone and Confluence pages in one request', async () => {
@@ -430,7 +524,7 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       );
       expect(pageDelete).toBeDefined();
       expect(pageDelete![1]).toEqual([[1, 2]]);
-      expect(cleanPageAttachments).toHaveBeenCalledWith('test-user-id', 'page-2');
+      expect(cleanPageAttachments).toHaveBeenCalledWith('page-2');
     });
   });
 
@@ -479,6 +573,25 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    it('re-queues the image index when the refresh rewrites body_html (#1115 P2)', async () => {
+      // A bulk refresh overwrites `body_html` from upstream, which is exactly
+      // what can move an image — and this path never reaches `syncPage`, so
+      // nothing else raises the flag for it.
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1'] },
+      });
+
+      const update = mockQueryFn.mock.calls
+        .map((c) => c[0] as string)
+        .find((sql) => typeof sql === 'string' && sql.includes('UPDATE pages SET') && sql.includes('body_storage'));
+      expect(update).toBeDefined();
+      expect(update).toMatch(
+        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
+      );
     });
 
     it('should report not-found pages in sync', async () => {
@@ -631,6 +744,37 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       expect(response.statusCode).toBe(409);
       const body = JSON.parse(response.body);
       expect(body.error).toContain('already in progress');
+    });
+
+    // The guard above is a no-op mock, which is what a route test wants — but a
+    // no-op mock also passes if the route stops calling it at all, and that is
+    // precisely how the call was lost. These two cells pin the wiring: it is
+    // invoked, and its refusal reaches the client as a 409 rather than a 500.
+    it('consults the shadow-rollback guard before touching anything', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(mockAssertShadowRollbackWindowClear).toHaveBeenCalled();
+    });
+
+    it('surfaces the guard refusal as a 409, not a 500', async () => {
+      const refusal = Object.assign(
+        new Error('A shadow embedding migration has swapped and is awaiting validation'),
+        { statusCode: 409 },
+      );
+      mockAssertShadowRollbackWindowClear.mockRejectedValueOnce(refusal);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/embed',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error).toContain('awaiting validation');
     });
 
     it('accepts filter-mode + expectedCount selection', async () => {

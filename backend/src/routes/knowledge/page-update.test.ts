@@ -236,6 +236,74 @@ describe('PUT /api/pages/:id', () => {
     });
   });
 
+  /**
+   * #1115 P2 (review r1) — a body writer is an image-reference writer.
+   *
+   * Nothing else notices an `<img>` the editor DELETED: no attachment write
+   * happens, so without this the index keeps a row for a picture the page no
+   * longer shows and the reconcile pass this feature ships can never fire for
+   * a locally-edited page. The ADD side has a race of its own — paste stages
+   * the bytes (raising the flag) BEFORE the body that references them is
+   * saved, so a scan landing in between clears the flag against the old body.
+   *
+   * Gated on `body_html` alone, so a title-only save costs nothing.
+   */
+  describe('re-queues the image index after a body edit (#1115 P2)', () => {
+    function findUpdatePagesCall(marker: string): string {
+      const call = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET') && (c[0] as string).includes(marker),
+      );
+      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
+      return call[0] as string;
+    }
+
+    it('raises image_embedding_dirty on a standalone edit, gated on body_html', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, space_key')) {
+          return Promise.resolve({
+            rows: [{
+              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
+              created_by_user_id: 'user-1', visibility: 'shared',
+              confluence_id: null, deleted_at: null, page_type: 'page',
+            }],
+          });
+        }
+        if (sql.includes('UPDATE pages SET')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/7',
+        payload: { title: 'Note', bodyHtml: '<p>note <img src="/api/attachments/7/a.png"></p>', version: 3 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = findUpdatePagesCall('local_modified_by');
+      expect(sql).toContain('image_embedding_dirty');
+      // `body_html`, never `body_text`: the src attributes live in the HTML,
+      // and a flattener-only difference cannot move an image.
+      expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
+    });
+
+    it('raises image_embedding_dirty on the app-side Confluence push', async () => {
+      // This path especially: its own comment notes the follow-up sync
+      // short-circuits on an already-current version, so `syncPage`'s image
+      // flag never runs for it.
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/page-1',
+        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = findUpdatePagesCall('body_storage');
+      expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
+    });
+  });
+
   describe('standalone visibility change — cache invalidation', () => {
     function mockStandalonePage(visibility: 'private' | 'shared') {
       mockQuery.mockImplementation((sql: string) => {

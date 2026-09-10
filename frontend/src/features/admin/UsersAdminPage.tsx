@@ -1,5 +1,5 @@
 /**
- * Settings → Users admin page (#304).
+ * Users sub-tab of Settings → Access Control (#304).
  *
  * Distinct from `RbacPage` (which manages role assignment and space/group
  * memberships). This page owns the user *lifecycle*: create, edit metadata,
@@ -7,13 +7,16 @@
  */
 
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { AdminUser, AdminUserRole } from '@compendiq/contracts';
 import { useAuthStore } from '../../stores/auth-store';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button } from '../../shared/components/Button';
 import { BulkUserImportModal } from './BulkUserImportModal';
 import { UserBulkActionDialog } from './UserBulkActionDialog';
 
@@ -29,7 +32,7 @@ interface CreateUserResponse {
 export function UsersAdminPage() {
   const queryClient = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
-  const { hasFeature } = useEnterprise();
+  const { isEnterprise, hasFeature } = useEnterprise();
   // EE #116: bulk import + multi-select bulk actions are gated by the
   // `bulk_user_operations` feature flag. The whole UI degrades to the
   // CE #304 single-user CRUD when the flag is off — no bulk button, no
@@ -151,51 +154,62 @@ export function UsersAdminPage() {
   return (
     <section className="space-y-6">
       <header className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold tracking-[-0.01em]">Users</h2>
-          <p className="text-sm text-muted-foreground">
-            Lifecycle management for user accounts. Role assignment and space permissions live under{' '}
-            <a className="underline" href="/settings/security/rbac">RBAC</a>.
+        {/* `min-w-0` on the prose, `shrink-0` on the actions. Without it the
+            description refused to wrap, pushed the button group past the
+            available width, and stacked "Bulk import" above "Create user" in a
+            column — two peer actions reading as a hierarchy. Prose is the thing
+            that should reflow; controls are not. */}
+        <div className="min-w-0">
+          <h2 className="text-[15px] font-semibold">Users</h2>
+          <p className="text-[13px] text-muted-foreground">
+            Lifecycle management for user accounts.
+            {/* The Roles (RBAC) sub-tab is EE-gated — mirror AccessControlWrapper's
+                visibility, because SubTabs falls back to the first visible tab for
+                an unknown ?sub=, and in CE that is this very page: the link would
+                be a silent reload-in-place. */}
+            {isEnterprise && hasFeature('advanced_rbac') && (
+              <>
+                {' '}Role assignment and space permissions live under{' '}
+                <Link className="underline" to={`${SETTINGS_PANELS.access.path}?sub=rbac`}>Roles</Link>.
+              </>
+            )}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {bulkEnabled && someSelected && (
-            <button
-              type="button"
+            <Button
               onClick={() => setShowBulkAction(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              variant="secondary"
               data-testid="users-bulk-action-btn"
             >
               Bulk actions ({selectedUserIds.size})
-            </button>
+            </Button>
           )}
           {bulkEnabled && (
-            <button
-              type="button"
+            <Button
               onClick={() => setShowBulkImport(true)}
-              className="rounded-md border border-border/60 px-4 py-2 text-sm font-medium hover:bg-foreground/5"
+              variant="secondary"
               data-testid="users-bulk-import-btn"
             >
               Bulk import
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
+          <Button
             onClick={() => setShowCreate(true)}
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            variant="primary"
           >
             Create user
-          </button>
+          </Button>
         </div>
       </header>
 
       {lastTempPassword && (
-        <div className="rounded-md border border-yellow-300 bg-yellow-50 p-3 text-sm dark:bg-yellow-900/20">
-          <p className="font-semibold text-yellow-900 dark:text-yellow-200">
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+          <p className="font-semibold text-warning">
             Temporary password for {lastTempPassword.username}
           </p>
-          <p className="mt-1 font-mono text-yellow-900 dark:text-yellow-100">{lastTempPassword.password}</p>
-          <p className="mt-2 text-xs text-yellow-800 dark:text-yellow-200">
+          <p className="mt-1 font-mono text-warning">{lastTempPassword.password}</p>
+          <p className="mt-2 text-xs text-warning">
             Share this with the user over a secure channel. It will not be shown again. Ask the user to change it immediately after first login.
           </p>
           <button
@@ -210,10 +224,15 @@ export function UsersAdminPage() {
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading users…</p>}
 
+      {/* The table carries no box of its own: it already sits inside the
+          settings pane, so a border here made a bordered box inside a bordered
+          box — the nesting the finish review flagged. A table is legible as a
+          table from its own rules; the header rule separates it from the
+          heading above, and the row rules do the rest. */}
       {data?.users && (
-        <div className="overflow-hidden rounded-md border">
+        <div className="overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-muted/40 text-left text-xs uppercase tracking-wide">
+            <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 {bulkEnabled && (
                   <th className="w-10 p-3">
@@ -272,11 +291,11 @@ export function UsersAdminPage() {
                   </td>
                   <td className="p-3">
                     {u.deactivatedAt ? (
-                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800 dark:bg-red-900/30 dark:text-red-200">
+                      <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
                         deactivated
                       </span>
                     ) : (
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800 dark:bg-green-900/30 dark:text-green-200">
+                      <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
                         active
                       </span>
                     )}
@@ -288,7 +307,7 @@ export function UsersAdminPage() {
                     {u.id !== currentUserId && !u.deactivatedAt && (
                       <button
                         type="button"
-                        className="text-xs text-yellow-700 underline dark:text-yellow-400"
+                        className="text-xs text-warning underline"
                         onClick={() => deactivate.mutate(u.id)}
                         disabled={deactivate.isPending}
                       >
@@ -298,7 +317,7 @@ export function UsersAdminPage() {
                     {u.deactivatedAt && (
                       <button
                         type="button"
-                        className="text-xs text-green-700 underline dark:text-green-400"
+                        className="text-xs text-success underline"
                         onClick={() => reactivate.mutate(u.id)}
                         disabled={reactivate.isPending}
                       >
@@ -308,7 +327,7 @@ export function UsersAdminPage() {
                     {u.id !== currentUserId && (
                       <button
                         type="button"
-                        className="text-xs text-red-700 underline dark:text-red-400"
+                        className="text-xs text-destructive underline"
                         onClick={() => setPendingDelete(u)}
                         disabled={remove.isPending}
                       >
@@ -408,7 +427,7 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md space-y-4 rounded-md bg-background p-6 shadow-lg"
+        className="w-full max-w-md space-y-4 nm-card-elevated p-6"
       >
         <h3 className="text-lg font-semibold">Create user</h3>
         <div className="space-y-3">
@@ -484,28 +503,28 @@ function UserCreateDialog({ onClose, onSubmit, isSubmitting }: UserCreateDialogP
               Send invitation email (requires SMTP + email address)
             </label>
             {mode === 'invitation' && !email.trim() && (
-              <p className="text-xs text-yellow-700 dark:text-yellow-400">
+              <p className="text-xs text-warning">
                 Without an email address the temp password will be shown to you after create, and no email is sent.
               </p>
             )}
           </fieldset>
         </div>
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
+          <Button
             onClick={onClose}
-            className="rounded-md border px-4 py-2 text-sm"
+            variant="secondary"
             disabled={isSubmitting}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="submit"
-            className="rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            variant="primary"
+            isLoading={isSubmitting}
             disabled={isSubmitting}
           >
             {isSubmitting ? 'Creating…' : 'Create'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>

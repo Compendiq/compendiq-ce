@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { TrashItemSchema, TrashListResponseSchema } from './pages.js';
+import {
+  ConnectionEventSchema,
+  PageConnectionsSchema,
+  TrashItemSchema,
+  TrashListResponseSchema,
+} from './pages.js';
 
 // Mirrors the exact wire shape of GET /api/pages/trash (backend serializes
 // dates to ISO strings and stringifies the integer page id).
@@ -55,5 +60,92 @@ describe('TrashListResponseSchema', () => {
 
   it('rejects a negative total', () => {
     expect(() => TrashListResponseSchema.parse({ items: [], total: -1 })).toThrow();
+  });
+});
+
+describe('PageConnectionsSchema', () => {
+  it('accepts the complete grouped reason contract', () => {
+    const payload = {
+      linked: [{
+        pageId: '2',
+        title: 'Linked page',
+        reasons: [
+          { type: 'explicit_link', direction: 'incoming' },
+          { type: 'explicit_link', direction: 'outgoing' },
+        ],
+      }],
+      section: [{
+        pageId: '3',
+        title: 'Parent page',
+        reasons: [{ type: 'parent_child', direction: 'parent' }],
+      }],
+      related: [{
+        pageId: '4',
+        title: 'Related page',
+        reasons: [
+          { type: 'embedding_similarity', score: 0.75 },
+          { type: 'label_overlap', labels: ['api'], score: 0.5 },
+        ],
+      }],
+    };
+    expect(PageConnectionsSchema.parse(payload)).toEqual(payload);
+  });
+
+  it('bounds related results and requires numeric string page ids', () => {
+    const item = {
+      pageId: '1',
+      title: 'Page',
+      reasons: [{ type: 'embedding_similarity', score: 0.5 }],
+    };
+    expect(() => PageConnectionsSchema.parse({
+      linked: [],
+      section: [],
+      related: Array.from({ length: 6 }, () => item),
+    })).toThrow();
+    expect(() => PageConnectionsSchema.parse({
+      linked: [{ ...item, pageId: 'confluence-1' }],
+      section: [],
+      related: [],
+    })).toThrow();
+  });
+});
+
+describe('ConnectionEventSchema', () => {
+  const visitId = '11111111-1111-4111-8111-111111111111';
+
+  it('accepts every event variant', () => {
+    expect(ConnectionEventSchema.parse({ event: 'impression', visitId })).toEqual({
+      event: 'impression',
+      visitId,
+    });
+    expect(ConnectionEventSchema.parse({
+      event: 'connection_click',
+      visitId,
+      targetPageId: '42',
+      group: 'related',
+    })).toEqual({
+      event: 'connection_click',
+      visitId,
+      targetPageId: '42',
+      group: 'related',
+    });
+    expect(ConnectionEventSchema.parse({ event: 'graph_launch', visitId })).toEqual({
+      event: 'graph_launch',
+      visitId,
+    });
+  });
+
+  it('rejects extra telemetry fields and malformed visits', () => {
+    expect(() => ConnectionEventSchema.parse({
+      event: 'impression',
+      visitId,
+      title: 'must not cross the telemetry boundary',
+    })).toThrow();
+    expect(() => ConnectionEventSchema.parse({
+      event: 'connection_click',
+      visitId: 'not-a-uuid',
+      targetPageId: '42',
+      group: 'linked',
+    })).toThrow();
   });
 });

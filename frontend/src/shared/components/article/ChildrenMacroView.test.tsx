@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ChildrenMacroView } from './ChildrenMacroView';
 import type { NodeViewProps } from '@tiptap/react';
@@ -17,7 +19,10 @@ vi.mock('../../lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }));
 
-function makeProps(attrs: Record<string, string | null> = {}): NodeViewProps {
+function makeProps(
+  attrs: Record<string, string | null> = {},
+  editor: { isEditable?: boolean } = {},
+): NodeViewProps {
   return {
     node: {
       attrs: {
@@ -28,13 +33,14 @@ function makeProps(attrs: Record<string, string | null> = {}): NodeViewProps {
         page: null,
         style: null,
         excerptType: null,
+        columns: null,
         'macro-name': null,
         ...attrs,
       },
     },
     updateAttributes: vi.fn(),
     deleteNode: vi.fn(),
-    editor: { isEditable: false },
+    editor: { isEditable: false, ...editor },
     getPos: () => 0,
     extension: {} as NodeViewProps['extension'],
     HTMLAttributes: {},
@@ -63,7 +69,7 @@ describe('ChildrenMacroView', () => {
     renderWithRouter(makeProps());
 
     expect(screen.getByTestId('children-loading')).toBeTruthy();
-    expect(screen.getByText('Child Pages')).toBeTruthy();
+    expect(screen.getByText('Loading child pages')).toBeTruthy();
   });
 
   it('renders a list of child pages', async () => {
@@ -88,6 +94,25 @@ describe('ChildrenMacroView', () => {
     expect(links).toHaveLength(2);
     expect(links[0].getAttribute('href')).toBe('/pages/1');
     expect(links[1].getAttribute('href')).toBe('/pages/2');
+
+    // Marker-free directory: no disc column, and a single stack by default.
+    const list = screen.getByTestId('children-list').querySelector('ul');
+    expect(list?.classList.contains('list-disc')).toBe(false);
+    expect(list?.classList.contains('list-none')).toBe(true);
+    expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('1');
+    expect(screen.queryByTestId('children-columns-toggle')).toBeNull();
+
+    // Notion-style page links: body colour + underline. The accent prose-link
+    // colour and the old padded row (`px-2`) are the two things that made
+    // this read as chrome rather than document. Hover uses the same accent
+    // fill as PagesPage / the page tree — a background change, not a border.
+    expect(links[0].classList.contains('children-directory-link')).toBe(true);
+    expect(links[0].className).not.toMatch(/text-primary/);
+    expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
+    expect(links[0].className).toMatch(/hover:bg-accent/);
+    expect(links[0].className).toMatch(/rounded-md/);
+    expect(links[0].className).toMatch(/transition-colors/);
+    expect(list?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
   });
 
   it('shows empty message when no children exist', async () => {
@@ -99,7 +124,7 @@ describe('ChildrenMacroView', () => {
       expect(screen.getByTestId('children-empty')).toBeTruthy();
     });
 
-    expect(screen.getByText('No child pages')).toBeTruthy();
+    expect(screen.getByText('This page has no children')).toBeTruthy();
   });
 
   it('shows error state on fetch failure', async () => {
@@ -111,7 +136,8 @@ describe('ChildrenMacroView', () => {
       expect(screen.getByTestId('children-error')).toBeTruthy();
     });
 
-    expect(screen.getByText('Network error')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toBe("Couldn't load child pages.");
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
   it('renders nested children when depth > 1', async () => {
@@ -137,6 +163,102 @@ describe('ChildrenMacroView', () => {
 
     expect(screen.getByText('Parent Page')).toBeTruthy();
     expect(screen.getByText('Nested Child')).toBeTruthy();
+
+    // Nested titles start on the same left edge as the article, not a tree gutter.
+    const nested = screen.getByTestId('children-list').querySelector('ul ul');
+    expect(nested?.className).not.toMatch(/(?:^|\s)pl-3(?:\s|$)/);
+  });
+
+  it('splits the top-level list into two columns when columns=2', async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      children: [
+        {
+          id: 1,
+          confluenceId: 'parent',
+          title: 'Parent Page',
+          spaceKey: 'DEV',
+          children: [
+            { id: 2, confluenceId: 'child', title: 'Nested Child', spaceKey: 'DEV' },
+          ],
+        },
+        { id: 3, confluenceId: 'sibling', title: 'Sibling Page', spaceKey: 'DEV' },
+      ],
+    });
+
+    renderWithRouter(makeProps({ columns: '2' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('children-macro-view').getAttribute('data-columns')).toBe('2');
+    const lists = screen.getByTestId('children-list').querySelectorAll('ul');
+    expect(lists[0]?.classList.contains('sm:grid-cols-2')).toBe(true);
+    // Nested directory stays a stack under its parent — two columns is a
+    // top-level layout, not a recursive one.
+    expect(lists[1]?.classList.contains('sm:grid-cols-2')).toBe(false);
+    expect(lists[1]?.classList.contains('flex')).toBe(true);
+  });
+
+  it('exposes a two-column toggle only while editing', async () => {
+    mockApiFetch.mockResolvedValue({
+      children: [
+        { id: 1, confluenceId: 'child-1', title: 'Getting Started', spaceKey: 'DEV' },
+      ],
+    });
+
+    const { unmount } = renderWithRouter(makeProps());
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+    expect(screen.queryByRole('button', { name: 'Two columns' })).toBeNull();
+    unmount();
+
+    const updateAttributes = vi.fn();
+    const editable = makeProps({}, { isEditable: true });
+    editable.updateAttributes = updateAttributes;
+    renderWithRouter(editable);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Two columns' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-describedby')).toBeTruthy();
+    expect(screen.getByTestId('children-columns-hint').textContent).toContain(
+      'Compendiq only',
+    );
+    expect(screen.queryByRole('link')).toBeNull();
+    const title = screen.getByText('Getting Started');
+    expect(title.tagName).toBe('SPAN');
+    // Edit-mode titles are not navigable, so they must not wear the
+    // pages-list hover fill — that would advertise a click that is not there.
+    expect(title.className).not.toMatch(/hover:bg-accent/);
+    toggle.click();
+    expect(updateAttributes).toHaveBeenCalledWith({ columns: '2' });
+  });
+
+  it('clears the columns param when the pressed toggle is clicked', async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      children: [
+        { id: 1, confluenceId: 'child-1', title: 'Getting Started', spaceKey: 'DEV' },
+      ],
+    });
+
+    const updateAttributes = vi.fn();
+    const editable = makeProps({ columns: '2' }, { isEditable: true });
+    editable.updateAttributes = updateAttributes;
+    renderWithRouter(editable);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Two columns' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    toggle.click();
+    expect(updateAttributes).toHaveBeenCalledWith({ columns: null });
   });
 
   it('passes correct query params to the API', async () => {
@@ -155,6 +277,42 @@ describe('ChildrenMacroView', () => {
     expect(callPath).toContain('depth=2');
   });
 
+  it('names unused Confluence params in edit mode when they are present', async () => {
+    mockApiFetch.mockResolvedValueOnce({ children: [] });
+
+    renderWithRouter(makeProps({ page: 'Other Page', style: 'h3' }, { isEditable: true }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-empty')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('children-unused-params').textContent).toContain(
+      "This list is always this page's children",
+    );
+  });
+
+  it('retries a failed fetch from the error control', async () => {
+    mockApiFetch
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockResolvedValueOnce({
+        children: [{ id: 1, confluenceId: 'child-1', title: 'Getting Started', spaceKey: 'DEV' }],
+      });
+
+    renderWithRouter(makeProps());
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-error')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-list')).toBeTruthy();
+    });
+    expect(screen.getByText('Getting Started')).toBeTruthy();
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('does not fetch when no page ID is available', async () => {
     render(
       <MemoryRouter initialEntries={['/other']}>
@@ -168,5 +326,40 @@ describe('ChildrenMacroView', () => {
     await waitFor(() => {
       expect(mockApiFetch).not.toHaveBeenCalled();
     });
+    expect(screen.getByText('Child pages will appear on a saved page.')).toBeTruthy();
+  });
+
+  it('is a document directory without gadget card framing or an injected title', async () => {
+    mockApiFetch.mockResolvedValueOnce({ children: [] });
+    renderWithRouter(makeProps());
+
+    await waitFor(() => {
+      expect(screen.getByTestId('children-empty')).toBeTruthy();
+    });
+
+    const view = screen.getByTestId('children-macro-view');
+    expect(view.classList.contains('border')).toBe(false);
+    expect(view.classList.contains('rounded-lg')).toBe(false);
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.queryByText('Children of this page')).toBeNull();
+  });
+});
+
+describe('ChildrenMacroView link treatment', () => {
+  const css = readFileSync(resolve(__dirname, '../../../index.css'), 'utf-8');
+
+  it('overrides prose accent links with an inherited, always-underlined title', () => {
+    expect(css).toMatch(
+      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*underline/,
+    );
+    const start = css.indexOf('.prose .confluence-children-view a,');
+    expect(start).toBeGreaterThan(-1);
+    const block = css.slice(start, start + 1100);
+    expect(block).not.toMatch(/--color-primary/);
+    expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
+    expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
+    // Prose's `transition: color, text-decoration` would snap the row fill
+    // unless this override includes background-color.
+    expect(block).toMatch(/background-color\s+0\.15s/);
   });
 });

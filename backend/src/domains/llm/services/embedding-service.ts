@@ -1,8 +1,14 @@
 import type { Job } from 'bullmq';
 import { query, getPool } from '../../../core/db/postgres.js';
+import { columnTypeFor, HNSW_PARAMS } from '../../../core/db/vector-column-tier.js';
 import { resolveUsecase } from './llm-provider-resolver.js';
 import { generateEmbedding } from './openai-compatible-client.js';
-import { htmlToText } from '../../../core/services/content-converter.js';
+import { LlmHttpError } from './llm-http-error.js';
+import {
+  htmlToEmbeddingText,
+  htmlToText,
+  markdownToSnippetText,
+} from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { safeIntOr } from '../../../core/utils/safe-int.js';
 import { invalidateGraphCache, acquireEmbeddingLock, releaseEmbeddingLock, refreshEmbeddingLock, isEmbeddingLocked, getRedisClient, listActiveEmbeddingLocks } from '../../../core/services/redis-cache.js';
@@ -11,13 +17,43 @@ import { visiblePagesPredicate } from '../../../core/services/page-visibility.js
 import { CircuitBreakerOpenError, getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 import { getReembedHistoryRetention } from '../../../core/services/admin-settings-service.js';
 import { enqueueJob } from '../../../core/services/queue-service.js';
-import { listRelationshipProducers } from './embedding-relationship-hooks.js';
-import { toUserFacingEmbeddingError } from './embedding-error-message.js';
+import {
+  getActiveShadowTarget,
+  getShadowMigrationState,
+  shadowStateFingerprint,
+  shadowEpochFromClient,
+} from './shadow-migration-service.js';
+import { materializeDeterministicRelationships } from './deterministic-relationships.js';
+import { RELATIONSHIP_ADVISORY_LOCK_ID } from '../../../core/db/advisory-locks.js';
+import { toUserFacingEmbeddingError, EmbeddingDimensionMismatchError } from './embedding-error-message.js';
+import { efSearchFor } from './hnsw-ef-search.js';
 import pgvector from 'pgvector';
+
+/**
+ * The dimension the live `embedding` column accepts, or `null` when it cannot
+ * be determined.
+ *
+ * `null` means "do not check" — an unreadable catalog must not stop embedding,
+ * since the INSERT remains the backstop it has always been. `atttypmod` is
+ * where pgvector keeps the declared width for both `vector` and `halfvec`, and
+ * is -1 when the column is unqualified.
+ */
+async function liveEmbeddingDimensions(): Promise<number | null> {
+  try {
+    const r = await query<{ atttypmod: number }>(
+      `SELECT atttypmod FROM pg_attribute
+       WHERE attrelid = 'page_embeddings'::regclass AND attname = 'embedding'`,
+    );
+    const mod = r.rows[0]?.atttypmod;
+    return mod === undefined || mod === null || mod < 0 ? null : Number(mod);
+  } catch {
+    return null;
+  }
+}
 
 const CHUNK_SIZE = 500;          // ~500 tokens target
 const CHUNK_OVERLAP = 50;        // ~50 token overlap
-const CHARS_PER_TOKEN = 3;       // conservative estimate (code/tables can be 1–3 chars/token)
+export const CHARS_PER_TOKEN = 3; // conservative estimate (code/tables can be 1–3 chars/token)
 export const CHUNK_HARD_LIMIT = 6_000;  // absolute character ceiling (~1,500–2,000 tokens safety cap)
 
 /** Delay between embedding pages to reduce LLM server pressure (ms). */
@@ -104,8 +140,36 @@ export function isCircuitBreakerError(err: unknown): boolean {
 /**
  * Helper to detect HTTP 400 "input length exceeds context length" errors from
  * Ollama/OpenAI-compatible embedding endpoints.
+ *
+ * `generateEmbedding` throws `LlmHttpError` (#1185), whose `.message` is a
+ * bare `generateEmbedding HTTP 400` — the provider's body lives on `.detail`
+ * instead (see `llm-http-error.ts`). Branching on the typed `status`/`detail`
+ * fields is a field read instead of re-parsing them back out of a string that
+ * was only ever formatted for humans, and it keeps working now that the body
+ * is no longer folded into the message.
+ *
+ * The message-based fallback below stays for any caller or test double that
+ * still throws a plain `Error` with the pre-#1185 message shape.
+ *
+ * The `LlmHttpError` branch below must keep parity with the message-based
+ * fallback's three terms, not just the first two: a bare `'context'` check
+ * (PR #1214 review) is what catches OpenAI's machine code
+ * `context_length_exceeded` (underscored — contains neither `'input length
+ * exceeds'` nor `'context length'`) and prose like "exceeds the model's
+ * context window". Dropping it flips those providers from skip-and-preserve
+ * (#821/#867) to fail-the-page. The `LlmHttpError` branch is already gated on
+ * `status === 400` (the check right below), the same gate the fallback's
+ * third term applies via its own `'http 400'` substring check — its first two
+ * terms carry no status gate at all — so a bare `'context'` here has the same
+ * reach as that composite `('http 400' && 'context')` term. It subsumes
+ * `'context length'`, so that term isn't repeated separately.
  */
 export function isContextLengthError(err: unknown): boolean {
+  if (err instanceof LlmHttpError) {
+    if (err.status !== 400) return false;
+    const detail = err.detail.toLowerCase();
+    return detail.includes('input length exceeds') || detail.includes('context');
+  }
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
   return (
@@ -160,8 +224,15 @@ export function splitByWords(text: string, maxChars: number): string[] {
         result.push(current);
         current = '';
       }
-      for (let offset = 0; offset < word.length; offset += maxChars) {
-        result.push(word.slice(offset, offset + maxChars));
+      let start = 0;
+      while (start < word.length) {
+        let end = Math.min(start + maxChars, word.length);
+        // Never split a surrogate pair: a slice ending on a lone high
+        // surrogate stores U+FFFD and hands the provider a malformed token.
+        const code = word.charCodeAt(end - 1);
+        if (end < word.length && code >= 0xd800 && code <= 0xdbff) end--;
+        result.push(word.slice(start, end));
+        start = end;
       }
       continue;
     }
@@ -203,7 +274,96 @@ function pushChunk(
 }
 
 /**
+ * Per-line "part of a fenced code block" flags, used to keep both structural
+ * splitters out of fences (#1265 review B1): a ```` ``` ```` block full of
+ * YAML/shell comments must never fabricate sections, and a blank line inside
+ * a fence is not a paragraph boundary. A fence closes on a line opening with
+ * at least as many of the same fence character; an unclosed fence runs to the
+ * end (CommonMark behaviour), which fails safe — no splits inside it.
+ */
+function fencedLineFlags(lines: string[]): boolean[] {
+  const flags = new Array<boolean>(lines.length).fill(false);
+  let inFence = false;
+  let fenceChar = '';
+  let fenceLen = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (!inFence) {
+      if (m) {
+        inFence = true;
+        fenceChar = m[1]![0]!;
+        fenceLen = m[1]!.length;
+        flags[i] = true;
+      }
+    } else {
+      flags[i] = true;
+      if (m && m[1]![0] === fenceChar && m[1]!.length >= fenceLen) {
+        inFence = false;
+      }
+    }
+  }
+  return flags;
+}
+
+/**
+ * Split Markdown into sections at unfenced atx-heading lines. Each section
+ * (except a headingless preamble) begins with its own heading line.
+ */
+function splitMarkdownSections(text: string): string[] {
+  const lines = text.split('\n');
+  const fenced = fencedLineFlags(lines);
+  const sections: string[] = [];
+  let current: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!fenced[i] && /^#{1,6}\s/.test(lines[i]!) && current.length > 0) {
+      sections.push(current.join('\n'));
+      current = [];
+    }
+    current.push(lines[i]!);
+  }
+  if (current.length) sections.push(current.join('\n'));
+  return sections;
+}
+
+/** Fence-aware paragraph split: blank lines outside fences delimit. */
+function splitMarkdownParagraphs(text: string): string[] {
+  const lines = text.split('\n');
+  const fenced = fencedLineFlags(lines);
+  const paras: string[] = [];
+  let current: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!fenced[i] && lines[i]!.trim() === '') {
+      if (current.length) {
+        paras.push(current.join('\n'));
+        current = [];
+      }
+      continue;
+    }
+    current.push(lines[i]!);
+  }
+  if (current.length) paras.push(current.join('\n'));
+  return paras;
+}
+
+/**
  * Split text into chunks, preferring heading/paragraph boundaries.
+ *
+ * Live behaviour since #1265 (the input is Markdown now — see
+ * htmlToEmbeddingText; before that, whitespace-collapsed text made every
+ * splitter below unreachable):
+ * - sections start at unfenced atx headings (fence-aware — a `# comment`
+ *   inside a code block is content, not a boundary);
+ * - a section's title comes from its FIRST line only. The old `m`-flagged
+ *   search could grab an in-fence comment from anywhere in a headingless
+ *   section and present it as the section title in RAG context;
+ * - consecutive small sections are PACKED into one chunk up to the target
+ *   size, titled by the packed run's opening section — one-chunk-per-heading
+ *   turned a 300-heading page into 301 rows, and a heading-only sliver into
+ *   a chunk competing for a top-K slot (#1265 review M7). The later
+ *   headings' text stays visible inside the chunk (`## …` lines survive);
+ * - an oversized section still splits on (fence-aware) paragraph boundaries
+ *   with word overlap, and pushChunk's CHUNK_HARD_LIMIT backstop is
+ *   unchanged.
  */
 export function chunkText(
   text: string,
@@ -215,55 +375,108 @@ export function chunkText(
 ): Array<{ text: string; metadata: ChunkMetadata }> {
   const maxChars = chunkSize * CHARS_PER_TOKEN;
   const overlapChars = chunkOverlap * CHARS_PER_TOKEN;
-
-  // Split on headings first (lines starting with # or lines with === or ---)
-  const sections = text.split(/(?=^#{1,6}\s)/m);
   const chunks: Array<{ text: string; metadata: ChunkMetadata }> = [];
+  const makeMeta = (sectionTitle: string): ChunkMetadata => ({
+    page_title: pageTitle,
+    section_title: sectionTitle,
+    space_key: spaceKey,
+    confluence_id: confluenceId,
+  });
 
-  let currentSection = pageTitle;
+  const sections = splitMarkdownSections(text);
+
+  // Below this size a would-be chunk is a sliver — a bare heading line, a
+  // one-line list stub — that embeds as title-shaped noise and competes for
+  // a top-K slot with zero answerable content. Slivers are carried into the
+  // neighbouring chunk instead of flushed alone (#1265 verification, 5).
+  // Scaled with the target so a deliberately tiny chunkSize (tests; extreme
+  // admin settings) still splits rather than being swallowed by the floor.
+  const MIN_FLUSH_CHARS = Math.min(200, Math.ceil(maxChars / 4));
+
+  // The last real heading seen — titles oversized-section chunks, and the
+  // packed run that opens with each section.
+  let runningTitle = pageTitle;
+  let packed = '';
+  let packedTitle = pageTitle;
+  const flushPacked = () => {
+    if (packed.trim()) pushChunk(chunks, packed, makeMeta(packedTitle));
+    packed = '';
+  };
 
   for (const section of sections) {
     const trimmed = section.trim();
     if (!trimmed) continue;
 
-    // Extract section title
-    const headingMatch = trimmed.match(/^#{1,6}\s+(.+?)$/m);
+    // `.` stops at every line terminator (\n, \r, U+2028/9), so no explicit
+    // end anchor — requiring `(?:\n|$)` made the match FAIL outright on CRLF
+    // input ('# A\r\n'), silently reverting every section title to the page
+    // title (#1266 review r2, M-3). Not reachable via embedPage (the HTML
+    // parser normalises CRLF) but chunkText is exported.
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.+)/);
+    // Chunk metadata must carry the heading's PROSE — the raw line is
+    // turndown-escaped/decorated ("1\. Introduction", "**Bold** [x](url)")
+    // and renders verbatim in citations and RAG context headers.
     if (headingMatch) {
-      currentSection = headingMatch[1]!;
+      const flat = markdownToSnippetText(headingMatch[1]!);
+      runningTitle = flat || headingMatch[1]!.trim();
     }
 
-    const meta: ChunkMetadata = {
-      page_title: pageTitle,
-      section_title: currentSection,
-      space_key: spaceKey,
-      confluence_id: confluenceId,
-    };
-
-    if (trimmed.length <= maxChars) {
-      // Section fits within the target — still enforce the hard limit
-      pushChunk(chunks, trimmed, meta);
-    } else {
-      // Split large sections on paragraph boundaries
-      const paragraphs = trimmed.split(/\n\n+/);
+    if (trimmed.length > maxChars) {
+      // A small pending pack (typically the previous sliver of prose) rides
+      // into this section's first chunk instead of flushing as its own row.
       let currentChunk = '';
-
+      if (packed && packed.length < MIN_FLUSH_CHARS) {
+        currentChunk = packed;
+        packed = '';
+      } else {
+        flushPacked();
+      }
+      const paragraphs = splitMarkdownParagraphs(trimmed);
       for (const para of paragraphs) {
-        if ((currentChunk + '\n\n' + para).length > maxChars && currentChunk) {
-          pushChunk(chunks, currentChunk, meta);
-          // Keep overlap from end of previous chunk
-          const words = currentChunk.split(/\s+/);
-          const overlapWords = Math.ceil(overlapChars / 5);
-          currentChunk = words.slice(-overlapWords).join(' ') + '\n\n' + para;
+        if (
+          (currentChunk + '\n\n' + para).length > maxChars &&
+          currentChunk.length >= MIN_FLUSH_CHARS
+        ) {
+          pushChunk(chunks, currentChunk, makeMeta(runningTitle));
+          // Keep overlap from the end of the previous chunk. Slice the raw
+          // character tail (starting at a whitespace boundary) rather than
+          // re-joining words with spaces — a word-join flattened the line
+          // structure of any code or table content it carried forward.
+          // CONTRACT (#1270 N2): the next chunk is built as tail + a literal
+          // paragraph break + para, and sibling-assembly's seam-trim
+          // discriminator rests on that break — the seam-contract test in
+          // sibling-assembly.test.ts binds the two modules; change the joiner
+          // and that test fails loudly instead of the trim silently dying.
+          // overlapChars <= 0 (an operator-legal setting, contracts min(0))
+          // must carry nothing forward — currentChunk.slice(-0) === slice(0)
+          // would otherwise hand the ENTIRE previous chunk to `tail` (#1271).
+          // For overlapChars > 0 the tail + '\n\n' + para joiner stays
+          // byte-identical to before (sibling-assembly's seam discriminator
+          // rests on it).
+          if (overlapChars > 0) {
+            const tail = currentChunk.slice(-overlapChars);
+            const firstBreak = tail.search(/\s/);
+            currentChunk = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail) + '\n\n' + para;
+          } else {
+            currentChunk = para;
+          }
         } else {
           currentChunk = currentChunk ? currentChunk + '\n\n' + para : para;
         }
       }
-
       if (currentChunk.trim()) {
-        pushChunk(chunks, currentChunk, meta);
+        pushChunk(chunks, currentChunk, makeMeta(runningTitle));
       }
+      continue;
     }
+
+    if (packed && packed.length + trimmed.length + 2 > maxChars && packed.length >= MIN_FLUSH_CHARS) {
+      flushPacked();
+    }
+    if (!packed) packedTitle = runningTitle;
+    packed = packed ? `${packed}\n\n${trimmed}` : trimmed;
   }
+  flushPacked();
 
   return chunks;
 }
@@ -272,7 +485,7 @@ export function chunkText(
  * Read chunk settings from admin_settings table.
  * Falls back to module-level defaults if not found.
  */
-async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
+export async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverlap: number }> {
   const result = await query<{ setting_key: string; setting_value: string }>(
     `SELECT setting_key, setting_value FROM admin_settings
      WHERE setting_key IN ('embedding_chunk_size', 'embedding_chunk_overlap')`,
@@ -287,9 +500,24 @@ async function getAdminChunkSettings(): Promise<{ chunkSize: number; chunkOverla
   // would let a NaN through). Overlap may legitimately be 0, so allow min 0.
   return {
     chunkSize: safeIntOr(settings['embedding_chunk_size'], CHUNK_SIZE),
-    chunkOverlap: safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0),
+    // Clamped at the contracts-schema max (512 tokens) where the value is
+    // READ, not only where the panel writes it (#1270 review F14): a
+    // direct-SQL overlap above the cap would put the real seam overlap
+    // beyond sibling-assembly's SEAM_TRIM_WINDOW, silently reviving the
+    // full-duplication defect m8 closed — the derived guard test in
+    // sibling-assembly.test.ts holds only while this clamp does.
+    chunkOverlap: Math.min(safeIntOr(settings['embedding_chunk_overlap'], CHUNK_OVERLAP, 0), 512),
   };
 }
+
+/**
+ * Pages whose extracted plain text is shorter than this never embed:
+ * embedPage settles them with zero `page_embeddings` rows and un-dirties
+ * them. Exported so the coverage probe (#1117, rag-service.ts) can exclude
+ * them from its denominator — counting the permanently-unembeddable would
+ * make a corpus with a few structural stub pages read "degraded" forever.
+ */
+export const MIN_EMBEDDABLE_TEXT_CHARS = 20;
 
 /**
  * Embed a single page's content.
@@ -304,8 +532,26 @@ export async function embedPage(
   bodyHtml: string,
   opts?: { chunkSize?: number; chunkOverlap?: number },
 ): Promise<number> {
-  const plainText = htmlToText(bodyHtml);
-  if (!plainText || plainText.length < 20) {
+  // Markdown-shaped, structure-preserving (#1265): this is what makes
+  // chunkText's heading/paragraph splitting live code — htmlToText's
+  // whitespace collapse made every page <= CHUNK_HARD_LIMIT a single chunk.
+  let plainText = htmlToEmbeddingText(bodyHtml, { pageId, pageTitle });
+  // The embeddability floor is measured on the FLATTENED text, not the raw
+  // Markdown: a bare `![diagram.png](/api/attachments/…)` clears 20 chars on
+  // syntax alone, and image-only pages settled (never embedded) before
+  // #1265 — a URL-only chunk is retrieval noise, not signal. Flattening
+  // keeps alt text, so an image whose alt genuinely describes it still
+  // embeds.
+  if (markdownToSnippetText(plainText).length < MIN_EMBEDDABLE_TEXT_CHARS) {
+    // Markdown can also come out SHORTER than the text form — macro
+    // placeholders shrink ("[Children pages]" vs the longer rendered text) —
+    // and the coverage probe counts pages by char_length(body_text). Settling
+    // a page the probe still counts would hold coverage below 1.0 forever
+    // (#1265 review M1), so fall back to the text form before settling: a
+    // page the probe counts either embeds or is genuinely empty both ways.
+    plainText = htmlToText(bodyHtml);
+  }
+  if (!plainText || plainText.length < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
     await query(
       `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
@@ -317,6 +563,14 @@ export async function embedPage(
   // Pass String(pageId) as the confluenceId metadata field (cosmetic only; never queried)
   const chunks = chunkText(plainText, pageTitle, spaceKey, String(pageId), opts?.chunkSize, opts?.chunkOverlap);
   if (chunks.length === 0) return 0;
+
+  // Schema-epoch snapshot (#1116, review r1): taken BEFORE any model is
+  // resolved or any vector generated, so it covers the entire generate
+  // window. The write transaction re-checks it — a swap/rollback/abort that
+  // lands anywhere in between aborts this embed instead of writing vectors
+  // from one epoch into the columns of another.
+  const shadowStateBefore = await getShadowMigrationState();
+  const epochBefore = shadowStateFingerprint(shadowStateBefore);
 
   // ── Phase 1: Generate all embeddings in memory (no DB connection held) ──────
   // If the LLM call fails here, no transaction is opened and the old embeddings
@@ -335,12 +589,56 @@ export async function embedPage(
   // keeps all chunks of one page consistent.
   const { config: embedConfig, model: embedModel } = await resolveUsecase('embedding');
 
+  // #1114 pre-flight: the width the live `embedding` column will actually
+  // accept. Without this, a model whose vectors are the wrong length is only
+  // caught by pgvector at the Phase 2 INSERT — after every chunk of the page
+  // has been embedded and paid for, and reported as an opaque type error
+  // rather than "expected 1024, got 2560". The shadow dual-write below has had
+  // this guard since its own review; the live path, which is the one a plain
+  // model repoint goes through, never did.
+  //
+  // Deliberately NOT cached across pages. One indexed catalog lookup is noise
+  // beside the page's embedding HTTP calls, whereas a TTL cache would keep
+  // rejecting correct vectors for the length of its window after a swap
+  // legitimately changes the column — failing closed on exactly the operation
+  // this check exists to support.
+  //
+  // Resolved lazily, on the first batch that actually returns vectors: a page
+  // whose every batch is skipped for context length produces nothing to check,
+  // and must not spend a query proving it.
+  let liveDimensions: number | null | undefined;
+
   for (let i = 0; i < chunks.length; i += batchSize) {
     const batch = chunks.slice(i, i + batchSize);
     const texts = batch.map((c) => c.text);
 
     try {
       const embeddings = await generateEmbedding(embedConfig, embedModel, texts);
+
+      // Checked before accumulating, so the failure names the model and both
+      // widths instead of surfacing as a pgvector cast error many chunks later.
+      if (liveDimensions === undefined) liveDimensions = await liveEmbeddingDimensions();
+      if (liveDimensions !== null) {
+        const wrong = embeddings.find((v) => Array.isArray(v) && v.length !== liveDimensions);
+        if (wrong) {
+          // A width mismatch has two very different causes and only one is an
+          // operator error. A swap committing mid-generate legitimately retypes
+          // the live column under vectors already produced for the old model —
+          // that is the #1116 race, and the epoch recheck in Phase 2 handles it
+          // far better than this can: it rolls back and re-dirties the page for
+          // a clean post-swap embed, where throwing here would mark the page
+          // failed and blame a model assignment that is about to become correct.
+          // So the config error is raised only when the epoch has NOT moved.
+          const epochNow = shadowStateFingerprint(await getShadowMigrationState());
+          if (epochNow === epochBefore) {
+            throw new EmbeddingDimensionMismatchError(embedModel, liveDimensions, wrong.length);
+          }
+          logger.info(
+            { pageId, epochBefore, epochNow, expected: liveDimensions, received: wrong.length },
+            'Vector width changed mid-embed (shadow swap) — deferring to the Phase 2 epoch recheck',
+          );
+        }
+      }
 
       for (let j = 0; j < batch.length; j++) {
         allEmbeddings.push({
@@ -385,6 +683,45 @@ export async function embedPage(
     return 0;
   }
 
+  // ── Shadow dual-write (#1116) ────────────────────────────────────────────────
+  // While a shadow migration is backfilling, embed the SAME chunk texts with
+  // the shadow model too, so an edited page never goes stale in the shadow
+  // column. A shadow failure must never fail the live embed — the row's
+  // embedding_next stays NULL and the swap's straggler gate catches it.
+  // Uses the epoch snapshot taken before Phase 1 — never a fresh read, which
+  // would let a swap landing during the live-generate window go unnoticed.
+  const shadowTarget = shadowStateBefore?.status === 'active' ? await getActiveShadowTarget() : null;
+  let shadowEmbeddings: Array<number[] | null> | null = null;
+  if (shadowTarget && allEmbeddings.length > 0) {
+    try {
+      shadowEmbeddings = [];
+      const shadowBatchSize = 10;
+      for (let i = 0; i < allEmbeddings.length; i += shadowBatchSize) {
+        const slice = allEmbeddings.slice(i, i + shadowBatchSize);
+        const vectors = await generateEmbedding(
+          shadowTarget.cfg,
+          shadowTarget.model,
+          slice.map((e) => e.text),
+        );
+        for (let j = 0; j < slice.length; j++) shadowEmbeddings.push(vectors[j] ?? null);
+      }
+      // A provider that answers with the wrong vector length must count as a
+      // shadow FAILURE, not poison the live INSERT below — a single
+      // wrong-dimension value in the multi-row insert would fail the whole
+      // page embed and break the promised live/shadow isolation (review r1).
+      if (shadowEmbeddings.some((v) => v !== null && v.length !== shadowTarget.dimensions)) {
+        logger.warn(
+          { pageId, expected: shadowTarget.dimensions },
+          'Shadow dual-write returned wrong-dimension vectors — treated as shadow failure, page left as straggler',
+        );
+        shadowEmbeddings = null;
+      }
+    } catch (err) {
+      logger.warn({ err, pageId }, 'Shadow dual-write embed failed — live embed proceeds, page left as straggler');
+      shadowEmbeddings = null;
+    }
+  }
+
   // ── Phase 2: Atomically replace old embeddings with new ones ─────────────────
   // All LLM work is done; now open a short-lived transaction so that concurrent
   // RAG queries never see an empty page_embeddings window.
@@ -392,24 +729,59 @@ export async function embedPage(
   try {
     await client.query('BEGIN');
     await client.query('DELETE FROM page_embeddings WHERE page_id = $1', [pageId]);
+    // Schema-epoch recheck (review r1+r2): the vectors above were generated
+    // against the models and columns of one migration epoch. The recheck runs
+    // AFTER the DELETE on purpose — the DELETE's ROW EXCLUSIVE lock conflicts
+    // with the migration DDL's ACCESS EXCLUSIVE, so by the time it returns,
+    // any swap/revert/abort either committed BEFORE our lock grant (and this
+    // read sees its new epoch → we abort) or is queued BEHIND this
+    // transaction and cannot change the schema before we COMMIT. Rechecking
+    // before the DELETE held no conflicting lock, so a DDL transaction
+    // holding the table lock was invisible and its rename landed between the
+    // recheck and the write (review r2).
+    const epochNow = await shadowEpochFromClient(client);
+    if (epochNow !== epochBefore) {
+      await client.query('ROLLBACK');
+      await query(
+        `UPDATE pages SET embedding_dirty = TRUE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
+        [pageId],
+      );
+      logger.warn(
+        { pageId, epochBefore, epochNow },
+        'Shadow-migration epoch changed mid-embed — page re-queued for a clean embed',
+      );
+      return 0;
+    }
 
     // Batch insert embeddings (50 rows per INSERT) instead of one-at-a-time.
-    // 5 params per row x 50 = 250, well within PostgreSQL's 65535 parameter limit.
+    // 6 params per row x 50 = 300, well within PostgreSQL's 65535 parameter
+    // limit. The embedding_next column only exists while a shadow migration
+    // is active, so the column list is built per call.
     const INSERT_BATCH_SIZE = 50;
+    const withShadow = shadowTarget !== null;
     for (let batchStart = 0; batchStart < allEmbeddings.length; batchStart += INSERT_BATCH_SIZE) {
       const batch = allEmbeddings.slice(batchStart, batchStart + INSERT_BATCH_SIZE);
       const values: unknown[] = [];
       const placeholders: string[] = [];
       let paramIdx = 1;
 
-      for (const item of batch) {
-        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4})`);
-        values.push(pageId, item.chunkIndex, item.text, pgvector.toSql(item.embedding), JSON.stringify(item.metadata));
-        paramIdx += 5;
+      for (let bi = 0; bi < batch.length; bi++) {
+        const item = batch[bi]!;
+        const cols = withShadow ? 6 : 5;
+        placeholders.push(
+          `(${Array.from({ length: cols }, (_, c) => `$${paramIdx + c}`).join(', ')})`,
+        );
+        values.push(pageId, item.chunkIndex, item.text, pgvector.toSql(item.embedding));
+        if (withShadow) {
+          const shadowVec = shadowEmbeddings?.[batchStart + bi] ?? null;
+          values.push(shadowVec ? pgvector.toSql(shadowVec) : null);
+        }
+        values.push(JSON.stringify(item.metadata));
+        paramIdx += cols;
       }
 
       await client.query(
-        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding${withShadow ? ', embedding_next' : ''}, metadata)
          VALUES ${placeholders.join(', ')}`,
         values,
       );
@@ -425,6 +797,19 @@ export async function embedPage(
        WHERE id = $1`,
       [pageId],
     );
+
+    if (withShadow) {
+      // Shadow average only when every row carries a shadow vector — a
+      // partial AVG would skew related-pages after the swap.
+      await client.query(
+        `UPDATE pages SET page_avg_embedding_next = (
+           SELECT CASE WHEN COUNT(*) FILTER (WHERE embedding_next IS NULL) = 0
+                       THEN AVG(embedding_next) END
+           FROM page_embeddings WHERE page_id = $1
+         ) WHERE id = $1`,
+        [pageId],
+      );
+    }
 
     await client.query('COMMIT');
   } catch (err) {
@@ -577,6 +962,17 @@ export async function processDirtyPages(
     logger.info({ userId, dirtyPages: totalDirty }, 'Processing dirty pages for embedding');
 
     if (totalDirty === 0) {
+      // SSE consumers need a terminal event even when there is no work. Without
+      // it the Workers UI sees only the initial "started" event, the stream
+      // closes, and the action appears to have silently done nothing.
+      onProgress?.({
+        type: 'complete',
+        total: 0,
+        completed: 0,
+        failed: 0,
+        percentage: 100,
+        errors: [],
+      });
       return { processed: 0, errors: 0 };
     }
 
@@ -931,12 +1327,33 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
   const TOP_K = 5;
   const SIMILARITY_THRESHOLD = 0.4; // cosine similarity (1 - cosine_distance) — lowered from 0.7 to surface more connections in small corpora
 
-  // Wrap all three queries in a single transaction so the graph is never
-  // visible as empty during the window between DELETE and INSERT.
+  // Resolved BEFORE the checkout, never between BEGIN and the SET LOCAL: on a
+  // cache miss `efSearchFor` reads `admin_settings` on this same pool, and a
+  // transaction that asks its own pool for a second connection while holding
+  // one stalls for `connectionTimeoutMillis` under load — here inside a
+  // 120s-`statement_timeout` transaction (review r1).
+  const efSearch = await efSearchFor(TOP_K);
+
+  // Semantic and deterministic writers share one transaction lock.
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
     await client.query('SET LOCAL statement_timeout = 120000'); // 2 min max for relationship computation
+    await client.query('SELECT pg_advisory_xact_lock($1)', [RELATIONSHIP_ADVISORY_LOCK_ID]);
+    // The LATERAL kNN below is served by idx_pages_page_avg_embedding_hnsw, so
+    // it is governed by hnsw.ef_search exactly as the RAG vector leg is. Without
+    // this it ran at PostgreSQL's default 40 while retrieval ran at >= 100 — one
+    // corpus, two recall settings, and the lower one on the path that filters
+    // AFTER the index scan (`deleted_at IS NULL`, `p2.id != s.page_id`,
+    // `page_avg_embedding IS NOT NULL`), where every discarded row comes off the
+    // returned budget. A shortfall here is silent: a neighbour the walk never
+    // visits is an edge that never reaches page_relationships, so the graph and
+    // the related-page suggestions are just thinner than they should be. This is
+    // the SAME arithmetic vectorSearch uses (#1113 folded this path into its
+    // tuning scope); TOP_K sits far below the floor, so it resolves to the
+    // configured `rag_ef_search` floor today (#1285) and keeps its 2x headroom
+    // if TOP_K is ever raised.
+    await client.query(`SET LOCAL hnsw.ef_search = ${efSearch}`);
 
     // Delete only affected relationships when changedPageIds provided, otherwise full recompute
     if (changedPageIds && changedPageIds.length > 0) {
@@ -950,17 +1367,8 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
          WHERE relationship_type = 'embedding_similarity' AND page_id_1 = ANY($1)`,
         [changedPageIds],
       );
-      // All other edge types (label_overlap, parent_child, explicit_link) are
-      // symmetric and stored canonically (lower id first), and are fully
-      // recomputed for any pair touching a changed page — so delete both sides.
-      await client.query(
-        `DELETE FROM page_relationships
-         WHERE relationship_type <> 'embedding_similarity'
-           AND (page_id_1 = ANY($1) OR page_id_2 = ANY($1))`,
-        [changedPageIds],
-      );
     } else {
-      await client.query('DELETE FROM page_relationships');
+      await client.query("DELETE FROM page_relationships WHERE relationship_type = 'embedding_similarity'");
     }
 
     // Compute embedding similarity edges using pgvector <=> operator.
@@ -1005,99 +1413,15 @@ export async function computePageRelationships(changedPageIds?: number[]): Promi
       [TOP_K, SIMILARITY_THRESHOLD, useIncremental ? changedPageIds : null],
     );
 
-    // Compute label-overlap edges: pages sharing at least one label.
-    // When changedPageIds is provided, only compute for pairs involving at least one changed page.
-    const labelResult = await client.query<{ page_id_1: number; page_id_2: number; score: number }>(
-      `WITH label_overlaps AS (
-         SELECT
-           a.id AS page_id_1,
-           b.id AS page_id_2,
-           CASE
-             WHEN array_length(a.labels, 1) IS NULL OR array_length(b.labels, 1) IS NULL THEN 0
-             ELSE (
-               SELECT COUNT(*)::real FROM (
-                 SELECT unnest(a.labels) INTERSECT SELECT unnest(b.labels)
-               ) x
-             ) / GREATEST(
-               array_length(a.labels, 1)::real,
-               array_length(b.labels, 1)::real
-             )
-           END AS score
-         FROM pages a
-         JOIN pages b ON a.id < b.id
-         WHERE a.deleted_at IS NULL AND b.deleted_at IS NULL
-           AND a.labels IS NOT NULL AND array_length(a.labels, 1) > 0
-           AND b.labels IS NOT NULL AND array_length(b.labels, 1) > 0
-           AND a.labels && b.labels
-           AND ($1::int[] IS NULL OR a.id = ANY($1) OR b.id = ANY($1))
-       )
-       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-       SELECT page_id_1, page_id_2, 'label_overlap', score
-       FROM label_overlaps
-       WHERE score > 0
-       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO UPDATE
-         SET score = EXCLUDED.score, created_at = NOW()
-       RETURNING page_id_1, page_id_2, score`,
-      [useIncremental ? changedPageIds : null],
+    const deterministicEdges = await materializeDeterministicRelationships(
+      client, useIncremental ? changedPageIds : null,
     );
-
-    // #362: parent_child edges. pages.parent_id is TEXT (a Confluence id)
-    // while page_relationships.page_id_1/2 is INT FK to pages.id after
-    // migration 030. Join via confluence_id to translate.
-    // Pairs are stored canonically (lower id first) so the unique key
-    // (page_id_1, page_id_2, relationship_type) catches both directions.
-    // Score = 1.0 since these edges are deterministic, not similarity-derived.
-    const parentChildResult = await client.query<{ page_id_1: number; page_id_2: number }>(
-      `WITH parent_links AS (
-         SELECT child.id AS child_id,
-                parent.id AS parent_id
-         FROM pages child
-         JOIN pages parent ON parent.confluence_id = child.parent_id
-         WHERE child.deleted_at IS NULL
-           AND parent.deleted_at IS NULL
-           AND child.parent_id IS NOT NULL
-           AND ($1::int[] IS NULL OR child.id = ANY($1) OR parent.id = ANY($1))
-       )
-       INSERT INTO page_relationships (page_id_1, page_id_2, relationship_type, score)
-       SELECT
-         LEAST(child_id, parent_id),
-         GREATEST(child_id, parent_id),
-         'parent_child',
-         1.0
-       FROM parent_links
-       WHERE child_id <> parent_id
-       ON CONFLICT (page_id_1, page_id_2, relationship_type) DO NOTHING
-       RETURNING page_id_1, page_id_2`,
-      [useIncremental ? changedPageIds : null],
-    );
-
-    // #359: cross-domain producers (registered at app bootstrap) run inside
-    // the same transaction. ESLint forbids `llm → knowledge` imports, so the
-    // explicit_link producer registers itself via `registerRelationshipProducer`
-    // — see `embedding-relationship-hooks.ts`. Producers honour the same
-    // `changedPageIds` scoping; failures bubble up and ROLLBACK below.
-    let extraEdges = 0;
-    const extraCounts: Record<string, number> = {};
-    for (const producer of listRelationshipProducers()) {
-      const inserted = await producer.fn(client, useIncremental ? changedPageIds : null);
-      extraCounts[producer.name] = inserted;
-      extraEdges += inserted;
-    }
 
     await client.query('COMMIT');
 
-    const totalEdges =
-      similarityResult.rows.length +
-      labelResult.rows.length +
-      parentChildResult.rows.length +
-      extraEdges;
+    const totalEdges = similarityResult.rows.length + deterministicEdges;
     logger.info(
-      {
-        embeddingSimilarity: similarityResult.rows.length,
-        labelOverlap: labelResult.rows.length,
-        parentChild: parentChildResult.rows.length,
-        ...extraCounts,
-      },
+      { embeddingSimilarity: similarityResult.rows.length, deterministicEdges },
       'Page relationships computed',
     );
     return totalEdges;
@@ -1175,9 +1499,58 @@ export async function getEmbeddingStatus(userId: string): Promise<EmbeddingStatu
 }
 
 /**
+ * #1116 mutual exclusion for EVERY whole-corpus re-embed, whatever the
+ * entrypoint. Round 7 guarded `enqueueReembedAll`; round 8 found three more
+ * doors to the same room — `reEmbedAll()` (the embedding-rescan admin
+ * routes) and the chunk-settings change that marks the whole corpus dirty.
+ *
+ * During `swapped` any of them replaces every row with one whose
+ * `embedding_prev` is NULL, and the rollback that deletes NULL-vector rows
+ * would then EMPTY the corpus rather than restore it — the exact opposite of
+ * the runbook's promise. During `active` they race the backfill for the same
+ * rows. The refusal carries a statusCode because these routes have no error
+ * mapping of their own, so it answers 409 instead of a masked 500.
+ */
+export async function assertNoShadowMigration(): Promise<void> {
+  await refuseDuringShadowMigration((status) => status !== null);
+}
+
+/**
+ * The narrower guard, for BOUNDED user-initiated re-embeds — today
+ * `POST /pages/bulk/embed`, which is authenticate-only and can dirty up to
+ * 5000 pages. Those are harmless while the backfill runs, because `embedPage`
+ * dual-writes both columns. After the swap they are not: the rows they write
+ * have no `embedding_prev`, so a rollback re-dirties exactly those pages and
+ * search loses them until the normal pipeline catches up — the rollback's
+ * "old model serves again immediately" quietly stops being true for that
+ * slice (review r9). Refusing in every state would block an ordinary,
+ * non-admin action for a backfill window that can run for hours, so this one
+ * refuses only inside the window it can actually damage.
+ */
+export async function assertShadowRollbackWindowClear(): Promise<void> {
+  await refuseDuringShadowMigration((status) => status === 'swapped');
+}
+
+async function refuseDuringShadowMigration(
+  refuses: (status: string | null) => boolean,
+): Promise<void> {
+  const state = await getShadowMigrationState();
+  if (refuses(state?.status ?? null)) {
+    const err = new Error(
+      state?.status === 'swapped'
+        ? 'A shadow embedding migration has swapped and is awaiting validation — re-embedding these pages now would drop them from the rollback. Try again once it is cleaned up or rolled back (#1116).'
+        : 'A shadow migration is in progress — swap, roll it back or clean it up before re-embedding the corpus (#1116)',
+    ) as Error & { statusCode: number };
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
+/**
  * Re-embed all pages (admin action).
  */
 export async function reEmbedAll(): Promise<void> {
+  await assertNoShadowMigration();
   // Issue #917 — do NOT wipe the whole index up front. `embedPage` atomically
   // replaces each page's embeddings inside its own transaction (Phase 2), so
   // marking every page dirty and re-embedding page by page shrinks-then-grows
@@ -1214,6 +1587,8 @@ export async function enqueueReembedAll(
   // Fixed id — concurrent POSTs collapse onto the same BullMQ record.
   const jobId = 'reembed-all';
 
+  await assertNoShadowMigration();
+
   if (opts.newDimensions !== undefined) {
     // pgvector type args must be literal — validate strictly before interpolation.
     const n = Math.floor(opts.newDimensions);
@@ -1222,33 +1597,20 @@ export async function enqueueReembedAll(
         `refused dimension change to non-integer or out-of-range value: ${opts.newDimensions}`,
       );
     }
-    // pgvector index tiers (pgvector 0.8+):
-    //   HNSW on vector:  max 2000 dims — best recall, fastest, full float32
-    //   HNSW on halfvec: max 4000 dims — float16 storage, ~50% smaller, ~equivalent recall
-    //   no index:        > 4000 dims — sequential scan; correct but slower on large KBs
-    // Large open-source models like qwen3-embedding:4b (2560) or :8b (4096) can't fit
-    // HNSW on plain vector; falling back to halfvec or seq-scan keeps them usable.
-    let columnType: string;
-    let indexSql: string | null;
+    // pgvector index tiers, from the one shared statement of the rule
+    // (`core/db/vector-column-tier.ts`, hoisted in #1115). Large open-source
+    // models like qwen3-embedding:4b (2560) or :8b (4096) can't fit HNSW on
+    // plain vector; falling back to halfvec or seq-scan keeps them usable.
+    const { columnType, opclass } = columnTypeFor(n);
     // pages.page_avg_embedding (#919) must stay the same type/dimension as
     // page_embeddings.embedding so embedPage's `AVG(embedding)` assigns cleanly,
     // and its HNSW index uses the matching opclass.
-    let avgIndexSql: string | null;
-    // HNSW tuning parameters match migration 011 and 048 (m=16, ef_construction=200).
-    const HNSW_PARAMS = `WITH (m = 16, ef_construction = 200)`;
-    if (n <= 2000) {
-      columnType = `vector(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding vector_cosine_ops) ${HNSW_PARAMS}`;
-      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding vector_cosine_ops) ${HNSW_PARAMS}`;
-    } else if (n <= 4000) {
-      columnType = `halfvec(${n})`;
-      indexSql = `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
-      avgIndexSql = `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding halfvec_cosine_ops) ${HNSW_PARAMS}`;
-    } else {
-      columnType = `vector(${n})`;
-      indexSql = null;
-      avgIndexSql = null;
-    }
+    const indexSql = opclass
+      ? `CREATE INDEX idx_page_embeddings_hnsw ON page_embeddings USING hnsw (embedding ${opclass}) ${HNSW_PARAMS}`
+      : null;
+    const avgIndexSql = opclass
+      ? `CREATE INDEX idx_pages_page_avg_embedding_hnsw ON pages USING hnsw (page_avg_embedding ${opclass}) ${HNSW_PARAMS}`
+      : null;
     const client = await getPool().connect();
     try {
       await client.query('BEGIN');

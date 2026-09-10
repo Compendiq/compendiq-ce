@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SidebarTreeView, SidebarTreeNode } from './SidebarTreeView';
 import type { TreeNode, SidebarTreeNodeProps } from './SidebarTreeView';
 import { useUiStore } from '../../../stores/ui-store';
+import { ApiError } from '../../lib/api';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('framer-motion', async () => {
   const actual = await vi.importActual('framer-motion');
@@ -15,6 +18,10 @@ vi.mock('framer-motion', async () => {
 // resolves synchronously in tests without pulling in @dnd-kit. The stub mirrors
 // the real component's `data-active` marker on the active row (#707) so the
 // parent's scroll-into-view effect can find it end-to-end for local spaces.
+vi.mock('./SidebarSessionChrome', () => ({
+  SidebarSessionChrome: () => <div data-testid="sidebar-session-chrome" />,
+}));
+
 vi.mock('./DndLocalSpaceTree', () => ({
   default: ({ activePageId }: { activePageId?: string }) => (
     <div data-testid="dnd-local-space-tree">
@@ -47,25 +54,62 @@ const defaultTreeData = {
   total: 4,
 };
 
-let mockTreeData = { ...defaultTreeData };
+let mockTreeData: typeof defaultTreeData | undefined = { ...defaultTreeData };
 
-const mockSpaces = [
+// Query/mutation state the error tests drive. Kept as mutable objects rather
+// than per-test vi.mock factories so a test only has to state the one field it
+// cares about; `resetQueryState()` in beforeEach puts them back.
+const mockRefetchTree = vi.fn();
+const mockCreatePageReset = vi.fn();
+let mockTreeQueryState = { isLoading: false, isError: false, error: undefined as unknown, isFetching: false };
+let mockCreatePageState = { isPending: false, isError: false, error: undefined as unknown };
+
+function resetQueryState() {
+  mockTreeQueryState = { isLoading: false, isError: false, error: undefined, isFetching: false };
+  mockCreatePageState = { isPending: false, isError: false, error: undefined };
+  mockRefetchTree.mockClear();
+  mockCreatePageReset.mockClear();
+}
+let mockPinnedData = { items: [] as Array<{
+  id: string;
+  spaceKey: string;
+  title: string;
+  author: string | null;
+  lastModifiedAt: string | null;
+  excerpt: string;
+  pinnedAt: string;
+  pinOrder: number;
+}>, total: 0 };
+
+const defaultSpaces = [
   { key: 'DEV', name: 'Development', homepageId: 'root-1', lastSynced: '2026-03-01T00:00:00Z', pageCount: 4, source: 'confluence' as const },
   { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 2, source: 'confluence' as const },
 ];
 
-const mockLocalSpaces = [
-  { key: 'NOTES', name: 'My Notes', description: null, icon: null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
+let mockSpacesData = [...defaultSpaces];
+
+const defaultLocalSpaces = [
+  { key: 'NOTES', name: 'My Notes', description: null, icon: null as string | null, pageCount: 3, createdBy: null, createdAt: '2026-03-01T00:00:00Z', source: 'local' as const },
 ];
+let mockLocalSpaces = [...defaultLocalSpaces];
 
 const mockCreatePageMutateAsync = vi.fn();
 vi.mock('../../hooks/use-pages', () => ({
-  usePageTree: () => ({ data: mockTreeData, isLoading: false }),
-  useCreatePage: () => ({ mutateAsync: mockCreatePageMutateAsync, isPending: false }),
+  usePageTree: () => ({
+    data: mockTreeData,
+    refetch: mockRefetchTree,
+    ...mockTreeQueryState,
+  }),
+  useCreatePage: () => ({
+    mutateAsync: mockCreatePageMutateAsync,
+    reset: mockCreatePageReset,
+    ...mockCreatePageState,
+  }),
+  usePinnedPages: () => ({ data: mockPinnedData }),
 }));
 
 vi.mock('../../hooks/use-spaces', () => ({
-  useSpaces: () => ({ data: mockSpaces }),
+  useSpaces: () => ({ data: mockSpacesData }),
 }));
 
 vi.mock('../../hooks/use-standalone', () => ({
@@ -92,9 +136,14 @@ describe('SidebarTreeView', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockTreeData = { ...defaultTreeData };
+    mockPinnedData = { items: [], total: 0 };
+    mockLocalSpaces = [...defaultLocalSpaces];
+    mockSpacesData = [...defaultSpaces];
+    resetQueryState();
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: undefined,
+      treeSidebarWidth: 256,
     });
   });
 
@@ -107,21 +156,25 @@ describe('SidebarTreeView', () => {
     expect(screen.getByRole('link', { name: /AI/ })).toBeInTheDocument();
   });
 
-  it('active nav tab uses ink-action treatment, not amber text', () => {
+  // The main nav is a segmented control, the same shape as the article
+  // inspector's Outline/Details tabs and the search-mode toggle. It used
+  // `nav-selection` (an accent-tinted field), which was a fourth treatment for
+  // "one of N is selected"; the raised neutral segment is the shared one.
+  // `bg-action` stays asserted-against: a near-black fill would make the nav
+  // the heaviest thing in the rail.
+  it('active nav tab uses the shared segmented-control treatment', () => {
     // location.pathname === '/' => Pages tab is active.
     render(<SidebarTreeView />, { wrapper: createWrapper('/') });
     const pagesLink = screen.getByRole('link', { name: /Pages/ });
-    expect(pagesLink.className).toContain('bg-action');
-    expect(pagesLink.className).toContain('text-action-foreground');
-    expect(pagesLink.className).not.toContain('text-primary');
+    expect(pagesLink.className).toContain('nm-pill-active');
+    expect(pagesLink.className).not.toContain('bg-action');
   });
 
-  it('active AI tab keeps an amber icon as the AI signal even though pill is ink', () => {
+  it('active AI tab keeps its icon in the selection ink', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
     const aiLink = screen.getByRole('link', { name: /AI/ });
-    // At least one descendant element carries text-primary (the amber icon).
-    const amberDescendant = aiLink.querySelector('[class*="text-primary"]');
-    expect(amberDescendant).not.toBeNull();
+    const selectedIcon = aiLink.querySelector('[class*="text-primary-ink"]');
+    expect(selectedIcon).not.toBeNull();
   });
 
   it('inactive AI tab icon does not use amber (would fail 3:1 against light glass)', () => {
@@ -148,6 +201,10 @@ describe('SidebarTreeView', () => {
   it('orders sibling roots by sortOrder, not alphabetically (#959)', () => {
     // "Zebra" is stored before "Alpha" (drag-reorder), so honouring sortOrder
     // must beat the title tiebreak — otherwise a drop snaps back to A→Z.
+    // Scoped to DEV (rather than left in All-Spaces) so the row's textContent
+    // is just the title — All-Spaces scope appends a spaceKey suffix, which
+    // is a different, dedicated test below and orthogonal to sort order.
+    useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
     mockTreeData = {
       items: [
         { id: 'p-alpha', spaceKey: 'DEV', title: 'Alpha', pageType: 'page' as const, parentId: null, sortOrder: 2, labels: [], lastModifiedAt: null, embeddingDirty: false },
@@ -270,8 +327,10 @@ describe('SidebarTreeView', () => {
     // so there's exactly one "Expand" chevron at this point.
     fireEvent.click(screen.getByLabelText('Expand'));
     const guide = screen.getByLabelText('Collapse Getting Started');
-    // level=0 => left = 0*16+14 = 14px
-    expect(guide.style.left).toBe('14px');
+    // level=0 => left = 0*12+8 = 8px. `.indent-guide` is a 12px-wide click
+    // target with its visible 1px line centred, so this lands the line on the
+    // parent chevron's axis (0*12+2 + 24/2 = 14).
+    expect(guide.style.left).toBe('8px');
   });
 
   it('navigates to page on click', () => {
@@ -280,18 +339,32 @@ describe('SidebarTreeView', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
   });
 
-  it('navigates to /ai?pageId= on click when on AI route (#417)', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
-    fireEvent.click(screen.getByText('API Reference'));
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?pageId=root-2', { replace: true });
+  // A parent row does two jobs — navigate to the page, and (via its chevron,
+  // indent guide, and ArrowRight/Left) expand its children — and used to
+  // conflate them: clicking the title toggled expansion unconditionally
+  // before navigating, so opening an already-expanded section closed the very
+  // children the click was meant to reach.
+  it('does not collapse an already-expanded parent when its title is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getAllByLabelText('Expand')[0]);
+    expect(screen.getByText('Installation')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Getting Started'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
+    expect(screen.getByText('Installation')).toBeInTheDocument();
   });
 
-  it('highlights the article matching ?pageId on the AI route (#417)', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
-    const installRef = screen.getByText('Installation');
-    const row = installRef.parentElement!;
-    expect(row.className).toContain('bg-action');
-    expect(row.className).toContain('text-action-foreground');
+  it('still expands a collapsed parent when its title is clicked', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.queryByText('Installation')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Getting Started'));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/root-1');
+    expect(screen.getByText('Installation')).toBeInTheDocument();
   });
 
   // #767: tree titles intermittently rendered faux-bold (synthesized weight
@@ -330,7 +403,7 @@ describe('SidebarTreeView', () => {
     expect(screen.getByLabelText('Expand sidebar')).toBeInTheDocument();
     expect(screen.getByLabelText('Pages')).toBeInTheDocument();
     expect(screen.getByLabelText('Graph')).toBeInTheDocument();
-    expect(screen.getByLabelText('AI')).toBeInTheDocument();
+    expect(screen.getByLabelText('AI chat, full page')).toBeInTheDocument();
   });
 
   it('expands sidebar when collapsed expand button is clicked', () => {
@@ -350,6 +423,26 @@ describe('SidebarTreeView', () => {
     expect(screen.getByText('4 pages')).toBeInTheDocument();
   });
 
+  it('keeps Trash in the expanded page-tree footer', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trash = screen.getByRole('button', { name: 'Trash' });
+
+    expect(trash).toHaveAttribute('data-testid', 'sidebar-trash');
+    fireEvent.click(trash);
+    expect(mockNavigate).toHaveBeenCalledWith('/trash');
+  });
+
+  it('keeps Trash reachable when the page tree is collapsed', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const trash = screen.getByRole('button', { name: 'Trash' });
+
+    expect(trash).toHaveAttribute('data-testid', 'sidebar-trash-collapsed');
+    expect(trash).toHaveClass('nm-icon-button');
+    fireEvent.click(trash);
+    expect(mockNavigate).toHaveBeenCalledWith('/trash');
+  });
+
   it('opens space dropdown and shows confluence and local space options', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByText('All Spaces'));
@@ -363,6 +456,116 @@ describe('SidebarTreeView', () => {
     fireEvent.click(screen.getByText('All Spaces'));
     expect(screen.getByText('Confluence')).toBeInTheDocument();
     expect(screen.getByText('Local')).toBeInTheDocument();
+  });
+
+  // The auto-select-space effect fires whenever a page is open and the scope
+  // is falsy — which is exactly what explicitly choosing "All Spaces" sets it
+  // to, so the effect could not tell "never chosen" apart from "explicitly
+  // chose all" and silently reverted the choice on the very next render, with
+  // no error and no visible change. Only reproduces with a page open, which
+  // is why it survived: with none open the same click worked correctly.
+  it('does not silently revert an explicit "All Spaces" choice back to the open page\'s own space', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+    fireEvent.click(screen.getByText('All Spaces'));
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
+    expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
+  });
+
+  it('still auto-scopes to the open page\'s space the first time, before any explicit choice', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBe('DEV');
+  });
+
+  // Opening a space's homepage used to auto-scope into DEV, whose own #352
+  // homepage-hiding rule then removed root-1 from the tree it had just been
+  // scoped to — leaving zero selected rows and no visible trace of the page
+  // the user just clicked. Staying in All Spaces keeps root-1 rendered as an
+  // ordinary row (homepage-hiding only applies once a single space is
+  // selected) and correctly selected.
+  it('does not auto-scope into a space when the open page is that space\'s own homepage', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-1') });
+
+    expect(useUiStore.getState().treeSidebarSpaceKey).toBeUndefined();
+    const active = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(active).toHaveAttribute('aria-selected', 'true');
+  });
+
+  describe('space filter', () => {
+    const manySpaces = Array.from({ length: 12 }, (_, i) => ({
+      key: `SP${i}`,
+      name: `Space ${i}`,
+      homepageId: null,
+      lastSynced: '2026-03-01T00:00:00Z',
+      pageCount: i,
+      source: 'confluence' as const,
+    }));
+
+    it('stays out of the way until the list stops fitting', () => {
+      // Two confluence + one local by default: a search box above three items
+      // is chrome, not an affordance.
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      expect(screen.queryByLabelText('Filter spaces by name')).not.toBeInTheDocument();
+    });
+
+    it('appears past the threshold and filters on name or key', () => {
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+      const filter = screen.getByLabelText('Filter spaces by name');
+      expect(filter).toBeInTheDocument();
+
+      fireEvent.change(filter, { target: { value: 'Space 1' } });
+      expect(screen.getByText('Space 1')).toBeInTheDocument();
+      expect(screen.queryByText('Space 2')).not.toBeInTheDocument();
+
+      // An operator who knows a space as "SP7" should not have to remember its
+      // display name.
+      fireEvent.change(filter, { target: { value: 'sp7' } });
+      expect(screen.getByText('Space 7')).toBeInTheDocument();
+      expect(screen.queryByText('Space 1')).not.toBeInTheDocument();
+    });
+
+    it('says so when nothing matches instead of emptying out', () => {
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'zzzz' } });
+      expect(screen.getByText(/No spaces match/)).toBeInTheDocument();
+    });
+
+    it('keeps the escape routes reachable while filtering', () => {
+      // New Space is how you leave this list, so it must not be filtered away
+      // or scrolled out of reach.
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'zzzz' } });
+      expect(screen.getByText('New Space')).toBeInTheDocument();
+    });
+
+    it('forgets the filter when the list closes', () => {
+      // A remembered filter would silently hide spaces from whoever opens it
+      // next, including the same user a minute later.
+      mockSpacesData = manySpaces;
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      fireEvent.change(screen.getByLabelText('Filter spaces by name'), { target: { value: 'Space 3' } });
+      expect(screen.queryByText('Space 4')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle')); // close
+      fireEvent.click(screen.getByTestId('space-selector-toggle')); // reopen
+      expect(screen.getByLabelText('Filter spaces by name')).toHaveValue('');
+      expect(screen.getByText('Space 4')).toBeInTheDocument();
+    });
   });
 
   it('shows "New Space" button in dropdown', () => {
@@ -389,7 +592,19 @@ describe('SidebarTreeView', () => {
 
   it('renders resize handle', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' })).toBeInTheDocument();
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+    expect(handle).toHaveAttribute('aria-valuenow', '256');
+    expect(handle).toHaveAttribute('tabindex', '0');
+  });
+
+  it('renders New Page button in sidebar section header and navigates to /pages/new', () => {
+    mockNavigate.mockClear();
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const newPageBtn = screen.getByTestId('sidebar-new-page-btn');
+    expect(newPageBtn).toBeInTheDocument();
+    expect(newPageBtn).toHaveAccessibleName('New Page');
+    fireEvent.click(newPageBtn);
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
   });
 
   it('applies persisted width from store', () => {
@@ -435,22 +650,123 @@ describe('SidebarTreeView', () => {
     expect(useUiStore.getState().treeSidebarWidth).toBe(600);
   });
 
+  it('supports keyboard resizing and double-click reset', () => {
+    useUiStore.setState({ treeSidebarWidth: 320 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize tree sidebar' });
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(336);
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(320);
+
+    fireEvent.doubleClick(handle);
+    // Resets to the default width, which is 282 — see ui-store for why it is
+    // no longer 256. Home does the same thing from the keyboard.
+    expect(useUiStore.getState().treeSidebarWidth).toBe(282);
+
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(useUiStore.getState().treeSidebarWidth).toBe(282);
+  });
+
   it('does not render resize handle when collapsed', () => {
     useUiStore.setState({ treeSidebarCollapsed: true });
     render(<SidebarTreeView />, { wrapper: createWrapper() });
     expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
   });
 
-  it('uses document icons for all pages, including parents with children (no folder icons)', () => {
+  it('lets users override an ephemeral forced collapse without changing their saved preference', () => {
+    const onForceExpand = vi.fn();
+    render(
+      <SidebarTreeView forceCollapsed onForceExpand={onForceExpand} />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.queryByRole('separator', { name: 'Resize tree sidebar' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Expand sidebar'));
+    expect(onForceExpand).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+  });
+
+  it('renders up to four compact pinned shortcuts and links overflow to the Pages overview', () => {
+    mockPinnedData = {
+      total: 5,
+      items: Array.from({ length: 5 }, (_, index) => ({
+        id: `pin-${index + 1}`,
+        spaceKey: 'DEV',
+        title: `Pinned page ${index + 1}`,
+        author: null,
+        lastModifiedAt: null,
+        excerpt: '',
+        pinnedAt: '2026-03-01T00:00:00Z',
+        pinOrder: index + 1,
+      })),
+    };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('sidebar-pinned-pin-1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-pinned-pin-4')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-pinned-pin-5')).not.toBeInTheDocument();
+    expect(screen.getByText('View all 5 pinned pages')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('sidebar-pinned-pin-1'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages/pin-1');
+  });
+
+  // A pinned page and a tree page are the same object listed twice in one
+  // panel. They used to be 32px/8px-corner/12px and 28px/6px/13px respectively
+  // — two row shapes four pixels apart, which reads as a rendering fault rather
+  // than a distinction. The Pin glyph is the distinction and it is enough.
+  it('gives pinned shortcuts the same row geometry as tree rows', () => {
+    mockPinnedData = {
+      total: 1,
+      items: [{
+        id: 'pin-1',
+        spaceKey: 'DEV',
+        title: 'Pinned page 1',
+        author: null,
+        lastModifiedAt: null,
+        excerpt: '',
+        pinnedAt: '2026-03-01T00:00:00Z',
+        pinOrder: 1,
+      }],
+    };
+
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    const pinnedRow = screen.getByTestId('sidebar-pinned-pin-1');
+    const treeRow = container.querySelector<HTMLElement>('[data-page-id]')!;
+
+    for (const geometry of ['h-7', 'rounded-md', 'text-[13px]']) {
+      expect(pinnedRow.className).toContain(geometry);
+      expect(treeRow.className).toContain(geometry);
+    }
+    // The pair they used to differ by.
+    expect(pinnedRow.className).not.toContain('h-8');
+    expect(pinnedRow.className).not.toContain('rounded-lg');
+  });
+
+  // Was "uses document icons for all pages, including parents with children
+  // (no folder icons)". The intent was that a parent page is still a PAGE in
+  // Compendiq — there is no folder entity — so it must not wear a folder glyph.
+  // That intent now holds more strongly: tree rows carry no page icon at all,
+  // because one identical glyph on 100% of rows discriminated nothing and cost
+  // 21px of the title's width. The folder assertion stays so the weaker version
+  // can't come back by the side door.
+  it('gives tree rows no page icon, and never a folder/document distinction', () => {
     useUiStore.setState({
       treeSidebarCollapsed: false,
       treeSidebarSpaceKey: 'DEV',
     });
     const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
 
-    const svgs = container.querySelectorAll('svg');
-    const svgClasses = Array.from(svgs).map((svg) => svg.getAttribute('class') ?? '');
+    for (const row of container.querySelectorAll('[data-page-id]')) {
+      expect(row.querySelectorAll('svg')).toHaveLength(row.querySelector('[aria-label="Expand"], [aria-label="Collapse"]') ? 1 : 0);
+    }
 
+    const svgClasses = Array.from(container.querySelectorAll('svg')).map((svg) => svg.getAttribute('class') ?? '');
     const hasFolderIcon = svgClasses.some(
       (c) => c.includes('lucide-folder-open') || (c.includes('lucide-folder') && !c.includes('lucide-folder-plus')),
     );
@@ -492,15 +808,43 @@ describe('SidebarTreeView', () => {
     expect(screen.queryByText('This space has no content.')).not.toBeInTheDocument();
   });
 
-  it('has a New Space button in sidebar header', () => {
+  // The space selector used to sit under a "Workspace" caption with a `+`
+  // beside it — 101px of panel height to introduce one control, on the panel
+  // whose scarcest resource is height. Both are gone. These two tests replace
+  // the pair that pinned the header `+`: creating a space is unchanged as a
+  // capability, it just lives only where it belongs now.
+  it('reaches new-space creation from the selector dropdown, not a header button', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('New Space')).toBeInTheDocument();
+    // No second entrance above the selector.
+    expect(screen.queryByLabelText('New Space')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('All Spaces'));
+    fireEvent.click(screen.getByText('New Space'));
+    expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
   });
 
-  it('navigates to new space page when New Space is clicked in header', () => {
+  // The caption said "Workspace" while the control selects a SPACE — the noun
+  // the API, the dropdown's own Confluence/Local headings and Confluence itself
+  // all use. It should not come back under either name: the selector names the
+  // current scope on the chip itself.
+  it('renders no caption above the space selector', () => {
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Space'));
-    expect(mockNavigate).toHaveBeenCalledWith('/spaces/new');
+    expect(screen.queryByText('Workspace')).not.toBeInTheDocument();
+    // The selector itself still names the current scope.
+    expect(screen.getByTestId('space-selector-toggle')).toHaveTextContent('All Spaces');
+  });
+
+  it('sits the space selector left of collapse, at the collapse control height', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false });
+    render(<SidebarTreeView embedMainNav={false} />, { wrapper: createWrapper() });
+    const selector = screen.getByTestId('space-selector-toggle');
+    const collapse = screen.getByLabelText('Collapse sidebar');
+    expect(selector.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(selector.className).toMatch(/\bh-8\b/);
+    expect(selector).not.toHaveTextContent('Every connected space');
+    expect(collapse.parentElement).toContainElement(selector);
+    expect(collapse.parentElement!.className).toMatch(/\bh-12\b/);
+    expect(collapse.parentElement!.className).toContain('panel-toolbar');
   });
 
   it('shows collapse sidebar button in expanded sidebar header', () => {
@@ -573,6 +917,56 @@ describe('SidebarTreeView keyboard navigation (#880)', () => {
   });
 });
 
+// #856: closes out the roving-tabindex/arrow-key-nav follow-up #880 left
+// open — reaching a page used to cost one Tab press per visible row. The
+// underlying flatten/keyboard logic (sidebar-tree-keyboard.ts) has its own
+// unit tests; these confirm SidebarTreeView actually wires the hook up.
+describe('SidebarTreeView roving tabindex (#856)', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+    useUiStore.setState({
+      treeSidebarCollapsed: false,
+      treeSidebarSpaceKey: undefined,
+    });
+  });
+
+  it('defaults the tab stop to the open page, not just the first row', () => {
+    // child-1 "Installation", not "Getting Started": root-1 is DEV's
+    // configured homepage (see mockSpaces above), so opening any DEV page
+    // auto-selects the space and the #352 homepage-hiding rule promotes
+    // root-1's children to the top level instead of rendering root-1 itself.
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/child-1') });
+    const active = screen.getByText('Installation').closest('[role="treeitem"]')!;
+    const other = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(active.getAttribute('tabindex')).toBe('0');
+    expect(other.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('moves the tab stop with ArrowDown/ArrowUp and gives the row real DOM focus', () => {
+    // No :id in the path -> activePageId stays undefined -> the DEV space
+    // is never auto-selected -> root-1 "Getting Started" renders normally
+    // alongside root-2 "API Reference" (see the homepage note above).
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // root-2 "API Reference" sorts before root-1 "Getting Started", so it is
+    // the initial roving target here.
+    const first = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+
+    const second = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(second.getAttribute('tabindex')).toBe('0');
+    expect(first.getAttribute('tabindex')).toBe('-1');
+    expect(document.activeElement).toBe(second);
+  });
+
+  it('does not move focus off a leaf row on ArrowRight (no children to expand into)', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+    const leaf = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    fireEvent.keyDown(leaf, { key: 'ArrowRight' });
+    expect(leaf.getAttribute('tabindex')).toBe('0');
+  });
+});
+
 // #880 (code-review follow-up): the rows carry role="treeitem" but had no
 // ancestor role="tree" and nested-children wrappers had no role="group", so
 // every treeitem was orphaned — an axe-critical aria-required-parent violation
@@ -606,6 +1000,95 @@ describe('SidebarTreeView ARIA tree semantics (#880)', () => {
     expect(group).not.toBeNull();
     // The nested treeitem lives inside the group.
     expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+  });
+
+  // Hierarchy and "where am I" are the two things a tree exists to
+  // communicate, and neither reached assistive tech: the open page was
+  // conveyed by fill colour and font-weight alone.
+  it('marks the active row aria-selected and every other row aria-selected="false"', () => {
+    // OPS has no configured homepage, so opening root-2 does not trigger the
+    // #352 homepage-hiding rule the way DEV (root-1's owning space) would.
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper('/pages/root-2') });
+    const active = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    const inactive = screen.getByText('Getting Started').closest('[role="treeitem"]')!;
+    expect(active.getAttribute('aria-selected')).toBe('true');
+    expect(inactive.getAttribute('aria-selected')).toBe('false');
+  });
+
+  // No row attribute exposed a title clipped by `truncate`, and no other
+  // reachable affordance (no hover card, nothing keyboard- or
+  // touch-reachable) recovered it.
+  it('gives every row a title attribute matching the page title', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(row.getAttribute('title')).toBe('API Reference');
+  });
+});
+
+// All-Spaces scope merges every connected space's pages into one flat run
+// with nothing else distinguishing them — a corpus with any amount of
+// templated content (runbooks, meeting notes, duplicated drafts) reliably
+// produces same-titled rows next to each other with no way to tell them
+// apart. Scoped to one space, the panel chrome above the tree already
+// supplies that context, so the suffix would be redundant on every row.
+describe('SidebarTreeView spaceKey disambiguation in All-Spaces scope', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockTreeData = { ...defaultTreeData };
+  });
+
+  it('shows each row\'s spaceKey when scope is All Spaces', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(within(row).getByText('DEV')).toBeInTheDocument();
+  });
+
+  it('hides the spaceKey suffix once scoped to a specific space', () => {
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: 'OPS' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('API Reference').closest('[role="treeitem"]')!;
+    expect(within(row).queryByText('DEV')).not.toBeInTheDocument();
+  });
+
+  // Unfiled standalone pages carry spaceKey: null — rendering that bare left
+  // the suffix blank on exactly the rows a real corpus collides on (several
+  // same-titled unfiled pages). A static "Local" label wouldn't disambiguate
+  // between two unfiled duplicates either, so the fallback is a compact
+  // relative date instead.
+  it('falls back to a compact last-modified date when a page has no spaceKey', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-05T12:00:00Z'));
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    mockTreeData = {
+      items: [
+        { id: 'unfiled-1', spaceKey: null, title: 'Untitled draft', pageType: 'page' as const, parentId: null, sortOrder: 0, labels: [], lastModifiedAt: '2026-03-02T12:00:00Z', embeddingDirty: false },
+      ],
+      total: 1,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const row = screen.getByText('Untitled draft').closest('[role="treeitem"]')!;
+    expect(within(row).getByText('3d')).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('two same-titled unfiled pages get different suffixes when their last-modified dates differ', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-05T12:00:00Z'));
+    useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined });
+    mockTreeData = {
+      items: [
+        { id: 'dup-1', spaceKey: null, title: 'Table Test Page', pageType: 'page' as const, parentId: null, sortOrder: 0, labels: [], lastModifiedAt: '2026-03-04T12:00:00Z', embeddingDirty: false },
+        { id: 'dup-2', spaceKey: null, title: 'Table Test Page', pageType: 'page' as const, parentId: null, sortOrder: 1, labels: [], lastModifiedAt: '2025-01-05T12:00:00Z', embeddingDirty: false },
+      ],
+      total: 2,
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    const rows = screen.getAllByText('Table Test Page').map((el) => el.closest('[role="treeitem"]')!);
+    const suffixes = rows.map((row) => within(row).getByText(/^(today|\d+[dmy]o?)$/).textContent);
+    expect(new Set(suffixes).size).toBe(2);
+    vi.useRealTimers();
   });
 });
 
@@ -765,7 +1248,7 @@ describe('SidebarTreeNode memoization', () => {
       expandedSet,
       toggleExpand: vi.fn(),
       activePageId: 'page-1',
-      isAiRoute: false,
+      showSpaceKey: false,
     };
 
     expect(component.compare(props, { ...props, toggleExpand: vi.fn() })).toBe(true);
@@ -778,8 +1261,8 @@ describe('SidebarTreeNode memoization', () => {
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: 'page-1', showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -790,21 +1273,21 @@ describe('SidebarTreeNode memoization', () => {
     };
     const node = makeNode('page-1', 'Test');
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet: new Set<string>(), toggleExpand, activePageId: undefined, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
 
-  it('custom comparator returns false (re-render) when isAiRoute changes (#960)', () => {
+  it('custom comparator returns false (re-render) when showSpaceKey changes', () => {
     const component = SidebarTreeNode as unknown as {
       compare: (prev: SidebarTreeNodeProps, next: SidebarTreeNodeProps) => boolean;
     };
     const node = makeNode('page-1', 'Test');
     const expandedSet = new Set<string>();
     const toggleExpand = vi.fn();
-    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: true };
+    const prev: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: true };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -817,8 +1300,8 @@ describe('SidebarTreeNode memoization', () => {
     const toggleExpand = vi.fn();
     const node1 = makeNode('page-1', 'Test');
     const node2 = makeNode('page-1', 'Test Changed');
-    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
-    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, isAiRoute: false };
+    const prev: SidebarTreeNodeProps = { node: node1, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
+    const next: SidebarTreeNodeProps = { node: node2, level: 0, expandedSet, toggleExpand, activePageId: undefined, showSpaceKey: false };
 
     expect(component.compare(prev, next)).toBe(false);
   });
@@ -836,7 +1319,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
+          showSpaceKey={false}
         />
       </MemoryRouter>,
     );
@@ -844,28 +1327,101 @@ describe('SidebarTreeNode memoization', () => {
     expect(screen.getByText('Memoized Page')).toBeInTheDocument();
   });
 
-  it('has a New Folder button in sidebar header', () => {
+  // ---------------------------------------------------------------------
+  // Failure paths.
+  //
+  // The tree consumed only { data, isLoading }. A failed request therefore
+  // left data undefined, the tree empty, and the EMPTY state on screen — "No
+  // pages synced yet / Sync a Confluence space to get started", with a button
+  // into Settings. The panel diagnosed a network failure as an unconfigured
+  // integration and pointed the user at the most expensive wrong action it had.
+  // Nothing exercised the path, which is why it survived.
+  // ---------------------------------------------------------------------
+  describe('failure paths', () => {
+    beforeEach(() => {
+      mockNavigate.mockClear();
+      mockTreeData = { ...defaultTreeData };
+      mockPinnedData = { items: [], total: 0 };
+      mockCreatePageMutateAsync.mockClear();
+      resetQueryState();
+      useUiStore.setState({ treeSidebarCollapsed: false, treeSidebarSpaceKey: undefined, treeSidebarWidth: 282 });
+    });
+
+  it('reports a failed load as a failure, not as an empty knowledge base', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(500, 'Internal Server Error (HTTP 500)'), isFetching: false };
+
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    expect(screen.getByLabelText('New Folder')).toBeInTheDocument();
+
+    expect(screen.getByTestId('tree-error')).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t load pages/)).toBeInTheDocument();
+    // The curated ApiError message is the only place the user learns why.
+    expect(screen.getByText('Internal Server Error (HTTP 500)')).toBeInTheDocument();
+
+    // The wrong diagnosis must be absent — this is the actual regression guard.
+    expect(screen.queryByText('No pages synced yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sync a Confluence space to get started.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Sync a Space/ })).not.toBeInTheDocument();
   });
 
-  it('shows new folder inline input when New Folder button is clicked', () => {
-    render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Folder'));
-    expect(screen.getByTestId('new-folder-input')).toBeInTheDocument();
-    expect(screen.getByLabelText('New folder name')).toBeInTheDocument();
+  it('offers a retry that refetches, and says it is retrying', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(503, 'Service Unavailable (HTTP 503)'), isFetching: false };
+
+    const { rerender } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: /Try again/ }));
+    expect(mockRefetchTree).toHaveBeenCalledTimes(1);
+
+    mockTreeQueryState = { ...mockTreeQueryState, isFetching: true };
+    rerender(<SidebarTreeView />);
+    const retrying = screen.getByRole('button', { name: /Retrying/ });
+    expect(retrying).toBeDisabled();
   });
 
-  it('creates new folder as pageType "page" (not "folder")', async () => {
-    mockCreatePageMutateAsync.mockResolvedValue({ id: 'new-1' });
+  it('falls back to generic copy when the failure is not an ApiError', () => {
+    mockTreeData = undefined;
+    mockTreeQueryState = { isLoading: false, isError: true, error: new TypeError('Failed to fetch'), isFetching: false };
+
     render(<SidebarTreeView />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByLabelText('New Folder'));
-    const input = screen.getByLabelText('New folder name');
-    fireEvent.change(input, { target: { value: 'My Container' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(mockCreatePageMutateAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ pageType: 'page', title: 'My Container', bodyHtml: '' }),
-    );
+
+    // A raw TypeError is not user-facing prose, so it is not shown.
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument();
+    expect(screen.getByText(/Your pages are still there/)).toBeInTheDocument();
+  });
+
+  it('keeps a cached tree usable when a refresh fails, and flags it', () => {
+    // The common case: a background refetch failed but the last good tree is
+    // still in hand. Replacing working navigation with an error screen would
+    // take away what the user is mid-task in to report a cost not yet incurred.
+    mockTreeQueryState = { isLoading: false, isError: true, error: new ApiError(504, 'Gateway Timeout (HTTP 504)'), isFetching: false };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Getting Started')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-error')).not.toBeInTheDocument();
+
+    const notice = screen.getByTestId('tree-stale-notice');
+    expect(notice).toHaveTextContent('Showing the last loaded pages');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+    expect(mockRefetchTree).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no failure treatment when the tree is genuinely empty', () => {
+    mockTreeData = { items: [], total: 0 };
+
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('No pages synced yet')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tree-stale-notice')).not.toBeInTheDocument();
+  });
+
+  });
+
+  it('does not put a New page control on the tree toolbar', () => {
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.queryByRole('button', { name: 'New page' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('new-page-input')).not.toBeInTheDocument();
   });
 
   it('pages with pageType folder navigate on click like normal pages', () => {
@@ -899,7 +1455,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -907,7 +1462,7 @@ describe('SidebarTreeNode memoization', () => {
     const guide = screen.getByLabelText('Collapse Parent');
     expect(guide).toBeInTheDocument();
     expect(guide).toHaveClass('indent-guide');
-    expect(guide.style.left).toBe('14px');
+    expect(guide.style.left).toBe('8px'); // level=0 => 0*12 + 8
   });
 
   it('calls toggleExpand when indent guide is clicked', () => {
@@ -924,7 +1479,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -947,14 +1501,278 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
 
     const guide = screen.getByLabelText('Collapse Deep Parent');
-    // level=3 => left = 3*16+14 = 62px
-    expect(guide.style.left).toBe('62px');
+    // level=3 => left = 3*12+8 = 44px
+    expect(guide.style.left).toBe('44px');
+  });
+
+  // ---------------------------------------------------------------------
+  // Overlay treatment and section labels.
+  // ---------------------------------------------------------------------
+
+  it('gives the space dropdown a real overlay treatment', () => {
+    const { container } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+    const dropdown = container.querySelector('.absolute.z-50, [class*="nm-popover-glass"]');
+    expect(dropdown?.className).toContain('nm-popover-glass');
+    // nm-sidebar is the PANEL CHASSIS utility (background: var(--color-background)
+    // + border-RIGHT only), so wearing it made this floating layer paint the
+    // exact colour of the panel it covers, edged on one side. Measured in
+    // Graphite: box-shadow none, background rgb(13,14,17), identical to the
+    // sidebar beneath it.
+    expect(dropdown?.className).not.toContain('nm-sidebar');
+  });
+
+  it('uses one section-label treatment throughout the panel', () => {
+    mockPinnedData = {
+      total: 1,
+      items: [{ id: 'pin-1', spaceKey: 'DEV', title: 'Pinned page', author: null, lastModifiedAt: null, excerpt: '', pinnedAt: '2026-03-01T00:00:00Z', pinOrder: 1 }],
+    };
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('space-selector-toggle'));
+
+    // There were four treatments for one role in a 280px column: "Pages" at
+    // 12px sentence case in text-foreground/85, "Pinned" at 11px, and the
+    // dropdown's two group headings at 11px again.
+    // "Pages" is scoped to the toolbar span — the nav strip has a "Pages"
+    // link with the same text.
+    const labels = [
+      screen.getByText(
+        (_, el) => el?.tagName === 'SPAN' && el.textContent === 'Pages' && el.className.includes('uppercase'),
+      ),
+      screen.getByText('Pinned'),
+      screen.getByText('Confluence'),
+      screen.getByText('Local'),
+    ];
+    // "Pinned" is an inner <span className="flex-1"> inside the styled button,
+    // so resolve each label to whichever element actually carries the recipe.
+    const styled = (el: HTMLElement) =>
+      (el.className.includes('uppercase') ? el : el.closest<HTMLElement>('.uppercase')) ?? el;
+
+    for (const raw of labels) {
+      const el = styled(raw as HTMLElement);
+      const cls = el.className;
+      expect(cls).toContain('uppercase');
+      expect(cls).toContain('text-[12px]');
+      expect(cls).toContain('tracking-[0.08em]');
+      // 11px uppercase would fail ui-text-legibility's higher floor for caps.
+      expect(cls).not.toContain('text-[11px]');
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Keyboard and landmark semantics.
+  // ---------------------------------------------------------------------
+
+  it('keeps exactly one tab stop no matter how many parents are expanded', () => {
+    // The tree's roving tabindex promises "exactly one row is ever
+    // tab-stoppable". Every chevron was a plain <button> with no tabIndex, so
+    // it was natively focusable and the promise was false: a 20-parent tree was
+    // 21 tab stops. Nothing is lost by removing them — the row carries
+    // aria-expanded and sidebar-tree-keyboard handles ArrowRight/ArrowLeft.
+    const tree = makeNode('p', 'Parent', [
+      makeNode('c1', 'Child 1', [makeNode('g1', 'Grandchild')]),
+      makeNode('c2', 'Child 2'),
+    ]);
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={tree}
+          level={0}
+          expandedSet={new Set(['p', 'c1'])}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+          rovingId="p"
+          onRowFocus={vi.fn()}
+          onRowKeyDown={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    const tabStops = [...container.querySelectorAll<HTMLElement>('a,button,[tabindex]')]
+      .filter((el) => el.getAttribute('tabindex') !== '-1');
+    expect(tabStops).toHaveLength(1);
+    expect(tabStops[0].getAttribute('role')).toBe('treeitem');
+    // Four rows rendered, so this is not passing by rendering nothing.
+    expect(screen.getAllByRole('treeitem')).toHaveLength(4);
+  });
+
+  it('hides the chevron and indent guide from assistive tech', () => {
+    const parent = makeNode('parent', 'Parent', [makeNode('child-1', 'Child')]);
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={0}
+          expandedSet={new Set(['parent'])}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    // Both are mouse shortcuts for something the row already exposes; two
+    // announced ways to collapse the same node is noise, and the chevron's
+    // bare "Collapse" named nothing anyway.
+    const chevron = screen.getByLabelText('Collapse');
+    expect(chevron).toHaveAttribute('aria-hidden', 'true');
+    expect(chevron).toHaveAttribute('tabindex', '-1');
+
+    const guide = container.querySelector('.indent-guide')!;
+    expect(guide).toHaveAttribute('aria-hidden', 'true');
+    expect(guide).toHaveAttribute('tabindex', '-1');
+
+    // The row remains the control, and still says so.
+    expect(screen.getAllByRole('treeitem')[0]).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('stays a named complementary landmark in both expanded and collapsed states', () => {
+    const { unmount } = render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByRole('complementary', { name: 'Page tree' })).toBeInTheDocument();
+    unmount();
+
+    // Collapsing used to render a <div>, deleting the landmark outright — a
+    // screen-reader user who collapsed the tree lost the region, not just its
+    // contents.
+    useUiStore.setState({ treeSidebarCollapsed: true });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    expect(screen.getByRole('complementary', { name: 'Page tree' })).toBeInTheDocument();
+  });
+
+  it('keeps the collapsed rail focused on navigation without a space symbol', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.queryByTestId('rail-space-scope')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Expand sidebar'));
+    expect(useUiStore.getState().treeSidebarCollapsed).toBe(false);
+  });
+
+  it('does not render a scope flyout in the collapsed rail', () => {
+    useUiStore.setState({ treeSidebarCollapsed: true, treeSidebarSpaceKey: 'DEV' });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+    expect(screen.queryByTestId('rail-space-scope-flyout')).not.toBeInTheDocument();
+  });
+
+  it('announces the resize handle width with a unit', () => {
+    useUiStore.setState({ treeSidebarWidth: 320 });
+    render(<SidebarTreeView />, { wrapper: createWrapper() });
+    // aria-valuenow alone announces a bare "320" on a control whose entire job
+    // is a measurement.
+    expect(screen.getByRole('separator', { name: 'Resize tree sidebar' }))
+      .toHaveAttribute('aria-valuetext', '320 pixels');
+  });
+
+  // ---------------------------------------------------------------------
+  // Row gutter (see SidebarTreeNode's style comment).
+  //
+  // These pin the reclaimed horizontal budget. The panel's job is choosing a
+  // page, and at the old geometry 43 of 57 rendered rows truncated their title
+  // with no `title` attribute and no hover card — you could not read what you
+  // were choosing between. Every assertion below is a pixel the title got back,
+  // so each one fails loudly if a future change quietly spends it again.
+  // ---------------------------------------------------------------------
+
+  it('hangs the chevron in the indent gutter rather than laying it out in the row', () => {
+    const child = makeNode('child-1', 'Child');
+    const parent = makeNode('parent', 'Parent', [child]);
+
+    render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={parent}
+          level={2}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const chevron = screen.getByLabelText('Expand');
+    // Out of flow, so its width costs the title nothing...
+    expect(chevron.className).toContain('absolute');
+    // ...which is what lets the hit area be 24x24 (WCAG 2.5.8) for free. It was
+    // an 18x18 in-flow button before, failing the minimum AND charging for it.
+    expect(chevron.className).toContain('size-6');
+    // Sits in the gutter at level*12 + 2.
+    expect(chevron.style.left).toBe('26px');
+    // Must outrank .indent-guide (z-index: 1): at a 12px indent a parent's
+    // guide target overlaps its children's chevrons by ~6px, and the chevron
+    // has to win those clicks or it collapses the parent instead.
+    expect(chevron.className).toContain('z-10');
+  });
+
+  it('charges leaf rows nothing for a chevron they never show', () => {
+    const leaf = makeNode('leaf', 'A leaf page');
+
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={leaf}
+          level={1}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    // No chevron and — the point — no placeholder holding its column either.
+    expect(screen.queryByLabelText('Expand')).not.toBeInTheDocument();
+    expect(container.querySelector('.w-\\[20px\\]')).toBeNull();
+
+    // A leaf's title still starts on the same axis as a sibling parent's,
+    // because the chevron is out of flow rather than simply deleted. Dropping
+    // the placeholder from the FLOW instead would leave a ragged left edge
+    // inside every sibling group.
+    const row = container.querySelector<HTMLElement>('[data-page-id="leaf"]')!;
+    expect(row.style.paddingLeft).toBe('40px'); // 1*12 + 28
+  });
+
+  it('renders no per-row file icon', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={makeNode('leaf', 'A leaf page')}
+          level={0}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    // The FileText glyph rendered on 100% of rows — identical on parents and
+    // leaves — so it discriminated nothing while costing 21px of the title's
+    // width including its gap. A leaf row now contains no svg at all.
+    const row = container.querySelector<HTMLElement>('[data-page-id="leaf"]')!;
+    expect(row.querySelectorAll('svg')).toHaveLength(0);
+  });
+
+  it('indents 12px per level, not 16', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <SidebarTreeNode
+          node={makeNode('deep', 'Deep page')}
+          level={4}
+          expandedSet={new Set<string>()}
+          toggleExpand={vi.fn()}
+          activePageId={undefined}
+        />
+      </MemoryRouter>,
+    );
+
+    const row = container.querySelector<HTMLElement>('[data-page-id="deep"]')!;
+    expect(row.style.paddingLeft).toBe('76px'); // 4*12 + 28, was 4*16 + 10 = 74
   });
 
   it('does not render indent guide for expanded leaf nodes', () => {
@@ -970,7 +1788,7 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
+          showSpaceKey={false}
         />
       </MemoryRouter>,
     );
@@ -992,7 +1810,6 @@ describe('SidebarTreeNode memoization', () => {
           expandedSet={expandedSet}
           toggleExpand={toggleExpand}
           activePageId={undefined}
-          isAiRoute={false}
         />
       </MemoryRouter>,
     );
@@ -1058,12 +1875,17 @@ describe('SidebarTreeNode memoization', () => {
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.getByText('4 pages in DEV')).toBeInTheDocument();
     });
+
+    it('does not keep session chrome in the rail footer', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+      expect(screen.queryByTestId('sidebar-session-chrome')).not.toBeInTheDocument();
+    });
   });
 
   // #960: memoized rows used to call useLocation() internally, so every
   // location / searchParams change re-rendered every row in the tree — the
-  // memo comparator never got a chance to bail. The /ai signal is now passed
-  // in as a stable `isAiRoute` prop derived once by the parent, so a row only
+  // memo comparator never got a chance to bail. Rows take no location input at
+  // all now (#1361 removed the last one, the `/ai` signal), so a row only
   // re-renders when one of its actually-tracked props changes.
   describe('does not subscribe to location (#960)', () => {
     function UrlChanger() {
@@ -1091,7 +1913,6 @@ describe('SidebarTreeNode memoization', () => {
             expandedSet={expandedSet}
             toggleExpand={toggleExpand}
             activePageId={undefined}
-            isAiRoute={false}
           />
           <UrlChanger />
         </MemoryRouter>,
@@ -1136,6 +1957,85 @@ describe('SidebarTreeNode memoization', () => {
 
       fireEvent.click(screen.getByTestId('space-selector-toggle'));
       expect(screen.queryByTestId('space-settings-link')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('local space icons', () => {
+    // The /spaces/new picker persists `spaces.icon`, and these are the surfaces
+    // that consume it — before this, no component anywhere read the value back.
+
+    beforeEach(() => {
+      // The enclosing block's beforeEach resets the store but not this mock.
+      mockLocalSpaces = [...defaultLocalSpaces];
+    });
+
+    it('renders the chosen icon on the selector chip for a selected local space', () => {
+      mockLocalSpaces = [{ ...defaultLocalSpaces[0]!, icon: 'rocket' }];
+      useUiStore.setState({ treeSidebarSpaceKey: 'NOTES' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      const chip = screen.getByTestId('space-selector-toggle');
+      expect(chip.querySelector('svg.lucide-rocket')).not.toBeNull();
+      expect(chip.querySelector('svg.lucide-hard-drive')).toBeNull();
+    });
+
+    it('falls back to the generic HardDrive mark when the local space has no icon', () => {
+      useUiStore.setState({ treeSidebarSpaceKey: 'NOTES' });
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      const chip = screen.getByTestId('space-selector-toggle');
+      expect(chip.querySelector('svg.lucide-hard-drive')).not.toBeNull();
+    });
+
+    it('renders each local space row in the dropdown with its own icon', () => {
+      mockLocalSpaces = [
+        { ...defaultLocalSpaces[0]!, icon: 'rocket' },
+        { ...defaultLocalSpaces[0]!, key: 'SCRATCH', name: 'Scratch', icon: null },
+      ];
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByTestId('space-selector-toggle'));
+      const notesRow = screen.getByRole('button', { name: /My Notes/ });
+      expect(notesRow.querySelector('svg.lucide-rocket')).not.toBeNull();
+      const scratchRow = screen.getByRole('button', { name: /Scratch/ });
+      expect(scratchRow.querySelector('svg.lucide-hard-drive')).not.toBeNull();
+    });
+  });
+
+  // #1361: the conversations pane replaces this tree on AI routes, so the tree
+  // has no AI behaviour left. Clicking a page while `/ai` is open navigates to
+  // the page like everywhere else — it no longer rewrites the AI route's query
+  // string with a page scope that `/ai` has stopped reading.
+  describe('no AI-route special casing (#1361)', () => {
+    it('navigates to the page, not to /ai?pageId=, while an AI route is open', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper('/ai') });
+      fireEvent.click(screen.getByText('API Reference'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/root-2');
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        expect.stringContaining('/ai?pageId='),
+        expect.anything(),
+      );
+    });
+
+    it('does not highlight a row from ?pageId on an AI route', () => {
+      render(<SidebarTreeView />, { wrapper: createWrapper('/ai?pageId=child-1') });
+      // `?pageId=` is inert everywhere now: `resolveAiPageId` answers null on an
+      // AI route (#1361 Task 1) and this tree no longer reads the param at all.
+      const installRef = screen.queryByText('Installation');
+      if (installRef) expect(installRef.parentElement!.className).not.toContain('nav-selection');
+    });
+
+    // A source guard beside the behavioural ones, because the third producer
+    // lives in the lazily-loaded local-space tree that only renders for a local
+    // space: a behavioural test for it needs the whole dnd harness, and a
+    // reintroduced literal in EITHER file is the thing that matters.
+    it('neither tree implementation contains an /ai?pageId= literal', () => {
+      const files = ['SidebarTreeView.tsx', 'DndLocalSpaceTree.tsx'];
+      for (const file of files) {
+        const source = readFileSync(join(import.meta.dirname, file), 'utf-8');
+        expect(source, `${file} still produces /ai?pageId=`).not.toContain('/ai?pageId=');
+        expect(source, `${file} still carries the isAiRoute prop`).not.toContain('isAiRoute');
+      }
     });
   });
 });

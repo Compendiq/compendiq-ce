@@ -42,6 +42,8 @@ interface LocationPickerProps {
   excludePageId?: string;
   /** Disabled state */
   disabled?: boolean;
+  /** Trap focus in the popover (needed when nested in a modal Dialog). */
+  modal?: boolean;
 }
 
 // ── Tree builder ────────────────────────────────────────────────────
@@ -300,6 +302,7 @@ export function LocationPicker({
   onSelect,
   excludePageId,
   disabled = false,
+  modal = false,
 }: LocationPickerProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -351,7 +354,7 @@ export function LocationPicker({
   }, [parentId]);
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={setOpen} modal={modal}>
       <Popover.Trigger asChild disabled={disabled || !spaceKey}>
         <button
           type="button"
@@ -391,16 +394,20 @@ export function LocationPicker({
               align="start"
               sideOffset={4}
               className="z-50"
+              onCloseAutoFocus={(event) => {
+                if (modal) event.preventDefault();
+              }}
             >
               <m.div
                 initial={{ opacity: 0, y: -4, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -4, scale: 0.98 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="w-80 rounded-lg border border-border/50 bg-card shadow-xl backdrop-blur-xl"
+                className="w-80 nm-card-elevated"
+                data-location-picker-content=""
               >
                 {/* Search bar */}
-                <div className="border-b border-border/40 p-2">
+                <div className="border-b border-border p-2">
                   <div className="relative">
                     <Search
                       size={14}
@@ -428,7 +435,7 @@ export function LocationPicker({
                 </div>
 
                 {/* Root option */}
-                <div className="border-b border-border/40 px-2 py-1">
+                <div className="border-b border-border px-2 py-1">
                   <button
                     type="button"
                     onClick={handleClearParent}
@@ -457,7 +464,7 @@ export function LocationPicker({
                 </div>
 
                 {/* Footer with confirm button */}
-                <div className="flex items-center justify-end border-t border-border/40 p-2">
+                <div className="flex items-center justify-end border-t border-border p-2">
                   <button
                     type="button"
                     onClick={handleConfirm}

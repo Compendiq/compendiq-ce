@@ -279,6 +279,63 @@ describe('POST /api/pages - parentId validation', () => {
     expect(body.source).toBe('standalone');
   });
 
+  // Labels at creation (#1133). They used to be applied by a follow-up
+  // PUT /pages/:id/labels keyed on the id this route returns — which for a
+  // Confluence create is the Confluence content id, numeric, and therefore
+  // read by that route as a database primary key. The follow-up labelled a
+  // different page. Carrying them on the create removes the ambiguity.
+  it('stores labels supplied with a standalone create', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 70, title: 'Labelled', version: 1 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Labelled',
+        bodyHtml: '<p>Hello</p>',
+        spaceKey: 'LOCALSPACE',
+        labels: ['api', 'guide'],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
+    expect(insert).toBeDefined();
+    expect(String(insert![0])).toContain('labels');
+    expect((insert![1] as unknown[]).at(-1)).toEqual(['api', 'guide']);
+  });
+
+  it('defaults to no labels when the create omits them', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 71, title: 'Plain', version: 1 }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: { title: 'Plain', bodyHtml: '<p>Hello</p>', spaceKey: 'LOCALSPACE' },
+    });
+
+    const insert = mockQueryFn.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO pages'));
+    expect((insert![1] as unknown[]).at(-1)).toEqual([]);
+  });
+
+  it('rejects more labels than the contract allows', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Too many',
+        bodyHtml: '<p>Hello</p>',
+        labels: Array.from({ length: 51 }, (_, i) => `label-${i}`),
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it('should auto-detect confluence when source is omitted and space is confluence', async () => {
     // Space lookup: space exists and is confluence
     mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
@@ -414,6 +471,81 @@ describe('POST /api/pages - parentId validation', () => {
   // #893 review follow-up: a newly created shared/Confluence page appears in
   // every user's lists/trees, so only invalidating the creator's cache leaves
   // the page missing for other users for up to the cache TTL (15 min).
+  /**
+   * #1115 P2 (review r2) — a CREATE is a `body_html` writer too.
+   *
+   * Round 1 swept the four UPDATE paths and stopped there, which left the
+   * writer list this feature ships — ADR-025's, the runbook's and
+   * `image-embedding-dirty.ts`'s — reading as an audit while the create arms
+   * were absent from it. The Confluence arm is the one that matters twice
+   * over: `confluenceToHtml` emits `/api/attachments/<id>/<file>` for any
+   * `<ac:image><ri:attachment>` the created storage carries, and its
+   * `ON CONFLICT … DO UPDATE` re-writes `body_html` on a row that may already
+   * carry index entries.
+   *
+   * Unconditional TRUE, matching `embedding_dirty` beside it rather than the
+   * `IS DISTINCT FROM` gate the UPDATE paths use: there is no previous body to
+   * diff against on an INSERT, and a page created with no image at all costs
+   * exactly one scan that enumerates nothing and clears the flag.
+   */
+  describe('queues the image index on create (#1115 P2)', () => {
+    function insertPagesSql(): string {
+      const call = mockQueryFn.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('INSERT INTO pages'),
+      );
+      if (!call) throw new Error('no INSERT INTO pages call');
+      return call[0] as string;
+    }
+
+    it('marks a standalone create image_embedding_dirty, excluding folders', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, title: 'T', version: 1 }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { title: 'T', bodyHtml: '<p>Hello</p>', source: 'standalone' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = insertPagesSql();
+      expect(sql).toContain('image_embedding_dirty');
+      // Bound to the SAME parameter as `embedding_dirty` (`!isFolder`), so a
+      // folder cannot be queued for a scan whose own WHERE excludes it — a
+      // flag no worker can ever clear reads as a backlog that never drains.
+      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty/);
+      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
+      expect(embeddingDirtyParam).not.toBeNull();
+      expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![2]);
+    });
+
+    it('marks a Confluence create image_embedding_dirty, on the insert and the conflict arm', async () => {
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+      mockQueryFn.mockResolvedValue({ rows: [] });
+
+      const { getClientForUser } = await import('../../domains/confluence/services/sync-service.js');
+      vi.mocked(getClientForUser).mockResolvedValueOnce({
+        createPage: vi.fn().mockResolvedValue({
+          id: 'conf-100',
+          title: 'New Conf Page',
+          version: { number: 1 },
+          body: { storage: { value: '<p>Hello</p>' } },
+        }),
+      } as never);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { title: 'New Conf Page', bodyHtml: '<p>Hello</p>', spaceKey: 'CONFSPACE' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sql = insertPagesSql();
+      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*embedding_status/);
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_embedding_dirty = TRUE/);
+    });
+  });
+
   describe('cache invalidation (#893)', () => {
     it('invalidates the pages cache across all users when creating a standalone page with default (shared) visibility', async () => {
       // INSERT returns new page

@@ -1,7 +1,8 @@
 /**
  * Admin user lifecycle service (#304).
  *
- * Owns the business logic behind the Settings → Users admin page. Audit
+ * Owns the business logic behind the Users sub-tab of
+ * Settings → Access Control. Audit
  * emission happens at the route layer via `audit-service.ts`; this module
  * only raises errors — callers decide how to map them to HTTP codes.
  */

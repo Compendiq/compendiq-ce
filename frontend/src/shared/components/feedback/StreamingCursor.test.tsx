@@ -23,10 +23,20 @@ describe('StreamingCursor', () => {
     expect(screen.getByTestId('streaming-cursor')).toHaveAttribute('aria-hidden', 'true');
   });
 
-  it('applies cyan glow styling', () => {
+  // Was a `bg-` utility on `cyan-400`, under an 8px glow hard-coded to that
+  // same hue. Both were raw literals that never tracked the theme; the glow
+  // went with the flat system and the fill is the accent token now. Solid, not
+  // a tint — this is a 2px cursor, and a 15% fill makes it a smudge.
+  //
+  // Prefix and shade are written apart, and the glow's hex is described rather
+  // than quoted: Tailwind 4 scans comments for class candidates, so the earlier
+  // wording compiled a dead palette fill and a dead arbitrary-value shadow into
+  // the shipped stylesheet, neither of which any component renders.
+  it('paints the cursor in the accent, at full strength', () => {
     render(<StreamingCursor />, { wrapper: Wrapper });
     const cursor = screen.getByTestId('streaming-cursor');
-    expect(cursor.className).toContain('bg-cyan-400');
+    expect(cursor.className).toContain('bg-primary');
+    expect(cursor.className).not.toMatch(/bg-primary\//);
   });
 
   it('applies custom className', () => {

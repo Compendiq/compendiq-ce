@@ -111,7 +111,7 @@ describe('ProviderListSection', () => {
     const apiKeyInput = () =>
       screen.getByRole('dialog').querySelector('input[type="password"]') as HTMLInputElement;
     fireEvent.change(nameInput(), { target: { value: 'First' } });
-    fireEvent.change(screen.getByPlaceholderText('https://api.openai.com/v1'), {
+    fireEvent.change(screen.getByLabelText(/base url/i), {
       target: { value: 'https://api.example.com/v1' },
     });
     fireEvent.change(apiKeyInput(), { target: { value: 'sk-secret-key' } });

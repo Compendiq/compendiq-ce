@@ -83,7 +83,7 @@ export function ReviewerQueuePage() {
   if (!isEnterprise || !hasFeature('ai_output_review')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="ai-review-queue-not-licensed"
       >
@@ -137,7 +137,7 @@ function ReviewerQueuePageInner() {
       data-testid="ai-review-queue-page"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ListChecks size={20} className="text-muted-foreground" />
           AI review queue
         </h1>
@@ -150,7 +150,7 @@ function ReviewerQueuePageInner() {
 
       {/* Filters */}
       <div
-        className="flex flex-wrap items-center gap-3 rounded-lg border border-border/40 bg-foreground/[0.02] p-3"
+        className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-foreground/[0.02] p-3"
         data-testid="ai-review-queue-filters"
       >
         <label className="flex items-center gap-2 text-xs">
@@ -192,10 +192,10 @@ function ReviewerQueuePageInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="ai-review-queue-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The AI review API isn&apos;t registered on this deployment. The
             Enterprise overlay that exposes <code>GET /api/ai-reviews</code>{' '}
@@ -220,10 +220,10 @@ function ReviewerQueuePageInner() {
 
       {!error && filtered.length === 0 && (
         <div
-          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border/40 bg-foreground/[0.02] p-8 text-center"
+          className="flex flex-col items-center justify-center gap-3 rounded-lg border border-border bg-foreground/[0.02] p-8 text-center"
           data-testid="ai-review-queue-empty"
         >
-          <CheckCircle2 size={32} className="text-emerald-400" />
+          <CheckCircle2 size={32} className="text-success" />
           <div>
             <div className="text-sm font-medium">
               {statusFilter === 'pending'

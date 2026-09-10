@@ -124,6 +124,27 @@ describe('health-api route — Compendiq/compendiq-ee#113 Part A', () => {
       expect(typeof body.collectedAt).toBe('string');
     });
 
+    it('counts backup export failures in the error-rate metric', async () => {
+      wireQueryRouting([
+        { text: "setting_key = 'health_api_token'", rows: [{ setting_value: VALID_TOKEN }] },
+        { text: 'FROM users', rows: [{ total: '1', active: '1' }] },
+        { text: 'FROM pages', rows: [{ c: '0' }] },
+        { text: 'FROM spaces', rows: [{ ts: null }] },
+        { text: 'FROM audit_log', rows: [{ failed: '1', total: '1' }] },
+      ]);
+
+      const res = await app.inject({ method: 'GET', url: `/api/internal/health?token=${VALID_TOKEN}` });
+
+      expect(res.statusCode).toBe(200);
+      expect((res.json() as Record<string, unknown>).errorRate24h).toBe(1);
+      const auditQuery = mockQuery.mock.calls.find(([sql]) =>
+        (sql as string).includes('FROM audit_log'),
+      );
+      expect(auditQuery?.[1]).toEqual([
+        expect.arrayContaining(['BACKUP_EXPORT_FAILED']),
+      ]);
+    });
+
     it('returns errorRate24h=0 when no audit activity in window', async () => {
       wireQueryRouting([
         { text: "setting_key = 'health_api_token'", rows: [{ setting_value: VALID_TOKEN }] },

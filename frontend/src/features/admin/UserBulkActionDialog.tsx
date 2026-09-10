@@ -24,10 +24,11 @@
  */
 
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
-import { AlertTriangle, Loader2, Users, X } from 'lucide-react';
+import { AlertTriangle, Users, X } from 'lucide-react';
 import type {
   BulkUserAction,
   BulkUserBulkActionRequest,
@@ -35,6 +36,8 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // Local fetch helper — same shape as BulkUserImportModal so the 404-on-
 // missing-overlay branch lights up consistently.
@@ -82,6 +85,7 @@ function UserBulkActionDialogInner({
   onClose,
   selectedUserIds,
 }: UserBulkActionDialogProps) {
+  const { isEnterprise, hasFeature } = useEnterprise();
   const queryClient = useQueryClient();
 
   const [actionKind, setActionKind] = useState<ActionKind>('change-role');
@@ -188,12 +192,12 @@ function UserBulkActionDialogInner({
         />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
           )}
           aria-describedby={undefined}
           data-testid="bulk-action-modal"
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
               <Users size={16} className="text-action" />
               Bulk action ({selectedUserIds.length} selected)
@@ -201,7 +205,7 @@ function UserBulkActionDialogInner({
             <Dialog.Close asChild>
               <button
                 type="button"
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close"
                 data-testid="bulk-action-close"
               >
@@ -215,7 +219,7 @@ function UserBulkActionDialogInner({
             <label className="block text-sm">
               <span className="mb-1 block font-medium">Action</span>
               <select
-                className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                 value={actionKind}
                 onChange={(e) => {
                   setActionKind(e.target.value as ActionKind);
@@ -235,7 +239,7 @@ function UserBulkActionDialogInner({
             {/* Per-action body */}
             {actionKind === 'change-role' && (
               <fieldset
-                className="space-y-2 rounded-md border border-border/40 p-3"
+                className="space-y-2 rounded-md border border-border p-3"
                 data-testid="bulk-action-role"
               >
                 <legend className="px-1 text-xs font-medium text-muted-foreground">
@@ -273,7 +277,7 @@ function UserBulkActionDialogInner({
                   Reason (optional)
                 </span>
                 <textarea
-                  className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   rows={3}
                   maxLength={500}
                   value={reason}
@@ -293,21 +297,29 @@ function UserBulkActionDialogInner({
                 <span className="mb-1 block font-medium">Group</span>
                 <input
                   type="text"
-                  className="w-full rounded-md border border-border/60 bg-background px-3 py-2 text-sm"
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                   value={groupId}
                   onChange={(e) => setGroupId(e.target.value)}
                   placeholder="group id (UUID)"
                   data-testid="bulk-action-group"
                 />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Pick the group id from <a href="/settings/security/rbac" className="underline">Settings → RBAC → Groups</a>.
-                </p>
+                {/* The Roles (RBAC) sub-tab is EE-gated — mirror
+                    AccessControlWrapper's visibility, same as UsersAdminPage's
+                    pointer: this dialog's own gate is bulk_user_operations, a
+                    DIFFERENT flag, and on a licence without advanced_rbac
+                    SubTabs falls back to the first visible tab for the unknown
+                    ?sub=, so the link would silently reload-in-place. */}
+                {isEnterprise && hasFeature('advanced_rbac') && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Pick the group id from <Link to={`${SETTINGS_PANELS.access.path}?sub=rbac`} className="underline">Settings → {SETTINGS_PANELS.access.label} → Roles</Link>.
+                  </p>
+                )}
               </label>
             )}
 
             {/* Confirmation summary */}
             <div
-              className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"
+              className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
               data-testid="bulk-action-summary"
             >
               {summarySentence}
@@ -319,8 +331,8 @@ function UserBulkActionDialogInner({
                 className={cn(
                   'flex items-start gap-2 rounded-lg border p-3 text-sm',
                   isMissingOverlay
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-                    : 'border-red-500/40 bg-red-500/10 text-red-100',
+                    ? 'border-warning/40 bg-warning/10 text-warning'
+                    : 'border-destructive/40 bg-destructive/10 text-destructive',
                 )}
                 data-testid={
                   isMissingOverlay
@@ -333,18 +345,16 @@ function UserBulkActionDialogInner({
               </div>
             )}
 
-            <div className="flex justify-end gap-2 border-t border-border/40 pt-4">
-              <button
-                type="button"
+            <div className="flex justify-end gap-2 border-t border-border pt-4">
+              <Button
                 onClick={handleClose}
-                className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+                variant="secondary"
                 data-testid="bulk-action-cancel"
                 disabled={submitMutation.isPending}
               >
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
                 onClick={() => {
                   setErrorMessage(null);
                   setIsMissingOverlay(false);
@@ -354,14 +364,12 @@ function UserBulkActionDialogInner({
                   });
                 }}
                 disabled={submitDisabled}
-                className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                isLoading={submitMutation.isPending}
+                variant="primary"
                 data-testid="bulk-action-submit"
               >
-                {submitMutation.isPending && (
-                  <Loader2 size={14} className="animate-spin" />
-                )}
                 Apply
-              </button>
+              </Button>
             </div>
           </div>
         </Dialog.Content>

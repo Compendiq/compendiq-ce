@@ -1,4 +1,5 @@
-import { FastifyRequest } from 'fastify';
+import type { FastifyRequest } from 'fastify';
+import type { ConnectionEvent } from '@compendiq/contracts';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
 
@@ -64,6 +65,7 @@ export type AuditAction =
   | 'SYNC_OVERWROTE_LOCAL_EDITS'
   | 'SYNC_POLICY_CHANGED'
   | 'PAT_UPDATED'
+  | 'NOTION_TOKEN_UPDATED'
   | 'PAGE_CREATED'
   | 'PAGE_UPDATED'
   | 'PAGE_DELETED'
@@ -75,12 +77,25 @@ export type AuditAction =
   | 'ENCRYPTION_KEY_ROTATED'
   | 'PROMPT_INJECTION_DETECTED'
   | 'SUMMARY_RESCAN'
+  | 'RETRIEVAL_BENCHMARK_STARTED'
+  | 'EMBEDDING_SHADOW_COMPARE_STARTED'
+  // #1131: the extraction endpoint went multi-format, so the emitted event is
+  // now DOCUMENT_EXTRACTED (metadata.format names the type). PDF_EXTRACTED is
+  // no longer emitted but stays in the union: `audit_log.action` is plain TEXT
+  // with no enum to migrate, and rows written before #1131 still carry the old
+  // string. Renaming in place would have meant rewriting history to keep
+  // action-filtered queries whole; keeping both leaves those rows readable and
+  // typed. Do not re-emit it.
   | 'PDF_EXTRACTED'
+  | 'DOCUMENT_EXTRACTED'
   | 'DRAFT_PUBLISHED'
   | 'LOCAL_SPACE_CREATED'
   | 'LOCAL_SPACE_UPDATED'
   | 'LOCAL_SPACE_DELETED'
   | 'PAGE_MOVED'
+  // #1123: distinct from PAGE_MOVED (tree re-parent) — this one crosses the
+  // Confluence boundary and creates or deletes a page upstream.
+  | 'PAGE_RELOCATED'
   | 'PAGE_REORDERED'
   | 'QUALITY_RUN_NOW'
   | 'SUMMARY_RUN_NOW'
@@ -88,6 +103,9 @@ export type AuditAction =
   | 'EMBEDDING_RESCAN'
   | 'EMBEDDING_RESET_FAILED'
   | 'ADMIN_ACCESS_DENIED'
+  | 'CONNECTION_IMPRESSION'
+  | 'CONNECTION_CLICK'
+  | 'CONNECTION_GRAPH_LAUNCH'
   | 'ROLE_ASSIGNED'
   | 'ROLE_REVOKED'
   | 'GROUP_CREATED'
@@ -139,7 +157,19 @@ export type AuditAction =
   // rotates the per-instance health-API bearer token. Deliberate admin
   // action — not counted in `errorRate24h` (see ERROR_AUDIT_ACTIONS in
   // routes/foundation/health-api.ts).
-  | 'HEALTH_API_TOKEN_ROTATED';
+  | 'HEALTH_API_TOKEN_ROTATED'
+  // #1154: image staging for AI source material. Emitted by
+  // POST /llm/prepare-image on a successful stage; metadata carries filename,
+  // format, dimensions and size — never the bytes themselves.
+  | 'IMAGE_PREPARED'
+  | 'BACKUP_EXPORTED'
+  | 'BACKUP_EXPORT_FAILED'
+  | 'BACKUP_UPLOADED'
+  | 'BACKUP_SETTINGS_CHANGED'
+  | 'BACKUP_S3_TESTED'
+  | 'TEMPLATE_CREATED'
+  | 'TEMPLATE_UPDATED'
+  | 'TEMPLATE_DELETED';
 
 interface AuditLogEntry {
   id: string;
@@ -186,6 +216,44 @@ export async function logAuditEvent(
     // Audit logging must never block the main operation
     logger.error({ err, action, userId }, 'Failed to write audit log');
   }
+}
+
+/**
+ * Persist a Connections instrumentation event. Unlike the general audit
+ * helper, this throws on storage failure: this endpoint's only operation is
+ * collection, so returning `{ recorded: true }` without a durable row would be
+ * false. The partial unique index from migration 110 makes impression retries
+ * idempotent; the other event types remain append-only.
+ */
+export async function recordConnectionEvent(
+  userId: string,
+  sourcePageId: number,
+  event: ConnectionEvent,
+  request?: FastifyRequest,
+): Promise<void> {
+  const action: AuditAction = event.event === 'impression'
+    ? 'CONNECTION_IMPRESSION'
+    : event.event === 'connection_click'
+      ? 'CONNECTION_CLICK'
+      : 'CONNECTION_GRAPH_LAUNCH';
+  const metadata = event.event === 'connection_click'
+    ? { event: event.event, visitId: event.visitId, group: event.group }
+    : { event: event.event, visitId: event.visitId };
+
+  await query(
+    `INSERT INTO audit_log
+       (user_id, action, resource_type, resource_id, metadata, ip_address, user_agent)
+     VALUES ($1, $2, 'page_connections', $3, $4, $5, $6)
+     ON CONFLICT DO NOTHING`,
+    [
+      userId,
+      action,
+      String(sourcePageId),
+      JSON.stringify(metadata),
+      request?.ip ?? null,
+      request?.headers['user-agent'] ?? null,
+    ],
+  );
 }
 
 interface AuditLogFilter {

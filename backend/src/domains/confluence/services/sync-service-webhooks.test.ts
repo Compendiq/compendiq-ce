@@ -180,10 +180,10 @@ function setupSyncMocks(opts: {
       return empty as QueryResult; // fresh create for every page in confluencePages
     }
     if (sqlStr.includes('INSERT INTO pages')) return empty as QueryResult;
-    // detectDeletedPages: SELECT confluence_id FROM pages WHERE space_key = $1 AND deleted_at IS NULL
-    if (sqlStr.includes('SELECT confluence_id FROM pages') && sqlStr.includes('deleted_at IS NULL')) {
+    // detectDeletedPages: existing pages in DB, in cursor order
+    if (sqlStr.includes('SELECT p.id, p.confluence_id') && sqlStr.includes('p.deleted_at IS NULL')) {
       return {
-        rows: dbPages.map((id) => ({ confluence_id: id })),
+        rows: dbPages.map((id, index) => ({ id: index + 1, confluence_id: id })),
         rowCount: dbPages.length, command: '', oid: 0, fields: [],
       } as QueryResult;
     }

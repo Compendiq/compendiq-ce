@@ -1,7 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import type { Ref } from 'react';
 import { X, Plus, Tag } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { normalizeTag, MAX_TAG_LENGTH } from '../lib/tag-utils';
+
+export interface TagEditorHandle {
+  /**
+   * Hide an open autocomplete list. Returns whether there was one to hide.
+   *
+   * This exists for `TagPopover`, which has to decide what a single Escape
+   * means before the editor ever sees the key: Radix takes Escape at
+   * `document` in the capture phase, so the layer either peels the list or
+   * closes itself, and only it can tell which. The boolean is the whole
+   * contract — the caller closes when it comes back false.
+   */
+  dismissSuggestions: () => boolean;
+}
 
 interface TagEditorProps {
   /** Current tags on the page */
@@ -14,8 +28,12 @@ interface TagEditorProps {
   suggestions?: string[];
   /** Whether mutation is in-flight */
   isLoading?: boolean;
+  /** Focus the input on mount — set by `TagPopover` so opening the chip lands the caret in the field */
+  autoFocus?: boolean;
   /** Additional CSS classes */
   className?: string;
+  /** Imperative handle — see `TagEditorHandle` */
+  ref?: Ref<TagEditorHandle>;
 }
 
 /**
@@ -31,7 +49,9 @@ export function TagEditor({
   onRemoveTag,
   suggestions = [],
   isLoading = false,
+  autoFocus = false,
   className,
+  ref,
 }: TagEditorProps) {
   const [input, setInput] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -67,6 +87,33 @@ export function TagEditor({
     setHighlightedIndex(-1);
   }, [filteredSuggestions.length]);
 
+  // An effect rather than the DOM `autoFocus` attribute, so the caller can see
+  // it happen and so it re-runs if the flag flips on a live instance.
+  //
+  // This alone is not enough inside a Radix layer: child effects run before
+  // parent effects, so `Popover.Content`'s FocusScope mounts *after* this and
+  // would move focus to the content wrapper. `TagPopover` preventDefaults
+  // `onOpenAutoFocus` for exactly that reason — the two halves are one
+  // mechanism, and removing either leaves the caret off the input.
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus();
+  }, [autoFocus]);
+
+  const suggestionsOpen = showSuggestions && filteredSuggestions.length > 0;
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      dismissSuggestions: () => {
+        if (!suggestionsOpen) return false;
+        setShowSuggestions(false);
+        setHighlightedIndex(-1);
+        return true;
+      },
+    }),
+    [suggestionsOpen],
+  );
+
   const handleAddTag = useCallback(
     (raw: string) => {
       const normalized = normalizeTag(raw);
@@ -90,6 +137,11 @@ export function TagEditor({
           handleAddTag(input);
         }
       } else if (event.key === 'Escape') {
+        // Standalone only. Inside `TagPopover` this never runs: Radix binds its
+        // Escape listener with `capture: true`, so it sees the key at
+        // `document` before React dispatches from its root container — and it
+        // stops the key there. That layer peels the list through
+        // `dismissSuggestions()` instead.
         setShowSuggestions(false);
         setHighlightedIndex(-1);
       } else if (event.key === 'ArrowDown') {
@@ -125,7 +177,7 @@ export function TagEditor({
         {tags.map((tag) => (
           <span
             key={tag}
-            className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border"
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-border"
           >
             <Tag size={10} className="opacity-60" />
             {tag}
@@ -160,11 +212,11 @@ export function TagEditor({
               placeholder="Add a tag..."
               maxLength={MAX_TAG_LENGTH}
               disabled={isLoading}
-              className="w-full rounded-xl border border-border/60 bg-background/60 px-3 py-2 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary disabled:opacity-50"
+              className="w-full rounded-xl border border-border bg-background/60 px-3 py-2 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/50 focus:border-primary disabled:opacity-50"
               data-testid="tag-input"
               aria-label="New tag name"
               aria-autocomplete="list"
-              aria-expanded={showSuggestions && filteredSuggestions.length > 0}
+              aria-expanded={suggestionsOpen}
               role="combobox"
             />
             <Tag
@@ -176,7 +228,7 @@ export function TagEditor({
             type="button"
             onClick={() => handleAddTag(input)}
             disabled={isLoading || !input.trim()}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-background/55 px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
             data-testid="add-tag-button"
           >
             <Plus size={14} />
@@ -185,12 +237,12 @@ export function TagEditor({
         </div>
 
         {/* Autocomplete dropdown */}
-        {showSuggestions && filteredSuggestions.length > 0 && (
+        {suggestionsOpen && (
           <ul
             ref={suggestionsRef}
             role="listbox"
             data-testid="tag-suggestions"
-            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-xl border border-border/60 bg-card/95 shadow-lg backdrop-blur-xl"
+            className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto nm-card-elevated"
           >
             {filteredSuggestions.map((suggestion, index) => (
               <li

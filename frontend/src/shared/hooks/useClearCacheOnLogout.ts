@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../stores/auth-store';
+import { forgetLastConfluenceSpace } from '../../features/pages/last-confluence-space';
+import { forgetRecentLibrarySpaces } from '../../features/pages/library-space-history';
+import { SETUP_STATUS_QUERY_KEY } from './useSetupStatus';
+import { resetOnboardingSessionWrites } from './use-onboarding';
 
 /**
  * Wipe the in-memory TanStack Query cache whenever the session ends.
@@ -11,6 +15,10 @@ import { useAuthStore } from '../../stores/auth-store';
  * ['permissions', …]), so without an explicit clear the next user in the same
  * tab would read the previous user's cached pages, search results, and cached
  * `allowed` permission results (issue #885).
+ *
+ * It also drops the remembered New Page space (#1122): that lives in
+ * localStorage rather than the query cache, so `queryClient.clear()` would
+ * leave the previous user's space key behind.
  *
  * This is the single choke point for every clearAuth path — the logout button,
  * the api.ts token-expiry handlers, the cross-tab storage event, and a failed
@@ -25,7 +33,26 @@ export function useClearCacheOnLogout(): void {
 
   useEffect(() => {
     if (wasAuthenticated.current && !isAuthenticated) {
-      queryClient.clear();
+      // Everything EXCEPT the setup-status query, which describes the
+      // deployment rather than any user and so is outside what this wipe
+      // protects. A blanket queryClient.clear() also removed it *mid-flight*:
+      // the in-flight response then arrived for a query that no longer existed
+      // and was discarded, leaving ProtectedRoute's `isLoading` gate stuck on
+      // the loading fallback with nothing left to trigger a refetch — an
+      // expired session rendered a permanent spinner instead of the login page.
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey[0] !== SETUP_STATUS_QUERY_KEY[0],
+      });
+      // clear() dropped mutation state too; keep doing that so an interrupted
+      // mutation can't surface to whoever logs in next in this tab.
+      queryClient.getMutationCache().clear();
+      // The onboarding auto-mark dedupe is keyed by this same never-rebuilt
+      // client (#1402), so it is exactly as stale as the cache above: without
+      // this the next user in the tab has their milestones suppressed for the
+      // rest of the page load while their own flags are still false.
+      resetOnboardingSessionWrites(queryClient);
+      forgetLastConfluenceSpace();
+      forgetRecentLibrarySpaces();
     }
     wasAuthenticated.current = isAuthenticated;
   }, [isAuthenticated, queryClient]);

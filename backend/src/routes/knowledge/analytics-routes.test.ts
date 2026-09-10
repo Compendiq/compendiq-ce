@@ -180,4 +180,47 @@ describe('Search analytics routes - admin', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().periodDays).toBe(14);
   });
+
+  // ── GET /api/analytics/confidence-distribution ────────────────────
+
+  it('#1284: answers the parsed contract shape', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ basis: 'similarity', sample_count: '2184', p50: 0.41, p90: 0.63 }],
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/analytics/confidence-distribution',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toEqual({
+      windowDays: 7,
+      surface: 'ask',
+      similarity: { p50: 0.41, p90: 0.63, count: 2184 },
+      rerank: { p50: null, p90: null, count: 0 },
+    });
+  });
+
+  /**
+   * #1284 review r1 — the contract is PARSED on the way out, not just used as
+   * a type. `parseInt` and `Number` answer NaN inside the `number` type, and
+   * `JSON.stringify(NaN)` is `null` — so an unparsed route would answer 200
+   * with `count: null`, which the panel renders as "nothing measured". A
+   * refusal the operator can see beats a silent zero.
+   */
+  it('#1284: refuses to ship an unparseable count rather than serialising NaN', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ basis: 'similarity', sample_count: 'not-a-number', p50: 0.41, p90: 0.63 }],
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/analytics/confidence-distribution',
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(res.json().count).toBeUndefined();
+  });
 });

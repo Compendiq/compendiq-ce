@@ -36,7 +36,6 @@ export function DiagnosticsWrapper() {
   return (
     <>
       <PanelHeader
-        title="Diagnostics"
         subtitle="Live system status, application info, and the recent-errors log."
       />
       <SubTabs ariaLabel="Diagnostics sub-sections" tabs={tabs} testIdRoot="diagnostics" />

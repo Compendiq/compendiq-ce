@@ -10,7 +10,6 @@ import {
   ServerCog,
   Lock,
   TestTube2,
-  Loader2,
   CheckCircle2,
   XCircle,
   Save,
@@ -21,6 +20,7 @@ import type {
 } from '@compendiq/contracts';
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -306,7 +306,7 @@ export function IpAllowlistTab() {
     >
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">IP allowlist</h1>
+        <h1 className="text-lg font-semibold">IP allowlist</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Restrict API access to specific IP ranges. When enabled, requests from
           non-matching IPs are rejected with 403 at the edge, before any route
@@ -317,10 +317,10 @@ export function IpAllowlistTab() {
       {/* Lockout warning — NOT dismissible */}
       <div
         role="alert"
-        className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+        className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
         data-testid="ip-allowlist-warning"
       >
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-400" />
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-sm">
           This restricts access to the IPs listed.{' '}
           <strong>Make sure your own IP is in the Allowed ranges before saving</strong>{' '}
@@ -411,7 +411,7 @@ export function IpAllowlistTab() {
           Exempt paths
         </div>
         <ul
-          className="space-y-1 rounded-md border border-border/40 bg-foreground/[0.02] p-3"
+          className="space-y-1 rounded-md border border-border bg-foreground/[0.02] p-3"
           data-testid="ip-allowlist-exceptions"
         >
           {exceptions.length === 0 ? (
@@ -464,20 +464,16 @@ export function IpAllowlistTab() {
               }
             }}
           />
-          <button
-            type="button"
+          <Button
             onClick={handleTest}
             disabled={testMutation.isPending || !testIp.trim()}
-            className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
+            isLoading={testMutation.isPending}
+            variant="secondary"
+            leftIcon={!testMutation.isPending ? <TestTube2 size={14} /> : undefined}
             data-testid="ip-allowlist-test-btn"
           >
-            {testMutation.isPending ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <TestTube2 size={14} />
-            )}
             Test
-          </button>
+          </Button>
         </div>
         {testInvalidIp && (
           <div className="text-xs text-destructive" data-testid="ip-allowlist-test-invalid">
@@ -496,7 +492,7 @@ export function IpAllowlistTab() {
                 className={cn(
                   'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
                   testResult.allowed
-                    ? 'bg-emerald-500/15 text-emerald-300'
+                    ? 'bg-success/15 text-success'
                     : 'bg-destructive/15 text-destructive',
                 )}
                 data-testid="ip-allowlist-test-outcome"
@@ -511,7 +507,7 @@ export function IpAllowlistTab() {
               )}
               {testResult.isTrustedProxy && (
                 <span
-                  className="inline-flex items-center rounded-full bg-blue-500/15 px-2 py-0.5 text-xs text-blue-300"
+                  className="inline-flex items-center rounded-full bg-foreground/5 px-2 py-0.5 text-xs text-muted-foreground"
                   data-testid="ip-allowlist-test-trusted-proxy"
                 >
                   trusted proxy
@@ -526,26 +522,22 @@ export function IpAllowlistTab() {
       </div>
 
       {/* Save */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>
-        <button
-          type="button"
+        <Button
           onClick={handleSave}
           disabled={!saveEnabled || saveMutation.isPending}
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           title={saveDisabledReason || undefined}
           aria-label="Save IP allowlist configuration"
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           data-testid="ip-allowlist-save-btn"
         >
-          {saveMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           Save
-        </button>
+        </Button>
       </div>
 
       {putError?.kind === 'other' && (

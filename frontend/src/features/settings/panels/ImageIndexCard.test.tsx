@@ -1,0 +1,794 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import type { ImageIndexStatus } from '@compendiq/contracts';
+import { ImageIndexCard } from './ImageIndexCard';
+import { useAuthStore } from '../../../stores/auth-store';
+
+vi.mock('sonner', () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), message: vi.fn() },
+}));
+
+/**
+ * #1115 P2 — the Embeddings-tab card.
+ *
+ * Fetch is mocked at the network boundary; the card runs its real logic. What
+ * is pinned here is the copy that carries a CONSEQUENCE — re-scan, the model
+ * change, and "this is not searchable yet" — plus the ADR-010 colour rule.
+ *
+ * That rule is THREE attention states, not one (review r2): a run with failed
+ * images, a run with pages that could not be written, and an index whose
+ * recorded identity is not the assigned pair. Each is something an operator has
+ * to act on; everything else on the card is a measurement and renders neutral.
+ * Each of the three is pinned for its colour as well as its words, because a
+ * de-coloured amber and an absent one are the same assertion to a text test.
+ */
+
+let queryClient: QueryClient;
+
+function renderCard() {
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ImageIndexCard />
+    </QueryClientProvider>,
+  );
+}
+
+const NO_SKIPS = { missing: 0, unsupported: 0, oversized: 0, tooLarge: 0, capped: 0, external: 0 };
+
+const ASSIGNED: ImageIndexStatus = {
+  assigned: true,
+  identity: {
+    providerId: '00000000-0000-4000-8000-000000000001',
+    model: 'Qwen/Qwen3-VL-Embedding-2B',
+    dimensions: 2048,
+    tier: 'halfvec',
+  },
+  identityMatchesAssignment: true,
+  rows: 42,
+  pagesDirty: 3,
+  pagesTotal: 120,
+  running: false,
+  lastRun: null,
+};
+
+function mockApi(
+  status: ImageIndexStatus,
+  capture?: Array<{ url: string; method: string }>,
+  sequence?: ImageIndexStatus[],
+  kickResult: { marked?: number; started: boolean; alreadyRunning: boolean } = {
+    marked: 120,
+    started: true,
+    alreadyRunning: false,
+  },
+) {
+  let call = 0;
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      const body = sequence ? (sequence[Math.min(call++, sequence.length - 1)] ?? status) : status;
+      return new Response(JSON.stringify(body), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify(kickResult), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/** Every GET on this route fails; POSTs still succeed. */
+function mockApiFailingStatus(capture?: Array<{ url: string; method: string }>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ marked: 120, started: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/**
+ * The status GET answers ONCE, then every later GET fails.
+ *
+ * `mockApiFailingStatus` fails from the first read, so `data` is `undefined`
+ * and nothing about the RETAINED-payload path is exercised. TanStack keeps
+ * `data` across a failed refetch, which is the outage that begins while a scan
+ * is already running — the shape `AttachmentStorageCard` guards.
+ */
+function mockApiOutageAfterFirstRead(
+  first: ImageIndexStatus,
+  capture?: Array<{ url: string; method: string }>,
+) {
+  let reads = 0;
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+    const method = init?.method ?? 'GET';
+    capture?.push({ url, method });
+    if (url.includes('/admin/embedding/image-index') && method === 'GET') {
+      if (reads++ === 0) {
+        return new Response(JSON.stringify(first), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ message: 'boom' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ marked: 120, started: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+}
+
+/**
+ * Wait for the STATUS to have arrived, not merely for the card to exist.
+ *
+ * Every element here renders on the first paint, so a bare `findByTestId`
+ * resolves against the pre-fetch render and an assertion built on it passes
+ * whatever the response says — the `EmbeddingShadowMigration` card's review-r5
+ * trap, reached from the other direction. The pending paint shows `—` for
+ * every number (review r1: a number the server has not sent is not a zero), so
+ * that is what this waits out.
+ */
+async function awaitLoaded(): Promise<void> {
+  await waitFor(() =>
+    expect(screen.getByTestId('image-index-counters').textContent).not.toContain('—'),
+  );
+}
+
+/**
+ * Settle the click: a POST that WAS fired lands within a macrotask, so a
+ * "fired nothing" assertion must be made after this flush.
+ *
+ * `waitFor(() => expect(posted).toBe(false))` cannot do the job — it is
+ * satisfied on its first synchronous attempt, before any fetch could have been
+ * recorded, so it passes whether the handler refused or not. Mutation-checked:
+ * with this flush, deleting the handlers' early return reds the two refusal
+ * cells; with `waitFor` it did not.
+ */
+async function flushClick(): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 0);
+    await promise;
+  });
+}
+
+beforeEach(() => {
+  // The `sonner` mock is module-level, so its call history outlives a test and
+  // a "did not toast X" assertion would pass or fail on what ran before it.
+  vi.clearAllMocks();
+  useAuthStore.getState().setAuth('t', { id: '1', username: 'admin', role: 'admin' });
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  useAuthStore.getState().clearAuth();
+});
+
+describe('ImageIndexCard (#1115 P2)', () => {
+  it('states the width, the tier and the model on one status line', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await awaitLoaded();
+    const status = screen.getByTestId('image-index-status');
+    expect(status.textContent).toContain('2048-dim');
+    expect(status.textContent).toContain('halfvec HNSW');
+    expect(status.textContent).toContain('Qwen/Qwen3-VL-Embedding-2B');
+  });
+
+  it('points an unassigned instance at the row that switches the leg on', async () => {
+    mockApi({ ...ASSIGNED, assigned: false, identity: null });
+    renderCard();
+    await awaitLoaded();
+    const status = screen.getByTestId('image-index-status');
+    expect(status.textContent).toMatch(/not assigned/i);
+    expect(status.textContent).toMatch(/LLM providers/i);
+  });
+
+  it('reports the counters, so a low row count is explainable', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await awaitLoaded();
+    const counters = screen.getByTestId('image-index-counters');
+    expect(counters.textContent).toContain('42');
+    expect(counters.textContent).toContain('3');
+  });
+
+  it('names the consequence of Re-scan beside the control, not in a tooltip', async () => {
+    // #1119's rule: a caveat that lives only in a `title` is unreachable by
+    // touch, keyboard and screen readers.
+    mockApi(ASSIGNED);
+    renderCard();
+    const note = await screen.findByTestId('image-index-rescan-note');
+    expect(note.textContent).toMatch(/marks every page/i);
+    expect(note.textContent).toMatch(/reused by content hash/i);
+    expect(note.getAttribute('title')).toBeNull();
+  });
+
+  it('states that a model change empties and rebuilds the index, and spares text search', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    const note = await screen.findByTestId('image-index-model-change-note');
+    expect(note.textContent).toMatch(/empties and rebuilds/i);
+    expect(note.textContent).toMatch(/text search is unaffected/i);
+  });
+
+  it('points at the switch that turns the retrieval leg on (#1115 P3)', async () => {
+    // This sentence used to say image search was not live yet. P3 landed the
+    // leg, so that became false — the card now names where the leg is turned
+    // on rather than denying it exists.
+    mockApi(ASSIGNED);
+    renderCard();
+    const note = await screen.findByTestId('image-index-retrieval-note');
+    expect(note.textContent).toMatch(/third retrieval leg/i);
+    // The FULL panel chain, not a bare "under Retrieval" (review r2):
+    // `settings-wayfinding.test.ts` only polices a pointer that starts
+    // `Settings →`, so a naked tab name is a signpost no guard can check and
+    // no reader can follow from another panel.
+    expect(note.textContent).toMatch(/Settings → AI Models → Retrieval/);
+    expect(note.textContent).not.toMatch(/not live yet/i);
+  });
+
+  it('Process now POSTs the process route', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi(ASSIGNED, calls);
+    renderCard();
+    await awaitLoaded();
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process')),
+      ).toBe(true),
+    );
+  });
+
+  it('Re-scan all POSTs the rescan route', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi(ASSIGNED, calls);
+    renderCard();
+    await awaitLoaded();
+    fireEvent.click(screen.getByTestId('image-index-rescan'));
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/rescan')),
+      ).toBe(true),
+    );
+  });
+
+  /**
+   * #1532. `actionsDisabled` mixes the multi-minute busy state with two
+   * non-busy inert conditions, and it landed on both buttons as a native
+   * `disabled`. Per the HTML focus fixup rule a control that stops being
+   * focusable is blurred and leaves the tab order, so an operator who pressed
+   * Process now was dropped to `<body>` for the whole scan; jsdom implements
+   * none of that, which is why these cells asserted `.disabled` and saw
+   * nothing. The recipe is CLAUDE.md's Retrieval-panel ruling —
+   * `aria-disabled` (announced as disabled by NVDA, JAWS and VoiceOver) plus a
+   * handler that refuses, since `aria-disabled` blocks no events — and the
+   * WHOLE flag converts, because the fixup fires wherever native `disabled`
+   * lands on a focused control, and the inert half is preserved by the refusal.
+   *
+   * `AttachmentStorageCard` is swept in the same change: the two cards are
+   * each other's pattern of record and must not end up with two busy
+   * behaviours.
+   */
+  it('marks both actions aria-disabled — never natively disabled — while the leg is unassigned', async () => {
+    // Neither does anything: the worker's own fast path answers "unassigned"
+    // and clears nothing, so a live button would be a control that reports
+    // success for work that never starts. The REFUSAL is what carries that
+    // now, not the attribute.
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, assigned: false, identity: null }, calls);
+    renderCard();
+    await awaitLoaded();
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      expect(btn).not.toHaveAttribute('disabled');
+      fireEvent.click(btn);
+    }
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('enables both actions once the leg IS assigned', async () => {
+    // The pin that keeps the previous test honest: every control on this card
+    // renders inert on the pre-fetch paint, so "inert when unassigned"
+    // passes against a card that is permanently dead.
+    mockApi(ASSIGNED);
+    renderCard();
+    await awaitLoaded();
+    expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByTestId('image-index-rescan')).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('marks both actions aria-disabled, never natively disabled, while a scan runs', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    for (const testId of ['image-index-process', 'image-index-rescan']) {
+      const btn = screen.getByTestId(testId);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+      // The whole point: a genuinely disabled control cannot keep the focus
+      // the flag exists to hold, for the minutes the scan lasts.
+      expect(btn).not.toHaveAttribute('disabled');
+      // Review r1: element `opacity` composites the 1px operable border toward
+      // the card, so the recipe's 70 left it at 2.47 (Graphite) / 2.35 (Paper)
+      // against CLAUDE.md's WCAG 1.4.11 floor of 3:1; at 90 it measures
+      // 3.27 / 3.18. Asserted as a FLOOR, like `RetrievalTab`'s, and identical
+      // to `AttachmentStorageCard`'s so the two cards' busy states match.
+      const dim = /aria-disabled:opacity-(\d+)/.exec(btn.className);
+      expect(dim, `${testId} declares no aria-disabled opacity`).not.toBeNull();
+      expect(Number(dim![1]), testId).toBeGreaterThanOrEqual(90);
+      // Review r1: `nm-button-ghost` paints a pressed background on `:active`,
+      // and the `:disabled` rule this conversion removed made that state
+      // unreachable. Keyboard `:active` matches with no `:hover`, so the hover
+      // pin cannot cover it and a refused press would otherwise paint as
+      // accepted. Only the browser can watch the flash; the pin is asserted
+      // here so it cannot be dropped silently.
+      expect(btn.className, testId).toContain('aria-disabled:active:bg-transparent');
+    }
+  });
+
+  it('refuses both actions while a scan runs instead of relying on the attribute', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: true }, calls);
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    fireEvent.click(screen.getByTestId('image-index-rescan'));
+
+    await flushClick();
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('marks the card busy while a scan runs, matching AttachmentStorageCard', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+    expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  // The border tint that used to mark this card is gone. It came from
+  // `--color-status-embedding`, which resolves to body ink now, so the 30% it
+  // wore measures 1.941:1 (Paper) / 2.431:1 (Graphite) against Pane where an
+  // ordinary card's `--color-border` hairline measures 1.414 / 1.264 — and
+  // this card is permanently mounted, so the tint made the panel's most
+  // sharply drawn box the one that is usually idle. What has to read is a RUN,
+  // so that is what these two tests assert instead of a colour class.
+  it('draws determinate index progress while a scan runs, with no border tint', async () => {
+    mockApi({ ...ASSIGNED, running: true });
+    renderCard();
+    await screen.findByTestId('image-index-running');
+
+    const card = screen.getByTestId('image-index-card');
+    expect(card.className.split(/\s+/).filter((c) => c.startsWith('border'))).toEqual([]);
+    // 3 of 120 pages still queued → 98% indexed. The `dl` above the bar is the
+    // accessible readout of the same pair, which is why the bar is aria-hidden.
+    const bar = screen.getByTestId('image-index-progress');
+    expect((bar.firstElementChild as HTMLElement).style.width).toBe('98%');
+  });
+
+  it('shows no progress bar while the index is at rest', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await screen.findByTestId('image-index-counters');
+    // Idle the backlog does not move, and a bar would read as live work that
+    // nobody started. The counters are the resting readout.
+    expect(screen.queryByTestId('image-index-running')).toBeNull();
+    expect(screen.queryByTestId('image-index-progress')).toBeNull();
+  });
+
+  /**
+   * The regression pin. It cannot FAIL in jsdom for the browser reason (no
+   * focus fixup here), so it is not the proof — it is what reds if someone
+   * unmounts, hides or reorders the button under the busy flag. The proof is
+   * the serial browser pass.
+   */
+  it('keeps the pressed button focused across the flip into running', async () => {
+    mockApi(ASSIGNED, undefined, [ASSIGNED, { ...ASSIGNED, running: true }]);
+    renderCard();
+    await awaitLoaded();
+    const process = screen.getByTestId('image-index-process');
+    process.focus();
+    expect(document.activeElement).toBe(process);
+
+    fireEvent.click(process);
+    await screen.findByTestId('image-index-running');
+
+    expect(document.activeElement).toBe(screen.getByTestId('image-index-process'));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('polls while a run is in progress and stops once it finishes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi(ASSIGNED, calls, [
+      { ...ASSIGNED, running: true },
+      { ...ASSIGNED, running: true },
+      { ...ASSIGNED, running: false, rows: 60 },
+    ]);
+    renderCard();
+    await screen.findByTestId('image-index-status');
+
+    const before = calls.filter((c) => c.method === 'GET').length;
+    // One whole 5s interval (the cadence is deliberately not 3s — see the
+    // rate-limit test below).
+    await vi.advanceTimersByTimeAsync(6_000);
+    const during = calls.filter((c) => c.method === 'GET').length;
+    expect(during).toBeGreaterThan(before);
+
+    // Settled: the third response says `running: false`, so the interval stops.
+    await vi.advanceTimersByTimeAsync(6_000);
+    await waitFor(() => expect(screen.queryByTestId('image-index-running')).toBeNull());
+    const settled = calls.filter((c) => c.method === 'GET').length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(calls.filter((c) => c.method === 'GET').length).toBe(settled);
+  });
+
+  it('renders a successful last run in neutral chips, with no amber anywhere', async () => {
+    // ADR-010: measurements are neutral. A run that embedded 20 images is a
+    // measurement, and amber is reserved for attention.
+    const { container } = (() => {
+      mockApi({
+        ...ASSIGNED,
+        lastRun: {
+          at: '2026-08-17T10:00:00.000Z',
+          pages: 12,
+          embedded: 20,
+          reused: 5,
+          removed: 1,
+          failed: 0,
+          pagesFailed: 0,
+          skipped: { ...NO_SKIPS, unsupported: 2, capped: 3 },
+        },
+      });
+      return renderCard();
+    })();
+    const run = await screen.findByTestId('image-index-last-run');
+    await awaitLoaded();
+    expect(run.textContent).toContain('20');
+    expect(run.textContent).toMatch(/unsupported/i);
+    expect(run.textContent).toMatch(/capped/i);
+    expect(container.innerHTML).not.toMatch(/warning/);
+  });
+
+  it('renders a FAILED last run in amber — the one attention-worthy state here', async () => {
+    const { container } = (() => {
+      mockApi({
+        ...ASSIGNED,
+        lastRun: {
+          at: '2026-08-17T10:00:00.000Z',
+          pages: 12,
+          embedded: 0,
+          reused: 0,
+          removed: 0,
+          failed: 4,
+          pagesFailed: 0,
+          skipped: NO_SKIPS,
+        },
+      });
+      return renderCard();
+    })();
+    const failed = await screen.findByTestId('image-index-last-run-failed');
+    expect(failed.textContent).toContain('4');
+    expect(container.innerHTML).toMatch(/warning/);
+  });
+
+  /**
+   * #1115 P2 review r1 — a failed FETCH is a failure, not an unassigned leg.
+   *
+   * CLAUDE.md's `usePageTree` rule, on a different surface: reading `{ data }`
+   * alone collapsed a 500 into the not-assigned state, so an admin whose leg
+   * IS assigned was told to go and assign it, and both remedies were disabled
+   * on the one surface that reports the index.
+   */
+  describe('a failed status read', () => {
+    it('does not claim the leg is unassigned', async () => {
+      mockApiFailingStatus();
+      renderCard();
+
+      const status = await screen.findByTestId('image-index-status');
+      await waitFor(() => expect(status.textContent).toMatch(/could not be read/i));
+      expect(status.textContent).not.toMatch(/not assigned/i);
+      // …and it says what is NOT affected, so nobody goes looking for a
+      // destroyed index.
+      expect(status.textContent).toMatch(/assignment and the stored index are unaffected/i);
+    });
+
+    it('takes the destructive treatment, not amber — it is a failure, not a warning', async () => {
+      const { container } = (() => {
+        mockApiFailingStatus();
+        return renderCard();
+      })();
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+      expect(screen.getByTestId('image-index-status').className).toMatch(/text-destructive/);
+      expect(container.innerHTML).not.toMatch(/text-warning/);
+    });
+
+    it('leaves both remedies live, because they are the recovery', async () => {
+      const calls: Array<{ url: string; method: string }> = [];
+      mockApiFailingStatus(calls);
+      renderCard();
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+
+      // #1532 converted this card off native `disabled` entirely, so a
+      // `HTMLButtonElement.disabled` read here would be unconditionally
+      // `false` — vacuous. The live-ness this cell guards now lives in the
+      // absence of `aria-disabled`, the same attribute its six siblings read.
+      expect(screen.getByTestId('image-index-process')).not.toHaveAttribute('aria-disabled');
+      fireEvent.click(screen.getByTestId('image-index-process'));
+      await waitFor(() =>
+        expect(
+          calls.some((c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process')),
+        ).toBe(true),
+      );
+    });
+
+    /**
+     * The same half-fix `AttachmentStorageCard` closed one file over (fixer
+     * r1, its `running` guard) — and the reason the two cards' busy states
+     * were NOT identical in the branch that matters most (review r2).
+     *
+     * The cell above fails the FIRST read, so `data` is `undefined` and
+     * `running` is trivially false. When the outage begins while a scan is in
+     * flight TanStack retains the payload, so this card read `running: true`
+     * off a record it could no longer observe: `aria-busy="true"` and the
+     * "Scanning…" chip asserted a scan as fact, and `busy` — which is inside
+     * `actionsDisabled` — refused BOTH buttons, the very remedy the error copy
+     * one line above names. No reachable affordance until the backend came
+     * back.
+     */
+    it('stops claiming a scan it can no longer see, and leaves both remedies reachable', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const calls: Array<{ url: string; method: string }> = [];
+      mockApiOutageAfterFirstRead({ ...ASSIGNED, running: true }, calls);
+      renderCard();
+      await waitFor(() => expect(screen.getByTestId('image-index-running')).toBeInTheDocument());
+
+      // One whole 5s poll interval later the GET is 500ing while the retained
+      // payload still says `running: true` (the card's POLL_MS is private —
+      // the sibling poll cell above advances by the same literal).
+      await vi.advanceTimersByTimeAsync(6_000);
+      await waitFor(() =>
+        expect(screen.getByTestId('image-index-status').textContent).toMatch(/could not be read/i),
+      );
+
+      expect(
+        screen.queryByTestId('image-index-running'),
+        'the card must not announce a scan it cannot observe',
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId('image-index-card')).toHaveAttribute('aria-busy', 'false');
+      for (const testId of ['image-index-process', 'image-index-rescan']) {
+        expect(
+          screen.getByTestId(testId),
+          'the error copy names both buttons as the recovery — they must be pressable',
+        ).not.toHaveAttribute('aria-disabled');
+      }
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+      await waitFor(() =>
+        expect(
+          calls.some(
+            (c) => c.method === 'POST' && c.url.endsWith('/admin/embedding/image-index/process'),
+          ),
+        ).toBe(true),
+      );
+    });
+
+    it('shows no invented zeroes while the first read is in flight', async () => {
+      // A number the server has not sent is not a zero: `0 rows` on a healthy
+      // index is exactly the reading that sends an operator to the runbook.
+      mockApi(ASSIGNED);
+      renderCard();
+      expect(screen.getByTestId('image-index-counters').textContent).toContain('—');
+      await awaitLoaded();
+      expect(screen.getByTestId('image-index-counters').textContent).toContain('42');
+    });
+  });
+
+  it('flags an index built for a different model than the one assigned now', async () => {
+    // The guarded-DDL branch: the assignment saved, the `ALTER` did not, so
+    // the status line names a model and a width that belong to different
+    // things. Amber, like a failed run — the operator has to press Re-check.
+    mockApi({ ...ASSIGNED, identityMatchesAssignment: false });
+    renderCard();
+    await awaitLoaded();
+
+    const note = await screen.findByTestId('image-index-identity-mismatch');
+    expect(note.textContent).toMatch(/different model or endpoint/i);
+    expect(note.textContent).toMatch(/Re-check/);
+    // …and WHERE that control lives (review r4). This card is on the Embeddings
+    // tab and the Re-check button is on another panel entirely, so naming the
+    // control without naming the panel leaves the operator hunting; the
+    // not-assigned line one paragraph up already spells the same chain, and
+    // `settings-wayfinding.test.ts` fails if either stops matching the rail.
+    expect(note.textContent).toMatch(/Settings → AI Models → LLM providers/);
+    // The third attention state, pinned for its colour like the other two
+    // (review r2: it was the one of the three with no colour assertion).
+    expect(note.className).toMatch(/text-warning/);
+  });
+
+  it('says nothing about the identity when it matches', async () => {
+    mockApi(ASSIGNED);
+    renderCard();
+    await awaitLoaded();
+    expect(screen.queryByTestId('image-index-identity-mismatch')).toBeNull();
+  });
+
+  it('says nothing about the identity when there is nothing to compare', async () => {
+    // A fresh install has recorded no identity at all; that is not a mismatch,
+    // and rendering one would put a permanent amber strip on every new
+    // deployment — which is how the reserved colour stops meaning anything.
+    mockApi({ ...ASSIGNED, identityMatchesAssignment: null });
+    renderCard();
+    await awaitLoaded();
+    expect(screen.queryByTestId('image-index-identity-mismatch')).toBeNull();
+  });
+
+  it('reports pages that could not be WRITTEN separately from images that failed to embed', async () => {
+    // Different outages, different remedies: an image failure is the provider,
+    // a page failure is the index. Reporting one as the other sends the
+    // operator to the wrong place.
+    mockApi({
+      ...ASSIGNED,
+      lastRun: {
+        at: '2026-08-17T10:00:00.000Z',
+        pages: 6,
+        embedded: 0,
+        reused: 0,
+        removed: 0,
+        failed: 0,
+        pagesFailed: 6,
+        skipped: NO_SKIPS,
+      },
+    });
+    renderCard();
+    await awaitLoaded();
+
+    expect(screen.queryByTestId('image-index-last-run-failed')).toBeNull();
+    const pages = screen.getByTestId('image-index-last-run-pages-failed');
+    expect(pages.textContent).toContain('6');
+    expect(pages.textContent).toMatch(/stay queued/i);
+    // Amber, and pinned as amber: this is the second of the card's three
+    // attention states, and a text-only assertion cannot tell a de-coloured
+    // one from a missing one.
+    expect(pages.className).toMatch(/text-warning/);
+  });
+
+  /**
+   * Review r2 — the card must not report a scan that did not start.
+   *
+   * The POST answers `alreadyRunning` when the worker lock is already held.
+   * Toasting "scan started" then is wrong twice: nothing started, and the
+   * running scan walks a LIMIT/OFFSET window over a result set the Re-scan just
+   * grew, so the pages it marked may need a second press.
+   */
+  describe('a trigger that lands on a running scan', () => {
+    it('does not claim a Re-scan started, and names the second press', async () => {
+      mockApi(ASSIGNED, undefined, undefined, { marked: 40, started: false, alreadyRunning: true });
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-rescan'));
+
+      await waitFor(() => expect(vi.mocked(toast.message)).toHaveBeenCalled());
+      const said = vi.mocked(toast.message).mock.calls.at(-1)?.[0] as string;
+      // The half that DID happen is still reported…
+      expect(said).toMatch(/40 pages/);
+      // …and so is the reason it may not be enough.
+      expect(said).toMatch(/already running/i);
+      expect(said).toMatch(/Process now/);
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('does not claim a Process now started', async () => {
+      mockApi(ASSIGNED, undefined, undefined, { started: false, alreadyRunning: true });
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.message)).toHaveBeenCalledWith(
+          expect.stringMatching(/already running/i),
+        ),
+      );
+      expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    });
+
+    it('still reports a real start as a success', async () => {
+      // The pin that keeps the two above honest: a card that never toasts a
+      // success passes them without ever having distinguished the two answers.
+      mockApi(ASSIGNED);
+      renderCard();
+      await awaitLoaded();
+
+      fireEvent.click(screen.getByTestId('image-index-process'));
+
+      await waitFor(() =>
+        expect(vi.mocked(toast.success)).toHaveBeenCalledWith(expect.stringMatching(/started/i)),
+      );
+      expect(vi.mocked(toast.message)).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps polling after a kick even when the lock is not held yet', async () => {
+    // `running` is read from the worker lock, and the POST answers BEFORE the
+    // detached scan takes it. Arming the interval solely from the one post-kick
+    // refetch therefore loses a race the client cannot see: the card freezes on
+    // pre-scan counters, with both buttons live, until a remount.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    // Every GET says the lock is free — the exact payload that used to stop
+    // the card polling for good.
+    mockApi({ ...ASSIGNED, running: false }, calls);
+    renderCard();
+    await awaitLoaded();
+
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST')).toBe(true),
+    );
+    const afterKick = calls.filter((c) => c.method === 'GET').length;
+
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(afterKick);
+  });
+
+  it('stops the warm-up polling rather than running forever', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: false }, calls);
+    renderCard();
+    await awaitLoaded();
+
+    fireEvent.click(screen.getByTestId('image-index-process'));
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true));
+
+    // Past the warm-up window, with every payload still reporting a free lock.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const settled = calls.filter((c) => c.method === 'GET').length;
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(calls.filter((c) => c.method === 'GET').length).toBe(settled);
+  });
+
+  it('polls no faster than the admin rate limit allows', async () => {
+    // 20/min is the per-route admin bucket, so a 3s interval sits exactly at
+    // it — before the mount fetch and before the invalidate every button press
+    // fires. With `retry: false` a 429 then freezes the card on stale counters
+    // with both buttons disabled and no error shown.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: Array<{ url: string; method: string }> = [];
+    mockApi({ ...ASSIGNED, running: true }, calls);
+    renderCard();
+    await screen.findByTestId('image-index-status');
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(0));
+
+    const before = calls.filter((c) => c.method === 'GET').length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    const perMinute = calls.filter((c) => c.method === 'GET').length - before;
+
+    expect(perMinute).toBeLessThan(20);
+  });
+});

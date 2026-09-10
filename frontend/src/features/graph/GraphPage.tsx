@@ -3,10 +3,20 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { m } from 'framer-motion';
 import ForceGraph2D from 'react-force-graph-2d';
 import { toast } from 'sonner';
-import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, RefreshCw, Info, Layers, Grid3x3, Filter, Search, X, Settings, Loader2, AlertTriangle } from 'lucide-react';
 import { cn } from '../../shared/lib/cn';
 import { useSearch } from '../../shared/hooks/use-standalone';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useThemeColors } from '../../shared/hooks/use-theme-colors';
+import {
+  categoricalRamp,
+  withAlpha,
+  FALLBACK_INK,
+  FALLBACK_NEUTRAL,
+  FALLBACK_PAPER,
+  type ReadThemeColor,
+} from '../../shared/lib/theme-colors';
+import { isLightTheme, type ThemeId } from '../../stores/theme-store';
+import { useEmbeddingStatus, isZeroEmbeddings } from '../../shared/hooks/use-pages';
 import { useAuthStore } from '../../stores/auth-store';
 import { useGraphData, useLocalGraphData, useRefreshGraph, type LocalGraphFilters, type GraphMeta } from './graph-hooks';
 
@@ -51,67 +61,127 @@ function isClusterNode(node: GraphNode | ClusterNode): node is ClusterNode {
 
 // ---------- Helpers ----------
 
-const SPACE_COLORS = [
-  '#7c8cf5', '#5cc9a7', '#f59e42', '#e879a8', '#64b5f6',
-  '#ab82e6', '#4dd0a1', '#f4c84b', '#e57373', '#81d4fa',
-  '#ce93d8', '#a5d6a7',
-];
+/**
+ * How many distinct space colours the graph offers before it wraps. Twelve
+ * matches the hand-picked ramp this replaces; past a dozen spaces on one
+ * canvas, colour has stopped being how a reader tells them apart anyway.
+ */
+const SPACE_COLOR_COUNT = 12;
 
-function getSpaceColor(spaceKey: string, spaceKeys: string[]): string {
-  const idx = spaceKeys.indexOf(spaceKey);
-  return SPACE_COLORS[idx % SPACE_COLORS.length] ?? '#7c8cf5';
+function getSpaceColor(spaceKey: string, spaceKeys: string[], ramp: string[]): string {
+  // An unlisted space (indexOf -1) takes the first entry, as it always has.
+  const idx = Math.max(0, spaceKeys.indexOf(spaceKey));
+  return ramp[idx % ramp.length] ?? FALLBACK_NEUTRAL;
 }
-
-const EDGE_COLORS: Record<string, string> = {
-  embedding_similarity: 'rgba(124, 140, 245, 0.35)',
-  label_overlap: 'rgba(92, 201, 167, 0.45)',
-  explicit_link: 'rgba(245, 158, 66, 0.5)',
-  // #362: parent_child edges get a distinct hue and higher opacity so the
-  // hierarchy is legible against the semantic-similarity haze.
-  parent_child: 'rgba(232, 176, 106, 0.7)',
-  cluster_relationship: 'rgba(171, 130, 230, 0.4)',
-};
 
 const MAX_TOOLTIP_LABELS = 5;
 
-// #941: node text/border colours must adapt to the active theme. On the light
-// theme the previously-hardcoded white label was invisible against the pale
-// surface. Text takes the deep navy ink on light and the cool near-white on
-// dark; borders mirror that so the outline reads on both surfaces.
-//
-// These are the palette's --color-foreground values written as literals:
-// react-force-graph-2d paints to a <canvas> via ctx.fillStyle, which resolves
-// no CSS custom properties. Keep them in step with the tokens in index.css.
-interface GraphCanvasColors {
-  label: string;
-  title: string;
-  badge: string;
-  border: string;
-  borderHover: string;
-  hoverStroke: string;
+/**
+ * Node count at or below which /graph skips the pick-a-page landing and just
+ * renders the full graph. The landing exists because the global hairball is
+ * unusable — and the force simulation slow — past a few hundred pages: the
+ * constraint is simulation/render cost and visual legibility, not transfer
+ * size. At ≤50 nodes the simulation settles instantly and every label stays
+ * readable, so interposing a picker that says "the knowledge graph is large"
+ * before a graph this small is pure friction (the gate was observed firing
+ * at 6 pages total). 50 keeps a wide margin under the "few hundred" where
+ * the hairball actually breaks down.
+ */
+const SMALL_GRAPH_NODE_LIMIT = 50;
+
+/**
+ * How long the landing probe may hold its "Checking your knowledge base…"
+ * card while the request is still pending. Against a healthy backend the
+ * probe answers in tens of milliseconds; a request that is still open after
+ * this long is hung (apiFetch sets no timeout of its own), and the picker is
+ * static content that works without the verdict. The query keeps running —
+ * a late-resolving probe may still upgrade the picker to the graph, which is
+ * the existing contract for late verdicts.
+ */
+const PROBE_PENDING_TIMEOUT_MS = 3000;
+
+// #1257 post-review: these three force-graph props used to be inline
+// closures, re-allocated on every render. react-kapsule diffs props by
+// identity, and its setters call notifyRedraw — so each unrelated re-render (a
+// status poll result, a hover) forced a FULL canvas repaint. They are
+// state-free, so they hoist to module scope where their identity is permanent.
+// `linkColor` used to live here too; it is theme-derived now and sits in a
+// useCallback in the component instead.
+const nodeCanvasObjectModeAll = () => 'replace' as const;
+
+function getNodeVal(node: GraphNode | ClusterNode): number {
+  return isClusterNode(node)
+    ? Math.max(5, node.articleCount)
+    : Math.max(1, (node as GraphNode).embeddingCount);
 }
 
-function getCanvasColors(isLight: boolean): GraphCanvasColors {
-  return isLight
-    ? {
-        // Frost Steel --color-foreground #171c2c
-        label: 'rgba(23,28,44,0.85)',
-        title: 'rgba(23,28,44,0.95)',
-        badge: 'rgba(23,28,44,0.7)',
-        border: 'rgba(23,28,44,0.4)',
-        borderHover: 'rgba(23,28,44,0.9)',
-        hoverStroke: 'rgba(23,28,44,0.8)',
-      }
-    : {
-        // Slate Steel --color-foreground #e8ecf5
-        label: 'rgba(232,236,245,0.85)',
-        title: 'rgba(232,236,245,0.95)',
-        badge: 'rgba(232,236,245,0.7)',
-        border: 'rgba(232,236,245,0.4)',
-        borderHover: 'rgba(232,236,245,0.9)',
-        hoverStroke: 'rgba(232,236,245,0.8)',
-      };
+function getLinkWidth(link: { score?: number }): number {
+  return Math.max(0.5, (link.score ?? 0.5) * 3);
 }
+
+/**
+ * Canvas and edge colours, resolved from the active theme.
+ *
+ * react-force-graph-2d paints through `ctx.fillStyle`, which resolves no CSS
+ * custom properties, so these have to be read back out of the live palette.
+ * They were copied literals, and they had already drifted: this file carried
+ * both themes' `--color-foreground` from a revision of index.css that has
+ * since been retuned twice.
+ *
+ * The `FALLBACK_*` inks apply only where no stylesheet exists (SSR, jsdom).
+ * Pure black / white on purpose — a copy of either theme's ink is the thing
+ * that goes stale.
+ */
+const buildGraphColors = (read: ReadThemeColor, theme: ThemeId) => {
+  const ink = read('--color-foreground', isLightTheme(theme) ? FALLBACK_INK : FALLBACK_PAPER);
+  const similarityHue = read('--color-info');
+  const labelOverlapHue = read('--color-status-connected');
+  return {
+    label: withAlpha(ink, 0.85),
+    title: withAlpha(ink, 0.95),
+    badge: withAlpha(ink, 0.7),
+    border: withAlpha(ink, 0.4),
+    borderHover: withAlpha(ink, 0.9),
+    hoverStroke: withAlpha(ink, 0.8),
+    /** Ring on the ego-graph's centre node: a highlight, not a fault. */
+    centerStroke: withAlpha(read('--color-status-syncing'), 0.9),
+    /**
+     * Spaces carry no status — a space is not "healthy", its dot only has to
+     * differ from the dot beside it. See `categoricalRamp`.
+     */
+    spaces: categoricalRamp(read, SPACE_COLOR_COUNT),
+    /**
+     * The palette owns no edge tokens, so each relation type takes the token
+     * nearest the hue it replaces and the five stay tellable apart: the
+     * similarity haze was periwinkle → `--color-info`, label overlap mint →
+     * the palette green, explicit links orange → the amber, cluster links
+     * violet → the AI token. `parent_child` moves off the tan it shared with
+     * `explicit_link` onto Steel, which keeps #362's "distinct hue, higher
+     * opacity" promise more honestly than a second amber did. Alphas are
+     * unchanged, so relation weight reads exactly as before.
+     */
+    edges: {
+      embedding_similarity: withAlpha(similarityHue, 0.35),
+      label_overlap: withAlpha(labelOverlapHue, 0.45),
+      explicit_link: withAlpha(read('--color-status-syncing'), 0.5),
+      parent_child: withAlpha(read('--color-primary'), 0.7),
+      cluster_relationship: withAlpha(read('--color-status-ai'), 0.4),
+    } as Record<string, string>,
+    /**
+     * Legend keys share the edge hues but not their alphas. A 2px swatch at an
+     * edge's 0.35 opacity is imperceptible, and a legend key identifies
+     * something (WCAG 1.4.11 asks 3:1 of such a graphic) — while a canvas of
+     * edges at full opacity would be a wall of colour. Same hue, honest
+     * weight at each size.
+     */
+    edgeLegend: {
+      similarity: similarityHue,
+      labelOverlap: labelOverlapHue,
+    },
+    /** An edge type the API grows that this map does not know yet. */
+    edgeFallback: withAlpha(read('--color-border'), 0.4),
+  };
+};
 
 // ---------- Component ----------
 
@@ -178,12 +248,103 @@ export function GraphPage() {
     labels: labels.length > 0 ? labels : undefined,
   }), [edgeTypes, minScore, labels]);
 
-  // #360: only fetch the global graph when the user opted into the
-  // hairball view (otherwise we render an article picker instead).
-  const wantsGlobal = !focusPageId && showFullGraph;
+  // The landing gate used to branch on nothing: every visit without ?focus
+  // or ?full got the pick-a-page screen, which blames scale ("the knowledge
+  // graph is large") even on a six-page corpus — and even when the true
+  // blocker was configuration (nothing embedded yet), a state the user only
+  // discovered after clicking "Show full graph anyway". Probe the real state
+  // first: /embeddings/status is a cheap counts endpoint (shared query cache
+  // with the AI surfaces). Its totalPages is a close PROXY for the graph's
+  // node population, not an exact count — status counts every page visible
+  // to the caller (accessible Confluence spaces plus shared standalone plus
+  // the caller's own private standalone pages) while the graph route filters
+  // on accessible space keys only, and a ?space= filter narrows the graph
+  // but never this probe. Both drifts are small, and the only cost of error
+  // is showing or skipping a gate, which is all this coarse size check
+  // decides.
+  const landingGate = !focusPageId && !showFullGraph;
+  // #1257 post-review: the status count above is a PROXY, and the graph
+  // response's meta carries the EXACT counts. Once those exact counts have
+  // refuted a proxy-approved skip (see oversizedDirectRender below), stop
+  // trusting the proxy for the rest of the visit. State, not a ref: the
+  // refutation must force a render, and it feeds the two query gates below.
+  const [proxyRefuted, setProxyRefuted] = useState(false);
+  // #1257 post-review (see the probingLanding block below): a probe request
+  // that never settles must not hold the probe card forever. probeTimedOut
+  // flips once the pending window expires; the ref makes every dismissal
+  // one-way for the visit.
+  const [probeTimedOut, setProbeTimedOut] = useState(false);
+  const probeCardDismissedRef = useRef(false);
+  const smallCorpusLatchRef = useRef(false);
+  // #1257 post-review: once the latch has committed this visit to the graph,
+  // the status query's 3s processing poll bought nothing — its only effect
+  // was a fresh result forcing a full canvas repaint (see the hoisted props
+  // above). Gate the poll off with the latch. This reads the latch as of the
+  // PREVIOUS render (the mid-render ref write below cannot re-run this
+  // hook), which costs at most one extra poll tick before the query
+  // disables. The picker branch deliberately keeps live status, so its
+  // notice stays current and a mid-sync corpus can still upgrade to the
+  // direct render.
+  const statusEnabled = landingGate && !(smallCorpusLatchRef.current && !proxyRefuted);
+  const {
+    data: embeddingStatus,
+    isError: statusProbeFailed,
+    failureCount: statusFailureCount,
+    fetchStatus: statusFetchStatus,
+  } = useEmbeddingStatus(statusEnabled);
+  const zeroEmbedded = isZeroEmbeddings(embeddingStatus);
+  // Small corpora skip the size gate entirely — see SMALL_GRAPH_NODE_LIMIT.
+  // Deliberately regardless of embedding state: at this size the fetch is
+  // cheap, three of the four edge types (labels, links, parent/child) exist
+  // without embeddings, and if nothing renders the route's own empty states
+  // explain why with real, graph-scoped meta.
+  //
+  // Only a RESOLVED count in [1, limit] qualifies — never 0, and never an
+  // absent status. totalPages === 0 used to count as small so a fresh
+  // instance reached the graph's own empty state, but 0 is also what the
+  // probe reads mid-first-sync, and the one-way latch then pinned the
+  // growing global graph open as the corpus passed 50, 500, 5000 until
+  // route exit. A fresh instance now gets the picker (its search finds
+  // nothing and the escape hatch still reaches the real empty state), and
+  // the latch can only engage once at least one page verifiably exists.
+  const corpusIsSmall =
+    !!embeddingStatus &&
+    embeddingStatus.totalPages >= 1 &&
+    embeddingStatus.totalPages <= SMALL_GRAPH_NODE_LIMIT;
+  // The skip-gate decision latches one-way: the status query re-polls every
+  // 3s while an embedding pass is processing, and a corpus crossing the
+  // limit mid-sync must not swap a rendered graph back to the picker under
+  // the user. Leaving and returning to /graph re-decides.
+  if (corpusIsSmall) smallCorpusLatchRef.current = true;
+  const skipSizeGate = smallCorpusLatchRef.current && !proxyRefuted;
+
+  // #360: only fetch the global graph when the user opted into the hairball
+  // view — or when the corpus is small enough that the gate would be pure
+  // friction (otherwise we render an article picker instead).
+  const wantsGlobal = !focusPageId && (showFullGraph || skipSizeGate);
   const globalQuery = useGraphData(viewMode, filterSpaces, wantsGlobal);
   const localQuery = useLocalGraphData(focusPageId, filters);
   const activeQuery = focusPageId ? localQuery : (wantsGlobal ? globalQuery : null);
+
+  // #1257 post-review: post-fetch guard on the proxy. The status count and
+  // the graph's node population are non-nested predicates (see the PROXY note
+  // above), so a proxy-approved direct render can come back with a
+  // multi-hundred-node graph. When a NON-opt-in fetch returns more nodes than
+  // the limit, fall back to the picker instead of rendering the hairball the
+  // gate exists to prevent; the explicit "Show full graph anyway" path
+  // (showFullGraph) keeps rendering whatever it gets. The render branch below
+  // consults this value directly so not even one frame of the oversized graph
+  // paints; the effect then commits the refutation, which un-skips the gate,
+  // disables the global query and resumes the picker's live status.
+  const oversizedDirectRender =
+    !focusPageId &&
+    !showFullGraph &&
+    skipSizeGate &&
+    !!globalQuery.data &&
+    globalQuery.data.nodes.length > SMALL_GRAPH_NODE_LIMIT;
+  useEffect(() => {
+    if (oversizedDirectRender) setProxyRefuted(true);
+  }, [oversizedDirectRender]);
 
   const data = activeQuery?.data;
   const isLoading = activeQuery?.isLoading ?? false;
@@ -196,10 +357,18 @@ export function GraphPage() {
   const [hoveredNode, setHoveredNode] = useState<(GraphNode | ClusterNode) | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  // #941: derive theme-aware canvas colours so node labels/borders stay
-  // legible on both the dark (Slate Steel) and light (Frost Steel) themes.
-  const isLight = useIsLightTheme();
-  const canvasColors = useMemo(() => getCanvasColors(isLight), [isLight]);
+  // #941/#1556: derive theme-aware canvas colours so node labels, borders and
+  // edges track the palette on both Graphite and Paper.
+  const graphColors = useThemeColors(buildGraphColors);
+
+  // Theme-derived, so this cannot hoist to module scope with the props below;
+  // keyed on the resolved colours it still only changes identity when the
+  // theme does, not on every render.
+  const linkColor = useCallback(
+    (link: { type?: string }) =>
+      graphColors.edges[link.type ?? 'embedding_similarity'] ?? graphColors.edgeFallback,
+    [graphColors],
+  );
 
   const prefersReducedMotion = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -291,7 +460,7 @@ export function GraphPage() {
       const y = node.y ?? 0;
       const isHovered = hoveredNode?.id === node.id;
       const isCenter = data?.centerId === node.id;
-      const color = getSpaceColor(node.spaceKey, spaceKeys);
+      const color = getSpaceColor(node.spaceKey, spaceKeys, graphColors.spaces);
 
       if (isClusterNode(node)) {
         // Cluster node: larger rounded rect with count badge
@@ -307,7 +476,7 @@ export function GraphPage() {
         ctx.globalAlpha = 1;
 
         // Thicker border for clusters
-        ctx.strokeStyle = isHovered ? canvasColors.borderHover : canvasColors.border;
+        ctx.strokeStyle = isHovered ? graphColors.borderHover : graphColors.border;
         ctx.lineWidth = (isHovered ? 2.5 : 1.5) / globalScale;
         ctx.stroke();
 
@@ -316,14 +485,14 @@ export function GraphPage() {
         ctx.font = `bold ${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = canvasColors.title;
+        ctx.fillStyle = graphColors.title;
         const truncated = node.title.length > 20 ? node.title.slice(0, 17) + '...' : node.title;
         ctx.fillText(truncated, x, y - 3 / globalScale);
 
         // Count badge
         const badgeFontSize = Math.max(9 / globalScale, 1.2);
         ctx.font = `${badgeFontSize}px Inter, system-ui, sans-serif`;
-        ctx.fillStyle = canvasColors.badge;
+        ctx.fillStyle = graphColors.badge;
         ctx.fillText(`${node.articleCount} pages`, x, y + fontSize);
         return;
       }
@@ -340,7 +509,7 @@ export function GraphPage() {
       ctx.fill();
 
       if (isHovered || isCenter) {
-        ctx.strokeStyle = isCenter ? 'rgba(245, 158, 66, 0.9)' : canvasColors.hoverStroke;
+        ctx.strokeStyle = isCenter ? graphColors.centerStroke : graphColors.hoverStroke;
         ctx.lineWidth = (isCenter ? 2 : 1.5) / globalScale;
         ctx.stroke();
       }
@@ -350,12 +519,12 @@ export function GraphPage() {
         ctx.font = `${isHovered || isCenter ? 'bold ' : ''}${fontSize}px Inter, system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = canvasColors.label;
+        ctx.fillStyle = graphColors.label;
         const truncated = label.length > 30 ? label.slice(0, 27) + '...' : label;
         ctx.fillText(truncated, x, y + size + 2 / globalScale);
       }
     },
-    [spaceKeys, hoveredNode, data?.centerId, canvasColors],
+    [spaceKeys, hoveredNode, data?.centerId, graphColors],
   );
 
   const nodePointerAreaPaint = useCallback(
@@ -390,13 +559,88 @@ export function GraphPage() {
   const tooltipTop = Math.min(tooltipPos.y - 8, (typeof window !== 'undefined' ? window.innerHeight : 800) - tooltipMaxH - 16);
   const tooltipLeft = Math.min(tooltipPos.x + 12, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 280);
 
-  // #360: when no article is focused and the user hasn't opted into the
-  // global view, render an article picker instead of fetching a hairball.
-  // This is the new default state for the Graph page — Obsidian/Logseq-style
-  // local-graph-first UX that scales to large knowledge bases.
-  if (!focusPageId && !showFullGraph) {
+  // Hold the loading card while the landing probe's FIRST attempt is in
+  // flight — tens of milliseconds against a healthy backend — so the picker
+  // cannot flash up for a corpus the probe is about to reveal as small.
+  // First attempt only: once one attempt has failed (failureCount > 0) the
+  // picker renders immediately instead of stalling behind the query client's
+  // retry backoff. If a later retry still resolves small, the picker
+  // upgrades to the graph — content arriving late beats a spinner that may
+  // never end. The probe card names what is actually happening rather than
+  // promising a graph the verdict may decline to load.
+  //
+  // #1257 post-review: the card also needs exits for a fetch that never
+  // SETTLES, or /graph is stuck on it. Two such states exist: offline,
+  // TanStack's networkMode 'online' PAUSES the query (fetchStatus 'paused',
+  // failureCount frozen at 0), and a hung connection stays pending forever
+  // (apiFetch sets no timeout). Both fall through to the picker — it is
+  // static content that works without the verdict — via the one-way
+  // dismissal ref below, which also folds in the failure cases: once the
+  // card has stood down for any reason it never comes back this visit, so a
+  // reconnect cannot swap an already-shown picker back to a spinner. A late
+  // verdict may still upgrade the picker to the graph, per the contract
+  // above.
+  //
+  // Every dismissal source below is render-visible (fetchStatus, isError and
+  // failureCount are tracked query fields; probeTimedOut is state), so the
+  // render that observes one is also the render that computes the ref into
+  // probingLanding — the mid-render ref write needs no extra render of its
+  // own.
+  if (
+    statusFetchStatus === 'paused' ||
+    probeTimedOut ||
+    statusProbeFailed ||
+    statusFailureCount > 0
+  ) {
+    probeCardDismissedRef.current = true;
+  }
+  const probingLanding =
+    landingGate && !skipSizeGate && !embeddingStatus && !probeCardDismissedRef.current;
+
+  // Bound the pending case: while the card is up and the request has neither
+  // settled nor paused, a local timer is the only thing that can end the
+  // wait. This is still an unconditional hook — no early return precedes it,
+  // the ifs above only write refs.
+  useEffect(() => {
+    if (!probingLanding) return;
+    const timer = setTimeout(() => setProbeTimedOut(true), PROBE_PENDING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [probingLanding]);
+
+  if (isLoading || probingLanding) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="nm-card flex flex-col items-center gap-4 p-8">
+          <RefreshCw className="h-8 w-8 animate-spin text-action" />
+          <p className="text-muted-foreground">
+            {isLoading ? 'Loading knowledge graph...' : 'Checking your knowledge base…'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // #360, reordered: when no article is focused and the user hasn't opted
+  // into the global view, branch on the probed state rather than assuming
+  // scale:
+  //   - small corpus → no gate at all, fall through to the graph
+  //     (wantsGlobal above already started the fetch);
+  //   - pages exist but none embedded → the pick-a-page gate stays fully
+  //     operable (search, local graphs and the full-graph escape hatch all
+  //     work without embeddings — label, link and parent/child edges need
+  //     none) with a notice above it naming the configuration gap, so the
+  //     screen stops blaming scale for a setup problem;
+  //   - large corpus, or the probe failed → the pick-a-page gate, unchanged.
+  //
+  // oversizedDirectRender re-routes a proxy-approved render here on the same
+  // render its data lands, so the hairball never paints while the effect
+  // commits the refutation.
+  if (landingGate && (!skipSizeGate || oversizedDirectRender)) {
     return (
       <ArticlePickerLanding
+        unembeddedWorkspacePages={
+          embeddingStatus && zeroEmbedded ? embeddingStatus.totalPages : undefined
+        }
         onPick={(pageId) => {
           const next = new URLSearchParams(searchParams);
           next.set('focus', pageId);
@@ -404,18 +648,6 @@ export function GraphPage() {
         }}
         onShowFullGraph={() => setShowFullGraph(true)}
       />
-    );
-  }
-
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="nm-card flex flex-col items-center gap-4 p-8">
-          <RefreshCw className="h-8 w-8 animate-spin text-action" />
-          <p className="text-muted-foreground">Loading knowledge graph...</p>
-        </div>
-      </div>
     );
   }
 
@@ -452,7 +684,7 @@ export function GraphPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Knowledge Graph</h1>
+          <h1 className="text-[15px] font-semibold sm:text-lg">Graph</h1>
           <p className="text-sm text-muted-foreground">
             {data.nodes.length} {viewMode === 'clustered' ? 'clusters' : 'pages'}, {data.edges.length} connections
             {focusPageId && ' (local view)'}
@@ -540,18 +772,18 @@ export function GraphPage() {
           <span key={sk} className="flex items-center gap-1.5">
             <span
               className="inline-block h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: getSpaceColor(sk, spaceKeys) }}
+              style={{ backgroundColor: getSpaceColor(sk, spaceKeys, graphColors.spaces) }}
             />
             {sk}
           </span>
         ))}
         <span className="ml-4 font-medium">Edges:</span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: '#7c8cf5' }} />
+          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: graphColors.edgeLegend.similarity }} />
           Similarity
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: '#5cc9a7' }} />
+          <span className="inline-block h-0.5 w-4 rounded" style={{ backgroundColor: graphColors.edgeLegend.labelOverlap }} />
           Labels
         </span>
       </div>
@@ -582,7 +814,7 @@ export function GraphPage() {
       {/* Graph container */}
       <div
         ref={containerRef}
-        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border/50 bg-background/50"
+        className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-background/50"
         data-testid="graph-container"
       >
         <ForceGraph2D
@@ -592,13 +824,12 @@ export function GraphPage() {
           height={dimensions.height}
           nodeId="id"
           nodeCanvasObject={nodeCanvasObject}
-          nodeCanvasObjectMode={() => 'replace'}
+          // Hoisted, identity-stable props — see the module-scope note.
+          nodeCanvasObjectMode={nodeCanvasObjectModeAll}
           nodePointerAreaPaint={nodePointerAreaPaint}
-          nodeVal={(node: GraphNode | ClusterNode) =>
-            isClusterNode(node) ? Math.max(5, node.articleCount) : Math.max(1, (node as GraphNode).embeddingCount)
-          }
-          linkColor={(link: { type?: string }) => EDGE_COLORS[link.type ?? 'embedding_similarity'] ?? 'rgba(255,255,255,0.1)'}
-          linkWidth={(link: { score?: number }) => Math.max(0.5, (link.score ?? 0.5) * 3)}
+          nodeVal={getNodeVal}
+          linkColor={linkColor}
+          linkWidth={getLinkWidth}
           linkDirectionalParticles={0}
           onNodeClick={handleNodeClick}
           onNodeHover={handleNodeHover}
@@ -616,8 +847,8 @@ export function GraphPage() {
         {hoveredNode && (
           <div
             className={cn(
-              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border/50',
-              'bg-card/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md',
+              'pointer-events-none fixed z-50 max-w-xs rounded-lg border border-border',
+              'nm-card-elevated px-3 py-2 text-xs',
               'max-h-64 overflow-y-auto',
             )}
             style={{
@@ -664,6 +895,17 @@ export function GraphPage() {
 interface ArticlePickerLandingProps {
   onPick: (pageId: string) => void;
   onShowFullGraph: () => void;
+  /**
+   * When set, no page visible to the caller has an embedding yet and this is
+   * the status endpoint's visible-page count — a WORKSPACE total, not a graph
+   * node count (the two predicates differ around standalone pages). Renders a
+   * notice above the picker naming the configuration gap. The picker stays
+   * fully operable underneath it: label, link and parent/child edges exist
+   * without embeddings, so local graphs and the full-graph escape hatch may
+   * still have content to show — replacing the picker with a dead-end empty
+   * state here would hide a renderable graph.
+   */
+  unembeddedWorkspacePages?: number;
 }
 
 /**
@@ -676,7 +918,7 @@ interface ArticlePickerLandingProps {
  * "Show full graph anyway" stays available as an opt-in escape hatch with a
  * warning so power users on small corpora aren't blocked.
  */
-function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingProps) {
+function ArticlePickerLanding({ onPick, onShowFullGraph, unembeddedWorkspacePages }: ArticlePickerLandingProps) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const { data, isLoading } = useSearch({ q: q.trim(), page: 1 });
@@ -690,6 +932,25 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="nm-card w-full max-w-xl p-6" data-testid="graph-picker-landing">
+        {/* Same treatment as the /ai zero-embeddings notice: amber is the
+            reserved attention colour, and a missing embedding provider is the
+            one genuinely attention-worthy state on this screen. Fresh copy on
+            purpose — the Settings wayfinding strings live in GraphEmptyState
+            and are owned elsewhere. */}
+        {unembeddedWorkspacePages !== undefined && (
+          <div
+            data-testid="graph-not-embedded-notice"
+            className="mb-4 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          >
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              Pages not embedded yet — none of the {unembeddedWorkspacePages}{' '}
+              pages you can access have embeddings, so similarity connections
+              are missing from the graph. Label, link and parent/child
+              connections can still appear.
+            </span>
+          </div>
+        )}
         <h2 className="mb-1 text-lg font-semibold">Pick a page to explore</h2>
         <p className="mb-4 text-sm text-muted-foreground">
           The knowledge graph is large — start from one page and expand from
@@ -704,7 +965,12 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages by title…"
-            className="w-full rounded-lg border border-border/40 bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
+            // A text field is operable, so its resting edge is the measured
+            // --color-border-interactive one (WCAG 1.4.11, forced-colors), not
+            // the app's structural rule. It was on the quiet token, which the
+            // 2026-08-31 softening pass took to 1.16:1 — under the floor and
+            // now visibly so.
+            className="w-full rounded-lg border border-border-interactive bg-foreground/5 py-2 pl-9 pr-3 text-sm outline-none focus:ring-1 focus:ring-primary"
             data-testid="graph-picker-input"
           />
         </div>
@@ -742,7 +1008,7 @@ function ArticlePickerLanding({ onPick, onShowFullGraph }: ArticlePickerLandingP
           </ul>
         )}
 
-        <div className="mt-5 border-t border-border/30 pt-4 text-xs text-muted-foreground">
+        <div className="mt-5 border-t border-border pt-4 text-xs text-muted-foreground">
           <p>
             Want to see everything anyway? The full graph can be slow on large
             knowledge bases.
@@ -771,7 +1037,7 @@ interface GraphEmptyStateProps {
  * Differentiated empty state for the knowledge graph. Picks a message based
  * on the meta counts so users know which step they're stuck at:
  *   - no spaces accessible (RBAC)            → check sync settings
- *   - no pages embedded yet                  → embed pages from Settings → LLM
+ *   - no pages embedded yet                  → embed pages from Settings → AI Models
  *   - embedded but no relationships computed → admin can press Recompute
  * Falls back to a generic message if meta is missing (older backend).
  */
@@ -802,12 +1068,12 @@ function GraphEmptyState({ meta }: GraphEmptyStateProps) {
     } else if (meta.pagesEmbedded === 0) {
       title = 'Pages not embedded yet';
       body =
-        'Pages exist but no embeddings have been generated. Configure an embedding provider in Settings → LLM, then run an embedding pass.';
+        'Pages exist but no embeddings have been generated. Configure an embedding provider in Settings → AI Models, then run an embedding pass.';
     } else if (meta.relationshipsTotal === 0) {
       title = 'Embedded — but no relationships computed yet';
       body = isAdmin
         ? 'Press Recompute below to build the relationship graph from current embeddings.'
-        : 'Ask an admin to recompute the relationship graph (Settings → Knowledge → Graph).';
+        : 'Ask an admin to recompute the relationship graph — admins see a Recompute control on this page.';
     }
   }
 
@@ -882,8 +1148,15 @@ export function GraphFilterSidebar({
   };
 
   return (
+    // overflow-y-auto because this aside is a cross-axis-stretched flex item:
+    // its height is the row's, not its content's, and #1218's min-h-0 chain
+    // clamps that row to the scrollport. Without it the label chips paint
+    // straight through the nm-card border onto the page background once the
+    // filter list outgrows the graph area — measured at 1440x560 as a 29px
+    // spill. Scrolling inside the card is the fix; growing the page is not,
+    // since the graph canvas beside it is sized to the same clamped row.
     <aside
-      className="nm-card w-60 shrink-0 space-y-4 p-4 text-xs"
+      className="nm-card w-60 shrink-0 space-y-4 overflow-y-auto p-4 text-xs"
       role="complementary"
       aria-label="Graph filters"
       data-testid="graph-filter-sidebar"

@@ -345,7 +345,7 @@ export async function getUserAccessibleSpacesMemoized(userId: string): Promise<s
   const scoped = getScopedSpaces(userId);
   if (scoped) return scoped;
   const spaces = await getUserAccessibleSpaces(userId);
-  setScopedSpaces(spaces);
+  setScopedSpaces(userId, spaces);
   return spaces;
 }
 
@@ -404,10 +404,108 @@ export async function userCanAccessPage(
     return aceCheck.rows.length > 0;
   }
 
-  // Space-level access check for confluence pages
+  // Space-level access check for confluence pages. Memoized variant (ADR-022):
+  // inside a request scope this is a synchronous read of the same snapshot the
+  // retrieval legs already resolved — which both removes a per-candidate
+  // Redis/DB round-trip from the RAG ACL post-filter (whose candidate count
+  // scales with the #1103 fetch width) and keeps one request's legs and
+  // post-filter reading one consistent space set. Falls back to the raw
+  // resolver outside a scope.
   if (!page.space_key) return false;
-  const accessibleSpaces = await getUserAccessibleSpaces(userId);
+  const accessibleSpaces = await getUserAccessibleSpacesMemoized(userId);
   return accessibleSpaces.includes(page.space_key);
+}
+
+/**
+ * Write ACL for a page — PUT /api/pages/:id predicates verbatim.
+ *
+ * Standalone: owner or `visibility = 'shared'`. **No `isSystemAdmin`
+ * short-circuit** — an admin who is not the owner cannot edit another user's
+ * private standalone page today, and collab must not start allowing it.
+ * Confluence: `space_key` ∈ `getUserAccessibleSpaces` (admins already union
+ * every known space). Missing `space_key` is allowed, matching PUT.
+ */
+export async function userCanEditPage(
+  userId: string,
+  pageId: number,
+): Promise<boolean> {
+  const pageResult = await query<{
+    source: string;
+    created_by_user_id: string | null;
+    visibility: string | null;
+    space_key: string | null;
+    deleted_at: Date | null;
+  }>(
+    `SELECT source, created_by_user_id, visibility, space_key, deleted_at
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  if (pageResult.rows.length === 0) return false;
+  const page = pageResult.rows[0]!;
+  if (page.deleted_at) return false;
+
+  if (page.source === 'standalone') {
+    return page.created_by_user_id === userId || page.visibility === 'shared';
+  }
+
+  if (page.space_key) {
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    return accessibleSpaces.includes(page.space_key);
+  }
+  return true;
+}
+
+/**
+ * Batched {@link userCanAccessPage} (#1104): the RAG ACL post-filter walks a
+ * candidate pool that scaled from ~15 to up to 100 pages (the rerank
+ * candidate pool), and N sequential per-page checks at 1-3 queries each were
+ * the cost ADR-023's amendment flagged as "required work for the PR that
+ * actually raises the width". One admin probe + one space resolve + ONE
+ * set-based query replaces up to 3N round-trips.
+ *
+ * Semantics MUST stay bit-identical to {@link userCanAccessPage} — the
+ * per-page function is the specification, and an integration test compares
+ * the two verdict-for-verdict across every fixture shape (admin bypass,
+ * standalone shared/private/foreign, inherit_perms space check including the
+ * NULL space_key case, per-page ACE by user and by group, deleted and
+ * missing pages). Change one, change both.
+ */
+export async function filterAccessiblePages(
+  userId: string,
+  pageIds: number[],
+): Promise<Set<number>> {
+  if (pageIds.length === 0) return new Set();
+  if (await isSystemAdmin(userId)) return new Set(pageIds);
+  const accessibleSpaces = await getUserAccessibleSpacesMemoized(userId);
+  // $2 is the userId in TEXT contexts (ACE principal_id), $4 the same value
+  // in UUID contexts — one parameter cannot carry both inferred types in a
+  // single statement (`operator does not exist: text = uuid`).
+  const result = await query<{ id: number }>(
+    `SELECT p.id FROM pages p
+     WHERE p.id = ANY($1::int[])
+       AND p.deleted_at IS NULL
+       AND (
+         (p.source = 'standalone' AND (
+           p.visibility = 'shared'
+           OR (p.visibility = 'private' AND p.created_by_user_id = $4::uuid)
+         ))
+         OR (p.source <> 'standalone' AND p.inherit_perms
+             AND p.space_key = ANY($3::text[]))
+         OR (p.source <> 'standalone' AND NOT p.inherit_perms AND EXISTS (
+           SELECT 1 FROM access_control_entries ace
+           WHERE ace.resource_type = 'page' AND ace.resource_id = p.id
+             AND (
+               (ace.principal_type = 'user' AND ace.principal_id = $2)
+               OR (ace.principal_type = 'group' AND ace.principal_id ~ '^\\d+$'
+                   AND ace.principal_id::INTEGER IN (
+                 SELECT group_id FROM group_memberships WHERE user_id = $4::uuid
+               ))
+             )
+         ))
+       )`,
+    [pageIds, userId, accessibleSpaces, userId],
+  );
+  return new Set(result.rows.map((r) => r.id));
 }
 
 /**

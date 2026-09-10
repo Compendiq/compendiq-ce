@@ -7,6 +7,7 @@ import {
   getAttachmentImageSource,
   getLocalFilenameForImageSource,
 } from './image-references.js';
+import { logger } from '../utils/logger.js';
 
 // SECURITY: All innerHTML usage below is in server-side JSDOM context (Node.js),
 // NOT browser DOM. JSDOM is used purely as an HTML parser/transformer for
@@ -39,7 +40,27 @@ function stripCdata(xhtml: string): string {
 // meant to contain children (ri:user, ri:page, ri:attachment, ri:url,
 // ac:emoticon). This is narrow and surgical — it does not touch container
 // elements like ac:structured-macro, ac:rich-text-body, ac:link, etc.
-const SELF_CLOSING_XHTML_TAGS = ['ri:user', 'ri:page', 'ri:attachment', 'ri:url', 'ac:emoticon'];
+//
+// `ac:parameter` is the one entry that CAN legitimately hold children (the
+// `<ac:parameter><ri:page/></ac:parameter>` that include / excerpt-include
+// use), and it is in the list anyway (#1222 review) because a *value-less*
+// parameter is empty, so an XML serializer may normalise it to `<ac:parameter
+// ac:name="subtle"/>`. Unexpanded, that element swallows every following
+// parameter AND the ac:rich-text-body as its own children: the macro's
+// remaining parameters became grandchildren (invisible to a direct-child
+// lookup) and an empty `title` parameter absorbed the body, titling the section
+// with its own opening prose. A parameter that really does carry content is
+// never written self-closing, so the rewrite cannot reach it. Expanding the tag
+// is what lets the rest of this file treat "parameter" and "direct
+// ac:parameter child" as the same thing.
+const SELF_CLOSING_XHTML_TAGS = [
+  'ri:user',
+  'ri:page',
+  'ri:attachment',
+  'ri:url',
+  'ac:emoticon',
+  'ac:parameter',
+];
 
 function expandSelfClosingXhtmlTags(xhtml: string): string {
   let out = xhtml;
@@ -64,10 +85,40 @@ function getMacroName(el: Element): string {
   return el.getAttribute('ac:name') ?? el.getAttribute('data-macro-name') ?? '';
 }
 
+/**
+ * Read one named parameter from a macro's DIRECT ac:parameter children (#1222).
+ *
+ * `ac:parameter` is a direct child of `ac:structured-macro` by storage-format
+ * schema, so scoping the lookup loses nothing legitimate — but that guarantee
+ * reaches the parsed DOM only because the tag is expanded out of self-closing
+ * form first (SELF_CLOSING_XHTML_TAGS above). Unexpanded, one value-less
+ * parameter makes every parameter after it a grandchild, invisible here.
+ *
+ * A descendant search (what this did before) let a macro read the first match
+ * anywhere in its subtree — a NESTED macro's parameter — and the reverse pass
+ * then persisted that value onto the outer macro as a parameter the Confluence
+ * page never had. Nothing limits that to the handlers that render a body: any
+ * macro whose source element contains another macro can be the victim, and
+ * storage XHTML is API-writable, so the nesting is reachable even where
+ * Confluence's own editor would not produce it. Every name resolved through
+ * this helper is exposed — `title`, `language`, `colour`, `border`, `width`,
+ * `key`, `diagramName`, `upload`/`old`, `depth`, `max`, `maxLevel`. Thefts
+ * verified on dev: an untitled `expand` took a nested expand's `title`, or a
+ * nested `status` badge's; `section` took a nested macro's `border`; `column`
+ * took its `width`, which also landed in an inline flex style. Which macros
+ * could donate a value was an accident of handler order, not a rule — a nested
+ * `code` macro is already replaced by the time the expand branch looks, a
+ * nested `status` macro is not.
+ *
+ * Keeps `textContent` semantics — an element-valued parameter contributes its
+ * text — which is what separates this from `collectDirectTextParams` below,
+ * where such a parameter is skipped instead.
+ */
 function getParamValue(macro: Element, name: string): string | null {
-  for (const param of byTag(macro as unknown as Element, 'ac:parameter')) {
-    if (param.getAttribute('ac:name') === name) {
-      return param.textContent;
+  for (const child of [...macro.children]) {
+    if (child.tagName.toLowerCase() !== 'ac:parameter') continue;
+    if (child.getAttribute('ac:name') === name) {
+      return child.textContent;
     }
   }
   return null;
@@ -95,6 +146,86 @@ function collectDirectTextParams(macro: Element): Record<string, string> {
 }
 
 /**
+ * Macros that map onto `<details>` (#1129).
+ *
+ * `ui-expand` is Refined's "UI Expand" from the Refined Macro Toolkit — a
+ * different macro from Atlassian's native `expand`, not a rename. Verified
+ * against a Confluence DC 9.2.19 instance with the app installed: the key is
+ * bare `ui-expand` (the `rw-ui-expands-macro` / `rw-expand` spellings in
+ * Refined's own docs are their Cloud renderer's internals and never appear in
+ * DC storage format), and the element shape is identical to the native macro —
+ * a `title` parameter plus `ac:rich-text-body`, flat siblings rather than a
+ * container macro. Which one produced a given `<details>` is carried on
+ * `data-macro-name` (#1211) so write-back never coerces one into the other.
+ */
+const EXPAND_MACRO_NAMES = new Set(['expand', 'ui-expand']);
+
+/**
+ * …and of those, the ones with a default-open parameter (#1129). Only Refined's
+ * macro has one; emitting `expanded` on a native `expand` would invent a
+ * parameter Atlassian's macro does not define, on a page that never had it.
+ * Membership also decides which macros treat the `open` attribute as the single
+ * source of truth for that state, so the forward and reverse passes stay
+ * symmetric: a name outside this set keeps any `expanded` parameter verbatim in
+ * `data-macro-params` instead.
+ */
+const EXPANDED_PARAM_MACROS = new Set(['ui-expand']);
+
+function countRawStructuredMacros(root: Element | DocumentFragment): number {
+  let count = 0;
+  const pending: Array<Element | DocumentFragment> = [root];
+
+  while (pending.length > 0) {
+    const parent = pending.pop()!;
+    for (const child of parent.children) {
+      const tagName = child.tagName.toLowerCase();
+      if (tagName === 'ac:structured-macro') count += 1;
+
+      // Template descendants live in a separate DocumentFragment and are not
+      // returned by getElementsByTagName. Inspect that fragment explicitly
+      // without relying on JSDOM's broken escaped-colon selectors.
+      pending.push(
+        tagName === 'template'
+          ? (child as HTMLTemplateElement).content
+          : child,
+      );
+    }
+  }
+
+  return count;
+}
+
+const PANEL_MACRO_NAMES: Record<string, true> = {
+  panel: true,
+  info: true,
+  warning: true,
+  note: true,
+  tip: true,
+};
+
+// Keep this registry in lockstep with the dedicated structured-macro handlers
+// below. It is not a long-tail inventory: it only prevents a fresh clone of a
+// supported macro from being prematurely downgraded by the catch-all.
+const DEDICATED_MACRO_NAMES: Record<string, true> = {
+  code: true,
+  ...PANEL_MACRO_NAMES,
+  expand: true,
+  'ui-expand': true,
+  drawio: true,
+  status: true,
+  toc: true,
+  jira: true,
+  include: true,
+  'excerpt-include': true,
+  column: true,
+  section: true,
+  children: true,
+  'ui-children': true,
+  attachments: true,
+  labels: true,
+};
+
+/**
  * Transfer innerHTML from a source element to a target element.
  * Server-side JSDOM only — used for Confluence macro conversion.
  */
@@ -103,14 +234,66 @@ function transferInnerHtml(target: Element, source: Element | undefined | null, 
   target.innerHTML = source?.innerHTML ?? fallback;
 }
 
+function appendSerializedMacroParams(macro: Element, rawParams: string | null): void {
+  if (!rawParams) return;
+  try {
+    const params = JSON.parse(rawParams) as Record<string, unknown>;
+    for (const [paramName, paramValue] of Object.entries(params)) {
+      if (typeof paramValue !== 'string') continue;
+      const parameter = macro.ownerDocument.createElement('ac:parameter');
+      parameter.setAttribute('ac:name', paramName);
+      parameter.textContent = paramValue;
+      macro.appendChild(parameter);
+    }
+  } catch {
+    // A malformed data attribute must not prevent the macro itself from
+    // surviving write-back. Its body and identity remain lossless.
+  }
+}
+
+interface ConfluenceConversionPass {
+  html: string;
+  macrosBefore: number;
+  macrosAfter: number;
+}
+
 /**
- * Converts Confluence storage format (XHTML) to clean HTML for TipTap editor.
- * Handles common Confluence macros: code blocks, task lists, panels, links, images, draw.io.
+ * Convert repeated static-snapshot passes until every structured macro has a
+ * concrete HTML representation. Replacing an outer macro reparses its body and
+ * can clone raw nested macros after their handler's snapshot has gone stale.
+ *
+ * Each successful pass removes at least one outer wrapper while preserving its
+ * descendants, so the raw macro count must strictly decrease. Refuse to return
+ * partial HTML if that invariant ever fails: the loop is bounded by the input
+ * macro count and a malformed/unhandled shape is never silently discarded.
  */
 export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey?: string): string {
+  let input = storageXhtml;
+  while (true) {
+    const pass = confluenceToHtmlPass(input, pageId, spaceKey);
+    if (pass.macrosAfter === 0) return pass.html;
+    if (pass.macrosAfter >= pass.macrosBefore) {
+      throw new Error(
+        `Confluence macro conversion made no progress (${pass.macrosBefore} raw macros remain)`,
+      );
+    }
+    input = pass.html;
+  }
+}
+
+/**
+ * Run one static-snapshot conversion pass.
+ */
+function confluenceToHtmlPass(
+  storageXhtml: string,
+  pageId?: string,
+  spaceKey?: string,
+): ConfluenceConversionPass {
   const preprocessed = expandSelfClosingXhtmlTags(stripCdata(storageXhtml));
   const dom = new JSDOM(`<body>${preprocessed}</body>`, { contentType: 'text/html' });
   const doc = dom.window.document;
+  const macrosAtPassStart = new Set(byTag(doc, 'ac:structured-macro'));
+  const macrosBefore = countRawStructuredMacros(doc.body);
 
   // Process code blocks: ac:structured-macro[name=code] -> <pre><code>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
@@ -147,27 +330,79 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     taskList.replaceWith(ul);
   }
 
-  // Process panels: ac:structured-macro[name=info|warning|note|tip] -> <div class="panel-*">
-  const panelTypes = new Set(['info', 'warning', 'note', 'tip']);
+  // Process panels: native `panel` uses the existing info panel node for
+  // display, but carries its original identity and arbitrary text parameters
+  // so editor/write-back never coerces it permanently to `info` (#1438).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro);
-    if (!panelTypes.has(name)) continue;
+    if (!Object.hasOwn(PANEL_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
     const div = doc.createElement('div');
-    div.className = `panel-${name}`;
+    div.className = `panel-${name === 'panel' ? 'info' : name}`;
+    if (name === 'panel') {
+      div.setAttribute('data-macro-name', name);
+      const params = collectDirectTextParams(macro);
+      if (Object.keys(params).length > 0) {
+        div.setAttribute('data-macro-params', JSON.stringify(params));
+      }
+    }
     transferInnerHtml(div, bodyEl);
     macro.replaceWith(div);
   }
 
-  // Process expand macros: ac:structured-macro[name=expand] -> <details>
+  // Process expand macros: ac:structured-macro[name=expand|ui-expand] -> <details>
   for (const macro of byTag(doc, 'ac:structured-macro')) {
-    if (getMacroName(macro) !== 'expand') continue;
-    const title = getParamValue(macro, 'title') ?? 'Click to expand';
+    const macroName = getMacroName(macro);
+    if (!EXPAND_MACRO_NAMES.has(macroName)) continue;
+    // #1227: no `?? 'Click to expand'` default. Substituting one made absence
+    // unrepresentable at the very first hop, and the reverse pass — which has
+    // only the summary to go on — then wrote the substituted label back as a
+    // real `title` parameter onto a customer page that never had one.
+    // getParamValue returns the parameter's textContent, so the three storage
+    // states arrive here already distinct: `null` (no parameter), `''`
+    // (`<ac:parameter ac:name="title"/>`, a real empty title #1232 preserves)
+    // and a string.
+    const title = getParamValue(macro, 'title');
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const details = doc.createElement('details');
+    // #1211: stamp which macro produced this <details> so the reverse pass can
+    // write back the right ac:name — since #1129 two macros map to this
+    // element. Parameters other than `title` are persisted the same way the
+    // #865 unknown-macro net does; `title` stays in <summary> only — one
+    // source of truth per value, and the reverse pass rebuilds the parameter
+    // from there.
+    details.setAttribute('data-macro-name', macroName);
+    const extraParams = collectDirectTextParams(macro);
+    // …with one exception (#1227): an EMPTY title has no home in the summary,
+    // because a blank summary is also what an absent title looks like. Keep
+    // that one key so the two stay distinguishable; every non-empty title is
+    // still deleted here and rebuilt from the summary, so a typed title never
+    // has two homes to disagree.
+    if (extraParams.title !== '') delete extraParams.title;
+    // #1129: `expanded` gets the same one-value-one-home treatment as `title`.
+    // It is read from the direct-children map because it has to be deleted from
+    // that map anyway. The two sources are not interchangeable even now that
+    // both are scoped to direct children (#1222): collectDirectTextParams skips
+    // an unnamed or element-valued parameter, getParamValue reads its text.
+    // Read `=== 'true'` rather than testing for presence: Confluence DC omits
+    // the parameter entirely on a collapsed section and no `false` spelling was
+    // observed, so presence-testing would misread a hand-authored
+    // `expanded=false` as open.
+    if (EXPANDED_PARAM_MACROS.has(macroName)) {
+      if (extraParams.expanded === 'true') details.setAttribute('open', '');
+      delete extraParams.expanded;
+    }
+    if (Object.keys(extraParams).length > 0) {
+      details.setAttribute('data-macro-params', JSON.stringify(extraParams));
+    }
+    // The <summary> is appended unconditionally even when it is empty. The
+    // TipTap `Details` node declares `content: 'detailsSummary block*'`, so a
+    // summary-less <details> cannot parse as written: the body is lifted out
+    // and left as a sibling of an emptied section, in the read view as much as
+    // the editor. Every <details> this codebase produces carries a <summary>.
     const summary = doc.createElement('summary');
-    summary.textContent = title;
+    summary.textContent = title ?? '';
     details.appendChild(summary);
     if (bodyEl) {
       // Move children directly to avoid nesting extra <div> on each round-trip
@@ -412,7 +647,7 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   }
 
   // Process children / ui-children display macro -> placeholder div, preserving all params
-  const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
+  const childrenParamNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns'];
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const macroName = getMacroName(macro);
     if (macroName !== 'children' && macroName !== 'ui-children') continue;
@@ -492,6 +727,10 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
   // fixed for ALL unhandled macros (excerpt, anchor, gallery, chart, …) (#865).
   for (const macro of byTag(doc, 'ac:structured-macro')) {
     const name = getMacroName(macro) || 'unknown';
+    // Replacement reparses an outer body into fresh nodes. A fresh supported
+    // clone must remain raw for its next dedicated pass; a fresh unknown clone
+    // can safely take the lossless long-tail fallback immediately.
+    if (!macrosAtPassStart.has(macro) && Object.hasOwn(DEDICATED_MACRO_NAMES, name)) continue;
     const bodyEl = byTag(macro, 'ac:rich-text-body')[0];
 
     const div = doc.createElement('div');
@@ -528,7 +767,9 @@ export function confluenceToHtml(storageXhtml: string, pageId?: string, spaceKey
     el.remove();
   }
 
-  return doc.body.innerHTML;
+  const html = doc.body.innerHTML;
+  const macrosAfter = countRawStructuredMacros(doc.body);
+  return { html, macrosBefore, macrosAfter };
 }
 
 /**
@@ -569,8 +810,31 @@ export function htmlToConfluence(html: string): string {
     pre.replaceWith(macro);
   }
 
-  // Convert task lists back
-  for (const ul of doc.querySelectorAll('ul[data-type="taskList"]')) {
+  // Convert task lists back — innermost-first (#1220). Every macro body below
+  // is rebuilt by re-parsing the element's innerHTML (transferInnerHtml), which
+  // produces FRESH nodes, while the querySelectorAll snapshot driving the loop
+  // is static: converting an outer placeholder before a nested one of the same
+  // class leaves the inner element behind in the discarded original subtree
+  // (still in the snapshot, no longer in the document) while its live clone in
+  // the new body was never in the snapshot at all. querySelectorAll returns
+  // document order (outer before inner), so iterating it reversed converts each
+  // inner element in place first and the outer's later re-parse copies an
+  // already-converted, inert ac: element. Same fix shape as the <details> loop
+  // below (#1216); see it for the reachability argument.
+  //
+  // Task lists corrupt rather than leak: the inner li query below is unscoped,
+  // so an outer-first pass ALSO matched the nested items and hoisted them into
+  // sibling ac:task elements — the subtask shipped twice, once as a literal
+  // <ul> inside the outer task body and once as a sibling. Innermost-first the
+  // nested <ul> is already an ac:task-list by the time the outer runs, so the
+  // query no longer finds its items. The producer is the EDITOR, not the sync:
+  // TipTap's TaskItem runs `nested: true` (Editor.tsx, ArticleViewer.tsx), so
+  // Tab on a task creates exactly this HTML — which is what makes it the most
+  // reachable shape of the set. A subtask coming *from* Confluence never
+  // arrives here in this shape: the forward pass has the mirror-image
+  // stale-snapshot bug and hands over an already-duplicated list (pre-existing,
+  // unchanged by #1220, out of its scope).
+  for (const ul of [...doc.querySelectorAll('ul[data-type="taskList"]')].reverse()) {
     const taskList = doc.createElement('ac:task-list');
 
     for (const li of ul.querySelectorAll('li[data-type="taskItem"]')) {
@@ -591,11 +855,22 @@ export function htmlToConfluence(html: string): string {
     ul.replaceWith(taskList);
   }
 
-  // Convert panels back
+  // Convert panels back — innermost-first (#1220), per the stale-snapshot
+  // reasoning on the task-list loop above; panel-in-panel is schema-legal in
+  // the editor and reachable from improve-apply, which feeds model-produced
+  // HTML through here with no tag allow-list. Cross-TYPE nesting (an info panel
+  // around a warning one) has a second, independent guarantee: each type takes
+  // its OWN fresh snapshot after the previous type's re-parses, so a clone an
+  // earlier type created is still found by a later one. Collapsing the four
+  // selectors into one (`.panel-info, .panel-warning, …`, deriving the type per
+  // element) removes that guarantee and leaves this reversal as the only thing
+  // keeping cross-type nesting intact — hence the regression pins in the tests.
   for (const panelType of ['info', 'warning', 'note', 'tip']) {
-    for (const div of doc.querySelectorAll(`.panel-${panelType}`)) {
+    for (const div of [...doc.querySelectorAll(`.panel-${panelType}`)].reverse()) {
       const macro = doc.createElement('ac:structured-macro');
-      macro.setAttribute('ac:name', panelType);
+      const macroName = div.getAttribute('data-macro-name') || panelType;
+      macro.setAttribute('ac:name', macroName);
+      appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'));
       const body = doc.createElement('ac:rich-text-body');
       transferInnerHtml(body, div);
       macro.appendChild(body);
@@ -603,18 +878,115 @@ export function htmlToConfluence(html: string): string {
     }
   }
 
-  // Convert expand sections back
-  for (const details of doc.querySelectorAll('details')) {
-    const summary = details.querySelector('summary');
+  // Convert expand sections back — innermost-first. The snapshot below is
+  // static while each macro body is rebuilt by re-parsing the element's
+  // innerHTML (transferInnerHtml), so converting an outer <details> before a
+  // nested one would copy the still-raw inner element into the new body — a
+  // copy the snapshot never visits — and ship a literal HTML5 <details> to
+  // Confluence inside the storage XHTML. querySelectorAll returns document
+  // order (outer before inner), so iterating it reversed converts each inner
+  // section in place first; the outer's later re-parse then copies an
+  // already-converted, inert ac:structured-macro. Confluence supports
+  // expand-inside-expand natively, so this nesting is reachable from sync.
+  for (const details of [...doc.querySelectorAll('details')].reverse()) {
+    // Direct child only: an unscoped querySelector('summary') would let a
+    // summary-less outer section steal (and delete) a nested section's
+    // summary as its own title.
+    const summary = [...details.children].find(
+      (el) => el.tagName.toLowerCase() === 'summary',
+    );
     const macro = doc.createElement('ac:structured-macro');
-    macro.setAttribute('ac:name', 'expand');
+    // #1211: carry the macro identity the forward pass stamped. Absent →
+    // `expand` is safe: the native expand branch was the only producer of a
+    // <details> when the stamp was introduced (so every stored body_html
+    // predating it genuinely is one), and editor-created sections carry no attribute
+    // either. An unrecognised value is passed through, never coerced —
+    // coercion is precisely the silent-rewrite bug this exists to prevent,
+    // and passthrough grants nothing new: the #865 unknown-macro net already
+    // round-trips arbitrary data-macro-name values.
+    const macroName = details.getAttribute('data-macro-name') || 'expand';
+    macro.setAttribute('ac:name', macroName);
 
-    if (summary) {
+    // #1227: decide on the summary's TEXT, not on the summary's existence.
+    // The forward pass now emits an empty <summary> for an untitled section
+    // (it must emit one — see the schema note there), so "there is a summary"
+    // no longer means "there is a title", and treating it as one fabricated a
+    // `title` parameter on every untitled section that made the round-trip.
+    // Trimmed, so a whitespace-only summary counts as untitled; the parameter
+    // carries the UNtrimmed text, since a real title's own spacing is the
+    // user's.
+    const summaryText = summary?.textContent ?? '';
+    const hasTitle = summaryText.trim() !== '';
+    if (hasTitle) {
       const param = doc.createElement('ac:parameter');
       param.setAttribute('ac:name', 'title');
-      param.textContent = summary.textContent ?? '';
+      param.textContent = summaryText;
       macro.appendChild(param);
-      summary.remove();
+    }
+    // Removal is unconditional wherever a summary exists: <summary> is an
+    // HTML5 element with no place in Confluence storage format, whether or not
+    // it carried a title.
+    summary?.remove();
+
+    // #1129: rebuild the default-open parameter from the `open` attribute, its
+    // single source of truth (the forward pass consumed the parameter into it).
+    // Emitted only when open: Confluence DC omits `expanded` entirely on a
+    // collapsed section rather than writing `expanded=false`, so emitting one
+    // would hand every collapsed section a parameter it never had. Macros
+    // outside EXPANDED_PARAM_MACROS get nothing — the editor forces every
+    // <details> open in edit mode and its summary click handler writes the
+    // attribute, so `open` on a native expand is reachable and must stay inert.
+    if (EXPANDED_PARAM_MACROS.has(macroName) && details.hasAttribute('open')) {
+      const param = doc.createElement('ac:parameter');
+      param.setAttribute('ac:name', 'expanded');
+      param.textContent = 'true';
+      macro.appendChild(param);
+    }
+
+    // Any <summary> still in the subtree (wrapped in another element, or a
+    // second sibling) is not this section's title per the direct-child rule
+    // above — but it must not ship to Confluence as a literal HTML5 element
+    // either. Improve-apply feeds model-produced markdown through this
+    // function with no tag allow-list, so the shape is reachable without the
+    // editor. Unwrap it: the text belongs to the body, only the tag is
+    // invalid. Nested sections' summaries are already gone here — the loop
+    // runs innermost-first, so they were consumed by their own iteration.
+    for (const stray of details.querySelectorAll('summary')) {
+      stray.replaceWith(...stray.childNodes);
+    }
+
+    // Re-emit parameters persisted by the forward pass (mirrors the
+    // unknown-macro handler below). A `title` key is skipped when the summary
+    // provided the parameter above — the summary is its source of truth. So is
+    // an `expanded` key on a macro that keeps that state in `open` (#1129): the
+    // forward pass never writes one, but a stale copy from hand-edited or
+    // pre-#1129 HTML must not resurrect a section the user has since closed.
+    //
+    // #1227: the `title` key is consulted EXACTLY when the summary is blank —
+    // which is why this is not the marker-attribute approach the issue rejected.
+    // There, a declared attribute survived a text edit verbatim and discarded
+    // the title the user had just typed; here the user's own text always wins,
+    // and the marker is unreachable while any is present. And it is honoured
+    // only for `''`, the one value the summary cannot carry: a stale non-empty
+    // `title` in the map — hand-edited or legacy HTML — must not resurrect a
+    // title the user has just cleared.
+    const rawParams = details.getAttribute('data-macro-params');
+    if (rawParams) {
+      try {
+        const params = JSON.parse(rawParams) as Record<string, unknown>;
+        for (const [paramName, paramValue] of Object.entries(params)) {
+          if (typeof paramValue !== 'string') continue;
+          if (paramName === 'title' && (hasTitle || paramValue !== '')) continue;
+          if (paramName === 'expanded' && EXPANDED_PARAM_MACROS.has(macroName)) continue;
+          const p = doc.createElement('ac:parameter');
+          p.setAttribute('ac:name', paramName);
+          p.textContent = paramValue;
+          macro.appendChild(p);
+        }
+      } catch {
+        // Malformed params attribute — preserve the macro without them rather
+        // than fail the whole write-back.
+      }
     }
 
     const body = doc.createElement('ac:rich-text-body');
@@ -623,8 +995,14 @@ export function htmlToConfluence(html: string): string {
     details.replaceWith(macro);
   }
 
-  // Convert section divs back to ac:structured-macro[name=section] (outside-in: sections before columns)
-  for (const div of doc.querySelectorAll('div.confluence-section')) {
+  // Convert section divs back to ac:structured-macro[name=section] (sections
+  // before columns), each snapshot innermost-first (#1220) per the stale-snapshot
+  // reasoning on the task-list loop above. BOTH this loop and the columns loop
+  // below must be reversed: `section > column > section > column` (schema-legal
+  // in the editor) leaks the whole inner subtree if either one still runs
+  // outside-in, because the outer section's re-parse clones the outer column,
+  // which an outside-in columns loop then clones again.
+  for (const div of [...doc.querySelectorAll('div.confluence-section')].reverse()) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'section');
     const border = div.getAttribute('data-border');
@@ -640,8 +1018,10 @@ export function htmlToConfluence(html: string): string {
     div.replaceWith(macro);
   }
 
-  // Convert column divs back to ac:structured-macro[name=column] (inside sections)
-  for (const div of doc.querySelectorAll('div.confluence-column')) {
+  // Convert column divs back to ac:structured-macro[name=column] (inside
+  // sections), innermost-first (#1220) — the second half of the pair described
+  // on the sections loop above.
+  for (const div of [...doc.querySelectorAll('div.confluence-column')].reverse()) {
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', 'column');
     // Prefer data-cell-width; fall back to extracting width from inline style
@@ -664,7 +1044,7 @@ export function htmlToConfluence(html: string): string {
   }
 
   // Convert children / ui-children macro placeholders back to ac:structured-macro
-  const childrenRoundTripParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType'];
+  const childrenRoundTripParams = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns'];
   for (const div of doc.querySelectorAll('div.confluence-children-macro')) {
     const macro = doc.createElement('ac:structured-macro');
     const originalName = div.getAttribute('data-macro-name') || 'children';
@@ -728,28 +1108,20 @@ export function htmlToConfluence(html: string): string {
   // Convert unknown-macro placeholders back to their original
   // ac:structured-macro (#865) so write-back doesn't permanently delete the
   // macro from the Confluence page. Mirrors the #765 labels handler above.
-  for (const div of doc.querySelectorAll('div.confluence-macro-unknown')) {
+  //
+  // Innermost-first (#1220) per the stale-snapshot reasoning on the task-list
+  // loop — the shape this matters most for, since a third-party macro whose
+  // rich-text body holds another unrecognised macro is ordinary Confluence
+  // content. Reverse order also feeds the isPlaceholderOnly check below a
+  // truer reading: a nested macro is an inert ac: element by then, contributing
+  // no text, where outside-in an outer macro containing only a body-less nested
+  // one of the same name read as placeholder-only and dropped it entirely.
+  for (const div of [...doc.querySelectorAll('div.confluence-macro-unknown')].reverse()) {
     const name = div.getAttribute('data-macro-name') || 'unknown';
     const macro = doc.createElement('ac:structured-macro');
     macro.setAttribute('ac:name', name);
 
-    // Rebuild parameters persisted generically on the forward pass.
-    const rawParams = div.getAttribute('data-macro-params');
-    if (rawParams) {
-      try {
-        const params = JSON.parse(rawParams) as Record<string, unknown>;
-        for (const [paramName, paramValue] of Object.entries(params)) {
-          if (typeof paramValue !== 'string') continue;
-          const p = doc.createElement('ac:parameter');
-          p.setAttribute('ac:name', paramName);
-          p.textContent = paramValue;
-          macro.appendChild(p);
-        }
-      } catch {
-        // Malformed params attribute — preserve the macro without them rather
-        // than fail the whole write-back.
-      }
-    }
+    appendSerializedMacroParams(macro, div.getAttribute('data-macro-params'));
 
     // Restore the rich-text-body. The forward pass only writes the
     // `[Confluence macro: {name}]` placeholder (see the fallback in the
@@ -878,6 +1250,10 @@ export function htmlToConfluence(html: string): string {
 
   // Convert layout divs back to ac:layout / ac:layout-section / ac:layout-cell
   // Process outside-in: layout wrapper first, then sections, then cells.
+  // Deliberately NOT innermost-first like the loops above (#1220): these MOVE
+  // the existing child nodes (`while (div.firstChild)`) instead of re-parsing
+  // innerHTML, so a nested placeholder is carried over as the very node the
+  // snapshot holds and stays reachable. No stale-snapshot exposure to fix here.
   for (const div of doc.querySelectorAll('div.confluence-layout')) {
     const layout = doc.createElement('ac:layout');
     while (div.firstChild) layout.appendChild(div.firstChild);
@@ -995,6 +1371,8 @@ const MEDIA_TOKEN_PREFIX = 'CQ_MEDIA_PLACEHOLDER_';
 // LAYOUT_TOKEN_* below) so the inner content stays improvable. The labels
 // macro placeholder IS opaque — it is atomic (no prose inside) so the token
 // pattern fits it exactly.
+const NATIVE_PANEL_SELECTOR = 'div.panel-info[data-macro-name="panel"]';
+
 const MEDIA_SELECTOR = [
   'img',
   'div.confluence-drawio',
@@ -1006,6 +1384,10 @@ const MEDIA_SELECTOR = [
   // would then rebuild nothing from). Inner prose becomes non-improvable —
   // the same preserve-over-improve tradeoff already accepted for labels/drawio.
   'div.confluence-macro-unknown',
+  // #1438: a native panel reuses the visual info-panel node, but its macro
+  // identity and arbitrary parameters have no Markdown representation.
+  // Freeze the whole node so Improve cannot coerce it to an `info` macro.
+  NATIVE_PANEL_SELECTOR,
   // #901: freeze atomic macro placeholders — toc / children / attachments /
   // include (block) and jira / status / user-mention (inline). Like labels and
   // unknown-macro they carry NO LLM-editable prose (only a synthetic visible
@@ -1021,6 +1403,14 @@ const MEDIA_SELECTOR = [
   'span.confluence-jira-issue',
   'span.confluence-status',
   'span.confluence-user-mention',
+  // #1221: expand sections. Stage 1 froze every `<details>` here — `details`
+  // has no turndown rule, so the Improve round-trip flattened the section into
+  // bare paragraphs, the #1211 `data-macro-name` stamp was lost, and
+  // htmlToConfluence rebuilt no macro at all, permanently deleting it from the
+  // Confluence page on apply. Stage 2 keeps that freeze only where a boundary
+  // token cannot survive (see isFrozenExpand); everywhere else the section
+  // round-trips as [[[EXPAND …]]] tokens and its body stays improvable.
+  'details',
 ].join(',');
 
 // #765 review follow-up: legacy section/column wrappers nested inside
@@ -1043,6 +1433,256 @@ function isFrozenLegacyWrapper(el: Element): boolean {
   return isLegacyWrapper(el) && el.parentElement?.closest(CONSTRAINED_ANCESTOR_SELECTOR) != null;
 }
 
+const EXPAND_SELECTOR = 'details';
+
+function isExpandSection(el: Element): boolean {
+  return el.nodeName === 'DETAILS';
+}
+
+function isConstrainedPosition(el: Element): boolean {
+  return el.parentElement?.closest(CONSTRAINED_ANCESTOR_SELECTOR) != null;
+}
+
+/** Subtrees that travel as one opaque media token, so they emit no tokens. */
+const OPAQUE_SUBTREE_SELECTOR = [
+  'div.confluence-drawio',
+  'div.confluence-mermaid',
+  'div.mermaid',
+  'div.confluence-macro-unknown',
+  NATIVE_PANEL_SELECTOR,
+].join(',');
+
+/** Layout-token kinds enclosing `el`, outermost first — the open-time stack. */
+function enclosingLayoutKinds(el: Element): string[] {
+  const stack: string[] = [];
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const wrapper = layoutWrapperKind(p);
+    if (wrapper) stack.unshift(wrapper.kind);
+  }
+  return stack;
+}
+
+/**
+ * Would this expand, and everything it contains, produce a token sequence
+ * `rebuildLayoutStructure` accepts?
+ *
+ * #1221 review. The first cut of this guard hand-listed the wrapper classes
+ * known to be invalid inside an expand, and missed `div.confluence-column` —
+ * Confluence's Column macro is not schema-bound to Section, so `expand >
+ * column` is real content, and it emits `[[[EXPAND]]] [[[COLUMN]]]` which
+ * layoutOpenAllowed rejects (a COLUMN may only open inside a SECTION). The
+ * rebuild's all-or-nothing drop-guard then stripped EVERY token and the macro
+ * was deleted from the page — on a model echo with zero mangling. The mirror
+ * case, an expand sitting directly inside `div.confluence-layout` (where an
+ * EXPAND may not open), failed the same way.
+ *
+ * So the question is no longer answered by a list that has to be kept in sync
+ * by hand: it is answered by the SAME predicate that will judge the sequence
+ * later. A shape this cannot prove tokenizable keeps the stage-1 opaque
+ * freeze — its body is not improvable, but it survives, which is the trade
+ * this whole issue exists to make.
+ */
+function expandTokenizesCleanly(el: Element): boolean {
+  const stack = enclosingLayoutKinds(el);
+  if (!layoutOpenAllowed('EXPAND', stack)) return false;
+
+  stack.push('EXPAND');
+  const visit = (node: Element): boolean => {
+    for (const child of Array.from(node.children)) {
+      // A nested expand is never walked, whatever its verdict turns out to be.
+      // Frozen, it travels as one opaque token and emits nothing. Unfrozen, its
+      // OWN expandTokenizesCleanly already validated both its position (against
+      // this very stack, via enclosingLayoutKinds) and its whole subtree — so
+      // re-checking here can only repeat that work.
+      //
+      // It is also the difference between linear and exponential. Calling
+      // isFrozenExpand(child) here walked the child's subtree once inside that
+      // call and again on the way down, i.e. T(n) = 2·T(n-1): a chain of nested
+      // sections took 12s at depth 18 and ~56s at depth 20, synchronously, on
+      // the Improve and apply request paths.
+      if (isExpandSection(child)) continue;
+      if (isFrozenLegacyWrapper(child)) continue;
+      if (child.matches(OPAQUE_SUBTREE_SELECTOR)) continue;
+
+      const wrapper = layoutWrapperKind(child);
+      if (!wrapper) {
+        if (!visit(child)) return false;
+        continue;
+      }
+      if (!layoutOpenAllowed(wrapper.kind, stack)) return false;
+      stack.push(wrapper.kind);
+      const ok = visit(child);
+      stack.pop();
+      if (!ok) return false;
+    }
+    return true;
+  };
+  return visit(el);
+}
+
+/**
+ * #1221 stage 2: an expand section freezes for exactly the reason a legacy
+ * section/column does — a boundary token inside a markdown-constrained
+ * container is ripped out of that construct by markdownToHtml's token
+ * normalization. `details` is deliberately NOT part of
+ * CONSTRAINED_ANCESTOR_SELECTOR: an expand's own body is ordinary markdown
+ * once its boundary is a token, so nesting inside one constrains nothing.
+ */
+function isFrozenExpand(el: Element): boolean {
+  if (!isExpandSection(el)) return false;
+  if (isConstrainedPosition(el)) return true;
+  return !expandTokenizesCleanly(el);
+}
+
+/** Does any `<details>` ancestor of `el` travel as one opaque capture? */
+function hasFrozenExpandAncestor(el: Element): boolean {
+  for (
+    let ancestor = el.parentElement?.closest(EXPAND_SELECTOR) ?? null;
+    ancestor;
+    ancestor = ancestor.parentElement?.closest(EXPAND_SELECTOR) ?? null
+  ) {
+    if (isFrozenExpand(ancestor)) return true;
+  }
+  return false;
+}
+
+/** The expand's title element — direct child only, mirroring htmlToConfluence. */
+function firstDirectSummary(el: Element): Element | null {
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeName === 'SUMMARY') return child as Element;
+  }
+  return null;
+}
+
+/**
+ * Fallback macro identity for a `<details>` carrying no `data-macro-name`.
+ * Same value and same reasoning as htmlToConfluence's reverse pass: sections
+ * predating the #1211 stamp, and editor-created ones, genuinely are native
+ * expands.
+ */
+const DEFAULT_EXPAND_MACRO_NAME = 'expand';
+
+/**
+ * #1221 stage 2: percent-encode a token attribute value.
+ *
+ * The token grammar allows `[ \t][^\]\n]*`, so `]`, newline and the separating
+ * space must be encoded — but that is only the floor. Once encoded the value
+ * also passes through marked's markdown parse and HTML escaping untouched,
+ * which matters because the skeleton-less paths read it back out of marked's
+ * HTML with a plain regex: unencoded, `&` would return as `&amp;` and `_foo_`
+ * as `<em>foo</em>`. So everything outside `[A-Za-z0-9-]` is encoded:
+ * encodeURIComponent handles UTF-8 (surrogate pairs included) and the follow-up
+ * pass removes the characters it leaves unescaped. `-` is kept because it is
+ * inert mid-line and keeps `name=ui-expand` readable.
+ *
+ * What this does NOT survive is what happens BEFORE it: turndown collapses
+ * whitespace in the DOM, so a tab or a double space in a summary reaches this
+ * function already normalised to one space. Harmless on the Improve path —
+ * extractLayoutSkeleton reads the untouched DOM and the rebuild re-emits from
+ * the skeleton, so the literal whitespace is what lands in storage — but it is
+ * not a byte-for-byte guarantee, and a future skeleton-less path must not
+ * assume one.
+ */
+function encodeTokenValue(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[_.!~*'()]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
+  );
+}
+
+/**
+ * Inverse of encodeTokenValue. Falls back to the raw text on malformed input:
+ * with a #781 skeleton every attrs string is canonical (written from the
+ * skeleton), but the skeleton-less paths read whatever the model echoed, and a
+ * stray `%` there must not throw.
+ */
+function decodeTokenValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttr(value: string): string {
+  return escapeHtmlText(value).replace(/"/g, '&quot;');
+}
+
+/**
+ * Canonical `EXPAND` token attrs for a `<details>`: the macro identity, open
+ * state, summary and remaining parameters — everything the reverse pass needs
+ * and none of it improvable. htmlToMarkdown and extractLayoutSkeleton both
+ * derive them from here, though the two do not always agree byte-for-byte:
+ * turndown has already collapsed whitespace in the DOM it hands the token rule,
+ * while extractLayoutSkeleton reads the untouched one. That is safe only
+ * because alignment matches on kind and direction alone and the rebuild always
+ * re-emits the SKELETON's spelling — the more faithful of the two. Any future
+ * attrs-sensitive alignment would have to reconcile them first.
+ *
+ * The summary rides opaquely and is deliberately NOT improvable: titles are
+ * short, rarely the thing needing a rewrite, and a second boundary pair around
+ * them would add three lines per section to the prompt and one more way into
+ * the 422 path.
+ */
+function expandTokenAttrs(el: Element): string {
+  const summary = firstDirectSummary(el);
+  const name = el.getAttribute('data-macro-name') || DEFAULT_EXPAND_MACRO_NAME;
+  const open = el.hasAttribute('open') ? '1' : '0';
+  const params = el.getAttribute('data-macro-params') ?? '';
+  const attrs = [`name=${encodeTokenValue(name)}`, `open=${open}`];
+  // PRESENCE of the key records whether the HTML had a <summary> at all — no
+  // more than that since #1227. The absent-vs-explicitly-empty title
+  // distinction Confluence storage draws now rides in `params`
+  // (`{"title":""}`), because a blank summary is what BOTH states look like.
+  // The guard stays anyway: this function also runs over HTML that never came
+  // from confluenceToHtml, and the rebuild is happy to be told there was none.
+  if (summary) attrs.push(`title=${encodeTokenValue(summary.textContent ?? '')}`);
+  attrs.push(`params=${encodeTokenValue(params)}`);
+  return attrs.join(' ');
+}
+
+interface ExpandTokenAttrs { name: string; open: boolean; title: string | null; params: string; }
+
+function parseExpandTokenAttrs(attrs: string): ExpandTokenAttrs {
+  const parsed: ExpandTokenAttrs = { name: DEFAULT_EXPAND_MACRO_NAME, open: false, title: null, params: '' };
+  for (const part of attrs.split(/[ \t]+/)) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const raw = part.slice(eq + 1);
+    switch (part.slice(0, eq)) {
+      case 'name': {
+        const name = decodeTokenValue(raw);
+        if (name) parsed.name = name;
+        break;
+      }
+      case 'open': parsed.open = raw === '1'; break;
+      case 'title': parsed.title = decodeTokenValue(raw); break;
+      case 'params': parsed.params = decodeTokenValue(raw); break;
+    }
+  }
+  return parsed;
+}
+
+/**
+ * data-macro-params is a JSON object written by the forward pass. A value that
+ * does not parse as one came from a model-invented token (the skeleton-guided
+ * paths always supply the page's own attrs), so it is dropped rather than
+ * persisted — htmlToConfluence would ignore it anyway.
+ */
+function isMacroParamsObject(raw: string): boolean {
+  if (!raw) return false;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * #723: Replace rich/media nodes with opaque text tokens before the lossy
  * HTML→Markdown→HTML round-trip used by AI Improve. Document order makes the
@@ -1061,13 +1701,30 @@ export function protectMedia(html: string): { html: string; media: ProtectedMedi
       // Legacy section/column wrappers freeze ONLY when nested inside a
       // markdown-constrained container; elsewhere they use boundary tokens.
       if (isLegacyWrapper(n) && !isFrozenLegacyWrapper(n)) return false;
-      if (n.parentElement?.closest('div.confluence-drawio, div.confluence-mermaid, div.mermaid, div.confluence-macro-unknown')) return false;
+      // #1221 stage 2: expand sections follow the same rule — a constrained one
+      // freezes, everywhere else it round-trips as [[[EXPAND …]]] tokens.
+      if (isExpandSection(n) && !isFrozenExpand(n)) return false;
+      // Descendants of an already-frozen node travel inside it.
+      if (n.parentElement?.closest(OPAQUE_SUBTREE_SELECTOR)) return false;
       // Skip descendants of a frozen wrapper — it is protected whole. If the
       // nearest wrapper ancestor is not frozen, no farther one can be either
       // (frozenness propagates downward: a frozen ancestor's constrained
       // container is an ancestor of every nested wrapper too).
       const wrapperAncestor = n.parentElement?.closest(LEGACY_WRAPPER_SELECTOR);
       if (wrapperAncestor && isFrozenLegacyWrapper(wrapperAncestor)) return false;
+      // Same test for expands, and it must be the FROZEN-ness that decides, not
+      // the mere presence of a `<details>` ancestor: media inside an
+      // unconstrained expand now needs its own token, because that section's
+      // body travels as markdown rather than inside one opaque capture.
+      //
+      // Unlike legacy wrappers this must check EVERY `<details>` ancestor, not
+      // just the nearest. The downward-propagation argument above holds only
+      // for frozen-by-position; an expand can also freeze because its own
+      // token shape is invalid (expandTokenizesCleanly), and that reason is not
+      // inherited — so a frozen outer section can hold an unfrozen inner one.
+      // Testing only the nearest gave media inside it a second, orphaned token
+      // that the apply drop-guard could re-append as a duplicate.
+      if (hasFrozenExpandAncestor(n)) return false;
       return true;
     });
   for (const node of nodes) {
@@ -1241,6 +1898,28 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
         return `\n\n[[[COLUMN${attrs}]]]\n\n${content.trim()}\n\n[[[/COLUMN]]]\n\n`;
       },
     });
+
+    // #1221 stage 2: expand sections — same boundary-token treatment, so the
+    // body prose inside a collapsible section is editable again. The title is
+    // NOT: it rides percent-encoded in the token's `title` attr, so the summary
+    // must be dropped from the converted content or it would be emitted twice
+    // (once opaquely, once as prose the model would then rewrite into a body
+    // paragraph). Only the FIRST direct-child summary is the section's title —
+    // htmlToConfluence applies exactly that rule, and unwraps any other.
+    // (A constrained expand never reaches turndown: protectMedia froze it.)
+    turndownService.addRule('confluenceExpandSummary', {
+      filter: (node) =>
+        node.nodeName === 'SUMMARY' &&
+        node.parentNode?.nodeName === 'DETAILS' &&
+        firstDirectSummary(node.parentNode as Element) === (node as Element),
+      replacement: () => '',
+    });
+
+    turndownService.addRule('confluenceExpand', {
+      filter: (node) => node.nodeName === 'DETAILS',
+      replacement: (content, node) =>
+        `\n\n[[[EXPAND ${expandTokenAttrs(node as Element)}]]]\n\n${content.trim()}\n\n[[[/EXPAND]]]\n\n`,
+    });
   } else {
     // Default (all non-Improve flows): pre-#765 flattened output — wrapper
     // structure is dropped, only the inner content survives. Modern
@@ -1333,7 +2012,8 @@ export function htmlToMarkdown(html: string, options?: HtmlToMarkdownOptions): s
 // ---------------------------------------------------------------------------
 
 // Longest-first so LAYOUT never shadows LAYOUT-SECTION / LAYOUT-CELL.
-const LAYOUT_TOKEN_KINDS = 'LAYOUT-SECTION|LAYOUT-CELL|LAYOUT|SECTION|COLUMN';
+// EXPAND (#1221 stage 2) shares no prefix with any of the others.
+const LAYOUT_TOKEN_KINDS = 'LAYOUT-SECTION|LAYOUT-CELL|LAYOUT|SECTION|COLUMN|EXPAND';
 const LAYOUT_TOKEN_BARE = String.raw`\[\[\[\/?(?:${LAYOUT_TOKEN_KINDS})(?:[ \t][^\]\n]*)?\]\]\]`;
 const LAYOUT_TOKEN_CAPTURE = String.raw`\[\[\[(\/?)(${LAYOUT_TOKEN_KINDS})((?:[ \t][^\]\n]*)?)\]\]\]`;
 
@@ -1366,8 +2046,13 @@ function layoutOpenAllowed(kind: string, stack: string[]): boolean {
     case 'LAYOUT': return stack.length === 0;
     case 'LAYOUT-SECTION': return top === 'LAYOUT';
     case 'LAYOUT-CELL': return top === 'LAYOUT-SECTION';
-    case 'SECTION': return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN';
+    // #1221: Confluence permits a legacy section inside an expand body.
+    case 'SECTION': return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'EXPAND';
     case 'COLUMN': return top === 'SECTION';
+    // #1221: an expand may sit at top level or anywhere prose may — including
+    // inside another expand, which Confluence supports natively.
+    case 'EXPAND':
+      return top === undefined || top === 'LAYOUT-CELL' || top === 'SECTION' || top === 'COLUMN' || top === 'EXPAND';
     default: return false;
   }
 }
@@ -1394,10 +2079,36 @@ function layoutOpenTag(kind: string, attrs: string): string {
       const style = /^\d+(%|px|em|rem)$/.test(width) ? ` style="flex: 0 0 ${width}"` : '';
       return `<div class="confluence-column" data-cell-width="${width}"${style}>`;
     }
+    case 'EXPAND': {
+      // #1221 stage 2. Attribute order mirrors confluenceToHtml's forward pass
+      // so a section that made the round-trip untouched serializes identically.
+      // Every value is HTML-escaped: percent-encoding protects the TOKEN
+      // grammar, escaping protects the HTML — a token echoed by a model can
+      // carry raw `<script>` in its attrs.
+      const { name, open, title, params } = parseExpandTokenAttrs(attrs);
+      let tag = `<details data-macro-name="${escapeHtmlAttr(name)}"`;
+      if (open) tag += ' open';
+      if (isMacroParamsObject(params)) tag += ` data-macro-params="${escapeHtmlAttr(params)}"`;
+      tag += '>';
+      // #1227: always a summary, including for a token that carries no `title`
+      // attribute at all. A blank one no longer costs anything — htmlToConfluence
+      // now decides on the summary's text rather than its existence, so it emits
+      // no `title` parameter for one — while a summary-LESS <details> is not
+      // parseable by the TipTap schema (`content: 'detailsSummary block*'`) and
+      // ejects its own body out of the section. That was reachable from here:
+      // a model echoing `[[[EXPAND name=expand open=0 params=]]]` reaches this
+      // rebuild through Improve-apply.
+      return `${tag}<summary>${escapeHtmlText(title ?? '')}</summary>`;
+    }
     // Unreachable: kinds are constrained by LAYOUT_TOKEN_KINDS in the regex.
     default:
       return '<div>';
   }
+}
+
+/** #1221: close tags stopped being uniform once EXPAND rebuilt a `<details>`. */
+function layoutCloseTag(kind: string): string {
+  return kind === 'EXPAND' ? '</details>' : '</div>';
 }
 
 /**
@@ -1407,28 +2118,118 @@ function layoutOpenTag(kind: string, attrs: string): string {
  * produce unbalanced divs — instead every token is stripped (graceful
  * flatten) while the prose is kept.
  */
+/** Balance + nesting check shared by the rebuild and the skeleton path. */
+function layoutSequenceValid(tokens: { isClose: boolean; kind: string }[]): boolean {
+  const stack: string[] = [];
+  for (const t of tokens) {
+    if (!t.isClose) {
+      if (!layoutOpenAllowed(t.kind, stack)) return false;
+      stack.push(t.kind);
+    } else if (stack.pop() !== t.kind) {
+      return false;
+    }
+  }
+  return stack.length === 0;
+}
+
 function rebuildLayoutStructure(html: string): string {
   const tokens = [...html.matchAll(layoutTokenRegex())].map(parseLayoutToken);
   if (tokens.length === 0) return html;
 
-  let valid = true;
-  const stack: string[] = [];
-  for (const t of tokens) {
-    if (!t.isClose) {
-      if (!layoutOpenAllowed(t.kind, stack)) { valid = false; break; }
-      stack.push(t.kind);
-    } else if (stack.pop() !== t.kind) {
-      valid = false;
-      break;
-    }
-  }
-  if (stack.length > 0) valid = false;
+  const valid = layoutSequenceValid(tokens);
 
   let i = 0;
   return html.replace(layoutTokenRegex(), () => {
     const t = tokens[i++]!;
     if (!valid) return ''; // drop-guard: strip the token, keep the prose
-    return t.isClose ? '</div>' : layoutOpenTag(t.kind, t.attrs);
+    return t.isClose ? layoutCloseTag(t.kind) : layoutOpenTag(t.kind, t.attrs);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// #1221 review: token PROVENANCE on the skeleton path.
+//
+// The rebuild above re-discovers tokens in marked's HTML with a regex, which
+// silently equates "text that looks like a token" with "a token this pipeline
+// emitted". Those are not the same set, and the gap deletes pages:
+//
+//   turndown escapes literal `[[[EXPAND …]]]` prose to `\[\[\[…\]\]\]`, so the
+//   markdown-side strict scan (and therefore all of #781's verification) does
+//   not see it and reports the echo clean. marked then UN-escapes it, the
+//   regex above re-discovers three opens against one close, the sequence fails
+//   validation, and the all-or-nothing drop-guard strips EVERY token — the
+//   page's real expand macro included. HTTP 200, page written, macro gone.
+//   A balanced literal pair went the other way and FABRICATED a macro out of
+//   the user's sentence.
+//
+// The fix is to stop re-discovering. When a skeleton is known, recovery has
+// already produced a token stream verified against it, so those exact tokens
+// are replaced by opaque sentinels BEFORE marked runs and consumed by identity
+// afterwards. Bracket text that was never a token stays prose all the way
+// through — it cannot join the balance count, cannot be stripped, and reaches
+// the saved page verbatim. That also retires the backstop strip on this path,
+// which was eating token-shaped text out of expand titles, macro parameters
+// and the model's own commentary.
+//
+// Sentinels are plain alphanumerics: markdown cannot escape them, marked
+// cannot emphasise or link them, and a collision with page text is excluded by
+// construction (the prefix grows until it does not occur in the input).
+// ---------------------------------------------------------------------------
+
+const LAYOUT_SENTINEL_BASE = 'CQLAYOUTTOKEN';
+
+function layoutSentinelPrefix(markdown: string): string {
+  let prefix = LAYOUT_SENTINEL_BASE;
+  while (markdown.includes(prefix)) prefix = `X${prefix}`;
+  return prefix;
+}
+
+/** `…0E`, `…1E` — the trailing marker stops token 1 matching token 10's prefix. */
+function layoutSentinel(prefix: string, index: number): string {
+  return `${prefix}${index}E`;
+}
+
+/**
+ * Swap each canonical token (outside code constructs — literal token text in a
+ * fenced block is data) for its sentinel, in document order. The caller has
+ * already verified this stream against the skeleton, so sentinel N is
+ * skeleton[N].
+ */
+function sentinelizeLayoutTokens(markdown: string, prefix: string): { markdown: string; tokens: LayoutToken[] } {
+  const tokens: LayoutToken[] = [];
+  // A list marker immediately before a token is consumed with it: the token
+  // becomes its own paragraph, so leaving the `-` behind emits an empty list
+  // item. Safe to strip because only a token this pipeline is about to
+  // sentinelize can match here — a literal one in page prose reaches this
+  // point still turndown-escaped, which LAYOUT_TOKEN_CAPTURE does not match.
+  const tokenWithListMarker = new RegExp(
+    String.raw`(?:(?:^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?` + LAYOUT_TOKEN_CAPTURE,
+    'g',
+  );
+  const out = transformOutsideMarkdownCode(markdown, (segment) =>
+    segment.replace(tokenWithListMarker, (...args: unknown[]) => {
+      const m = args.slice(0, 4) as [string, string, string, string | undefined];
+      tokens.push({ isClose: m[1] === '/', kind: m[2], attrs: (m[3] ?? '').trim() });
+      return `\n\n${layoutSentinel(prefix, tokens.length - 1)}\n\n`;
+    }),
+  );
+  return { markdown: out, tokens };
+}
+
+/**
+ * Consume the sentinels marked wrapped in paragraphs.
+ *
+ * #1232 round 2: renders each token's OWN payload, not `skeleton[index]`. The
+ * recovered stream is a permutation of the skeleton whenever the model
+ * reordered sections, so indexing the skeleton here would put the first
+ * section's title on whichever body came first.
+ */
+function rebuildLayoutFromSentinels(html: string, prefix: string, tokens: LayoutToken[]): string {
+  const pattern = new RegExp(`<p>\\s*${prefix}(\\d+)E\\s*</p>|${prefix}(\\d+)E`, 'g');
+  return html.replace(pattern, (matched, wrapped: string | undefined, bare: string | undefined) => {
+    const token = tokens[Number(wrapped ?? bare)];
+    if (!token) return matched;
+    return token.isClose ? layoutCloseTag(token.kind) : layoutOpenTag(token.kind, token.attrs);
   });
 }
 
@@ -1538,6 +2339,12 @@ const COLUMN_WIDTH_RE = /^[\d.]+(%|px|em|rem)?$/;
 
 /** Token kind + canonical attrs for a layout wrapper element (else null). */
 function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null {
+  // #1221 stage 2: every `<details>` is an expand macro — `data-macro-name` is
+  // only the identity STAMP, and a section predating it (or created in the
+  // editor) carries none. Requiring the attribute here would leave those
+  // sections without a token AND without the freeze, i.e. back to the silent
+  // macro deletion this issue is about.
+  if (isExpandSection(el)) return { kind: 'EXPAND', attrs: expandTokenAttrs(el) };
   const cls = el.classList;
   if (cls.contains('confluence-layout')) return { kind: 'LAYOUT', attrs: '' };
   if (cls.contains('confluence-layout-section')) {
@@ -1563,13 +2370,33 @@ function layoutWrapperKind(el: Element): { kind: string; attrs: string } | null 
 /** Max anchor length: long enough to be unique, short enough to survive edits. */
 const ANCHOR_MAX_CHARS = 80;
 
+/**
+ * Text of `node` as the model will see it in the markdown.
+ *
+ * #1221: every `<summary>` is an expand's TITLE — it rides inside that
+ * section's own EXPAND token and never reaches the markdown. Anchoring on one
+ * would search the model's prose for text the model was never shown. Nested
+ * summaries count as much as the element's own: a cell whose first child is an
+ * expand, or an expand wrapping another, would otherwise anchor on a title.
+ */
+function markdownVisibleText(node: Node): string {
+  if (node.nodeType === 3 /* TEXT_NODE */) return node.textContent ?? '';
+  if (node.nodeType !== 1 /* ELEMENT_NODE */) return '';
+  if (node.nodeName === 'SUMMARY') return '';
+  let text = '';
+  for (const child of Array.from(node.childNodes)) text += markdownVisibleText(child);
+  return text;
+}
+
 /** First non-empty block text of a cell — the anchor for token-free recovery. */
 function leadingAnchorText(el: Element): string | undefined {
-  for (const child of Array.from(el.children)) {
-    const t = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType !== 1 /* ELEMENT_NODE */) continue;
+    const t = collapse(markdownVisibleText(child));
     if (t) return t.slice(0, ANCHOR_MAX_CHARS);
   }
-  const own = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const own = collapse(markdownVisibleText(el));
   return own ? own.slice(0, ANCHOR_MAX_CHARS) : undefined;
 }
 
@@ -1608,7 +2435,12 @@ export function extractLayoutSkeleton(html: string): LayoutSkeletonToken[] {
 // case. Prose collisions (e.g. "[[Section 2]]" wiki-style links) are kept
 // out by requiring EXACTLY three brackets for case-insensitive matches —
 // other bracket counts only count when the kind is spelled all-uppercase.
-const LAYOUT_KIND_LOOSE = 'LAYOUT[-_ ]SECTION|LAYOUT[-_ ]CELL|LAYOUT|SECTION|COLUMN';
+// #1221 stage 2: EXPAND joins the tolerant set for the same reason the other
+// prose-bearing kinds are in it. Left out, a routinely-mangled spelling (a
+// lower-cased close, a fenced token) would make the most common macro on a
+// page the ONLY kind the loose pass cannot rescue, turning ordinary local-model
+// churn into a 422.
+const LAYOUT_KIND_LOOSE = 'LAYOUT[-_ ]SECTION|LAYOUT[-_ ]CELL|LAYOUT|SECTION|COLUMN|EXPAND';
 const LAYOUT_TOKEN_LOOSE_SRC =
   String.raw`(?:\*{1,2}|_{1,2})?` +
   String.raw`((?:\\?\[){2,4})` +
@@ -1618,7 +2450,60 @@ const LAYOUT_TOKEN_LOOSE_SRC =
   String.raw`(?:\\?\]){2,4}` +
   String.raw`(?:\*{1,2}|_{1,2})?`;
 
-interface ScannedLayoutToken { start: number; end: number; kind: string; isClose: boolean; }
+/**
+ * `attrs` is the token's own payload as the model echoed it. It is what makes
+ * alignment able to follow IDENTITY rather than position (#1232 round 2) — a
+ * reordered expand must take its title with it. Empty when the spelling was
+ * too mangled to read one.
+ */
+interface ScannedLayoutToken { start: number; end: number; kind: string; isClose: boolean; attrs: string; }
+
+/** Kind + direction + payload — what makes two tokens the same section. */
+function tokenIdentity(t: { kind: string; isClose: boolean; attrs: string }): string {
+  return `${t.isClose ? '/' : ''}${t.kind}|${t.attrs}`;
+}
+
+/**
+ * Canonical shape of a token stream: the nesting tree, with each level's
+ * siblings sorted so their ORDER does not matter but their PARENT does.
+ * Returns null when the stream is unbalanced.
+ *
+ * #1232 round 3. Comparing multisets alone accepted any re-nesting of the same
+ * tokens — including a section the reader could see being moved INSIDE a
+ * collapsed one. Content is not lost that way, but it disappears behind a
+ * toggle, which is the harm that made the token-free recovery paths refuse.
+ * Sorting siblings is exactly the licence the fast path is meant to grant:
+ * reordering is allowed, re-parenting is not.
+ */
+function canonicalTokenShape(tokens: { kind: string; isClose: boolean; attrs: string }[]): string | null {
+  interface Node { kind: string; identity: string; children: Node[] }
+  const roots: Node[] = [];
+  const stack: Node[] = [];
+  for (const t of tokens) {
+    if (!t.isClose) {
+      const node: Node = { kind: t.kind, identity: tokenIdentity(t), children: [] };
+      (stack[stack.length - 1]?.children ?? roots).push(node);
+      stack.push(node);
+    } else {
+      // Closes carry no payload, so only the kind can be matched here.
+      const open = stack.pop();
+      if (!open || open.kind !== t.kind) return null;
+    }
+  }
+  if (stack.length > 0) return null;
+  const render = (nodes: Node[]): string =>
+    nodes.map((n) => `${n.identity}(${render(n.children)})`).sort().join(',');
+  return render(roots);
+}
+
+function sameTokenShape(
+  found: { kind: string; isClose: boolean; attrs: string }[],
+  skeleton: LayoutSkeletonToken[],
+): boolean {
+  if (found.length !== skeleton.length) return false;
+  const a = canonicalTokenShape(found);
+  return a !== null && a === canonicalTokenShape(skeleton);
+}
 
 /** Scan markdown (outside code constructs) for mangled-token candidates. */
 function scanLooseLayoutTokens(markdown: string): ScannedLayoutToken[] {
@@ -1636,6 +2521,9 @@ function scanLooseLayoutTokens(markdown: string): ScannedLayoutToken[] {
           end: offset + m.index + m[0].length,
           kind: rawKind.toUpperCase().replace(/[_ ]/g, '-'),
           isClose: m[2] !== undefined,
+          // Mangled spellings carry mangled payloads; read it anyway so an
+          // identity contradiction can still be detected, never trusted.
+          attrs: (m[4] ?? '').trim(),
         });
       }
     }
@@ -1668,6 +2556,7 @@ function scanStrictLayoutTokenSpans(markdown: string): ScannedLayoutToken[] {
           end: offset + m.index + m[0].length,
           kind: m[2]!,
           isClose: m[1] === '/',
+          attrs: (m[3] ?? '').trim(),
         });
       }
     }
@@ -1712,36 +2601,67 @@ function unwrapFullDocumentFence(markdown: string): string | null {
 // is genuinely lost and recovery must fail. LAYOUT / LAYOUT-SECTION opens
 // are pure containers (the storage format puts nothing between them and
 // their first child), so their positions are re-derivable from neighbors.
-const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION']);
+const PROSE_BEARING_KINDS = new Set(['LAYOUT-CELL', 'COLUMN', 'SECTION', 'EXPAND']);
 
-/** Greedy in-order alignment of scanned tokens onto the skeleton. */
+/**
+ * Greedy in-order alignment of scanned tokens onto the skeleton.
+ *
+ * #1232 round 2 added two rejections, because this function decides WHERE a
+ * section boundary lands and both failures put a real macro's identity on the
+ * wrong body at HTTP 200:
+ *
+ * - `surplus` counts echo tokens that matched nothing. They used to be
+ *   stripped as debris, which quietly let a token-shaped fragment ANCHOR the
+ *   alignment: an escape-stripped prose literal (models drop backslashes when
+ *   echoing) took the skeleton's first slot, and the real section's boundary
+ *   moved to the prose. On a non-empty skeleton the caller now refuses.
+ * - `identityConflict` is true when a matched echo token's own payload names a
+ *   DIFFERENT section of the same kind. Position said one thing and the token
+ *   said another, so positional assignment would swap two titles. A payload
+ *   that names no skeleton section at all is not a conflict — that is the
+ *   model editing a title, where the skeleton is meant to win.
+ */
 function alignLayoutTokens(
   found: ScannedLayoutToken[],
   skeleton: LayoutSkeletonToken[],
-): { matched: number[]; ok: boolean; matchedCount: number } {
+): { matched: number[]; ok: boolean; matchedCount: number; surplus: number; identityConflict: boolean } {
   const matched: number[] = new Array<number>(skeleton.length).fill(-1);
   let s = 0;
+  let surplus = 0;
   for (let f = 0; f < found.length; f++) {
     let k = s;
     while (k < skeleton.length && !(skeleton[k]!.kind === found[f]!.kind && skeleton[k]!.isClose === found[f]!.isClose)) k++;
     if (k < skeleton.length) {
       matched[k] = f;
       s = k + 1;
+    } else {
+      surplus++;
     }
-    // else: unmatched echo — debris, stripped during reconstruction.
   }
+  const identityConflict = matched.some((f, i) => {
+    if (f === -1) return false;
+    const echoed = found[f]!;
+    const target = skeleton[i]!;
+    if (!echoed.attrs || echoed.attrs === target.attrs) return false;
+    return skeleton.some(
+      (other, j) =>
+        j !== i && other.kind === target.kind && other.isClose === target.isClose && other.attrs === echoed.attrs,
+    );
+  });
   const ok = skeleton.every((t, i) => matched[i] !== -1 || t.isClose || !PROSE_BEARING_KINDS.has(t.kind));
-  return { matched, ok, matchedCount: matched.filter((f) => f !== -1).length };
+  return { matched, ok, matchedCount: matched.filter((f) => f !== -1).length, surplus, identityConflict };
 }
 
 function canonicalLayoutToken(t: LayoutSkeletonToken): string {
   return t.isClose ? `[[[/${t.kind}]]]` : `[[[${t.kind}${t.attrs ? ` ${t.attrs}` : ''}]]]`;
 }
 
-/** Prose may live at top level and inside cells/columns/legacy sections. */
+/** Prose may live at top level and inside cells/columns/sections/expands. */
 function proseAllowedIn(stack: string[]): boolean {
   const top = stack[stack.length - 1];
-  return top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'SECTION';
+  return (
+    top === undefined || top === 'LAYOUT-CELL' || top === 'COLUMN' || top === 'SECTION' || top === 'EXPAND'
+  );
 }
 
 /**
@@ -1777,7 +2697,12 @@ function reconstructLayoutMarkdown(
   let cursor = 0;
 
   const placeText = (raw: string): void => {
-    const seg = raw.replace(/^\n+|\n+$/g, ''); // outer newlines only — keep code indentation
+    const seg = raw
+      .replace(/^\n+|\n+$/g, '') // outer newlines only — keep code indentation
+      // A list marker left dangling at the end of a segment is the remains of a
+      // token the model wrote on a list line; keeping it emits an empty list
+      // item next to the rebuilt wrapper (#1232 round 3).
+      .replace(/(?:^|\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]*$/, '');
     if (seg.trim().length === 0) return;
     if (proseAllowedIn(stack)) out.push(`\n\n${seg}\n\n`);
     else pendingText += (pendingText ? '\n\n' : '') + seg;
@@ -2000,6 +2925,35 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // Fast path: layout-free page and a clean echo — nothing to do.
   if (skeleton.length === 0 && rawFound.length === 0) return markdown;
 
+  // #1232 round 2: IDENTITY fast path. When the echo's canonical tokens carry
+  // the skeleton's own payloads in the skeleton's own nesting SHAPE — only the
+  // order of siblings differing — nothing was mangled: every token sits beside
+  // its own prose. Rebuilding from the ECHO's token order instead of the
+  // skeleton's is what stops a reordered section's title being pinned onto the
+  // body that happened to come first. Duplicate identities are by definition
+  // indistinguishable, so however they pair up is the same document.
+  //
+  // The rebuild still runs through reconstructLayoutMarkdown (#1232 round 3):
+  // returning the echo verbatim skipped its prose-placement rules, so a
+  // sentence the model added BETWEEN two cells was saved as a direct child of
+  // ac:layout-section — a shape the storage format forbids. Identity comes from
+  // the echo; where prose may legally sit does not.
+  const strictSpans = scanStrictLayoutTokenSpans(markdown);
+  if (skeleton.length > 0 && sameTokenShape(strictSpans, skeleton) && layoutSequenceValid(strictSpans)) {
+    const echoSkeleton: LayoutSkeletonToken[] = strictSpans.map((t) => ({
+      kind: t.kind,
+      isClose: t.isClose,
+      attrs: t.attrs,
+    }));
+    const rebuilt = reconstructLayoutMarkdown(
+      markdown,
+      strictSpans,
+      echoSkeleton.map((_, i) => i),
+      echoSkeleton,
+    );
+    if (matchesSkeleton(rebuilt, echoSkeleton)) return rebuilt;
+  }
+
   const candidates: string[] = [markdown];
   const unwrappedCode = unwrapTokenOnlyCode(markdown);
   if (unwrappedCode !== markdown) candidates.push(unwrappedCode);
@@ -2026,6 +2980,12 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
       .sort((a, b) => b.matchedCount - a.matchedCount || a.order - b.order);
     for (const attempt of attempts) {
       if (!attempt.ok || attempt.matchedCount < minMatched) continue;
+      // #1232 round 2: never let an unreconciled token anchor the alignment,
+      // and never assign a token to a slot its own payload contradicts. Both
+      // are silent identity corruption on the persisting path; refusing is
+      // what the caller turns into a 422.
+      if (skeleton.length > 0 && attempt.surplus > 0) continue;
+      if (attempt.identityConflict) continue;
       const rebuilt = reconstructLayoutMarkdown(attempt.candidate, attempt.found, attempt.matched, skeleton);
       if (matchesSkeleton(rebuilt, skeleton)) return { rebuilt, bestMatched: attempt.matchedCount };
     }
@@ -2046,10 +3006,35 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   const loosePass = tryRecover(scanLooseLayoutTokens, 0);
   if (loosePass.rebuilt !== null) return loosePass.rebuilt;
 
+  const proseSlots = skeleton.filter((t) => !t.isClose && PROSE_BEARING_KINDS.has(t.kind));
+
+  // #1221 review: BOTH last-resort paths below rest on the same premise — that
+  // a prose-bearing slot PARTITIONS the document, so prose that lost its
+  // boundary tokens must belong to some slot. That holds for the kinds they
+  // were designed for: a single-cell layout wraps the whole body, and a
+  // multi-cell layout's cells tile it. It is false for an EXPAND, which is a
+  // page FRAGMENT with ordinary sibling prose around it. Applying the premise
+  // there moved a page's heading and every surrounding paragraph INSIDE the
+  // collapsed section (single-slot), or pulled the prose sitting BETWEEN two
+  // sections into the preceding one (anchor split) — content still present,
+  // but hidden behind a toggle and pushed to Confluence at HTTP 200.
+  //
+  // There is no safe guess to make: the machinery has no representation for
+  // "prose that belongs outside every slot". So a skeleton containing an
+  // EXPAND open falls straight through to LayoutRecoveryError → 422, which is
+  // the outcome the user can actually recover from.
+  const hasExpandSlot = skeleton.some((t) => !t.isClose && t.kind === 'EXPAND');
+
+  // #1232 round 2: both paths below strip every token-shaped fragment as
+  // debris and re-slot the remaining prose. With a surplus token in the echo
+  // that fragment may be the page's OWN prose, so stripping it deletes user
+  // text and the re-slotting is anchored on a document that no longer matches
+  // what the model returned. Refuse instead.
+  const hasSurplus = alignLayoutTokens(rawFound, skeleton).surplus > 0;
+
   // Single-slot wrap (#785 review): with exactly one prose-bearing open the
   // assignment is unambiguous even when nothing aligned at all.
-  const proseSlots = skeleton.filter((t) => !t.isClose && PROSE_BEARING_KINDS.has(t.kind));
-  if (proseSlots.length === 1) {
+  if (!hasExpandSlot && !hasSurplus && proseSlots.length === 1) {
     const wrapped = wrapProseInSingleSlot(markdown, skeleton);
     if (matchesSkeleton(wrapped, skeleton)) return wrapped;
   }
@@ -2057,7 +3042,7 @@ function recoverLayoutMarkdown(markdown: string, skeleton: LayoutSkeletonToken[]
   // Anchor split: multi-slot skeleton, every token dropped, but each cell's
   // leading prose survived the rewrite — split at the anchors instead of
   // rejecting. All-or-nothing; any ambiguity falls through to the error.
-  if (proseSlots.length > 1) {
+  if (!hasExpandSlot && !hasSurplus && proseSlots.length > 1) {
     const split = splitProseByAnchors(markdown, skeleton);
     if (split !== null && matchesSkeleton(split, skeleton)) return split;
   }
@@ -2084,18 +3069,52 @@ export interface MarkdownToHtmlOptions {
  * Converts Markdown to HTML (for LLM output -> editor).
  */
 export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlOptions): Promise<string> {
+  const skeleton = options?.layoutSkeleton;
+
+  // #1221 review: on the persisting path the sequence is the PAGE's own, so an
+  // invalid one means the stored document has a nesting the storage format
+  // forbids (the freeze normally keeps those opaque — see expandTokenizesCleanly).
+  // Fail closed. The alternative the rebuild uses elsewhere, stripping every
+  // token and saving the flattened body, is exactly the silent macro loss this
+  // envelope exists to prevent, and here it would be triggered by the page
+  // rather than by anything the model did. Checked before recovery runs: the
+  // verdict cannot change and the work would be wasted (#1232 round 2).
+  if (skeleton && skeleton.length > 0 && !layoutSequenceValid(skeleton)) {
+    throw new LayoutRecoveryError({ expectedTokens: skeleton.length, recoveredTokens: 0 });
+  }
+
   // #781: with a known skeleton, align the LLM's echo against it first —
   // throws LayoutRecoveryError when the layout is unrecoverable.
-  const input = options?.layoutSkeleton
-    ? recoverLayoutMarkdown(markdown, options.layoutSkeleton)
-    : markdown;
+  const input = skeleton ? recoverLayoutMarkdown(markdown, skeleton) : markdown;
+
+  // #1221 review: replace the verified tokens with opaque sentinels so the
+  // HTML-side rebuild consumes THEM rather than re-discovering bracket runs
+  // that marked un-escaped out of ordinary prose.
+  const sentinelPrefix = skeleton ? layoutSentinelPrefix(input) : '';
+  let prepared = input;
+  let sentinelTokens: LayoutToken[] = [];
+  if (skeleton) {
+    const sentinelled = sentinelizeLayoutTokens(input, sentinelPrefix);
+    // The recovered stream is a permutation of the skeleton (the model may have
+    // reordered sections), so it is checked for COUNT and for its own validity
+    // rather than against the skeleton's order.
+    if (sentinelled.tokens.length !== skeleton.length || !layoutSequenceValid(sentinelled.tokens)) {
+      throw new LayoutRecoveryError({
+        expectedTokens: skeleton.length,
+        recoveredTokens: sentinelled.tokens.length,
+      });
+    }
+    prepared = sentinelled.markdown;
+    sentinelTokens = sentinelled.tokens;
+  }
 
   // #765: force every layout boundary token onto its own paragraph so marked
   // wraps it in a lone <p>, even when the LLM merged adjacent token lines or
   // pulled a token into surrounding prose. Code constructs are skipped —
-  // literal token text in a fenced block must survive verbatim.
+  // literal token text in a fenced block must survive verbatim. (Sentinelised
+  // input has none left; this is the no-skeleton path's normalization.)
   const tokenLine = new RegExp(`[ \\t]*(${LAYOUT_TOKEN_BARE})[ \\t]*`, 'g');
-  const normalized = transformOutsideMarkdownCode(input, (segment) =>
+  const normalized = transformOutsideMarkdownCode(prepared, (segment) =>
     segment.replace(tokenLine, '\n\n$1\n\n'),
   );
 
@@ -2111,22 +3130,25 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
     },
   );
 
+  if (skeleton) {
+    // Sentinels can only exist outside code constructs (sentinelizeLayoutTokens
+    // skips them), so no masking is needed. Nothing else is touched: any
+    // remaining [[[…]]] text is prose the strictness ladder deliberately kept,
+    // and it now reaches the page verbatim instead of being stripped.
+    return rebuildLayoutFromSentinels(html, sentinelPrefix, sentinelTokens);
+  }
+
   html = transformOutsideHtmlCode(html, (segment) => {
     // #765: rebuild layout/section/column wrappers from boundary tokens.
     let out = rebuildLayoutStructure(segment);
 
     // #765 drop-guard backstop: strip any token-shaped remnant that failed
     // structural matching (e.g. the LLM lower-cased a marker) — raw [[[…]]]
-    // text must never reach the saved page. With a skeleton (#781) recovery
-    // has already rewritten every real token canonically and consumed all
-    // mangled debris, so the strip stays case-SENSITIVE there: a surviving
-    // lower-case token shape is a prose lookalike the strictness ladder
-    // deliberately preserved, not a failed marker (#785 review).
+    // text must never reach the saved page. Skeleton-guided callers never get
+    // here: their tokens are consumed by identity above, so nothing has to be
+    // guessed at from the text.
     out = out.replace(
-      new RegExp(
-        `<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`,
-        options?.layoutSkeleton ? 'g' : 'gi',
-      ),
+      new RegExp(`<p>\\s*${LAYOUT_TOKEN_BARE}\\s*</p>|${LAYOUT_TOKEN_BARE}`, 'gi'),
       '',
     );
     return out;
@@ -2136,10 +3158,143 @@ export async function markdownToHtml(markdown: string, options?: MarkdownToHtmlO
 }
 
 /**
- * Strips all HTML tags, returning plain text (for full-text search + embedding input).
+ * Strips all HTML tags, returning plain text (for full-text search — and, until
+ * #1265, the embedding input; see htmlToEmbeddingText for why that moved).
  */
 export function htmlToText(html: string): string {
   const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
   const text = dom.window.document.body.textContent ?? '';
   return he.decode(text).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Structure-preserving text for the embedding pipeline (#1265).
+ *
+ * `chunkText` (embedding-service) splits on Markdown atx headings
+ * (`^#{1,6}\s`) and blank-line paragraph boundaries — but `htmlToText`'s
+ * final `replace(/\s+/g, ' ')` collapses every newline, so neither splitter
+ * could ever match its output: every page ≤ CHUNK_HARD_LIMIT embedded as one
+ * chunk, longer pages split at arbitrary word boundaries with no overlap, and
+ * `section_title` metadata always equalled the page title. The
+ * structure-aware chunking was dead code from the day it shipped.
+ *
+ * This routes the embedding input through `htmlToMarkdown` instead — per
+ * ADR-003, Markdown is already the canonical LLM-facing form of page content
+ * (auto-tagger, quality worker, and subpage context all convert the same
+ * way), and the converter is configured with `headingStyle: 'atx'`, which is
+ * exactly the shape `chunkText`'s heading split expects. Consequences, all
+ * deliberate:
+ * - stored `chunk_text` (and so RAG context handed to the chat model) is
+ *   Markdown-shaped — better for the LLM, mildly syntax-flavoured in any UI
+ *   excerpt that renders a vector chunk verbatim. (Known exception: a table
+ *   nested inside a table stays raw HTML — the gfm turndown plugin bails on
+ *   nesting. It is still text; nothing downstream parses chunk_text.);
+ * - `body_text` (FTS, snippets, the coverage probe's length check) stays
+ *   `htmlToText` — this function changes only what gets chunked + embedded;
+ * - changed chunk text means existing embeddings describe text that is no
+ *   longer produced: taking this live on real data means **re-running
+ *   embedPage per page** — `UPDATE pages SET embedding_dirty = TRUE` and let
+ *   the worker re-chunk (per-page transactional delete+insert; search stays
+ *   warm throughout). #1116's shadow path is NOT sufficient on its own: it
+ *   re-embeds the *stored* `chunk_text` into the shadow column and never
+ *   re-chunks, so it would faithfully preserve the pre-#1265 blobs.
+ *
+ * `data:` URI destinations are stripped (`(data:uri-omitted`): DOMPurify
+ * permits `data:` on <img>, so one Markdown import carrying a 120 KB base64
+ * image would otherwise become ~19 pure-base64 chunks — junk vectors, junk
+ * provider payloads, and page_embeddings bloat. The alt text survives; only
+ * the payload goes.
+ *
+ * Falls back to `htmlToText` if the Markdown conversion throws (measured
+ * trigger: ~2,000-deep tag nesting overflows the recursion in turndown) — a
+ * page that defeats the converter must still embed as a flat blob (the
+ * pre-#1265 behaviour) rather than not at all.
+ */
+export function htmlToEmbeddingText(
+  html: string,
+  logContext: Record<string, unknown> = {},
+): string {
+  try {
+    const md = htmlToMarkdown(flattenTableCellsForEmbedding(html)).trim();
+    return md.replace(/\(\s*data:[^)\s]{40,}/g, '(data:uri-omitted');
+  } catch (err) {
+    // logContext exists so this warn can carry the pageId — the fallback
+    // silently flips a page to a different text shape, and a context-free
+    // warning left no way to enumerate affected pages once logs rotate.
+    logger.warn(
+      { err, ...logContext },
+      'htmlToMarkdown failed for embedding input — falling back to plain text',
+    );
+    return htmlToText(html);
+  }
+}
+
+/**
+ * Collapse each table cell's block content to plain inline text before the
+ * Markdown conversion (#1265 verification, finding 2). Confluence wraps cell
+ * content in `<p>`, and turndown-gfm emits those paragraph breaks as blank
+ * lines INSIDE the pipe row — which the fence-aware paragraph splitter then
+ * reads as boundaries, tearing large tables mid-cell and stranding the
+ * header row. With single-line cells every row is one line, the whole table
+ * is one paragraph block, and the header travels with its rows. Inline marks
+ * inside cells are flattened to text — cells are data; their emphasis is not
+ * retrieval signal.
+ */
+function flattenTableCellsForEmbedding(html: string): string {
+  if (!/<t[dh][\s>]/i.test(html)) return html;
+  const dom = new JSDOM(`<body>${html}</body>`, { contentType: 'text/html' });
+  const doc = dom.window.document;
+  for (const cell of Array.from(doc.querySelectorAll('td, th'))) {
+    // Skip cells that contain a nested table — the gfm plugin bails on those
+    // and keeps raw HTML; flattening would silently delete the inner table.
+    if (cell.querySelector('table')) continue;
+    // An <img> has no textContent — replace it with its alt text first, or a
+    // diagram-in-a-table cell (a common KB shape) embeds as EMPTY and loses
+    // the only retrievable signal it has (#1266 review r2, N-1).
+    for (const img of Array.from(cell.querySelectorAll('img'))) {
+      img.replaceWith(doc.createTextNode(img.getAttribute('alt') ?? ''));
+    }
+    const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
+    cell.textContent = text;
+  }
+  return doc.body.innerHTML;
+}
+
+/**
+ * Flatten Markdown-shaped chunk text into a plain-prose excerpt for search
+ * snippets (#1265). Vector-sourced results carry Markdown `chunk_text` now,
+ * while keyword-fallback rows carry plain `body_text` — without this, one
+ * result list mixed the two shapes, and an image-led chunk's first 300 chars
+ * were mostly `![name](/api/attachments/…)` syntax. Images collapse to their
+ * alt text, links to their label, fence/heading markers drop, and the common
+ * backslash escapes unescape (`2\*3` → `2*3`). Idempotent on plain text.
+ * A display affordance, not a renderer — never used on the LLM-facing path,
+ * which keeps the full Markdown deliberately.
+ */
+export function markdownToSnippetText(md: string): string {
+  return (
+    md
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+      .replace(/^\s{0,3}(?:`{3,}|~{3,}).*$/gm, '')
+      .replace(/^#{1,6}\s+/gm, '')
+      // Blockquote markers (panels render as "> **INFO:** …") and thematic
+      // breaks are chrome, not prose.
+      .replace(/^\s{0,3}>\s?/gm, '')
+      .replace(/^\s{0,3}((\*\s*){3,}|-{3,}|_{3,})\s*$/gm, '')
+      // Emphasis pairs: turndown escapes LITERAL asterisks/underscores, so an
+      // unescaped pair here is real formatting — safe to strip. The guards
+      // keep this from eating identifiers on PLAIN-text inputs (keyword rows
+      // pass through here too): no opener straight after a word character or
+      // backslash (`snake_case_name` never opens), no closer straight before
+      // one.
+      .replace(/(?<![\\\w])(\*\*|__)(.+?)(?<!\\)\1(?!\w)/g, '$2')
+      .replace(/(?<![\\\w])([*_])([^*_\n]+?)(?<!\\)\1(?!\w)/g, '$2')
+      // turndown backslash-escapes far more than the bracket set — the
+      // numbered-heading case ("1\. Introduction") is ubiquitous, and a
+      // literal backslash doubles ("C:\\Users").
+      .replace(/\\([\\*_[\]#|`~.>+()!-])/g, '$1')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }

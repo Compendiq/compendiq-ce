@@ -18,6 +18,26 @@ describe('routeDepth', () => {
     expect(routeDepth('/ai')).toBe(0);
   });
 
+  it('returns 0 for a conversation URL', () => {
+    // Documents intent; it is `routeDepth`'s catch-all that makes it pass
+    // today. The assertion that fails before the change is the source guard
+    // below — one predicate, not a second copy of the route test.
+    expect(routeDepth('/ai/c/conv-1')).toBe(0);
+  });
+
+  it('is defined by the shared AI-route predicate, not a second copy of it', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const url = await import('node:url');
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const src = await fs.readFile(path.join(here, 'PageTransition.tsx'), 'utf-8');
+    // Strip comments so the explanatory block above routeDepth (which names
+    // the routes) cannot satisfy or trip either matcher.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(code).toMatch(/isAiRoute\(pathname\)/);
+    expect(code).not.toMatch(/pathname === '\/ai'/);
+  });
+
   it('returns 0 for /settings', () => {
     expect(routeDepth('/settings')).toBe(0);
   });

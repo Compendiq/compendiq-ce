@@ -13,7 +13,6 @@ export interface ShortcutDefinition {
   /**
    * Multi-key sequence, e.g. `'g p'`. When set, the shortcut fires only
    * after the full sequence is typed within the timeout window.
-   * Sequences count as single-key shortcuts for WCAG toggle purposes.
    */
   sequence?: string;
   /** Description shown in the shortcuts modal. */
@@ -46,12 +45,6 @@ function isEditableTarget(event: KeyboardEvent): boolean {
 
 interface KeyboardShortcutOptions {
   /**
-   * When false, shortcuts that use a single key (no Ctrl/Cmd/Alt modifier)
-   * are suppressed. Modifier shortcuts always fire regardless.
-   * Defaults to `true` (WCAG 2.1.4 — Character Key Shortcuts).
-   */
-  singleKeyEnabled?: boolean;
-  /**
    * Called when the pending sequence prefix changes.
    * Receives the current prefix key (e.g. `'g'`) or `null` when cleared.
    */
@@ -64,9 +57,11 @@ interface KeyboardShortcutOptions {
  * - Suppresses shortcuts when focus is inside an editable element
  *   (input, textarea, contentEditable, TipTap editor), **unless** the
  *   shortcut requires a modifier key (Ctrl/Cmd).
+ * - Suppresses single-key shortcuts when the keystroke has already been
+ *   claimed (`event.defaultPrevented`), so a dialog/popover that dismisses on
+ *   ESC does not also trigger the page-level ESC shortcut. Modifier shortcuts
+ *   are exempt, on the same reasoning as the editable-element rule above.
  * - Supports both `Ctrl` (Windows/Linux) and `Cmd` (Mac) via the `mod` flag.
- * - When `singleKeyEnabled` is false, single-key shortcuts are suppressed
- *   while modifier shortcuts continue to work (WCAG 2.1.4 compliance).
  */
 export function useKeyboardShortcuts(
   shortcuts: ShortcutDefinition[],
@@ -96,7 +91,6 @@ export function useKeyboardShortcuts(
 
   const handleKeyDown = useCallback((event: KeyboardEvent) => {
     const mac = isMac();
-    const singleKeyEnabled = optionsRef.current?.singleKeyEnabled ?? true;
     const currentShortcuts = shortcutsRef.current;
 
     // ---- Sequence handling (no-modifier, non-editable only) ----
@@ -106,10 +100,9 @@ export function useKeyboardShortcuts(
     // ESC inside a plain input/textarea/select blurs it so the user can
     // immediately use single-key shortcuts. Limited to native form fields —
     // contentEditable / TipTap have their own ESC semantics (close menu,
-    // exit cell, etc.) and we leave those alone. We also bail when another
-    // listener already called preventDefault() (e.g. a Radix Dialog that
-    // wants to close on ESC and keep focus management intact) — checking
-    // defaultPrevented is what lets dialog ESC handlers win cleanly.
+    // exit cell, etc.) and we leave those alone. Skipped once the keystroke
+    // has been claimed elsewhere (`defaultPrevented`): a layer dismissing on
+    // ESC restores focus itself, and blurring underneath it fights that.
     if (event.key === 'Escape' && !hasModifier && !event.defaultPrevented) {
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
@@ -129,8 +122,6 @@ export function useKeyboardShortcuts(
         clearPendingPrefix();
 
         if (match) {
-          // Sequences respect the singleKeyEnabled toggle
-          if (!singleKeyEnabled) return;
           event.preventDefault();
           match.action();
           return;
@@ -142,7 +133,7 @@ export function useKeyboardShortcuts(
       const isPrefix = currentShortcuts.some(
         (s) => s.sequence && s.sequence.startsWith(key + ' '),
       );
-      if (isPrefix && singleKeyEnabled) {
+      if (isPrefix) {
         // Start a new sequence; suppress any single-key shortcut for this key
         pendingPrefixRef.current = key;
         optionsRef.current?.onSequenceChange?.(key);
@@ -174,11 +165,38 @@ export function useKeyboardShortcuts(
       // Match against any of the defined key values
       if (!shortcut.keys.includes(event.key)) continue;
 
-      // WCAG 2.1.4: suppress single-key shortcuts when the toggle is off
-      if (!modRequired && !altRequired && !shiftRequired && !singleKeyEnabled) continue;
+      // A shortcut with no modifier is a bare character key, and yields to
+      // anything closer to the keystroke. Modifier chords (Ctrl+S, Alt+I) are
+      // app-level and deliberately punch through both gates below — that
+      // is why Ctrl+S still saves while you are typing in the editor.
+      //
+      // `shiftRequired` counts as a modifier here, which is worth naming
+      // because WCAG 2.1.4 would not agree: Shift+/ produces `?`, one
+      // character, and the success criterion is about single *characters*, not
+      // about how many physical keys are held. This classification is
+      // pre-existing — the single-key gate below has always used it —
+      // and it is left alone rather than corrected here so that this change
+      // stays about `defaultPrevented`. Nothing currently rides on it either:
+      // the app's only `shift: true` shortcut is `Alt+Shift+D`, which requires
+      // Alt as well and so is a genuine chord however Shift is counted. A
+      // Shift-ONLY shortcut — `?` for help being the obvious candidate — would
+      // be the first to bypass both gates, and should flip this line to
+      // treat Shift as a bare key rather than be added as-is.
+      const singleKey = !modRequired && !altRequired && !shiftRequired;
 
       // Suppress non-modifier shortcuts when inside editable elements
-      if (!modRequired && !altRequired && !shiftRequired && isEditableTarget(event)) continue;
+      if (singleKey && isEditableTarget(event)) continue;
+
+      // Suppress non-modifier shortcuts once another handler has claimed the
+      // keystroke. This is what lets a portalled layer's ESC win cleanly:
+      // Radix's DismissableLayer handles ESC from a *capture* listener on
+      // `document`, calls preventDefault() and dismisses, so by the time this
+      // bubble-phase listener runs the layer can already be unmounted and a
+      // `[role="dialog"]`-style probe of the DOM finds nothing. The flag is
+      // the only surviving evidence that the key was already spoken for —
+      // without it, ESC on an open colour-picker popover closed the popover
+      // *and* exited the article's edit mode.
+      if (singleKey && event.defaultPrevented) continue;
 
       event.preventDefault();
       shortcut.action();

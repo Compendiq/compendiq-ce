@@ -18,7 +18,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=
 
 ### LLM providers
 
-By default the first-boot code seeds an `llm_providers` row for Ollama (always local). If you also seeded a row for Azure / OpenAI during an earlier test run, delete it from Settings → LLM before running disconnected:
+By default the first-boot code seeds an `llm_providers` row for Ollama (always local). If you also seeded a row for Azure / OpenAI during an earlier test run, delete it from Settings → AI → AI Models before running disconnected:
 
 ```sql
 DELETE FROM llm_providers WHERE base_url ~ '(openai\.com|azure\.com)';

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { KPICards } from './KPICards';
 import { formatRelativeTime } from '../../shared/lib/format-relative-time';
@@ -53,45 +53,25 @@ describe('KPICards', () => {
     );
   });
 
-  it('gives the Last Sync tile double width so one tile leads the row', () => {
+  it('renders Last Sync as the final segment of the KPI strip', () => {
     render(
       <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
       { wrapper: Wrapper },
     );
 
     const lastSync = screen.getByTestId('kpi-last-sync');
-    expect(lastSync.closest('.sm\\:col-span-2')).not.toBeNull();
+    const segments = Array.from(screen.getByTestId('kpi-cards').children);
+    expect(segments.indexOf(lastSync)).toBe(segments.length - 1);
   });
 
-  it('offers the sync action inside the Last Sync tile', () => {
-    const onSync = vi.fn();
+  it('renders Last Sync as ambient status without button clutter', () => {
     render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={onSync} />,
+      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} lastSynced="2026-03-10T10:00:00Z" />,
       { wrapper: Wrapper },
     );
 
-    const btn = screen.getByTestId('kpi-sync-btn');
-    expect(screen.getByTestId('kpi-last-sync')).toContainElement(btn);
-    fireEvent.click(btn);
-    expect(onSync).toHaveBeenCalledOnce();
-  });
-
-  it('disables the sync action while a sync is running', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} onSync={vi.fn()} isSyncing />,
-      { wrapper: Wrapper },
-    );
-
-    expect(screen.getByTestId('kpi-sync-btn')).toBeDisabled();
-    expect(screen.getByTestId('kpi-sync-btn')).toHaveTextContent('Syncing...');
-  });
-
-  it('omits the sync action when no handler is supplied', () => {
-    render(
-      <KPICards embeddingStatus={mockEmbeddingStatus} spacesCount={5} />,
-      { wrapper: Wrapper },
-    );
-
+    const lastSync = screen.getByTestId('kpi-last-sync');
+    expect(lastSync).toBeInTheDocument();
     expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
   });
 
@@ -253,7 +233,7 @@ describe('KPICards', () => {
     expect(screen.getByTestId('kpi-embedding-coverage')).toHaveTextContent('--');
   });
 
-  it('shows "Never" when lastSynced is not provided', () => {
+  it('says Not recorded when lastSynced is missing but pages exist', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -264,7 +244,36 @@ describe('KPICards', () => {
 
     const card = screen.getByTestId('kpi-last-sync');
     expect(card).toHaveTextContent('Last Sync');
-    expect(card).toHaveTextContent('Never');
+    expect(card).toHaveTextContent('Not recorded');
+    expect(card).not.toHaveTextContent('Never');
+    expect(card).not.toHaveTextContent('Local pages only');
+  });
+
+  it('renders Local pages only when no Confluence spaces are connected', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.queryByTestId('kpi-sync-btn')).not.toBeInTheDocument();
+    expect(screen.getByTestId('kpi-last-sync')).toHaveTextContent('Local pages only');
+    expect(screen.getByTestId('kpi-last-sync')).not.toHaveTextContent('Never');
+  });
+
+  it('does not claim zero spaces when the library already has pages', () => {
+    render(
+      <KPICards
+        embeddingStatus={mockEmbeddingStatus}
+        spacesCount={0}
+      />,
+      { wrapper: Wrapper },
+    );
+
+    expect(screen.getByTestId('kpi-spaces-synced')).toHaveTextContent('in this library');
+    expect(screen.getByTestId('kpi-spaces-synced')).not.toHaveTextContent('0 spaces');
   });
 
   it('shows relative time for lastSynced', () => {
@@ -314,7 +323,11 @@ describe('KPICards', () => {
     expect(svg).toHaveAttribute('aria-label', 'Embedding coverage: 100%');
   });
 
-  it('all cards use consistent DOM structure for equal height', () => {
+  // These are three segments of ONE strip, not three cards. The old version of
+  // this test asserted each carried `rounded-xl bg-card h-full` — the tile
+  // styling — which is exactly what a strip must not have: three bordered
+  // panes inside a bordered pane is the nested-card shape.
+  it('renders one separated strip with all three segments inside it', () => {
     render(
       <KPICards
         embeddingStatus={mockEmbeddingStatus}
@@ -324,18 +337,21 @@ describe('KPICards', () => {
       { wrapper: Wrapper },
     );
 
-    const testIds = [
-      'kpi-total-articles',
-      'kpi-embedded-pages',
-      'kpi-last-sync',
-    ];
+    // Separated by a rule, not boxed. The strip is ambient status — a caption
+    // on the page rather than an object on it — so it carries a bottom hairline
+    // and no fill. It used to assert `bg-card`, which pinned the container the
+    // destacking pass removed; the intent was always "one strip, and the
+    // segments own no pane styling", which the loop below is what actually
+    // tests.
+    const strip = screen.getByTestId('kpi-cards');
+    expect(strip.className).not.toContain('bg-card');
 
-    for (const testId of testIds) {
-      const card = screen.getByTestId(testId);
-      // Each card uses the v0.4 translucent pane style + h-full for equal height
-      expect(card.className).toContain('rounded-xl');
-      expect(card.className).toContain('bg-card/50');
-      expect(card.className).toContain('h-full');
+    for (const testId of ['kpi-total-articles', 'kpi-embedded-pages', 'kpi-last-sync']) {
+      const segment = screen.getByTestId(testId);
+      expect(strip).toContainElement(segment);
+      // No pane styling of its own — the strip is the only surface.
+      expect(segment.className).not.toContain('bg-card');
+      expect(segment.className).not.toContain('rounded-xl');
     }
   });
 });

@@ -13,8 +13,8 @@ const MODE_LABELS: Record<VimMode, string> = {
 
 const MODE_COLORS: Record<VimMode, string> = {
   normal: 'bg-action/15 text-action',
-  insert: 'bg-emerald-500/15 text-emerald-400',
-  visual: 'bg-amber-500/15 text-amber-400',
+  insert: 'bg-success/15 text-success',
+  visual: 'bg-warning/15 text-warning',
 };
 
 export function VimModeIndicator({ vimState }: VimModeIndicatorProps) {
@@ -23,7 +23,7 @@ export function VimModeIndicator({ vimState }: VimModeIndicatorProps) {
   return (
     <div
       data-testid="vim-mode-indicator"
-      className="flex items-center gap-2 border-t border-border/50 bg-card/80 px-3 py-1 text-xs font-mono"
+      className="flex items-center gap-2 border-t border-border bg-card px-3 py-1 text-xs font-mono"
     >
       <span
         className={cn(

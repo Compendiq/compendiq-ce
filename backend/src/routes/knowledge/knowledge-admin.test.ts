@@ -315,7 +315,13 @@ describe('knowledge-admin routes - happy path', () => {
     );
   });
 
-  it('should resolve a numeric pageId via the id::int branch', async () => {
+  // #1167: the id arm casts the COLUMN (`id::text`), never the parameter.
+  // `$1::int` overflowed on any Confluence content id above 2^31 (22003), and
+  // the `confluence_id` arm could not rescue it. The behavioural regression
+  // test lives in `pages-id-overflow.integration.test.ts` against real
+  // Postgres — a mocked query() accepts `2200000000` and proves nothing, so
+  // this one only pins the SQL shape.
+  it('should resolve a numeric pageId via the id::text branch', async () => {
     mockQueryFn.mockResolvedValue({ rows: [{ id: 99 }] });
     mockRegenerateSummary.mockResolvedValue(undefined);
 
@@ -326,10 +332,28 @@ describe('knowledge-admin routes - happy path', () => {
 
     expect(response.statusCode).toBe(200);
     expect(mockQueryFn).toHaveBeenCalledWith(
-      'SELECT id FROM pages WHERE id = $1::int OR confluence_id = $2',
+      'SELECT id FROM pages WHERE id::text = $1 OR confluence_id = $2',
       ['99', '99'],
     );
     expect(mockRegenerateSummary).toHaveBeenCalledWith(99);
+  });
+
+  // The id arm is normalised (`toPageIdText`) so a zero-padded id still
+  // resolves the way `'007'::int` used to; `confluence_id` stays verbatim.
+  it('should normalise a zero-padded pageId on the id arm only', async () => {
+    mockQueryFn.mockResolvedValue({ rows: [{ id: 7 }] });
+    mockRegenerateSummary.mockResolvedValue(undefined);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/summary-regenerate/007',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockQueryFn).toHaveBeenCalledWith(
+      'SELECT id FROM pages WHERE id::text = $1 OR confluence_id = $2',
+      ['7', '007'],
+    );
   });
 
   // #356 AC: when no provider is configured, the route must still respond

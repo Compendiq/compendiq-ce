@@ -6,7 +6,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PageViewPage } from './PageViewPage';
 import { useAuthStore } from '../../stores/auth-store';
 import { useArticleViewStore } from '../../stores/article-view-store';
-import { apiFetch } from '../../shared/lib/api';
+import { useAiDockStore } from '../../stores/ai-dock-store';
+import { apiFetch, ApiError } from '../../shared/lib/api';
+import { toast } from 'sonner';
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
 
 const mockNavigate = vi.fn();
 const mockUpdatePage = vi.fn();
@@ -64,6 +75,7 @@ vi.mock('../../shared/components/article/ArticleViewer', async () => {
   };
 });
 
+
 // Configurable draft content so tests can exercise the restore-draft dialog.
 let mockDraftContent: string | null = null;
 
@@ -78,10 +90,12 @@ vi.mock('../../shared/components/article/Editor', async () => {
       content,
       onChange,
       onEditorReady,
+      ydoc,
     }: {
       content: string;
       onChange?: (dirty: boolean) => void;
       onEditorReady?: (editor: { getHTML: () => string } | null) => void;
+      ydoc?: unknown;
     }) => {
       const htmlRef = React.useRef(content);
       React.useEffect(() => {
@@ -97,6 +111,7 @@ vi.mock('../../shared/components/article/Editor', async () => {
       return (
         <textarea
           aria-label="Article editor"
+          data-has-ydoc={ydoc ? 'true' : 'false'}
           defaultValue={content}
           onChange={(event) => {
             htmlRef.current = event.target.value;
@@ -105,7 +120,10 @@ vi.mock('../../shared/components/article/Editor', async () => {
         />
       );
     },
-    EditorToolbar: () => null,
+    EditorToolbar: ({ actions, pageProperty }: { actions?: React.ReactNode; pageProperty?: React.ReactNode }) => (
+      <div data-testid="editor-toolbar-mock">{pageProperty}{actions}</div>
+    ),
+    EditorContextToolbars: () => null,
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
@@ -130,8 +148,14 @@ vi.mock('../../shared/components/feedback/Skeleton', () => ({
   PageViewSkeleton: () => <div data-testid="page-view-skeleton" />,
 }));
 
-vi.mock('../../shared/components/TagEditor', () => ({
-  TagEditor: () => <div data-testid="tag-editor" />,
+vi.mock('../../shared/components/TagPopover', () => ({
+  TagPopover: ({ tags, onAddTag, onRemoveTag }: { tags?: string[]; onAddTag?: (t: string) => void; onRemoveTag?: (t: string) => void }) => (
+    <div data-testid="tag-popover">
+      <span data-testid="tag-list">{tags?.join(',')}</span>
+      <button data-testid="add-tag-btn" onClick={() => onAddTag?.('tag2')}>Add Tag</button>
+      <button data-testid="remove-tag-btn" onClick={() => onRemoveTag?.('tag1')}>Remove Tag</button>
+    </div>
+  ),
 }));
 
 
@@ -153,16 +177,40 @@ vi.mock('../../shared/components/diagrams/DrawioEditor', () => ({
 }));
 
 vi.mock('../../shared/lib/api', () => ({
-  apiFetch: vi.fn().mockResolvedValue({}),
+  apiFetch: vi.fn().mockResolvedValue({ linked: [], section: [], related: [] }),
+  ApiError: class ApiError extends Error {
+    statusCode: number;
+    code?: string;
+    remoteVersion?: number;
+    localVersion?: number;
+    constructor(statusCode: number, message: string, code?: string) {
+      super(message);
+      this.name = 'ApiError';
+      this.statusCode = statusCode;
+      this.code = code;
+    }
+  },
 }));
 
+const mockSetPresenceEditing = vi.fn();
+let mockPresenceViewers: Array<{ userId: string; name: string; role: string; isEditing: boolean }> = [];
 vi.mock('./use-presence', () => ({
-  usePresence: () => ({ viewers: [], selfIsEditing: false, setEditing: vi.fn() }),
+  usePresence: () => ({
+    viewers: mockPresenceViewers,
+    selfIsEditing: false,
+    setEditing: mockSetPresenceEditing,
+  }),
+}));
+
+const { useCollabProviderMock } = vi.hoisted(() => ({
+  useCollabProviderMock: vi.fn(),
+}));
+vi.mock('./use-collab-provider', () => ({
+  useCollabProvider: (opts: unknown) => useCollabProviderMock(opts),
 }));
 
 vi.mock('../../shared/hooks/use-standalone', () => ({
   useSubmitFeedback: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useVerifyPage: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 let capturedShortcuts: Array<{ key: string; keys: string[]; mod?: boolean; alt?: boolean; shift?: boolean; description: string; category: string; action: () => void }> = [];
@@ -183,9 +231,17 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       ollamaModel: 'qwen3.5',
       llmProvider: 'ollama',
       openaiModel: null,
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
     },
     isLoading: false,
   }),
+}));
+
+vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
+  useInlineCompletionAvailability: () => ({ data: true }),
 }));
 
 const mockPage = {
@@ -229,15 +285,27 @@ const mockPage = {
 
 let currentMockPage: typeof mockPage | undefined = mockPage;
 let mockIsLoading = false;
+let mockPageIsError = false;
+let mockPageErrorValue: unknown = null;
 
 const mockPinMutate = vi.fn();
 const mockUnpinMutate = vi.fn();
 const mockDeleteMutateAsync = vi.fn().mockResolvedValue(undefined);
+const mockRefetchPage = vi.fn();
 
 vi.mock('../../shared/hooks/use-pages', () => ({
-  usePage: () => ({ data: mockIsLoading ? undefined : currentMockPage, isLoading: mockIsLoading }),
+  usePage: () => ({
+    data: mockIsLoading ? undefined : currentMockPage,
+    isLoading: mockIsLoading,
+    isError: mockPageIsError,
+    error: mockPageErrorValue,
+    refetch: mockRefetchPage,
+    isFetching: false,
+  }),
   useUpdatePage: () => ({ mutateAsync: mockUpdatePage, isPending: false }),
   useUpdatePageLabels: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdatePageIcon: () => ({ mutate: vi.fn(), isPending: false }),
+  useUploadPageIcon: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePageFilterOptions: () => ({ data: { authors: [], labels: [] } }),
   usePinnedPages: () => ({ data: { items: [] } }),
   usePinPage: () => ({ mutate: mockPinMutate, isPending: false }),
@@ -281,6 +349,9 @@ describe('PageViewPage', () => {
   beforeEach(() => {
     currentMockPage = mockPage;
     mockIsLoading = false;
+    mockPageIsError = false;
+    mockPageErrorValue = null;
+    mockRefetchPage.mockReset();
     capturedShortcuts = [];
     mockNavigate.mockReset();
     mockUpdatePage.mockReset().mockResolvedValue(undefined);
@@ -288,10 +359,21 @@ describe('PageViewPage', () => {
     mockUnpinMutate.mockReset();
     mockDeleteMutateAsync.mockReset().mockResolvedValue(undefined);
     mockDraftContent = null;
+    mockPresenceViewers = [];
+    mockSetPresenceEditing.mockReset();
+    useCollabProviderMock.mockReset();
+    useCollabProviderMock.mockImplementation(() => ({
+      ydoc: null,
+      provider: null,
+      synced: false,
+      awarenessUsers: [],
+      error: null,
+    }));
     vi.mocked(apiFetch).mockClear();
-    vi.mocked(apiFetch).mockResolvedValue({} as never);
+    vi.mocked(apiFetch).mockResolvedValue({ linked: [], section: [], related: [] } as never);
     localStorage.clear();
     Element.prototype.scrollTo = vi.fn();
+    useAiDockStore.setState({ open: false });
 
     useAuthStore.getState().setAuth('token', {
       id: '1',
@@ -307,11 +389,100 @@ describe('PageViewPage', () => {
     document.body.innerHTML = '';
   });
 
-  it('renders the article title and space key in the breadcrumb', () => {
+
+
+  // ---------- fetch-failure vs. genuine 404 (P1) ----------
+  // usePage used to be consumed as { data, isLoading } only, so a 500, a
+  // dropped network, and a real 404 all fell into the same "Page not found"
+  // screen with no retry — CLAUDE.md already forbids exactly this pattern
+  // for usePageTree; this route hadn't gotten the fix.
+
+  it('keeps the "Page not found" copy — with no retry control — for a genuine 404', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new ApiError(404, 'Page not found');
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Engineering Handbook')).toBeInTheDocument();
-    expect(screen.getByText('ENG')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    expect(screen.queryByTestId('page-load-error')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a distinct failed-to-load state with retry for a non-404 failure', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new ApiError(500, 'Internal Server Error (HTTP 500)');
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('alert')).toHaveAttribute('data-testid', 'page-load-error');
+    expect(screen.getByRole('heading', { name: /couldn.t load this page/i })).toBeInTheDocument();
+    expect(screen.getByText('Internal Server Error (HTTP 500)')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(mockRefetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the same failed-to-load state for a non-ApiError (e.g. a network failure)', () => {
+    currentMockPage = undefined;
+    mockPageIsError = true;
+    mockPageErrorValue = new Error('Failed to fetch');
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('page-load-error')).toBeInTheDocument();
+    expect(screen.getByText(/this page is still there/i)).toBeInTheDocument();
+  });
+
+  it('renders the article title as the document heading only', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+
+    expect(screen.getAllByText('Engineering Handbook')).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' })).toBeInTheDocument();
+  });
+
+  it('offers Add icon on the title when the page has no mark', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    expect(screen.getByRole('button', { name: 'Add icon' })).toBeInTheDocument();
+  });
+
+  it('places the page mark to the left of the document title', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    const heading = screen.getByRole('heading', { level: 1, name: 'Engineering Handbook' });
+    const add = screen.getByRole('button', { name: 'Add icon' });
+    expect(heading.parentElement?.className).toMatch(/(?:^|\s)flex(?:\s|$)/);
+    expect(add.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('gives the document title the same reduced top inset in read and edit', () => {
+    const { unmount } = render(<PageViewPage />, { wrapper: createWrapper() });
+    const readShell = screen.getByTestId('article-content-shell');
+    expect(readShell.className).toMatch(/(?:^|\s)pt-4(?:\s|$)/);
+    expect(readShell.className).not.toMatch(/\bpt-10\b/);
+    expect(readShell.className).not.toMatch(/\bsm:pt-12\b/);
+    unmount();
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Edit'));
+    const title = screen.getByTestId('edit-title-input');
+    expect(title.className).toMatch(/(?:^|\s)p-0(?:\s|$)/);
+    expect(title.parentElement?.className).toMatch(/(?:^|\s)pt-4(?:\s|$)/);
+    expect(title.parentElement?.className).not.toMatch(/\bpy-5\b/);
+  });
+
+  it('keeps the title, body and tables in the same 1200px column', () => {
+    const { unmount } = render(<PageViewPage />, { wrapper: createWrapper() });
+    const readShell = screen.getByTestId('article-content-shell');
+    expect(readShell.className).toContain('max-w-[1200px]');
+    expect(readShell.className).toMatch(/(?:^|\s)px-5(?:\s|$)/);
+    expect(readShell.className).toContain('sm:px-10');
+    unmount();
+
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Edit'));
+    const titleBox = screen.getByTestId('edit-title-input').parentElement;
+    expect(titleBox?.className).toContain('max-w-[1200px]');
+    expect(titleBox?.className).toMatch(/(?:^|\s)px-5(?:\s|$)/);
+    expect(titleBox?.className).toContain('sm:px-10');
   });
 
   describe('feedback widget visibility', () => {
@@ -340,27 +511,45 @@ describe('PageViewPage', () => {
     });
   });
 
-  it('renders the Edit button in the header (action buttons moved to right pane)', () => {
+  it('puts Edit and tags on the sticky article bar, not in the 48px header', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Edit')).toBeInTheDocument();
-    // AI Improve, Pin, Confluence, Delete are now in ArticleRightPane
-    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
-    expect(screen.queryByText('Delete')).not.toBeInTheDocument();
+    const strip = screen.getByTestId('article-read-toolbar');
+    expect(strip).toContainElement(screen.getByTestId('edit-page-btn'));
+    expect(strip).toContainElement(screen.getByTestId('article-tags-readonly'));
+    expect(screen.getByTestId('article-tags-readonly')).toHaveTextContent('docs');
+    expect(screen.queryByTestId('tag-popover')).not.toBeInTheDocument();
+    expect(screen.getByTestId('edit-page-btn').closest('#app-header-slot')).toBeNull();
+    expect(screen.getByTestId('article-read-toolbar').closest('#app-header-slot')).toBeNull();
+    expect(screen.queryByTestId('show-in-graph-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('verify-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('move-to-trash-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('page-actions-overflow-btn')).not.toBeInTheDocument();
+    // Same chassis as write mode — not a vacant rail and not a title-row chip.
+    expect(strip.closest('[data-testid="article-page"]')).not.toBeNull();
+    expect(strip.closest('[data-testid="article-scroll"]')).toBeNull();
+    expect(strip.className).toContain('w-full');
+    expect(strip.className).not.toMatch(/max-w-\[1200px\]/);
   });
 
-  it('resets the app scroll container when the article route renders', async () => {
-    const scrollContainer = document.createElement('div');
-    scrollContainer.setAttribute('data-scroll-container', '');
-    document.body.appendChild(scrollContainer);
+  it('keeps the article title in the document, not the header', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
 
-    const scrollSpy = vi.spyOn(scrollContainer, 'scrollTo');
+    const heading = screen.getByRole('heading', { level: 1, name: mockPage.title });
+    expect(heading.className).toMatch(/text-3xl/);
+    expect(heading.closest('#app-header-slot')).toBeNull();
+  });
+
+  it('resets the article scroller when the article route renders', async () => {
+    const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollTo');
 
     render(<PageViewPage />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(scrollSpy).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'auto' });
     });
+    expect(screen.getByTestId('article-scroll')).toBeInTheDocument();
   });
 
   it('opens the lightbox from article media', async () => {
@@ -393,7 +582,7 @@ describe('PageViewPage', () => {
     fireEvent.click(screen.getByText('Edit'));
 
     expect(screen.getByText('Save')).toBeInTheDocument();
-    expect(screen.getByText('Cancel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.queryByText('Edit')).not.toBeInTheDocument();
   });
 
@@ -439,6 +628,41 @@ describe('PageViewPage', () => {
     });
   });
 
+  it('clears stale shared headings when navigating to a heading-free page', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [{ path: '/pages/:id', element: <PageViewPage /> }],
+      { initialEntries: ['/pages/page-1'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <RouterProvider router={router} />
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().headings).toHaveLength(2);
+    });
+
+    currentMockPage = {
+      ...mockPage,
+      id: 'page-2',
+      title: 'Heading-free page',
+      bodyHtml: '',
+    };
+    await act(async () => {
+      await router.navigate('/pages/page-2');
+    });
+
+    await waitFor(() => {
+      expect(useArticleViewStore.getState().headings).toEqual([]);
+    });
+  });
+
   it('syncs editing state to article-view-store', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
 
@@ -449,6 +673,26 @@ describe('PageViewPage', () => {
     await waitFor(() => {
       expect(useArticleViewStore.getState().editing).toBe(true);
     });
+  });
+
+  // ---------- write-mode session cluster ----------
+  // Cancel is the compact red 32px X (toolbar-sized, destructive). Save
+  // stays the labelled primary. Both keep an accessible name.
+
+  it('renders a small red Cancel and a labelled Save', () => {
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('Edit'));
+
+    const cancel = screen.getByTestId('cancel-edit-btn');
+    const save = screen.getByTestId('save-page-btn');
+
+    expect(cancel).toHaveAccessibleName('Cancel');
+    expect(cancel).not.toHaveTextContent('Cancel');
+    expect(cancel.className).toContain('nm-icon-button');
+    expect(cancel.className).toContain('nm-action-destructive');
+    expect(save).toHaveAccessibleName('Save');
+    expect(save).toHaveTextContent('Save');
+    expect(save.className).toContain('nm-button-primary');
   });
 
   it('shows error toast when draw.io attachment fetch returns non-OK status', async () => {
@@ -598,6 +842,7 @@ describe('PageViewPage', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     expect(screen.getByText('This page has no content yet.')).toBeInTheDocument();
     expect(screen.getByTestId('add-content-btn')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Connections' })).toBeInTheDocument();
   });
 
   it('shows empty page placeholder when bodyHtml is whitespace-only', () => {
@@ -623,7 +868,7 @@ describe('PageViewPage', () => {
     // Should enter edit mode (shows Save/Cancel), not navigate to a non-existent route
     await waitFor(() => {
       expect(screen.getByText('Save')).toBeInTheDocument();
-      expect(screen.getByText('Cancel')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     });
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -702,62 +947,50 @@ describe('PageViewPage', () => {
     expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
   });
 
-  it('registers an Alt+I shortcut for AI Improve', () => {
+  it('registers an Alt+I shortcut for the AI assistant', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
     expect(aiShortcut).toBeDefined();
     expect(aiShortcut!.alt).toBe(true);
     expect(aiShortcut!.keys).toContain('i');
     expect(aiShortcut!.category).toBe('actions');
+    // The shortcut sheet reads this back to the user, so it has to describe
+    // what the key does now: open the assistant, not run an improvement.
+    expect(aiShortcut!.description).toBe('AI Assistant');
   });
 
-  it('Alt+I action navigates to AI improve page', () => {
+  // #1126: the third of three assistant call sites. All of them used to navigate
+  // to /ai?mode=improve&pageId=…, which took the document off screen in order to
+  // operate on it. They now open the dock beside it instead — and since #1176,
+  // opening is all they do.
+  it('Alt+I action opens the docked assistant without starting a run', () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const aiShortcut = capturedShortcuts.find((s) => s.key === 'Alt+I');
     expect(aiShortcut).toBeDefined();
     aiShortcut!.action();
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+    expect(useAiDockStore.getState().open).toBe(true);
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  // #703 / #769 — the sticky edit toolbar carries an opaque bg-background
-  // under-mask (z-[-1]) covering exactly the toolbar's box (inset-0), the
-  // same pattern as /ai's sticky bars. The toolbar pins flush at the
-  // scrollport top, so the mask must not extend past the toolbar's box:
-  // negative inset offsets push the absolutely positioned mask outside the
-  // scroll container's content edge (the pattern that caused /ai's phantom
-  // vertical scroll).
-  describe('sticky edit-toolbar under-mask (#703, #769)', () => {
-    it('renders an opaque under-mask behind the edit toolbar covering exactly its box', () => {
-      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+  // The 48px strip is a sibling of the article scroller, so content cannot
+  // travel under it and the workspace scrollbar cannot sit beside it.
+  describe('article toolbar sits above the article scroller', () => {
+    it('pins the format toolbar outside the scrolling body', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
-      // The sticky toolbar wrapper establishes its own stacking context
-      // (isolate) so the negative-z mask sits behind it, not behind the page.
-      const toolbar = container.querySelector('.sticky.top-0');
-      expect(toolbar).not.toBeNull();
-      expect(toolbar!.className).toContain('isolate');
-
-      const mask = toolbar!.querySelector('[aria-hidden]');
-      expect(mask).not.toBeNull();
-      expect(mask!.className).toContain('bg-background');
-      expect(mask!.className).not.toContain('bg-background/');
-      expect(mask!.className).toContain('z-[-1]');
-      expect(mask!.className).toContain('inset-0');
-      expect(mask!.className).toContain('pointer-events-none');
+      const toolbar = await screen.findByTestId('editor-toolbar-mock');
+      expect(toolbar.closest('[data-testid="article-scroll"]')).toBeNull();
+      expect(screen.getByTestId('article-scroll').className).toContain('overflow-y-auto');
     });
 
-    it('the under-mask does not extend past the toolbar (regression: #769 phantom scroll)', () => {
-      const { container } = render(<PageViewPage />, { wrapper: createWrapper() });
+    it('renders the format toolbar with Cancel and Save as its session actions', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByText('Edit'));
 
-      const mask = container.querySelector('.sticky.top-0 [aria-hidden]') as HTMLElement;
-      expect(mask).not.toBeNull();
-      // Forbid both negative-utility (-top-[100px]) and arbitrary-negative
-      // (top-[-100px]) spellings, plus inline style offsets.
-      expect(mask.className).not.toMatch(/-(top|bottom|left|right|inset(-[xy])?)-\[/);
-      expect(mask.className).not.toMatch(/\b(top|bottom|left|right|inset(-[xy])?)-\[-/);
-      expect(mask.style.top).toBe('');
-      expect(mask.style.bottom).toBe('');
+      const toolbar = await screen.findByTestId('editor-toolbar-mock');
+      expect(toolbar).toContainElement(screen.getByTestId('cancel-edit-btn'));
+      expect(toolbar).toContainElement(screen.getByTestId('save-page-btn'));
     });
   });
 
@@ -765,14 +998,11 @@ describe('PageViewPage', () => {
   // the Draft badge must use the neutral private-tier palette (no
   // orange/amber/primary). The Playwright contrast spec in Task 6 will catch
   // the colour combo at run-time; this guards the contract at the unit level.
-  it('Draft badge uses neutral private-tier palette, not orange/amber', () => {
+  it('does not put the Draft badge in the 48px header', () => {
     currentMockPage = { ...mockPage, hasDraft: true } as typeof mockPage;
     try {
       render(<PageViewPage />, { wrapper: createWrapper() });
-      const badge = screen.getByTestId('badge-draft');
-      expect(badge.className).not.toMatch(/orange|amber|primary|warning|yellow/);
-      expect(badge.className).toMatch(/bg-\[#ececea\]/);
-      expect(badge.className).toMatch(/text-\[#4a4a48\]/);
+      expect(screen.queryByTestId('badge-draft')).not.toBeInTheDocument();
     } finally {
       currentMockPage = mockPage;
     }
@@ -890,7 +1120,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       // The discard confirmation appears and the editor stays mounted — the
       // work is NOT thrown away until the user confirms.
@@ -911,7 +1141,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await screen.findByText('Discard changes?');
       fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
@@ -929,7 +1159,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await screen.findByText('Discard changes?');
       fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
@@ -946,13 +1176,36 @@ describe('PageViewPage', () => {
 
       fireEvent.click(screen.getByText('Edit'));
       // No edits made — Cancel should exit straight to view mode.
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
 
       await waitFor(() => {
         expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
       });
       expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
       expect(screen.getByText('Edit')).toBeInTheDocument();
+    });
+
+    it('does not add another AI summary after Edit then Done', async () => {
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
+
+      fireEvent.click(screen.getByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+      expect(screen.queryByTestId('article-summary')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
+
+      fireEvent.click(screen.getByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+      expect(screen.getAllByTestId('article-summary')).toHaveLength(1);
     });
   });
 
@@ -1048,7 +1301,7 @@ describe('PageViewPage', () => {
       fireEvent.change(screen.getByLabelText('Article editor'), {
         target: { value: '<p>rewritten page A</p>' },
       });
-      fireEvent.click(screen.getByText('Cancel'));
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
       expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
 
       // Navigate to page B while the discard dialog is still open.
@@ -1184,5 +1437,286 @@ describe('PageViewPage', () => {
     });
   });
 
-});
+  describe('critique recommendations: toast and tag buffering', () => {
+    it('differentiates toast message on save between Confluence and standalone pages', async () => {
+      currentMockPage = { ...mockPage, source: 'confluence', confluenceId: '123' };
+      render(<PageViewPage />, { wrapper: createWrapper() });
 
+      fireEvent.click(screen.getByText('Edit'));
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith('Page saved & synced to Confluence DC.');
+      });
+    });
+
+    it('buffers tag modifications in edit mode and discards them on cancel', async () => {
+      currentMockPage = { ...mockPage, labels: ['tag1'] };
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      // Initially displays 'tag1' in draft mode
+      expect(screen.getByTestId('tag-list')).toHaveTextContent('tag1');
+
+      // Click add-tag-btn which fires onAddTag('tag2')
+      fireEvent.click(screen.getByTestId('add-tag-btn'));
+
+      // TagPopover now receives buffered draft labels ('tag1,tag2')
+      expect(screen.getByTestId('tag-list')).toHaveTextContent('tag1,tag2');
+
+      // Cancel editing and confirm discard
+      fireEvent.click(screen.getByTestId('cancel-edit-btn'));
+      const discardBtn = screen.getByRole('button', { name: /discard changes/i });
+      fireEvent.click(discardBtn);
+
+      // Returned to view mode: the sticky bar stays, draft labels revert
+      // to the published pills (the count-chip lives only in write mode).
+      await waitFor(() => {
+        expect(screen.getByTestId('article-read-toolbar')).toBeInTheDocument();
+        expect(screen.queryByTestId('save-page-btn')).not.toBeInTheDocument();
+        expect(screen.getByTestId('article-tags-readonly')).toHaveTextContent('tag1');
+        expect(screen.queryByTestId('tag-popover')).not.toBeInTheDocument();
+      });
+    });
+
+  });
+
+  describe('collaborative editing (#1447)', () => {
+    it('flag off: provider stays disabled in edit mode and SSE still drives presence', async () => {
+      mockPresenceViewers = [
+        { userId: 'u1', name: 'Alice', role: 'editor', isEditing: true },
+        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
+      ];
+      render(<PageViewPage />, { wrapper: createWrapper() });
+
+      expect(await screen.findByTestId('presence-avatar-stack')).toBeInTheDocument();
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+      const alice = screen.getByText('Alice').closest('[data-testid="presence-avatar"]');
+      expect(alice).toHaveAttribute('data-is-editing', 'true');
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false, pageId: 'page-1' }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+    });
+
+    async function waitForCollabConfig(): Promise<void> {
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith('/collab/config');
+      });
+    }
+
+    it('flag on: provider mounts only in edit mode, and the editor receives the ydoc', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return { linked: [], section: [], related: [] };
+      });
+      const ydoc = { __ydoc: true };
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc,
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false }),
+        );
+      });
+      await waitForCollabConfig();
+
+      fireEvent.click(screen.getByText('Edit'));
+
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: true, pageId: 'page-1' }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'true');
+    });
+
+    it('latches collab vs local at Edit so a late config fetch cannot remount', async () => {
+      let resolveConfig: ((value: { enabled: boolean }) => void) | undefined;
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') {
+          return new Promise<{ enabled: boolean }>((resolve) => {
+            resolveConfig = resolve;
+          });
+        }
+        return { linked: [], section: [], related: [] };
+      });
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      fireEvent.click(await screen.findByText('Edit'));
+      await waitFor(() => {
+        expect(useCollabProviderMock).toHaveBeenCalledWith(
+          expect.objectContaining({ enabled: false }),
+        );
+      });
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+
+      await act(async () => {
+        resolveConfig?.({ enabled: true });
+      });
+      expect(useCollabProviderMock.mock.calls.at(-1)?.[0]).toEqual(
+        expect.objectContaining({ enabled: false }),
+      );
+      expect(screen.getByLabelText('Article editor')).toHaveAttribute('data-has-ydoc', 'false');
+    });
+
+    it('keeps the collab editor mounted when synced goes false after first sync', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return { linked: [], section: [], related: [] };
+      });
+      const live = {
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [] as unknown[],
+        error: null as string | null,
+      };
+      useCollabProviderMock.mockImplementation(() => live);
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      expect(await screen.findByLabelText('Article editor')).toBeInTheDocument();
+
+      live.synced = false;
+      fireEvent.change(screen.getByTestId('edit-title-input'), {
+        target: { value: 'Engineering Handbook' },
+      });
+      expect(screen.queryByTestId('collab-connecting')).toBeNull();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+    });
+
+    it('Done confirms when title diverged and leaves the session without isDirty', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return { linked: [], section: [], related: [] };
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.change(screen.getByTestId('edit-title-input'), {
+        target: { value: 'Renamed in collab' },
+      });
+      fireEvent.click(screen.getByText('Done'));
+      expect(await screen.findByText('Discard changes?')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /discard changes/i }));
+      await waitFor(() => {
+        expect(screen.queryByLabelText('Article editor')).not.toBeInTheDocument();
+      });
+    });
+
+    it('flag on: Save posts /collab/commit, not PUT with a stale version', async () => {
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        if (path === '/pages/page-1/collab/commit') {
+          return { id: 1, title: 'Updated Engineering Handbook', version: 8, source: 'standalone' };
+        }
+        return { linked: [], section: [], related: [] };
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.change(screen.getByDisplayValue('Engineering Handbook'), {
+        target: { value: 'Updated Engineering Handbook' },
+      });
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith(
+          '/pages/page-1/collab/commit',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ title: 'Updated Engineering Handbook' }),
+          }),
+        );
+      });
+      expect(mockUpdatePage).not.toHaveBeenCalled();
+    });
+
+    it('flag on: confluence_modified shows a neutral alert, not a toast, and stays in edit mode', async () => {
+      vi.mocked(toast.error).mockClear();
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        if (path === '/pages/page-1/collab/commit') {
+          const err = new ApiError(409, 'This page was modified in Confluence.', 'confluence_modified');
+          err.remoteVersion = 9;
+          err.localVersion = 7;
+          throw err;
+        }
+        return { linked: [], section: [], related: [] };
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+      fireEvent.click(screen.getByText('Save'));
+
+      expect(await screen.findByTestId('confluence-modified-alert')).toBeInTheDocument();
+      expect(vi.mocked(toast.error).mock.calls.every((c) => !String(c[0]).match(/Confluence/i))).toBe(true);
+      expect(screen.getByText('Save')).toBeInTheDocument();
+      expect(screen.getByLabelText('Article editor')).toBeInTheDocument();
+    });
+
+    it('flag on: SSE usePresence still runs so viewers stay on the stack', async () => {
+      mockPresenceViewers = [
+        { userId: 'u2', name: 'Bob', role: 'viewer', isEditing: false },
+      ];
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === '/collab/config') return { enabled: true };
+        return { linked: [], section: [], related: [] };
+      });
+      useCollabProviderMock.mockImplementation(() => ({
+        ydoc: { __ydoc: true },
+        provider: { awareness: { getStates: () => new Map() } },
+        synced: true,
+        awarenessUsers: [{ id: 'u3', name: 'Nia', color: '#5C6B8A' }],
+        error: null,
+      }));
+
+      render(<PageViewPage />, { wrapper: createWrapper() });
+      await waitForCollabConfig();
+      fireEvent.click(await screen.findByText('Edit'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Nia')).toBeInTheDocument();
+      });
+      expect(screen.getByText('Bob')).toBeInTheDocument();
+      expect(mockSetPresenceEditing).toHaveBeenCalledWith(false);
+    });
+  });
+
+});

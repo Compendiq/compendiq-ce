@@ -21,6 +21,7 @@
 import { z } from 'zod';
 import { query } from '../db/postgres.js';
 import { visiblePagesPredicate } from './page-visibility.js';
+import { toPageIdText } from '../utils/page-id-text.js';
 
 /**
  * Subset of the GET /pages filter shape that's safe + useful for bulk
@@ -110,10 +111,47 @@ interface BulkSelectionResolutionError {
   actual?: number;
 }
 
-interface ResolveBulkSelectionResult {
+export interface ResolveBulkSelectionResult {
   rows: ResolvedBulkRow[];
   /** IDs supplied by the caller that did not resolve to any page (only for ids-mode). */
   notFoundIds: string[];
+  /**
+   * IDs that resolved to **two different live pages** — one by `pages.id`, a
+   * different one by `pages.confluence_id`. Deliberately acted on by nobody:
+   * see the ambiguity note in `resolveBulkSelection`. Always empty in
+   * `numeric-only` mode and in filter mode.
+   */
+  ambiguousIds: string[];
+}
+
+/**
+ * Per-id failures every bulk route reports, as the two things a route needs:
+ * the `errors` lines and the `failed` count they correspond to.
+ *
+ * Shared rather than re-derived at each of the six call sites: an id that the
+ * resolver refused as ambiguous is *not* a "not found", and a site that mapped
+ * only `notFoundIds` would drop it from `errors` **and** from `failed`,
+ * reporting a page as neither succeeded nor failed.
+ *
+ * Both are returned together, rather than leaving each route to write
+ * `failed = errors.length` (#1167 review). That identity is only true while
+ * nothing else has seeded `errors`, which is a convention six call sites would
+ * have to keep independently — and the first route to push a pre-resolution
+ * error would silently double-count it. Handing back the pair makes the
+ * relationship structural instead.
+ */
+export function bulkResolutionFailures(
+  resolution: ResolveBulkSelectionResult,
+): { errors: string[]; failed: number } {
+  const errors = [
+    ...resolution.notFoundIds.map((id) => `Page ${id} not found`),
+    ...resolution.ambiguousIds.map(
+      (id) =>
+        `Page ${id}: ambiguous identifier — it is one page's id and another page's ` +
+        `Confluence id; no action taken`,
+    ),
+  ];
+  return { errors, failed: errors.length };
 }
 
 /**
@@ -225,12 +263,24 @@ const DEFAULT_DRIFT_TOLERANCE = 0.05;
  * already has them.
  *
  * For ids-mode: queries `pages` filtered by id OR confluence_id, restricted
- * to the user's RBAC scope (own standalone OR accessible spaces). Returns
- * the matching rows + the input ids that didn't resolve.
+ * to the user's RBAC scope (own standalone OR accessible spaces). Returns the
+ * matching rows, the input ids that didn't resolve, and the input ids that
+ * resolved to two different pages. **Each input id contributes at most one
+ * row** — it lands in exactly one of the three.
  *
  * For filter-mode: builds the same WHERE clause that `GET /pages` would,
  * COUNTs, validates drift, then SELECTs the resolved rows. Throws
  * `BulkSelectionError` when drift exceeds tolerance.
+ *
+ * `idMode` picks which identifiers the ids-mode arms accept:
+ *  - `'mixed'` (default) — PK **or** `confluence_id`. The wire shape the UI
+ *    sends (`bulkWireId`) and what delete/sync/embed/quality accept.
+ *  - `'numeric-only'` — PK only, so `confluence_id` is never consulted and
+ *    ambiguity cannot arise. Used by `POST /pages/bulk/tag` and
+ *    `/pages/bulk/replace-tags`, which key their work by `String(row.id)` and
+ *    write `WHERE id = $1`; nothing addresses them by `confluence_id`, so they
+ *    stay on the narrower surface rather than gaining an ambiguity case for a
+ *    capability no caller uses.
  */
 export async function resolveBulkSelection(
   userId: string,
@@ -241,9 +291,27 @@ export async function resolveBulkSelection(
   // -- ids mode --
   if (selection.ids) {
     const ids = selection.ids;
-    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(Number);
-    const confluenceStringIds =
-      options.idMode === 'numeric-only' ? [] : ids.filter((id) => !/^\d+$/.test(id));
+    const pkOnly = options.idMode === 'numeric-only';
+
+    // Two arms, and an all-digit id must reach BOTH.
+    //
+    // Confluence DC content ids are numeric strings, so the old
+    // `ids.filter((id) => !/^\d+$/.test(id))` on the confluence arm excluded
+    // every real one: a synced page was not addressable by its `confluence_id`
+    // in any bulk route, at any magnitude. That is the wire shape the UI
+    // actually sends — `bulkWireId` maps every non-standalone row to
+    // `confluenceId ?? id` — so bulk delete/sync/embed/quality resolved *zero*
+    // rows for synced pages and reported the whole selection not-found.
+    //
+    // The id arm is bound as TEXT against `cp.id::text`, not as int4 (#1167),
+    // so a content id above 2^31 cannot abort the statement and sink the batch.
+    // `toPageIdText` keeps the numeric normalisation the old int cast provided,
+    // so a zero-padded id still matches the same row it always did. The
+    // confluence arm takes the ids **verbatim**: `confluence_id` is an opaque
+    // upstream string, and normalising it would invent matches (a row whose
+    // confluence_id is literally `'000999'` is not the row `'999'` names).
+    const numericIds = ids.filter((id) => /^\d+$/.test(id)).map(toPageIdText);
+    const confluenceStringIds = pkOnly ? [] : ids;
 
     const result = await query<{
       id: number;
@@ -257,14 +325,74 @@ export async function resolveBulkSelection(
       // to their private pages regardless of visibility, and the space branch
       // is not gated on source = 'confluence'.
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.source, cp.labels, cp.created_by_user_id FROM pages cp
-       WHERE (cp.id = ANY($1::int[]) OR cp.confluence_id = ANY($2::text[]))
+       WHERE (cp.id::text = ANY($1::text[]) OR cp.confluence_id = ANY($2::text[]))
          AND cp.deleted_at IS NULL
          AND ((cp.source = 'standalone' AND (cp.visibility = 'shared' OR cp.created_by_user_id = $3))
               OR cp.space_key = ANY($4::text[]))`,
       [numericIds, confluenceStringIds, userId, accessibleSpaces],
     );
 
-    const rows: ResolvedBulkRow[] = result.rows.map((r) => ({
+    // Match each *input* id to the row(s) it hit, rather than mapping each row
+    // back to one guessed id. The old reverse map assumed a row could only have
+    // been named one way (synced → `confluence_id`, standalone → PK), so a
+    // synced page addressed by its PK was acted on and *still* counted in
+    // `failed`. Driving from the input handles both addressing modes and is the
+    // only shape that can see an id matching two rows at all.
+    const byPk = new Map<string, (typeof result.rows)[number]>();
+    const byConfluenceId = new Map<string, (typeof result.rows)[number]>();
+    for (const r of result.rows) {
+      byPk.set(String(r.id), r);
+      if (r.confluence_id !== null) byConfluenceId.set(r.confluence_id, r);
+    }
+
+    const selected = new Map<number, (typeof result.rows)[number]>();
+    const notFoundIds: string[] = [];
+    const ambiguousIds: string[] = [];
+
+    for (const id of ids) {
+      const pkHit = /^\d+$/.test(id) ? byPk.get(toPageIdText(id)) : undefined;
+      const confluenceHit = pkOnly ? undefined : byConfluenceId.get(id);
+
+      // Ambiguity: this one string names two different live pages the caller
+      // can see. Refuse it — do not act on both, and do not pick a winner.
+      //
+      // Both wrong answers are silent on a path that includes bulk DELETE:
+      // acting on both trashes a page nobody named, and preferring one arm
+      // trashes the wrong one while reporting success. Neither is recoverable
+      // from the response. Refusing costs the caller one id, which the error
+      // line names, and is the same call `/move` and `/relocate` make for the
+      // identical collision (`assertIdentifierUnambiguous`, #1166) — there
+      // because an ambiguous *stored* `parent_id` re-parents another page's
+      // children, here because an ambiguous *resolved* id deletes another
+      // page. Granularity differs because the operations do: `/move` has one
+      // target so refusing the id is refusing the request, while these routes
+      // have a per-id `errors`/`failed` channel and #1167 exists to keep one
+      // bad id from sinking the batch.
+      //
+      // Unlike #1166 this counts only rows that are live and in the caller's
+      // RBAC scope, because the query already filters both. A trashed row
+      // cannot be a target of any bulk route, so letting it veto an otherwise
+      // unambiguous operation would be a refusal with no hazard behind it —
+      // whereas #1166 must count trashed rows, since the `parent_id` it writes
+      // outlives the request and a restore puts that row back in contention.
+      // Scoping to visible rows also keeps the refusal from disclosing that a
+      // page exists outside the caller's spaces.
+      if (pkHit && confluenceHit && pkHit.id !== confluenceHit.id) {
+        ambiguousIds.push(id);
+        continue;
+      }
+
+      // Same row via both arms (a page whose PK as text equals its own
+      // `confluence_id`) is one target, not a conflict.
+      const hit = confluenceHit ?? pkHit;
+      if (!hit) {
+        notFoundIds.push(id);
+        continue;
+      }
+      selected.set(hit.id, hit);
+    }
+
+    const rows: ResolvedBulkRow[] = [...selected.values()].map((r) => ({
       id: r.id,
       confluenceId: r.confluence_id,
       spaceKey: r.space_key,
@@ -273,19 +401,7 @@ export async function resolveBulkSelection(
       createdByUserId: r.created_by_user_id,
     }));
 
-    // Map each returned row back to the *original* id the caller supplied so
-    // we can compute notFoundIds correctly. In `numeric-only` mode every
-    // input is the integer PK; in `mixed` mode the input is whatever the
-    // route accepted (PK for standalone pages, confluence_id for synced).
-    const foundOriginal = new Set<string>(
-      result.rows.map((r) => {
-        if (options.idMode === 'numeric-only') return String(r.id);
-        return r.source === 'standalone' ? String(r.id) : r.confluence_id ?? String(r.id);
-      }),
-    );
-    const notFoundIds = ids.filter((id) => !foundOriginal.has(id));
-
-    return { rows, notFoundIds };
+    return { rows, notFoundIds, ambiguousIds };
   }
 
   // -- filter mode --
@@ -322,7 +438,7 @@ export async function resolveBulkSelection(
   // when tolerance > 0%).
   const expected = selection.expectedCount;
   if (expected === 0 && actual === 0) {
-    return { rows: [], notFoundIds: [] };
+    return { rows: [], notFoundIds: [], ambiguousIds: [] };
   }
   // tolerance=0 → exact match required. Otherwise allow at least ±1 row of
   // drift even on tiny selections (a 1-page drift on a 5-row preview should
@@ -365,5 +481,5 @@ export async function resolveBulkSelection(
     createdByUserId: r.created_by_user_id,
   }));
 
-  return { rows, notFoundIds: [] };
+  return { rows, notFoundIds: [], ambiguousIds: [] };
 }

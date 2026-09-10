@@ -6,6 +6,9 @@ export class ApiError extends Error {
   constructor(
     public statusCode: number,
     message: string,
+    public code?: string,
+    public remoteVersion?: number,
+    public localVersion?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -110,14 +113,85 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ message: res.statusText }));
-    throw new ApiError(res.status, body.message ?? 'Request failed');
+    const raw = (await res.json().catch(() => null)) as {
+      message?: unknown;
+      error?: unknown;
+      code?: unknown;
+      remoteVersion?: unknown;
+      localVersion?: unknown;
+    } | null;
+    throw new ApiError(
+      res.status,
+      messageFromErrorBody(raw, res),
+      typeof raw?.code === 'string' ? raw.code : undefined,
+      typeof raw?.remoteVersion === 'number' ? raw.remoteVersion : undefined,
+      typeof raw?.localVersion === 'number' ? raw.localVersion : undefined,
+    );
   }
 
-  if (res.headers.get('content-type')?.includes('application/json')) {
-    return res.json();
+  const contentType = res.headers.get('content-type') ?? '';
+  if (contentType.includes('application/octet-stream') && !isBodyless(res.status)) {
+    return (await res.blob()) as T;
+  }
+
+  if (contentType.includes('application/json') && !isBodyless(res.status)) {
+    try {
+      return (await res.json()) as T;
+    } catch {
+      // A response that promises JSON and delivers nothing parseable. Left
+      // alone this rejects with a raw SyntaxError, which is not an ApiError —
+      // so every caller's `err instanceof ApiError` branch misses it and the
+      // user gets a parser message, or silence (#1178).
+      throw new ApiError(
+        res.status,
+        `The server returned an empty or malformed response (HTTP ${res.status}). Please try again.`,
+      );
+    }
   }
   return undefined as T;
+}
+
+/** Authenticated binary GET for same-origin client-model assets (#1418). */
+export async function apiFetchBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const blob = await apiFetch<Blob | undefined>(path, options);
+  if (blob instanceof Blob) return blob;
+  throw new ApiError(500, 'Expected binary asset');
+}
+
+/** Statuses that carry no body at all, so there is nothing to parse. */
+function isBodyless(status: number): boolean {
+  return status === 204 || status === 205 || status === 304;
+}
+
+/**
+ * The message a failed response leaves the user holding.
+ *
+ * A JSON body with a `message` is this app's error contract — surface it
+ * verbatim, because it was written to be read. Everything else is a response
+ * the app never composed: an HTML error page from the nginx edge, an empty
+ * body, a gateway failure. Those used to collapse to `res.statusText` — which
+ * names the *proxy's* rule rather than the app's, and is an empty string over
+ * HTTP/2, where it slipped past `??` and produced a toast with no text at all
+ * — or to a bare `'Request failed'` that took a full code audit to trace to a
+ * branch. Both now carry the status code (#1178).
+ */
+function messageFromErrorBody(
+  body: { message?: unknown; error?: unknown } | null,
+  res: Response,
+): string {
+  if (typeof body?.message === 'string' && body.message.trim()) return body.message;
+  // Several admin routes answer `{error: <human text>}` (the shadow-migration
+  // refusals, provider guards, probe 404s). Surface that text rather than a
+  // bare status line — but only when it reads as prose; a single-token error
+  // NAME ('InternalServerError') is not a message (#1116 review r3).
+  if (typeof body?.error === 'string' && body.error.trim() && /\s/.test(body.error.trim())) {
+    // Keep naming the status — the pre-existing contract for message-less
+    // bodies — while surfacing the refusal text.
+    return `${body.error.trim()} (HTTP ${res.status})`;
+  }
+
+  const reason = res.statusText.trim();
+  return reason ? `${reason} (HTTP ${res.status})` : `Request failed (HTTP ${res.status})`;
 }
 
 /**

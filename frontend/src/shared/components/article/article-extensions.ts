@@ -1,15 +1,29 @@
-import { Node, mergeAttributes, type Editor } from '@tiptap/core';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Extension, Node, mergeAttributes, type Editor } from '@tiptap/core';
+import { Table } from '@tiptap/extension-table';
+import { Highlight } from '@tiptap/extension-highlight';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { ReactNodeViewRenderer } from '@tiptap/react';
+import { toast } from 'sonner';
 import { DrawioDiagramNodeView } from './DrawioDiagramNodeView';
 import { StatusBadgeView } from './StatusBadgeView';
 import { AttachmentsMacroView } from './AttachmentsMacroView';
 import { ChildrenMacroView } from './ChildrenMacroView';
 import { FigureIndexView } from './FigureIndexView';
 import { TableIndexView } from './TableIndexView';
+import { createTableSelectionPerimeterPlugin } from './table-cell-selection';
+import { CompendiqTableView } from './table-layout-view';
+import { blockLabel } from './block-menu-nodes';
+
+const SUMMARY_INTERACTIVE_DESCENDANT =
+  'a[href], button, input, select, textarea, [role="button"], [role="link"], [contenteditable="true"]';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
+    details: {
+      /** Persist UI Expand default-open (`open` on the node). Native expand ignores this. */
+      setDetailsOpen: (options: { pos: number; open: boolean }) => ReturnType;
+    };
     confluenceSection: {
       insertColumns: (options?: { cols?: number }) => ReturnType;
       addSectionColumnBefore: () => ReturnType;
@@ -38,15 +52,30 @@ export const LAYOUT_PRESETS = [
   { type: 'three_with_sidebars', label: 'Side panels', cols: 3, bars: [1, 2, 1] },
 ] as const;
 
+function applyExpandIdentity(el: HTMLElement, attrs: { macroName?: unknown; macroParams?: unknown }) {
+  if (typeof attrs.macroName === 'string' && attrs.macroName) {
+    el.setAttribute('data-macro-name', attrs.macroName);
+  } else {
+    el.removeAttribute('data-macro-name');
+  }
+  if (typeof attrs.macroParams === 'string' && attrs.macroParams) {
+    el.setAttribute('data-macro-params', attrs.macroParams);
+  } else {
+    el.removeAttribute('data-macro-params');
+  }
+  el.classList.add('cq-expand');
+}
+
 /**
  * Details node — renders <details> for collapsible sections.
  * Handles Confluence expand macros converted to <details>/<summary>.
  *
- * Two fixes for TipTap editor:
- * 1. In edit mode, force `open` attribute so the content area is always
- *    visible and the cursor can be placed inside.
- * 2. Add a click handler on <summary> to toggle the `open` node attribute
- *    via ProseMirror transaction (native toggle is swallowed by PM).
+ * Stored `open` is UI Expand's default-open bit (#1129). Native expand must
+ * never write it. The NodeView keeps DOM `open` as a session preview: summary
+ * clicks toggle the element without a document transaction, and a stored-open
+ * change (block menu) is the only thing that resyncs the DOM from attrs.
+ * Edit mode used to force every section open, which hid the reader state and
+ * made a title click persist `expanded` on Refined.
  */
 export const Details = Node.create({
   name: 'details',
@@ -61,6 +90,25 @@ export const Details = Node.create({
         parseHTML: (element) => element.hasAttribute('open'),
         renderHTML: (attributes) => (attributes.open ? { open: '' } : {}),
       },
+      // #1211: identity of the Confluence macro this <details> was converted
+      // from, stamped by the backend forward pass. ProseMirror serializes only
+      // declared attributes — without these declarations an editor save strips
+      // the stamp and the backend reverse pass rewrites every section into a
+      // native expand macro, silently deleting a third-party macro from the
+      // Confluence page (#1129). Mirrors UnknownMacro's shape and naming so a
+      // macro graduating from the fallback keeps the same attribute names.
+      macroName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
+      },
     };
   },
 
@@ -72,63 +120,116 @@ export const Details = Node.create({
     return ['details', mergeAttributes(HTMLAttributes), 0];
   },
 
+  addCommands() {
+    return {
+      setDetailsOpen:
+        ({ pos, open }) =>
+        ({ tr, state, dispatch }) => {
+          const node = state.doc.nodeAt(pos);
+          if (node?.type.name !== 'details') return false;
+          if (node.attrs.macroName !== 'ui-expand') return false;
+          if (dispatch) tr.setNodeMarkup(pos, undefined, { ...node.attrs, open });
+          return true;
+        },
+    };
+  },
+
+  addNodeView() {
+    return ({ node }) => {
+      const el = document.createElement('details');
+      applyExpandIdentity(el, node.attrs);
+      el.open = !!node.attrs.open;
+      let storedOpen = !!node.attrs.open;
+
+      return {
+        dom: el,
+        contentDOM: el,
+        update(updatedNode) {
+          if (updatedNode.type.name !== 'details') return false;
+          applyExpandIdentity(el, updatedNode.attrs);
+          const nextStored = !!updatedNode.attrs.open;
+          if (nextStored !== storedOpen) {
+            el.open = nextStored;
+            storedOpen = nextStored;
+          }
+          return true;
+        },
+        ignoreMutation: (mutation) =>
+          mutation.type === 'attributes' && mutation.attributeName === 'open',
+      };
+    };
+  },
+
   addProseMirrorPlugins() {
     return [
       new Plugin({
         key: new PluginKey('detailsToggle'),
         props: {
-          handleClickOn(view, pos, node, nodePos, event) {
-            // Check if the click target is a <summary> element
-            const target = event.target as HTMLElement;
-            if (target.tagName !== 'SUMMARY' && !target.closest('summary')) {
-              return false;
-            }
-            // Find the parent details node in the document
-            const resolved = view.state.doc.resolve(pos);
-            for (let d = resolved.depth; d >= 0; d--) {
-              const ancestor = resolved.node(d);
-              if (ancestor.type.name === 'details') {
-                const ancestorPos = resolved.before(d);
-                // Toggle the open attribute
-                const tr = view.state.tr.setNodeAttribute(ancestorPos, 'open', !ancestor.attrs.open);
-                view.dispatch(tr);
-                // Prevent the native toggle
-                event.preventDefault();
-                return true;
-              }
-            }
-            return false;
-          },
-          // In edit mode, force all <details> elements to be open in the DOM
-          // so users can always access the content area
+          // Toggle on `click`, not `handleClickOn`. ProseMirror fires
+          // handleClickOn from mouseup; the UA then runs the summary's
+          // default on click and toggles again — first click is a no-op,
+          // second is a double-click that skips handleClickOn and only
+          // the native open lands.
           handleDOMEvents: {
-            focus(view) {
-              if (!view.editable) return false;
-              const detailsEls = view.dom.querySelectorAll('details');
-              detailsEls.forEach((el) => el.setAttribute('open', ''));
-              return false;
+            click(view, event) {
+              const target = event.target;
+              if (!(target instanceof HTMLElement)) return false;
+              const summary = target.closest('summary');
+              const details = summary?.parentElement;
+              if (!summary || details?.tagName !== 'DETAILS' || !view.dom.contains(details)) {
+                return false;
+              }
+              const interactiveDescendant = target.closest(SUMMARY_INTERACTIVE_DESCENDANT);
+              if (interactiveDescendant && summary.contains(interactiveDescendant)) {
+                return false;
+              }
+              details.toggleAttribute('open', !details.hasAttribute('open'));
+              event.preventDefault();
+              return true;
             },
           },
-        },
-        view(editorView) {
-          // On init: force open in edit mode
-          function forceOpen() {
-            if (!editorView.editable) return;
-            const detailsEls = editorView.dom.querySelectorAll('details');
-            detailsEls.forEach((el) => el.setAttribute('open', ''));
-          }
-          // Run after initial render
-          requestAnimationFrame(forceOpen);
-          return {
-            update() {
-              requestAnimationFrame(forceOpen);
-            },
-          };
         },
       }),
     ];
   },
 });
+
+/**
+ * Label an untitled expand section shows in place of its own title (#1227).
+ *
+ * These are Confluence's, not ours: an untitled section renders with the
+ * macro's own default label on the page, so mirroring it is what makes our
+ * read view match. Nothing is ever stored for it — the label is a decoration,
+ * so a section that arrived with no `title` parameter still writes back with
+ * none, which is the whole point of the issue.
+ *
+ * Both strings were measured, not recalled:
+ * - `expand` — `expand-macro.default-title` in the bundled
+ *   `confluence-expand-macro-19.2.44` plugin of a Confluence DC 9.2.14
+ *   container (the key `ExpandMacro` resolves when the parameter is absent).
+ *   Note the ellipsis; the mobile renderer says "Tap here to expand..." and is
+ *   deliberately not modelled here.
+ * - `ui-expand` — Refined's public DC demo (`confluence-dc-demo.refined.com`),
+ *   rendered through `/rest/api/contentbody/convert/view`. It has NO ellipsis;
+ *   the near-collision with the native string is real, not a typo.
+ */
+const EXPAND_PLACEHOLDER_LABELS: Record<string, string> = {
+  expand: 'Click here to expand...',
+  'ui-expand': 'Click here to expand',
+};
+
+/**
+ * Shown for a <details> carrying no identity stamp (pre-#1211 body_html, and
+ * editor-created sections) or an unrecognised one. Generic on purpose: guessing
+ * a third-party macro's label would be the same fabrication in the UI that this
+ * issue removed from the storage format.
+ */
+const DEFAULT_EXPAND_PLACEHOLDER = 'Click to expand';
+
+function expandPlaceholderLabel(macroName: unknown): string {
+  return (typeof macroName === 'string' && EXPAND_PLACEHOLDER_LABELS[macroName]) ||
+    DEFAULT_EXPAND_PLACEHOLDER;
+}
 
 /**
  * DetailsSummary node — renders <summary> inside <details>.
@@ -144,6 +245,52 @@ export const DetailsSummary = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     return ['summary', mergeAttributes(HTMLAttributes), 0];
+  },
+
+  /**
+   * #1227: stamp `data-expand-placeholder` on an empty summary so CSS can show
+   * the macro's default label. A decoration rather than a stored attribute —
+   * nothing about this may reach `body_html`, or it becomes the fabricated
+   * title all over again.
+   *
+   * Not CSS `:empty`: ProseMirror renders an empty textblock as
+   * `<summary><br class="ProseMirror-trailingBreak"></summary>` in editable AND
+   * non-editable mode, so the selector never matches in either. A decoration
+   * also computes under jsdom, which a CSS-only form does not, so it is
+   * testable.
+   *
+   * Registered on the node, so `Editor` and `ArticleViewer` both get it from
+   * `article-extensions.ts` — one change covers edit mode and read view.
+   */
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('detailsSummaryPlaceholder'),
+        props: {
+          decorations(state) {
+            const decorations: Decoration[] = [];
+            state.doc.descendants((node, pos, parent) => {
+              if (node.type.name !== 'detailsSummary') return undefined;
+              // Strictly empty, not trimmed-empty: a summary holding only
+              // spaces looks blank but has the user's own text in it, and
+              // prefixing a label onto it would read as their own typing.
+              // (htmlToConfluence trims, so such a section still writes back
+              // untitled — the label is the only thing that differs.)
+              if (node.content.size > 0) return false;
+              const label = expandPlaceholderLabel(parent?.attrs.macroName);
+              decorations.push(
+                Decoration.node(pos, pos + node.nodeSize, {
+                  'data-expand-placeholder': label,
+                  'aria-label': label,
+                }),
+              );
+              return false;
+            });
+            return DecorationSet.create(state.doc, decorations);
+          },
+        },
+      }),
+    ];
   },
 });
 
@@ -215,6 +362,21 @@ export const Panel = Node.create({
         // TipTap render the attribute as well would write a second copy of
         // the type into every saved page that nothing ever reads.
         renderHTML: () => ({}),
+      },
+      // Native `panel` renders through the info panel node, so its original
+      // macro identity and arbitrary parameters must survive ProseMirror's
+      // declared-attribute filter for lossless write-back (#1438).
+      macroName: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-name'),
+        renderHTML: (attributes) =>
+          attributes.macroName ? { 'data-macro-name': attributes.macroName } : {},
+      },
+      macroParams: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-macro-params'),
+        renderHTML: (attributes) =>
+          attributes.macroParams ? { 'data-macro-params': attributes.macroParams } : {},
       },
     };
   },
@@ -426,7 +588,7 @@ export const ConfluenceChildren = Node.create({
   atom: true,
 
   addAttributes() {
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     const attrs: Record<string, { default: null; parseHTML: (el: HTMLElement) => string | null }> = {};
     for (const name of paramNames) {
       attrs[name] = {
@@ -443,7 +605,7 @@ export const ConfluenceChildren = Node.create({
 
   renderHTML({ node }) {
     const htmlAttrs: Record<string, string> = { class: 'confluence-children-macro' };
-    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'macro-name'];
+    const paramNames = ['sort', 'reverse', 'depth', 'first', 'page', 'style', 'excerptType', 'columns', 'macro-name'];
     for (const name of paramNames) {
       if (node.attrs[name] != null) htmlAttrs[`data-${name}`] = node.attrs[name];
     }
@@ -1153,6 +1315,24 @@ export const TableCaption = Node.create({
   group: 'block',
   content: 'inline*',
 
+  addAttributes() {
+    return {
+      align: {
+        default: 'left',
+        parseHTML: (element) => element.getAttribute('data-align') || element.style.textAlign || 'left',
+        renderHTML: (attributes) => {
+          if (!attributes.align || attributes.align === 'left') {
+            return { 'data-align': 'left' };
+          }
+          return {
+            'data-align': attributes.align,
+            style: `text-align: ${attributes.align}`,
+          };
+        },
+      },
+    };
+  },
+
   parseHTML() {
     return [
       { tag: 'caption' },
@@ -1164,7 +1344,7 @@ export const TableCaption = Node.create({
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
-        class: 'table-caption text-sm text-muted-foreground text-center mt-1 italic',
+        class: 'table-caption text-sm text-muted-foreground text-left mt-1.5 mb-2 italic',
       }),
       0,
     ];
@@ -1214,3 +1394,209 @@ export const TableIndex = Node.create({
     return ReactNodeViewRenderer(TableIndexView);
   },
 });
+
+/**
+ * ExtendedTable — TipTap Table extension with `data-layout` attribute support.
+ * Supports `data-layout="default"` (prose width) and `data-layout="full-width"` (expand to page width).
+ */
+export const ExtendedTable = Table.extend({
+  addOptions() {
+    // parent is always defined on Table.extend; optional-call spread would
+    // make required TableOptions fields (HTMLAttributes) optional and fail tsc.
+    return {
+      ...this.parent!(),
+      View: CompendiqTableView,
+    };
+  },
+
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      'data-layout': {
+        default: 'default',
+        parseHTML: (element) => element.getAttribute('data-layout') || 'default',
+        renderHTML: (attributes) => {
+          if (!attributes['data-layout'] || attributes['data-layout'] === 'default') {
+            return {};
+          }
+          return { 'data-layout': attributes['data-layout'] };
+        },
+      },
+    };
+  },
+
+  addProseMirrorPlugins() {
+    return [
+      ...(this.parent?.() || []),
+      createTableSelectionPerimeterPlugin(),
+    ];
+  },
+});
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    blockShortcuts: {
+      duplicateBlock: () => ReturnType;
+    };
+  }
+}
+
+const NON_DUPLICABLE_CONTAINERS = new Set([
+  'confluenceColumn',
+  'confluenceLayoutCell',
+  'confluenceLayoutSection',
+  'tableRow',
+  'tableCell',
+  'tableHeader',
+]);
+
+/**
+ * BlockShortcutsExtension — Global keyboard shortcuts and commands for block-level operations.
+ * - Mod-d (Cmd+D / Ctrl+D): Duplicate the active block containing the selection (supports nested blocks).
+ */
+export const BlockShortcutsExtension = Extension.create({
+  name: 'blockShortcuts',
+
+  addCommands() {
+    return {
+      duplicateBlock:
+        () =>
+        ({ tr, state, dispatch }) => {
+          const { selection } = state;
+          const $from = selection.$from;
+          if ($from.depth < 1 && state.doc.childCount === 0) return false;
+
+          let targetDepth = $from.depth >= 1 ? 1 : 0;
+          for (let d = $from.depth; d >= 1; d--) {
+            const n = $from.node(d);
+            if (n.isBlock && !NON_DUPLICABLE_CONTAINERS.has(n.type.name)) {
+              targetDepth = d;
+              break;
+            }
+          }
+
+          const node = targetDepth === 0 ? state.doc.firstChild : $from.node(targetDepth);
+          if (!node) return false;
+
+          const insertPos = targetDepth === 0 ? (state.doc.firstChild?.nodeSize ?? 0) : $from.after(targetDepth);
+          const label = blockLabel(node);
+
+          if (dispatch) {
+            tr.insert(insertPos, node);
+            toast.success(`${label} duplicated`, {
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  if (!this.editor.isDestroyed) this.editor.commands.undo();
+                },
+              },
+            });
+          }
+          return true;
+        },
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      'Mod-d': () => this.editor.commands.duplicateBlock(),
+    };
+  },
+});
+
+export type PanelType = 'info' | 'warning' | 'note' | 'tip';
+
+/**
+ * Inserts `node` and leaves the caret inside its first child, so the author
+ * types straight into the new box instead of underneath it.
+ */
+export function insertBlockWithCaret(editor: Editor, typeName: string, node: Record<string, unknown>) {
+  editor
+    .chain()
+    .focus()
+    .insertContent(node)
+    .command(({ tr, dispatch }) => {
+      if (!dispatch) return true;
+      const { from } = tr.selection;
+      let caret: number | null = null;
+      tr.doc.descendants((child, pos) => {
+        if (child.type.name === typeName && pos <= from) {
+          caret = pos + 2;
+        }
+        return true;
+      });
+      if (caret !== null) {
+        tr.setSelection(TextSelection.create(tr.doc, caret));
+      }
+      return true;
+    })
+    .run();
+}
+
+/**
+ * Inserts an empty panel and leaves the caret inside it, so the author types
+ * straight into the box instead of clearing out placeholder copy first.
+ */
+export function insertPanel(editor: Editor, panelType: PanelType) {
+  insertBlockWithCaret(editor, 'panel', {
+    type: 'panel',
+    attrs: { panelType },
+    content: [{ type: 'paragraph' }],
+  });
+}
+
+/**
+ * Inserts the shared Expand module (empty title and body, caret in the title).
+ * Authoring always creates native `expand`. Synced `ui-expand` still loads as
+ * the same module and keeps its Confluence identity on save (#1211).
+ */
+export function insertExpandSection(editor: Editor, macroName: 'expand' | 'ui-expand' = 'expand') {
+  insertBlockWithCaret(editor, 'details', {
+    type: 'details',
+    attrs: { macroName },
+    content: [
+      { type: 'detailsSummary' },
+      { type: 'paragraph' },
+    ],
+  });
+}
+
+/** Wrap the image at the caret in a `figure` so it can carry a caption. */
+export function captionSelectedImage(editor: Editor) {
+  const { from } = editor.state.selection;
+  const node = editor.state.doc.nodeAt(from);
+  if (node?.type.name !== 'image') return;
+  editor
+    .chain()
+    .deleteRange({ from, to: from + node.nodeSize })
+    .insertContentAt(from, {
+      type: 'figure',
+      content: [{ type: 'image', attrs: node.attrs }, { type: 'figcaption' }],
+    })
+    .run();
+}
+
+/**
+ * Highlight extension that ignores elements with data-comment-id
+ * so it never conflicts with or overwrites inline CommentMark notes.
+ */
+export const SafeHighlight = Highlight.extend({
+  parseHTML() {
+    return [
+      {
+        tag: 'mark',
+        getAttrs: (node) => {
+          if (typeof node !== 'string' && (node as HTMLElement).hasAttribute('data-comment-id')) {
+            return false;
+          }
+          return {};
+        },
+      },
+    ];
+  },
+});
+
+export { CommentMark } from './comment-extension';
+
+
+

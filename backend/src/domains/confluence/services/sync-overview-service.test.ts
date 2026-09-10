@@ -55,7 +55,7 @@ describe('getSyncOverview', () => {
       ],
     });
 
-    mockAttachmentExists.mockImplementation(async (_userId: string, pageId: string, filename: string) => {
+    mockAttachmentExists.mockImplementation(async (pageId: string, filename: string) => {
       return pageId === 'page-1' && filename === 'topology.png';
     });
 
@@ -167,7 +167,7 @@ describe('getSyncOverview', () => {
       }],
     });
 
-    mockAttachmentExists.mockImplementation(async (_userId: string, pageId: string, filename: string) => {
+    mockAttachmentExists.mockImplementation(async (pageId: string, filename: string) => {
       return pageId === 'page-1' && filename === 'topology.png';
     });
 

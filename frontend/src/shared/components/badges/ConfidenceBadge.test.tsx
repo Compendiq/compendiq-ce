@@ -49,30 +49,33 @@ describe('ConfidenceBadge', () => {
     expect(badge.getAttribute('title')).toBe('Confidence: 73%');
   });
 
-  it('applies emerald classes for high confidence', () => {
-    render(<ConfidenceBadge score={0.9} />);
+  // Similarity is a MEASUREMENT, not a pipeline state, so every level renders
+  // the same neutral chip and the WORD is the channel (QualityScoreBadge's
+  // de-colouring is the precedent, and this reuses its neutral recipe). The
+  // badge used to wear status-connected / status-syncing / status-disconnected
+  // beside every cited AI answer, so a weak match sat there in the same red as
+  // a broken connection and a partial match in the same amber as a space
+  // mid-sync.
+  it.each([
+    ['High confidence', 0.9],
+    ['Medium confidence', 0.5],
+    ['Low confidence', 0.15],
+  ])('%s renders the neutral chip — no status hue, no hex, no dark:', (label, score) => {
+    render(<ConfidenceBadge score={score} />);
     const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-status-connected');
+    expect(badge).toHaveTextContent(label);
+    expect(badge.className).toContain('bg-muted/40');
+    expect(badge.className).toContain('text-foreground');
+    expect(badge.className).toContain('border-border');
+    expect(badge.className).not.toMatch(
+      /status-|success|warning|destructive|emerald|amber|red|green|#[0-9a-fA-F]{3,8}|dark:/,
+    );
   });
 
-  it('applies amber classes for medium confidence', () => {
-    render(<ConfidenceBadge score={0.5} />);
-    const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-status-syncing');
-  });
-
-  it('applies red classes for low confidence', () => {
-    render(<ConfidenceBadge score={0.15} />);
-    const badge = screen.getByTestId('confidence-badge');
-    expect(badge.className).toContain('text-status-disconnected');
-  });
-
-  it('renders the glowing dot element', () => {
+  it('carries no colour-coded dot — with one neutral chip a dot encodes nothing', () => {
     render(<ConfidenceBadge score={0.8} />);
     const badge = screen.getByTestId('confidence-badge');
-    const dot = badge.querySelector('[aria-hidden="true"]');
-    expect(dot).toBeInTheDocument();
-    expect(dot?.className).toContain('rounded-full');
+    expect(badge.querySelector('[aria-hidden="true"]')).not.toBeInTheDocument();
   });
 
   it('applies custom className', () => {

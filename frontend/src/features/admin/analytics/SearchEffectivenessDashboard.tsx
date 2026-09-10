@@ -3,6 +3,15 @@ import { useQuery } from '@tanstack/react-query';
 import { Download } from 'lucide-react';
 import { apiFetch } from '../../../shared/lib/api';
 import type { DashboardProps } from './AnalyticsPage';
+import { useThemeColors } from '../../../shared/hooks/use-theme-colors';
+import type { ReadThemeColor } from '../../../shared/lib/theme-colors';
+import {
+  CHART_GRID_STROKE,
+  CHART_LEGEND_WRAPPER_STYLE,
+  CHART_TICK_FILL,
+  CHART_TOOLTIP_CONTENT_STYLE,
+  CHART_TOOLTIP_LABEL_STYLE,
+} from '../../../shared/components/charts/chart-chrome';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -16,6 +25,22 @@ interface SearchEffectivenessData {
   clickThroughRate: Array<{ searchType: string; withResults: number; total: number; rate: number }>;
   dailyVolume: Array<{ date: string; totalSearches: number; zeroResultSearches: number }>;
 }
+
+// ── Colors ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Series colours, resolved from the palette per theme. These were Tailwind v3
+ * defaults, which follow no theme and fail contrast on the light pane
+ * (v3 amber-500 measures 2.15:1 on white where `--color-status-syncing`
+ * measures 5.93:1).
+ */
+const buildColors = (read: ReadThemeColor) => ({
+  totalSearches: read('--color-primary'),
+  zeroResults: read('--color-status-disconnected'),
+  clickThrough: read('--color-status-connected'),
+  warning: read('--color-status-syncing'),
+  healthy: read('--color-status-connected'),
+});
 
 // ── Hook ───────────────────────────────────────────────────────────────────────
 
@@ -44,7 +69,11 @@ function GaugeChart({ value, max, label }: { value: number; max: number; label: 
     { name: 'value', value: percentage },
     { name: 'remainder', value: 100 - percentage },
   ];
-  const color = percentage > 30 ? '#ef4444' : percentage > 15 ? '#f59e0b' : '#10b981';
+  const colors = useThemeColors(buildColors);
+  // A zero-result rate is a health reading, so it takes the status tokens
+  // directly: comfortable, warning, broken.
+  const color =
+    percentage > 30 ? colors.zeroResults : percentage > 15 ? colors.warning : colors.healthy;
 
   return (
     <div className="relative" data-testid="gauge-chart">
@@ -80,6 +109,7 @@ function GaugeChart({ value, max, label }: { value: number; max: number; label: 
 
 export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: DashboardProps) {
   const { data, isLoading } = useSearchEffectiveness(dateRange);
+  const colors = useThemeColors(buildColors);
 
   if (isLoading) {
     return (
@@ -157,13 +187,16 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
           <Suspense fallback={<ChartSkeleton />}>
             <ResponsiveContainer width="100%" height={250}>
               <AreaChart data={data.dailyVolume}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Legend />
-                <Area type="monotone" dataKey="totalSearches" name="Total Searches" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.15} />
-                <Area type="monotone" dataKey="zeroResultSearches" name="Zero Results" stroke="#ef4444" fill="#ef4444" fillOpacity={0.15} />
+                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                <XAxis dataKey="date" tick={{ fontSize: 11, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <YAxis tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                <Tooltip
+                  contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                  labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                />
+                <Legend wrapperStyle={CHART_LEGEND_WRAPPER_STYLE} />
+                <Area type="monotone" dataKey="totalSearches" name="Total Searches" stroke={colors.totalSearches} fill={colors.totalSearches} fillOpacity={0.15} />
+                <Area type="monotone" dataKey="zeroResultSearches" name="Zero Results" stroke={colors.zeroResults} fill={colors.zeroResults} fillOpacity={0.15} />
               </AreaChart>
             </ResponsiveContainer>
           </Suspense>
@@ -176,11 +209,15 @@ export function SearchEffectivenessDashboard({ dateRange, onExportPdf }: Dashboa
             {data.clickThroughRate.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <BarChart data={data.clickThroughRate}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-foreground)" strokeOpacity={0.1} />
-                  <XAxis dataKey="searchType" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => `${v}%`} />
-                  <Tooltip formatter={(value) => `${Number(value).toFixed(1)}%`} />
-                  <Bar dataKey="rate" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+                  <XAxis dataKey="searchType" tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} />
+                  <YAxis tick={{ fontSize: 12, fill: CHART_TICK_FILL }} stroke={CHART_GRID_STROKE} tickFormatter={(v: number) => `${v}%`} />
+                  <Tooltip
+                    formatter={(value) => `${Number(value).toFixed(1)}%`}
+                    contentStyle={CHART_TOOLTIP_CONTENT_STYLE}
+                    labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                  />
+                  <Bar dataKey="rate" fill={colors.clickThrough} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (

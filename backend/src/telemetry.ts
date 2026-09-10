@@ -11,15 +11,43 @@
  * Controlled by environment variables:
  *   OTEL_ENABLED=true          - Enable OpenTelemetry (default: false)
  *   OTEL_SERVICE_NAME          - Service name (default: 'compendiq-backend')
- *   OTEL_EXPORTER_OTLP_ENDPOINT - OTLP endpoint (if set, uses OTLP exporter; otherwise console)
+ *   OTEL_EXPORTER_OTLP_ENDPOINT and the standard per-signal config
+ *   (OTEL_EXPORTER_OTLP_{TRACES,METRICS}_ENDPOINT,
+ *   OTEL_{TRACES,METRICS}_EXPORTER incl. 'none') are honored per signal;
+ *   only the fully-unconfigured dev default falls back to console exporters.
  */
 
 import { logger } from './core/utils/logger.js';
 
 const SDK_KEY = '__otelSdk';
 const TRACER_KEY = '__otelTracer';
+const METER_KEY = '__otelMeter';
+
+/**
+ * Where one signal's telemetry actually goes, for the boot log. Mirrors
+ * sdk-node's env precedence: the exporter-choice variable wins (a non-otlp
+ * value like 'none'/'console'/'zipkin' ignores every endpoint); only an
+ * otlp resolution consults the signal-specific then general endpoint.
+ */
+function resolveSignalDestination(exporterChoice: string | undefined, signalEndpoint: string | undefined): string {
+  if (exporterChoice && exporterChoice !== 'otlp') {
+    return exporterChoice;
+  }
+  return (
+    signalEndpoint
+    ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+    ?? (exporterChoice ? 'otlp (default endpoint)' : 'console')
+  );
+}
 
 type OtelSdk = { shutdown: () => Promise<void> };
+
+// Instrument cache for recordHistogram: OTel meters return a NEW histogram on
+// every createHistogram call, so instruments must be created once and reused.
+// Keyed by the meter itself, not module state — an instrument belongs to the
+// meter that created it, and a restart of the SDK (or a test swapping the
+// globalThis seam) must not serve instruments bound to a dead meter.
+const histogramCaches = new WeakMap<object, Map<string, import('@opentelemetry/api').Histogram>>();
 
 /**
  * Construct and start the OpenTelemetry NodeSDK.
@@ -63,11 +91,43 @@ export async function startTelemetry(): Promise<void> {
       ],
     };
 
-    // If OTLP endpoint is configured, the SDK auto-picks it up from env vars
-    // (OTEL_EXPORTER_OTLP_ENDPOINT). Otherwise, it defaults to console exporter.
-    if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
+    // Traces: same policy as the metrics block below (review r3 — the two
+    // guards must stay twins). When any standard trace destination is
+    // expressed — the general OTLP endpoint, the signal-specific traces
+    // endpoint, or an explicit exporter choice including 'none' — pass no
+    // exporter and let sdk-node's env-driven span-processor construction
+    // honor it. Only the unconfigured dev default gets the console fallback.
+    if (
+      !process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      && !process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      && !process.env.OTEL_TRACES_EXPORTER
+    ) {
       const { ConsoleSpanExporter } = await import('@opentelemetry/sdk-trace-node' as string);
       sdkConfig.traceExporter = new ConsoleSpanExporter();
+    }
+
+    // Metrics (#1117): without a reader the SDK registers no MeterProvider
+    // and every histogram records into the void. When no explicit reader is
+    // passed, sdk-node already builds an env-driven one (OTEL_METRICS_EXPORTER
+    // et al., defaulting to OTLP at the configured endpoint) — respect that
+    // config wherever the operator expressed it: the general endpoint, the
+    // signal-specific metrics endpoint, or an explicit exporter choice
+    // (including 'none'). The one remaining gap is the dev default — enabled,
+    // nothing configured — where the env default would export OTLP into
+    // nowhere, so mirror the trace fallback above and print to console.
+    if (
+      !process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      && !process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+      && !process.env.OTEL_METRICS_EXPORTER
+    ) {
+      const { PeriodicExportingMetricReader, ConsoleMetricExporter } = await import(
+        '@opentelemetry/sdk-metrics'
+      );
+      sdkConfig.metricReaders = [
+        new PeriodicExportingMetricReader({
+          exporter: new ConsoleMetricExporter(),
+        }),
+      ];
     }
 
     const sdk = new NodeSDK(sdkConfig);
@@ -80,15 +140,36 @@ export async function startTelemetry(): Promise<void> {
     // Make the tracer available globally for custom spans
     (globalThis as Record<string, unknown>)[TRACER_KEY] = tracer;
 
+    // Same seam for application-level metrics. metrics.getMeter delegates to
+    // the MeterProvider the SDK just registered.
+    (globalThis as Record<string, unknown>)[METER_KEY] = otelApi.metrics.getMeter(serviceName);
+
     logger.info(
       {
         serviceName,
-        otlpEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'console',
+        // Per-signal resolution matches sdk-node's own precedence: an
+        // explicit exporter choice decides WHICH exporter runs (endpoints
+        // only matter when that resolves to otlp), so consult it FIRST —
+        // an endpoint-first chain would log a collector URL for a signal
+        // the operator disabled with '=none' (review r4).
+        tracesDestination: resolveSignalDestination(
+          process.env.OTEL_TRACES_EXPORTER,
+          process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+        ),
+        metricsDestination: resolveSignalDestination(
+          process.env.OTEL_METRICS_EXPORTER,
+          process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+        ),
       },
       'OpenTelemetry initialized',
     );
   } catch (err) {
-    logger.warn({ err }, 'Failed to initialize OpenTelemetry - continuing without tracing');
+    // error, not warn: the operator explicitly asked for telemetry
+    // (OTEL_ENABLED=true), and the historical failure mode here is the OTel
+    // packages missing from the runtime image (hoisting regression — see the
+    // root package.json deps-note), which otherwise leaves a deployment
+    // silently blind while looking configured.
+    logger.error({ err }, 'Failed to initialize OpenTelemetry - continuing without tracing/metrics');
   }
 }
 
@@ -113,12 +194,55 @@ export function getTracer(): import('@opentelemetry/api').Tracer | undefined {
 }
 
 /**
+ * Get the application meter for creating custom metrics.
+ * Returns undefined if OTel is not initialized.
+ */
+export function getMeter(): import('@opentelemetry/api').Meter | undefined {
+  return (globalThis as Record<string, unknown>)[METER_KEY] as
+    | import('@opentelemetry/api').Meter
+    | undefined;
+}
+
+/**
+ * Record a value on a named histogram. Transparent no-op when OTel is
+ * disabled, mirroring {@link withSpan}. The instrument is created on first
+ * use and cached — `options` (unit/description) therefore only take effect
+ * on that first call for a given name.
+ */
+export function recordHistogram(
+  name: string,
+  value: number,
+  attributes?: Record<string, string | number | boolean>,
+  options?: { unit?: string; description?: string },
+): void {
+  const meter = getMeter();
+  if (!meter) {
+    return;
+  }
+  let cache = histogramCaches.get(meter);
+  if (!cache) {
+    cache = new Map();
+    histogramCaches.set(meter, cache);
+  }
+  let histogram = cache.get(name);
+  if (!histogram) {
+    histogram = meter.createHistogram(name, options);
+    cache.set(name, histogram);
+  }
+  histogram.record(value, attributes);
+}
+
+/**
  * Create a custom span for a named operation.
  * If OTel is not enabled, the function is called directly without tracing.
+ *
+ * The live span is passed to `fn` (undefined when tracing is off) so callers
+ * can set attributes that only exist AFTER the work ran — hit counts, degraded
+ * verdicts — which the upfront `attributes` parameter cannot carry.
  */
 export async function withSpan<T>(
   name: string,
-  fn: () => Promise<T>,
+  fn: (span?: import('@opentelemetry/api').Span) => Promise<T>,
   attributes?: Record<string, string | number | boolean>,
 ): Promise<T> {
   const tracer = getTracer();
@@ -133,7 +257,7 @@ export async function withSpan<T>(
           span.setAttribute(key, value);
         }
       }
-      const result = await fn();
+      const result = await fn(span);
       span.setStatus({ code: 1 }); // OK
       return result;
     } catch (err) {
@@ -147,7 +271,7 @@ export async function withSpan<T>(
 }
 
 /**
- * Gracefully shut down the OTel SDK (flushes pending spans).
+ * Gracefully shut down the OTel SDK (flushes pending spans and metrics).
  */
 export async function shutdownTelemetry(): Promise<void> {
   const store = globalThis as Record<string, unknown>;
@@ -161,6 +285,20 @@ export async function shutdownTelemetry(): Promise<void> {
     } finally {
       delete store[SDK_KEY];
       delete store[TRACER_KEY];
+      delete store[METER_KEY];
+      try {
+        // The api globals are write-once: NodeSDK.shutdown() stops the
+        // providers but leaves the DEAD ones registered, and a later
+        // startTelemetry cannot re-register over them — every tracer/meter
+        // handed out after a restart would silently point at a stopped
+        // provider. Disabling here is what makes start→shutdown→start cycles
+        // (tests, and any future hot-reconfigure) hand out live instruments.
+        const otelApi = await import('@opentelemetry/api');
+        otelApi.trace.disable();
+        otelApi.metrics.disable();
+      } catch {
+        // api not loadable here means it was never loaded — nothing to clear.
+      }
     }
   }
 }

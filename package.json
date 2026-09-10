@@ -1,6 +1,6 @@
 {
   "name": "compendiq",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": true,
   "description": "Compendiq - AI-powered knowledge base management with Confluence integration and Ollama LLM backend",
   "workspaces": [
@@ -13,29 +13,57 @@
     "build": "npm run build -w @compendiq/contracts && npm run build -w backend && npm run build -w frontend",
     "lint": "npm run lint -w backend && npm run lint -w frontend",
     "typecheck": "npm run build -w @compendiq/contracts && npm run typecheck -w backend && npm run typecheck -w frontend",
-    "test": "npm run build -w @compendiq/contracts && npm run test -w @compendiq/contracts && npm run test -w backend && npm run test -w frontend",
+    "test": "npm run build -w @compendiq/contracts && npm run test -w @compendiq/contracts && npm run test -w backend && npm run test -w frontend && vitest run --config e2e/vitest.config.ts",
     "test:e2e": "npx playwright test",
     "lighthouse": "lhci autorun",
     "knip": "knip",
     "prepare": "husky || true"
   },
-  "//deps-note": "These mirror two backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting majors from a root devDep chain (@lhci/cli → express/yargs) push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
+  "//deps-note": "These mirror backend prod deps (kept in sync with backend/package.json) so npm hoists them to the root node_modules. Without this, conflicting versions from root devDep chains push backend's copy down to backend/node_modules, where the runtime Docker stage — which copies only the root tree and flattens backend/dist to /app/dist — can't reach them. The OpenTelemetry runtime stack lives here for exactly that reason (#1117: the whole observability path silently no-ops in the shipped image when these nest). The smoke step in .github/workflows/docker-build.yml guards against this regressing silently.",
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.78.0",
+    "@opentelemetry/sdk-metrics": "2.9.0",
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "pdf-lib": "^1.17.1"
+  },
   "devDependencies": {
     "@lhci/cli": "^0.15.1",
     "@playwright/test": "^1.58.2",
     "concurrently": "^9.1.0",
     "husky": "^9.1.7",
     "knip": "^6.3.0",
-    "vitest": "^4.0.18"
+    "vitest": "^5.0.0"
   },
+  "//inference-deps-note": "Transformers 4.2.0 still excludes patched sharp and adm-zip. Scope security overrides to its native chain; keep onnxruntime-node/web paired as published. Compatibility and removal criteria: docs/runbooks/client-inference.md#native-dependency-security-overrides.",
+  "//tooling-deps-note": "knip 6.14.1 admits smol-toml ^1.6.1; pin 1.8.0 for GHSA-7w5x-hrqm-74c2. lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor.",
   "overrides": {
+    "@huggingface/transformers@4.2.0": {
+      "sharp": "0.35.4",
+      "onnxruntime-node@1.24.3": {
+        "adm-zip": "0.6.0"
+      }
+    },
+    "smol-toml": "1.8.0",
+    "@puppeteer/browsers": "3.2.2",
     "vite": "^8.0.16",
+    "@tiptap/core": "3.30.5",
+    "@tiptap/pm": "3.30.5",
+    "@tiptap/starter-kit": "3.30.5",
+    "@tiptap/extensions": "3.30.5",
+    "@tiptap/react": "3.30.5",
+    "@tiptap/extension-bubble-menu": "3.30.5",
+    "@tiptap/extension-floating-menu": "3.30.5",
     "protobufjs": "^7.5.5",
     "@fastify/static": "^9.1.1",
-    "fast-uri": "^3.1.2",
+    "fast-uri": "^3.1.7",
+    "qs@6": "^6.16.0",
+    "@xmldom/xmldom@0.8": "^0.8.15",
     "hono": "^4.12.18",
     "ip-address": "^10.1.1",
-    "shell-quote": "^1.8.4",
+    "js-yaml@3": "^3.15.1",
+    "js-yaml@4": "^4.3.1",
+    "shell-quote": "^1.10.0",
     "tmp": "^0.2.6",
     "uuid": "^14.0.0",
     "brace-expansion@5": "^5.0.6"

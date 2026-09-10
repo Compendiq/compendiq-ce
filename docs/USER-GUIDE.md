@@ -12,6 +12,31 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 2. **Register an account.** The first user automatically receives the admin role.
 3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
 
+### The Getting Started checklist
+
+The Pages overview carries a short **Getting started** checklist for as long as
+you have steps outstanding. It tracks five milestones and ticks each one off by
+itself as you do it — there is nothing to mark complete by hand:
+
+1. Connect your Confluence account
+2. Choose the spaces to sync
+3. Ask your first question
+4. Learn the keyboard shortcuts
+5. Create or edit a page
+
+Each outstanding step carries a button that takes you straight to it. The
+checklist never blocks the page list, and **Dismiss guide** hides it for good —
+once hidden it stays hidden, even when a later step completes behind it.
+
+When the last step lands, a short note appears above the five checked
+milestones, saying so and telling you where to find the guide afterwards. The
+note and completed checklist stay until you leave the overview or dismiss them.
+They appear when you return to the overview even if the final step was completed
+somewhere else — you do not have to be looking at the checklist at the time.
+
+To bring it back at any time — finished or dismissed — open the account menu in
+the top right and choose **Getting Started Guide**.
+
 ### Creating a Confluence PAT
 
 To connect Compendiq to your Confluence Data Center instance:
@@ -30,9 +55,10 @@ Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the bro
 After configuring your Confluence connection:
 
 1. Go to **Settings → Knowledge → Spaces & Sync**.
-2. You will see all available Confluence spaces.
-3. Select the spaces you want to sync to Compendiq.
-4. Click **Sync** to start the initial synchronization.
+2. Click **Fetch Spaces** to load every space your PAT can read.
+3. If the list is long, use the filter box above it to narrow by space name or key. It changes only what you see — spaces you have already ticked stay selected, and a count tells you how many of the list are showing.
+4. Select the spaces you want to sync to Compendiq.
+5. Click **Sync** to start the initial synchronization.
 
 Synced spaces are periodically updated in the background (default: every 15 minutes).
 
@@ -46,6 +72,26 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 - **Filter** by space, tags, or status
 - **Pin** important pages for quick access from the dashboard
 
+### Connections: what to read next
+
+In read mode, **Connections** sits below the article. It groups **Linked articles**
+(links in either direction), **In this section** (parent and child pages), and
+**Related articles** (up to five ranked semantic or shared-label recommendations).
+Each row explains why it appears. Link direction and hierarchy are not similarity
+scores; shared labels name the actual overlap, and semantic scores are the
+relationship engine's recorded cosine similarity, not an AI confidence rating.
+
+Select a title to open that article. **Explore connections** opens the current
+article's focused, two-hop view at `/graph?focus=<page-id>`. Graph remains in
+navigation; the panel does not replace or expand the global canvas.
+
+Only articles you can access appear. Links, hierarchy, and shared-label evidence
+update without waiting for an embedding provider, including on articles with no
+body yet. An empty result is stated in the panel rather than hiding it. Loading
+and failed requests are distinct from an empty result, with a Retry action on
+failures. A failed refresh may retain the last loaded results with a warning;
+an access denial discards them until a successful authorized read.
+
 ### Creating a Page
 
 1. Click **New Page** (or press `Alt+N`).
@@ -54,7 +100,54 @@ The **Pages** view shows all synced pages from your selected Confluence spaces, 
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
 
-You can also start a page from a template (e.g. Meeting Notes, Incident Report, How-to Guide, ADR, Runbook) via the **Use Template** button on the New Page screen.
+You can also start a page from a template (Meeting Notes, Incident Report, How-to Guide, ADR, Runbook, Cornell Notes, plus any templates you or an admin created) via the **Use Template** button on the New Page screen. Shared templates and your own templates are listed separately. If the editor already has content, **Save current as template** stores it as a personal template (admins can tick **Share with everyone**).
+
+### Page templates
+
+Templates are starter layouts for new pages.
+
+1. Open **Settings → Knowledge → Templates**.
+2. **New template** opens a title, optional description/category/icon, and the editor for the body.
+3. Your templates appear under **My templates**. Only you can use, edit, or delete them.
+4. **Shared templates** are visible to everyone. Only an administrator can create a shared template (the **Share with everyone** checkbox), or edit and delete shared ones.
+
+Cornell Notes is a built-in shared template: a two-column **Cues | Notes** table plus a **Summary** at the bottom. Fill notes during the session, cues when you review, and the summary last.
+
+### Importing from Notion
+
+This is a **one-shot migrate**, not a live sync. Open it from **Library → Import from Notion** or from **New Page → Import from Notion**.
+
+1. Paste an **internal integration token**. That is Notion’s **Installation access token** for an **internal connection** — not an OAuth app, and not a personal access token. Create one at [notion.so/my-integrations](https://www.notion.so/my-integrations) (workspace owners only), then share the pages you want to import with that connection. Compendiq stores it encrypted and never shows it again.
+2. Pick what to import in the grouped workspace tree. Selecting a parent selects the importable group below it. Importing a page also discovers its actual embedded child pages and database contents, even if those children were not individually selected. Ordinary links do not import the linked pages. To import only part of a page's contents, select the desired children without their parent; set unwanted databases to **Skip**. Databases offer **Table | Pages | Skip**:
+   - **Table** — property-only rows become table columns and rows, not separate articles. An embedded database's table belongs on its parent article; a standalone database owns its own table article.
+   - **Pages** — rows with real content stay articles. Choosing *Pages* keeps the database's own article, with its rows beneath it, even when that database sits inside another page you are importing. Wikis retain their root article and body, with rows beneath it, and offer only *Pages* or *Skip*. A database you never select — an inline table, or one found inside a page you did select — has no shape of its own: property-only rows become the parent's table, rows with content become the parent's children, and no empty container article is created.
+   - **Skip** — leave the database in Notion.
+
+   Rows beneath a *Table* database read **Included in the table above** and are not separately selectable. Everything beneath a *Skip* database reads **Excluded — stays in Notion**. If you force *Table* on a database whose scan found row content, the picker shows an amber caution: *Some rows have page content — the whole database imports as pages instead*.
+3. Confirm the destination: a **local space**, optional parent page, and visibility (the same contract as creating a standalone page).
+4. Run the import. The server keeps working after the request returns; a large Knowledge Base can take several minutes because Notion allows about three requests per second. Stay on the confirm step until the result appears. Refreshing or closing the tab does not cancel it — re-open **Import from Notion** later and pages that already exist locally are reported as already imported rather than duplicated. If a run is interrupted on the server, wait about ten minutes before starting another; a dead job stops blocking new imports once its lock expires.
+
+**Not supported — stays in Notion** (the picker uses these exact words, and those nodes cannot be selected):
+
+- Data sources — they point at content the pinned Notion API cannot resolve. A linked view of a database Search already returned as the source database is not listed twice.
+- Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
+- **Board** databases — Compendiq is not a Kanban board. The picker marks the Board (and a page that only hosts an inline Board) with *Board view is not compatible — import cards as articles*. Tick the Board row to select its cards; each card imports as an article under a parent article named after the Notion page that contains the database.
+
+**Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.
+
+**Inline databases and child pages.** Non-wiki inline databases read *Imports inside its parent article*. Property-only entries become a simple table there. Entries with page content remain articles, and actual embedded pages become subarticles. The parent uses Compendiq's **Child pages** feature to display its children, including pages nested inside Notion columns or toggles. Wiki roots remain selectable and are never flattened into a table.
+
+**Nothing is dropped to make a table.** If a database cannot be safely flattened — a row holds page content, or a row cannot be read — it imports as pages instead of losing anything, and the result screen says so. Result rows read *imported as a table*, *imported as an article*, or *imported*.
+
+**Very large branches are cut off, not truncated silently.** One run pulls in at
+most 2000 pages beyond the ones you selected. Anything past that reads *Import
+limit reached — select this branch directly to import it* on the result screen;
+re-running the import on that branch picks up exactly where it stopped, and
+nothing already imported is duplicated.
+
+**Repairing an earlier import.** Select its root and enable **Update existing pages with latest Notion content** to rebuild imported content and child-page lists without changing article IDs. This replaces local edits. Leave it off to preserve existing bodies. Old database-row articles are not automatically deleted; review them separately, and do not identify duplicates by title alone.
+
+Skipped and unselected Notion items keep their Notion URLs in imported page bodies. Markdown import on New Page is unchanged: it still loads one `.md` file into the editor and does not create pages until you press Create.
 
 ### Editing a Page
 
@@ -109,21 +202,39 @@ The AI assistant can answer questions, improve content, and help with writing:
 1. Open the **AI** panel from the sidebar (or press `G A`).
 2. Type your question or request.
 3. Responses stream in real-time via SSE.
-4. Conversations are saved and can be continued later.
+4. **Q&A conversations are saved.** Past conversations are listed in the left
+   pane on the AI page, grouped by when you last used them (Today, Yesterday,
+   Previous 7 days, and so on), with a filter box once you have more than
+   eight. Selecting one reopens it at its own address (`/ai/c/<id>`), so it can
+   be bookmarked and walked with the browser's Back and Forward buttons, and
+   your next question continues it. Each row's `⋯` menu **renames** it in place
+   (Enter commits, Escape cancels) or **deletes** it permanently. **New chat**
+   — in the top bar and at the top of the pane — starts an empty one. After the
+   first completed answer, Compendiq generates a concise title in the question's
+   language without delaying the response. If that background step fails, the
+   first question remains the title; a title you rename manually is never
+   replaced later.
+5. Only Q&A is saved. Generate, the rewrite skills and Diagram are not.
+   Questions you ask from the assistant beside an article are saved too and
+   appear in the list tagged with the page they started on; continuing one from
+   the AI page searches the whole knowledge base rather than that page.
 
 ### Improve an Article
 
 AI can analyze and improve existing articles:
 
 1. Open a page.
-2. Click **AI Improve** (or press `Alt+I`).
-3. Choose an improvement mode:
-   - **Grammar** -- fix spelling, grammar, and punctuation
-   - **Structure** -- improve headings, sections, and organization
-   - **Clarity** -- simplify language and improve readability
-   - **Technical accuracy** -- verify technical claims and add corrections
-   - **Completeness** -- identify and fill gaps in the content
-4. Review the suggested changes and apply them.
+2. Click **AI Assistant** (or press `Alt+I`) to open the assistant beside the article.
+   Opening it starts nothing.
+3. Optionally type instructions in the prompt box -- they are sent with the request --
+   and attach a document or image as reference material.
+4. Click the **Improve** chip.
+5. Review the proposed changes in the diff card and **Apply** or **Skip** them.
+
+Improve rewrites for grammar, spelling and punctuation by default. To ask for something
+else -- restructuring, simpler language, filling gaps, checking technical claims -- say so
+in the prompt box before clicking **Improve**; whatever you type is sent as extra
+instructions with the request.
 
 ### Generate an Article
 
@@ -242,7 +353,7 @@ The knowledge graph provides a visual map of relationships between pages:
 
 ## Keyboard Shortcuts
 
-Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
+Press `?` or `Ctrl+/` to open the keyboard shortcuts modal, then start typing in its search box to narrow the list. Key shortcuts:
 
 ### Navigation
 
@@ -264,7 +375,7 @@ Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
 | `Alt+N` | New Page |
 | `Alt+P` | Pin/Unpin page |
 | `Alt+Shift+D` | Delete page |
-| `Alt+I` | AI Improve |
+| `Alt+I` | AI Assistant |
 
 ### Editor
 
@@ -283,11 +394,11 @@ Press `?` or `Ctrl+/` to open the keyboard shortcuts modal. Key shortcuts:
 | Shortcut | Action |
 |----------|--------|
 | `,` | Toggle Left Sidebar |
-| `.` | Toggle Right Panel |
+| `.` | Toggle Page Inspector |
 | `\` | Zen Mode |
 | `Esc` | Close dialog / modal |
 
-Single-key shortcuts (`,`, `.`, `\`, `?`) can be toggled on/off in the shortcuts modal. They are automatically disabled when typing in inputs or the editor.
+Single-key shortcuts (`,`, `.`, `\`, `?`) are automatically disabled when typing in inputs or the editor.
 
 On macOS, `Ctrl` is replaced by `Cmd` and `Alt` by `Option`.
 

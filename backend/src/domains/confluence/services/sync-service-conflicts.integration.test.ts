@@ -244,6 +244,59 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
     expect(args.counts.pagesUpdated).toBe(1);
   });
 
+  /**
+   * #1115 P2 (review r1) — the image flag on the conflict-policy UPDATE.
+   *
+   * It is gated on `body_html` ALONE while `embedding_dirty` beside it is
+   * gated on html OR text, and nothing pinned that asymmetry: the whole
+   * `CASE` could be deleted, or widened to match its neighbour, with every
+   * suite green. Both halves matter — `body_html` is where the `img src`
+   * attributes live, so a text-only difference cannot move an image and
+   * dirtying on it re-scans pages whose pictures are provably identical.
+   */
+  describe('image_embedding_dirty on the conflict-policy update (#1115 P2)', () => {
+    async function imageFlags(id: number): Promise<{ image: boolean; text: boolean }> {
+      const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean }>(
+        `SELECT image_embedding_dirty, embedding_dirty FROM pages WHERE id = $1`,
+        [id],
+      );
+      return { image: r.rows[0]!.image_embedding_dirty, text: r.rows[0]!.embedding_dirty };
+    }
+
+    it('raises it when body_html changes', async () => {
+      activePolicy = 'confluence-wins';
+      const inserted = await insertPage({
+        confluenceId: 'c-img-1',
+        spaceKey: 'DOCS',
+        body: 'OLD-REMOTE-CONTENT',
+      });
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
+
+      await __internal.applyConflictPolicyForExistingPage(makeArgs({ confluenceId: 'c-img-1' }));
+
+      expect(await imageFlags(inserted.id)).toEqual({ image: true, text: true });
+    });
+
+    it('leaves it alone when only body_text differs', async () => {
+      activePolicy = 'confluence-wins';
+      const inserted = await insertPage({
+        confluenceId: 'c-img-2',
+        spaceKey: 'DOCS',
+        body: 'INCOMING-HTML',
+      });
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
+
+      // Same html, different text — the flattener disagreeing with itself
+      // across a converter upgrade. The text side re-embeds; the image side
+      // must not, because no `img src` can have moved.
+      await __internal.applyConflictPolicyForExistingPage(
+        makeArgs({ confluenceId: 'c-img-2', bodyHtml: 'INCOMING-HTML' }),
+      );
+
+      expect(await imageFlags(inserted.id)).toEqual({ image: false, text: true });
+    });
+  });
+
   it('confluence-wins + no local edits → overwrites with no audit', async () => {
     activePolicy = 'confluence-wins';
     const inserted = await insertPage({

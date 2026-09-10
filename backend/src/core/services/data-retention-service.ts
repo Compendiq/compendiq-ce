@@ -30,6 +30,8 @@ import {
   getPendingSyncVersionsRetentionDays,
 } from './admin-settings-service.js';
 import { logAuditEvent } from './audit-service.js';
+import { cleanupStandalonePageAttachmentDirs } from './standalone-attachment-cleanup.js';
+import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
 
 export const RETENTION_DEFAULTS: Record<string, number> = {
   audit_log: 365,          // days
@@ -252,25 +254,37 @@ const STANDALONE_TRASH_PURGE_BATCH_SIZE = 10_000;
  * logged and the promise resolves with the count so far).
  */
 export async function purgeExpiredStandalonePages(): Promise<number> {
-  const pool = getPool();
   let deleted = 0;
 
   try {
     for (;;) {
-      const { rowCount } = await pool.query(
-        // Explicit `deleted_at IS NOT NULL` guard instead of relying on SQL
-        // NULL-comparison semantics to protect live pages — matches the
-        // Confluence purge in sync-service.
-        `DELETE FROM pages
-          WHERE id IN (
-            SELECT id FROM pages
-             WHERE source = 'standalone'
-               AND deleted_at IS NOT NULL
-               AND deleted_at < NOW() - INTERVAL '1 day' * $1
-             LIMIT $2
-          )`,
-        [STANDALONE_TRASH_RETENTION_DAYS, STANDALONE_TRASH_PURGE_BATCH_SIZE],
-      );
+      // #1349: RETURNING id so the attachment directories can be removed too —
+      // `local_attachments`' CASCADE removes rows, never files, so before this
+      // every purge leaked `<pk>/` and `local/<pk>/` on disk forever.
+      const { rowCount } = await withLocalAttachmentMutationLock(async (client) => {
+        const result = await client.query<{ id: number }>(
+          // Explicit `deleted_at IS NOT NULL` guard instead of relying on SQL
+          // NULL-comparison semantics to protect live pages — matches the
+          // Confluence purge in sync-service.
+          `DELETE FROM pages
+            WHERE id IN (
+              SELECT id FROM pages
+               WHERE source = 'standalone'
+                 AND deleted_at IS NOT NULL
+                 AND deleted_at < NOW() - INTERVAL '1 day' * $1
+               LIMIT $2
+            )
+            RETURNING id`,
+          [STANDALONE_TRASH_RETENTION_DAYS, STANDALONE_TRASH_PURGE_BATCH_SIZE],
+        );
+        // Best-effort per page, inside the batch loop so memory stays bounded.
+        // The shared barrier remains held after the DELETE commits until every
+        // related directory cleanup has completed.
+        for (const row of result.rows ?? []) {
+          await cleanupStandalonePageAttachmentDirs(row.id, client);
+        }
+        return result;
+      });
       const n = rowCount ?? 0;
       deleted += n;
       // A short batch signals drained — break out rather than loop again on

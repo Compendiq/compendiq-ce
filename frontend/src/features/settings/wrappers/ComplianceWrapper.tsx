@@ -68,7 +68,6 @@ export function ComplianceWrapper() {
   return (
     <>
       <PanelHeader
-        title="Data & Compliance"
         subtitle="Enterprise: retention policy, audit reports, webhook delivery, and SCIM provisioning."
       />
       <SubTabs ariaLabel="Data & Compliance sub-sections" tabs={tabs} testIdRoot="compliance" />

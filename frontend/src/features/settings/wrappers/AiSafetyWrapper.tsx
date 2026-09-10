@@ -6,6 +6,7 @@ import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 
 const AiSafetyTab = lazy(() => import('../AiSafetyTab').then((m) => ({ default: m.AiSafetyTab })));
 const LlmPolicyTab = lazy(() => import('../../admin/LlmPolicyTab').then((m) => ({ default: m.LlmPolicyTab })));
+const ClientInferenceOrgPolicyTab = lazy(() => import('../../admin/ClientInferenceOrgPolicyTab').then((m) => ({ default: m.ClientInferenceOrgPolicyTab })));
 const PiiPolicyTab = lazy(() => import('../../admin/PiiPolicyTab').then((m) => ({ default: m.PiiPolicyTab })));
 const ReviewerQueuePage = lazy(() => import('../../ai/ReviewerQueuePage').then((m) => ({ default: m.ReviewerQueuePage })));
 const AiReviewPolicyTab = lazy(() => import('../../admin/AiReviewPolicyTab').then((m) => ({ default: m.AiReviewPolicyTab })));
@@ -38,6 +39,17 @@ export function AiSafetyWrapper() {
       render: () => (
         <Suspense fallback={<SkeletonFormFields />}>
           <LlmPolicyTab />
+        </Suspense>
+      ),
+    },
+    {
+      id: 'client-inference-policy',
+      label: 'On-device policy',
+      badge: 'EE',
+      visible: isEnterprise && hasFeature('org_llm_policy'),
+      render: () => (
+        <Suspense fallback={<SkeletonFormFields />}>
+          <ClientInferenceOrgPolicyTab />
         </Suspense>
       ),
     },
@@ -90,7 +102,6 @@ export function AiSafetyWrapper() {
   return (
     <>
       <PanelHeader
-        title="AI Safety"
         subtitle="Guardrails, output rules, and (with EE) review policy, audit log, and PII detection."
       />
       <SubTabs ariaLabel="AI Safety sub-sections" tabs={tabs} testIdRoot="ai-safety" />

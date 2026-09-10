@@ -3,11 +3,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Shield, Loader2, Save, AlertTriangle,
+  Shield, Save, AlertTriangle,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -89,11 +91,11 @@ export function LlmPolicyTab() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+            <div className="text-sm font-medium text-warning">Enterprise Feature</div>
             <div className="mt-1 text-xs text-muted-foreground">
               Organization-wide LLM policy requires an enterprise license with the LLM Policy feature enabled.
             </div>
@@ -124,9 +126,9 @@ export function LlmPolicyTab() {
       <m.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+        className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
       >
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
         <div className="text-xs text-muted-foreground">
           Changes take effect immediately for all users.
         </div>
@@ -156,7 +158,7 @@ export function LlmPolicyTab() {
           Provider
         </label>
         <p className="mb-2 text-xs text-muted-foreground">
-          Locked LLM provider for the organization. Choose any provider configured in Settings → LLM.
+          Locked LLM provider for the organization. Choose any provider configured in Settings → {SETTINGS_PANELS.models.label}.
         </p>
         <select
           id="llm-policy-provider-select"
@@ -193,16 +195,17 @@ export function LlmPolicyTab() {
       </div>
 
       {/* Save button */}
-      <div className="flex items-center justify-end border-t border-border/50 pt-4">
-        <button
+      <div className="flex items-center justify-end border-t border-border pt-4">
+        <Button
           onClick={handleSave}
           disabled={saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           data-testid="llm-policy-save-btn"
         >
-          {saveMutation.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save Policy
-        </button>
+        </Button>
       </div>
     </div>
   );

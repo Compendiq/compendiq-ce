@@ -1,10 +1,20 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { RetrievalBenchmarkRequestSchema } from '@compendiq/contracts';
 import { LlmCache } from '../../domains/llm/services/llm-cache.js';
 import { getMcpDocsSettings, upsertMcpDocsSettings } from '../../core/services/mcp-docs-settings.js';
 import { testConnection as testMcpConnection, fetchDocumentation, searchDocumentation } from '../../core/services/mcp-docs-client.js';
 import { query } from '../../core/db/postgres.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
+import { logger } from '../../core/utils/logger.js';
+import {
+  createProductionBenchmarkRun,
+  getActiveProductionBenchmark,
+  getProductionBenchmarkRun,
+  ProductionBenchmarkAlreadyRunningError,
+  runProductionBenchmark,
+} from '../../domains/llm/eval/production-benchmark.js';
+import { slotBusyMessage } from '../../domains/llm/eval/benchmark-run-lifecycle.js';
 
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 const ADMIN_RATE_LIMIT = { config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } } };
@@ -36,6 +46,88 @@ export async function llmAdminRoutes(fastify: FastifyInstance) {
   }, async () => {
     const deleted = await llmCache.clearAll();
     return { message: `LLM cache cleared`, entriesDeleted: deleted };
+  });
+
+  // ─── Production retrieval benchmark ─────────────────────────────────
+
+  // Starts a paired, read-only comparison over real production queries. The
+  // work is intentionally asynchronous: a provider call plus three retrieval
+  // legs per question can outlive an HTTP request timeout.
+  fastify.post('/admin/retrieval-benchmark', {
+    preHandler: fastify.requireAdmin,
+    ...ADMIN_RATE_LIMIT,
+  }, async (request, reply) => {
+    const config = RetrievalBenchmarkRequestSchema.parse(request.body ?? {});
+    const active = await getActiveProductionBenchmark();
+    if (active) {
+      return reply.code(409).send({
+        error: 'benchmark_in_progress',
+        // Worded by the run that HOLDS the slot, never by the route that was
+        // asked (r3). The slot is shared with the #1260 shadow comparison, so
+        // the fixed sentence told an operator refused by a running comparison
+        // that "a production retrieval benchmark is already running" — a run
+        // that did not exist, on the surface they consult to find out what is
+        // holding it, and toasted verbatim by the Retrieval tab. That the
+        // exclusion itself is acceptable and stated in both cards' copy is the
+        // #1260 owner decision; wording it wrongly is not part of it.
+        message: slotBusyMessage(active.kind),
+        // The ID is withheld unless the holder is a benchmark THIS admin
+        // started. `GET /admin/retrieval-benchmark/:id` is guarded twice:
+        // by kind (it 404s a #1260 compare run's id) and by `requested_by`
+        // (r2 — its report carries page titles read under the starting
+        // admin's ACL). An id failing either guard is one this card could
+        // adopt but never poll, so both guards are applied here (r1).
+        ...(active.kind === null && active.requestedBy === request.userId
+          ? { runId: active.id }
+          : {}),
+      });
+    }
+
+    let runId: string;
+    try {
+      runId = await createProductionBenchmarkRun(request.userId, config);
+    } catch (err) {
+      if (err instanceof ProductionBenchmarkAlreadyRunningError) {
+        return reply.code(409).send({
+          error: 'benchmark_in_progress',
+          // Same holder-worded sentence as above: the race's winner may be a
+          // comparison, and `err.message` is the class's fixed benchmark one.
+          message: slotBusyMessage(err.kind),
+          // Same two guards as above: only ever this admin's own benchmark.
+          ...(err.kind === null && err.requestedBy === request.userId
+            ? { runId: err.activeRunId }
+            : {}),
+        });
+      }
+      throw err;
+    }
+
+    await logAuditEvent(request.userId, 'RETRIEVAL_BENCHMARK_STARTED', 'llm', undefined, {
+      runId,
+      source: config.source,
+      queryLimit: config.source === 'recent-queries' ? config.limit : config.queries?.length,
+      topK: config.topK,
+    }, request);
+
+    void runProductionBenchmark(runId, request.userId).catch((err) => {
+      logger.error({ err, runId }, 'Production retrieval benchmark could not start');
+    });
+
+    return reply.code(202).send({
+      runId,
+      status: 'queued',
+      message: 'Production retrieval benchmark started',
+    });
+  });
+
+  fastify.get('/admin/retrieval-benchmark/:id', {
+    preHandler: fastify.requireAdmin,
+    ...ADMIN_RATE_LIMIT,
+  }, async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const run = await getProductionBenchmarkRun(id, request.userId);
+    if (!run) return reply.code(404).send({ error: 'not_found', message: 'Benchmark run not found' });
+    return run;
   });
 
   // ─── MCP Docs Admin Routes ──────────────────────────────────────────

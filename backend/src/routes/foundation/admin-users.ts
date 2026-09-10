@@ -1,5 +1,5 @@
 /**
- * Admin CRUD routes for the Settings → Users admin page (#304).
+ * Admin CRUD routes for the Users sub-tab of Settings → Access Control (#304).
  *
  * These routes are separate from rbac.ts (role assignment) and admin.ts
  * (general admin settings). They cover the user *lifecycle*:

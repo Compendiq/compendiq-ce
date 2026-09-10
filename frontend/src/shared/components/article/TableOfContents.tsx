@@ -285,7 +285,7 @@ export function TableOfContents({ htmlContent, headings: headingsProp, contentRe
       {/* Mobile toggle */}
       <button
         onClick={() => setIsMobileOpen(!isMobileOpen)}
-        className="fixed bottom-4 right-4 z-40 rounded-full border border-action bg-transparent p-3 text-action shadow-lg transition-colors hover:bg-action hover:text-action-foreground lg:hidden"
+        className="fixed bottom-4 right-4 z-40 rounded-full border border-action bg-card p-3 text-action shadow-[var(--shadow-overlay)] transition-colors hover:bg-action hover:text-action-foreground lg:hidden"
         aria-label="Toggle table of contents"
       >
         {isMobileOpen ? <X size={20} /> : <List size={20} />}

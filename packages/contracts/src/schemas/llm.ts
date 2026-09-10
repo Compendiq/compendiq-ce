@@ -8,6 +8,35 @@ export const ImprovementTypeSchema = z.enum([
   'completeness',
 ]);
 
+/**
+ * #1154: the image-staging endpoint accepts four raster formats. Like
+ * SUPPORTED_DOCUMENT_FORMATS below, this list is the single source of truth —
+ * the backend sniffing table and the upload UI's `accept` list both derive
+ * from it, so SVG's exclusion cannot drift between them. SVG is out for two
+ * independent reasons: vision encoders need raster, and it carries script and
+ * external-entity risk.
+ */
+export const SUPPORTED_IMAGE_FORMATS = ['png', 'jpeg', 'webp', 'gif'] as const;
+
+export const ImageFormatSchema = z.enum(SUPPORTED_IMAGE_FORMATS);
+
+/**
+ * Content-addressed staging id: the sha256 of the validated bytes, lowercase
+ * hex. The regex is a security control, not tidiness — the handle is
+ * interpolated into the Redis key `llm:img:<userId>:<sha256>`, so a bare
+ * z.string() would permit key injection.
+ */
+export const ImageHandleSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const PrepareImageResponseSchema = z.object({
+  /** Format the server *sniffed* from the bytes — never the client's Content-Type. */
+  format: ImageFormatSchema,
+  handle: ImageHandleSchema,
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fileSize: z.number().int().nonnegative(),
+});
+
 export const ImproveRequestSchema = z.object({
   content: z.string().min(1),
   type: ImprovementTypeSchema,
@@ -15,28 +44,74 @@ export const ImproveRequestSchema = z.object({
   pageId: z.string().optional(),
   includeSubPages: z.boolean().optional(),
   instruction: z.string().max(10000).optional(),
+  /**
+   * #1131: text of a document the user attached as background for the rewrite.
+   *
+   * Deliberately *not* folded into `instruction`. That field is capped at 10K
+   * and is appended to the **system prompt**, so a real uploaded document would
+   * blow the cap on the first attachment and, worse, arrive with the authority
+   * of an instruction. Reference material is user *content*: it takes the same
+   * 200K ceiling as `GenerateRequestSchema.documentText` and is merged into the
+   * user turn, sanitized separately.
+   */
+  referenceText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
 export const GenerateRequestSchema = z.object({
   prompt: z.string().min(1),
-  template: z.enum(['runbook', 'howto', 'architecture', 'troubleshooting']).optional(),
+  template: z.enum([
+    'runbook',
+    'howto',
+    'architecture',
+    'troubleshooting',
+    'spec',
+    'guide',
+    'notes',
+    'postmortem',
+    'custom',
+  ]).optional(),
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   spaceKey: z.string().optional(),
   parentId: z.string().optional(),
-  pdfText: z.string().max(200_000).optional(),
+  /**
+   * #1132: text of the document the user attached as source material.
+   *
+   * Was `pdfText` back when Generate accepted only PDFs. It is format-blind
+   * by design — the extractor has already sniffed and decoded the bytes, so
+   * what arrives here is a DOCX's or an ODT's prose exactly as much as a PDF's,
+   * and a PDF-shaped name would have been a lie for the other formats.
+   */
+  documentText: z.string().max(200_000).optional(),
   thinking: z.boolean().optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
-export const ExtractPdfResponseSchema = z.object({
+/**
+ * #1131: the document-extraction endpoint accepts seven formats. This list is the
+ * single source of truth — the backend extractor derives its sniffing table
+ * from it and the upload UI derives its `accept` list from it.
+ */
+export const SUPPORTED_DOCUMENT_FORMATS = ['pdf', 'docx', 'md', 'txt', 'rtf', 'odt', 'yaml'] as const;
+
+export const DocumentFormatSchema = z.enum(SUPPORTED_DOCUMENT_FORMATS);
+
+export const ExtractDocumentResponseSchema = z.object({
+  /** Format the server *sniffed* from the bytes — never the client's Content-Type. */
+  format: DocumentFormatSchema,
   text: z.string(),
-  totalPages: z.number(),
   fileSize: z.number(),
   preview: z.string(),
+  /**
+   * PDF-only. Absent for every other format rather than faked as `0`, so a
+   * consumer can tell "not a paged format" from "a zero-page PDF".
+   */
+  totalPages: z.number().optional(),
 });
 
 export const SummarizeRequestSchema = z.object({
@@ -60,6 +135,22 @@ export const AskRequestSchema = z.object({
   externalUrls: z.array(z.string().url()).max(5).optional(),
   searchWeb: z.boolean().optional(),
   searchQuery: z.string().max(500).optional(),
+  /**
+   * #1112 — multi-query expansion ("deep search"). Per-request and DEFAULT
+   * OFF, exactly like `searchWeb` and `thinking` above: it costs one extra
+   * chat call and two extra retrievals, so it stays the caller's decision per
+   * ask rather than a mode the server infers. Absent and `false` are the same
+   * thing, and `false` must reach retrieval as today's single-query path.
+   */
+  deepSearch: z.boolean().optional(),
+  /**
+   * Text extracted from a document attached to this question. Like Improve's
+   * `referenceText`, this is user-supplied reference content rather than a
+   * system-level instruction, so the route sanitizes it separately and keeps
+   * it in the user turn.
+   */
+  referenceText: z.string().max(200_000).optional(),
+  imageHandle: ImageHandleSchema.optional(), // #1154: staged image handle from POST /llm/prepare-image
 });
 
 export const GenerateDiagramRequestSchema = z.object({
@@ -67,6 +158,8 @@ export const GenerateDiagramRequestSchema = z.object({
   model: z.string().min(1).optional(), // #929: optional — resolved server-side per ADR-021, body value ignored
   diagramType: z.enum(['flowchart', 'sequence', 'state', 'mindmap']).default('flowchart'),
   pageId: z.string().optional(),
+  /** Optional user guidance for this diagram; kept separate from page content. */
+  instruction: z.string().max(10_000).optional(),
   thinking: z.boolean().optional(),
 });
 
@@ -77,6 +170,34 @@ export const AnalyzeQualityRequestSchema = z.object({
   includeSubPages: z.boolean().optional(),
   thinking: z.boolean().optional(),
 });
+
+/**
+ * #1417 — bounded editor context for one inline continuation. The frontend
+ * deliberately sends text around the cursor, never the full document, and the
+ * server keeps the ceilings here so every caller receives the same guard.
+ */
+export const InlineCompletionRequestSchema = z.object({
+  pageId: z.number().int().positive().optional(),
+  spaceKey: z.string().max(255).optional(),
+  title: z.string().max(500).optional(),
+  prefix: z.string().max(8_000),
+  suffix: z.string().max(2_000).optional(),
+  language: z.string().max(50).optional(),
+  maxTokens: z.number().int().min(1).max(64).default(48),
+});
+
+export const InlineCompletionResponseSchema = z.object({
+  completion: z.string(),
+  model: z.string(),
+  provider: z.string(),
+  usage: z.object({
+    promptTokens: z.number().int().nonnegative().optional(),
+    completionTokens: z.number().int().nonnegative().optional(),
+  }).optional(),
+});
+
+export type InlineCompletionRequest = z.infer<typeof InlineCompletionRequestSchema>;
+export type InlineCompletionResponse = z.infer<typeof InlineCompletionResponseSchema>;
 
 export const ForceEmbedTreeRequestSchema = z.object({
   pageId: z.string().min(1),
@@ -89,17 +210,119 @@ export const ApplyImprovementRequestSchema = z.object({
   title: z.string().optional(),
 });
 
-export const ConversationSchema = z.object({
+/**
+ * #1361 — conversation persistence contracts. `title_source` records who
+ * named the row: the trimmed first question, the LLM auto-title (PR 3), or
+ * a user rename — the last is never overwritten.
+ */
+export const TITLE_SOURCES = ['question', 'generated', 'user'] as const;
+export const TitleSourceSchema = z.enum(TITLE_SOURCES);
+export type TitleSource = z.infer<typeof TitleSourceSchema>;
+
+/**
+ * A source persisted beside an assistant turn (the wire `Source` allow-listed
+ * to what a citation chip renders). `pageId` is a positive internal `pages.id`
+ * or ABSENT — the route's `pageId: 0` sentinel for external/web sources is
+ * omitted on persist. `unavailable` is a READ-TIME annotation from
+ * `GET /llm/conversations/:id` (page trashed or no longer visible to the
+ * caller); it is never stored.
+ *
+ * An ABSENT `kind` still means a knowledge-base page or web source — the
+ * #1125 url-keyed discriminator on those two shapes is untouched.
+ * `kind: 'image'` + `attachmentUrl` is #1115 P3's image source, persisted
+ * (#1361) so a reopened answer renders the same thumbnails as the live one.
+ * `similarity` on an image source is always `null`: the hit's own cosine is
+ * cross-modal and sits in a different band than the text cosines beside it
+ * (ADR-025 §8). Deliberately NOT a discriminated union: Zod needs a present
+ * literal on every branch, and the page/web shape deliberately carries none
+ * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
+ * knowledge-base page".
+ *
+ * `attachmentUrl` is restricted to the two authenticated attachment route
+ * prefixes (`ATTACHMENT_URL_PATTERN`), not merely a non-empty string:
+ * `SourceThumbnail` hands it straight to `useAuthenticatedSrc`, which sets
+ * any src NOT starting with `/api/` directly as the rendered `<img src>`, so
+ * an absolute URL stored here would be an unauthenticated outbound request
+ * from the reader's browser on every reopen. Be clear about WHERE that rule
+ * runs: nothing Zod-parses a persisted source today — `toPersistedSources`
+ * builds the row by construction and `GET /llm/conversations/:id` returns
+ * the stored JSON without re-parsing. The runtime gates are the PRODUCER,
+ * which applies this exported pattern before it persists (an entry that
+ * fails it is dropped, see `persisted-source.ts`), and the frontend's
+ * `isImageSource`, which imports the same pattern as the last check before
+ * `<img>`; the schema states the rule so both — and any later writer or
+ * client-side parse — share one definition. The `superRefine` below is the
+ * co-presence half of the same rule: `kind` and `attachmentUrl` come
+ * together, never singly.
+ */
+export const ATTACHMENT_URL_PATTERN = /^\/api\/(local-)?attachments\//;
+
+export const SourceSchema = z.object({
+  pageTitle: z.string(),
+  spaceKey: z.string().nullable().optional(),
+  pageId: z.number().int().positive().optional(),
+  confluenceId: z.string().nullable().optional(),
+  url: z.string().optional(),
+  sectionTitle: z.string().optional(),
+  similarity: z.number().nullable().optional(),
+  unavailable: z.literal(true).optional(),
+  kind: z.literal('image').optional(),
+  attachmentUrl: z.string().regex(ATTACHMENT_URL_PATTERN).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'image' && value.attachmentUrl === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['attachmentUrl'], message: 'attachmentUrl is required when kind is "image"' });
+  }
+  if (value.attachmentUrl !== undefined && value.kind === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['kind'], message: 'kind must be "image" when attachmentUrl is present' });
+  }
+});
+export type PersistedSource = z.infer<typeof SourceSchema>;
+
+export const StoredChatMessageSchema = z.object({
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  refused: z.boolean().optional(),
+  sources: z.array(SourceSchema).optional(),
+});
+export type StoredChatMessage = z.infer<typeof StoredChatMessageSchema>;
+
+export const ConversationSummarySchema = z.object({
   id: z.string().uuid(),
+  title: z.string(),
+  titleSource: TitleSourceSchema,
   model: z.string(),
-  title: z.string().nullable(),
-  messages: z.array(z.object({
-    role: z.enum(['user', 'assistant', 'system']),
-    content: z.string(),
-  })),
+  pageId: z.number().int().positive().nullable(),
+  pageTitle: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
+
+export const ConversationDetailSchema = ConversationSummarySchema.extend({
+  messages: z.array(StoredChatMessageSchema),
+  /** `selectReplayableHistory(messages).truncated` — the reopen-time half of decision 10. */
+  historyTruncated: z.boolean(),
+});
+export type ConversationDetail = z.infer<typeof ConversationDetailSchema>;
+
+export const ConversationListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().max(200).optional(),
+});
+export type ConversationListQuery = z.infer<typeof ConversationListQuerySchema>;
+
+export const ConversationListResponseSchema = z.object({
+  items: z.array(ConversationSummarySchema),
+  nextCursor: z.string().nullable(),
+});
+export type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
+
+export const UpdateConversationSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+});
+export type UpdateConversationBody = z.infer<typeof UpdateConversationSchema>;
+
+export const ConversationIdParamSchema = z.object({ id: z.string().uuid() });
 
 export const ImprovementSchema = z.object({
   id: z.string().uuid(),
@@ -134,8 +357,10 @@ export type DiagramType = z.infer<typeof GenerateDiagramRequestSchema>['diagramT
 export type AnalyzeQualityRequest = z.infer<typeof AnalyzeQualityRequestSchema>;
 export type ForceEmbedTreeRequest = z.infer<typeof ForceEmbedTreeRequestSchema>;
 export type ApplyImprovementRequest = z.infer<typeof ApplyImprovementRequestSchema>;
-export type Conversation = z.infer<typeof ConversationSchema>;
 export type Improvement = z.infer<typeof ImprovementSchema>;
 export type OllamaModel = z.infer<typeof OllamaModelSchema>;
-export type ExtractPdfResponse = z.infer<typeof ExtractPdfResponseSchema>;
+export type DocumentFormat = z.infer<typeof DocumentFormatSchema>;
+export type ExtractDocumentResponse = z.infer<typeof ExtractDocumentResponseSchema>;
 export type EmbeddingStatus = z.infer<typeof EmbeddingStatusSchema>;
+export type ImageFormat = z.infer<typeof ImageFormatSchema>;
+export type PrepareImageResponse = z.infer<typeof PrepareImageResponseSchema>;

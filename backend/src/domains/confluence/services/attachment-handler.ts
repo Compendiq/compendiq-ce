@@ -18,9 +18,39 @@ import {
   MAX_ATTACHMENT_FAILURES,
   getRedisClient,
 } from '../../../core/services/redis-cache.js';
+import {
+  attachmentCacheDir,
+  attachmentDir,
+  listCachedAttachments,
+  readCachedAttachmentFile,
+  safeAttachmentPath,
+  validateFilename,
+} from '../../../core/services/attachment-store.js';
+import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-embedding-dirty.js';
 
-const ATTACHMENTS_BASE = process.env.ATTACHMENTS_DIR ?? 'data/attachments';
-const ATTACHMENTS_BASE_RESOLVED = path.resolve(ATTACHMENTS_BASE);
+/**
+ * The path-resolution and READ half of this module lives in
+ * `core/services/attachment-store.ts` since #1115 P0 — `domains/llm` may
+ * import `core` and nothing else, and the image-embedding worker needs the
+ * same resolver this module has always used. Nothing moved except the
+ * address: the names below are re-exported so this module's importers
+ * (`sync-service`, `sync-overview-service`, `pages-crud`,
+ * `routes/knowledge/local-attachments`, `routes/confluence/attachments`,
+ * `page-relocate-service`) did not change.
+ *
+ * What stayed here is everything that talks to Confluence or writes to disk:
+ * downloading, caching, the draw.io and cross-page image sync, and the
+ * relocate writers.
+ */
+export {
+  isStorableAttachmentFilename,
+  readAttachment,
+  getMimeType,
+  attachmentCacheDir,
+  listCachedAttachments,
+  readCachedAttachmentFile,
+  __internal,
+} from '../../../core/services/attachment-store.js';
 
 /**
  * Files larger than this threshold are streamed directly to disk
@@ -32,88 +62,6 @@ export const STREAM_THRESHOLD_BYTES = 5 * 1024 * 1024;
  * Maximum allowed attachment size for streaming downloads. Default: 50 MB.
  */
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
-
-// Allowed shape for a Confluence page identifier as we use it on disk.
-// Confluence DC native IDs are numeric; our tests and a few legacy callers
-// also use short kebab-style IDs (e.g. `page-1`). We accept letters, digits,
-// `_`, `-` only — slashes, dots, NUL bytes, and any other separator-like
-// character cause rejection up front, so a malicious pageId can never reach
-// `path.resolve` / `path.join`.
-const PAGE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-
-function validatePageId(pageId: string): string {
-  if (typeof pageId !== 'string' || pageId.length === 0 || !PAGE_ID_PATTERN.test(pageId)) {
-    throw new Error('Invalid page ID');
-  }
-  return pageId;
-}
-
-function validateFilename(filename: string): string {
-  if (typeof filename !== 'string') {
-    throw new Error('Invalid filename');
-  }
-  // `path.basename` strips any directory components — `../../etc/passwd`
-  // collapses to `passwd`, `/abs/file` to `file`. We then re-validate.
-  const base = path.basename(filename);
-  if (base.length === 0) {
-    throw new Error('Invalid filename');
-  }
-  if (base.includes('\0')) {
-    throw new Error('Invalid filename');
-  }
-  // Reject hidden / metadata files (`.`, `..`, `.htaccess`, …). After
-  // `basename`, `..` and `.` would otherwise round-trip through the
-  // containment check unchanged, which is still safe but pointless.
-  if (base.startsWith('.')) {
-    throw new Error('Invalid filename');
-  }
-  return base;
-}
-
-/**
- * Attachments are stored in a shared directory keyed only by pageId.
- * The public-facing functions still accept a `userId` argument for
- * backward compatibility / observability, but the on-disk path no longer
- * depends on it.
- */
-function attachmentDir(pageId: string): string {
-  const safeId = validatePageId(pageId);
-  // safeId is constrained to /^[A-Za-z0-9_-]+$/ by validatePageId above,
-  // so it cannot contain `..`, separators, NUL bytes, or anything else
-  // path.resolve would interpret as an escape.
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- pageId is validated against an allow-list (PAGE_ID_PATTERN) above; containment is asserted below
-  const resolved = path.resolve(ATTACHMENTS_BASE_RESOLVED, safeId);
-  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
-}
-
-/**
- * Build the on-disk path for an attachment, with explicit traversal-safe
- * validation of both `pageId` and `filename`. Throws on any input that
- * does not fit the strict allow-list — no unvalidated user-controlled
- * input reaches `path.resolve`.
- *
- * Replaces the previous `attachmentPath(userId, pageId, filename)` helper,
- * which relied on `path.basename` sanitisation plus a generic `// nosemgrep`
- * annotation. The new helper makes the invariant explicit and asserts the
- * resolved path stays under the attachments root (with `path.sep`, so the
- * `/base-evil` prefix-overlap trick is rejected).
- */
-function safeAttachmentPath(pageId: string, filename: string): string {
-  const safeFilename = validateFilename(filename);
-  const dir = attachmentDir(pageId);
-  // Both inputs are validated by helpers above: pageId by an allow-list,
-  // filename by basename + checks for empty / NUL / dotfile. The
-  // containment assertion that follows is the final defence-in-depth.
-  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- both arguments are validated above (validatePageId, validateFilename) and containment is asserted below
-  const resolved = path.resolve(dir, safeFilename);
-  if (!resolved.startsWith(ATTACHMENTS_BASE_RESOLVED + path.sep)) {
-    throw new Error('Path traversal detected');
-  }
-  return resolved;
-}
 
 /**
  * Download and cache an attachment locally.
@@ -153,72 +101,13 @@ export async function cacheAttachment(
 /**
  * Check if an attachment exists locally.
  */
-export async function attachmentExists(userId: string, pageId: string, filename: string): Promise<boolean> {
+export async function attachmentExists(pageId: string, filename: string): Promise<boolean> {
   try {
     await fs.access(safeAttachmentPath(pageId, filename));
     return true;
   } catch {
     return false;
   }
-}
-
-/**
- * Read a cached attachment. If the exact filename is not found, searches for
- * cross-page reference variants (.xref-{hash}) that match the same base name.
- * This handles the case where stale cached HTML references a plain filename
- * but the sync stored the file with an xref suffix.
- */
-export async function readAttachment(userId: string, pageId: string, filename: string): Promise<Buffer | null> {
-  const fullPath = safeAttachmentPath(pageId, filename);
-  try {
-    return await fs.readFile(fullPath);
-  } catch (err) {
-    logger.debug({ pageId, filename, fullPath, error: (err as NodeJS.ErrnoException).code }, 'Exact attachment path miss');
-  }
-
-  // Search for .xref- variants: "foo.jpg" matches "foo.xref-{hash}.jpg"
-  const safe = validateFilename(filename);
-  const dir = attachmentDir(pageId);
-  const ext = path.extname(safe);
-  const stem = ext ? safe.slice(0, -ext.length) : safe;
-  const prefix = `${stem}.xref-`;
-
-  try {
-    const entries = await fs.readdir(dir);
-    const match = entries.find((e) => e.startsWith(prefix) && e.endsWith(ext));
-    if (match) {
-      logger.debug({ pageId, filename, xrefMatch: match }, 'Serving attachment via xref fallback');
-      return await fs.readFile(safeAttachmentPath(pageId, match));
-    }
-    logger.debug({ pageId, filename, dir, dirContents: entries.slice(0, 20) }, 'No xref match found — listing dir contents');
-  } catch {
-    logger.debug({ pageId, filename, dir }, 'Attachment directory does not exist');
-  }
-
-  return null;
-}
-
-/**
- * Get the MIME type from filename extension.
- */
-export function getMimeType(filename: string): string {
-  const ext = path.extname(filename).toLowerCase();
-  const mimeTypes: Record<string, string> = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.svg': 'image/svg+xml',
-    '.webp': 'image/webp',
-    '.pdf': 'application/pdf',
-    '.xml': 'application/xml',
-    // draw.io XML sibling uploaded by the PUT route with content-type
-    // application/xml — keep the served Content-Type consistent so browsers
-    // don't fall back to octet-stream (download-only) when a user inspects
-    // the cached .drawio file directly.
-    '.drawio': 'application/xml',
-  };
-  return mimeTypes[ext] ?? 'application/octet-stream';
 }
 
 /**
@@ -333,6 +222,14 @@ export async function syncDrawioAttachments(
     }
   }
 
+  // #1115 P2 — closes half of the "attachment changed under an unchanged page
+  // version" hole (`sync-service.ts`'s version-unchanged branch calls this
+  // exact function when a cached file is missing). Only a real DOWNLOAD counts:
+  // this function is idempotent and skips files already on disk, so raising the
+  // flag unconditionally would re-dirty every page carrying a diagram on every
+  // sync — a scan of the whole corpus every `SYNC_INTERVAL_MIN`, for nothing.
+  if (downloaded > 0) await markPageImagesDirtyByAttachmentKey(pageId);
+
   logger.debug(
     { pageId, found: diagramNames.length, skipped, downloaded },
     'syncDrawioAttachments complete',
@@ -418,6 +315,13 @@ export async function syncImageAttachments(
       );
     }
   }
+
+  // #1115 P2 — the other half of the version-unchanged hole. Same rule as
+  // `syncDrawioAttachments` above: a download, not a skip. Note the writes here
+  // reach the cache through `cacheAttachment`/`cacheExternalImage` rather than
+  // `writeAttachmentCache`, which is why the flag is raised here rather than
+  // being inherited from that one call site.
+  if (downloaded > 0) await markPageImagesDirtyByAttachmentKey(pageId);
 
   logger.debug(
     { pageId, found: refs.length, skipped, downloaded },
@@ -614,7 +518,26 @@ interface FetchAndCachePageImageOptions {
   redis?: ReturnType<typeof getRedisClient>;
 }
 
+/**
+ * Lazily materialise one image the page's body already references.
+ *
+ * #1115 P2 (review r1) — this is the RECOVERY path for the index's `missing`
+ * skip, and therefore a dirty-flag writer. A skip is terminal by design: the
+ * worker counts the image and the page still clears its flag, so nothing would
+ * ever re-queue that page once the bytes finally arrive. Raised only when
+ * bytes really came back, matching the sync writers' download-not-skip rule;
+ * the route only reaches here on a cache MISS, so a page whose images are all
+ * cached never pays for it.
+ */
 export async function fetchAndCachePageImage(
+  options: FetchAndCachePageImageOptions,
+): Promise<Buffer | null> {
+  const data = await fetchAndCachePageImageBytes(options);
+  if (data) await markPageImagesDirtyByAttachmentKey(options.pageId);
+  return data;
+}
+
+async function fetchAndCachePageImageBytes(
   options: FetchAndCachePageImageOptions,
 ): Promise<Buffer | null> {
   const { client, userId, pageId, localFilename, bodyStorage, currentSpaceKey, redis } = options;
@@ -689,6 +612,13 @@ export async function writeAttachmentCache(
   await fs.mkdir(dir, { recursive: true });
   const filePath = safeAttachmentPath(pageId, filename);
   await fs.writeFile(filePath, data);
+  // #1115 P2 — the bytes behind a key this page's `body_html` may reference
+  // just changed. Every caller of this function is a write (a pasted image, an
+  // imported external image, an edited draw.io PNG), so the flag is raised
+  // unconditionally rather than by diffing: the page's own reconcile pass is
+  // what decides whether anything is actually re-embedded, and an unchanged
+  // file reuses its row by sha256 for the cost of one file read.
+  await markPageImagesDirtyByAttachmentKey(pageId);
   logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
   return filePath;
 }
@@ -698,7 +628,7 @@ export async function writeAttachmentCache(
  * Used by sync-service to decide whether to retry attachment downloads
  * for pages whose content version hasn't changed.
  */
-export async function hasLocalAttachments(_userId: string, pageId: string): Promise<boolean> {
+export async function hasLocalAttachments(pageId: string): Promise<boolean> {
   const dir = attachmentDir(pageId);
   try {
     const entries = await fs.readdir(dir);
@@ -728,7 +658,6 @@ export function getExpectedAttachmentFilenames(bodyStorage: string, currentSpace
  * Returns the list of filenames that are expected but NOT present on disk.
  */
 export async function getMissingAttachments(
-  userId: string,
   pageId: string,
   bodyStorage: string,
   currentSpaceKey?: string,
@@ -738,7 +667,7 @@ export async function getMissingAttachments(
 
   const missing: string[] = [];
   for (const filename of expected) {
-    const exists = await attachmentExists(userId, pageId, filename);
+    const exists = await attachmentExists(pageId, filename);
     if (!exists) missing.push(filename);
   }
   return missing;
@@ -748,7 +677,7 @@ export async function getMissingAttachments(
  * Clean up all attachments for a page.
  * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
-export async function cleanPageAttachments(_userId: string, pageId: string): Promise<void> {
+export async function cleanPageAttachments(pageId: string): Promise<void> {
   const dir = attachmentDir(pageId);
   try {
     await fs.rm(dir, { recursive: true, force: true });
@@ -757,16 +686,80 @@ export async function cleanPageAttachments(_userId: string, pageId: string): Pro
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
+  // #1115 P2 — re-queue the page so the next scan RE-READS its images. It does
+  // not delete their index rows, and saying so was wrong (review r3):
+  // `embedPageImages` reconciles against the page's BODY, which this function
+  // never touches, so every image comes back as a `missing` skip whose row is
+  // deliberately kept — a stale row is recoverable, a deleted one costs a
+  // re-embed, and `resolveAttachmentBytes` cannot tell "gone" from "the read
+  // failed". The re-read is the point: on the sync path these bytes are about
+  // to be downloaded again and may differ, and on a delete path the page row
+  // (and its rows, by CASCADE) is going anyway.
+  await markPageImagesDirtyByAttachmentKey(pageId);
 }
 
-// Test-only: expose validators so unit tests can exercise the validation logic
-// directly without going through the higher-level cache functions (which mock
-// out `fs` and `client`). Not part of the public module surface.
-export const __internal = {
-  validatePageId,
-  validateFilename,
-  safeAttachmentPath,
-  attachmentDir,
-  ATTACHMENTS_BASE,
-  ATTACHMENTS_BASE_RESOLVED,
-};
+/**
+ * Copy a page's cached attachments from one key to another (#1123 relocate).
+ *
+ * A COPY, never a move: relocate runs this *before* its database transaction
+ * commits, so an abort must leave the original directory intact. The old key
+ * is removed only after the commit, via {@link cleanPageAttachments}.
+ * Idempotent — re-running overwrites the destination files.
+ *
+ * Returns the filenames copied.
+ */
+export async function copyAttachmentDirectory(
+  fromPageId: string,
+  toPageId: string,
+): Promise<string[]> {
+  if (fromPageId === toPageId) return [];
+  const filenames = await listCachedAttachments(fromPageId);
+  if (filenames.length === 0) return [];
+
+  const destDir = attachmentCacheDir(toPageId);
+  await fs.mkdir(destDir, { recursive: true });
+
+  const copied: string[] = [];
+  for (const filename of filenames) {
+    const data = await readCachedAttachmentFile(fromPageId, filename);
+    if (data === null) continue;
+    const safeFilename = validateFilename(filename);
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
+    await fs.writeFile(path.resolve(destDir, safeFilename), data);
+    copied.push(filename);
+  }
+  return copied;
+}
+
+/**
+ * Write bytes into the Confluence attachment cache under an explicit key,
+ * resolving the attachments root at call time. {@link writeAttachmentCache}
+ * does the same against the module-load root; relocate needs the call-time
+ * variant for the same testability reason as `attachmentsRootNow` in
+ * `core/services/attachment-store.ts`.
+ */
+export async function writeAttachmentCacheAt(
+  pageId: string,
+  filename: string,
+  data: Buffer,
+): Promise<void> {
+  const dir = attachmentCacheDir(pageId);
+  await fs.mkdir(dir, { recursive: true });
+  const safeFilename = validateFilename(filename);
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
+  await fs.writeFile(path.resolve(dir, safeFilename), data);
+}
+
+/**
+ * Remove a page's cached attachment directory, resolving the root at call
+ * time. Post-commit cleanup for relocate — best-effort by contract, so callers
+ * must treat a throw as non-fatal (orphaned files only; the DB is consistent).
+ */
+export async function removeAttachmentDirectory(pageId: string): Promise<void> {
+  try {
+    await fs.rm(attachmentCacheDir(pageId), { recursive: true, force: true });
+  } catch {
+    // Directory may not exist, or the key may be unrepresentable on disk.
+  }
+  await clearAttachmentFailures(getRedisClient(), pageId);
+}

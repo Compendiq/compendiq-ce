@@ -33,10 +33,11 @@ function buildApp() {
   app.register(sensible);
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ZodError) {
+    if (error instanceof ZodError || (error as { name?: string }).name === 'ZodError') {
+      const issues = (error as unknown as ZodError).issues ?? [];
       reply.status(400).send({
         error: 'ValidationError',
-        message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+        message: issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
         statusCode: 400,
       });
       return;
@@ -287,6 +288,36 @@ describe('Comments routes', () => {
       );
       expect(mentionLookupCall).toBeDefined();
       expect(mentionLookupCall![1]).toEqual([['alice', 'bob']]);
+    });
+
+    it('should create an inline comment with selection anchorData', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{
+          id: 8, page_id: 1, user_id: TEST_USER_ID, parent_id: null,
+          body: 'Verify these numbers', body_html: '<p>Verify these numbers</p>',
+          is_resolved: false, resolved_by: null, resolved_at: null,
+          anchor_type: 'selection', anchor_data: { quote: 'Q3 revenue 4.2M', from: 45, to: 62 },
+          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+          deleted_at: null,
+        }],
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [{ username: 'testuser' }] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/1/comments',
+        payload: {
+          body: 'Verify these numbers',
+          anchorType: 'selection',
+          anchorData: { quote: 'Q3 revenue 4.2M', from: 45, to: 62 },
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse(response.body);
+      expect(body.id).toBe(8);
+      expect(body.anchorType).toBe('selection');
+      expect(body.anchorData).toEqual({ quote: 'Q3 revenue 4.2M', from: 45, to: 62 });
     });
 
     it('should reject missing body', async () => {
@@ -621,10 +652,11 @@ describe('Comments routes – admin delete', () => {
     await app.register(sensible);
 
     app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
+      if (error instanceof ZodError || (error as { name?: string }).name === 'ZodError') {
+        const issues = (error as unknown as ZodError).issues ?? [];
         reply.status(400).send({
           error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
+          message: issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
           statusCode: 400,
         });
         return;

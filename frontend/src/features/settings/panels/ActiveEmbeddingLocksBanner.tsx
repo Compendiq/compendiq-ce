@@ -58,10 +58,10 @@ export function ActiveEmbeddingLocksBanner() {
 
   return (
     <div
-      className="nm-card border-yellow-500/30 p-3 text-sm"
+      className="nm-card border-warning/30 p-3 text-sm"
       data-testid="active-embedding-locks-banner"
     >
-      <p className="mb-2 text-yellow-300">
+      <p className="mb-2 text-warning">
         <b>Embedding in progress:</b> {userList} — per-user triggers and
         re-embed-all will queue until these complete.
       </p>

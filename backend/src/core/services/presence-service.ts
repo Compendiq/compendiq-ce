@@ -21,6 +21,7 @@
  */
 
 import type { RedisClientType } from 'redis';
+import { prefixedRedisChannel } from '../utils/prefixed-redis-channel.js';
 import { logger } from '../utils/logger.js';
 
 /** Heartbeat entries within this many seconds count as "active". */
@@ -44,11 +45,13 @@ function metaKey(userId: string): string {
   return `presence:meta:${userId}`;
 }
 
+const PRESENCE_CHANNEL_STEM = prefixedRedisChannel('presence:page:');
+
 function channelFor(pageId: string): string {
-  return `presence:page:${pageId}`;
+  return `${PRESENCE_CHANNEL_STEM}${pageId}`;
 }
 
-const CHANNEL_PATTERN = 'presence:page:*';
+const CHANNEL_PATTERN = `${PRESENCE_CHANNEL_STEM}*`;
 
 interface PresenceMeta {
   name: string;
@@ -86,8 +89,8 @@ const _lastPublishAt: Map<string, number> = new Map();
 const _publishTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
 function parseChannel(channel: string): string | null {
-  if (!channel.startsWith('presence:page:')) return null;
-  return channel.slice('presence:page:'.length);
+  if (!channel.startsWith(PRESENCE_CHANNEL_STEM)) return null;
+  return channel.slice(PRESENCE_CHANNEL_STEM.length);
 }
 
 /**

@@ -3,17 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import * as Dialog from '@radix-ui/react-dialog';
 import { m } from 'framer-motion';
 import {
-  Search, FileText, Plus, Settings, Bot, RefreshCw,
+  Search, FileText, Plus, Settings, Bot,
   Clock, ArrowRight, Sparkles,
 } from 'lucide-react';
 import { useCommandPaletteStore } from '../../../stores/command-palette-store';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
+import type { PageIcon as PageIconValue } from '@compendiq/contracts';
+import { PageIcon } from '../page-icon/PageIcon';
 
 interface SearchResult {
   id: string;
   title: string;
   spaceKey: string;
+  icon?: PageIconValue | null;
 }
 
 interface QuickAction {
@@ -27,7 +30,6 @@ const QUICK_ACTIONS: QuickAction[] = [
   { id: 'new-page', label: 'New Page', icon: Plus, path: '/pages/new' },
   { id: 'settings', label: 'Settings', icon: Settings, path: '/settings' },
   { id: 'ai-assistant', label: 'AI Assistant', icon: Bot, path: '/ai' },
-  { id: 'sync', label: 'Sync Pages', icon: RefreshCw, path: '/pages' },
 ];
 
 const RECENT_SEARCHES_KEY = 'kb-recent-searches';
@@ -119,6 +121,28 @@ export function CommandPalette() {
     };
   }, [query, isAiMode]);
 
+  // Title search missed. Offer the two tools that can actually answer a
+  // question: the Pages list (hybrid) and the AI composer. Not shown while
+  // a request is in flight — that would flash recovery under "Searching...".
+  const recoveryItems = useMemo(() => {
+    if (!query.trim() || isAiMode || isSearching || results.length > 0) return [];
+    const q = query.trim();
+    return [
+      {
+        id: 'search-in-pages',
+        type: 'action' as const,
+        label: 'Search in Pages',
+        path: `/?search=${encodeURIComponent(q)}&mode=hybrid`,
+      },
+      {
+        id: 'ask-ai',
+        type: 'ai' as const,
+        label: `Ask AI: ${q}`,
+        path: `/ai?q=${encodeURIComponent(q)}`,
+      },
+    ];
+  }, [query, isAiMode, isSearching, results.length]);
+
   // Build combined items list for keyboard navigation
   const allItems = useMemo(() => {
     const items: Array<{ id: string; type: 'result' | 'action' | 'recent' | 'ai'; label: string; path?: string }> = [];
@@ -133,26 +157,26 @@ export function CommandPalette() {
         // composer (#957) instead of dropping it.
         path: aiQuery ? `/ai?q=${encodeURIComponent(aiQuery)}` : '/ai',
       });
-    } else if (query.trim()) {
+      return items;
+    }
+
+    if (query.trim()) {
       results.forEach((r) => {
         items.push({ id: `result-${r.id}`, type: 'result', label: r.title, path: `/pages/${r.id}` });
       });
-    }
-
-    if (!query.trim()) {
+      recoveryItems.forEach((item) => items.push(item));
+    } else {
       recentSearches.forEach((term, i) => {
         items.push({ id: `recent-${i}`, type: 'recent', label: term });
       });
     }
 
-    if (!isAiMode) {
-      QUICK_ACTIONS.forEach((a) => {
-        items.push({ id: a.id, type: 'action', label: a.label, path: a.path });
-      });
-    }
+    QUICK_ACTIONS.forEach((a) => {
+      items.push({ id: a.id, type: 'action', label: a.label, path: a.path });
+    });
 
     return items;
-  }, [query, results, recentSearches, isAiMode, aiQuery]);
+  }, [query, results, recentSearches, isAiMode, aiQuery, recoveryItems]);
 
   const handleSelect = useCallback((index: number) => {
     const item = allItems[index];
@@ -231,16 +255,21 @@ export function CommandPalette() {
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
-              'nm-card overflow-hidden shadow-2xl transition-shadow duration-200',
-              isAiMode && 'shadow-[0_0_30px_-5px_rgba(168,85,247,0.4)] ring-1 ring-purple-500/30',
+              'nm-card-elevated overflow-hidden',
+              // The glow went with the rest of them: a 30px coloured bloom is
+              // the retired world's way of saying "this mode is special", and
+              // `nm-card-elevated` already carries the one overlay shadow the
+              // system has. The ring stays — that is the AI signal, and a ring
+              // is a border, not an effect.
+              isAiMode && 'ring-1 ring-status-ai/30',
             )}>
               {/* Search input */}
               <div className={cn(
-                'flex items-center gap-3 border-b border-border/50 px-4 py-3',
-                isAiMode && 'border-purple-500/30',
+                'flex items-center gap-3 border-b border-border px-4 py-3',
+                isAiMode && 'border-status-ai/30',
               )}>
                 {isAiMode ? (
-                  <Sparkles size={18} className="text-purple-400" />
+                  <Sparkles size={18} className="text-status-ai" />
                 ) : (
                   <Search size={18} className="text-muted-foreground" />
                 )}
@@ -249,19 +278,19 @@ export function CommandPalette() {
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={isAiMode ? 'Ask AI anything...' : 'Search pages or type a command...'}
+                  placeholder={isAiMode ? 'Ask AI anything...' : 'Find a page or command...'}
                   className={cn(
                     'flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground',
-                    isAiMode && 'text-purple-700 dark:text-purple-100 placeholder:text-purple-300/50',
+                    isAiMode && 'text-foreground placeholder:text-status-ai/50',
                   )}
-                  aria-label="Search"
+                  aria-label="Find a page or command"
                   role="combobox"
                   aria-expanded={allItems.length > 0}
                   aria-controls="cmdk-listbox"
                   aria-activedescendant={activeOptionId}
                   autoComplete="off"
                 />
-                <kbd className="rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                <kbd className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   ESC
                 </kbd>
               </div>
@@ -276,7 +305,7 @@ export function CommandPalette() {
                 {/* AI mode result */}
                 {isAiMode && (
                   <div className="mb-2">
-                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-purple-400">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-status-ai">
                       AI Assistant
                     </p>
                     <button
@@ -289,13 +318,13 @@ export function CommandPalette() {
                       className={cn(
                         'flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-colors',
                         selectedIndex === 0
-                          ? 'bg-purple-500/20 text-purple-300'
-                          : 'text-foreground hover:bg-purple-500/10',
+                          ? 'bg-status-ai/20 text-status-ai'
+                          : 'text-foreground hover:bg-status-ai/10',
                       )}
                     >
-                      <Sparkles size={14} className="shrink-0 text-purple-400" />
+                      <Sparkles size={14} className="shrink-0 text-status-ai" />
                       <span className="font-medium">{aiQuery ? `Ask AI: ${aiQuery}` : 'Ask AI'}</span>
-                      <kbd className="ml-auto rounded border border-border/50 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      <kbd className="ml-auto rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                         Enter
                       </kbd>
                     </button>
@@ -325,7 +354,11 @@ export function CommandPalette() {
                               : 'text-foreground hover:bg-foreground/5',
                           )}
                         >
-                          <FileText size={14} className="shrink-0" />
+                          {result.icon ? (
+                            <PageIcon icon={result.icon} pageId={result.id} size="row" />
+                          ) : (
+                            <FileText size={14} className="shrink-0" />
+                          )}
                           <span className="truncate">{result.title}</span>
                           <span className="ml-auto text-xs text-muted-foreground">{result.spaceKey}</span>
                         </button>
@@ -341,10 +374,34 @@ export function CommandPalette() {
                   </div>
                 )}
 
-                {/* No results */}
-                {query.trim() && !isAiMode && !isSearching && results.length === 0 && (
-                  <div className="py-4 text-center text-sm text-muted-foreground">
-                    No pages found
+                {/* Title search missed — offer the corpus search and Ask AI. */}
+                {recoveryItems.length > 0 && (
+                  <div className="mb-2">
+                    <p className="mb-1 px-2 text-[12px] font-medium uppercase tracking-wider text-muted-foreground">
+                      No matching titles
+                    </p>
+                    {recoveryItems.map((item, i) => (
+                      <button
+                        key={item.id}
+                        id={`cmdk-opt-${i}`}
+                        role="option"
+                        aria-selected={selectedIndex === i}
+                        onClick={() => handleSelect(i)}
+                        onMouseEnter={() => setSelectedIndex(i)}
+                        data-testid={item.id}
+                        className={cn(
+                          'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                          selectedIndex === i
+                            ? 'bg-action/15 text-action'
+                            : 'text-foreground hover:bg-foreground/5',
+                        )}
+                      >
+                        {item.id === 'ask-ai'
+                          ? <Sparkles size={14} className="shrink-0 text-status-ai" />
+                          : <Search size={14} className="shrink-0" />}
+                        <span className="truncate">{item.label}</span>
+                      </button>
+                    ))}
                   </div>
                 )}
 
@@ -388,7 +445,7 @@ export function CommandPalette() {
                     </p>
                     {QUICK_ACTIONS.map((action, i) => {
                       const baseIdx = query.trim()
-                        ? results.length + i
+                        ? results.length + recoveryItems.length + i
                         : recentSearches.length + i;
                       const Icon = action.icon;
                       return (
@@ -417,14 +474,14 @@ export function CommandPalette() {
 
               {/* Footer */}
               <div className={cn(
-                'flex items-center gap-4 border-t border-border/50 px-4 py-2 text-[11px] text-muted-foreground',
-                isAiMode && 'border-purple-500/30',
+                'flex items-center gap-4 border-t border-border px-4 py-2 text-[11px] text-muted-foreground',
+                isAiMode && 'border-status-ai/30',
               )}>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↑↓</kbd> Navigate</span>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">↵</kbd> Select</span>
-                <span><kbd className="rounded border border-border/50 px-1 py-0.5">esc</kbd> Close</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">↑↓</kbd> Navigate</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">↵</kbd> Select</span>
+                <span><kbd className="rounded border border-border px-1 py-0.5">esc</kbd> Close</span>
                 {!isAiMode && (
-                  <span className="ml-auto"><kbd className="rounded border border-border/50 px-1 py-0.5">/ai</kbd> AI mode</span>
+                  <span className="ml-auto"><kbd className="rounded border border-border px-1 py-0.5">/ai</kbd> AI mode</span>
                 )}
               </div>
             </div>

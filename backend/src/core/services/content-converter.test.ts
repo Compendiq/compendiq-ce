@@ -17,6 +17,8 @@ import {
   TASK_LIST_PAGE,
   PANELS_PAGE,
   EXPAND_PAGE,
+  UI_EXPAND_PAGE,
+  MIXED_EXPAND_PAGE,
   LINKS_PAGE,
   IMAGES_PAGE,
   CROSS_PAGE_IMAGES_PAGE,
@@ -49,6 +51,7 @@ import {
   EXCERPT_INCLUDE_PAGE,
   TOC_WITH_PARAMS_PAGE,
 } from './__fixtures__/confluence-xhtml.js';
+import { STRUCTURE_PRESERVATION_INSTRUCTION } from '../../domains/llm/services/prompts.js';
 
 describe('content-converter', () => {
   // ========== confluenceToHtml ==========
@@ -99,7 +102,9 @@ describe('content-converter', () => {
 
     it('converts expand macros to <details>', () => {
       const html = confluenceToHtml(EXPAND_PAGE);
-      expect(html).toContain('<details>');
+      // #1211: the forward pass stamps the producing macro's identity so the
+      // reverse pass can write back the right ac:name.
+      expect(html).toContain('<details data-macro-name="expand">');
       expect(html).toContain('<summary>How do I reset my password?</summary>');
       expect(html).toContain('Settings &gt; Account');
       expect(html).toContain('<summary>What models are supported?</summary>');
@@ -227,7 +232,7 @@ describe('content-converter', () => {
       expect(html).toContain('<pre><code class="language-python">');
       expect(html).toContain('print("hello world")');
       expect(html).toContain('class="panel-info"');
-      expect(html).toContain('<details>');
+      expect(html).toContain('<details data-macro-name="expand">');
       expect(html).toContain('<summary>Details</summary>');
     });
 
@@ -495,6 +500,288 @@ describe('content-converter', () => {
       expect(xhtml).toContain('ac:rich-text-body');
     });
 
+    // ========== Macro identity on <details> (#1211) ==========
+    //
+    // htmlToConfluence used to write ac:name="expand" on EVERY <details>. That
+    // is correct only while exactly one macro maps to <details>; the moment a
+    // second one does (#1129, Refined "UI Expand"), write-back would silently
+    // rewrite the third-party macro into a native expand on the first editor
+    // save. These cases pin the identity round-trip that prevents that.
+    describe('macro identity on <details> (#1211)', () => {
+      it('writes back two different ac:name values, each on its own body', () => {
+        const html =
+          '<details data-macro-name="expand"><summary>Native</summary><p>A</p></details>' +
+          '<details data-macro-name="ui-expand"><summary>Refined</summary><p>B</p></details>';
+        const xhtml = htmlToConfluence(html);
+        // Pin the name-to-content pairing, not just that both values appear
+        // somewhere — a reverse-loop regression that SWAPPED the identities
+        // would pass a presence-only assertion (PR #1216 review).
+        const native = xhtml.match(
+          /<ac:structured-macro ac:name="expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(native).toBeDefined();
+        expect(native).toContain('Native');
+        expect(native).toContain('<p>A</p>');
+        expect(native).not.toContain('Refined');
+        const refined = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(refined).toBeDefined();
+        expect(refined).toContain('Refined');
+        expect(refined).toContain('<p>B</p>');
+      });
+
+      it('round-trips nested expand sections without leaking a literal <details> (innermost-first)', () => {
+        // Confluence natively supports expand-inside-expand. The reverse loop
+        // rebuilds each body by re-parsing innerHTML, so converting outer
+        // before inner would copy the still-raw inner <details> into the new
+        // body — a copy the loop snapshot never visits — and ship a literal
+        // HTML5 element to Confluence (PR #1216 review).
+        const storage =
+          '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Outer</ac:parameter><ac:rich-text-body>' +
+          '<p>before</p>' +
+          '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter><ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+          '<p>after</p>' +
+          '</ac:rich-text-body></ac:structured-macro>';
+        const html = confluenceToHtml(storage);
+        const xhtml = htmlToConfluence(html);
+        expect(xhtml).not.toContain('<details');
+        expect(xhtml.match(/ac:name="expand"/g)).toHaveLength(2);
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Outer</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Inner</ac:parameter>');
+        expect(xhtml).toContain('<p>deep</p>');
+      });
+
+      it('keeps a nested foreign identity intact inside a native section', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand"><summary>Outer</summary>' +
+            '<details data-macro-name="ui-expand"><summary>Inner</summary><p>deep</p></details>' +
+            '</details>',
+        );
+        expect(xhtml).not.toContain('<details');
+        expect(xhtml).toContain('ac:name="expand"');
+        expect(xhtml).toContain('ac:name="ui-expand"');
+      });
+
+      it('unwraps a summary that is not a direct child instead of leaking the tag', () => {
+        // The direct-child rule (above) means a wrapped <summary> is not this
+        // section's title — but it must not ship to Confluence as a literal
+        // HTML5 element either. Improve-apply feeds model-produced markdown
+        // through htmlToConfluence with no tag allow-list, so the shape is
+        // reachable without the editor (#1216 re-review).
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand"><div><summary>WrappedTitle</summary></div><p>body</p></details>',
+        );
+        expect(xhtml).not.toContain('<summary');
+        expect(xhtml).toContain('WrappedTitle');
+        expect(xhtml).not.toContain('ac:name="title"');
+      });
+
+      it('does not let a summary-less outer section steal a nested summary as its title', () => {
+        const xhtml = htmlToConfluence(
+          '<details>' +
+            '<details data-macro-name="ui-expand"><summary>InnerTitle</summary><p>deep</p></details>' +
+            '</details>',
+        );
+        // Exactly one title parameter, and it belongs to the inner macro.
+        expect(xhtml.match(/ac:name="title"/g)).toHaveLength(1);
+        const inner = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(inner).toContain('<ac:parameter ac:name="title">InnerTitle</ac:parameter>');
+      });
+
+      it('passes an unrecognised macroName through, never coercing to expand', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="whatever"><summary>S</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="whatever"');
+        expect(xhtml).not.toContain('ac:name="expand"');
+      });
+
+      it('defaults an attribute-less <details> to expand (stored content + editor-created sections)', () => {
+        const xhtml = htmlToConfluence('<details><summary>S</summary><p>B</p></details>');
+        expect(xhtml).toContain('ac:name="expand"');
+      });
+
+      it('persists non-title parameters through the forward pass, title staying in <summary> only', () => {
+        const page =
+          '<ac:structured-macro ac:name="expand">' +
+          '<ac:parameter ac:name="title">T</ac:parameter>' +
+          '<ac:parameter ac:name="breakout-mode">wide</ac:parameter>' +
+          '<ac:rich-text-body><p>B</p></ac:rich-text-body></ac:structured-macro>';
+        const html = confluenceToHtml(page);
+        expect(html).toContain('data-macro-name="expand"');
+        expect(html).toContain('breakout-mode');
+        // title is not duplicated into the params JSON — <summary> is its
+        // single source of truth.
+        expect(html).not.toMatch(/data-macro-params="[^"]*title/);
+      });
+
+      it('re-emits data-macro-params as ac:parameter entries, <summary> winning over a stale title param', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand" ' +
+            'data-macro-params=\'{"breakout-mode":"wide","title":"stale"}\'>' +
+            '<summary>Real Title</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).toContain('<ac:parameter ac:name="breakout-mode">wide</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Real Title</ac:parameter>');
+        expect(xhtml).not.toContain('stale');
+      });
+
+      it('preserves a foreign identity on the next sync', () => {
+        // Writing a ui-expand back and re-importing must return it as a
+        // <details> with its identity intact — not vanish, and not become a
+        // native expand. Before #1129 the re-import landed in the #865
+        // unknown-macro placeholder instead (identity preserved, but opaque).
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand"><summary>T</summary><p>B</p></details>',
+        );
+        const html = confluenceToHtml(xhtml);
+        expect(html).toContain('<details data-macro-name="ui-expand">');
+        expect(html).toContain('<summary>T</summary>');
+        expect(html).not.toContain('confluence-macro-unknown');
+      });
+    });
+
+    // ========== Refined "UI Expand" macro (#1129) ==========
+    //
+    // A second macro now maps onto <details>, which is what the #1211 identity
+    // stamp above exists for. Storage shape verified against a Confluence DC
+    // 9.2.19 instance with the Refined Macro Toolkit installed: same `title`
+    // parameter and ac:rich-text-body as the native macro, plus an `expanded`
+    // parameter present ONLY on default-open sections.
+    describe('Refined UI Expand macro (#1129)', () => {
+      it('converts ui-expand to <details> carrying its own identity', () => {
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        expect(html).toContain('data-macro-name="ui-expand"');
+        expect(html).toContain('<summary>Development Team</summary>');
+        expect(html).toContain('<summary>Support Team</summary>');
+        // Not the #865 opaque placeholder any more, and not a native expand.
+        expect(html).not.toContain('confluence-macro-unknown');
+        expect(html).not.toContain('data-macro-name="expand"');
+      });
+
+      it('maps expanded=true onto the open attribute and leaves a collapsed section closed', () => {
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        const sections = [...html.matchAll(/<details[^>]*>/g)].map((m) => m[0]);
+        expect(sections).toHaveLength(2);
+        // First section is expanded=true in the fixture, second omits the param.
+        expect(sections[0]).toMatch(/\bopen\b/);
+        expect(sections[1]).not.toMatch(/\bopen\b/);
+      });
+
+      it('keeps `expanded` out of data-macro-params — open is its only home', () => {
+        // Otherwise a user toggling the section in the editor flips `open`
+        // while the stale string rides along, and the reverse pass emits both.
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        expect(html).not.toMatch(/data-macro-params="[^"]*expanded/);
+      });
+
+      it('round-trips a default-open section back to expanded=true', () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(UI_EXPAND_PAGE));
+        const open = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(open).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+        expect(open).toContain('<ac:parameter ac:name="title">Development Team</ac:parameter>');
+        expect(open).toContain('Development Team');
+      });
+
+      it('emits no expanded parameter at all for a collapsed section', () => {
+        // Confluence DC omits the parameter on collapsed sections rather than
+        // spelling expanded=false; emitting one would fabricate a parameter the
+        // page never had.
+        const xhtml = htmlToConfluence(
+          confluenceToHtml(
+            '<ac:structured-macro ac:name="ui-expand"><ac:parameter ac:name="title">Closed</ac:parameter>' +
+              '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>',
+          ),
+        );
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('never fabricates expanded on a native expand the editor left open', () => {
+        // Atlassian's expand macro has no such parameter. The editor forces
+        // every <details> open in edit mode and its summary click handler
+        // writes the attribute, so `open` on a native section is reachable and
+        // must stay inert on write-back.
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="expand" open><summary>T</summary><p>B</p></details>',
+        );
+        expect(xhtml).toContain('ac:name="expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('rebuilds expanded from open alone, ignoring a stale params copy', () => {
+        const xhtml = htmlToConfluence(
+          '<details data-macro-name="ui-expand" data-macro-params=\'{"expanded":"true"}\'>' +
+            '<summary>T</summary><p>B</p></details>',
+        );
+        // The section is closed; the stale param must not resurrect it.
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).not.toContain('expanded');
+      });
+
+      it('keeps a native expand and a ui-expand distinct across a full round-trip', () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(MIXED_EXPAND_PAGE));
+        const native = xhtml.match(
+          /<ac:structured-macro ac:name="expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(native).toContain('Native');
+        expect(native).toContain('<p>native body</p>');
+        expect(native).not.toContain('expanded');
+        const refined = xhtml.match(
+          /<ac:structured-macro ac:name="ui-expand">[\s\S]*?<\/ac:structured-macro>/,
+        )?.[0];
+        expect(refined).toContain('Refined');
+        expect(refined).toContain('<p>refined body</p>');
+        expect(refined).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+      });
+
+      it("carries Refined's own classed body markup through the round-trip", () => {
+        const xhtml = htmlToConfluence(confluenceToHtml(UI_EXPAND_PAGE));
+        expect(xhtml).toContain('rw_adf_text_strong');
+        expect(xhtml).toContain('ordered-list top_level');
+        expect(xhtml).toContain('<li>Backend</li>');
+      });
+
+      it('still writes back a pre-#1129 stored placeholder for the same macro', () => {
+        // body_html synced before this change holds the #865 unknown-macro
+        // placeholder, not a <details>. There is no migration — the shape
+        // changes on the next sync — so both must keep writing back to the same
+        // macro, and the placeholder path keeps `expanded` as an ordinary
+        // parameter (it has no `open` attribute to hold it).
+        const stored =
+          '<div class="confluence-macro-unknown" data-macro-name="ui-expand" ' +
+          'data-macro-params=\'{"title":"Old","expanded":"true"}\'><p>body</p></div>';
+        const xhtml = htmlToConfluence(stored);
+        expect(xhtml).toContain('ac:name="ui-expand"');
+        expect(xhtml).toContain('<ac:parameter ac:name="title">Old</ac:parameter>');
+        expect(xhtml).toContain('<ac:parameter ac:name="expanded">true</ac:parameter>');
+      });
+
+      it('keeps its identity through the AI Improve round-trip (#1221)', async () => {
+        // The ordering constraint from #1221, pinned: before that issue a
+        // ui-expand mapped onto <details> moved from protected (the #865
+        // unknown-macro freeze) to destroyed by the Markdown round-trip. Stage 1
+        // fixed it with an opaque freeze, stage 2 with boundary tokens — the
+        // property under test is the identity surviving, not the mechanism.
+        const html = confluenceToHtml(UI_EXPAND_PAGE);
+        const { html: prot, media } = protectMedia(html);
+        const md = htmlToMarkdown(prot, { layoutTokens: true });
+        const rebuilt = restoreMedia(
+          await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) }),
+          media,
+        );
+        expect((rebuilt.match(/data-macro-name="ui-expand"/g) ?? []).length).toBe(2);
+        expect(rebuilt).toContain('<summary>Development Team</summary>');
+        expect(rebuilt).not.toContain('data-macro-name="expand"');
+      });
+    });
+
     it('round-trips status macros', () => {
       const html = confluenceToHtml(STATUS_MACRO_PAGE);
       const xhtml = htmlToConfluence(html);
@@ -561,6 +848,18 @@ describe('content-converter', () => {
       expect(xhtml).toContain('>My Parent<');
       expect(xhtml).toContain('>h3<');
       expect(xhtml).toContain('>rich<');
+    });
+
+    it('round-trips children macro columns display parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="children"><ac:parameter ac:name="columns">2</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-columns="2"');
+
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="children"');
+      expect(xhtml).toContain('ac:name="columns"');
+      expect(xhtml).toContain('>2<');
     });
 
     it('round-trips ui-children macro preserving macro name', () => {
@@ -1021,6 +1320,310 @@ describe('content-converter', () => {
       expect(html).not.toContain('ac:emoticon');
       // Cannot be restored
     });
+  });
+});
+
+// ==========================================================================
+// #1222 — a macro's parameters are its DIRECT ac:parameter children
+// ==========================================================================
+//
+// getParamValue used to search all descendants, so a body-carrying macro read
+// the first matching parameter anywhere in its subtree — a nested macro's. The
+// forward pass then rendered that value, and write-back persisted it as the
+// outer macro's own parameter on the user's Confluence page. Three thefts were
+// verified on dev: expand→title (including cross-type, from a nested status
+// badge), section→border and column→width.
+describe('content-converter: #1222 direct-child parameter resolution', () => {
+  it('does not give an untitled expand a nested expand\'s title', () => {
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<p>before</p>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const summaries = [...confluenceToHtml(storage).matchAll(/<summary>[^<]*<\/summary>/g)].map(
+      (m) => m[0],
+    );
+    expect(summaries).toHaveLength(2);
+    // Empty since #1227 — the untitled outer section no longer gets a
+    // substituted label either.
+    expect(summaries[0]).toBe('<summary></summary>');
+    expect(summaries[1]).toBe('<summary>Inner</summary>');
+  });
+
+  it('write-back does not persist the stolen title onto the outer macro', () => {
+    // What must not survive is the *inner* macro's real string being written
+    // onto a page that never had it. Since #1227 the untitled outer section
+    // emits no `title` parameter of its own either.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const xhtml = htmlToConfluence(confluenceToHtml(storage));
+    expect(
+      xhtml.match(/<ac:parameter ac:name="title">Inner<\/ac:parameter>/g),
+    ).toHaveLength(1);
+    expect(xhtml.match(/ac:name="expand"/g)).toHaveLength(2);
+  });
+
+  it('does not give an untitled expand a nested status badge\'s title', () => {
+    // Cross-type theft: `status` is processed after `expand`, so its title is
+    // still an ac:parameter in the subtree when the expand branch looks.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body><p>' +
+      '<ac:structured-macro ac:name="status"><ac:parameter ac:name="colour">Green</ac:parameter>' +
+      '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>' +
+      '</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html).toContain('<summary></summary>');
+    expect(html).not.toContain('<summary>DONE</summary>');
+
+    const xhtml = htmlToConfluence(html);
+    // Exactly one DONE title parameter, and it belongs to the status macro.
+    expect(xhtml.match(/<ac:parameter ac:name="title">DONE<\/ac:parameter>/g)).toHaveLength(1);
+    const status = xhtml.match(
+      /<ac:structured-macro ac:name="status">[\s\S]*?<\/ac:structured-macro>/,
+    )?.[0];
+    expect(status).toContain('<ac:parameter ac:name="title">DONE</ac:parameter>');
+  });
+
+  it('does not let a section inherit a nested macro\'s border', () => {
+    // The donor is a third-party macro: an unknown macro's parameter names are
+    // arbitrary (#865 persists them generically), and its handler runs after
+    // the section loop, so its parameters are still ac:parameter elements in
+    // the subtree when the section branch looks for `border`.
+    const storage =
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="bordered-widget"><ac:parameter ac:name="border">true</ac:parameter>' +
+      '<ac:rich-text-body><p>widget</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html.match(/<div class="confluence-section"[^>]*>/)?.[0]).toBe(
+      '<div class="confluence-section">',
+    );
+    // …and the donor still carries the parameter it was never asked to share.
+    expect(html).toContain('data-macro-name="bordered-widget"');
+    expect(html).toMatch(/data-macro-params="[^"]*border/);
+  });
+
+  it('does not let a column inherit a nested macro\'s width', () => {
+    const storage =
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="column"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="chart"><ac:parameter ac:name="width">400px</ac:parameter>' +
+      '<ac:rich-text-body><p>chart body</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    const column = html.match(/<div class="confluence-column"[^>]*>/)?.[0];
+    expect(column).toBe('<div class="confluence-column">');
+    // The stolen width was also written into an inline style.
+    expect(html).not.toContain('flex: 0 0 400px');
+  });
+
+  it('resolves an expand\'s own title when its parameter follows the body', () => {
+    // Storage XHTML is API-writable, so parameter-after-body is reachable even
+    // though Confluence's own serializer emits parameters first. Descendant
+    // search returned the first match in document order, which here is the
+    // nested macro's — turning fabrication into overwrite of a real title.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+      '<ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body><ac:parameter ac:name="title">Outer</ac:parameter></ac:structured-macro>';
+    const summaries = [...confluenceToHtml(storage).matchAll(/<summary>[^<]*<\/summary>/g)].map(
+      (m) => m[0],
+    );
+    expect(summaries[0]).toBe('<summary>Outer</summary>');
+    expect(summaries[1]).toBe('<summary>Inner</summary>');
+  });
+
+  // A parameter is a direct child by storage-format schema — but the pipeline
+  // parses storage XHTML with an HTML parser, where `<ac:parameter …/>` does
+  // NOT self-close. Every following sibling parameter nests inside it and
+  // becomes a grandchild, so "direct child by schema" only holds in the parsed
+  // DOM because the tag is pre-expanded (SELF_CLOSING_XHTML_TAGS). Reachable
+  // the same way parameter-after-body above is: storage XHTML is API-writable,
+  // and an XML serializer in a third-party app normalises an empty element to
+  // self-closing form.
+  describe('self-closing ac:parameter', () => {
+    it('keeps reading a status macro\'s colour and title past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="status"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="colour">Green</ac:parameter>' +
+        '<ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-color="green"');
+      expect(html).toContain('>DONE<');
+      // Write-back must not persist a defaulted colour and an emptied title.
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('<ac:parameter ac:name="colour">Green</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">DONE</ac:parameter>');
+    });
+
+    it('keeps an expand\'s own title past a self-closed parameter, and recovers that parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="breakout-mode"/>' +
+        '<ac:parameter ac:name="title">Real Title</ac:parameter>' +
+        '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('<summary>Real Title</summary>');
+      // The self-closed parameter is a real parameter of this macro too — once
+      // it closes, the #865 net can carry it through the round-trip.
+      expect(html).toMatch(/data-macro-params="[^"]*breakout-mode/);
+    });
+
+    it('keeps a column\'s width past a self-closed parameter', () => {
+      const storage =
+        '<ac:structured-macro ac:name="column"><ac:parameter ac:name="subtle"/>' +
+        '<ac:parameter ac:name="width">30%</ac:parameter>' +
+        '<ac:rich-text-body><p>c</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('data-cell-width="30%"');
+      expect(html).toContain('style="flex: 0 0 30%"');
+    });
+
+    it('does not let a self-closed title parameter swallow the body as its title', () => {
+      // Pre-existing on dev, not introduced by the direct-child lookup: the
+      // unclosed parameter absorbs ac:rich-text-body, so textContent returned
+      // the body's prose and the section was titled with its own first words.
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+        '<ac:rich-text-body><p>body text</p></ac:rich-text-body></ac:structured-macro>';
+      const html = confluenceToHtml(storage);
+      expect(html).not.toContain('<summary>body text</summary>');
+      expect(html).toContain('<p>body text</p>');
+    });
+  });
+});
+
+// ==========================================================================
+// #1227 — an untitled expand section must stay untitled
+// ==========================================================================
+//
+// The forward pass substituted `Click to expand` for an absent `title`
+// parameter, and the reverse pass — which had only "is there a <summary>" to
+// go on — wrote that label back as a real parameter. Every write-back path
+// (editor save, Improve-apply, draft publish, version restore) put a parameter
+// on the customer's Confluence page that the page never had, changing how it
+// renders and taking the label out of the vendor's hands.
+//
+// Three storage states, three distinct HTML shapes, and every one of them
+// carries a <summary> — a summary-less <details> is unparseable by the
+// editor's schema (`content: 'detailsSummary block*'`) and ejects its own body
+// out of the section, in read view as much as edit mode.
+describe('content-converter: #1227 untitled expand sections', () => {
+  const untitled = (name: string) =>
+    `<ac:structured-macro ac:name="${name}"><ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>`;
+
+  for (const macroName of ['expand', 'ui-expand']) {
+    it(`converts an untitled ${macroName} to an empty summary, storing no title`, () => {
+      const html = confluenceToHtml(untitled(macroName));
+      expect(html).toContain('<summary></summary>');
+      expect(html).not.toContain('Click to expand');
+      // Not smuggled into the #865 parameter net either — absence has to stay
+      // absence, or the reverse pass rebuilds it from there instead.
+      expect(html).not.toMatch(/data-macro-params="[^"]*title/);
+      // …and the body is still inside the section.
+      expect(html).toMatch(/<summary><\/summary><p>body<\/p>/);
+    });
+
+    it(`round-trips an untitled ${macroName} without inventing a title parameter`, () => {
+      const xhtml = htmlToConfluence(confluenceToHtml(untitled(macroName)));
+      expect(xhtml).not.toContain('ac:name="title"');
+      expect(xhtml).toContain(`ac:name="${macroName}"`);
+      expect(xhtml).toContain('<p>body</p>');
+    });
+  }
+
+  it('preserves an explicitly empty title parameter, which is a different thing', () => {
+    // #1232 drew this distinction deliberately: `<ac:parameter ac:name="title"/>`
+    // is a real, empty title, and dropping it would be the same fabrication
+    // class inverted. A blank summary is what BOTH states look like, so the
+    // empty one rides in data-macro-params — the one value the summary cannot
+    // carry.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage);
+    expect(html).toContain('<summary></summary>');
+    expect(html).toMatch(/data-macro-params="[^"]*title/);
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"></ac:parameter>');
+  });
+
+  it('emits a title the user typed onto a previously untitled section', () => {
+    // The self-correcting half: absence is representable, so filling it in is
+    // an ordinary edit rather than something the converter has to guess at.
+    const html = confluenceToHtml(untitled('expand')).replace(
+      '<summary></summary>',
+      '<summary>Typed</summary>',
+    );
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title">Typed</ac:parameter>');
+  });
+
+  it('lets a typed title win over an empty-title marker', () => {
+    // This is why the marker is not the attribute approach the issue rejected:
+    // it is consulted EXACTLY when the summary is blank, so the user's own
+    // text is never in a position to be discarded by it.
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title"/>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage).replace('<summary></summary>', '<summary>Typed</summary>');
+    const xhtml = htmlToConfluence(html);
+    expect(xhtml).toContain('<ac:parameter ac:name="title">Typed</ac:parameter>');
+    expect(xhtml.match(/ac:name="title"/g)).toHaveLength(1);
+  });
+
+  it('drops the parameter when the user clears a real title', () => {
+    const storage =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Was Here</ac:parameter>' +
+      '<ac:rich-text-body><p>body</p></ac:rich-text-body></ac:structured-macro>';
+    const html = confluenceToHtml(storage).replace('<summary>Was Here</summary>', '<summary></summary>');
+    expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
+  });
+
+  it('ignores a stale NON-empty title marker under a blank summary', () => {
+    // Hand-edited or legacy HTML. Honouring it would resurrect the title the
+    // user just cleared — the summary stays the source of truth for any real
+    // string, and only `''` is taken from the marker.
+    const html =
+      '<details data-macro-name="expand" data-macro-params=\'{"title":"Stale"}\'>' +
+      '<summary></summary><p>body</p></details>';
+    expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
+  });
+
+  it('treats a whitespace-only summary as untitled', () => {
+    const html = '<details data-macro-name="expand"><summary>   </summary><p>body</p></details>';
+    const xhtml = htmlToConfluence(html);
+    expect(xhtml).not.toContain('ac:name="title"');
+    // The <summary> tag itself is still gone — it has no place in storage
+    // format whether or not it carried a title.
+    expect(xhtml).not.toContain('<summary');
+  });
+
+  it('carries a real title\'s own leading and trailing spaces', () => {
+    // Trimming decides *whether* there is a title; the parameter carries the
+    // untrimmed text, because a real title's spacing is the user's.
+    const html = '<details data-macro-name="expand"><summary> Spaced </summary><p>b</p></details>';
+    expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"> Spaced </ac:parameter>');
+  });
+
+  it('writes no title for a <details> that reaches the reverse pass with no summary', () => {
+    // Improve-apply feeds model-produced HTML through htmlToConfluence with no
+    // tag allow-list, so this shape is reachable without the editor.
+    const xhtml = htmlToConfluence('<details data-macro-name="expand"><p>body</p></details>');
+    expect(xhtml).not.toContain('ac:name="title"');
+    expect(xhtml).toContain('<p>body</p>');
+  });
+
+  it('keeps the title parameter stable across a double round-trip', () => {
+    // The fabricated label was self-consistent once written, which is exactly
+    // what made it easy to miss. Untitled must now be the stable state.
+    const once = htmlToConfluence(confluenceToHtml(untitled('expand')));
+    const twice = htmlToConfluence(confluenceToHtml(once));
+    expect(once).not.toContain('ac:name="title"');
+    expect(twice).toBe(once);
   });
 });
 
@@ -1852,13 +2455,16 @@ describe('content-converter: #781 layout-token resilience', () => {
       expectTwoEqualRebuilt(html);
     });
 
-    it('strips duplicated/hallucinated extra tokens and still rebuilds per the skeleton', async () => {
-      const html = await recover(LAYOUT_TWO_EQUAL_PAGE, (md) =>
-        md.replace('[[[/LAYOUT]]]', '[[[/LAYOUT]]]\n\n[[[LAYOUT]]]\n\n[[[/LAYOUT]]]'),
-      );
-      // Exactly ONE layout — the duplicate echo is debris.
-      expect((html.match(/class="confluence-layout"/g) ?? []).length).toBe(1);
-      expectTwoEqualRebuilt(html);
+    it('refuses a duplicated/hallucinated extra token pair instead of stripping it as debris', async () => {
+      // Changed by the #1232 round-2 review. Stripping a surplus token as
+      // debris let it ANCHOR the alignment first: whichever occurrence came
+      // earlier took the skeleton's slot, so a real boundary could land on the
+      // wrong prose, and any page text caught in the "debris" span was deleted.
+      // A token that reconciles with nothing is no longer allowed to
+      // participate — the apply is refused so the user can re-run.
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const duplicated = md.replace('[[[/LAYOUT]]]', '[[[/LAYOUT]]]\n\n[[[LAYOUT]]]\n\n[[[/LAYOUT]]]');
+      await expect(markdownToHtml(duplicated, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
 
     it('keeps prose the LLM placed between cell boundaries out of the bare section (folds into the next cell)', async () => {
@@ -1867,10 +2473,15 @@ describe('content-converter: #781 layout-token resilience', () => {
       );
       expect(html).toContain('Stray inter-cell prose');
       // The stray prose must live inside a cell, not directly in the section div.
-      const sectionInner = html.slice(html.indexOf('confluence-layout-section'));
-      const firstCellIdx = sectionInner.indexOf('confluence-layout-cell');
-      const strayIdx = sectionInner.indexOf('Stray inter-cell prose');
-      expect(strayIdx).toBeGreaterThan(firstCellIdx);
+      // "After the first cell opens" is NOT enough — it is also true when the
+      // prose sits between the two cells as a direct child of the section, which
+      // the storage format forbids. Assert it against the STORAGE output, where
+      // that shape is unambiguous (#1232 round 3).
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).not.toMatch(/<ac:layout-section[^>]*>\s*<p>/);
+      expect(xhtml).not.toMatch(/<\/ac:layout-cell>\s*<p>/);
+      expect(xhtml).not.toMatch(/<ac:layout>\s*<p>/);
+      expect(xhtml).toMatch(/<ac:layout-cell>[\s\S]*Stray inter-cell prose[\s\S]*<\/ac:layout-cell>/);
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
     });
 
@@ -1943,18 +2554,27 @@ describe('content-converter: #781 layout-token resilience', () => {
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
     });
 
-    it('still escalates to loose matching when the echo is mangled (lookalike exposure accepted)', async () => {
+    it('still escalates to loose matching when the echo is mangled', async () => {
       const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
-      const mangled = md
-        .replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]') // first close lower-cased by the model
-        .replace('Left column content', 'Left column content mentions [[[layout]]]');
+      const mangled = md.replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]'); // close lower-cased
       const html = await markdownToHtml(mangled, { layoutSkeleton: skeleton });
-      // Loose escalation rescued the layout; the lookalike was consumed as
-      // token debris — the accepted price of recovering a mangled echo.
       expect(html).toContain('data-layout-type="two_equal"');
       expect((html.match(/class="confluence-layout-cell"/g) ?? []).length).toBe(2);
-      expect(html).toContain('Left column content mentions');
+      expect(html).toContain('Left column content');
       expect(html).not.toContain('[[[');
+    });
+
+    it('refuses when a mangled echo ALSO carries a lookalike, rather than eating the prose', async () => {
+      // #785 accepted "the lookalike is consumed as token debris" as the price
+      // of loose escalation. The #1232 round-2 review withdrew that: consuming
+      // it deletes words the user wrote, and the same surplus can anchor a real
+      // boundary onto the wrong prose (that is BC2, with an expand instead of a
+      // cell). Refusing costs a re-run; the old behaviour cost page content.
+      const { skeleton, md } = prepare(LAYOUT_TWO_EQUAL_PAGE);
+      const mangled = md
+        .replace('[[[/LAYOUT-CELL]]]', '[[[/layout-cell]]]')
+        .replace('Left column content', 'Left column content mentions [[[layout]]]');
+      await expect(markdownToHtml(mangled, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
     });
   });
 
@@ -2176,5 +2796,1122 @@ describe('content-converter: #781 layout-token resilience', () => {
       expect(html).not.toContain('confluence-layout');
       expect(html).toContain('Left column content');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1221 stage 2: expand sections ride boundary tokens where position allows.
+//
+// Stage 1 (#1225) froze EVERY <details> via protectMedia, which preserved the
+// macro but made its body non-improvable. Stage 2 makes that freeze conditional
+// (mirroring isFrozenLegacyWrapper) and emits [[[EXPAND …]]] boundary tokens
+// everywhere else, so the prose inside a collapsible section is editable again
+// while the macro identity, summary and parameters ride opaquely in the token.
+// ---------------------------------------------------------------------------
+describe('content-converter: #1221 stage 2 expand boundary tokens', () => {
+  /** The Improve pipeline exactly as the route runs it (protect → tokens → rebuild). */
+  async function improveRoundTrip(
+    storageXhtml: string,
+    editMarkdown: (md: string) => string = (md) => md,
+  ): Promise<{ md: string; html: string; xhtml: string }> {
+    const bodyHtml = confluenceToHtml(storageXhtml);
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+    const layoutSkeleton = extractLayoutSkeleton(protectedHtml);
+    const md = editMarkdown(htmlToMarkdown(protectedHtml, { layoutTokens: true }));
+    const html = restoreMedia(await markdownToHtml(md, { layoutSkeleton }), media);
+    return { md, html, xhtml: htmlToConfluence(html) };
+  }
+
+  describe('token emission', () => {
+    it('wraps an unconstrained expand in EXPAND boundary tokens and leaves its body as markdown', () => {
+      const md = htmlToMarkdown(protectMedia(confluenceToHtml(EXPAND_PAGE)).html, { layoutTokens: true });
+      // Grammar is the contract: name / open / title / params, values
+      // percent-encoded so no value can break the one-line token shape.
+      expect(md).toContain('[[[EXPAND name=expand open=0 title=How%20do%20I%20reset%20my%20password%3F params=]]]');
+      expect(md).toContain('[[[/EXPAND]]]');
+      // The body is plain markdown the model can rewrite …
+      expect(md).toContain('Change Password');
+      // … while the summary rides opaquely inside the token, never as prose.
+      expect(md.replace(/\[\[\[[^\]\n]*\]\]\]/g, '')).not.toContain('How do I reset my password');
+      // And the section was NOT frozen into an opaque media token.
+      expect(md).not.toContain('CQ\\_MEDIA\\_PLACEHOLDER');
+    });
+
+    it('emits open=1 and the macro parameters for a default-open Refined UI Expand', () => {
+      const md = htmlToMarkdown(protectMedia(confluenceToHtml(UI_EXPAND_PAGE)).html, { layoutTokens: true });
+      expect(md).toContain('[[[EXPAND name=ui-expand open=1 title=Development%20Team params=]]]');
+      expect(md).toContain('[[[EXPAND name=ui-expand open=0 title=Support%20Team params=]]]');
+    });
+  });
+
+  describe('round-trip through the full Improve pipeline', () => {
+    it('preserves a native expand macro end to end and keeps its body improvable', async () => {
+      const { xhtml } = await improveRoundTrip(EXPAND_PAGE, (md) =>
+        md.replace('Change Password', 'Change Password (takes ~2 minutes)'),
+      );
+      expect((xhtml.match(/ac:name="expand"/g) ?? []).length).toBe(2);
+      expect(xhtml).toContain('<ac:parameter ac:name="title">How do I reset my password?</ac:parameter>');
+      expect(xhtml).toContain('Change Password (takes ~2 minutes)');
+      expect(xhtml).toContain('<ac:rich-text-body>');
+      expect(xhtml).not.toContain('[[[');
+      // A native expand never gains an `expanded` parameter Atlassian's macro
+      // does not define (#1129) — `open` stays inert on write-back.
+      expect(xhtml).not.toContain('ac:name="expanded"');
+    });
+
+    it('preserves Refined UI Expand identity, parameters and open state end to end', async () => {
+      const { xhtml } = await improveRoundTrip(UI_EXPAND_PAGE, (md) =>
+        md.replace('Handles escalations.', 'Handles customer escalations end to end.'),
+      );
+      expect((xhtml.match(/ac:name="ui-expand"/g) ?? []).length).toBe(2);
+      expect(xhtml).not.toContain('ac:name="expand"');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">Development Team</ac:parameter>');
+      expect(xhtml).toContain('Handles customer escalations end to end.');
+      // `expanded` is rebuilt from `open` and only for the section that had it.
+      expect((xhtml.match(/<ac:parameter ac:name="expanded">true<\/ac:parameter>/g) ?? []).length).toBe(1);
+    });
+
+    it('keeps a native expand and a UI Expand distinct on the same page', async () => {
+      const { md, xhtml } = await improveRoundTrip(MIXED_EXPAND_PAGE);
+      expect(md).toContain('[[[EXPAND name=expand ');
+      expect(md).toContain('[[[EXPAND name=ui-expand ');
+      expect(xhtml).toContain('ac:name="expand"');
+      expect(xhtml).toContain('ac:name="ui-expand"');
+      expect(xhtml).toContain('native body');
+      expect(xhtml).toContain('refined body');
+    });
+
+    it('round-trips a summary whose text would otherwise break the token grammar', async () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand">' +
+        '<ac:parameter ac:name="title">100% [done] &amp; &lt;b&gt;bold&lt;/b&gt; "quoted"</ac:parameter>' +
+        '<ac:rich-text-body><p>body prose</p></ac:rich-text-body></ac:structured-macro>';
+      const { md, xhtml } = await improveRoundTrip(storage);
+      // The raw characters never appear in the token line — they are encoded.
+      const tokenLine = md.split('\n').find((l) => l.startsWith('[[[EXPAND'))!;
+      expect(tokenLine).toBeDefined();
+      expect(tokenLine).not.toContain(' [done]');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">100% [done] &amp; &lt;b&gt;bold&lt;/b&gt; "quoted"</ac:parameter>');
+      expect(xhtml).toContain('body prose');
+    });
+
+    it('preserves extra macro parameters carried in data-macro-params', async () => {
+      const storage =
+        '<ac:structured-macro ac:name="ui-expand">' +
+        '<ac:parameter ac:name="title">Notes</ac:parameter>' +
+        '<ac:parameter ac:name="class">highlight</ac:parameter>' +
+        '<ac:rich-text-body><p>note body</p></ac:rich-text-body></ac:structured-macro>';
+      const { md, xhtml } = await improveRoundTrip(storage, (m) =>
+        m.replace('note body', 'note body, clarified'),
+      );
+      expect(md).toContain('params=%7B%22class%22%3A%22highlight%22%7D');
+      expect(xhtml).toContain('<ac:parameter ac:name="class">highlight</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">Notes</ac:parameter>');
+      expect(xhtml).toContain('note body, clarified');
+    });
+
+    it('preserves an expand nested inside another expand', async () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Outer</ac:parameter>' +
+        '<ac:rich-text-body><p>outer prose</p>' +
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Inner</ac:parameter>' +
+        '<ac:rich-text-body><p>inner prose</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>';
+      const { md, xhtml } = await improveRoundTrip(storage);
+      expect((md.match(/\[\[\[EXPAND /g) ?? []).length).toBe(2);
+      expect((xhtml.match(/ac:name="expand"/g) ?? []).length).toBe(2);
+      expect(xhtml).toContain('<ac:parameter ac:name="title">Outer</ac:parameter>');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">Inner</ac:parameter>');
+      // The inner macro really is nested inside the outer one's body.
+      expect(xhtml).toMatch(/Outer<\/ac:parameter>[\s\S]*Inner<\/ac:parameter>[\s\S]*inner prose/);
+      expect(xhtml).not.toContain('<details');
+    });
+
+    it('preserves a legacy section/column layout nested inside an expand body', async () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Layout inside</ac:parameter>' +
+        '<ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="column"><ac:parameter ac:name="width">30%</ac:parameter>' +
+        '<ac:rich-text-body><p>left cell</p></ac:rich-text-body></ac:structured-macro>' +
+        '<ac:structured-macro ac:name="column"><ac:parameter ac:name="width">70%</ac:parameter>' +
+        '<ac:rich-text-body><p>right cell</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>';
+      const { md, xhtml } = await improveRoundTrip(storage);
+      expect(md).toContain('[[[EXPAND ');
+      expect(md).toContain('[[[SECTION]]]');
+      expect(md).toContain('[[[COLUMN width=30%]]]');
+      expect(xhtml).toContain('ac:name="expand"');
+      expect(xhtml).toContain('ac:name="section"');
+      expect((xhtml.match(/ac:name="column"/g) ?? []).length).toBe(2);
+      expect(xhtml).toContain('<ac:parameter ac:name="width">30%</ac:parameter>');
+      expect(xhtml).toContain('left cell');
+      expect(xhtml).not.toContain('[[[');
+    });
+
+    it('protects media inside an expand body with its own token and restores it in place', async () => {
+      const storage =
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Diagrams</ac:parameter>' +
+        '<ac:rich-text-body><p>Intro</p><ac:image><ri:attachment ri:filename="photo.png"></ri:attachment></ac:image>' +
+        '</ac:rich-text-body></ac:structured-macro>';
+      const bodyHtml = confluenceToHtml(storage, '42');
+      const { html: protectedHtml, media } = protectMedia(bodyHtml);
+      // Stage 1 froze the whole section; stage 2 leaves it open and gives the
+      // image its own media token so the surrounding prose stays improvable.
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toContain('photo.png');
+      expect(media[0]!.html).not.toContain('<details');
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+      expect(md).toContain('[[[EXPAND ');
+      // The media token sits INSIDE the section's boundary tokens.
+      expect(md.indexOf('[[[EXPAND ')).toBeLessThan(md.indexOf('CQ\\_MEDIA\\_PLACEHOLDER\\_0'));
+      expect(md.indexOf('CQ\\_MEDIA\\_PLACEHOLDER\\_0')).toBeLessThan(md.indexOf('[[[/EXPAND]]]'));
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(protectedHtml) }),
+        media,
+      );
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ri:filename="photo.png"');
+      expect(xhtml).toContain('ac:name="expand"');
+      // The image is still inside the expand body, not appended after it.
+      expect(xhtml.indexOf('ri:filename="photo.png"')).toBeLessThan(xhtml.indexOf('</ac:rich-text-body>'));
+    });
+  });
+
+  describe('sections the forward pass never produced', () => {
+    /** Tokenise + rebuild body HTML directly (no storage-format source). */
+    async function tokenRoundTrip(bodyHtml: string): Promise<{ md: string; html: string }> {
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      return { md, html: await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) }) };
+    }
+
+    it('tokenises a <details> carrying no identity stamp, defaulting to the native expand', async () => {
+      // body_html synced before #1211, and editor-created sections, carry no
+      // `data-macro-name`. Requiring the stamp to recognise an expand would
+      // leave these with neither a token nor the freeze — i.e. back to the
+      // silent macro deletion. htmlToConfluence defaults them the same way.
+      const { md, html } = await tokenRoundTrip('<details><summary>Legacy</summary><p>old body</p></details>');
+      expect(md).toContain('[[[EXPAND name=expand open=0 title=Legacy params=]]]');
+      expect(htmlToConfluence(html)).toContain('ac:name="expand"');
+      expect(htmlToConfluence(html)).toContain('old body');
+    });
+
+    it('rebuilds a title-less section WITH an empty summary, and still invents no title', async () => {
+      const { md, html } = await tokenRoundTrip('<details data-macro-name="expand"><p>body only</p></details>');
+      // The `title` key is absent from the token: it records whether the HTML
+      // had a <summary> at all, and this one did not.
+      expect(md).not.toContain('title=');
+      // #1227: the rebuild supplies one regardless. A summary-less <details>
+      // is unparseable by the editor's schema and ejects its own body; a blank
+      // summary costs nothing, because the reverse pass reads the text.
+      expect(html).toContain('<details data-macro-name="expand"><summary></summary>');
+      const xhtml = htmlToConfluence(html);
+      expect(xhtml).toContain('ac:name="expand"');
+      expect(xhtml).not.toContain('ac:name="title"');
+      expect(xhtml).toContain('body only');
+    });
+
+    it('still emits tokens for a section with an empty body', async () => {
+      // turndown replaces a "blank" element with nothing at all, which would
+      // drop the boundary tokens and 422 every apply on such a page.
+      const { md, html } = await tokenRoundTrip('<details data-macro-name="expand"><summary>Empty</summary></details>');
+      expect(md).toContain('[[[EXPAND name=expand open=0 title=Empty params=]]]');
+      expect(md).toContain('[[[/EXPAND]]]');
+      expect(html).toContain('<summary>Empty</summary>');
+      expect(htmlToConfluence(html)).toContain('ac:name="expand"');
+    });
+  });
+
+  describe('token provenance on the skeleton path (#1232 review)', () => {
+    async function skeletonRoundTrip(bodyHtml: string): Promise<{ md: string; html: string; xhtml: string }> {
+      const { html: prot, media } = protectMedia(bodyHtml);
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      const html = restoreMedia(
+        await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) }),
+        media,
+      );
+      return { md, html, xhtml: htmlToConfluence(html) };
+    }
+
+    it('keeps token-shaped text inside an expand title instead of stripping it', async () => {
+      // The backstop strip ran over the rebuilt HTML, where layoutOpenTag had
+      // already decoded the title back to literal brackets — so a title that
+      // documented the token syntax was emptied on save.
+      const { xhtml } = await skeletonRoundTrip(
+        '<details data-macro-name="expand"><summary>[[[EXPAND name=expand]]] explained</summary><p>b</p></details>',
+      );
+      expect(xhtml).toContain('<ac:parameter ac:name="title">[[[EXPAND name=expand]]] explained</ac:parameter>');
+    });
+
+    it('keeps token-shaped text inside a macro parameter value', async () => {
+      const { xhtml } = await skeletonRoundTrip(
+        '<details data-macro-name="ui-expand" data-macro-params="{&quot;note&quot;:&quot;[[[LAYOUT]]] here&quot;}">' +
+        '<summary>T</summary><p>b</p></details>',
+      );
+      expect(xhtml).toContain('<ac:parameter ac:name="note">[[[LAYOUT]]] here</ac:parameter>');
+    });
+
+    it("keeps the page's own escaped literal, and refuses a token the model added", async () => {
+      // Two different things, and the escape tells them apart. Prose that was
+      // on the page reaches the model turndown-escaped (\[\[\[…), which the
+      // strict scan cannot see, so it stays prose all the way to the saved
+      // page — no surplus, apply succeeds.
+      const bodyHtml =
+        '<p>Docs mention [[[EXPAND name=expand]]] here.</p>' +
+        '<details data-macro-name="expand"><summary>Runbook</summary><p>step one</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const skeleton = extractLayoutSkeleton(prot);
+      const faithful = htmlToMarkdown(prot, { layoutTokens: true });
+      const html = await markdownToHtml(faithful, { layoutSkeleton: skeleton });
+      expect(html).toContain('Docs mention [[[EXPAND name=expand]]] here.');
+      expect(html).toContain('<summary>Runbook</summary>');
+
+      // An UNESCAPED token the model typed itself is a surplus, and #1232
+      // round 2 established that a surplus may never take part in alignment —
+      // it is indistinguishable from the escape-stripped literal that anchored
+      // a real boundary onto the wrong prose. Refused, not silently stripped.
+      await expect(
+        markdownToHtml(`${faithful}\n\nI preserved the [[[EXPAND]]] marker.`, { layoutSkeleton: skeleton }),
+      ).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('leaves literal token text in a fenced code block untouched on the skeleton path', async () => {
+      // Behaviour guard, not a pin on the provenance change: code regions were
+      // already masked from the old backstop strip, so this held before it too.
+      const bodyHtml = '<details data-macro-name="expand"><summary>Docs</summary><p>body</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = `${htmlToMarkdown(prot, { layoutTokens: true })}\n\n\`\`\`\n[[[EXPAND name=expand]]]\n\`\`\`\n`;
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toMatch(/<code>\[\[\[EXPAND name=expand\]\]\]/);
+      expect(html).toContain('<summary>Docs</summary>');
+    });
+
+    it('keeps literal token text belonging to a legacy SECTION page, macro included', async () => {
+      // The provenance fix is in the SHARED machinery, so it changes two things
+      // for non-expand pages too — both strictly safer, both deliberate. Here:
+      // a page documenting the token syntax used to lose the sentence AND the
+      // section macro; now both survive.
+      const bodyHtml = '<p>We document [[[SECTION]]] here.</p><div class="confluence-section"><p>real</p></div>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      const xhtml = htmlToConfluence(
+        restoreMedia(
+          await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true }), {
+            layoutSkeleton: extractLayoutSkeleton(prot),
+          }),
+          media,
+        ),
+      );
+      expect(xhtml).toContain('[[[SECTION]]]');
+      expect(xhtml).toContain('ac:name="section"');
+    });
+
+    it('refuses a re-nesting that would move a sibling section inside a collapsed one', async () => {
+      // Same multiset, different SHAPE: the model turned two siblings into one
+      // nested inside the other. Content is not lost, but a section the reader
+      // could see is now behind a toggle — the harm class that made the
+      // token-free recovery paths 422 for expands. The fast path is restricted
+      // to permutations that preserve the nesting shape (#1232 round 3).
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const nested = [
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/EXPAND]]]', '',
+        '[[[/EXPAND]]]',
+      ].join('\n');
+      await expect(markdownToHtml(nested, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses an un-nesting that would lift a nested section out to top level', async () => {
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const siblings = [
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[/EXPAND]]]', '',
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/EXPAND]]]',
+      ].join('\n');
+      await expect(markdownToHtml(siblings, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses a reorder whose closes were also mangled (identity cannot be confirmed)', async () => {
+      // Pins the identityConflict rejection. Without it the positional match
+      // stands and the two titles are crossed at HTTP 200; the reorder is only
+      // safe when the whole echo is canonical enough to prove identity.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>One</summary><p>alpha</p></details>' +
+        '<details data-macro-name="expand"><summary>Two</summary><p>beta</p></details>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      const reorderedAndMangled = [
+        '[[[EXPAND name=expand open=0 title=Two params=]]]', '',
+        'beta', '',
+        '[[[/expand]]]', '',
+        '[[[EXPAND name=expand open=0 title=One params=]]]', '',
+        'alpha', '',
+        '[[[/expand]]]',
+      ].join('\n');
+      await expect(
+        markdownToHtml(reorderedAndMangled, { layoutSkeleton: skeleton }),
+      ).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('refuses a surplus token on a SINGLE-slot page rather than wrapping around it', async () => {
+      // The multi-slot last resort is pinned elsewhere; this is the one-slot
+      // path, where wrapProseInSingleSlot would strip the surplus as debris —
+      // deleting whatever page text shares its span — and wrap the rest.
+      const bodyHtml =
+        '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+        '<div class="confluence-layout-cell"><p>Full width content</p></div></div></div>';
+      const skeleton = extractLayoutSkeleton(protectMedia(bodyHtml).html);
+      // A kind the skeleton does not contain at all, so it reconciles with
+      // nothing — the surplus case. (A lookalike whose kind DOES appear in the
+      // skeleton is matched rather than surplus; see the known-limits note in
+      // 11-content-pipeline.md.)
+      const withSurplus = 'Docs mention [[[COLUMN width=50%]]] in prose.\n\nFresh single-column prose.';
+      await expect(markdownToHtml(withSurplus, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('keeps a column width with its own prose when the model reorders columns', async () => {
+      // The identity fix is in shared machinery, so it corrects the same class
+      // for legacy columns: base pinned `width=30%` onto whichever prose came
+      // first, because reconstruction re-emitted skeleton[i].
+      const bodyHtml =
+        '<div class="confluence-section">' +
+        '<div class="confluence-column" data-cell-width="30%"><p>Narrow prose</p></div>' +
+        '<div class="confluence-column" data-cell-width="70%"><p>Wide prose</p></div></div>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const swapped = [
+        '[[[SECTION]]]', '',
+        '[[[COLUMN width=70%]]]', '', 'Wide prose', '', '[[[/COLUMN]]]', '',
+        '[[[COLUMN width=30%]]]', '', 'Narrow prose', '', '[[[/COLUMN]]]', '',
+        '[[[/SECTION]]]',
+      ].join('\n');
+      const xhtml = htmlToConfluence(
+        await markdownToHtml(swapped, { layoutSkeleton: extractLayoutSkeleton(prot) }),
+      );
+      expect(xhtml).toMatch(/width">70%[\s\S]*Wide prose/);
+      expect(xhtml).toMatch(/width">30%[\s\S]*Narrow prose/);
+    });
+
+    it('leaves no stray list marker when the model put a token on a list line', async () => {
+      const bodyHtml = '<details data-macro-name="expand"><summary>T</summary><p>body</p></details>';
+      const { html: prot } = protectMedia(bodyHtml);
+      const md = htmlToMarkdown(prot, { layoutTokens: true })
+        .replace('[[[EXPAND', '- [[[EXPAND');
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toContain('<summary>T</summary>');
+      expect(html).not.toContain('<p>- </p>');
+      expect(html).not.toMatch(/<li>\s*<\/li>/);
+    });
+
+    it('fails closed for a stored column macro that never had its section', async () => {
+      // Not an expand shape, but the same class, and the one most likely to
+      // exist in the wild: a hand-authored `column` outside any `section`.
+      // Base stripped every token and saved the flattened body, deleting the
+      // macro; refusing is strictly safer, at the cost of that page not being
+      // improvable until its storage is fixed.
+      const skeleton = extractLayoutSkeleton('<div class="confluence-column"><p>orphan</p></div>');
+      expect(skeleton.map((t) => t.kind)).toEqual(['COLUMN', 'COLUMN']);
+      await expect(markdownToHtml('orphan', { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('fails closed when the page itself carries a nesting the storage format forbids', async () => {
+      // Behaviour guard: this threw before the explicit gate too (recovery
+      // could not align the unmatched prose-bearing opens). The gate makes the
+      // refusal deliberate and cheap rather than incidental.
+      // Reached only if the freeze misses a shape: strip-and-save would delete
+      // the macros, so the apply is refused instead.
+      const skeleton = extractLayoutSkeleton(
+        '<div class="confluence-section"><div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="single">' +
+        '<div class="confluence-layout-cell"><p>x</p></div></div></div></div>',
+      );
+      expect(skeleton.map((t) => t.kind)).toContain('LAYOUT');
+      await expect(markdownToHtml('anything', { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+  });
+
+  describe('shapes that must keep the opaque freeze (#1232 review)', () => {
+    const CASES: { name: string; bodyHtml: string; keep: string }[] = [
+      {
+        name: 'an expand containing a bare column macro',
+        bodyHtml:
+          '<details data-macro-name="expand"><summary>T</summary>' +
+          '<div class="confluence-column" data-cell-width="50%"><p>col body</p></div></details>',
+        keep: 'confluence-column',
+      },
+      {
+        // Guard rather than pin: a stray cell was already covered by the first
+        // cut's class list. Kept because the derived check must not lose it.
+        name: 'an expand containing a layout cell without its grid',
+        bodyHtml:
+          '<details data-macro-name="expand"><summary>T</summary>' +
+          '<div class="confluence-layout-cell"><p>cell body</p></div></details>',
+        keep: 'confluence-layout-cell',
+      },
+      {
+        name: 'an expand sitting directly inside a layout wrapper',
+        bodyHtml:
+          '<div class="confluence-layout">' +
+          '<details data-macro-name="expand"><summary>T</summary><p>b</p></details></div>',
+        keep: 'data-macro-name="expand"',
+      },
+    ];
+
+    for (const { name, bodyHtml, keep } of CASES) {
+      it(`freezes ${name}`, async () => {
+        const { html: prot, media } = protectMedia(bodyHtml);
+        expect(media.some((m) => m.html.includes('<details'))).toBe(true);
+        const restored = restoreMedia(
+          await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true }), {
+            layoutSkeleton: extractLayoutSkeleton(prot),
+          }),
+          media,
+        );
+        expect(restored).toContain('data-macro-name="expand"');
+        expect(restored).toContain(keep);
+      });
+    }
+
+    it('still tokenises a section/column layout nested the legal way inside an expand', async () => {
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>T</summary>' +
+        '<div class="confluence-section"><div class="confluence-column"><p>col</p></div></div></details>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      expect(media).toHaveLength(0);
+      expect(htmlToMarkdown(prot, { layoutTokens: true })).toContain('[[[EXPAND ');
+    });
+
+    it('freezes only the inner section when a nested one is shape-frozen', async () => {
+      // The walk skipped a nested expand only when it was frozen by POSITION,
+      // so a nested one frozen by SHAPE was descended into and its invalid
+      // sequence froze the outer section too — costing the outer body's
+      // improvability for no safety reason. A frozen section emits no tokens
+      // at all, so its subtree cannot invalidate anything.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>Outer</summary><p>outer prose</p>' +
+        '<details data-macro-name="expand"><summary>Inner</summary>' +
+        '<div class="confluence-column"><p>col</p></div></details></details>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      // Exactly the inner section is captured …
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toContain('<summary>Inner</summary>');
+      expect(media[0]!.html).not.toContain('<summary>Outer</summary>');
+      // … and the outer one tokenises, so its prose stays improvable.
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      expect(md).toContain('[[[EXPAND name=expand open=0 title=Outer params=]]]');
+      expect(md).toContain('outer prose');
+    });
+
+    it('gives media exactly one token when a frozen expand holds an unfrozen nested one', async () => {
+      // The outer section freezes for a reason its descendants do not share, so
+      // frozen-ness is not inherited — the nearest-ancestor test handed the
+      // image a second token the apply drop-guard could re-append.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>Outer</summary>' +
+        '<div class="confluence-column"><p>col</p></div>' +
+        '<details data-macro-name="expand"><summary>Inner</summary>' +
+        '<p><img src="/api/attachments/1/p.png" alt="P"></p></details></details>';
+      const { media } = protectMedia(bodyHtml);
+      expect(media).toHaveLength(1);
+      expect(media[0]!.html).toContain('<summary>Outer</summary>');
+    });
+  });
+
+  describe('anchors and titles (#1232 review)', () => {
+    it('anchors on body prose only, skipping a nested section\'s summary too', async () => {
+      // A nested <summary> rides in its own token and never reaches the
+      // markdown either, so anchoring on it searches for text the model was
+      // never shown — the same defect the direct-summary skip was written for.
+      const skeleton = extractLayoutSkeleton(
+        '<details data-macro-name="expand"><summary>Outer</summary>' +
+        '<details data-macro-name="expand"><summary>Inner</summary><p>inner prose</p></details></details>',
+      );
+      expect(skeleton[0]!.anchor).toBe('inner prose');
+    });
+
+    it('preserves an explicitly empty title instead of dropping the parameter', async () => {
+      // Since #1227 the empty-vs-absent distinction rides in `params`, not in
+      // the presence of the `title` key — a blank summary is what BOTH states
+      // look like in the HTML. The marker has to survive the token layer or
+      // storage carrying an empty title parameter loses it on write-back.
+      const { html: prot } = protectMedia(
+        '<details data-macro-name="expand" data-macro-params="{&quot;title&quot;:&quot;&quot;}">' +
+        '<summary></summary><p>b</p></details>',
+      );
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toContain('<summary></summary>');
+      expect(htmlToConfluence(html)).toContain('<ac:parameter ac:name="title"></ac:parameter>');
+    });
+
+    it('gives a section that never had a summary an empty one rather than none', async () => {
+      // #1227: this is the path that made the ejection hole reachable — a
+      // model echoing `[[[EXPAND … params=]]]` with no `title` attribute.
+      const { html: prot } = protectMedia('<details data-macro-name="expand"><p>body only</p></details>');
+      const md = htmlToMarkdown(prot, { layoutTokens: true });
+      expect(md).not.toContain('title=');
+      const html = await markdownToHtml(md, { layoutSkeleton: extractLayoutSkeleton(prot) });
+      expect(html).toContain('<summary></summary>');
+      expect(htmlToConfluence(html)).not.toContain('ac:name="title"');
+    });
+  });
+
+  describe('safety envelope', () => {
+    it('escapes a token title instead of injecting markup into the rebuilt section', async () => {
+      const md = '[[[EXPAND name=expand open=0 title=%3Cscript%3Ealert%281%29%3C%2Fscript%3E params=]]]\n\nBody\n\n[[[/EXPAND]]]';
+      const html = await markdownToHtml(md);
+      expect(html).toContain('<details');
+      expect(html).not.toContain('<script>');
+      expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('neutralizes raw markup a mangled token carried in its attrs', async () => {
+      const md = '[[[EXPAND name=<script>x</script> open=0 title=<img onerror=y> params=]]]\n\nBody\n\n[[[/EXPAND]]]';
+      const html = await markdownToHtml(md);
+      expect(html).not.toContain('<script>');
+      expect(html).not.toContain('<img onerror');
+      expect(html).toContain('Body');
+    });
+
+    it('drops a params value that is not a JSON object rather than persisting garbage', async () => {
+      const md = '[[[EXPAND name=expand open=0 title=T params=not%20json]]]\n\nBody\n\n[[[/EXPAND]]]';
+      const html = await markdownToHtml(md);
+      expect(html).toContain('<details');
+      expect(html).not.toContain('data-macro-params');
+    });
+
+    it('flattens gracefully when an EXPAND token opens where the storage format forbids it', async () => {
+      // LAYOUT-CELL may only open inside a LAYOUT-SECTION — balanced but invalid.
+      const md = [
+        '[[[EXPAND name=expand open=0 title=T params=]]]', '',
+        '[[[LAYOUT-CELL]]]', '',
+        'Orphan prose', '',
+        '[[[/LAYOUT-CELL]]]', '',
+        '[[[/EXPAND]]]',
+      ].join('\n');
+      const html = await markdownToHtml(md);
+      expect(html).not.toContain('[[[');
+      expect(html).not.toContain('<details');
+      expect(html).toContain('Orphan prose');
+    });
+
+    it('preserves an expand wrapping a modern layout grid rather than flattening both', async () => {
+      // The one shape where an expand cannot use tokens for a reason other than
+      // its own position: [[[LAYOUT]]] is only valid at the top of the token
+      // stack, so the sequence would be rejected and the drop-guard would strip
+      // every token, deleting the macro. Verified end to end, through storage.
+      const bodyHtml =
+        '<details data-macro-name="expand"><summary>Grid</summary>' +
+        '<div class="confluence-layout"><div class="confluence-layout-section" data-layout-type="two_equal">' +
+        '<div class="confluence-layout-cell"><p>Left</p></div>' +
+        '<div class="confluence-layout-cell"><p>Right</p></div>' +
+        '</div></div></details>';
+      const { html: prot, media } = protectMedia(bodyHtml);
+      const rebuilt = restoreMedia(
+        await markdownToHtml(htmlToMarkdown(prot, { layoutTokens: true }), {
+          layoutSkeleton: extractLayoutSkeleton(prot),
+        }),
+        media,
+      );
+      const xhtml = htmlToConfluence(rebuilt);
+      expect(xhtml).toContain('ac:name="expand"');
+      expect(xhtml).toContain('<ac:parameter ac:name="title">Grid</ac:parameter>');
+      expect(xhtml).toContain('ac:type="two_equal"');
+      expect(xhtml).toContain('Left');
+      expect(xhtml).toContain('Right');
+      expect(xhtml).not.toContain('CQ_MEDIA_PLACEHOLDER');
+    });
+
+    it('#781: recovers a case-mangled EXPAND token against the page skeleton', async () => {
+      const bodyHtml = confluenceToHtml(EXPAND_PAGE);
+      const { html: protectedHtml } = protectMedia(bodyHtml);
+      const skeleton = extractLayoutSkeleton(protectedHtml);
+      const md = htmlToMarkdown(protectedHtml, { layoutTokens: true })
+        .replace('[[[/EXPAND]]]', '[[[/expand]]]');
+      const xhtml = htmlToConfluence(await markdownToHtml(md, { layoutSkeleton: skeleton }));
+      expect((xhtml.match(/ac:name="expand"/g) ?? []).length).toBe(2);
+      expect(xhtml).not.toContain('[[[');
+    });
+
+    it('#781: throws LayoutRecoveryError when the model dropped every EXPAND token and rewrote both bodies', async () => {
+      const bodyHtml = confluenceToHtml(EXPAND_PAGE);
+      const { html: protectedHtml } = protectMedia(bodyHtml);
+      const skeleton = extractLayoutSkeleton(protectedHtml);
+      // Two prose slots, no tokens, and both anchors reworded: there is no
+      // deterministic way to know which prose belongs in which section.
+      const mangled = 'Passwort zuruecksetzen: Einstellungen oeffnen.\n\nModelle: alle vom Server.';
+      await expect(markdownToHtml(mangled, { layoutSkeleton: skeleton })).rejects.toThrow(LayoutRecoveryError);
+    });
+
+    it('names every emittable token kind in the model-facing instruction', () => {
+      // The instruction enumerates the tokens the model will see; a kind
+      // missing from it is a kind the model was never told to keep verbatim,
+      // and since #781 a mangled token costs the user a 422 rather than a
+      // silent flatten. Guards the enumeration against a new kind being added
+      // to the converter alone.
+      for (const kind of ['LAYOUT-SECTION', 'LAYOUT-CELL', 'LAYOUT', 'SECTION', 'COLUMN', 'EXPAND']) {
+        expect(STRUCTURE_PRESERVATION_INSTRUCTION).toContain(`[[[${kind}`);
+      }
+    });
+
+    it('shows EXPAND in the worked example, not only in the enumeration', () => {
+      // #781 added the example because models echo tokens far more reliably
+      // when shown one, and EXPAND is the only kind carrying an opaque
+      // percent-encoded payload the model must copy byte-exact — so it is the
+      // kind that most needs the demonstration. Asserting on the example half
+      // specifically: the enumeration alone satisfies a `toContain('[[[EXPAND')`.
+      const example = STRUCTURE_PRESERVATION_INSTRUCTION.slice(
+        STRUCTURE_PRESERVATION_INSTRUCTION.indexOf('Example. Given this input:'),
+      );
+      expect(example).toContain('[[[EXPAND ');
+      expect(example).toContain('[[[/EXPAND]]]');
+    });
+
+    it('#781: an expand skeleton does not disturb hasRecoverableLayoutTokens', () => {
+      const md = htmlToMarkdown(protectMedia(confluenceToHtml(EXPAND_PAGE)).html, { layoutTokens: true });
+      expect(hasRecoverableLayoutTokens(md)).toBe(true);
+      expect(hasRecoverableLayoutTokens('Just prose, no structure.')).toBe(false);
+    });
+  });
+
+  describe('constrained positions stay frozen', () => {
+    const EXPAND_MACRO =
+      '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">In place</ac:parameter>' +
+      '<ac:rich-text-body><p>constrained body</p></ac:rich-text-body></ac:structured-macro>';
+
+    const CASES: { name: string; storage: string }[] = [
+      { name: 'table cell', storage: `<table><tbody><tr><td>${EXPAND_MACRO}</td><td><p>other</p></td></tr></tbody></table>` },
+      { name: 'table header cell', storage: `<table><tbody><tr><th>${EXPAND_MACRO}</th><th><p>other</p></th></tr></tbody></table>` },
+      { name: 'list item', storage: `<ul><li><p>Item</p>${EXPAND_MACRO}</li><li><p>Plain</p></li></ul>` },
+      { name: 'blockquote', storage: `<blockquote><p>Quoted</p>${EXPAND_MACRO}</blockquote>` },
+      { name: 'panel', storage: `<ac:structured-macro ac:name="info"><ac:rich-text-body><p>Panel intro</p>${EXPAND_MACRO}</ac:rich-text-body></ac:structured-macro>` },
+    ];
+
+    for (const { name, storage } of CASES) {
+      it(`freezes an expand inside a ${name} instead of tokenising it`, async () => {
+        const bodyHtml = confluenceToHtml(storage);
+        const { html: protectedHtml, media } = protectMedia(bodyHtml);
+        // Frozen whole — markdown's token normalization would rip a boundary
+        // token out of the containing construct (#765 review).
+        expect(media).toHaveLength(1);
+        expect(media[0]!.html).toContain('data-macro-name="expand"');
+        const md = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+        expect(md).not.toContain('[[[EXPAND');
+        expect(extractLayoutSkeleton(protectedHtml).filter((t) => t.kind === 'EXPAND')).toEqual([]);
+
+        const { xhtml } = await improveRoundTrip(storage);
+        expect(xhtml).toContain('ac:name="expand"');
+        expect(xhtml).toContain('constrained body');
+        expect(xhtml).not.toContain('<details');
+      });
+    }
+  });
+});
+
+// ========== #1220 self-nested placeholders on write-back ==========
+//
+// htmlToConfluence rebuilds every macro body with transferInnerHtml — an
+// innerHTML serialize/re-parse that produces FRESH nodes — while iterating a
+// STATIC querySelectorAll snapshot. Converting an outer placeholder before a
+// same-class inner one therefore leaves the inner element behind in the
+// discarded original subtree (still in the snapshot, no longer in the
+// document) while its live clone inside the new ac:rich-text-body was never in
+// the snapshot at all. The clone ships to Confluence as a literal <div>. The
+// task-list handler corrupts differently: its unscoped `li[data-type=taskItem]`
+// query also matches nested items, so the inner task is DUPLICATED — once as a
+// literal <ul> inside the outer task body, once hoisted to a sibling ac:task.
+// PR #1216 fixed the <details> loop by iterating innermost-first; these cases
+// pin the same reversal for the remaining loops.
+//
+// Every input below is fed to htmlToConfluence DIRECTLY, in the editor /
+// LLM-produced shape. Building it via confluenceToHtml would be vacuous for
+// undamaged storage: from well-formed storage the forward pass never emits a
+// self-nested same-class placeholder (a nested info panel comes back as
+// div.confluence-macro-unknown, and a nested unknown macro stays raw ac:
+// markup), so such a test passes on unpatched code. Storage ALREADY damaged by
+// this bug is the exception — a stored literal placeholder div survives the
+// forward pass verbatim and does arrive self-nested, which is how a damaged
+// page heals itself on its next save. The shapes below are reachable without
+// the sync either way: improve-apply runs markdownToHtml → htmlToConfluence
+// with no tag allow-list, and the editor schema permits panel-in-panel,
+// unknown-in-unknown and section > column > section > column.
+describe('content-converter: #1220 self-nested placeholders on write-back', () => {
+  describe('self-nesting per handler', () => {
+    it('converts a panel nested in a same-type panel without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-info"><p>outer</p><div class="panel-info"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts a section nested in a section without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-section"><p>outer</p>' +
+          '<div class="confluence-section"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="section"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts a column nested in a column without leaking a literal div', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-column"><p>outer</p>' +
+          '<div class="confluence-column"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('converts an unknown macro nested in an unknown macro without leaking a literal div', () => {
+      // The most plausible shape in practice (#1220): a third-party macro whose
+      // rich-text body holds another unrecognised macro.
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-macro-unknown" data-macro-name="outer-macro"><p>outer</p>' +
+          '<div class="confluence-macro-unknown" data-macro-name="inner-macro"><p>inner</p></div>' +
+          '</div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="outer-macro"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="inner-macro"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+  });
+
+  describe('nested task lists', () => {
+    it('nests a subtask instead of duplicating it', () => {
+      // Confluence task lists nest natively (subtasks), so this is the most
+      // reachable shape of the set — and it corrupts rather than leaks: the
+      // outer handler's unscoped li query hoists the nested item into a second
+      // ac:task while the raw <ul> is also copied into the outer task body.
+      const xhtml = htmlToConfluence(
+        '<ul data-type="taskList">' +
+          '<li data-type="taskItem" data-checked="false"><p>outer</p>' +
+          '<ul data-type="taskList">' +
+          '<li data-type="taskItem" data-checked="true"><p>inner</p></li>' +
+          '</ul>' +
+          '</li>' +
+          '</ul>',
+      );
+      expect(xhtml).not.toContain('<ul');
+      expect(xhtml.match(/<ac:task>/g)).toHaveLength(2);
+      // The inner task appears exactly once — as a nested ac:task-list inside
+      // the outer ac:task-body, never also hoisted as a sibling ac:task.
+      expect(xhtml.match(/<p>inner<\/p>/g)).toHaveLength(1);
+      expect(xhtml.match(/<ac:task-status>complete<\/ac:task-status>/g)).toHaveLength(1);
+      // Task ids are random; normalise them to compare the whole structure.
+      expect(xhtml.replace(/<ac:task-id>\d+<\/ac:task-id>/g, '<ac:task-id>#</ac:task-id>')).toBe(
+        '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-status>incomplete</ac:task-status>' +
+          '<ac:task-body><p>outer</p>' +
+          '<ac:task-list><ac:task><ac:task-id>#</ac:task-id>' +
+          '<ac:task-status>complete</ac:task-status>' +
+          '<ac:task-body><p>inner</p></ac:task-body>' +
+          '</ac:task></ac:task-list>' +
+          '</ac:task-body></ac:task></ac:task-list>',
+      );
+    });
+  });
+
+  describe('cross-type nesting regression pins', () => {
+    // These round-trip cleanly today, but only because each type/selector takes
+    // a FRESH querySelectorAll after the previous loop's re-parses, so a clone
+    // an earlier loop created is still found by a later one. Collapsing the four
+    // panel types into one selector (`.panel-info, .panel-warning, …`) — a
+    // plausible tidy-up — would silently break every cross-type panel nesting.
+    it('keeps a warning panel nested inside an info panel', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-info"><p>outer</p><div class="panel-warning"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('keeps an info panel nested inside a warning panel', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="panel-warning"><p>outer</p><div class="panel-info"><p>inner</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>outer</p>' +
+          '<ac:structured-macro ac:name="info"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+
+    it('keeps a column nested inside a section', () => {
+      const xhtml = htmlToConfluence(
+        '<div class="confluence-section"><div class="confluence-column"><p>cell</p></div></div>',
+      );
+      expect(xhtml).not.toContain('<div');
+      expect(xhtml).toBe(
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+          '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>cell</p></ac:rich-text-body></ac:structured-macro>' +
+          '</ac:rich-text-body></ac:structured-macro>',
+      );
+    });
+  });
+
+  it('survives section > column > section > column (both loops must be innermost-first)', () => {
+    // Reversing only one of the two loops is not enough: the outer section's
+    // re-parse clones the outer column, which an outer-first columns loop then
+    // clones again, leaking the entire inner subtree as literal divs.
+    const xhtml = htmlToConfluence(
+      '<div class="confluence-section"><div class="confluence-column">' +
+        '<div class="confluence-section"><div class="confluence-column"><p>deep</p></div></div>' +
+        '</div></div>',
+    );
+    expect(xhtml).not.toContain('<div');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="section"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="column"><ac:rich-text-body><p>deep</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+
+  it('survives same-type nesting through an intervening element (panel > details > panel)', () => {
+    // The <details> in between does not save the per-type snapshot: both tip
+    // panels are in the same panels-loop snapshot, so an outer-first pass still
+    // clones the inner one out of the document.
+    const xhtml = htmlToConfluence(
+      '<div class="panel-tip"><p>outer</p>' +
+        '<details data-macro-name="expand"><summary>S</summary>' +
+        '<div class="panel-tip"><p>inner</p></div>' +
+        '</details>' +
+        '</div>',
+    );
+    expect(xhtml).not.toContain('<div');
+    expect(xhtml).not.toContain('<details');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="tip"><ac:rich-text-body><p>outer</p>' +
+        '<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">S</ac:parameter>' +
+        '<ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="tip"><ac:rich-text-body><p>inner</p></ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+
+  it('never mistakes a nested placeholder for the outer unknown macro being body-less', () => {
+    // isPlaceholderOnly compares div.textContent against the exact
+    // `[Confluence macro: {name}]` string the forward pass fabricates for a
+    // body-less macro. Outer-first, an outer macro whose only content is a
+    // body-less nested macro of the SAME name reads as placeholder-only and
+    // emits no body at all — silently DELETING the nested macro. Innermost-first
+    // the inner is already an inert ac:structured-macro (no text), so the outer
+    // is never placeholder-only and the nesting survives.
+    const xhtml = htmlToConfluence(
+      '<div class="confluence-macro-unknown" data-macro-name="anchor">' +
+        '<div class="confluence-macro-unknown" data-macro-name="anchor">[Confluence macro: anchor]</div>' +
+        '</div>',
+    );
+    expect(xhtml.match(/ac:name="anchor"/g)).toHaveLength(2);
+    expect(xhtml).not.toContain('[Confluence macro:');
+    expect(xhtml).toBe(
+      '<ac:structured-macro ac:name="anchor"><ac:rich-text-body>' +
+        '<ac:structured-macro ac:name="anchor"></ac:structured-macro>' +
+        '</ac:rich-text-body></ac:structured-macro>',
+    );
+  });
+});
+
+// ==========================================================================
+// #1438 — forward conversion reaches a macro-free fixed point
+// ==========================================================================
+
+describe('content-converter: #1438 nested macro fallback', () => {
+  it('converts nested unknown macros without raw XML and round-trips their bodies and parameters', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor">' +
+      '<ac:parameter ac:name="outer-option">outer value</ac:parameter>' +
+      '<ac:rich-text-body><p>Outer body</p>' +
+      '<ac:structured-macro ac:name="inner-vendor">' +
+      '<ac:parameter ac:name="inner-option">inner value</ac:parameter>' +
+      '<ac:rich-text-body><p><strong>Inner body</strong></p></ac:rich-text-body>' +
+      '</ac:structured-macro></ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html.match(/class="confluence-macro-unknown"/g)).toHaveLength(2);
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:outer-vendor|inner-vendor)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="outer-option">outer value');
+    expect(roundTrip).toContain('ac:name="inner-option">inner value');
+    expect(roundTrip).toContain('<strong>Inner body</strong>');
+  });
+
+  it('converts a supported macro nested in an unknown macro without raw XML', () => {
+    const storage =
+      '<ac:structured-macro ac:name="outer-vendor"><ac:rich-text-body>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Supported body</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip).toContain('ac:name="outer-vendor"');
+    expect(roundTrip).toContain('ac:name="info"');
+    expect(roundTrip).toContain('Supported body');
+  });
+
+  it('converts an unknown macro cloned by a layout handler without a false no-progress failure', () => {
+    const storage =
+      '<ac:layout><ac:layout-section ac:type="single"><ac:layout-cell>' +
+      '<ac:structured-macro ac:name="layout-vendor"><ac:rich-text-body>' +
+      '<p>Nested in layout</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:layout-cell></ac:layout-section></ac:layout>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('data-macro-name="layout-vendor"');
+    expect(html).toContain('Nested in layout');
+  });
+
+  it('renders native panel losslessly while converting its nested supported macro', () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel body</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Nested info</p></ac:rich-text-body></ac:structured-macro>' +
+      '</ac:rich-text-body></ac:structured-macro>';
+
+    const html = confluenceToHtml(storage);
+    expect(html).not.toContain('ac:structured-macro');
+    expect(html).toContain('class="panel-info"');
+    expect(html).toContain('data-macro-name="panel"');
+    expect(html).toContain('data-macro-params=');
+    expect(html).not.toContain('confluence-macro-unknown');
+
+    const roundTrip = htmlToConfluence(html);
+    expect(roundTrip.match(/ac:name="(?:panel|info)"/g)).toHaveLength(2);
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Nested info');
+  });
+  it.each(['constructor', 'toString', '__proto__'])(
+    'keeps prototype-key macro name %s in the lossless unknown fallback',
+    (macroName) => {
+      const storage =
+        `<ac:structured-macro ac:name="${macroName}">` +
+        `<ac:parameter ac:name="mode">${macroName} mode</ac:parameter>` +
+        `<ac:rich-text-body><p>${macroName} body</p></ac:rich-text-body>` +
+        '</ac:structured-macro>';
+
+      const html = confluenceToHtml(storage);
+      expect(html).toContain('class="confluence-macro-unknown"');
+      expect(html).toContain(`data-macro-name="${macroName}"`);
+
+      const roundTrip = htmlToConfluence(html);
+      expect(roundTrip).toContain(`ac:name="${macroName}"`);
+      expect(roundTrip).toContain(`ac:name="mode">${macroName} mode`);
+      expect(roundTrip).toContain(`<p>${macroName} body</p>`);
+    },
+  );
+
+  it('ignores macro-looking markup inside comments when checking conversion progress', () => {
+    const storage =
+      '<p>Before comment</p>' +
+      '<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->' +
+      '<p>After comment</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<!-- <ac:structured-macro ac:name="info"></ac:structured-macro> -->');
+    expect(html).toContain('<p>After comment</p>');
+  });
+
+  it('ignores macro-looking markup inside raw-text elements when checking conversion progress', () => {
+    const storage =
+      '<script type="application/json">' +
+      '{"example":"<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>"}' +
+      '</script><p>After script</p>';
+
+    const html = confluenceToHtml(storage);
+
+    expect(html).toContain('<ac:structured-macro ac:name=\\"info\\"></ac:structured-macro>');
+    expect(html).toContain('<p>After script</p>');
+  });
+
+  it('throws instead of returning a raw macro hidden inside template content', () => {
+    const storage =
+      '<template><p>Before</p>' +
+      '<ac:structured-macro ac:name="info"><ac:rich-text-body>' +
+      '<p>Template body must not leak</p></ac:rich-text-body></ac:structured-macro>' +
+      '<p>After</p></template>';
+
+    expect(() => confluenceToHtml(storage)).toThrow(
+      'Confluence macro conversion made no progress (1 raw macros remain)',
+    );
+  });
+
+  it('freezes a native panel and its nested media through the full AI Improve round-trip', async () => {
+    const storage =
+      '<ac:structured-macro ac:name="panel">' +
+      '<ac:parameter ac:name="title">Operations</ac:parameter>' +
+      '<ac:parameter ac:name="custom-option">keep me</ac:parameter>' +
+      '<ac:rich-text-body><p>Panel identity must survive</p>' +
+      '<img src="/api/attachments/42/runbook.png" alt="Runbook">' +
+      '</ac:rich-text-body></ac:structured-macro>';
+    const bodyHtml = confluenceToHtml(storage);
+    const { html: protectedHtml, media } = protectMedia(bodyHtml);
+
+    expect(media).toHaveLength(1);
+    expect(media[0]!.html).toContain('data-macro-name="panel"');
+    expect(media[0]!.html).toContain('<img');
+
+    const markdown = htmlToMarkdown(protectedHtml, { layoutTokens: true });
+    expect(markdown).toContain('CQ\\_MEDIA\\_PLACEHOLDER\\_0');
+    const rebuilt = restoreMedia(
+      await markdownToHtml(markdown, {
+        layoutSkeleton: extractLayoutSkeleton(protectedHtml),
+      }),
+      media,
+    );
+    const roundTrip = htmlToConfluence(rebuilt);
+
+    expect(roundTrip).toContain('ac:name="panel"');
+    expect(roundTrip).toContain('ac:name="title">Operations');
+    expect(roundTrip).toContain('ac:name="custom-option">keep me');
+    expect(roundTrip).toContain('Panel identity must survive');
   });
 });

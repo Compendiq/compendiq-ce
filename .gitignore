@@ -1,5 +1,8 @@
 # Dependencies
-node_modules/
+# No trailing slash: a directory-only pattern does not match a SYMLINK of the
+# same name, which is how a `node_modules -> /Users/…` link was committed to a
+# branch and reached the PR head (#1102 review r3).
+node_modules
 node_modules.old/
 .pnp
 .pnp.js
@@ -47,6 +50,7 @@ e2e/.auth/
 tmp/
 temp/
 
+.worktrees/
 # Research
 research/
 
@@ -68,3 +72,35 @@ firebase-debug.log
 # k6 output files
 perf/*.json
 perf/*.html
+
+# #1115: the VL embedding shim is a Python tool, so its virtualenv, bytecode
+# and pytest cache land inside the checkout rather than in node_modules. The
+# venv holds mlx/torch wheels measured in gigabytes.
+tools/vl-embedding-shim/.venv
+tools/**/__pycache__/
+tools/**/.pytest_cache/
+tools/**/*.egg-info/
+
+# Impeccable — local UI critique runs and live-iteration scratch state
+.impeccable/
+
+# Local Confluence fixture that fakes the clock to keep an evaluation
+# licence alive; not part of the shipped docker/ compose set.
+docker/confluence-faketime.Dockerfile
+docker/docker-compose.confluence.faketime.yml
+
+# #1114: translator caches — resume state, not source.
+backend/src/domains/llm/eval/corpus-*/.titles.json
+backend/src/domains/llm/eval/corpus-*/.queries.json
+
+# #1114: the two eval scripts' default report names. Both default relative to
+# the cwd the runbook tells you to use (`cd backend`), so a bare run drops a
+# measurement into the tree — a result, not source. CI writes the first of
+# these by name (pr-check.yml). Pass --out for a report worth keeping.
+backend/retrieval-eval.json
+backend/query-latency.json
+
+# #1115: tools/eval-corpus-images/build.py stages the whole image corpus here
+# and swaps it over the real directory only when the run succeeds. A failed run
+# leaves it standing on purpose, for inspection — never to be committed.
+backend/src/domains/llm/eval/corpus-*.staging/

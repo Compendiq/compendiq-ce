@@ -67,6 +67,43 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   // hardcoded defaults in `admin-settings-service.ts`.
   getLlmConcurrency: vi.fn().mockReturnValue(4),
   getLlmMaxQueueDepth: vi.fn().mockReturnValue(50),
+  // #1118 — retrieval knobs. Stubbed at their reader defaults here because
+  // this file's subject is the surrounding settings surface. The knobs' own
+  // read/write/invalidate behaviour is exercised against the REAL service in
+  // `admin-retrieval-settings.test.ts`, which is what makes the cache
+  // invalidation assertion there mean something.
+  getRagFetchWidth: vi.fn().mockResolvedValue(10),
+  getRagRerankCandidates: vi.fn().mockResolvedValue(30),
+  getRagConfidenceThreshold: vi.fn().mockResolvedValue(0),
+  getRagConfidenceThresholdRerank: vi.fn().mockResolvedValue(0),
+  getRagContextCharsPerPage: vi.fn().mockResolvedValue(6000),
+  getRagPinIdentifiersEnabled: vi.fn().mockResolvedValue(true),
+  getRagMmrConfig: vi.fn().mockResolvedValue({ enabled: false, lambda: 0.7 }),
+  getRagRankingPriorWeight: vi.fn().mockResolvedValue(0),
+  // #1115 P2 — the image-index intake knobs, at their reader defaults for the
+  // same reason as the nine above.
+  getRagImagesPerPageMax: vi.fn().mockResolvedValue(20),
+  getRagImageIndexExternal: vi.fn().mockResolvedValue(true),
+  invalidateRagImageIntakeCache: vi.fn(),
+  // #1115 P3 — the retrieval half, likewise at its reader default.
+  getRagImageLegEnabled: vi.fn().mockResolvedValue(true),
+  invalidateRagImageLegCache: vi.fn(),
+  getRagAnswerMaxImages: vi.fn().mockResolvedValue(2),
+  invalidateRagAnswerMaxImagesCache: vi.fn(),
+  // #1285 — the ef_search floor, likewise at its reader default. Its own
+  // row → env-bootstrap → 100 cascade is exercised against the real service.
+  // Review r1: the GET reads the SOURCE too, so the panel can tell an
+  // instance running on the env var from one holding a saved row.
+  resolveRagEfSearch: vi.fn().mockResolvedValue({ value: 100, source: 'default' }),
+  invalidateRagEfSearchCache: vi.fn(),
+  noteRagEfSearchRowSaved: vi.fn(),
+  invalidateRagFetchWidthCache: vi.fn(),
+  invalidateRagRerankCandidatesCache: vi.fn(),
+  invalidateRagConfidenceThresholdCache: vi.fn(),
+  invalidateRagContextCharsCache: vi.fn(),
+  invalidateRagPinIdentifiersCache: vi.fn(),
+  invalidateRagMmrCache: vi.fn(),
+  invalidateRagRankingPriorCache: vi.fn(),
 }));
 
 // #113 Phase B-3 — `setLlmConcurrencyClusterWide` / `setLlmMaxQueueDepthClusterWide`
@@ -664,6 +701,30 @@ describe('Admin routes', () => {
         typeof sql === 'string' && sql.includes('embedding_dirty'),
       );
       expect(embeddingDirtyCall).toBeDefined();
+    });
+  });
+
+  describe('PUT /api/admin/settings - chunk changes during a shadow migration (#1116 r8/r9)', () => {
+    it('refuses with 409 and writes NOTHING when a migration is in progress', async () => {
+      // A chunk change dirties the whole corpus; during a migration's
+      // `swapped` phase the rollback that deletes NULL-vector rows would then
+      // empty it. Refusing AFTER the settings upsert would be its own bug —
+      // the new chunk size persisted with the corpus never re-chunked.
+      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        rows: [{ setting_value: JSON.stringify({ status: 'swapped', providerId: 'p', model: 'm', dimensions: 8, columnType: 'vector(8)', indexed: true, startedAt: '2026-08-06T00:00:00.000Z' }) }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/admin/settings',
+        payload: { embeddingChunkSize: 512 },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const calls = (mockQuery as ReturnType<typeof vi.fn>).mock.calls as Array<[string, ...unknown[]]>;
+      expect(calls.find(([sql]) => typeof sql === 'string' && sql.includes('embedding_dirty'))).toBeUndefined();
+      expect(calls.find(([sql]) => typeof sql === 'string' && /INSERT INTO admin_settings/i.test(sql))).toBeUndefined();
     });
   });
 

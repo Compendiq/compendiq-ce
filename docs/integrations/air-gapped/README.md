@@ -102,7 +102,7 @@ OTEL_ENABLED=false
 #    In docker-compose.yml, comment out the `mcp-docs:` service entirely.
 
 # 3. Ollama only — no OpenAI fallback. Seeded on first boot.
-#    After first boot, manage providers via Settings → LLM.
+#    After first boot, manage providers via Settings → AI → AI Models.
 OLLAMA_BASE_URL=http://ollama.corp.example.com:11434
 
 # 4. If the frontend image was built with update-checks, disable via admin UI.

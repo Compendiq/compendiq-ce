@@ -24,6 +24,20 @@ vi.mock('./audit-service.js', () => ({
   logAuditEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #1349: the trash purge removes each purged page's attachment directories.
+// The cleanup's own behaviour (both stores, the shared-keyspace guard) is
+// covered in standalone-attachment-cleanup.integration.test.ts.
+const mockCleanupDirs = vi.fn().mockResolvedValue(undefined);
+vi.mock('./standalone-attachment-cleanup.js', () => ({
+  cleanupStandalonePageAttachmentDirs: (...args: unknown[]) => mockCleanupDirs(...args),
+}));
+
+const mutationLockState = { active: false };
+const mockWithAttachmentMutationLock = vi.fn();
+vi.mock('./attachment-snapshot-lock.js', () => ({
+  withLocalAttachmentMutationLock: (...args: unknown[]) => mockWithAttachmentMutationLock(...args),
+}));
+
 import {
   runRetentionCleanup,
   startRetentionWorker,
@@ -44,6 +58,16 @@ import { logAuditEvent as mockLogAuditEvent } from './audit-service.js';
 describe('data-retention-service', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockWithAttachmentMutationLock.mockImplementation(
+      async (operation: (client: { query: typeof mockPool.query }) => Promise<unknown>) => {
+        mutationLockState.active = true;
+        try {
+          return await operation({ query: mockPool.query });
+        } finally {
+          mutationLockState.active = false;
+        }
+      },
+    );
   });
 
   afterEach(() => {
@@ -260,19 +284,47 @@ describe('data-retention-service', () => {
 
     // ─── Standalone trash purge (UX review) ──────────────────────────────
     it('loops standalone trash purge batches until a short batch signals drained', async () => {
+      // #1349: the purge now RETURNING ids so it can remove the purged pages'
+      // attachment directories — the mocks carry rows accordingly.
+      const batch1 = Array.from({ length: 10_000 }, (_, i) => ({ id: i + 1 }));
+      const batch2 = Array.from({ length: 7 }, (_, i) => ({ id: 20_000 + i }));
       mockPool.query
         .mockResolvedValueOnce({ rowCount: 0 })      // audit_log
         .mockResolvedValueOnce({ rowCount: 0 })      // search_analytics
         .mockResolvedValueOnce({ rowCount: 0 })      // error_log
         .mockResolvedValueOnce({ rowCount: 0 })      // ADMIN_ACCESS_DENIED drained
-        .mockResolvedValueOnce({ rowCount: 10_000 }) // trash batch 1 full — loop again
-        .mockResolvedValueOnce({ rowCount: 7 })      // trash batch 2 short — drained
+        .mockResolvedValueOnce({ rowCount: 10_000, rows: batch1 }) // trash batch 1 full — loop again
+        .mockResolvedValueOnce({ rowCount: 7, rows: batch2 })      // trash batch 2 short — drained
         .mockResolvedValueOnce({ rowCount: 0 });     // page_versions
 
       const results = await runRetentionCleanup();
       expect(results.pages_standalone_trash).toBe(10_007);
       // page_versions still ran after the extra batch.
       expect(results.page_versions).toBe(0);
+      // #1349: each purged page's attachment directories were cleaned.
+      expect(mockCleanupDirs).toHaveBeenCalledTimes(10_007);
+      expect(mockCleanupDirs).toHaveBeenCalledWith(1, expect.anything());
+      expect(mockCleanupDirs).toHaveBeenCalledWith(20_006, expect.anything());
+    });
+
+    it('holds the attachment barrier across each purge batch and its directory cleanup', async () => {
+      mockPool.query
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 0 })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 42 }] })
+        .mockResolvedValueOnce({ rowCount: 0 });
+      mockCleanupDirs.mockImplementationOnce(async (_pageId: number, client: unknown) => {
+        expect(mutationLockState.active).toBe(true);
+        expect(client).toEqual(expect.objectContaining({ query: mockPool.query }));
+      });
+
+      const results = await runRetentionCleanup();
+
+      expect(results.pages_standalone_trash).toBe(1);
+      expect(mockWithAttachmentMutationLock).toHaveBeenCalledTimes(1);
+      expect(mockCleanupDirs).toHaveBeenCalledWith(42, expect.anything());
     });
 
     it('swallows errors inside the standalone trash purge and reports 0', async () => {

@@ -16,7 +16,7 @@ const CommentIdParamSchema = z.object({
 
 const CreateCommentSchema = z.object({
   body: z.string().min(1).max(50_000),
-  bodyHtml: z.string().min(1).max(100_000),
+  bodyHtml: z.string().min(1).max(100_000).optional(),
   parentId: z.number().int().positive().optional(),
   anchorType: z.enum(['selection', 'block']).optional(),
   anchorData: z.record(z.string(), z.unknown()).optional(),
@@ -24,7 +24,7 @@ const CreateCommentSchema = z.object({
 
 const EditCommentSchema = z.object({
   body: z.string().min(1).max(50_000),
-  bodyHtml: z.string().min(1).max(100_000),
+  bodyHtml: z.string().min(1).max(100_000).optional(),
 });
 
 const ReactionSchema = z.object({
@@ -225,11 +225,13 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       }
     }
 
+    const finalBodyHtml = bodyHtml ?? `<p>${body}</p>`;
+
     const result = await query<CommentRow>(
       `INSERT INTO comments (page_id, user_id, parent_id, body, body_html, anchor_type, anchor_data)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [pageId, userId, parentId ?? null, body, bodyHtml, anchorType ?? null, anchorData ? JSON.stringify(anchorData) : null],
+      [pageId, userId, parentId ?? null, body, finalBodyHtml, anchorType ?? null, anchorData ? JSON.stringify(anchorData) : null],
     );
 
     const commentRow = result.rows[0]!;
@@ -287,11 +289,13 @@ export async function commentsRoutes(fastify: FastifyInstance) {
       return reply.forbidden('You can only edit your own comments');
     }
 
+    const finalBodyHtml = bodyHtml ?? `<p>${body}</p>`;
+
     const result = await query<CommentRow>(
       `UPDATE comments SET body = $1, body_html = $2, updated_at = NOW()
        WHERE id = $3
        RETURNING *`,
-      [body, bodyHtml, id],
+      [body, finalBodyHtml, id],
     );
 
     // Re-process @mentions: clear old and insert new

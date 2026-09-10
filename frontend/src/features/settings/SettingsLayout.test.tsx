@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SettingsLayout, SettingsIndexRedirect } from './SettingsLayout';
 import { SettingsPanelRoute } from './SettingsPanelRoute';
 import { SettingsSidebar } from '../../shared/components/layout/SettingsSidebar';
+import { useUiStore } from '../../stores/ui-store';
 
 // --- Mocks ---
 const authState = {
@@ -48,6 +49,12 @@ vi.mock('../../shared/hooks/use-settings', () => ({
       theme: 'dark',
       syncIntervalMin: 15,
       confluenceConnected: true,
+      customPrompts: {},
+      confluencePatPromptDismissed: false,
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
     },
     isLoading: false,
   }),
@@ -93,6 +100,7 @@ beforeEach(() => {
   enterpriseState.isEnterprise = false;
   enterpriseState.hasFeature = () => false;
   enterpriseState.isLoading = false;
+  useUiStore.setState({ treeSidebarCollapsed: false });
 });
 
 describe('SettingsSidebar — rail visibility', () => {
@@ -136,6 +144,7 @@ describe('SettingsSidebar — rail visibility', () => {
     expect(screen.getByTestId('nav-settings-access')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-integrations')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-license')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-settings-backup')).toBeInTheDocument();
     expect(screen.getByTestId('nav-settings-diagnostics')).toBeInTheDocument();
 
     // Data & Compliance is an all-EE wrapper — hidden in CE.
@@ -151,6 +160,32 @@ describe('SettingsSidebar — rail visibility', () => {
     await waitFor(() => {
       expect(screen.getByTestId('nav-settings-compliance')).toBeInTheDocument();
     });
+  });
+});
+
+describe('SettingsSidebar — always open on settings pages', () => {
+  it('does not render a collapse or expand control', async () => {
+    renderLayoutAt('/settings/personal/confluence');
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: /settings/i })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument();
+  });
+
+  it('stays open even when the shared collapsed flag is true', async () => {
+    useUiStore.setState({ treeSidebarCollapsed: true });
+
+    renderLayoutAt('/settings/personal/confluence');
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: /settings/i })).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('nav-settings-confluence')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Expand sidebar' })).not.toBeInTheDocument();
   });
 });
 

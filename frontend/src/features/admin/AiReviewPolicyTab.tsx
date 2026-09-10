@@ -36,7 +36,6 @@ import { toast } from 'sonner';
 import {
   AlertTriangle,
   CheckCircle2,
-  Loader2,
   Save,
   ShieldCheck,
   Info,
@@ -44,6 +43,7 @@ import {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 import {
   AI_REVIEW_ACTION_TYPES,
   AI_REVIEW_ACTION_LABELS,
@@ -84,7 +84,7 @@ export function AiReviewPolicyTab() {
   if (!isEnterprise || !hasFeature('ai_output_review')) {
     return (
       <div
-        className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"
+        className="rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm text-warning"
         role="alert"
         data-testid="ai-review-policy-not-licensed"
       >
@@ -184,7 +184,7 @@ function AiReviewPolicyTabInner() {
       data-testid="ai-review-policy-tab"
     >
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
           <ShieldCheck size={20} className="text-muted-foreground" />
           AI review policy
         </h1>
@@ -198,10 +198,10 @@ function AiReviewPolicyTabInner() {
       {is404 && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-100"
+          className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-warning"
           data-testid="ai-review-policy-overlay-missing"
         >
-          <Info size={18} className="mt-0.5 shrink-0 text-amber-400" />
+          <Info size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="text-sm">
             The AI review policy API isn&apos;t registered on this
             deployment. The Enterprise overlay that exposes{' '}
@@ -290,7 +290,7 @@ function AiReviewPolicyTabInner() {
                     {AI_REVIEW_MODE_LABELS[mode]}
                   </span>
                   {data?.policy.default_mode === mode && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-xs text-success">
                       <CheckCircle2 size={10} /> active
                     </span>
                   )}
@@ -313,7 +313,7 @@ function AiReviewPolicyTabInner() {
           different policy — e.g. trust auto-tag with auto-publish while
           keeping generate gated.
         </p>
-        <div className="overflow-x-auto rounded-lg border border-border/40">
+        <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead className="bg-foreground/[0.03] text-xs text-muted-foreground">
               <tr>
@@ -327,7 +327,7 @@ function AiReviewPolicyTabInner() {
                 return (
                   <tr
                     key={action}
-                    className="border-t border-border/40"
+                    className="border-t border-border"
                     data-testid={`ai-review-policy-override-row-${action}`}
                   >
                     <td className="px-3 py-2 align-middle font-medium">
@@ -342,7 +342,7 @@ function AiReviewPolicyTabInner() {
                           if (v === '') setOverride(action, null);
                           else setOverride(action, v as AiReviewMode);
                         }}
-                        className="rounded-md border border-border/50 bg-background px-2 py-1 text-sm disabled:opacity-50"
+                        className="rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
                         data-testid={`ai-review-policy-override-select-${action}`}
                       >
                         <option value="">Inherit default</option>
@@ -386,7 +386,7 @@ function AiReviewPolicyTabInner() {
                 }));
               }
             }}
-            className="w-24 rounded-md border border-border/50 bg-background px-2 py-1 text-sm disabled:opacity-50"
+            className="w-24 rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
             data-testid="ai-review-policy-expire-days-input"
           />
           <span className="text-xs text-muted-foreground">days</span>
@@ -394,24 +394,20 @@ function AiReviewPolicyTabInner() {
       </div>
 
       {/* Save button */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <div className="text-xs text-muted-foreground">
           {dirty ? 'You have unsaved changes.' : 'No unsaved changes.'}
         </div>
-        <button
-          type="button"
+        <Button
           onClick={handleSave}
           disabled={!dirty || saveMutation.isPending || is404}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
+          leftIcon={!saveMutation.isPending ? <Save size={15} /> : undefined}
           data-testid="ai-review-policy-save-btn"
         >
-          {saveMutation.isPending ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Save size={14} />
-          )}
           Save policy
-        </button>
+        </Button>
       </div>
     </m.div>
   );

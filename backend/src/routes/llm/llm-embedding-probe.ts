@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getProviderById } from '../../domains/llm/services/llm-provider-service.js';
 import { generateEmbedding } from '../../domains/llm/services/openai-compatible-client.js';
+import { LlmHttpError } from '../../domains/llm/services/llm-http-error.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
 import { logger } from '../../core/utils/logger.js';
 
@@ -46,8 +47,21 @@ export async function llmEmbeddingProbeRoutes(fastify: FastifyInstance) {
         const first = vectors[0] ?? [];
         return { dimensions: first.length };
       } catch (err) {
+        // #1185: `err.message` is body-free now that generateEmbedding throws
+        // LlmHttpError (the provider's raw body lives on `.detail`, per
+        // llm-http-error.ts), so it's already safe to return as-is. This route
+        // is admin-gated, so the prior exposure was minor — but log the detail
+        // explicitly rather than leaning on `{ err }` alone, so the same
+        // "body stays off client-visible paths, goes to logs" shape #1181
+        // established for chat() holds here too.
         const message = err instanceof Error ? err.message : 'probe failed';
-        logger.warn({ err, providerId, model }, 'embedding probe failed');
+        logger.warn(
+          {
+            err, providerId, model,
+            ...(err instanceof LlmHttpError ? { status: err.status, detail: err.detail } : {}),
+          },
+          'embedding probe failed',
+        );
         return { dimensions: 0, error: message };
       }
     },

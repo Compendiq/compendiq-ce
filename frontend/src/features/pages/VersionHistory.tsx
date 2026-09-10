@@ -1,18 +1,23 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { History, Eye, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
+import { History, Eye, FileText, GitCompare, Sparkles, Loader2, X, RotateCcw, AlertTriangle, Info } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { toast } from 'sonner';
+import { diffWordsWithSpace, type Change } from 'diff';
 import type {
   PageVersionsResponse,
   PageVersionDetail,
 } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../shared/lib/api';
+import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
 import { DiffView } from '../../shared/components/article/DiffView';
+import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { cn } from '../../shared/lib/cn';
-import { useIsLightTheme } from '../../shared/hooks/use-is-light-theme';
+import { useSettings } from '../../shared/hooks/use-settings';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
+import { markFormattedVersionDiff, versionContentAsHtml } from './version-formatted-diff';
 
 // Response/type shapes are the single source of truth in @compendiq/contracts
 // (PageVersionsResponseSchema / PageVersionDetailSchema). Don't re-declare them.
@@ -79,17 +84,18 @@ function formatVersionTime(editedAt: string | null, syncedAt: string | null): st
 }
 
 export function VersionHistory({ pageId, currentBodyText: _currentBodyText, model, renderTrigger }: VersionHistoryProps) {
-  const isLight = useIsLightTheme();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+  const [previewMode, setPreviewMode] = useState<'formatted' | 'text'>('formatted');
   const [compareVersions, setCompareVersions] = useState<[number, number] | null>(null);
   const [showSemanticDiff, setShowSemanticDiff] = useState(false);
   // Version awaiting restore confirmation (ConfirmDialog replaces native confirm()).
   const [pendingRestore, setPendingRestore] = useState<number | null>(null);
 
+  const { data: settings } = useSettings();
   const { data: versionsData, isLoading, isError, error, refetch } = useVersionHistory(pageId, open);
-  const { data: selectedVersionData } = useVersionDetail(
+  const { data: selectedVersionData, isLoading: isVersionDetailLoading } = useVersionDetail(
     pageId,
     selectedVersion,
   );
@@ -104,6 +110,37 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
   const versions = versionsData?.versions ?? [];
   const currentVersionNumber = versions.find((v) => v.isCurrent)?.versionNumber;
+  const selectedVersionIndex = selectedVersion === null
+    ? -1
+    : versions.findIndex((version) => version.versionNumber === selectedVersion);
+  const previousVersionNumber = selectedVersionIndex >= 0 && selectedVersionIndex < versions.length - 1
+    ? versions[selectedVersionIndex + 1]!.versionNumber
+    : null;
+  const {
+    data: previousVersionData,
+    isLoading: isPreviousVersionLoading,
+  } = useVersionDetail(pageId, previousVersionNumber);
+  const formattedDiffHtml = useMemo(() => {
+    if (!selectedVersionData) return null;
+    const currentHtml = versionContentAsHtml(
+      selectedVersionData.bodyHtml,
+      selectedVersionData.bodyText,
+    );
+    if (!previousVersionData) return currentHtml;
+    return markFormattedVersionDiff(
+      versionContentAsHtml(previousVersionData.bodyHtml, previousVersionData.bodyText),
+      currentHtml,
+    );
+  }, [previousVersionData, selectedVersionData]);
+  const rawVersionDiff = useMemo(
+    () => previousVersionData
+      ? diffWordsWithSpace(
+        previousVersionData.bodyText ?? '',
+        selectedVersionData?.bodyText ?? '',
+      ) as Change[]
+      : null,
+    [previousVersionData, selectedVersionData?.bodyText],
+  );
   // #763: non-ok backfill means the historical Confluence import never ran or
   // failed — the list still renders, but with a hint that it may be incomplete.
   const backfillStatus = versionsData?.backfillStatus;
@@ -111,7 +148,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
     backfillStatus === 'skipped_no_credentials' || backfillStatus === 'failed'
       ? versionsData?.backfillDetail ??
         (backfillStatus === 'skipped_no_credentials'
-          ? 'Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → Confluence.'
+          ? `Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → ${SETTINGS_PANELS.confluence.label}.`
           : 'Importing historical versions from Confluence failed — the list below may be incomplete.')
       : null;
 
@@ -156,6 +193,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   useEffect(() => {
     if (!open) {
       setSelectedVersion(null);
+      setPreviewMode('formatted');
       setCompareVersions(null);
       setShowSemanticDiff(false);
       setPendingRestore(null);
@@ -191,11 +229,11 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-50 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 nm-card overflow-hidden shadow-xl max-h-[85vh] flex flex-col"
+          className="fixed left-1/2 top-1/2 z-50 w-[96vw] sm:w-[92vw] max-w-5xl -translate-x-1/2 -translate-y-1/2 nm-card-elevated overflow-hidden max-h-[90vh] flex flex-col"
           aria-describedby={undefined}
         >
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <div className="flex items-center gap-2">
               <History size={16} className="text-action" />
               <Dialog.Title className="font-semibold">Version History</Dialog.Title>
@@ -207,7 +245,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
             </div>
             <Dialog.Close asChild>
               <button
-                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                className="nm-icon-button"
                 aria-label="Close"
               >
                 <X size={16} />
@@ -252,7 +290,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
               <>
               {isError && (
                 /* Background refetch failed but data is loaded — keep the list. */
-                <div className="flex items-center gap-2 border-b border-border/50 bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2 border-b border-border bg-destructive/10 px-5 py-2.5 text-xs text-muted-foreground">
                   <AlertTriangle size={12} className="shrink-0 text-destructive" />
                   <span>Could not refresh version history &mdash; showing the last loaded versions.</span>
                   <button
@@ -272,18 +310,18 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
               ) : (
               <>
               {backfillNotice && (
-                <div className="flex items-start gap-2 border-b border-border/50 bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
+                <div className="flex items-start gap-2 border-b border-border bg-warning/10 px-5 py-2.5 text-xs text-muted-foreground">
                   <Info size={12} className="mt-0.5 shrink-0 text-warning" />
                   <span>{backfillNotice}</span>
                 </div>
               )}
-              <div className="max-h-72 overflow-y-auto">
+              <div className={cn('overflow-y-auto', (selectedVersion !== null || compareVersions !== null || showSemanticDiff) ? 'max-h-48' : 'max-h-72')}>
                 {versions.map((version, i) => (
                   <div
                     key={`${version.versionNumber}-${version.isCurrent}`}
                     className={cn(
                       'flex items-center gap-3 px-5 py-2.5',
-                      i !== versions.length - 1 && 'border-b border-border/30',
+                      i !== versions.length - 1 && 'border-b border-border',
                       selectedVersion === version.versionNumber && 'bg-action/5',
                     )}
                   >
@@ -331,8 +369,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         onClick={() => setSelectedVersion(
                           selectedVersion === version.versionNumber ? null : version.versionNumber,
                         )}
-                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                        className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         title="Preview version"
+                        aria-label={`Preview version ${version.versionNumber}`}
                       >
                         <Eye size={12} />
                       </button>
@@ -340,15 +379,17 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <>
                           <button
                             onClick={() => handleCompare(versions[i + 1]!.versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="Compare with previous version"
+                            aria-label={`Compare version ${version.versionNumber} with previous version`}
                           >
                             <GitCompare size={12} />
                           </button>
                           <button
                             onClick={() => handleSemanticDiff(versions[i + 1]!.versionNumber, version.versionNumber)}
-                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action"
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-action focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title="AI semantic diff with previous version"
+                            aria-label={`AI semantic diff for version ${version.versionNumber}`}
                           >
                             <Sparkles size={12} />
                           </button>
@@ -358,8 +399,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                         <button
                           onClick={() => handleRestore(version.versionNumber)}
                           disabled={restoreMutation.isPending}
-                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary disabled:opacity-40"
+                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
                           title="Restore this version"
+                          aria-label={`Restore version ${version.versionNumber}`}
                         >
                           {restoreMutation.isPending && restoreMutation.variables?.version === version.versionNumber ? (
                             <Loader2 size={12} className="animate-spin" />
@@ -379,56 +421,146 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Version preview */}
             <AnimatePresence>
-              {selectedVersionData && (
+              {selectedVersion !== null && (
                 <m.div
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden border-t border-border/50"
+                  className="overflow-hidden border-t border-border"
                 >
-                  <div className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-medium text-muted-foreground">
-                        Version {selectedVersionData.versionNumber} Preview
-                        {selectedVersionData.author && (
-                          <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
-                        )}
-                      </h4>
-                      <div className="flex items-center gap-1">
-                        {!selectedVersionData.isCurrent && (
+                  {isVersionDetailLoading
+                    || (previousVersionNumber !== null && isPreviousVersionLoading)
+                    || !selectedVersionData ? (
+                    <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
+                      <Loader2 size={14} className="animate-spin" />
+                      <span className="text-sm">Loading version preview...</span>
+                    </div>
+                  ) : (
+                    <div className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-xs font-medium text-muted-foreground">
+                          Version {selectedVersionData.versionNumber} Preview
+                          {selectedVersionData.author && (
+                            <span className="ml-1 font-normal">by {selectedVersionData.author}</span>
+                          )}
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          {/* View mode toggle */}
+                          <div className="flex rounded-md border border-border">
+                            <button
+                              type="button"
+                              onClick={() => setPreviewMode('formatted')}
+                              className={cn(
+                                'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                                previewMode === 'formatted'
+                                  ? 'bg-action/15 text-action font-medium'
+                                  : 'text-muted-foreground hover:bg-foreground/5',
+                              )}
+                              title="Formatted view"
+                              aria-pressed={previewMode === 'formatted'}
+                            >
+                              <Eye size={12} /> Formatted
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewMode('text')}
+                              className={cn(
+                                'flex items-center gap-1 px-2 py-1 text-xs transition-colors',
+                                previewMode === 'text'
+                                  ? 'bg-action/15 text-action font-medium'
+                                  : 'text-muted-foreground hover:bg-foreground/5',
+                              )}
+                              title="Raw text view"
+                              aria-pressed={previewMode === 'text'}
+                            >
+                              <FileText size={12} /> Raw Text
+                            </button>
+                          </div>
+
+                          {!selectedVersionData.isCurrent && (
+                            <button
+                              onClick={() => handleRestore(selectedVersionData.versionNumber)}
+                              disabled={restoreMutation.isPending}
+                              className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
+                              title="Restore this version"
+                            >
+                              {restoreMutation.isPending ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <RotateCcw size={12} />
+                              )}
+                              Restore this version
+                            </button>
+                          )}
                           <button
-                            onClick={() => handleRestore(selectedVersionData.versionNumber)}
-                            disabled={restoreMutation.isPending}
-                            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-40"
-                            title="Restore this version"
+                            onClick={() => setSelectedVersion(null)}
+                            className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                            title="Close preview"
+                            aria-label="Close preview"
                           >
-                            {restoreMutation.isPending ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <RotateCcw size={12} />
-                            )}
-                            Restore this version
+                            <X size={12} />
                           </button>
-                        )}
-                        <button
-                          onClick={() => setSelectedVersion(null)}
-                          className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
-                        >
-                          <X size={12} />
-                        </button>
+                        </div>
                       </div>
+                      {selectedVersionData.message && (
+                        <p className="mb-2 text-xs italic text-muted-foreground">
+                          &ldquo;{selectedVersionData.message}&rdquo;
+                        </p>
+                      )}
+                      {previousVersionNumber === null && (
+                        <p className="mb-2 text-xs text-muted-foreground" role="status">
+                          No previous version to compare.
+                        </p>
+                      )}
+                      {previewMode === 'formatted' ? (
+                        <FeatureErrorBoundary
+                          featureName="Version Preview"
+                          fallback={
+                            <div className="prose max-h-[50vh] overflow-y-auto p-4 text-xs">
+                              <pre className="whitespace-pre-wrap text-muted-foreground">
+                                {selectedVersionData.bodyText ?? 'No content available'}
+                              </pre>
+                            </div>
+                          }
+                        >
+                          <div
+                            className={cn(
+                              'version-inline-diff max-h-[55vh] overflow-y-auto px-5 py-4',
+                              '[&_ins]:rounded-sm [&_ins]:bg-success/15 [&_ins]:text-success [&_ins]:no-underline',
+                              '[&_del]:rounded-sm [&_del]:bg-destructive/15 [&_del]:text-destructive [&_del]:line-through',
+                            )}
+                            data-testid={previousVersionData ? 'version-formatted-diff' : undefined}
+                          >
+                            {formattedDiffHtml ? (
+                              <ArticleViewer
+                                content={formattedDiffHtml}
+                                confluenceUrl={settings?.confluenceUrl}
+                                confluencePageId={selectedVersionData.confluenceId}
+                                pageId={pageId}
+                              />
+                            ) : rawVersionDiff ? (
+                              <InlineVersionDiff
+                                changes={rawVersionDiff}
+                                content={selectedVersionData.bodyText ?? ''}
+                              />
+                            ) : (
+                              <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
+                                {selectedVersionData.bodyText ?? 'No content available'}
+                              </pre>
+                            )}
+                          </div>
+                        </FeatureErrorBoundary>
+                      ) : (
+                        <div className="prose max-h-[55vh] overflow-y-auto px-5 py-4 text-xs">
+                          <InlineVersionDiff
+                            changes={rawVersionDiff}
+                            content={selectedVersionData.bodyText ?? 'No content available'}
+                            testId="version-raw-diff"
+                          />
+                        </div>
+                      )}
                     </div>
-                    {selectedVersionData.message && (
-                      <p className="mb-2 text-xs italic text-muted-foreground">
-                        &ldquo;{selectedVersionData.message}&rdquo;
-                      </p>
-                    )}
-                    <div className={cn('prose max-h-48 overflow-y-auto text-xs', !isLight && 'prose-invert')}>
-                      <pre className="whitespace-pre-wrap text-xs text-muted-foreground">
-                        {selectedVersionData.bodyText ?? 'No content available'}
-                      </pre>
-                    </div>
-                  </div>
+                  )}
                 </m.div>
               )}
             </AnimatePresence>
@@ -445,7 +577,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
 
             {/* Semantic diff */}
             {showSemanticDiff && (
-              <div className="border-t border-border/50 p-4">
+              <div className="border-t border-border p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                     <Sparkles size={12} className="text-primary" />
@@ -453,7 +585,9 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                   </h4>
                   <button
                     onClick={() => { setShowSemanticDiff(false); setCompareVersions(null); }}
-                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                    className="rounded p-1 text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    title="Close semantic diff"
+                    aria-label="Close semantic diff"
                   >
                     <X size={12} />
                   </button>
@@ -468,7 +602,7 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
                     Failed to generate semantic diff.
                   </p>
                 ) : semanticDiffMutation.data ? (
-                  <div className={cn('prose max-h-48 overflow-y-auto text-sm', !isLight && 'prose-invert')}>
+                  <div className="prose max-h-[50vh] overflow-y-auto text-sm">
                     <pre className="whitespace-pre-wrap text-xs">{semanticDiffMutation.data.diff}</pre>
                   </div>
                 ) : null}
@@ -497,6 +631,35 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   );
 }
 
+function InlineVersionDiff({
+  changes,
+  content,
+  testId,
+}: {
+  changes: Change[] | null;
+  content: string;
+  testId?: string;
+}) {
+  return (
+    <pre
+      className={cn(
+        'whitespace-pre-wrap text-xs text-muted-foreground',
+        '[&_ins]:rounded-sm [&_ins]:bg-success/15 [&_ins]:text-success [&_ins]:no-underline',
+        '[&_del]:rounded-sm [&_del]:bg-destructive/15 [&_del]:text-destructive [&_del]:line-through',
+      )}
+      data-testid={testId}
+    >
+      {changes
+        ? changes.map((change, index) => {
+          if (change.added) return <ins key={index}>{change.value}</ins>;
+          if (change.removed) return <del key={index}>{change.value}</del>;
+          return change.value;
+        })
+        : content}
+    </pre>
+  );
+}
+
 /**
  * Side-by-side text comparison of two versions.
  */
@@ -516,7 +679,7 @@ function CompareView({
 
   if (!version1 || !version2) {
     return (
-      <div className="border-t border-border/50 p-4">
+      <div className="border-t border-border p-4">
         <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
           <Loader2 size={14} className="animate-spin" />
           <span className="text-sm">Loading versions for comparison...</span>
@@ -526,7 +689,7 @@ function CompareView({
   }
 
   return (
-    <div className="border-t border-border/50">
+    <div className="border-t border-border">
       <div className="flex items-center justify-between px-4 py-2">
         <h4 className="text-xs font-medium text-muted-foreground">
           Comparing v{v1} vs v{v2}

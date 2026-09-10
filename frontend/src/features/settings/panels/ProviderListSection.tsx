@@ -3,7 +3,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { LlmProvider } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
+import { Button } from '../../../shared/components/Button';
 import { ProviderEditModal } from './ProviderEditModal';
+
+/** Quiet inline action in a settings row — ordinary, reversible. */
+const ROW_ACTION =
+  'rounded-[var(--radius-sm)] px-2 py-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-45';
+
+/** The same row, but destructive. See `nm-action-destructive` in index.css. */
+const DESTRUCTIVE_ROW_ACTION = 'nm-action-destructive rounded-[var(--radius-sm)] px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
 export function ProviderListSection() {
   const qc = useQueryClient();
@@ -53,9 +61,9 @@ export function ProviderListSection() {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">Providers</h3>
-        <button className="nm-button-primary" onClick={() => setAdding(true)}>
+        <Button variant="primary" size="sm" onClick={() => setAdding(true)}>
           + Add
-        </button>
+        </Button>
       </div>
       {isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
       <ul className="divide-border/40 divide-y">
@@ -65,22 +73,28 @@ export function ProviderListSection() {
               <div className="text-sm font-medium">
                 {p.name}{' '}
                 {p.isDefault && (
-                  <span className="ml-2 rounded bg-[#ececea] px-1.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                  <span className="ml-2 rounded bg-muted px-1.5 text-xs text-muted-foreground">
                     default
                   </span>
                 )}
               </div>
               <div className="text-muted-foreground text-xs">{p.baseUrl}</div>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              <button onClick={() => setEditing(p)}>Edit</button>
+            {/* These four were bare, unstyled <button>s, so `Delete` carried
+                exactly the weight of `Edit` beside it — the least guarded
+                destructive control in the app. The ordinary actions are quiet
+                ghost text; Delete takes the shared destructive treatment. */}
+            <div className="flex items-center gap-1 text-xs">
+              <button className={ROW_ACTION} onClick={() => setEditing(p)}>Edit</button>
               <button
+                className={ROW_ACTION}
                 onClick={() => setDefault.mutate(p.id)}
                 disabled={p.isDefault || (setDefault.isPending && setDefault.variables === p.id)}
               >
                 {setDefault.isPending && setDefault.variables === p.id ? 'Setting…' : 'Set default'}
               </button>
               <button
+                className={ROW_ACTION}
                 onClick={() => test.mutate(p.id)}
                 disabled={test.isPending && test.variables === p.id}
               >
@@ -89,16 +103,25 @@ export function ProviderListSection() {
               {confirmDeleteId === p.id ? (
                 <>
                   <button
-                    className="text-error"
+                    // Was `text-error`, which is not a class this project
+                    // defines — the one moment the UI meant to turn red, it
+                    // rendered as plain text.
+                    className={DESTRUCTIVE_ROW_ACTION}
                     onClick={() => del.mutate(p.id)}
                     disabled={del.isPending && del.variables === p.id}
                   >
                     {del.isPending && del.variables === p.id ? 'Deleting…' : 'Confirm delete'}
                   </button>
-                  <button onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                  <button className={ROW_ACTION} onClick={() => setConfirmDeleteId(null)}>
+                    Cancel
+                  </button>
                 </>
               ) : (
-                <button onClick={() => setConfirmDeleteId(p.id)} disabled={p.isDefault}>
+                <button
+                  className={DESTRUCTIVE_ROW_ACTION}
+                  onClick={() => setConfirmDeleteId(p.id)}
+                  disabled={p.isDefault}
+                >
                   Delete
                 </button>
               )}

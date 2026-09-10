@@ -7,6 +7,7 @@ import { getEmbeddingStatus, processDirtyPages, reEmbedAll, resetFailedEmbedding
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { getRateLimits } from '../../core/services/rate-limit-service.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 
 const adminMax = async () => (await getRateLimits()).admin.max;
 
@@ -57,17 +58,31 @@ export async function knowledgeAdminRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const { pageId } = z.object({ pageId: z.string().min(1) }).parse(request.params);
 
-    // Verify page exists. `pages.id` is SERIAL (integer); passing a non-numeric
-    // string (e.g. a Confluence content id) into the bare `WHERE id = $1` cast
-    // makes Postgres throw 22P02 invalid_text_representation, which surfaces as
-    // a 500 to the user (see #356). Numeric-guard the id branch so a non-numeric
-    // pageId only matches the text `confluence_id` column. Pattern mirrors
-    // `pages-crud.ts:1026-1030`.
+    // Verify page exists. `pages.id` is SERIAL (int4) but `pageId` may be
+    // either a DB id or a Confluence content id, so both must resolve.
+    //
+    // Compare `id::text` rather than casting the parameter (#1167). Casting the
+    // parameter fails on both flavours of out-of-domain input: a non-numeric
+    // Confluence id raised 22P02 invalid_text_representation (#356) and one
+    // above 2^31 raised 22003 numeric_value_out_of_range. In neither case did
+    // the `confluence_id` arm rescue it — the cast is evaluated before the OR
+    // can match, so the whole statement aborted and the route 500ed even though
+    // the row existed. Casting the column cannot fail on any input.
+    //
+    // The numeric guard is no longer what makes this safe — `id::text` cannot
+    // fail on any input — it just keeps a non-numeric pageId off an arm it
+    // could never match. That arm stays index-served either way: migration 084
+    // indexes this exact expression (`pages_id_text_idx ON pages ((id::text))`).
+    //
+    // `toPageIdText` restores the numeric normalisation the `::int` cast used
+    // to provide, so a zero-padded '007' still resolves to page 7. It applies
+    // to the id arm only; `confluence_id` is text and matches verbatim. Same
+    // resolution as the parent lookup in `POST /api/pages` (`pages-crud.ts`).
     const isNumericId = /^\d+$/.test(pageId);
     const pageResult = isNumericId
       ? await query<{ id: number }>(
-          'SELECT id FROM pages WHERE id = $1::int OR confluence_id = $2',
-          [pageId, pageId],
+          'SELECT id FROM pages WHERE id::text = $1 OR confluence_id = $2',
+          [toPageIdText(pageId), pageId],
         )
       : await query<{ id: number }>(
           'SELECT id FROM pages WHERE confluence_id = $1',

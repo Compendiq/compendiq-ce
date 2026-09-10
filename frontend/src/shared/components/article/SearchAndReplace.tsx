@@ -190,7 +190,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
       data-testid="search-and-replace"
       className={cn(
         'absolute right-4 top-1 z-40',
-        'rounded-lg border border-border/50 bg-card/95 backdrop-blur-sm shadow-lg',
+        'nm-card-elevated',
         'flex flex-col gap-1.5 p-2',
         'min-w-[320px]',
       )}
@@ -205,7 +205,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
           onChange={(e) => setSearchTerm(e.target.value)}
           onKeyDown={handleSearchKeyDown}
           placeholder="Search..."
-          className="min-w-0 flex-1 rounded-md border border-border/50 bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
           autoFocus
         />
 
@@ -293,13 +293,13 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
             onChange={(e) => setReplaceTerm(e.target.value)}
             onKeyDown={handleReplaceKeyDown}
             placeholder="Replace..."
-            className="min-w-0 flex-1 rounded-md border border-border/50 bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
           />
           <button
             onClick={handleReplaceNext}
             disabled={matchInfo.total === 0}
             title="Replace (Enter)"
-            className="shrink-0 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
           >
             Replace
           </button>
@@ -307,7 +307,7 @@ export function SearchAndReplace({ editor }: SearchAndReplaceProps) {
             onClick={handleReplaceAll}
             disabled={matchInfo.total === 0}
             title="Replace All"
-            className="shrink-0 rounded-md border border-border/50 px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+            className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed"
           >
             All
           </button>

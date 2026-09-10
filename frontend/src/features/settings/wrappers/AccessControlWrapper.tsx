@@ -86,7 +86,6 @@ export function AccessControlWrapper() {
   return (
     <>
       <PanelHeader
-        title="Access Control"
         subtitle="Users, rate limits, and — with EE — roles, SSO, and IP allowlisting."
       />
       <SubTabs ariaLabel="Access Control sub-sections" tabs={tabs} testIdRoot="access" />

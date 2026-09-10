@@ -28,10 +28,10 @@ const typeIcons: Record<Notification['type'], typeof Bell> = {
 };
 
 const typeColors: Record<Notification['type'], string> = {
-  comment: 'text-blue-400',
-  mention: 'text-purple-400',
-  verification_due: 'text-amber-400',
-  sync_complete: 'text-emerald-400',
+  comment: 'text-info',
+  mention: 'text-status-ai',
+  verification_due: 'text-warning',
+  sync_complete: 'text-success',
   general: 'text-muted-foreground',
 };
 
@@ -86,8 +86,8 @@ export function NotificationDropdown({
     return (
       <div className="flex flex-col items-center justify-center py-10 text-center" data-testid="notification-empty">
         <Inbox size={32} className="mb-3 text-muted-foreground" />
-        <p className="text-sm font-medium">All caught up!</p>
-        <p className="mt-1 text-xs text-muted-foreground">No new notifications</p>
+        <p className="text-sm font-medium">No notifications</p>
+        <p className="mt-1 text-xs text-muted-foreground">New activity will show up here.</p>
       </div>
     );
   }
@@ -96,7 +96,7 @@ export function NotificationDropdown({
     <div className="flex flex-col" data-testid="notification-dropdown">
       {/* Header with mark all read */}
       {hasUnread && (
-        <div className="flex items-center justify-end border-b border-border/30 px-3 py-2">
+        <div className="flex items-center justify-end border-b border-border px-3 py-2">
           <button
             onClick={onMarkAllRead}
             className="text-xs text-action hover:text-action/80 transition-colors"
@@ -115,8 +115,8 @@ export function NotificationDropdown({
               {group.label}
             </div>
             {group.items.map((notification, i) => {
-              const Icon = typeIcons[notification.type];
-              const color = typeColors[notification.type];
+              const Icon = typeIcons[notification.type] ?? Bell;
+              const color = typeColors[notification.type] ?? 'text-muted-foreground';
               return (
                 <m.button
                   key={notification.id}

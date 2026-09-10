@@ -1,0 +1,123 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+
+/**
+ * The strip of scroll padding that a sticky box does not reach (#1186, #1218).
+ *
+ * AppLayout's main scroll container carries padding. A `position: sticky` box
+ * inside it does NOT come to rest against the scrollport's edge: it is clamped
+ * to its containing block, and that block begins *after* the padding. Measured
+ * in Chromium at a 1440x900 viewport, a `sticky top-0` toolbar stops at the
+ * scroll container's content-box top — one padding step below the edge where
+ * the scrollport finally clips — so content scrolls up through that strip in
+ * full view, between the app header and the stuck toolbar. The same gap exists
+ * at the block-end, below a `sticky bottom-0` bar (#1218).
+ *
+ * There are two ways to keep content out of it, and this file enforces both:
+ *
+ *   (a) COVER IT — reach one padding step past your own box with an opaque
+ *       under-mask. PageViewPage's edit toolbar and NewPagePage's sticky
+ *       toolbar share the same recipe. The height of that reach is not a
+ *       free choice: it is
+ *       AppLayout's padding, in another file. It has already drifted once
+ *       (pt-4 to pt-5), and a mask that no longer matches fails silently —
+ *       the bleed simply returns, thinner. The invariants below read both
+ *       numbers out of the sources rather than restating them, the same
+ *       approach as `nginx-api-body-limit.test.ts`.
+ *
+ *   (b) NEVER SCROLL INTO IT — leave the scroll container with no overflow at
+ *       all, so nothing ever passes through either strip. `/ai` (#1218): its
+ *       message pane owns the scroller, reached by carrying `min-h-0` down
+ *       every wrapper between the scroll container and the pane. Its two bars
+ *       keep plain `inset-0` under-masks, which are belt-and-braces from that
+ *       point on rather than the thing holding the strip shut.
+ *
+ * Strategy (b) is not open to every surface: covering the block-end strip the
+ * way (a) covers the block-start one is what #769 forbids — an absolutely
+ * positioned mask overflowing the block-end edge grows the scrollable overflow
+ * region, adding phantom scroll. A surface with a sticky bottom bar therefore
+ * has to stop scrolling rather than mask its way out.
+ *
+ * The chain itself is pinned in `ai-scroll-chain.test.ts`, not here — one
+ * invariant, one file, so the two cannot drift apart. What this file asserts
+ * about `/ai` is that the delegation is real: strategy (b) is only a strategy
+ * while something enforces it.
+ *
+ * There is no unit test that can catch any of this by rendering: jsdom
+ * performs no layout, so the strip has no height and nothing scrolls through
+ * it.
+ */
+
+const SRC = __dirname;
+
+function read(relativePath: string): string {
+  return readFileSync(resolve(SRC, relativePath), 'utf-8');
+}
+
+const appLayoutSource = read('shared/components/layout/AppLayout.tsx');
+const pageViewSource = read('features/pages/PageViewPage.tsx');
+const newPageSource = read('features/pages/NewPagePage.tsx');
+
+/** Its top padding, in Tailwind spacing steps (non-article branch). */
+function scrollPaddingTopSteps(): number {
+  const match = appLayoutSource.match(
+    /overflow-y-auto[^']*pt-(\d+)/,
+  );
+  if (!match) throw new Error('No pt-* on the non-article scroll container branch');
+  return Number(match[1]);
+}
+
+describe('nothing shows in the scroll container padding (#1186, #1218)', () => {
+  it('article routes do not inset the scroll container, so the toolbar can meet the pane edge', () => {
+    expect(appLayoutSource).toMatch(/isArticleRoute\s*\n\s*\? 'overflow-hidden'/);
+    expect(appLayoutSource).toMatch(/isArticleRoute \? 'max-w-none'/);
+    expect(pageViewSource).toContain('data-testid="article-scroll"');
+    expect(pageViewSource).toMatch(/overflow-y-auto[^"]*\[scrollbar-gutter:stable\]/);
+  });
+
+  it('the non-article scroll container declares one top padding', () => {
+    expect(scrollPaddingTopSteps()).toBeGreaterThan(0);
+    expect(appLayoutSource).not.toMatch(/(?:^|\s)[a-z-]+:pt-/);
+  });
+
+  it("the article toolbar is pinned above the article scroller, so it needs no padding under-mask", () => {
+    expect(pageViewSource).not.toContain('edit-toolbar-mask');
+    expect(pageViewSource).not.toContain('sticky -top-5');
+    expect(pageViewSource).toContain('data-testid="article-scroll"');
+    expect(newPageSource).not.toContain('new-page-toolbar-mask');
+    expect(newPageSource).not.toContain('sticky -top-5');
+    expect(newPageSource).toContain('data-testid="article-scroll"');
+  });
+
+
+  it('/ai takes the other strategy, and something enforces it', () => {
+    // Strategy (b) has no mask to measure: the evidence that /ai stays out of
+    // both strips is that its wrapper chain still shrinks, and that is pinned
+    // one file over. Deleting or gutting that guard would leave this file's
+    // header describing a strategy nothing holds anyone to — so the pointer
+    // itself is asserted, rather than the chain being re-asserted here.
+    const guard = read('ai-scroll-chain.test.ts');
+
+    expect(guard, 'the /ai chain guard no longer pins min-h-0').toContain('min-h-0');
+    for (const row of [
+      'shared/components/layout/AppLayout.tsx',
+      'shared/components/layout/PageTransition.tsx',
+      'features/ai/AiAssistantPage.tsx',
+    ]) {
+      expect(guard, `the /ai chain guard no longer covers ${row}`).toContain(row);
+    }
+
+    // Naming the rows is not the same as still checking them. A guard whose
+    // cases are skipped keeps every string above and asserts nothing, which is
+    // the one failure mode a pointer-only check cannot see — so the machinery
+    // that does the checking is named too.
+    expect(guard, 'the /ai chain guard has skipped or pending cases').not.toMatch(
+      /\b(it|test|describe)\s*\.\s*(skip|todo|fails)\b/,
+    );
+    expect(guard, 'the /ai chain guard no longer evaluates its min-h-0 predicate').toContain(
+      'declaresMinHeightZero(',
+    );
+    expect(guard, 'the /ai chain guard no longer asserts that predicate').toMatch(/\.toBe\(true\)/);
+  });
+});

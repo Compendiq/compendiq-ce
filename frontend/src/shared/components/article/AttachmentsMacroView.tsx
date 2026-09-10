@@ -23,16 +23,16 @@ function formatFileSize(bytes: number): string {
 function FileIcon({ filename }: { filename: string }) {
   const ext = filename.split('.').pop()?.toLowerCase() ?? '';
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) {
-    return <FileImage size={16} className="text-blue-400 shrink-0" />;
+    return <FileImage size={16} className="text-info shrink-0" />;
   }
   if (['zip', 'tar', 'gz', 'rar', '7z'].includes(ext)) {
-    return <FileArchive size={16} className="text-yellow-400 shrink-0" />;
+    return <FileArchive size={16} className="text-warning shrink-0" />;
   }
   if (['js', 'ts', 'py', 'java', 'xml', 'json', 'html', 'css', 'sh'].includes(ext)) {
-    return <FileCode size={16} className="text-green-400 shrink-0" />;
+    return <FileCode size={16} className="text-success shrink-0" />;
   }
   if (['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(ext)) {
-    return <FileText size={16} className="text-orange-400 shrink-0" />;
+    return <FileText size={16} className="text-warning shrink-0" />;
   }
   return <File size={16} className="text-muted-foreground shrink-0" />;
 }
@@ -98,9 +98,9 @@ export function AttachmentsMacroView({ editor }: NodeViewProps) {
 
   return (
     <NodeViewWrapper className="confluence-attachments-macro my-4">
-      <div className="rounded-lg border border-border/50 bg-card/50 overflow-hidden">
+      <div className="rounded-lg border border-border bg-card overflow-hidden">
         {/* Header */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/30 bg-muted/30">
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-muted/30">
           <File size={14} className="text-muted-foreground" />
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
             Attachments

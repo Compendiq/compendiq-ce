@@ -57,6 +57,34 @@ export const EXPAND_PAGE = `<h2>FAQ</h2>
 <ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">How do I reset my password?</ac:parameter><ac:rich-text-body><p>Go to Settings &gt; Account &gt; Change Password.</p></ac:rich-text-body></ac:structured-macro>
 <ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">What models are supported?</ac:parameter><ac:rich-text-body><p>Any model available on the shared Ollama server. Default is <strong>qwen3.5</strong>.</p></ac:rich-text-body></ac:structured-macro>`;
 
+/**
+ * Page using Refined's "UI Expand" macro from the Refined Macro Toolkit (#1129).
+ *
+ * Captured from a Confluence DC 9.2.19 instance with the app installed. The key
+ * is bare `ui-expand`, not plugin-qualified — the `rw-ui-expands-macro` /
+ * `rw-expand` keys in Refined's own documentation are their Cloud renderer's
+ * internals and appear nowhere in DC storage format. The element shape is
+ * identical to Atlassian's native expand (a `title` parameter plus
+ * `ac:rich-text-body`, flat siblings rather than a container macro); it differs
+ * in exactly one thing, the `expanded` parameter, which is present ONLY on
+ * default-open sections — collapsed ones omit it rather than spelling
+ * `expanded=false`.
+ *
+ * The bodies carry Refined's own classed markup (`ordered-list top_level`,
+ * `rw_adf_text_strong` for bold), which rides through `ac:rich-text-body` as
+ * ordinary body HTML. We have no rule for those classes, so `rw_adf_text_strong`
+ * renders as plain text rather than bold — cosmetic, and out of scope here.
+ * `ac:macro-id` / `ac:schema-version` are dropped by the forward pass, as they
+ * already are for the native macro; Confluence regenerates them on save.
+ */
+export const UI_EXPAND_PAGE = `<h2>Teams</h2>
+<ac:structured-macro ac:name="ui-expand" ac:schema-version="1" ac:macro-id="a8810613-1f2e-4b5c-9d0a-3c7e8f6b2d41"><ac:parameter ac:name="expanded">true</ac:parameter><ac:parameter ac:name="title">Development Team</ac:parameter><ac:rich-text-body><p>Owns the <span class="text_node rw_adf_text_strong">platform</span> services.</p><ol class="ordered-list top_level"><li>Backend</li><li>Frontend</li></ol></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="ui-expand" ac:schema-version="1" ac:macro-id="b91c7d22-5a44-4e18-8f60-2b19d3a7c05e"><ac:parameter ac:name="title">Support Team</ac:parameter><ac:rich-text-body><p>Handles escalations.</p></ac:rich-text-body></ac:structured-macro>`;
+
+/** One page carrying Atlassian's native expand beside Refined's UI Expand (#1129). */
+export const MIXED_EXPAND_PAGE = `<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">Native</ac:parameter><ac:rich-text-body><p>native body</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="ui-expand"><ac:parameter ac:name="expanded">true</ac:parameter><ac:parameter ac:name="title">Refined</ac:parameter><ac:rich-text-body><p>refined body</p></ac:rich-text-body></ac:structured-macro>`;
+
 /** Page with Confluence internal links (ac:link / ri:page) */
 export const LINKS_PAGE = `<h2>Related Pages</h2>
 <p>See the <ac:link><ri:page ri:content-title="Architecture Overview" /><ac:plain-text-link-body><![CDATA[Architecture Overview]]></ac:plain-text-link-body></ac:link> for details.</p>

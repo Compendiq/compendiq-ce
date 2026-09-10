@@ -168,10 +168,11 @@ describe('LlmAuditPage', () => {
     render(<LlmAuditPage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('llm-audit-gated')).toBeInTheDocument();
     // #347: clarified copy — explicit about CE-vs-EE ownership and points
-    // CE users at the regular Audit Log for ops events.
+    // CE admins at the ops audit-log endpoint (no settings panel views it
+    // since the IA consolidation, so the endpoint is the actionable pointer).
     expect(screen.getByText(/Enterprise feature/i)).toBeInTheDocument();
     expect(screen.getByText(/Community Edition does not persist/i)).toBeInTheDocument();
-    expect(screen.getByText(/regular/i)).toBeInTheDocument();
+    expect(screen.getByText(/GET \/api\/admin\/audit-log/)).toBeInTheDocument();
   });
 
   it('renders the audit page when feature is enabled', async () => {

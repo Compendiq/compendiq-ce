@@ -1,8 +1,8 @@
 /**
- * Settings → Compliance Reports tab (EE-gated).
+ * Reports sub-tab of Settings → Data & Compliance (EE-gated).
  *
- * Surfaces the seven SOC 2 / ISO 27001 reports from
- * `Compendiq/compendiq-ee#115`. Each report is a one-shot generator: the
+ * Surfaces the shared compliance report catalogue. Each report is a
+ * one-shot generator: the
  * admin picks a from/to window, hits "Generate", and the browser
  * downloads a ZIP containing a PDF cover sheet + a CSV body.
  *
@@ -11,11 +11,8 @@
  *
  *   { catalogue: ReportId[], available: ReportId[] }
  *
- * `catalogue` is the canonical 7-id list — used to render the full grid
- * even if not every backend module is wired yet (Sprint 2 / 3 / 3-slice-2
- * landed reports incrementally; this tab is now built against the
- * "all 7 wired" registry but still renders coming-soon badges defensively
- * so older deployments downgrade cleanly instead of 400-ing on Generate).
+ * The shared catalogue renders even when an older backend omits a report.
+ * Only the server's `available` list enables generation.
  *
  * Generate flow:
  *   1. POST /api/admin/compliance-reports/generate { reportId, from, to }
@@ -47,14 +44,15 @@ import { apiFetch, ApiError } from '../../shared/lib/api';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { ErrorState } from '../../shared/components/feedback/ErrorState';
+import { SETTINGS_PANELS } from '../settings/settings-nav';
 
 // ── Catalogue ──────────────────────────────────────────────────────────
 //
 // `ReportId` and the catalogue request/response shapes are sourced from
 // `@compendiq/contracts` (`schemas/compliance-reports.ts`) — the EE
 // overlay route validator and registry use the same module, so adding
-// a new report touches exactly one place. The local `CATALOGUE` below
-// adds the UI-only fields (display copy, control mapping) on top.
+// a new report id belongs in that contract. The local `CATALOGUE` below
+// adds the UI-only fields (display copy, control mapping).
 
 interface CatalogueEntry {
   id: ReportId;
@@ -109,6 +107,13 @@ const CATALOGUE: readonly CatalogueEntry[] = [
     description:
       'Per-call LLM attestation with safety flags. Plaintext prompts and responses are NEVER exported — only the SHA-256 prompt_hash.',
     controls: 'SOC 2 CC6.7 · ISO 27001 A.8.15',
+  },
+  {
+    id: 'model_governance',
+    title: 'Model Governance Evidence',
+    description:
+      'Recorded LLM audit entries and supplied artifact checksums compared with the current registry. Missing evidence stays unattested; browser execution and air-gap isolation are not certified. No plaintext prompts or responses.',
+    controls: 'SOC 2 CC6.6 / CC6.7 · ISO 27001 A.8.15',
   },
   {
     id: 'rbac_changes',
@@ -315,7 +320,7 @@ function ReportCard({
         </div>
         {available ? (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500"
+            className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs text-success"
             data-testid={`badge-available-${entry.id}`}
           >
             <CheckCircle2 size={12} />
@@ -323,7 +328,7 @@ function ReportCard({
           </span>
         ) : (
           <span
-            className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500"
+            className="inline-flex items-center gap-1 rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning"
             data-testid={`badge-coming-soon-${entry.id}`}
           >
             <AlertTriangle size={12} />
@@ -361,7 +366,7 @@ function ReportCard({
 
       {!validation.ok && available && (
         <p
-          className="text-xs text-amber-500"
+          className="text-xs text-warning"
           data-testid={`validation-error-${entry.id}`}
         >
           {validation.reason}
@@ -417,8 +422,8 @@ export function ComplianceReportsTab() {
               <h2 className="text-base font-medium">Compliance reports require an Enterprise license</h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 The SOC 2 / ISO 27001 evidence-packet generator is part of the Compendiq
-                Enterprise tier. Configure a valid license in Settings → License to enable
-                the seven reports.
+                Enterprise tier. Configure a valid license in Settings → {SETTINGS_PANELS.license.label} to
+                enable compliance reports.
               </p>
             </div>
           </div>
@@ -464,7 +469,7 @@ export function ComplianceReportsTab() {
         <h2 className="text-lg font-medium tracking-tight">Compliance reports</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Self-serve evidence-packet generator for SOC 2 Type II and ISO 27001:2022 audits.
-          Each report produces a signed PDF cover sheet (with a SHA-256 integrity hash of
+          Each report produces a PDF cover sheet (with a SHA-256 integrity hash of
           the CSV body) inside a ZIP archive. Generation is an admin action and is
           recorded in the audit log.
         </p>

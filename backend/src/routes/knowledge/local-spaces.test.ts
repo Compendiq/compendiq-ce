@@ -4,18 +4,20 @@ import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { localSpacesRoutes } from './local-spaces.js';
 
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+// The REAL RedisCache over a mocked redis client (same pattern as
+// routes/confluence/spaces.test.ts, #352): `invalidateAcrossUsers` walks SCAN
+// cursors and DELs the returned keys, and the cross-user invalidation tests
+// below assert that fan-out. Defaults return an empty SCAN page so the walk
+// terminates immediately for tests that don't care about the cache.
+const mockRedisGet = vi.fn().mockResolvedValue(null);
+const mockRedisSetEx = vi.fn().mockResolvedValue('OK');
+const mockRedisScan = vi.fn().mockResolvedValue({ cursor: '0', keys: [] });
+const mockRedisDel = vi.fn().mockResolvedValue(0);
 
+// #1166 asserts the PAGE_MOVED metadata, so the spy is addressable.
+const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
+  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
 }));
 
 vi.mock('../../core/utils/logger.js', () => ({
@@ -93,7 +95,12 @@ describe('Local Spaces Routes', () => {
       request.username = 'testuser';
       request.userRole = 'admin';
     });
-    app.decorate('redis', {});
+    app.decorate('redis', {
+      get: mockRedisGet,
+      setEx: mockRedisSetEx,
+      scan: mockRedisScan,
+      del: mockRedisDel,
+    });
 
     await app.register(localSpacesRoutes, { prefix: '/api' });
     await app.ready();
@@ -108,6 +115,10 @@ describe('Local Spaces Routes', () => {
     // Default: page access allowed; no Confluence space assignments.
     mockUserCanAccessPage.mockResolvedValue(true);
     mockGetUserAccessibleSpaces.mockResolvedValue([]);
+    // Re-arm Redis SCAN/DEL so the walk terminates immediately for tests that
+    // don't care about cache invalidation; tests that DO care override this.
+    mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
+    mockRedisDel.mockReset().mockResolvedValue(0);
   });
 
   // ── GET /api/spaces/local ─────────────────────────────────────────────
@@ -318,6 +329,83 @@ describe('Local Spaces Routes', () => {
     expect(response.statusCode).toBe(409);
   });
 
+  // ── Cross-user cache invalidation (#352 pattern, PR #1256 review F-B) ──
+  //
+  // GET /spaces/local serves a GLOBALLY-scoped list (no per-user filter in
+  // its SQL) out of a per-user cache with a 15-minute TTL. A local space's
+  // name and icon are chrome every user's sidebar renders, so a mutation
+  // that only invalidates the acting user's cache leaves every other user
+  // on the stale row for up to the TTL. Each mutation must SCAN the shared
+  // `kb:*:spaces:*` namespace — NOT the per-user `kb:test-user-id:spaces:*`
+  // one — exactly as PUT /spaces/:key/home does (#352).
+
+  it('POST /spaces/local invalidates the spaces cache across ALL users, not just the creator', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // duplicate check
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // INSERT
+    // Two other users hold a cached spaces list; both entries must go.
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/spaces/local',
+      payload: { key: 'MYSPACE', name: 'My Space', icon: 'rocket' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
+  });
+
+  it('PUT /spaces/local/:key invalidates the spaces cache across ALL users, not just the editor', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local', created_by: 'test-user-id' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // UPDATE
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/spaces/local/PROJ',
+      payload: { icon: 'rocket' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
+  });
+
+  it('DELETE /spaces/local/:key invalidates the spaces cache across ALL users, not just the deleter', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'local' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // DELETE
+    mockRedisScan.mockResolvedValueOnce({
+      cursor: '0',
+      keys: ['kb:alice:spaces:local-spaces:list', 'kb:bob:spaces:local-spaces:list'],
+    });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/api/spaces/local/PROJ',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedisScan).toHaveBeenCalledWith('0', { MATCH: 'kb:*:spaces:*', COUNT: 100 });
+    expect(mockRedisDel).toHaveBeenCalledWith([
+      'kb:alice:spaces:local-spaces:list',
+      'kb:bob:spaces:local-spaces:list',
+    ]);
+  });
+
   // ── GET /api/spaces/:key/tree ─────────────────────────────────────────
 
   it('should return page tree for a space', async () => {
@@ -423,10 +511,14 @@ describe('Local Spaces Routes', () => {
     mockQueryFn.mockResolvedValueOnce({
       rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
     });
-    // Parent exists check (also supplies the parent path)
+    // Parent exists check (also supplies the parent path, source and
+    // confluence_id — #1166 derives the stored parent_id flavour from them)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5' }],
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
+    // #1166 ambiguity guard: no other row claims the identifier. One call
+    // only — the requested identifier and the stored key are both '5'.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // #891 cycle-check: no cycle (empty result)
     mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Update page
@@ -447,6 +539,126 @@ describe('Local Spaces Routes', () => {
     expect(body.depth).toBe(1);
   });
 
+  it('move: stores the parent confluence_id when the parent is Confluence-sourced (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 10, space_key: 'PROJ' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    // Parent is Confluence-synced: its children key on its confluence_id, not
+    // its numeric id. Its materialized path is NULL, as synced pages' are.
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '424242' }],
+    });
+    // #1166 ambiguity guard runs TWICE here: the requested identifier ('5')
+    // and the stored key ('424242') are different values, and each must be
+    // unique on its own.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] }); // cycle check: clear
+    mockQueryFn.mockResolvedValue({ rows: [] }); // UPDATEs
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: 5 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Response echoes the STORED key, not the caller's `5` (#1166 contract).
+    expect(JSON.parse(response.payload).parentId).toBe('424242');
+
+    // …and the column really holds it.
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).startsWith('UPDATE pages SET parent_id'),
+    );
+    expect(updateCall).toBeDefined();
+    expect((updateCall![1] as unknown[])[0]).toBe('424242');
+
+    // The audit trail records the stored key too, so it matches the row.
+    expect(mockLogAuditEvent).toHaveBeenCalledWith(
+      'test-user-id',
+      'PAGE_MOVED',
+      'page',
+      '10',
+      expect.objectContaining({ parentId: '424242' }),
+      expect.anything(),
+    );
+  });
+
+  it('move: resolves the parent against both id and confluence_id, never casting to int (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: null, source: 'confluence', confluence_id: '3000000000' }],
+    });
+    // Requested identifier == stored key here, so one ambiguity check, clear.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: '3000000000' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const parentLookup = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('confluence_id = $1 OR id::text = $1'),
+    );
+    expect(parentLookup).toBeDefined();
+    // A Confluence id above 2^31 raises 22003 the moment the parameter is cast
+    // to int (the #1167 hazard) — compare `id::text` and pass a plain string.
+    expect(parentLookup![0] as string).not.toMatch(/\$1::int|CAST\s*\(\s*\$1/i);
+    expect((parentLookup![1] as unknown[])[0]).toBe('3000000000');
+
+    // The cycle-check anchor takes the RESOLVED numeric id, so it cannot
+    // overflow either.
+    const cycleCheck = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
+    );
+    expect((cycleCheck![1] as unknown[])[0]).toBe(5);
+  });
+
+  it('move: refuses an ambiguous parent identifier with 409, before the cycle check (#1166)', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 10, space_key: 'PROJ' }] });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ parent_id: null, space_key: 'PROJ', path: '/10' }],
+    });
+    mockQueryFn.mockResolvedValueOnce({
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
+    });
+    // Another row also answers to '5' — here a Confluence page carrying it as
+    // its confluence_id. The stored key would resolve to two parents.
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 77, title: 'decoy' }] });
+    mockQueryFn.mockResolvedValue({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/pages/10/move',
+      payload: { parentId: '5' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toContain('ambiguous');
+
+    // The guard short-circuits: the cycle check never runs, and nothing is
+    // written. Ordering matters — the cycle check anchors on ONE row, so
+    // letting it run first is what reopened #891.
+    const cycleCheck = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('WITH RECURSIVE ancestors'),
+    );
+    expect(cycleCheck).toBeUndefined();
+    const updateCall = mockQueryFn.mock.calls.find(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages'),
+    );
+    expect(updateCall).toBeUndefined();
+  });
+
   it('move: rejects making a page its own parent (#891)', async () => {
     // Existing page
     mockQueryFn.mockResolvedValueOnce({
@@ -458,8 +670,10 @@ describe('Local Spaces Routes', () => {
     });
     // Parent exists check (parent is the page itself)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 5, path: '/5' }],
+      rows: [{ id: 5, path: '/5', source: 'standalone', confluence_id: null }],
     });
+    // #1166 ambiguity guard: unambiguous, so the cycle check still decides.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
     // Fallback so any further (unexpected) query resolves harmlessly
@@ -490,8 +704,11 @@ describe('Local Spaces Routes', () => {
     });
     // Parent exists check (a descendant of page 5, also NULL path)
     mockQueryFn.mockResolvedValueOnce({
-      rows: [{ id: 9, path: null }],
+      rows: [{ id: 9, path: null, source: 'confluence', confluence_id: 'conf-9' }],
     });
+    // #1166 ambiguity guard, twice: requested '9' vs stored key 'conf-9'.
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    mockQueryFn.mockResolvedValueOnce({ rows: [] });
     // Cycle-check finds the moved page in the ancestor chain
     mockQueryFn.mockResolvedValueOnce({ rows: [{ found: 1 }] });
     mockQueryFn.mockResolvedValue({ rows: [] });

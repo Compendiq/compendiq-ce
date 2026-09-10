@@ -17,6 +17,7 @@ import {
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
+import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import {
   RestoreVersionSchema,
   PageVersionsResponseSchema,
@@ -348,6 +349,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.forbidden('Not authorized to edit this page');
     }
 
+    await rejectIfLiveCollabRoom(ctx.id, (m) => fastify.httpErrors.conflict(m));
+
     // Optimistic concurrency: refuse if the page advanced past what the client saw.
     if (expectedVersion !== undefined && expectedVersion < ctx.version) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -377,6 +380,8 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     if (!result) {
       throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
     }
+
+    await invalidateCollabDocAfterBodyWrite(ctx.id);
 
     // Push the restored content upstream for Confluence pages so a subsequent
     // sync doesn't pull the newer remote content back and undo the revert.

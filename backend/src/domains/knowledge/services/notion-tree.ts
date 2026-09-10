@@ -1,0 +1,661 @@
+/**
+ * Workspace tree for selective Notion import (#1463 / #1459).
+ *
+ * Initial discovery uses Search only, then resolves Search-listed pages whose
+ * parent is a block back to their host page. It deliberately does not list the
+ * body blocks of every page: on a large workspace that added up to 80 serial
+ * requests against Notion's 3 req/s limit before the picker could render.
+ *
+ * There is no database query. A row is present only when Search returned it as
+ * a page object.
+ *
+ * Databases ARE importable and say so. Each one is classified into the shape it
+ * would take locally — one table, or a page per row — from its own property
+ * schema plus a bounded sample of its row pages. The sample is advisory copy for
+ * the picker; `notion-import-service` re-checks every row before it flattens a
+ * database into a table, so a wrong guess here costs a recommendation, never
+ * content.
+ */
+import pLimit from 'p-limit';
+import {
+  NOTION_BOARD_REASON,
+  NOTION_UNSUPPORTED_LABEL,
+  type NotionTreeDatabaseNode,
+  type NotionTreeNode,
+  type NotionTreeSkippedNode,
+} from '@compendiq/contracts';
+import { query } from '../../../core/db/postgres.js';
+import { NotionClient, isNotionObjectMissing, type NotionListResponse } from './notion-client.js';
+
+export { NOTION_BOARD_REASON, NOTION_UNSUPPORTED_LABEL };
+
+/**
+ * A non-wiki inline database belongs to its host: property-only rows become a
+ * table, while rows with bodies remain articles. It needs no second container
+ * selection beside that host.
+ */
+export const NOTION_INLINE_DATABASE_REASON = 'Imports inside its parent article' as const;
+
+const NOTION_LOOKUP_CONCURRENCY = 5;
+/** Row pages sampled per database to guess whether rows carry body content. */
+export const NOTION_ROW_SAMPLE_SIZE = 5;
+/** Ceiling on row samples per tree build, so a database-heavy workspace still renders. */
+export const NOTION_ROW_SAMPLE_BUDGET = 60;
+/**
+ * Blocks read per sampled row. A row template leaves a run of empty blocks
+ * behind (heading, callout, divider, …) and `rowHasBodyContent` has to see the
+ * END of that run: an unread remainder is `has_more`, which counts as content.
+ * Two blocks made every three-block template look written-in.
+ */
+export const NOTION_ROW_PROBE_BLOCKS = 8;
+
+function normalizeId(id: string): string {
+  return id.replace(/-/g, '').toLowerCase();
+}
+
+function richTextToPlain(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value
+    .map((item) => {
+      if (
+        item &&
+        typeof item === 'object' &&
+        'plain_text' in item &&
+        typeof (item as { plain_text: unknown }).plain_text === 'string'
+      ) {
+        return (item as { plain_text: string }).plain_text;
+      }
+      return '';
+    })
+    .join('');
+}
+
+function extractTitle(item: Record<string, unknown>): string {
+  const direct = richTextToPlain(item.title);
+  if (direct.trim()) return direct;
+
+  const props = item.properties;
+  if (props && typeof props === 'object') {
+    for (const prop of Object.values(props as Record<string, unknown>)) {
+      if (prop && typeof prop === 'object' && (prop as { type?: string }).type === 'title') {
+        const t = richTextToPlain((prop as { title?: unknown }).title);
+        if (t.trim()) return t;
+      }
+    }
+  }
+
+  if (item.object === 'block') {
+    const nested = item[item.type as string];
+    if (nested && typeof nested === 'object' && 'title' in nested) {
+      const t = (nested as { title?: unknown }).title;
+      if (typeof t === 'string' && t.trim()) return t;
+    }
+  }
+
+  return 'Untitled';
+}
+
+function isTrashed(item: Record<string, unknown>): boolean {
+  return item.in_trash === true || item.archived === true;
+}
+
+function parentRecord(item: Record<string, unknown>): Record<string, unknown> | null {
+  const parent = item.parent;
+  if (!parent || typeof parent !== 'object') return null;
+  return parent as Record<string, unknown>;
+}
+
+function parentTypeOf(item: Record<string, unknown>): string | null {
+  const p = parentRecord(item);
+  return p && typeof p.type === 'string' ? p.type : null;
+}
+
+function parentIdOf(item: Record<string, unknown>): string | null {
+  const p = parentRecord(item);
+  if (!p) return null;
+  if (p.type === 'page_id' && typeof p.page_id === 'string') return p.page_id;
+  if (p.type === 'database_id' && typeof p.database_id === 'string') return p.database_id;
+  if (p.type === 'data_source_id' && typeof p.data_source_id === 'string') return p.data_source_id;
+  if (p.type === 'block_id' && typeof p.block_id === 'string') return p.block_id;
+  return null;
+}
+
+export function extractParentRelationId(item: Record<string, unknown>): string | null {
+  const props = item.properties;
+  if (!props || typeof props !== 'object') return null;
+
+  for (const [key, prop] of Object.entries(props as Record<string, unknown>)) {
+    if (!prop || typeof prop !== 'object') continue;
+    const lowerKey = key.toLowerCase();
+    const isParentKey =
+      lowerKey.includes('parent') ||
+      lowerKey.includes('übergeordnet') ||
+      lowerKey.includes('overordnet');
+
+    const propType = typeof (prop as { type?: unknown }).type === 'string' ? (prop as { type: string }).type : '';
+
+    if (propType === 'relation' && isParentKey) {
+      const relation = (prop as { relation?: unknown }).relation;
+      if (Array.isArray(relation) && relation.length > 0) {
+        const first = relation[0];
+        if (first && typeof first === 'object' && 'id' in first && typeof first.id === 'string' && first.id.trim()) {
+          return first.id.trim();
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Notion adds a `verification` property to the row pages of a wiki database and
+ * nowhere else, so its presence in the schema identifies a wiki.
+ * https://developers.notion.com/guides/data-apis/working-with-databases#wiki-databases
+ */
+export function isWikiDatabase(item: Record<string, unknown>): boolean {
+  const props = item.properties;
+  if (!props || typeof props !== 'object') return false;
+  return Object.values(props).some(
+    (prop) => Boolean(prop) && typeof prop === 'object' && 'type' in prop && prop.type === 'verification',
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function layoutTypeOf(value: unknown): string | null {
+  if (typeof value === 'string') return value.toLowerCase();
+  if (isRecord(value) && typeof value.type === 'string') return value.type.toLowerCase();
+  return null;
+}
+
+/**
+ * True when the Notion object is a Board layout. The pinned 2022-06-28
+ * retrieve-database payload has no view type; tests and any extra fields
+ * (`layout`, `views`, `format.board_*`) are enough, and the tree also probes
+ * `GET /v1/views` fail-soft.
+ */
+export function isBoardLayout(item: Record<string, unknown>): boolean {
+  if (layoutTypeOf(item.layout) === 'board') return true;
+  if (item.object === 'database' && layoutTypeOf(item.type) === 'board') return true;
+  if (Array.isArray(item.views)) {
+    for (const view of item.views) {
+      if (layoutTypeOf(view) === 'board') return true;
+      if (isRecord(view) && layoutTypeOf(view.type) === 'board') return true;
+    }
+  }
+  const format = isRecord(item.format) ? item.format : null;
+  if (format) {
+    if (layoutTypeOf(format.type) === 'board') return true;
+    if ('board_columns' in format || 'board_groups' in format || 'board_columns2' in format) return true;
+  }
+  return false;
+}
+
+function toSkippedBoardNode(
+  node: NotionTreeNode,
+  reasonCode: 'board_layout' | 'board_host',
+): NotionTreeSkippedNode {
+  return {
+    id: node.id,
+    title: node.title,
+    type: 'unsupported',
+    selectable: false,
+    skipReason: NOTION_BOARD_REASON,
+    reasonCode,
+    ...('url' in node && typeof node.url === 'string' ? { url: node.url } : {}),
+    children: node.children,
+  };
+}
+
+function replaceNode(nodes: Map<string, NotionTreeNode>, next: NotionTreeNode): void {
+  const key = normalizeId(next.id);
+  const previous = nodes.get(key);
+  nodes.set(key, next);
+  if (!previous || previous === next) return;
+  for (const candidate of nodes.values()) {
+    const index = candidate.children.indexOf(previous);
+    if (index >= 0) candidate.children[index] = next;
+  }
+}
+
+function toNode(item: Record<string, unknown>): NotionTreeNode | null {
+  if (typeof item.id !== 'string' || item.id.length === 0) return null;
+  const title = extractTitle(item);
+  const url = typeof item.url === 'string' ? item.url : undefined;
+  const extras = url ? { url } : {};
+
+  if (item.object === 'page' || (item.object === 'block' && item.type === 'child_page')) {
+    const isDatabaseRow = parentTypeOf(item) === 'database_id' || parentTypeOf(item) === 'data_source_id';
+    return {
+      id: item.id,
+      title,
+      type: 'page',
+      selectable: true,
+      ...(isDatabaseRow ? { isDatabaseRow: true } : {}),
+      ...extras,
+      children: [],
+    };
+  }
+  if (item.object === 'data_source') {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_UNSUPPORTED_LABEL,
+      reasonCode: 'data_source',
+      ...extras,
+      children: [],
+    };
+  }
+  // A Board is never a local Kanban. Mark it incompatible up front when the
+  // object already carries a layout; `classifyBoardLayouts` catches the rest.
+  if (!isWikiDatabase(item) && isBoardLayout(item)) {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_BOARD_REASON,
+      reasonCode: 'board_layout',
+      ...extras,
+      children: [],
+    };
+  }
+  // Inline tables stay in their host page, but a wiki is an article container
+  // even when Notion reports it as inline.
+  const isWiki = item.object === 'database' && isWikiDatabase(item);
+  if ((item.is_inline === true && !isWiki) || (item.object === 'block' && item.type === 'child_database')) {
+    return {
+      id: item.id,
+      title,
+      type: 'unsupported',
+      selectable: false,
+      skipReason: NOTION_INLINE_DATABASE_REASON,
+      reasonCode: item.object === 'block' ? 'child_database' : 'inline_database',
+      ...extras,
+      children: [],
+    };
+  }
+  if (item.object === 'database') {
+    const props = item.properties;
+    return {
+      id: item.id,
+      title,
+      type: 'database',
+      selectable: true,
+      // Provisional. `classifyDatabases` settles these once rows are attached.
+      recommendedMode: 'pages',
+      rowContent: 'unknown',
+      isWiki,
+      rowCount: 0,
+      columns: props && typeof props === 'object' ? Object.keys(props) : [],
+      ...extras,
+      children: [],
+    };
+  }
+  return {
+    id: item.id,
+    title,
+    type: 'unsupported',
+    selectable: false,
+    skipReason: NOTION_UNSUPPORTED_LABEL,
+    reasonCode: typeof item.type === 'string' ? item.type : 'unsupported',
+    ...extras,
+    children: [],
+  };
+}
+
+function attach(parent: NotionTreeNode, child: NotionTreeNode, attached: Map<string, string>): void {
+  const childKey = normalizeId(child.id);
+  const parentKey = normalizeId(parent.id);
+  if (attached.has(childKey)) return;
+  // A parent relation can be malformed or cyclic. Keep the rejected edge's
+  // child available for its native parent, or as a root, instead of losing it.
+  for (let ancestor: string | undefined = parentKey; ancestor; ancestor = attached.get(ancestor)) {
+    if (ancestor === childKey) return;
+  }
+  parent.children.push(child);
+  attached.set(childKey, parentKey);
+}
+
+async function resolveHostPageId(
+  client: NotionClient,
+  startBlockId: string,
+  nodes: Map<string, NotionTreeNode>,
+): Promise<string | null> {
+  const seen = new Set<string>();
+  let current = startBlockId;
+  for (let i = 0; i < 25; i++) {
+    const key = normalizeId(current);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const known = nodes.get(key);
+    if (known) return known.id;
+
+    let block: Record<string, unknown>;
+    try {
+      block = await client.getBlock(current);
+    } catch (err) {
+      if (isNotionObjectMissing(err)) return null;
+      throw err;
+    }
+    const type = parentTypeOf(block);
+    const id = parentIdOf(block);
+    if ((type === 'page_id' || type === 'database_id' || type === 'data_source_id') && id) return id;
+    if (type === 'block_id' && id) {
+      current = id;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+export async function fetchNotionWorkspaceTree(
+  client: NotionClient,
+  options: { userId?: string } = {},
+): Promise<NotionTreeNode[]> {
+  const results = await client.searchAll();
+  const nodes = new Map<string, NotionTreeNode>();
+  const rawByKey = new Map<string, Record<string, unknown>>();
+  const addItem = (item: Record<string, unknown>): string | null => {
+    if (isTrashed(item)) return null;
+    const node = toNode(item);
+    if (!node) return null;
+    const key = normalizeId(node.id);
+    const existing = rawByKey.get(key);
+    // Search may repeat UUID spellings or expose a block before its full
+    // database/page metadata. The full object owns the identity and schema.
+    if (existing && !(existing.object === 'block' && (item.object === 'page' || item.object === 'database'))) {
+      return null;
+    }
+    nodes.set(key, node);
+    rawByKey.set(key, item);
+    return key;
+  };
+  for (const raw of results) {
+    if (raw && typeof raw === 'object') addItem(raw as Record<string, unknown>);
+  }
+
+  const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+  const attemptedParents = new Set<string>();
+  const directParents = new Map<string, string>();
+  let frontier = [...nodes.keys()];
+
+  // Resolve metadata in waves until the complete accessible ancestor chain is
+  // known. Each identity is fetched at most once, including missing ancestors.
+  while (frontier.length > 0) {
+    const missingParents = new Map<string, { id: string; type: string | null }>();
+    const queueParent = (id: string, type: string | null): void => {
+      const key = normalizeId(id);
+      if (!nodes.has(key) && !attemptedParents.has(key)) {
+        missingParents.set(key, { id, type });
+      }
+    };
+    await Promise.all(
+      frontier.map((key) =>
+        limit(async () => {
+          const raw = rawByKey.get(key)!;
+          const relationParentId = extractParentRelationId(raw);
+          if (relationParentId) queueParent(relationParentId, 'page_id');
+          const parentId = parentIdOf(raw);
+          if (!parentId) return;
+          const type = parentTypeOf(raw);
+          const hostId = type === 'block_id'
+            ? await resolveHostPageId(client, parentId, nodes)
+            : parentId;
+          if (!hostId) return;
+          directParents.set(key, normalizeId(hostId));
+          queueParent(hostId, type === 'block_id' ? 'page_id' : type);
+        }),
+      ),
+    );
+    const parents = await Promise.all(
+      [...missingParents.entries()].map(([key, { id, type }]) => {
+        attemptedParents.add(key);
+        return limit(async () => {
+          try {
+            if (type === 'database_id' || type === 'data_source_id') {
+              return await client.getDatabase(id);
+            }
+            try {
+              return await client.getPage(id);
+            } catch (err) {
+              if (!isNotionObjectMissing(err)) throw err;
+              return await client.getDatabase(id);
+            }
+          } catch (err) {
+            if (isNotionObjectMissing(err)) return null;
+            throw err;
+          }
+        });
+      }),
+    );
+    frontier = [];
+    for (const raw of parents) {
+      const key = raw && addItem(raw);
+      if (key) frontier.push(key);
+    }
+  }
+
+  const attached = new Map<string, string>();
+  // Sub-item relations take precedence over native database ownership. Resolve
+  // these after discovery so omitted parent pages get the same precedence.
+  for (const [key, node] of nodes) {
+    const relationParentId = extractParentRelationId(rawByKey.get(key)!);
+    const parent = relationParentId ? nodes.get(normalizeId(relationParentId)) : undefined;
+    if (parent) attach(parent, node, attached);
+  }
+  for (const [key, node] of nodes) {
+    const parentKey = directParents.get(key);
+    const parent = parentKey ? nodes.get(parentKey) : undefined;
+    if (parent) attach(parent, node, attached);
+  }
+
+  await classifyBoardLayouts(client, nodes, rawByKey);
+  await classifyDatabases(client, nodes);
+
+  if (options.userId) {
+    try {
+      const existing = await query<{ id: number; notion_page_id: string }>(
+        `SELECT id, lower(replace(notion_page_id, '-', '')) AS notion_page_id
+         FROM pages
+         WHERE created_by_user_id = $1
+           AND notion_page_id IS NOT NULL
+           AND deleted_at IS NULL`,
+        [options.userId],
+      );
+      const existingByNotionId = new Map<string, number>();
+      for (const row of existing.rows) {
+        existingByNotionId.set(row.notion_page_id, row.id);
+      }
+      for (const [key, node] of nodes) {
+        if ((node.type === 'page' || node.type === 'database') && existingByNotionId.has(key)) {
+          node.alreadyImported = true;
+          node.localPageId = existingByNotionId.get(key);
+        }
+      }
+    } catch {
+      // Graceful fallback if database is not reachable (e.g. mock unit tests)
+    }
+  }
+
+  return [...nodes.values()].filter((n) => !attached.has(normalizeId(n.id)));
+}
+
+/**
+ * A row page counts as empty when it has no blocks at all, or only blank text
+ * blocks — Notion leaves an empty paragraph (and templates leave empty
+ * headings/callouts) on a row nobody wrote in. Media, child pages, any block
+ * with visible text, and any block still HOLDING CHILDREN count as content,
+ * which is the safe direction: it recommends articles rather than a table that
+ * would drop them.
+ */
+export function rowHasBodyContent(list: NotionListResponse<Record<string, unknown>>): boolean {
+  for (const block of list.results) {
+    const type = typeof block.type === 'string' ? block.type : '';
+    if (!type || type === 'divider' || type === 'table_of_contents' || type === 'breadcrumb') continue;
+    // Notion nests body inside paragraphs, quotes, callouts, toggles and list
+    // items, so a blank one that has children is a wrapper around real content.
+    if (block.has_children === true) return true;
+    const payload = block[type];
+    if (payload && typeof payload === 'object') {
+      if ('rich_text' in payload && richTextHasContent(payload.rich_text)) return true;
+      if ('title' in payload && richTextHasContent(payload.title)) return true;
+      if ('caption' in payload && richTextHasContent(payload.caption)) return true;
+    }
+    if (
+      type === 'paragraph' ||
+      type === 'heading_1' ||
+      type === 'heading_2' ||
+      type === 'heading_3' ||
+      type === 'quote' ||
+      type === 'callout' ||
+      type === 'bulleted_list_item' ||
+      type === 'numbered_list_item' ||
+      type === 'to_do' ||
+      type === 'toggle' ||
+      type === 'code'
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return list.has_more;
+}
+
+function richTextHasContent(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((item) => {
+    if (!item || typeof item !== 'object' || !('plain_text' in item)) return false;
+    return typeof item.plain_text === 'string' && item.plain_text.trim().length > 0;
+  });
+}
+
+/**
+ * Settles every database node's import shape.
+ *
+ * `columns` and `isWiki` came free off the database object. The open question —
+ * do the rows carry page content? — costs a request per row, so it is sampled
+ * and capped. The answer only picks the picker's default: `notion-import-service`
+ * re-reads every row before it flattens one into a table, so an unlucky sample
+ * costs a recommendation and never content. Probe failures are swallowed for the
+ * same reason; a picker that 500s over advisory copy is worse than one that
+ * recommends articles.
+ */
+async function classifyBoardLayouts(
+  client: NotionClient,
+  nodes: Map<string, NotionTreeNode>,
+  rawByKey: Map<string, Record<string, unknown>>,
+): Promise<void> {
+  const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+  const candidates: NotionTreeNode[] = [];
+  for (const node of nodes.values()) {
+    if (node.type === 'database') candidates.push(node);
+    if (
+      node.type === 'unsupported'
+      && (node.reasonCode === 'inline_database' || node.reasonCode === 'child_database')
+    ) {
+      candidates.push(node);
+    }
+  }
+  await Promise.all(
+    candidates.map((node) =>
+      limit(async () => {
+        const current = nodes.get(normalizeId(node.id));
+        if (!current) return;
+        const raw = rawByKey.get(normalizeId(current.id));
+        if (raw && isWikiDatabase(raw)) return;
+        if (raw && isBoardLayout(raw)) {
+          replaceNode(nodes, toSkippedBoardNode(current, 'board_layout'));
+          return;
+        }
+        try {
+          if (await client.databaseHasBoardView(current.id)) {
+            const live = nodes.get(normalizeId(current.id));
+            if (live) replaceNode(nodes, toSkippedBoardNode(live, 'board_layout'));
+          }
+        } catch {
+          // Fail-soft: a views lookup must never fail the picker.
+        }
+      }),
+    ),
+  );
+
+  for (const node of [...nodes.values()]) {
+    if (node.type !== 'unsupported' || node.reasonCode !== 'board_layout') continue;
+    const raw = rawByKey.get(normalizeId(node.id));
+    if (!raw) continue;
+    const inline = raw.is_inline === true || (raw.object === 'block' && raw.type === 'child_database');
+    if (!inline) continue;
+    const parent = isRecord(raw.parent) ? raw.parent : null;
+    const pageId = parent?.type === 'page_id' && typeof parent.page_id === 'string' ? parent.page_id : null;
+    if (!pageId) continue;
+    const host = nodes.get(normalizeId(pageId));
+    if (host && host.type === 'page') {
+      replaceNode(nodes, toSkippedBoardNode(host, 'board_host'));
+    }
+  }
+}
+
+async function classifyDatabases(client: NotionClient, nodes: Map<string, NotionTreeNode>): Promise<void> {
+  const databases: NotionTreeDatabaseNode[] = [];
+  for (const node of nodes.values()) {
+    if (node.type === 'database') databases.push(node);
+  }
+  if (databases.length === 0) return;
+
+  const limit = pLimit(NOTION_LOOKUP_CONCURRENCY);
+  const pending: Array<Promise<void>> = [];
+  let budget = NOTION_ROW_SAMPLE_BUDGET;
+
+  for (const database of databases) {
+    const rows = database.children.filter(
+      (child) => child.type === 'page' && child.isDatabaseRow === true,
+    );
+    database.rowCount = rows.length;
+    database.recommendedMode = 'pages';
+
+    // A wiki's rows are articles by definition, so nothing a sample could say
+    // would turn one into a table. Spend no requests on it.
+    if (database.isWiki || rows.length === 0 || budget === 0) {
+      database.rowContent = 'unknown';
+      continue;
+    }
+
+    const sample = rows.slice(0, Math.min(NOTION_ROW_SAMPLE_SIZE, budget));
+    budget -= sample.length;
+    pending.push(
+      (async () => {
+        const verdicts = await Promise.all(
+          sample.map((row) =>
+            limit(async () => {
+              try {
+                return rowHasBodyContent(
+                  await client.getBlockChildren(row.id, { pageSize: NOTION_ROW_PROBE_BLOCKS }),
+                )
+                  ? 'content'
+                  : 'empty';
+              } catch {
+                return 'unreadable';
+              }
+            }),
+          ),
+        );
+        if (verdicts.includes('content')) {
+          database.rowContent = 'some';
+        } else if (verdicts.includes('empty')) {
+          database.rowContent = 'none';
+          database.recommendedMode = 'table';
+        } else {
+          database.rowContent = 'unknown';
+        }
+      })(),
+    );
+  }
+
+  await Promise.all(pending);
+}

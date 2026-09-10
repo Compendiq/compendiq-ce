@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -168,11 +169,11 @@ export function LlmAuditPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div className="space-y-2">
-            <div className="text-sm font-medium text-amber-200">LLM Audit Trail — Enterprise feature</div>
+            <div className="text-sm font-medium text-warning">LLM Audit Trail — Enterprise feature</div>
             <p className="text-xs text-muted-foreground">
               Per-LLM-call records (model, tokens, latency, status, prompt
               redaction) ship with the Enterprise Edition. The Community
@@ -180,9 +181,12 @@ export function LlmAuditPage() {
               and avoid storing prompt content by default.
             </p>
             <p className="text-xs text-muted-foreground">
+              {/* No panel views the ops audit log since the IA consolidation —
+                  the old pointer named a Security → Audit panel that no longer
+                  exists — so the actionable reference is the admin API. */}
               Need basic ops auditing today? Login, sync, admin, and PAT events
-              are recorded in the regular <strong>Audit Log</strong>{' '}
-              (Settings → Security → Audit) on every edition.
+              are recorded on every edition — admins can query them via{' '}
+              <code className="rounded bg-foreground/10 px-1">GET /api/admin/audit-log</code>.
             </p>
           </div>
         </m.div>
@@ -326,7 +330,7 @@ export function LlmAuditPage() {
         <div className="nm-card overflow-hidden" data-testid="audit-table">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Time</th>
                 <th className="px-4 py-3 font-medium">User ID</th>
                 <th className="px-4 py-3 font-medium">Action</th>
@@ -347,7 +351,9 @@ export function LlmAuditPage() {
                       {entry.user_id ? entry.user_id.slice(0, 8) : '—'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                      {/* Token chip, never `dark:`-hex — with no `@custom-variant
+                          dark`, `dark:` tracks the OS instead of the picked theme. */}
+                      <span className={cn('rounded px-2 py-0.5 text-xs', neutralChipInk)}>
                         {entry.action}
                       </span>
                     </td>
@@ -357,7 +363,7 @@ export function LlmAuditPage() {
                       <span className={cn(
                         'rounded px-2 py-0.5 text-xs font-medium',
                         entry.status === 'success'
-                          ? 'bg-emerald-500/10 text-emerald-400'
+                          ? 'bg-success/10 text-success'
                           : 'bg-destructive/10 text-destructive',
                       )}>
                         {entry.status}
@@ -411,7 +417,7 @@ function StatCard({ label, value, variant = 'default' }: { label: string; value:
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={cn(
         'mt-1 text-xl font-semibold',
-        variant === 'warning' ? 'text-amber-400' : 'text-foreground',
+        variant === 'warning' ? 'text-warning' : 'text-foreground',
       )}>
         {value}
       </div>

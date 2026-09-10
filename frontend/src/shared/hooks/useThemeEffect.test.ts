@@ -13,70 +13,70 @@ import { useThemeEffect } from './useThemeEffect';
  */
 describe('useThemeEffect', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'slate-steel' });
+    useThemeStore.setState({ theme: 'graphite' });
     document.documentElement.removeAttribute('data-theme');
     document.documentElement.removeAttribute('data-theme-type');
     document.documentElement.classList.remove('dark');
   });
 
-  it('sets data-theme to slate-steel for the default theme', () => {
+  it('sets data-theme to graphite for the default theme', () => {
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite');
     expect(document.documentElement.dataset.themeType).toBe('dark');
   });
 
-  it('sets data-theme attribute when frost-steel is selected', () => {
-    useThemeStore.setState({ theme: 'frost-steel' });
+  it('sets data-theme attribute when paper is selected', () => {
+    useThemeStore.setState({ theme: 'paper' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
     expect(document.documentElement.dataset.themeType).toBe('light');
   });
 
   it('updates data-theme when the theme changes', () => {
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite');
 
     act(() => {
-      useThemeStore.getState().setTheme('frost-steel');
+      useThemeStore.getState().setTheme('paper');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
   });
 
-  it('updates data-theme back to slate-steel when switching from frost-steel', () => {
-    useThemeStore.setState({ theme: 'frost-steel' });
+  it('updates data-theme back to graphite when switching from paper', () => {
+    useThemeStore.setState({ theme: 'paper' });
     renderHook(() => useThemeEffect());
-    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
 
     act(() => {
-      useThemeStore.getState().setTheme('slate-steel');
+      useThemeStore.getState().setTheme('graphite');
     });
-    expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('graphite');
     expect(document.documentElement.dataset.themeType).toBe('dark');
   });
 
-  it('keeps dark class for slate-steel', () => {
+  it('keeps dark class for graphite', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 
-  it('removes dark class for frost-steel', () => {
-    useThemeStore.setState({ theme: 'frost-steel' });
+  it('removes dark class for paper', () => {
+    useThemeStore.setState({ theme: 'paper' });
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
   });
 
-  it('toggles dark class when switching between frost-steel and slate-steel', () => {
+  it('toggles dark class when switching between paper and graphite', () => {
     renderHook(() => useThemeEffect());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     act(() => {
-      useThemeStore.getState().setTheme('frost-steel');
+      useThemeStore.getState().setTheme('paper');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(false);
 
     act(() => {
-      useThemeStore.getState().setTheme('slate-steel');
+      useThemeStore.getState().setTheme('graphite');
     });
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });

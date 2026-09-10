@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, m } from 'framer-motion';
-import { FileText, X, Upload, ShieldCheck, Globe, Lock, ThumbsUp, ThumbsDown, AlertCircle, GitGraph } from 'lucide-react';
+import { FileText, X, Save, ThumbsUp, ThumbsDown, AlertTriangle, RefreshCw, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   usePage,
@@ -13,97 +13,50 @@ import {
   usePinPage,
   useUnpinPage,
   useDeletePage,
+  useUpdatePageIcon,
+  useUploadPageIcon,
 } from '../../shared/hooks/use-pages';
-import { useSubmitFeedback, useVerifyPage } from '../../shared/hooks/use-standalone';
-import { useAuthenticatedSrc } from '../../shared/hooks/use-authenticated-src';
+import { PageTitleIcon } from '../../shared/components/page-icon/PageTitleIcon';
+import { downscaleImage, ImageDecodeError } from '../../shared/lib/downscale-image';
+import type { CollabConfig, SettablePageIcon } from '@compendiq/contracts';
+import { useSubmitFeedback } from '../../shared/hooks/use-standalone';
 import { useSettings } from '../../shared/hooks/use-settings';
+import { useInlineCompletionAvailability } from '../../shared/hooks/use-inline-completion-availability';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 import { useArticleViewStore } from '../../stores/article-view-store';
+import { useAiDockStore } from '../../stores/ai-dock-store';
 import { useAuthStore } from '../../stores/auth-store';
 import { cn } from '../../shared/lib/cn';
 import { FeatureErrorBoundary } from '../../shared/components/feedback/FeatureErrorBoundary';
-import { QualityScoreBadge } from '../../shared/components/badges/QualityScoreBadge';
-import { Editor, EditorToolbar, TableContextToolbar, LayoutContextToolbar, ColumnContextToolbar, clearDraft, getDraft } from '../../shared/components/article/Editor';
+import { Editor, EditorToolbar, EditorContextToolbars, clearDraft, getDraft } from '../../shared/components/article/Editor';
 import type { Editor as EditorType } from '@tiptap/core';
 import { drainPendingDrawioDiagrams } from '../../shared/components/article/drawio-save-drain';
 import { ArticleViewer } from '../../shared/components/article/ArticleViewer';
+import { ArticleConnections } from '../../shared/components/article/ArticleConnections';
 import { DrawioEditor } from '../../shared/components/diagrams/DrawioEditor';
-import { apiFetch } from '../../shared/lib/api';
+import { apiFetch, ApiError } from '../../shared/lib/api';
 import { ArticleSummary } from '../../shared/components/article/ArticleSummary';
+import { hasSubstantialLede } from '../../shared/lib/article-lede';
 import type { TocHeading } from '../../shared/components/article/TableOfContents';
 import { PageViewSkeleton } from '../../shared/components/feedback/Skeleton';
-import { TagEditor } from '../../shared/components/TagEditor';
+import { TagPopover } from '../../shared/components/TagPopover';
+import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button, IconButton } from '../../shared/components/Button';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
-
-function ImageLightbox({
-  alt,
-  onClose,
-  src,
-}: {
-  alt: string;
-  onClose: () => void;
-  src: string;
-}) {
-  const { blobSrc, loading } = useAuthenticatedSrc(src);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  // Move focus into the dialog on open and restore it to the trigger on close,
-  // so keyboard/screen-reader users are not stranded behind the overlay (#942).
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
-    return () => previouslyFocused?.focus?.();
-  }, []);
-
-  return (
-    <m.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Image preview: ${alt}`}
-    >
-      <button
-        ref={closeButtonRef}
-        onClick={onClose}
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-        aria-label="Close preview"
-      >
-        <X size={18} />
-      </button>
-
-      {loading ? (
-        <div className="text-sm text-white/70">Loading image…</div>
-      ) : blobSrc ? (
-        <img
-          src={blobSrc}
-          alt={alt}
-          className="max-h-[90vh] max-w-[90vw] rounded-2xl object-contain"
-          onClick={(event) => event.stopPropagation()}
-        />
-      ) : (
-        <div className="text-sm text-white/70">Failed to load image.</div>
-      )}
-    </m.div>
-  );
-}
+import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
+import { useCollabProvider } from './use-collab-provider';
+import { mergePresence } from './merge-presence';
+import { caretColorForUserId } from '../../shared/lib/collab-colors';
+import { ImageLightbox } from '../../shared/components/article/ImageLightbox';
 
 function scrollArticleToTop() {
-  const container = document.querySelector('[data-scroll-container]') as HTMLElement | null;
+  const container = (
+    document.querySelector('[data-testid="article-scroll"]')
+    ?? document.querySelector('[data-scroll-container]')
+  ) as HTMLElement | null;
   if (!container) return;
   container.scrollTop = 0;
   container.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
@@ -122,10 +75,14 @@ export function PageViewPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const { data: page, isLoading } = usePage(id);
+  const { data: page, isLoading, isError, error: pageError, refetch: refetchPage, isFetching: isRefetchingPage } = usePage(id);
   const { data: settings } = useSettings();
+  const { data: inlineCompletionAvailable = false } = useInlineCompletionAvailability();
   const updateMutation = useUpdatePage();
   const labelsMutation = useUpdatePageLabels();
+  const iconMutation = useUpdatePageIcon();
+  const uploadIconMutation = useUploadPageIcon();
+  const [iconUploadError, setIconUploadError] = useState<string | null>(null);
   const { data: filterOptions } = usePageFilterOptions();
   const { data: pinnedData } = usePinnedPages();
   const pinMutation = usePinPage();
@@ -157,6 +114,7 @@ export function PageViewPage() {
 
   const setStoreHeadings = useArticleViewStore((s) => s.setHeadings);
   const setStoreEditing = useArticleViewStore((s) => s.setEditing);
+  const openDock = useAiDockStore((s) => s.openDock);
 
   const [editing, setEditing] = useState(false);
   const [editorInstance, setEditorInstance] = useState<EditorType | null>(null);
@@ -166,12 +124,14 @@ export function PageViewPage() {
   // the live HTML is read from `editorInstance.getHTML()` on save (#954).
   const [editHtml, setEditHtml] = useState('');
   const [editTitle, setEditTitle] = useState('');
+  const [draftLabels, setDraftLabels] = useState<string[]>([]);
   // Dirty flag flipped by the editor's onChange (#954). A cheap boolean avoids
   // storing/serializing the whole document on every keystroke: after the first
   // change setIsDirty(true) is a no-op re-render, so typing no longer re-renders
   // this page.
   const [isDirty, setIsDirty] = useState(false);
   const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const previousPageIdRef = useRef(id);
   const [lightboxSrc, setLightboxSrc] = useState<{ alt: string; src: string } | null>(null);
   const [drawioEditingDiagram, setDrawioEditingDiagram] = useState<string | null>(null);
   const [drawioXml, setDrawioXml] = useState<string>('');
@@ -183,15 +143,14 @@ export function PageViewPage() {
   // While non-null, edit mode is deferred until the user picks a side.
   const [pendingDraft, setPendingDraft] = useState<string | null>(null);
 
-  // Vim mode state — lifted here so we can pass it to the external toolbar
-  const [vimEnabled, setVimEnabled] = useState(() =>
-    localStorage.getItem('compendiq-vim-mode') === 'true'
+  const [headerNumbering, setHeaderNumbering] = useState(() =>
+    localStorage.getItem('editor-header-numbering') === 'true',
   );
-  const toggleVim = useCallback(() => {
-    setVimEnabled(prev => {
-      const next = !prev;
-      localStorage.setItem('compendiq-vim-mode', String(next));
-      return next;
+
+  const toggleHeaderNumbering = useCallback(() => {
+    setHeaderNumbering((prev) => {
+      localStorage.setItem('editor-header-numbering', String(!prev));
+      return !prev;
     });
   }, []);
 
@@ -202,10 +161,51 @@ export function PageViewPage() {
 
   // Real-time co-presence (#301). Propagates our editing flag to other viewers
   // via a 10s heartbeat so the pencil badge toggles for them within one tick.
+  // When collab is live, awareness owns the pencil — stop sending SSE isEditing.
   const { viewers: presenceViewers, setEditing: setPresenceEditing } = usePresence(id);
+  const { data: collabConfig } = useQuery<CollabConfig>({
+    queryKey: ['collab-config'],
+    queryFn: async () => {
+      const raw = await apiFetch<Partial<CollabConfig>>('/collab/config');
+      return { enabled: raw?.enabled === true };
+    },
+    staleTime: 30_000,
+  });
+  const [collabSession, setCollabSession] = useState(false);
+  const [collabHasSynced, setCollabHasSynced] = useState(false);
+  const collab = useCollabProvider({
+    pageId: id,
+    enabled: collabSession,
+  });
+  const collabLive = collabSession;
   useEffect(() => {
-    setPresenceEditing(editing);
-  }, [editing, setPresenceEditing]);
+    if (!collabSession) {
+      setCollabHasSynced(false);
+      return;
+    }
+    if (collab.synced) setCollabHasSynced(true);
+    if (collab.error) setCollabHasSynced(false);
+  }, [collabSession, collab.synced, collab.error]);
+  const mergedViewers = useMemo(
+    () => (collabLive
+      ? mergePresence(presenceViewers, collab.awarenessUsers)
+      : presenceViewers),
+    [presenceViewers, collabLive, collab.awarenessUsers],
+  );
+  const caretUser = useMemo(() => {
+    if (!currentUserId) return undefined;
+    const user = useAuthStore.getState().user;
+    if (!user) return undefined;
+    return { name: user.username, color: caretColorForUserId(user.id) };
+  }, [currentUserId]);
+  const [collabSaving, setCollabSaving] = useState(false);
+  const [confluenceModified, setConfluenceModified] = useState<{
+    remoteVersion?: number;
+    localVersion?: number;
+  } | null>(null);
+  useEffect(() => {
+    setPresenceEditing(collabLive ? false : editing);
+  }, [editing, collabLive, setPresenceEditing]);
 
   // Sync headings to the shared store (consumed by ArticleRightPane)
   useEffect(() => {
@@ -220,7 +220,7 @@ export function PageViewPage() {
     };
   }, []);
 
-  // Reset edit-mode state whenever the :id route param changes (#872). The
+  // Reset page-local state whenever the :id route param changes (#872). The
   // /pages/:id route is not keyed, so React Router keeps this single
   // PageViewPage instance mounted across id changes — only useParams().id
   // and the react-query page object update. Without this reset, navigating
@@ -234,15 +234,54 @@ export function PageViewPage() {
   // here: the per-page localStorage draft is keyed by id and its
   // restore-on-edit feature must survive navigation.
   useEffect(() => {
-    setEditing(false);
-    setEditHtml('');
-    setEditTitle('');
-    setIsDirty(false);
-    setPendingDraft(null);
-    setEditorInstance(null);
-    setConfirmDiscardOpen(false);
-    setConfirmTrashOpen(false);
-  }, [id]);
+    if (previousPageIdRef.current !== id) {
+      previousPageIdRef.current = id;
+      // ArticleViewer publishes the destination headings asynchronously.
+      // Clear page A's structure immediately so the app-level inspector cannot
+      // expose a stale Outline while page B is loading or has no headings.
+      setHeadings([]);
+      setStoreHeadings([]);
+      setEditing(false);
+      setEditHtml('');
+      setEditTitle('');
+      setDraftLabels([]);
+      setIsDirty(false);
+      setPendingDraft(null);
+      setEditorInstance(null);
+      setConfirmDiscardOpen(false);
+      setConfirmTrashOpen(false);
+      setConfluenceModified(null);
+      setCollabSession(false);
+      setCollabHasSynced(false);
+    }
+  }, [id, setStoreHeadings]);
+  const editingScrollOffsetRef = useRef<number>(0);
+
+  const captureScrollOffset = useCallback(() => {
+    const container = (
+      document.querySelector('[data-testid="article-scroll"]')
+      ?? document.querySelector('[data-scroll-container]')
+    ) as HTMLElement | null;
+    if (container) {
+      editingScrollOffsetRef.current = container.scrollTop;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const offset = editingScrollOffsetRef.current;
+    if (offset > 0) {
+      const container = (
+        document.querySelector('[data-testid="article-scroll"]')
+        ?? document.querySelector('[data-scroll-container]')
+      ) as HTMLElement | null;
+      if (container) {
+        container.scrollTop = offset;
+        requestAnimationFrame(() => {
+          if (container) container.scrollTop = offset;
+        });
+      }
+    }
+  }, [editing]);
 
   useLayoutEffect(() => {
     scrollArticleToTop();
@@ -272,9 +311,59 @@ export function PageViewPage() {
     setLightboxSrc(null);
   }, []);
 
+  const handleSelectIcon = useCallback(
+    (icon: SettablePageIcon) => {
+      if (!id) return;
+      setIconUploadError(null);
+      iconMutation.mutate({ id, icon });
+    },
+    [id, iconMutation],
+  );
+
+  const handleRemoveIcon = useCallback(() => {
+    if (!id) return;
+    setIconUploadError(null);
+    iconMutation.mutate({ id, icon: null });
+  }, [id, iconMutation]);
+
+  const handleUploadIcon = useCallback(
+    async (file: File) => {
+      if (!id) return;
+      setIconUploadError(null);
+      try {
+        const { blob } = await downscaleImage(file);
+        const dataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error("Couldn't read that image."));
+          reader.readAsDataURL(blob);
+        });
+        await uploadIconMutation.mutateAsync({ id, dataUri });
+      } catch (err) {
+        setIconUploadError(
+          err instanceof ImageDecodeError || err instanceof Error
+            ? err.message
+            : "Couldn't upload that image.",
+        );
+      }
+    },
+    [id, uploadIconMutation],
+  );
+
   const handleStartEditing = useCallback(() => {
     if (!page || !id) return;
+    captureScrollOffset();
     setEditTitle(page.title);
+    setDraftLabels(page.labels ?? []);
+    const startCollab = collabConfig?.enabled === true;
+    setCollabSession(startCollab);
+    if (startCollab) {
+      // Collab has no private localStorage draft to restore.
+      setEditHtml(page.bodyHtml);
+      setIsDirty(false);
+      setEditing(true);
+      return;
+    }
     const draft = getDraft(`page-${id}`);
     if (draft && draft !== page.bodyHtml) {
       // Defer edit mode until the user decides in the ConfirmDialog below:
@@ -286,52 +375,78 @@ export function PageViewPage() {
     setEditHtml(page.bodyHtml);
     setIsDirty(false);
     setEditing(true);
-  }, [id, page]);
+  }, [id, page, collabConfig?.enabled, captureScrollOffset]);
 
   const handleRestoreDraft = useCallback(() => {
     if (pendingDraft === null) return;
+    captureScrollOffset();
     setEditHtml(pendingDraft);
+    if (page?.labels) setDraftLabels(page.labels);
     // A restored draft diverges from the published page, so the editor is
     // dirty from the outset — Cancel must guard it and Save must persist it.
     setIsDirty(true);
     setPendingDraft(null);
     setEditing(true);
-  }, [pendingDraft]);
+  }, [pendingDraft, page, captureScrollOffset]);
 
   const handleDeclineDraft = useCallback(() => {
     setPendingDraft(null);
+    captureScrollOffset();
     if (!page) return;
     setEditHtml(page.bodyHtml);
+    setDraftLabels(page.labels ?? []);
     setIsDirty(false);
     setEditing(true);
-  }, [page]);
+  }, [page, captureScrollOffset]);
 
-  // The editor is dirty when the title diverges from the persisted page or the
-  // body was touched. `isDirty` is set by the Editor's onChange (and seeded
-  // true when a draft is restored), so a pristine editor produces no false
-  // positive (#944). Body edits are tracked via the flag rather than a live
-  // HTML string so typing doesn't re-render the page (#954).
+  // The editor is dirty when the title diverges from the persisted page, the
+  // body was touched, or draft tag changes exist.
   const isEditorDirty = useCallback(() => {
     if (!page) return false;
-    return editTitle !== page.title || isDirty;
-  }, [page, editTitle, isDirty]);
+    const currentLabels = page.labels ?? [];
+    const labelsDiverged =
+      draftLabels.length !== currentLabels.length ||
+      draftLabels.some((l) => !currentLabels.includes(l));
+    return editTitle !== page.title || isDirty || labelsDiverged;
+  }, [page, editTitle, isDirty, draftLabels]);
 
   const discardAndExit = useCallback(() => {
-    if (draftKey) clearDraft(draftKey);
+    captureScrollOffset();
+    setCollabSession(false);
+    setCollabHasSynced(false);
     setIsDirty(false);
+    setDraftLabels([]);
     setEditing(false);
-  }, [draftKey]);
+  }, [captureScrollOffset]);
+
+  const titleOrLabelsDiverged = useCallback(() => {
+    if (!page) return false;
+    const currentLabels = page.labels ?? [];
+    const labelsDiverged =
+      draftLabels.length !== currentLabels.length ||
+      draftLabels.some((l) => !currentLabels.includes(l));
+    return editTitle !== page.title || labelsDiverged;
+  }, [page, editTitle, draftLabels]);
 
   // Cancel guards against silently throwing away unsaved work: when dirty it
   // opens the discard confirmation, otherwise it exits immediately. Backs the
   // Cancel button plus the Ctrl+E / Escape shortcuts (#944).
   const handleCancelEditing = useCallback(() => {
+    if (collabSession) {
+      // Body lives on the Y.Doc; still confirm title/label divergence.
+      if (titleOrLabelsDiverged()) {
+        setConfirmDiscardOpen(true);
+        return;
+      }
+      discardAndExit();
+      return;
+    }
     if (isEditorDirty()) {
       setConfirmDiscardOpen(true);
       return;
     }
     discardAndExit();
-  }, [isEditorDirty, discardAndExit]);
+  }, [collabSession, titleOrLabelsDiverged, isEditorDirty, discardAndExit]);
 
   const handleConfirmDiscard = useCallback(() => {
     setConfirmDiscardOpen(false);
@@ -346,31 +461,73 @@ export function PageViewPage() {
       // the edited PNG ships as a huge base64 data URI inside body_html;
       // with it, the PNG is uploaded to the attachment store and the
       // body_html references the small server URL instead.
-      const drain = await drainPendingDrawioDiagrams(editorInstance, {
-        attachmentPageId: page.confluenceId ?? id,
-        pageSource: page.confluenceId ? 'confluence' : 'standalone',
-      });
-      for (const msg of drain.errors) {
-        toast.warning(msg);
-      }
-      // Read the live HTML straight off the editor instance (#954) — it's the
-      // single source of truth for body content, and also reflects the
-      // newly-committed draw.io node attributes from the drain above. The
-      // `editHtml` seed is only a fallback for the (practically unreachable)
-      // case where the editor instance isn't ready.
-      const bodyToSave = editorInstance?.getHTML() ?? editHtml;
+      if (collabLive) {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
+        setCollabSaving(true);
+        try {
+          await apiFetch(`/pages/${id}/collab/commit`, {
+            method: 'POST',
+            body: JSON.stringify({ title: editTitle }),
+          });
+          setConfluenceModified(null);
+          queryClient.invalidateQueries({ queryKey: ['pages', id] });
+        } finally {
+          setCollabSaving(false);
+        }
+      } else {
+        const drain = await drainPendingDrawioDiagrams(editorInstance, {
+          attachmentPageId: page.confluenceId ?? id,
+          pageSource: page.confluenceId ? 'confluence' : 'standalone',
+        });
+        for (const msg of drain.errors) {
+          toast.warning(msg);
+        }
+        if (!editorInstance) {
+          toast.error('Editor instance is not ready. Please try again.');
+          return;
+        }
+        // Read the live HTML straight off the editor instance (#954) — it's the
+        // single source of truth for body content, and also reflects the
+        // newly-committed draw.io node attributes from the drain above.
+        const bodyToSave = editorInstance.getHTML();
 
-      await updateMutation.mutateAsync({
-        id,
-        title: editTitle,
-        bodyHtml: bodyToSave,
-        version: page.version,
-      });
+        await updateMutation.mutateAsync({
+          id,
+          title: editTitle,
+          bodyHtml: bodyToSave,
+          version: page.version,
+        });
+      }
+      if (editing) {
+        const currentLabels = page.labels ?? [];
+        const addLabels = draftLabels.filter((l) => !currentLabels.includes(l));
+        const removeLabels = currentLabels.filter((l) => !draftLabels.includes(l));
+        if (addLabels.length > 0 || removeLabels.length > 0) {
+          await labelsMutation.mutateAsync({ id, addLabels, removeLabels });
+        }
+      }
       if (draftKey) clearDraft(draftKey);
+      setCollabSession(false);
+      setCollabHasSynced(false);
       setIsDirty(false);
+      setDraftLabels([]);
       setEditing(false);
-      toast.success('Page saved.');
+      const isConfluence = page.source === 'confluence' || Boolean(page.confluenceId);
+      toast.success(isConfluence ? 'Page saved & synced to Confluence DC.' : 'Page saved.');
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'confluence_modified') {
+        setConfluenceModified({
+          remoteVersion: error.remoteVersion,
+          localVersion: error.localVersion,
+        });
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Failed to save page.';
       if (message.includes('modified since you loaded')) {
         toast.error('Version conflict detected.', {
@@ -387,7 +544,7 @@ export function PageViewPage() {
         toast.error(message);
       }
     }
-  }, [draftKey, editHtml, editTitle, editorInstance, id, page, queryClient, updateMutation]);
+  }, [collabLive, draftKey, draftLabels, editTitle, editing, editorInstance, id, labelsMutation, page, queryClient, updateMutation]);
 
   // Draw.io inline editing handlers
   const handleEditDiagram = useCallback(async (diagramName: string) => {
@@ -455,19 +612,31 @@ export function PageViewPage() {
 
   const handleAddTag = useCallback((tag: string) => {
     if (!id) return;
+    if (editing) {
+      if (!draftLabels.includes(tag)) {
+        setDraftLabels((prev) => [...prev, tag]);
+        setIsDirty(true);
+      }
+      return;
+    }
     labelsMutation.mutate(
       { id, addLabels: [tag] },
       { onError: () => toast.error('Failed to add tag.') },
     );
-  }, [id, labelsMutation]);
+  }, [editing, draftLabels, id, labelsMutation]);
 
   const handleRemoveTag = useCallback((tag: string) => {
     if (!id) return;
+    if (editing) {
+      setDraftLabels((prev) => prev.filter((t) => t !== tag));
+      setIsDirty(true);
+      return;
+    }
     labelsMutation.mutate(
       { id, removeLabels: [tag] },
       { onError: () => toast.error('Failed to remove tag.') },
     );
-  }, [id, labelsMutation]);
+  }, [editing, id, labelsMutation]);
 
   const handlePinToggle = useCallback(() => {
     if (!id || !page) return;
@@ -530,6 +699,13 @@ export function PageViewPage() {
       description: 'Exit edit mode',
       category: 'editor',
       action: () => {
+        // Kept as defence in depth now that the hook bails on
+        // `defaultPrevented`: the two catch different things. The flag catches
+        // any layer that dismisses on ESC (every Radix one does); this probe
+        // catches the hand-rolled overlays that never call preventDefault —
+        // AiDockSheet, ProviderEditModal, the mobile sidebar. On its own it is
+        // unreliable, because a layer unmounted during the capture phase is
+        // already gone from the DOM by the time this runs.
         if (document.querySelector('[role="dialog"]')) return;
         if (editing) handleCancelEditing();
       },
@@ -555,13 +731,16 @@ export function PageViewPage() {
       key: 'Alt+I',
       keys: ['i'],
       alt: true,
-      description: 'AI Improve',
+      description: 'AI Assistant',
       category: 'actions',
-      action: () => {
-        if (id) navigate(`/ai?mode=improve&pageId=${encodeURIComponent(id)}`);
-      },
+      // #1126: opens the assistant beside the document instead of navigating to
+      // /ai and leaving it. One of three call sites that used the same URL — the
+      // other two are in ArticleRightPane's rail and expanded pane.
+      // #1176: and opening is all it does — it no longer starts an improvement
+      // the user did not ask for, which is why it is no longer called Improve.
+      action: openDock,
     },
-  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, id, navigate]);
+  ], [editing, handleSave, handleCancelEditing, handleStartEditing, handlePinToggle, handleDeletePage, openDock]);
 
   useKeyboardShortcuts(pageShortcuts);
 
@@ -573,23 +752,113 @@ export function PageViewPage() {
     );
   }
 
+  // GET /pages/:id deliberately returns a real 404 for BOTH "no such page" and
+  // "you can't access this page's space" (pages-crud.ts) — collapsing them on
+  // purpose so a permission check can't be used to probe which pages exist.
+  // So "Page not found" is only the honest copy for an actual 404; a 500, a
+  // dropped network, or any other failure is a different situation and used
+  // to be misreported as this same screen with no retry (CLAUDE.md already
+  // forbids exactly this pattern for usePageTree — this route never got the
+  // fix). Only a confirmed non-404 failure gets the distinct "couldn't load"
+  // treatment below; a 404, or any other case where the query settled with
+  // no page, keeps the existing not-found copy.
+  const loadFailed = isError && !(pageError instanceof ApiError && pageError.statusCode === 404);
+
+  if (loadFailed) {
+    return (
+      <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center" role="alert" data-testid="page-load-error">
+        <div className="rounded-full bg-muted p-2.5">
+          <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+        </div>
+        <h1 className="text-lg font-semibold text-foreground">Couldn&rsquo;t load this page</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          {pageError instanceof ApiError
+            ? pageError.message
+            : 'The request did not complete. This page is still there — try again.'}
+        </p>
+        <Button
+          onClick={() => refetchPage()}
+          disabled={isRefetchingPage}
+          isLoading={isRefetchingPage}
+          variant="secondary"
+          leftIcon={!isRefetchingPage ? <RefreshCw size={14} aria-hidden="true" /> : undefined}
+        >
+          {isRefetchingPage ? 'Retrying' : 'Try again'}
+        </Button>
+      </div>
+    );
+  }
+
   if (!page) {
     return (
       <div className="nm-card flex min-h-[18rem] flex-col items-center justify-center gap-3 py-16 text-center">
         <FileText size={42} className="text-muted-foreground" />
-        <h1 className="text-xl font-semibold text-foreground">Page not found</h1>
+        <h1 className="text-lg font-semibold text-foreground">Page not found</h1>
         <p className="max-w-md text-sm text-muted-foreground">
           The selected page is unavailable or no longer accessible in the synced space tree.
         </p>
-        <button
+        <Button
           onClick={() => navigate('/')}
-          className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          variant="secondary"
         >
           Return to pages
-        </button>
+        </Button>
       </div>
     );
   }
+
+  const tagChip = (
+    <TagPopover
+      tags={editing ? draftLabels : (page.labels ?? [])}
+      onAddTag={handleAddTag}
+      onRemoveTag={handleRemoveTag}
+      suggestions={filterOptions?.labels}
+      isLoading={labelsMutation.isPending}
+      iconOnly={editing}
+    />
+  );
+  const saving = updateMutation.isPending || collabSaving;
+  const sessionActions = (
+    <>
+      <PresenceAvatarStack viewers={mergedViewers} />
+      {collabSession ? (
+        <Button
+          onClick={handleCancelEditing}
+          title="Done editing (Esc)"
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 px-2.5 text-xs"
+          data-testid="cancel-edit-btn"
+        >
+          Done
+        </Button>
+      ) : (
+        <IconButton
+          onClick={handleCancelEditing}
+          title="Cancel editing (Esc)"
+          label="Cancel"
+          variant="destructive-ghost"
+          size="icon-sm"
+          className="nm-icon-button nm-action-destructive shrink-0"
+          testid="cancel-edit-btn"
+          icon={<X size={15} aria-hidden="true" />}
+        />
+      )}
+      <Button
+        onClick={handleSave}
+        disabled={saving}
+        isLoading={saving}
+        title="Save changes (Ctrl+S)"
+        variant="primary"
+        size="sm"
+        leftIcon={!saving ? <Save size={15} aria-hidden="true" /> : undefined}
+        className="nm-button-primary shrink-0"
+        data-testid="save-page-btn"
+      >
+        {saving ? 'Saving…' : 'Save'}
+      </Button>
+    </>
+  );
 
   return (
     <m.div
@@ -600,254 +869,268 @@ export function PageViewPage() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
       data-testid="article-page"
+      className="flex min-h-0 flex-1 flex-col"
     >
-      {/* Sticky toolbar with an UNDER-mask that sits behind the toolbar at
-          a lower z-index. The mask is opaque bg-background, so article
-          content scrolling under the translucent toolbar is fully occluded
-          rather than showing through its rounded-corner cutouts. */}
-      {editing && (
-        <div className="sticky top-0 z-30 isolate">
-          {/* Under-mask: behind the toolbar (z-[-1]), covering exactly the
-              toolbar's box (inset-0). The toolbar pins flush at the
-              scrollport top — same situation as /ai's sub-header (#769) —
-              so there is no gap above it to mask, and the former
-              -top-[100px] upward bleed was dead paint (clipped at the
-              scrollport edge when stuck). Rounded bottom corners keep the
-              mask inside the toolbar's card silhouette. */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-[-1] bg-background rounded-b-xl"
+      {/* Pinned article chassis — same 48px bar in both modes, OUTSIDE the
+          article scroller so the strip meets the pane's right edge. Write
+          fills it with format tools + the tag chip + Cancel/Save. Read
+          keeps the bar: labels as pills on the left, Edit on the right.
+          Operate verbs stay in the inspector.
+
+          Carries a thin hairline (border-b border-border) below the edit bar
+          and toolbar, separating the 48px pinned strip from the article content
+          below it. The height stays 48 — the sidebar's chrome row and the
+          inspector's tab row still start their content on that same y. */}
+      <div className="relative z-30 shrink-0">
+        {confluenceModified && (
+          <ConfluenceModifiedAlert
+            remoteVersion={confluenceModified.remoteVersion}
+            localVersion={confluenceModified.localVersion}
+            onDismiss={() => setConfluenceModified(null)}
           />
-        <div className="rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm">
-          {editorInstance && (
-            <div className="px-1 border-b border-border/20">
-              <EditorToolbar editor={editorInstance} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
-              <TableContextToolbar editor={editorInstance} />
-              <LayoutContextToolbar editor={editorInstance} />
-              <ColumnContextToolbar editor={editorInstance} />
-            </div>
-          )}
-          {/* Action row — Cancel/Save are aligned to TagEditor's input row
-              (its bottom edge), since the TagEditor stacks existing tag
-              pills above the "Add a tag…" input. items-end keeps the
-              buttons on the same baseline as the Add-tag input/button. */}
-          <div className="flex items-end gap-3 px-3 py-2">
-            <div className="min-w-0 flex-1">
-              <TagEditor
-                tags={page.labels}
-                onAddTag={handleAddTag}
-                onRemoveTag={handleRemoveTag}
-                suggestions={filterOptions?.labels}
-                isLoading={labelsMutation.isPending}
+        )}
+        <div className="relative w-full border-b border-border bg-card">
+          {editing && editorInstance ? (
+            <div className="px-2">
+              <EditorToolbar
+                editor={editorInstance}
+                headerNumbering={headerNumbering}
+                onToggleHeaderNumbering={toggleHeaderNumbering}
+                pageProperty={tagChip}
+                actions={sessionActions}
+                pageId={id}
               />
             </div>
-            <button
-              onClick={handleCancelEditing}
-              className="shrink-0 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+          ) : (
+            <div
+              className={cn(
+                'flex min-h-12 w-full items-center gap-1.5 px-2',
+                editing && 'justify-end',
+              )}
+              {...(!editing
+                ? {
+                    'data-testid': 'article-read-toolbar',
+                    role: 'toolbar',
+                    'aria-label': 'Article actions',
+                  }
+                : {})}
             >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              className="shrink-0 inline-flex items-center gap-1 rounded-md border border-action bg-transparent px-3 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-            >
-              {updateMutation.isPending ? 'Saving…' : 'Save'}
-              {!updateMutation.isPending && <ShortcutHint shortcutId="save" />}
-            </button>
-          </div>
-        </div>
-        </div>
-      )}
-      {/* Article card. 25px gap below the toolbar when editing. When not
-          editing, the card sits on its own with no toolbar above.
-          Background tint matches the AI page panes (bg-card at 50% alpha
-          over the page bg + backdrop-blur) for cross-route consistency. */}
-      <div
-        className={cn(
-          'overflow-hidden rounded-xl border border-border/40 bg-card/50 backdrop-blur-sm',
-          editing && 'mt-[25px]',
-        )}
-      >
-        {/* Breadcrumb / action strip */}
-        <div className="flex items-center justify-between gap-4 border-b border-border/25 px-5 py-2 sm:px-7">
-          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/60">
-            <FileText size={12} className="shrink-0" />
-            {page.spaceKey !== '__local__' && <span className="truncate">{page.spaceKey}</span>}
-            {/* Source badge */}
-            {page.source === 'standalone' ? (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#e7f2e8] px-2 py-0.5 text-[11px] font-medium text-[#1f5a2a] dark:bg-[#1a2a1d] dark:text-[#9ad4a8]"
-                data-testid="badge-local"
-              >
-                Local
-              </span>
-            ) : (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[11px] font-medium text-blue-500"
-                data-testid="badge-confluence"
-              >
-                Confluence
-              </span>
-            )}
-            {/* Visibility badge for standalone articles */}
-            {page.source === 'standalone' && (
-              page.visibility === 'shared' ? (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#e6effb] px-2 py-0.5 text-[11px] font-medium text-[#1c3e72] dark:bg-[#162236] dark:text-[#a4c2eb]"
-                  data-testid="badge-shared"
-                >
-                  <Globe size={10} /> Shared
-                </span>
+              {editing ? (
+                <>
+                  {tagChip}
+                  {sessionActions}
+                </>
               ) : (
-                // Private = neutral gray. Was amber, but privacy carries no AI semantic.
-                <span
-                  className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
-                  data-testid="badge-private"
-                >
-                  <Lock size={10} /> Private
-                </span>
-              )
-            )}
-            {/* Draft indicator — neutral private-tier palette (drafts read as personal/private state, not AI). */}
-            {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <span
-                className="inline-flex items-center gap-1 rounded-full bg-[#ececea] px-2 py-0.5 text-[11px] font-medium text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]"
-                data-testid="badge-draft"
-              >
-                <AlertCircle size={10} /> Draft
-              </span>
-            )}
-            <QualityScoreBadge
-              qualityScore={page.qualityScore ?? null}
-              qualityStatus={page.qualityStatus ?? null}
-              qualityCompleteness={page.qualityCompleteness}
-              qualityClarity={page.qualityClarity}
-              qualityStructure={page.qualityStructure}
-              qualityAccuracy={page.qualityAccuracy}
-              qualityReadability={page.qualityReadability}
-              qualitySummary={page.qualitySummary}
-              qualityAnalyzedAt={page.qualityAnalyzedAt}
-              qualityError={page.qualityError}
+                <>
+                  {(page.labels ?? []).length > 0 && (
+                    <div
+                      className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden"
+                      data-testid="article-tags-readonly"
+                    >
+                      {(page.labels ?? []).map((label) => (
+                        <span
+                          key={label}
+                          className="inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-background/45 px-2.5 text-xs font-medium text-muted-foreground"
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                    <PresenceAvatarStack viewers={mergedViewers} />
+                    <Button
+                      type="button"
+                      onClick={handleStartEditing}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 gap-1.5 px-2.5 text-xs text-foreground"
+                      data-testid="edit-page-btn"
+                      leftIcon={<Pencil size={13} aria-hidden />}
+                      rightIcon={<ShortcutHint shortcutId="toggle-edit" />}
+                    >
+                      <span>Edit</span>
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {editing && editorInstance && (
+            <EditorContextToolbars
+              editor={editorInstance}
+              innerClassName="px-2"
             />
-          </span>
-
-          <div className="flex shrink-0 items-center gap-1.5">
-            <PresenceAvatarStack viewers={presenceViewers} className="mr-1" />
-            {editing ? null : (
-              <>
-                {/* Publish to Confluence for standalone articles */}
-                {page.spaceKey === '__local__' && (
-                  <button
-                    onClick={() => toast.info('Publish to Confluence coming soon')}
-                    className="rounded-md px-2.5 py-1 text-xs text-blue-500 transition-colors hover:bg-blue-500/10"
-                    data-testid="publish-confluence-btn"
-                  >
-                    <Upload size={12} className="mr-1 inline" />
-                    Publish to Confluence
-                  </button>
-                )}
-                {/* Verify button */}
-                <VerifyButton pageId={id} />
-                <button
-                  onClick={() => navigate(`/graph?focus=${encodeURIComponent(id ?? '')}`)}
-                  className="rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                  data-testid="show-in-graph-btn"
-                  title="Show in knowledge graph"
-                >
-                  <GitGraph size={12} className="mr-1 inline" />
-                  Graph
-                </button>
-                <button
-                  onClick={handleStartEditing}
-                  className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                >
-                  Edit
-                  <ShortcutHint shortcutId="toggle-edit" />
-                </button>
-              </>
-            )}
-          </div>
+          )}
         </div>
-
+      </div>
+      <div
+        data-testid="article-scroll"
+        className="min-h-0 flex-1 overflow-y-auto pb-5 [scrollbar-gutter:stable]"
+      >
         {editing ? (
-          <>
-            {/* Editable title — same 1200px reading column as the body so they
-                visually align as one document. */}
-            <div className="border-b border-border/25 px-5 py-5 sm:px-10">
-              <div className="mx-auto max-w-[1200px]">
-                <input
-                  value={editTitle}
-                  onChange={(event) => setEditTitle(event.target.value)}
-                  className="w-full bg-transparent text-3xl font-bold leading-tight tracking-[-0.02em] text-foreground outline-none placeholder:text-muted-foreground/40"
-                  placeholder="Page title…"
+          <Fragment key="article-edit">
+            <div className="group mx-auto flex max-w-[1200px] items-start gap-3 px-5 pt-4 sm:px-10">
+                <PageTitleIcon
+                  icon={page.icon}
+                  pageId={page.id}
+                  editable
+                  onSelect={handleSelectIcon}
+                  onUpload={handleUploadIcon}
+                  onRemove={handleRemoveIcon}
+                  uploading={uploadIconMutation.isPending}
+                  uploadError={iconUploadError}
                 />
-              </div>
+                {/* Same column and top inset as the read-mode <h1>. Type ramp
+                    is copied verbatim so the title does not resize or re-wrap
+                    when you toggle Edit. `p-0` kills the UA textarea padding
+                    so the first line sits on the same baseline as the h1. */}
+                <AutoGrowTextarea
+                  value={editTitle}
+                  onValueChange={setEditTitle}
+                  className="mb-4 min-w-0 flex-1 p-0 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground placeholder:text-muted-foreground/40 sm:text-4xl"
+                  placeholder="Page title…"
+                  aria-label="Page title"
+                  data-testid="edit-title-input"
+                />
             </div>
 
             {/* Editor body — same 1200px reading column so the editing
                 experience matches the reader's line length exactly. */}
-            <div className="mx-auto max-w-[1200px]">
+            <div className={cn('mx-auto max-w-[1200px] px-5 sm:px-10', headerNumbering && 'header-numbering')}>
               <FeatureErrorBoundary featureName="Editor">
-                <Editor content={editHtml} onChange={() => setIsDirty(true)} draftKey={draftKey} naked onEditorReady={setEditorInstance} hideToolbar pageId={id} onSave={handleSave} vimEnabled={vimEnabled} />
+                {collabLive && collab.error ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-join-error"
+                  >
+                    {collab.error === 'forbidden'
+                      ? 'You cannot join this collaborative session.'
+                      : collab.error === 'not_found'
+                        ? 'This page is no longer available for collaborative editing.'
+                        : 'Your session expired. Sign in again to keep editing together.'}
+                  </p>
+                ) : collabLive && !collabHasSynced ? (
+                  <p
+                    role="status"
+                    className="py-8 text-sm leading-6 text-muted-foreground"
+                    data-testid="collab-connecting"
+                  >
+                    Connecting to the collaborative session…
+                  </p>
+                ) : (
+                  <Editor
+                    content={collabLive ? undefined : editHtml}
+                    onChange={() => setIsDirty(true)}
+                    draftKey={collabLive ? undefined : draftKey}
+                    naked
+                    onEditorReady={setEditorInstance}
+                    hideToolbar
+                    pageId={id}
+                    onSave={handleSave}
+                    ydoc={collabLive ? collab.ydoc ?? undefined : undefined}
+                    collabProvider={collabLive ? collab.provider : undefined}
+                    caretUser={collabLive ? caretUser : undefined}
+                    inlineCompletion={{
+                      available: inlineCompletionAvailable,
+                      enabled: settings?.inlineCompletionEnabled ?? true,
+                      delay: settings?.inlineCompletionDelay ?? 'balanced',
+                      mode: settings?.inlineCompletionMode ?? 'full',
+                      codeOnly: settings?.inlineCompletionCodeOnly ?? false,
+                      clientInferenceEnabled: settings?.clientInferenceEnabled ?? false,
+                      clientInferenceWithoutServer: settings?.clientInferenceWithoutServer ?? true,
+                      clientInferenceAdminEnabled: settings?.clientInferenceAdminEnabled ?? false,
+                      title: editTitle,
+                      spaceKey: page.spaceKey ?? undefined,
+                    }}
+                    spellcheck={{
+                      enabled: settings?.clientSpellcheckEnabled ?? false,
+                      languages: settings?.clientSpellcheckLanguages ?? ['en_US', 'de_DE'],
+                    }}
+                  />
+                )}
               </FeatureErrorBoundary>
             </div>
-          </>
+          </Fragment>
         ) : !page.bodyHtml?.trim() || page.bodyHtml.trim() === '<p></p>' ? (
           /* Empty page — no content yet */
           <div
+            key="article-empty"
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-6 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
+            <div className="mb-6 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
             <div className="flex flex-col items-center gap-4 py-12 text-center">
               <FileText size={48} className="text-muted-foreground/30" />
               <p className="text-muted-foreground">This page has no content yet.</p>
-              <button
+              <Button
                 onClick={handleStartEditing}
-                className="rounded-xl border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                variant="primary"
                 data-testid="add-content-btn"
               >
                 Add content
-              </button>
+              </Button>
             </div>
+            <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
           </div>
         ) : (
-          /* Reading view — constrained to 1200px reading column for optimal
-             line length (60–75 characters at the default font scale). */
+          /* Reading view — constrained to 1200px reading column */
           <div
+            key="article-read"
             ref={contentRef}
-            className="mx-auto max-w-[1200px] px-5 pb-16 pt-10 sm:px-10 sm:pt-12"
+            className="group mx-auto max-w-[1200px] px-5 pb-16 pt-4 sm:px-10"
             data-testid="article-content-shell"
           >
-            <h1 className="mb-4 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
-              {page.title}
-            </h1>
-
-            {page.labels.length > 0 && (
-              <div className="mb-10 flex flex-wrap items-center gap-2" data-testid="article-tags-readonly">
-                {page.labels.map((label) => (
-                  <span
-                    key={label}
-                    className="rounded-full border border-border/60 bg-background/45 px-3 py-1 text-xs font-medium text-muted-foreground"
-                  >
-                    {label}
-                  </span>
-                ))}
-              </div>
-            )}
+            <div className="mb-4 flex items-start gap-3">
+              <PageTitleIcon
+                icon={page.icon}
+                pageId={page.id}
+                editable
+                onSelect={handleSelectIcon}
+                onUpload={handleUploadIcon}
+                onRemove={handleRemoveIcon}
+                uploading={uploadIconMutation.isPending}
+                uploadError={iconUploadError}
+              />
+              <h1 className="min-w-0 flex-1 text-3xl font-bold leading-[1.2] tracking-[-0.02em] text-foreground sm:text-4xl">
+                {page.title}
+              </h1>
+            </div>
 
             {page.summaryStatus && (
               <ArticleSummary
+                // Keyed on the page so navigating between articles remounts the
+                // block; without it React reconciles by position and one page's
+                // collapse state would carry onto the next. Must not share that
+                // key with ArticleConnections — duplicate sibling keys leak the
+                // summary across Edit → Done.
+                key={`summary-${page.id}`}
                 pageId={page.id}
                 summaryHtml={page.summaryHtml}
                 summaryStatus={page.summaryStatus}
                 summaryGeneratedAt={page.summaryGeneratedAt}
                 summaryModel={page.summaryModel}
                 summaryError={page.summaryError}
+                lastModifiedAt={page.lastModifiedAt}
+                // When the article opens with a lede of its own, that lede is
+                // the author's summary and should win the first screen.
+                deferToLede={hasSubstantialLede(page.bodyHtml)}
               />
             )}
 
@@ -862,6 +1145,8 @@ export function PageViewPage() {
                 confluencePageId={page.confluenceId}
               />
             </FeatureErrorBoundary>
+
+            <ArticleConnections key={`connections-${page.id}`} pageId={page.id} />
 
             {/* Feedback widget — hidden on the author's own standalone pages */}
             {!isOwnStandalonePage && <FeedbackWidget pageId={id} />}
@@ -953,20 +1238,25 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
 
   if (submitted) {
     return (
-      <div className="mt-12 border-t border-border/25 pt-6 text-center" data-testid="feedback-widget">
+      <div className="mt-12 border-t border-border pt-6 text-center" data-testid="feedback-widget">
         <p className="text-sm text-muted-foreground">Thanks for your feedback!</p>
       </div>
     );
   }
 
   return (
-    <div className="mt-12 border-t border-border/25 pt-6" data-testid="feedback-widget">
+    <div className="mt-12 border-t border-border pt-6" data-testid="feedback-widget">
       <p className="mb-3 text-sm font-medium text-muted-foreground">Was this page helpful?</p>
+      {/* Neutral controls, deliberately. Yes/No is a survey answer, not a
+          state readout — green/red here borrowed the connected/disconnected
+          vocabulary for the least consequential control on the page (the
+          measurement badges). The glyphs differentiate; press feedback comes
+          from the shared quiet-button recipe. */}
       <div className="flex gap-2">
         <button
           onClick={() => handleFeedback(true)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-4 py-2 text-sm text-emerald-500 transition-colors hover:bg-emerald-500/20 disabled:opacity-50"
+          className="nm-button-ghost disabled:opacity-50"
           data-testid="feedback-helpful"
         >
           <ThumbsUp size={14} /> Yes
@@ -974,43 +1264,12 @@ function FeedbackWidget({ pageId }: { pageId: string | undefined }) {
         <button
           onClick={() => handleFeedback(false)}
           disabled={submitFeedback.isPending}
-          className="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-4 py-2 text-sm text-red-500 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+          className="nm-button-ghost disabled:opacity-50"
           data-testid="feedback-not-helpful"
         >
           <ThumbsDown size={14} /> No
         </button>
       </div>
     </div>
-  );
-}
-
-function VerifyButton({ pageId }: { pageId: string | undefined }) {
-  const verifyMutation = useVerifyPage();
-
-  const handleVerify = async () => {
-    if (!pageId) return;
-    try {
-      await verifyMutation.mutateAsync({ pageId: Number(pageId) });
-      toast.success('Page verified — next review reminder rescheduled');
-    } catch (err) {
-      // #357: surface the server's specific message instead of a generic
-      // toast. ApiError.message already carries the backend reply.
-      const msg = err instanceof Error && err.message ? err.message : 'Failed to verify page';
-      toast.error(msg);
-    }
-  };
-
-  return (
-    <button
-      onClick={handleVerify}
-      disabled={verifyMutation.isPending}
-      title="Mark this page as up-to-date. Resets the next review reminder based on the configured review interval."
-      aria-label="Mark page as verified"
-      className="rounded-md px-2.5 py-1 text-xs text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
-      data-testid="verify-btn"
-    >
-      <ShieldCheck size={12} className="mr-1 inline" />
-      {verifyMutation.isPending ? 'Verifying...' : 'Verify'}
-    </button>
   );
 }

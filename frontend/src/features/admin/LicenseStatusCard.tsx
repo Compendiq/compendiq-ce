@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
-import { Crown, Users, Calendar, CheckCircle2, Lock, Sparkles, ChevronRight, KeyRound, Loader2, Save, Trash2, ArrowUpRight } from 'lucide-react';
+import { Crown, Users, Calendar, CheckCircle2, Lock, Sparkles, ChevronRight, KeyRound, Save, Trash2, ArrowUpRight } from 'lucide-react';
 import { PanelHeader } from '../settings/PanelHeader';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 function useLicenseStatus() {
   return useQuery<LicenseInfoResponse>({
@@ -19,27 +20,27 @@ function useLicenseStatus() {
 const tierConfig: Record<string, { label: string; color: string; bgColor: string; borderColor: string }> = {
   community: {
     label: 'Community',
-    color: 'text-zinc-400',
-    bgColor: 'bg-zinc-500/10',
-    borderColor: 'border-zinc-500/30',
+    color: 'text-status-inactive',
+    bgColor: 'bg-status-inactive/10',
+    borderColor: 'border-status-inactive/30',
   },
   team: {
     label: 'Team',
-    color: 'text-blue-400',
-    bgColor: 'bg-blue-500/10',
-    borderColor: 'border-blue-500/30',
+    color: 'text-info',
+    bgColor: 'bg-info/10',
+    borderColor: 'border-info/30',
   },
   business: {
     label: 'Business',
-    color: 'text-purple-400',
-    bgColor: 'bg-purple-500/10',
-    borderColor: 'border-purple-500/30',
+    color: 'text-status-ai',
+    bgColor: 'bg-status-ai/10',
+    borderColor: 'border-status-ai/30',
   },
   enterprise: {
     label: 'Enterprise',
-    color: 'text-amber-400',
-    bgColor: 'bg-amber-500/10',
-    borderColor: 'border-amber-500/30',
+    color: 'text-warning',
+    bgColor: 'bg-warning/10',
+    borderColor: 'border-warning/30',
   },
 };
 
@@ -126,7 +127,6 @@ export function LicenseStatusCard() {
   return (
     <div className="space-y-6" data-testid="license-status">
       <PanelHeader
-        title="License"
         subtitle="License tier and the enterprise features each tier unlocks."
       />
 
@@ -234,7 +234,7 @@ export function LicenseStatusCard() {
         {/* Stats — also shown when an (invalid) key is stored so the admin
             can see what that key granted. */}
         {(!isCommunity || hasStoredKey) && (
-          <div className="grid grid-cols-2 gap-px border-t border-border/40 bg-border/40">
+          <div className="grid grid-cols-2 gap-px border-t border-border bg-border/40">
             <div className="bg-card p-4">
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Users size={12} />
@@ -265,7 +265,7 @@ export function LicenseStatusCard() {
             <h3 className="text-sm font-medium">License Key</h3>
           </div>
           {hasStoredKey && (
-            <div className="mb-3 rounded-md border border-border/40 bg-foreground/5 px-3 py-2 font-mono text-xs text-muted-foreground" data-testid="license-key-display">
+            <div className="mb-3 rounded-md border border-border bg-foreground/5 px-3 py-2 font-mono text-xs text-muted-foreground" data-testid="license-key-display">
               Stored: {data?.displayKey}
             </div>
           )}
@@ -282,33 +282,27 @@ export function LicenseStatusCard() {
             Paste the full license key including the signature after the dot. Stored securely in the backend database.
           </p>
           <div className="mt-3 flex items-center gap-2">
-            <button
+            <Button
               onClick={handleSave}
               disabled={!keyInput.trim() || saveMutation.isPending || clearMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={saveMutation.isPending}
+              variant="primary"
+              leftIcon={!saveMutation.isPending ? <Save size={14} /> : undefined}
               data-testid="license-key-save-btn"
             >
-              {saveMutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Save size={14} />
-              )}
               Save Key
-            </button>
+            </Button>
             {hasStoredKey && (
-              <button
+              <Button
                 onClick={() => clearMutation.mutate()}
                 disabled={saveMutation.isPending || clearMutation.isPending}
-                className="flex items-center gap-2 rounded-lg border border-border/50 bg-transparent px-4 py-2 text-sm text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                isLoading={clearMutation.isPending}
+                variant="destructive-ghost"
+                leftIcon={!clearMutation.isPending ? <Trash2 size={14} /> : undefined}
                 data-testid="license-key-clear-btn"
               >
-                {clearMutation.isPending ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Trash2 size={14} />
-                )}
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -323,7 +317,7 @@ export function LicenseStatusCard() {
           opens it; everyone else gets a one-line summary. Expanded by default
           once a paid tier is active, where the rows carry real information. */}
       <details className="group" open={!isCommunity} data-testid="feature-catalogue">
-        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           <ChevronRight
             size={14}
             aria-hidden="true"
@@ -338,7 +332,7 @@ export function LicenseStatusCard() {
             {activeFeatureCount} of {ENTERPRISE_FEATURES.length} active
           </span>
         </summary>
-        <ul role="list" className="mt-3 divide-y divide-border/40 rounded-lg border border-border/40">
+        <ul role="list" className="mt-3 divide-y divide-border/40 rounded-lg border border-border">
           {ENTERPRISE_FEATURES.map((feature) => {
             const isAvailable = data?.features?.includes(feature.key) ?? false;
             return (
@@ -352,7 +346,7 @@ export function LicenseStatusCard() {
                     className={cn(
                       'inline-flex h-7 w-7 items-center justify-center rounded-md',
                       isAvailable
-                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        ? 'bg-success/10 text-success'
                         : 'bg-foreground/[0.04] text-muted-foreground/60',
                     )}
                   >
@@ -369,7 +363,7 @@ export function LicenseStatusCard() {
                   className={cn(
                     'rounded-full px-2 py-0.5 text-[12px] font-medium uppercase tracking-wider',
                     isAvailable
-                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      ? 'bg-success/10 text-success'
                       : 'bg-foreground/[0.04] text-muted-foreground',
                   )}
                 >

@@ -63,3 +63,20 @@ describe('#951 keyboard focus reveals hover-only controls', () => {
     ).toContain('opacity: 1');
   });
 });
+
+describe('editor chrome tokens', () => {
+  it('lets strong inherit colour so bold and text colour compose', () => {
+    expect(ruleBody('.prose :where(strong)')).toMatch(/color:\s*inherit/);
+    expect(ruleBody('.prose :where(strong)')).not.toContain('var(--color-foreground)');
+  });
+
+  it('gives horizontal rules a padded hit box for the drag handle', () => {
+    expect(normalized).toContain('.tiptap hr');
+    expect(normalized).toContain('background-clip: content-box');
+  });
+
+  it('rounds table corner cells instead of collapsing the grid', () => {
+    expect(normalized).toContain('border-collapse: separate');
+    expect(normalized).toContain('border-top-left-radius: var(--radius-md, 6px)');
+  });
+});

@@ -28,6 +28,10 @@ interface QueueStub {
 }
 
 const queueStubs = new Map<string, QueueStub>();
+const workerProcessors = new Map<
+  string,
+  (job: Record<string, unknown>) => Promise<unknown>
+>();
 
 function createQueueStub(): QueueStub {
   return {
@@ -67,7 +71,12 @@ vi.mock('bullmq', () => ({
     // constructor is ignored, so mutation is the cleanest approach.
     Object.assign(this, stub);
   },
-  Worker: function (this: Record<string, unknown>) {
+  Worker: function (
+    this: Record<string, unknown>,
+    name: string,
+    processor: (job: Record<string, unknown>) => Promise<unknown>,
+  ) {
+    workerProcessors.set(name, processor);
     this.on = vi.fn();
     this.close = vi.fn().mockResolvedValue(undefined);
   },
@@ -97,6 +106,10 @@ const legacy = vi.hoisted(() => ({
   stopRetentionWorker: vi.fn(),
   runRetentionCleanup: vi.fn(),
   runReembedAllJob: vi.fn(),
+  startBackupLegacyWorker: vi.fn(),
+  stopBackupLegacyWorker: vi.fn(),
+  processBackupJob: vi.fn(),
+  runForcedBackup: vi.fn(),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
@@ -134,6 +147,13 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   runReembedAllJob: legacy.runReembedAllJob,
 }));
 
+vi.mock('./backup-worker.js', () => ({
+  startBackupLegacyWorker: legacy.startBackupLegacyWorker,
+  stopBackupLegacyWorker: legacy.stopBackupLegacyWorker,
+  processBackupJob: legacy.processBackupJob,
+  runForcedBackup: legacy.runForcedBackup,
+}));
+
 vi.mock('../db/postgres.js', () => ({
   query: vi.fn().mockResolvedValue({ rows: [] }),
 }));
@@ -152,6 +172,7 @@ describe('queue-service', () => {
     vi.clearAllMocks();
     // Fresh stubs per test — prevents state leaking between cases.
     queueStubs.clear();
+    workerProcessors.clear();
     // Reset the module-level `queues`/`workerDefs` maps inside queue-service.
     // Without this, an internal queue reference from the previous test would
     // shadow the fresh stub we set up, making vi.fn()s unreachable.
@@ -378,6 +399,39 @@ describe('queue-service', () => {
         { name: 'maintenance' },
       );
     });
+
+    it('forwards exact BullMQ job IDs to forced and scheduled backup processors', async () => {
+      legacy.runForcedBackup.mockResolvedValue('Uploaded forced.enc');
+      legacy.processBackupJob.mockResolvedValue('Uploaded scheduled.enc');
+      const { startQueueWorkers } = await import('./queue-service.js');
+      await startQueueWorkers();
+      const processBackup = workerProcessors.get('backup');
+      expect(processBackup).toBeDefined();
+
+      await processBackup!({
+        id: 'forced-job-42',
+        name: 'backup',
+        data: { force: true, triggeredBy: 'admin-1' },
+      });
+      expect(legacy.runForcedBackup).toHaveBeenCalledWith(
+        'admin-1',
+        'forced-job-42',
+      );
+
+      await processBackup!({
+        id: 'scheduled-job-7',
+        name: 'backup',
+        data: {},
+      });
+      expect(legacy.processBackupJob).toHaveBeenCalledWith('scheduled-job-7');
+
+      await processBackup!({
+        id: undefined,
+        name: 'backup',
+        data: {},
+      });
+      expect(legacy.processBackupJob).toHaveBeenLastCalledWith(null);
+    });
   });
 
   // ─── Issue #741 — legacy mode (USE_BULLMQ=false) ──────────────────────
@@ -433,6 +487,41 @@ describe('queue-service', () => {
           data: { triggeredAt: 't' },
         }),
       );
+    });
+
+    it('assigns distinct ids to concurrent jobs enqueued in the same millisecond', async () => {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const [firstId, secondId] = await Promise.all([
+        enqueueJob('no-such-queue', { request: 'first' }),
+        enqueueJob('no-such-queue', { request: 'second' }),
+      ]);
+
+      expect(firstId).not.toBe(secondId);
+    });
+
+    it('passes each generated id to the matching legacy processor invocation', async () => {
+      vi.setSystemTime(new Date('2026-08-28T12:00:00.000Z'));
+      const { startQueueWorkers, enqueueJob } = await import('./queue-service.js');
+      await startQueueWorkers();
+
+      const firstId = await enqueueJob('reembed-all', { request: 'first' });
+      await vi.waitFor(() => {
+        expect(legacy.runReembedAllJob).toHaveBeenCalledOnce();
+      });
+      const secondId = await enqueueJob('reembed-all', { request: 'second' });
+      await vi.waitFor(() => {
+        expect(legacy.runReembedAllJob).toHaveBeenCalledTimes(2);
+      });
+
+      expect(firstId).not.toBe(secondId);
+      const processedJobs = legacy.runReembedAllJob.mock.calls.map(([job]) => job);
+      expect(processedJobs).toEqual([
+        expect.objectContaining({ id: firstId, data: { request: 'first' } }),
+        expect.objectContaining({ id: secondId, data: { request: 'second' } }),
+      ]);
     });
 
     it('does not create any BullMQ queues or schedulers in legacy mode', async () => {

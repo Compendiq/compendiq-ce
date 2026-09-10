@@ -1,50 +1,23 @@
 import { test, expect } from '@playwright/test';
+import { authenticateContext, registerUser, uniqueUsername } from './helpers/auth';
 
-/**
- * SSE helper E2E test.
- *
- * This test verifies the SSE collection helper works correctly.
- * It is designed to be skipped if no running backend is available
- * (the default CI scenario). When backend + frontend are running,
- * this test can be enabled to verify real SSE streaming.
- */
-
-// Skip by default in CI -- requires running backend
-const describeOrSkip = process.env.E2E_SSE_TEST ? test.describe : test.describe.skip;
-
-describeOrSkip('SSE Helper', () => {
-  test('collects SSE events from a mock endpoint', async ({ page }) => {
-    // Navigate to the app so we have a page context
-    await page.goto('http://localhost:5273');
-
-    // Use page.evaluate to test the SSE parsing logic
-    const result = await page.evaluate(async () => {
-      // Simulate SSE data parsing (unit-level in browser)
-      const sseData = [
-        'data: {"content":"Hello"}',
-        'data: {"content":" World"}',
-        'data: {"done":true}',
-      ].join('\n');
-
-      const events: { data: unknown }[] = [];
-      const lines = sseData.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            events.push({ data: JSON.parse(line.slice(6)) });
-          } catch {
-            // skip
-          }
-        }
-      }
-
-      return events;
-    });
-
-    expect(result).toHaveLength(3);
-    expect((result[0].data as { content: string }).content).toBe('Hello');
-    expect((result[1].data as { content: string }).content).toBe(' World');
-    expect((result[2].data as { done: boolean }).done).toBe(true);
-  });
+// The LLM-facing HTTP boundary is deterministic; the application's fetch/SSE
+// parser, accumulated answer and terminal-state transition run in Chromium.
+test('chat assembles SSE chunks and releases the composer on completion', async ({ page }) => {
+  const session = await registerUser(page.request, uniqueUsername('e2e_sse'));
+  await authenticateContext(page.context(), session);
+  await page.route('**/api/ollama/models?usecase=chat', (route) => route.fulfill({
+    json: [{ name: 'e2e-stream-model' }],
+  }));
+  await page.route('**/api/llm/ask', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: 'data: {"content":"The streamed"}\n\ndata: {"content":" answer arrived."}\n\ndata: {"done":true}\n\n',
+  }));
+  await page.goto('/ai');
+  await page.getByTestId('ask-input').fill('Exercise streaming');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText('The streamed answer arrived.', { exact: true })).toBeVisible();
+  await page.getByTestId('ask-input').fill('Another question');
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
 });

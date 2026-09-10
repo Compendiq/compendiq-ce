@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '../../shared/lib/api';
 import type { ReferenceAction } from '@compendiq/contracts';
+import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 
 interface AdminSettings {
   aiGuardrailNoFabrication?: string;
@@ -78,7 +79,7 @@ export function AiSafetyTab() {
   }
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <SkeletonFormFields />;
   }
 
   return (
@@ -95,7 +96,7 @@ export function AiSafetyTab() {
             type="checkbox"
             checked={guardrailEnabled}
             onChange={(e) => setGuardrailEnabled(e.target.checked)}
-            className="rounded border-border/40"
+            className="rounded border-border"
           />
           <span className="text-sm font-medium">Enable no-fabrication guardrail</span>
         </label>
@@ -127,7 +128,7 @@ export function AiSafetyTab() {
       </div>
 
       {/* Section 2: Output Rules */}
-      <div className="border-t border-border/40 pt-6">
+      <div className="border-t border-border pt-6">
         <h3 className="text-base font-semibold">AI Output Rules</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           Post-processing rules applied to LLM output before it reaches the user.
@@ -138,7 +139,7 @@ export function AiSafetyTab() {
             type="checkbox"
             checked={stripReferences}
             onChange={(e) => setStripReferences(e.target.checked)}
-            className="rounded border-border/40"
+            className="rounded border-border"
           />
           <span className="text-sm font-medium">Enable reference section detection</span>
         </label>
@@ -171,14 +172,14 @@ export function AiSafetyTab() {
 
         {/* Swiss spelling — never use ß (#705) */}
         <label
-          className="mt-6 flex items-start gap-2 border-t border-border/40 pt-4"
+          className="mt-6 flex items-start gap-2 border-t border-border pt-4"
           data-testid="ai-output-rule-swiss-spelling-toggle"
         >
           <input
             type="checkbox"
             checked={swissSpelling}
             onChange={(e) => setSwissSpelling(e.target.checked)}
-            className="mt-1 rounded border-border/40"
+            className="mt-1 rounded border-border"
           />
           <div>
             <span className="text-sm font-medium">Swiss spelling — never use ß</span>
@@ -191,7 +192,7 @@ export function AiSafetyTab() {
       </div>
 
       {/* Save button */}
-      <div className="border-t border-border/40 pt-4">
+      <div className="border-t border-border pt-4">
         <button
           onClick={handleSave}
           disabled={!hasChanges || mutation.isPending}

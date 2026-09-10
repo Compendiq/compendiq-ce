@@ -8,6 +8,7 @@
  */
 
 import { query } from '../../../core/db/postgres.js';
+import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getUserAccessibleSpacesMemoized } from '../../../core/services/rbac-service.js';
@@ -38,6 +39,10 @@ interface AssembledContext {
   wasTruncated: boolean;
   /** List of page titles included, for reference. */
   includedPages: string[];
+  /** Injection-pattern detections from the per-page-body sanitization
+   * (#1270 review F1) — the caller folds these into its attestation trail,
+   * mirroring fetchWebSources. */
+  injectionWarnings: string[];
 }
 
 /**
@@ -159,9 +164,34 @@ export async function assembleSubPageContext(
     : htmlToMarkdown(parentHtml);
   const includedPages: string[] = [parentTitle];
   let wasTruncated = false;
+  // #1270 review F1: per-page-BODY sanitization, before the attribution
+  // markers wrap the text. Sanitizing the assembled string at the route ate
+  // the route's own `--- Page: ... ---` markers (the delimiter-injection
+  // pattern matches marker + blank line + a body starting "System ..."),
+  // breaking the attribution mechanism getMultiPagePromptSuffix instructs
+  // the model to use. Warnings surface to the caller — the route folds them
+  // into the same attestation trail as fetchWebSources' (the precedent this
+  // mirrors).
+  const injectionWarnings: string[] = [];
+  const sanitizeBody = (markdown: string): string => {
+    const { sanitized, warnings } = sanitizeLlmInput(markdown);
+    injectionWarnings.push(...warnings);
+    return sanitized;
+  };
+
+  // Titles are sanitized too (#1270 round-4 residual): they are
+  // attacker-controlled metadata interpolated into the prompt's marker
+  // lines — the one channel the per-body layering re-opened (the
+  // whole-string pass used to cover them). Same precedent as the route's
+  // external-doc title sanitization (#820).
+  const sanitizeTitle = (title: string): string => {
+    const { sanitized, warnings } = sanitizeLlmInput(title);
+    injectionWarnings.push(...warnings);
+    return sanitized;
+  };
 
   // Start with the parent page
-  let combined = `--- Page: "${parentTitle}" (Main Page) ---\n\n${parentMarkdown}`;
+  let combined = `--- Page: "${sanitizeTitle(parentTitle)}" (Main Page) ---\n\n${sanitizeBody(parentMarkdown)}`;
 
   // Fetch sub-pages
   const subPages = await fetchSubPages(userId, parentPageId);
@@ -172,6 +202,7 @@ export async function assembleSubPageContext(
       pageCount: 1,
       wasTruncated: false,
       includedPages,
+      injectionWarnings,
     };
   }
 
@@ -181,8 +212,8 @@ export async function assembleSubPageContext(
   );
 
   for (const subPage of subPages) {
-    const subMarkdown = htmlToMarkdown(subPage.bodyHtml);
-    const separator = `\n\n--- Page: "${subPage.title}" (Sub-page, depth ${subPage.depth}) ---\n\n`;
+    const subMarkdown = sanitizeBody(htmlToMarkdown(subPage.bodyHtml));
+    const separator = `\n\n--- Page: "${sanitizeTitle(subPage.title)}" (Sub-page, depth ${subPage.depth}) ---\n\n`;
     const section = separator + subMarkdown;
 
     // Check if adding this page would exceed the limit
@@ -210,6 +241,7 @@ export async function assembleSubPageContext(
     pageCount: includedPages.length,
     wasTruncated,
     includedPages,
+    injectionWarnings,
   };
 }
 

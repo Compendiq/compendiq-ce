@@ -94,6 +94,37 @@ describe.skipIf(!dbAvailable)('cache invalidation on writes', () => {
   });
 });
 
+// #1154 — a changed base_url or api_key can put a different model behind the
+// same name, so cached vision-capability verdicts must not survive an update.
+// Deletion needs no explicit call: migration 087's `ON DELETE CASCADE` on
+// `llm_model_capabilities.provider_id` already drops those rows, so this
+// asserts that reliance rather than leaving it implicit.
+describe.skipIf(!dbAvailable)('capability-row invalidation on provider writes', () => {
+  beforeEach(async () => { await truncateAllTables(); });
+
+  it('updateProvider drops that provider\'s cached capability rows', async () => {
+    const p = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision) VALUES ($1, 'm', true)`,
+      [p.id],
+    );
+    await updateProvider(p.id, { baseUrl: 'http://aa/v1' });
+    const { rows } = await query(`SELECT 1 FROM llm_model_capabilities WHERE provider_id=$1`, [p.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('deleteProvider drops that provider\'s capability rows via ON DELETE CASCADE', async () => {
+    const p = await createProvider({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true });
+    await query(
+      `INSERT INTO llm_model_capabilities (provider_id, model, vision) VALUES ($1, 'm', true)`,
+      [p.id],
+    );
+    await deleteProvider(p.id);
+    const { rows } = await query(`SELECT 1 FROM llm_model_capabilities WHERE provider_id=$1`, [p.id]);
+    expect(rows).toHaveLength(0);
+  });
+});
+
 // Issue #267 — `deleteProvider` must emit a `providerDeleted(id)` signal on the
 // cache-bus so per-provider resources (circuit breakers, undici dispatchers)
 // can be dropped. Without this, `providerBreakers` leaks entries forever.

@@ -8,6 +8,7 @@ import { useSync, useForceResyncAll } from '../../../shared/hooks/use-spaces';
 import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ErrorState } from '../../../shared/components/feedback/ErrorState';
+import { AttachmentStorageCard } from './AttachmentStorageCard';
 
 interface QualityStatusResponse {
   totalPages: number;
@@ -80,22 +81,55 @@ export function SyncTab() {
     onError: (err) => toast.error(err.message),
   });
 
+  // Attachment storage + orphan sweep (#1349) — admin-only, like the rescan
+  // triggers: a KB-wide file deletion is an operator concern, and the routes
+  // behind the card are requireAdmin, so rendering it for a non-admin would
+  // only paint two failing fetches.
+  //
+  // It is built HERE, above the two early returns, and rendered in all three
+  // branches (fixer, external round). The card has its own queries, its own
+  // failure copy and its own "a failed stats fetch is a failure, not zero
+  // bytes" contract — and `if (isError) return <ErrorState/>` sitting above it
+  // deleted the whole card on a backend outage, which is the one failure that
+  // contract was written for. The overview's fetch says nothing about the
+  // storage record's.
+  const attachmentStorageSection = isAdmin ? (
+    <section className="space-y-3" data-testid="attachment-storage-section">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.16em] text-muted-foreground">Attachment Storage</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Disk usage of the two attachment stores, and a dry-run-first sweep for files nothing
+          references any more.
+        </p>
+      </div>
+      <AttachmentStorageCard />
+    </section>
+  ) : null;
+
   // Distinguish a failed overview fetch from the loading state so a
   // 500/network error surfaces a retry instead of an infinite skeleton.
   if (isError) {
     return (
-      <ErrorState
-        title="Couldn't load sync overview"
-        description={error instanceof Error ? error.message : undefined}
-        onRetry={() => refetch()}
-        testId="sync-tab-error"
-        retryTestId="sync-tab-retry"
-      />
+      <div className="space-y-6" data-testid="sync-tab-panel">
+        <ErrorState
+          title="Couldn't load sync overview"
+          description={error instanceof Error ? error.message : undefined}
+          onRetry={() => refetch()}
+          testId="sync-tab-error"
+          retryTestId="sync-tab-retry"
+        />
+        {attachmentStorageSection}
+      </div>
     );
   }
 
   if (isLoading || !data) {
-    return <SkeletonFormFields />;
+    return (
+      <div className="space-y-6" data-testid="sync-tab-panel">
+        <SkeletonFormFields />
+        {attachmentStorageSection}
+      </div>
+    );
   }
 
   // Force re-sync every Confluence-sourced page (UPDATE path — bypasses the
@@ -110,7 +144,37 @@ export function SyncTab() {
   // actual succeeded count, so the dialog text deliberately doesn't promise
   // a precise number.
   const totalPages = data.totals.totalPages;
+  /**
+   * #1532's recipe on this panel's third action control (external review
+   * round). Rendered as `aria-disabled` plus the refusing early return below,
+   * never as a native `disabled`: `onConfirm` calls `runForceResyncAll()`
+   * synchronously, so `forceResyncMutation.isPending` lands in the very commit
+   * that closes the `ConfirmDialog`. As a native `disabled` that commit takes
+   * the trigger out of the focusable set BEFORE Radix dispatches
+   * close-auto-focus, so #1531's restore aims `focus()` at a control that
+   * cannot take it and the keyboard restarts the ~28-stop panel walk
+   * (WCAG 2.4.3) — measured in a real browser on `a820e9b7`, checklist items
+   * 3 and 11.
+   *
+   * Scope, stated exactly (review r1): the five controls this PR converts —
+   * this trigger plus `attachment-sweep-dry-run`, `attachment-sweep-delete`,
+   * `image-index-process` and `image-index-rescan` — carry the same shape and
+   * behave identically. That is NOT panel-wide. `sync-overview-sync-now`
+   * below still holds a native `disabled` over the very same
+   * `data.sync.status === 'syncing'` window, so a keyboard operator standing
+   * on it when a sync starts is still blurred to `<body>`: #1532's defect on
+   * a control outside this PR's scope, recorded as an open question rather
+   * than converted here. Probe at this head, overview forced to `syncing`:
+   * force `{native:false, aria:"true", keepsFocus:true}`,
+   * syncNow `{native:true, aria:null, keepsFocus:false}`.
+   */
+  const forceResyncDisabled =
+    forceResyncMutation.isPending || data.sync.status === 'syncing' || totalPages === 0;
   const handleForceResyncAll = () => {
+    // The refusal `aria-disabled` cannot perform — it blocks no events. A
+    // second press during a running re-sync would otherwise re-open the
+    // dialog and queue a second KB-wide re-fetch.
+    if (forceResyncDisabled) return;
     if (totalPages > 5000) {
       toast.error(
         `Selection exceeds server cap (${totalPages} > 5000). Re-sync per space instead.`,
@@ -196,12 +260,19 @@ export function SyncTab() {
           {isAdmin && (
             <button
               onClick={handleForceResyncAll}
-              disabled={
-                forceResyncMutation.isPending ||
-                data.sync.status === 'syncing' ||
-                totalPages === 0
-              }
-              className="nm-button-ghost"
+              aria-disabled={forceResyncDisabled || undefined}
+              // The busy palette the removed `:disabled` rule used to paint,
+              // keyed off `aria-disabled` instead — the same class set the
+              // four converted card buttons carry, so all five converted
+              // controls dim, refuse and hover identically (the adjacent
+              // `sync-overview-sync-now` is NOT one of them; see the scope
+              // note above `forceResyncDisabled`).
+              // `active:` as well as `hover:`, because
+              // `nm-button-ghost` paints a pressed background on `:active` and
+              // a keyboard hold on the focused button matches `:active` with
+              // no `:hover`: without the pin the press the handler refuses
+              // would still paint as accepted.
+              className="nm-button-ghost aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
               title="Re-fetch every Confluence page even when its version hasn't changed"
               data-testid="sync-overview-force-resync-all"
             >
@@ -250,7 +321,7 @@ export function SyncTab() {
           {data.spaces.map((space) => (
             <div
               key={space.spaceKey}
-              className="rounded-xl border border-border/40 bg-foreground/[0.03] p-4"
+              className="rounded-xl border border-border bg-foreground/[0.03] p-4"
               data-testid={`sync-overview-space-${space.spaceKey}`}
             >
               <div className="flex items-start justify-between gap-3">
@@ -297,7 +368,7 @@ export function SyncTab() {
         </div>
 
         {data.issues.length === 0 ? (
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-300" data-testid="sync-overview-empty">
+          <div className="rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success" data-testid="sync-overview-empty">
             No missing images or draw.io exports were detected in the selected spaces.
           </div>
         ) : (
@@ -305,7 +376,7 @@ export function SyncTab() {
             {data.issues.map((issue) => (
               <div
                 key={issue.pageId}
-                className="rounded-xl border border-red-500/30 bg-red-500/10 p-4"
+                className="rounded-xl border border-destructive/30 bg-destructive/10 p-4"
                 data-testid={`sync-overview-issue-${issue.pageId}`}
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -313,7 +384,7 @@ export function SyncTab() {
                     <div className="font-medium">{issue.pageTitle}</div>
                     <div className="text-sm text-muted-foreground">{issue.spaceKey}</div>
                   </div>
-                  <div className="text-sm text-red-200">
+                  <div className="text-sm text-destructive">
                     {issue.missingImages} image missing, {issue.missingDrawio} draw.io missing
                   </div>
                 </div>
@@ -322,7 +393,7 @@ export function SyncTab() {
                   {issue.missingFiles.map((filename) => (
                     <span
                       key={filename}
-                      className="rounded-full border border-red-400/30 bg-black/10 px-2.5 py-1 text-xs text-red-100"
+                      className="rounded-full border border-destructive/30 bg-black/10 px-2.5 py-1 text-xs text-destructive"
                     >
                       {filename}
                     </span>
@@ -333,6 +404,8 @@ export function SyncTab() {
           </div>
         )}
       </section>
+
+      {attachmentStorageSection}
 
       {/* Quality Analysis Worker */}
       <section className="space-y-3" data-testid="quality-worker-section">
@@ -486,22 +559,43 @@ export function SyncTab() {
 // ---------------------------------------------------------------------------
 
 const syncBadgeClasses: Record<'idle' | 'syncing' | 'embedding' | 'error', string> = {
-  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-  embedding: 'border-sky-500/30 bg-sky-500/10 text-sky-300',
-  error: 'border-red-500/30 bg-red-500/10 text-red-300',
+  idle: 'border-success/30 bg-success/10 text-success',
+  syncing: 'border-warning/30 bg-warning/10 text-warning',
+  // The one hueless pill, and the only one that breaks the /30 + /10 + ink
+  // shape its siblings share. `--color-status-embedding` used to be Steel and
+  // is body ink now — it had been byte-identical to `--color-primary`, so
+  // ambient pipeline telemetry wore the colour reserved for "you can act on
+  // this". The alphas therefore had to be re-measured against INK (WCAG on an
+  // sRGB-space, byte-rounded composite, the way a browser blends):
+  //
+  //   fill at 10%  1.225:1 (Paper) / 1.278:1 (Graphite) against Pane — keeps
+  //                the siblings' alpha, because at ink strength this is
+  //                already the measured neutral-chip tint.
+  //   border       `border-border`, not the token: a border tint composites
+  //                ON TOP of that fill, so even an 8% ink border reaches
+  //                1.439:1 / 1.592:1 at the pill's outer edge, past
+  //                `--color-border` (1.414 / 1.264) in both themes — 26% past
+  //                it in Graphite, where a status pill would then out-weigh
+  //                every structural hairline on the page. The quiet hairline
+  //                token IS that ceiling, so it is what the pill wears.
+  //
+  // Hue is no longer a channel here; `syncLabel` above is. The four statuses
+  // read "Idle" / "Syncing <space>" / "Embedding" / "Error", so nothing is
+  // carried by colour alone.
+  embedding: 'border-border bg-status-embedding/10 text-status-embedding',
+  error: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
 
 const spaceBadgeClasses: Record<SyncOverviewSpace['status'], string> = {
-  healthy: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
-  degraded: 'border-red-500/30 bg-red-500/10 text-red-300',
-  syncing: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
-  not_synced: 'border-slate-500/30 bg-slate-500/10 text-slate-300',
+  healthy: 'border-success/30 bg-success/10 text-success',
+  degraded: 'border-destructive/30 bg-destructive/10 text-destructive',
+  syncing: 'border-warning/30 bg-warning/10 text-warning',
+  not_synced: 'border-status-inactive/30 bg-status-inactive/10 text-status-inactive',
 };
 
 const workerBadgeClasses = {
-  processing: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
-  idle: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  processing: 'border-status-ai/30 bg-status-ai/10 text-status-ai',
+  idle: 'border-success/30 bg-success/10 text-success',
 };
 
 function formatTimestamp(value?: string | null): string {
@@ -523,7 +617,7 @@ function MetricCard({
   testId?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border/40 bg-foreground/[0.03] p-4" data-testid={testId}>
+    <div className="rounded-xl border border-border bg-foreground/[0.03] p-4" data-testid={testId}>
       <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
       <div className="mt-2 text-2xl font-semibold">{value}</div>
       <div className="mt-1 text-sm text-muted-foreground">{hint}</div>

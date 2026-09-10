@@ -106,7 +106,7 @@ Restart Compendiq. Confluence calls skip cert validation. The setup wizard + UI 
 
 ### Per-LLM-provider
 
-Each row in `llm_providers` has a `verify_ssl BOOLEAN` column. In Settings → LLM, un-tick **Verify SSL** on the provider you want to skip. This is scoped to that row only — the rest of the providers still verify.
+Each row in `llm_providers` has a `verify_ssl BOOLEAN` column. In Settings → AI → AI Models → LLM providers, un-tick **Verify SSL** on the provider you want to skip. This is scoped to that row only — the rest of the providers still verify.
 
 The deprecated `LLM_VERIFY_SSL=false` env var does the same thing but applies to every provider globally; use only during bootstrap / first-boot seeding.
 
@@ -123,7 +123,7 @@ Turn verification back on as soon as the CA bundle lands.
 |---|---|---|
 | `NODE_EXTRA_CA_CERTS` | _(unset)_ | Absolute path to a PEM file. Node adds every cert in the file to its trust store on process start. |
 | `CONFLUENCE_VERIFY_SSL` | `true` | When `false`, Compendiq's Confluence client skips TLS verification entirely. |
-| `LLM_VERIFY_SSL` | `true` | **Deprecated bootstrap fallback.** Seed-only: consulted once on fresh install to populate `llm_providers.verify_ssl`. After that, configure per-provider in Settings → LLM. |
+| `LLM_VERIFY_SSL` | `true` | **Deprecated bootstrap fallback.** Seed-only: consulted once on fresh install to populate `llm_providers.verify_ssl`. After that, configure per-provider in Settings → AI → AI Models. |
 
 ## Troubleshooting
 

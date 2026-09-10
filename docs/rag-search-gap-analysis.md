@@ -41,7 +41,9 @@ guide does that Compendiq does not, and where adopting it would help.
   and keyword results by rank — the guide's central idea is present.
   (`rag-service.ts:137`)
 - **Dense vector search done right.** pgvector cosine (`<=>`), HNSW
-  (`m=16, ef_construction=200`), tunable `hnsw.ef_search` (`RAG_EF_SEARCH=100`).
+  (`m=16, ef_construction=200`), tunable `hnsw.ef_search`
+  (`admin_settings.rag_ef_search`, default 100 — `RAG_EF_SEARCH=100` before
+  #1285 moved it onto the Retrieval panel).
   Distance→similarity conversion is correct. (`rag-service.ts:42`)
 - **A lexical/keyword leg exists.** Postgres FTS over a GIN‑indexed `tsvector`
   (title + body_text), trigger‑maintained with a runtime‑configurable language

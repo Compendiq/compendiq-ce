@@ -40,11 +40,16 @@ export function buildLlmCacheKey(
   systemPrompt: string,
   userContent: string,
   provider?: string,
-  options?: { thinking?: boolean },
+  options?: { thinking?: boolean; imageHash?: string },
 ): string {
   const providerSuffix = provider ? `provider:${provider}` : '';
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  return KEY_PREFIX + hashLlmInputs(model, systemPrompt, userContent, providerSuffix, thinkingSuffix);
+  // #1154: without this, two different images sharing a prompt collide and
+  // the second caller is served the first image's answer.
+  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  return KEY_PREFIX + hashLlmInputs(
+    model, systemPrompt, userContent, providerSuffix, thinkingSuffix, imageSuffix,
+  );
 }
 
 /**
@@ -71,6 +76,58 @@ export function buildRagCacheKey(
     searchWeb?: boolean;
     provider?: string;
     thinking?: boolean;
+    /** #1270 review m6: the assembly budget shapes the prompt, so answers
+     * are budget-specific — killing assembly must not replay 30 KB-context
+     * answers for the cache TTL. */
+    contextChars?: number;
+    /** #1270 review F9: the realized outcome — a soft-failed (chunk-level)
+     * answer must not occupy the fully-assembled key for the TTL. */
+    assembledPages?: number;
+    /** #1273 review M5: pins change the prompt's head; a soft-failed pin
+     * must not serve (or be served) the pinned answer for the TTL — and
+     * sorted docIds alone cannot see a MOVED pin. */
+    pinnedCount?: number;
+    /**
+     * #1112: deep search retrieves three phrasings and fuses them, so the
+     * same question yields a different ORDER of sources and — once the
+     * paraphrases reach pages the original never did — a different SET. The
+     * doc-id component sees the second and not the first, and it sees
+     * neither when expansion soft-fails and later recovers: a deep ask served
+     * from a normal ask's key (or the reverse) is the two modes serving each
+     * other's answer for the whole TTL. The flag separates the namespaces
+     * outright.
+     */
+    deepSearch?: boolean;
+    imageHash?: string;
+    /**
+     * #1115 P4: the RETRIEVED images the request actually carried, as
+     * `retrievedImagesCacheComponent` renders them (count + a hash of the
+     * page/store/key/size tuples), or `undefined` when none were sent.
+     *
+     * The doc-id component above says which pages ground the answer and
+     * nothing about whether the model could SEE them, so without this a
+     * vision-capable model's image-augmented answer and a text-only model's
+     * answer to the same question over the same pages would share a key and
+     * serve each other for the TTL — as would the same model's answers either
+     * side of an admin moving `rag_answer_max_images`, or of a picture being
+     * deleted from one of those pages.
+     *
+     * `undefined` is the no-images spelling because the absence of images is
+     * not a zero-length set of them — it keeps "no pictures were attached"
+     * unable to collide with some future "0 pictures, deliberately", and
+     * keeps the suffix out of the derivation's own reading below. It does
+     * NOT preserve existing keys, and review r1 corrected the claim that it
+     * did: `hashLlmInputs` writes a `\x00` separator per component, so
+     * passing a 15th component at all moves every pre-P4 digest whether or
+     * not it is empty. Every deployment cold-starts its answer cache once,
+     * for one `LLM_CACHE_TTL`.
+     *
+     * Distinct from `imageHash`, which is the USER's own attachment. The two
+     * are different inputs and both belong in the key.
+     */
+    retrievedImages?: string;
+    /** Sanitized/truncated attached document text; folded into the final hash. */
+    referenceText?: string;
   },
 ): string {
   const sortedIds = [...docIds].sort().join(',');
@@ -86,7 +143,14 @@ export function buildRagCacheKey(
   // in a separate cache namespace so a prior thinking-off answer can't be
   // replayed when the user toggles Think on (and vice versa).
   const thinkingSuffix = options?.thinking ? 'think:1' : '';
-  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix);
+  const contextSuffix = options?.contextChars !== undefined ? `ctx:${options.contextChars}` : '';
+  const assembledSuffix = options?.assembledPages !== undefined ? `asm:${options.assembledPages}` : '';
+  const pinnedSuffix = options?.pinnedCount !== undefined ? `pin:${options.pinnedCount}` : '';
+  const deepSuffix = options?.deepSearch ? 'deep:1' : '';
+  const imageSuffix = options?.imageHash ? `img:${options.imageHash}` : '';
+  const retrievedImagesSuffix = options?.retrievedImages ? `rimg:${options.retrievedImages}` : '';
+  const referenceSuffix = options?.referenceText ? `ref:${options.referenceText}` : '';
+  return KEY_PREFIX + hashLlmInputs(model, question, sortedIds, subPageSuffix, externalSuffix, webSuffix, providerSuffix, thinkingSuffix, contextSuffix, assembledSuffix, pinnedSuffix, deepSuffix, imageSuffix, retrievedImagesSuffix, referenceSuffix);
 }
 
 export class LlmCache {

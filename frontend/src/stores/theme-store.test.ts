@@ -7,6 +7,14 @@ import {
   THEME_CATEGORIES,
   isLightTheme,
   applyThemeToDocument,
+  applyTypographyToDocument,
+  FONT_FAMILY_IDS,
+  FONT_FAMILY_OPTIONS,
+  FONT_SCOPES,
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_FONT_SCOPE,
+  validateFontFamily,
+  validateFontScope,
   validateThemeId,
   DEFAULT_DARK_THEME,
   DEFAULT_LIGHT_THEME,
@@ -15,16 +23,36 @@ import {
 
 describe('theme-store', () => {
   beforeEach(() => {
-    useThemeStore.setState({ theme: 'slate-steel' });
+    useThemeStore.setState({
+      theme: 'graphite',
+      preference: 'system',
+      fontFamily: DEFAULT_FONT_FAMILY,
+      fontScope: DEFAULT_FONT_SCOPE,
+      dyslexiaSpacing: false,
+    });
+    localStorage.removeItem('compendiq-theme');
   });
 
-  it('has slate-steel as the default theme', () => {
-    expect(useThemeStore.getState().theme).toBe('slate-steel');
+  it('has graphite as the default theme', () => {
+    expect(useThemeStore.getState().theme).toBe('graphite');
   });
 
   it('sets a new theme', () => {
-    useThemeStore.getState().setTheme('frost-steel');
-    expect(useThemeStore.getState().theme).toBe('frost-steel');
+    useThemeStore.getState().setTheme('paper');
+    expect(useThemeStore.getState().theme).toBe('paper');
+  });
+
+  it('defines the supported typography options and scopes', () => {
+    expect(FONT_FAMILY_IDS).toEqual(['inter', 'opendyslexic-alta', 'atkinson', 'system', 'serif']);
+    expect(FONT_FAMILY_OPTIONS.map((option) => option.id)).toEqual([...FONT_FAMILY_IDS]);
+    expect(FONT_SCOPES).toEqual(['application', 'reading-pane']);
+  });
+
+  it('falls back to safe typography defaults for unknown persisted values', () => {
+    expect(validateFontFamily('not-a-font')).toBe(DEFAULT_FONT_FAMILY);
+    expect(validateFontScope('not-a-scope')).toBe(DEFAULT_FONT_SCOPE);
+    expect(validateFontFamily('atkinson')).toBe('atkinson');
+    expect(validateFontScope('reading-pane')).toBe('reading-pane');
   });
 
   it('defines exactly 2 themes (1 dark + 1 light)', () => {
@@ -77,70 +105,93 @@ describe('theme-store', () => {
   });
 
   it('exports correct default theme constants', () => {
-    expect(DEFAULT_DARK_THEME).toBe('slate-steel');
-    expect(DEFAULT_LIGHT_THEME).toBe('frost-steel');
+    expect(DEFAULT_DARK_THEME).toBe('graphite');
+    expect(DEFAULT_LIGHT_THEME).toBe('paper');
   });
 
   it('sets light theme', () => {
-    useThemeStore.getState().setTheme('frost-steel');
-    expect(useThemeStore.getState().theme).toBe('frost-steel');
+    useThemeStore.getState().setTheme('paper');
+    expect(useThemeStore.getState().theme).toBe('paper');
   });
 
   it('sets dark theme', () => {
-    useThemeStore.getState().setTheme('slate-steel');
-    expect(useThemeStore.getState().theme).toBe('slate-steel');
+    useThemeStore.getState().setTheme('graphite');
+    expect(useThemeStore.getState().theme).toBe('graphite');
   });
 
   describe('isLightTheme', () => {
-    it('returns true for frost-steel', () => {
-      expect(isLightTheme('frost-steel')).toBe(true);
+    it('returns true for paper', () => {
+      expect(isLightTheme('paper')).toBe(true);
     });
 
-    it('returns false for slate-steel', () => {
-      expect(isLightTheme('slate-steel')).toBe(false);
+    it('returns false for graphite', () => {
+      expect(isLightTheme('graphite')).toBe(false);
     });
   });
 
   describe('applyThemeToDocument', () => {
     it('sets data-theme attribute on document root', () => {
-      applyThemeToDocument('frost-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+      applyThemeToDocument('paper');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
     });
 
-    it('sets data-theme-type to dark for slate-steel', () => {
-      applyThemeToDocument('slate-steel');
+    it('sets data-theme-type to dark for graphite', () => {
+      applyThemeToDocument('graphite');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('sets data-theme-type to light for frost-steel', () => {
-      applyThemeToDocument('frost-steel');
+    it('sets data-theme-type to light for paper', () => {
+      applyThemeToDocument('paper');
       expect(document.documentElement.dataset.themeType).toBe('light');
     });
 
     it('adds the dark class when applying a dark theme', () => {
       document.documentElement.classList.remove('dark');
-      applyThemeToDocument('slate-steel');
+      applyThemeToDocument('graphite');
       expect(document.documentElement.classList.contains('dark')).toBe(true);
     });
 
     it('removes the dark class when applying a light theme', () => {
       document.documentElement.classList.add('dark');
-      applyThemeToDocument('frost-steel');
+      applyThemeToDocument('paper');
       expect(document.documentElement.classList.contains('dark')).toBe(false);
     });
   });
 
   describe('setTheme applies to document', () => {
     it('updates data-theme when setTheme is called (dark)', () => {
-      useThemeStore.getState().setTheme('slate-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('slate-steel');
+      useThemeStore.getState().setTheme('graphite');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('graphite');
       expect(document.documentElement.dataset.themeType).toBe('dark');
     });
 
-    it('updates data-theme-type to light when switching to frost-steel', () => {
-      useThemeStore.getState().setTheme('frost-steel');
-      expect(document.documentElement.getAttribute('data-theme')).toBe('frost-steel');
+    it('updates data-theme-type to light when switching to paper', () => {
+      useThemeStore.getState().setTheme('paper');
+      expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
       expect(document.documentElement.dataset.themeType).toBe('light');
+    });
+  });
+
+  describe('typography preferences apply to document', () => {
+    it('sets the root attributes used by CSS', () => {
+      applyTypographyToDocument('opendyslexic-alta', 'reading-pane', true);
+
+      expect(document.documentElement.dataset.font).toBe('opendyslexic-alta');
+      expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+      expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
+    });
+
+    it('updates typography immediately when preferences change', () => {
+      useThemeStore.getState().setFontFamily('serif');
+      useThemeStore.getState().setFontScope('reading-pane');
+      useThemeStore.getState().setDyslexiaSpacing(true);
+
+      expect(useThemeStore.getState().fontFamily).toBe('serif');
+      expect(useThemeStore.getState().fontScope).toBe('reading-pane');
+      expect(useThemeStore.getState().dyslexiaSpacing).toBe(true);
+      expect(document.documentElement.dataset.font).toBe('serif');
+      expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+      expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
     });
   });
 
@@ -166,13 +217,13 @@ describe('theme-store', () => {
 
     it('accepts the two current theme IDs as valid', () => {
       const validIds = [...THEME_IDS] as string[];
-      expect(validIds).toContain('slate-steel');
-      expect(validIds).toContain('frost-steel');
+      expect(validIds).toContain('graphite');
+      expect(validIds).toContain('paper');
     });
 
     it('passes through current theme IDs unchanged', () => {
-      expect(validateThemeId('slate-steel')).toBe('slate-steel');
-      expect(validateThemeId('frost-steel')).toBe('frost-steel');
+      expect(validateThemeId('graphite')).toBe('graphite');
+      expect(validateThemeId('paper')).toBe('paper');
     });
 
     it('falls back retired light themes to the light default (no silent dark flip)', () => {
@@ -198,13 +249,105 @@ describe('theme-store', () => {
     // Users hold these in localStorage, so each must land on the replacement
     // of the SAME brightness — a light-theme user must not be flipped to dark.
     it('migrates the retired honey pair to its steel replacement', () => {
-      expect(validateThemeId('honey-linen')).toBe('frost-steel');
-      expect(validateThemeId('graphite-honey')).toBe('slate-steel');
+      expect(validateThemeId('honey-linen')).toBe('paper');
+      expect(validateThemeId('graphite-honey')).toBe('graphite');
     });
 
     it('lands a migrated honey theme on the matching brightness', () => {
       expect(isLightTheme(validateThemeId('honey-linen'))).toBe(true);
       expect(isLightTheme(validateThemeId('graphite-honey'))).toBe(false);
+    });
+  });
+});
+
+/**
+ * Rehydration is the entire point of persisting a preference: a user who picks
+ * dark must still be in dark after a reload.
+ *
+ * These drive the real persist middleware against real localStorage rather than
+ * the in-memory store, because the failure mode is specifically that the store
+ * comes up with its initial state and writes that over the stored one — which
+ * an in-memory `setState` test cannot see.
+ */
+describe('theme preference survives a reload', () => {
+  it('preserves a legacy fixed palette through hydration without overriding an explicit preference', async () => {
+    localStorage.setItem('compendiq-theme', JSON.stringify({
+      state: { theme: 'honey-linen' }, version: 0,
+    }));
+    await useThemeStore.persist.rehydrate();
+    expect(useThemeStore.getState().preference).toBe('light');
+    expect(document.documentElement.dataset.theme).toBe('paper');
+
+    localStorage.setItem('compendiq-theme', JSON.stringify({
+      state: { theme: 'honey-linen', preference: 'dark' }, version: 0,
+    }));
+    await useThemeStore.persist.rehydrate();
+    expect(useThemeStore.getState().preference).toBe('dark');
+    expect(document.documentElement.dataset.theme).toBe('graphite');
+  });
+
+  it('rehydrates an explicitly stored dark preference', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'dark' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('dark');
+    expect(useThemeStore.getState().theme).toBe(DEFAULT_DARK_THEME);
+    expect(JSON.parse(localStorage.getItem('compendiq-theme')!).state.preference).toBe('dark');
+  });
+
+  it('rehydrates an explicitly stored light preference', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'light' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('light');
+    expect(useThemeStore.getState().theme).toBe(DEFAULT_LIGHT_THEME);
+  });
+
+  it('never freezes the resolved palette into storage', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({ state: { preference: 'system' }, version: 0 }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().preference).toBe('system');
+    // A stored palette would win over the live OS reading on the next boot,
+    // which is how "follow the OS" silently stops following.
+    expect(JSON.parse(localStorage.getItem('compendiq-theme')!).state.theme).toBeUndefined();
+  });
+
+  it('rehydrates and persists typography preferences', async () => {
+    localStorage.setItem(
+      'compendiq-theme',
+      JSON.stringify({
+        state: { fontFamily: 'opendyslexic-alta', fontScope: 'reading-pane', dyslexiaSpacing: true },
+        version: 0,
+      }),
+    );
+
+    await useThemeStore.persist.rehydrate();
+
+    expect(useThemeStore.getState().fontFamily).toBe('opendyslexic-alta');
+    expect(useThemeStore.getState().fontScope).toBe('reading-pane');
+    expect(useThemeStore.getState().dyslexiaSpacing).toBe(true);
+    expect(document.documentElement.dataset.font).toBe('opendyslexic-alta');
+    expect(document.documentElement.dataset.fontScope).toBe('reading-pane');
+    expect(document.documentElement.dataset.dyslexiaSpacing).toBe('true');
+
+    const stored = JSON.parse(localStorage.getItem('compendiq-theme')!);
+    expect(stored.state).toMatchObject({
+      fontFamily: 'opendyslexic-alta',
+      fontScope: 'reading-pane',
+      dyslexiaSpacing: true,
     });
   });
 });

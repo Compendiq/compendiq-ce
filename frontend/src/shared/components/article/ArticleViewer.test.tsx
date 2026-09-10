@@ -1,6 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, waitFor, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { handleTableCellTripleClick } from './table-cell-selection';
+
+// Records every options object passed to `useEditor`, so a test can assert what
+// ArticleViewer wires into its editor without needing a reference to the view.
+// Delegates to the real hook, so nothing else in this file changes behaviour.
+const capturedEditorOptions: { editorProps?: Record<string, unknown> }[] = [];
+vi.mock('@tiptap/react', async () => {
+  const actual = await vi.importActual<typeof import('@tiptap/react')>('@tiptap/react');
+  return {
+    ...actual,
+    useEditor: (options: Parameters<typeof actual.useEditor>[0], deps?: unknown[]) => {
+      capturedEditorOptions.push(options as { editorProps?: Record<string, unknown> });
+      return actual.useEditor(options, deps as never);
+    },
+  };
+});
 
 // Mock mermaid (must be before component import)
 const mockMermaidRender = vi.fn().mockResolvedValue({ svg: '<svg data-testid="mermaid-svg">diagram</svg>' });
@@ -43,6 +59,18 @@ import { ArticleViewer } from './ArticleViewer';
 describe('ArticleViewer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedEditorOptions.length = 0;
+  });
+
+  it('preserves semantic insertion and deletion marks in formatted version diffs', async () => {
+    const { container } = render(
+      <ArticleViewer content="<p>Use the <del>old</del><ins>new</ins> service.</p>" />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('del')).toHaveTextContent('old');
+      expect(container.querySelector('ins')).toHaveTextContent('new');
+    });
   });
 
   it('rewrites protected attachment images to authenticated blob URLs', async () => {
@@ -233,6 +261,16 @@ describe('ArticleViewer', () => {
     expect(container.querySelectorAll('td')).toHaveLength(2);
   });
 
+  it('preserves the saved full-width table attribute', async () => {
+    const html = '<table data-layout="full-width"><tbody><tr><td>Wide</td></tr></tbody></table>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('table[data-layout="full-width"]')).toBeTruthy();
+    });
+  });
+
   it('renders multi-row tables with header and multiple data rows', async () => {
     const html = [
       '<table>',
@@ -418,15 +456,14 @@ describe('ArticleViewer', () => {
 
     // The ConfluenceChildren TipTap node now renders a React NodeView
     // (ChildrenMacroView) instead of static placeholder text.
-    // Without a page context the component shows "Child Pages" header
-    // and "No child pages" empty state.
+    // The route mock supplies a page id and an empty children payload.
     await waitFor(() => {
       expect(container.querySelector('[data-testid="children-macro-view"]')).toBeTruthy();
     });
 
     const view = container.querySelector('[data-testid="children-macro-view"]')!;
-    expect(view.textContent).toContain('Child Pages');
-    expect(view.textContent).toContain('No child pages');
+    expect(view.textContent).toContain('This page has no children');
+    expect(view.textContent).not.toContain('Children of this page');
   });
 
   // Regression for #876 (defect 2): the ConfluenceAttachments node must be
@@ -451,8 +488,10 @@ describe('ArticleViewer', () => {
     expect(container.textContent).not.toContain('[Attachments]');
   });
 
-  it('renders collapsible details/summary sections', async () => {
-    const html = '<details><summary>Click to expand</summary><p>Hidden content</p></details>';
+  it('lets readers expand and collapse a UI Expand section', async () => {
+    const html =
+      '<details data-macro-name="ui-expand"><summary>Section title</summary>' +
+      '<p>Hidden content</p></details>';
 
     const { container } = render(<ArticleViewer content={html} />);
 
@@ -460,7 +499,52 @@ describe('ArticleViewer', () => {
       expect(container.querySelector('details')).toBeTruthy();
     });
 
-    expect(container.querySelector('summary')?.textContent).toBe('Click to expand');
+    const details = container.querySelector('details')!;
+    const summary = container.querySelector('summary')!;
+    expect(summary.textContent).toBe('Section title');
+    expect(details).not.toHaveAttribute('open');
+
+    fireEvent.click(summary);
+    expect(details).toHaveAttribute('open');
+
+    fireEvent.click(summary);
+    expect(details).not.toHaveAttribute('open');
+  });
+
+  it('lets readers collapse a UI Expand section that is open by default', async () => {
+    const html =
+      '<details data-macro-name="ui-expand" open><summary>Section title</summary>' +
+      '<p>Visible content</p></details>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('details')).toHaveAttribute('open');
+    });
+
+    fireEvent.click(container.querySelector('summary')!);
+    expect(container.querySelector('details')).not.toHaveAttribute('open');
+  });
+
+  // #1227: an untitled section stores no title, so the read view has to supply
+  // the macro's own default label — that is what makes the page look the same
+  // in Compendiq as it does in Confluence. The label is a decoration, so it is
+  // present on the rendered element and absent from the content.
+  it('labels an untitled expand section without storing a title', async () => {
+    const html = '<details data-macro-name="expand"><summary></summary><p>Hidden content</p></details>';
+
+    const { container } = render(<ArticleViewer content={html} />);
+
+    await waitFor(() => {
+      expect(container.querySelector('summary')).toBeTruthy();
+    });
+
+    const summary = container.querySelector('summary')!;
+    expect(summary.getAttribute('data-expand-placeholder')).toBe('Click here to expand...');
+    expect(summary.textContent).toBe('');
+    // The body stayed inside the section — a summary-less <details> would have
+    // ejected it (see article-extensions.test.ts).
+    expect(container.querySelector('details')?.textContent).toContain('Hidden content');
   });
 
   it('adds copy buttons to code blocks', async () => {
@@ -554,19 +638,29 @@ describe('ArticleViewer', () => {
     expect(pre.getAttribute('data-title')).toBeNull();
   });
 
-  it('applies prose-invert class only in dark theme', async () => {
-    const html = '<p>Dark theme content</p>';
-
-    const { container } = render(<ArticleViewer content={html} />);
-
-    await waitFor(() => {
-      const editorContent = container.querySelector('.article-viewer');
-      expect(editorContent).toBeTruthy();
+  // Prose ink is owned by the CSS cascade (`[data-theme-type] .prose` in
+  // index.css), not by a JSX conditional, so the viewer carries `prose` and
+  // never `prose-invert` — whichever theme is mounted.
+  describe('prose surface', () => {
+    afterEach(() => {
+      delete document.documentElement.dataset.themeType;
     });
 
-    const editorContent = container.querySelector('.article-viewer')!;
-    // useIsLightTheme is mocked to return false (dark theme), so prose-invert should be present
-    expect(editorContent.classList.contains('prose-invert')).toBe(true);
+    it.each(['light', 'dark'])('renders prose without prose-invert in the %s theme', async (themeType) => {
+      document.documentElement.dataset.themeType = themeType;
+      const html = '<p>Themed content</p>';
+
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const editorContent = container.querySelector('.article-viewer');
+        expect(editorContent).toBeTruthy();
+      });
+
+      const editorContent = container.querySelector('.article-viewer')!;
+      expect(editorContent.classList.contains('prose')).toBe(true);
+      expect(editorContent.classList.contains('prose-invert')).toBe(false);
+    });
   });
 
   it('sets role="document" and aria-readonly="true" on the TipTap editor element', async () => {
@@ -781,6 +875,75 @@ describe('ArticleViewer', () => {
       const articleViewer = container.querySelector('.article-viewer') as HTMLElement;
       const articleViewerStyle = window.getComputedStyle(articleViewer);
       expect(articleViewerStyle.overflowX).not.toBe('hidden');
+    });
+  });
+
+  // #1135 wires the same triple-click handler into ArticleViewer, which builds
+  // its own `useEditor` with its own `editorProps` and so inherits nothing from
+  // `Editor`. Editor.test.tsx cannot cover this: it renders `Editor` with
+  // `editable={false}`, which is a different component.
+  //
+  // Asserted on the options ArticleViewer hands to `useEditor` rather than by
+  // synthesising a click: ProseMirror resolves a real triple-click through
+  // `posAtCoords`, which needs layout jsdom does not do. The handler's own
+  // behaviour is covered in Editor.test.tsx; what is unproven without this is
+  // that this component installs it at all.
+  describe('table cell triple-click (#1135)', () => {
+    it('installs the whole-cell handler in its own editorProps', async () => {
+      capturedEditorOptions.length = 0;
+
+      render(<ArticleViewer content="<table><tbody><tr><td><p>a</p><p>b</p></td></tr></tbody></table>" />);
+
+      await waitFor(() => {
+        expect(capturedEditorOptions.length).toBeGreaterThan(0);
+      });
+
+      // One capture per render, so assert on identity rather than on a count.
+      const handlers = capturedEditorOptions.map((o) => o?.editorProps?.handleTripleClick);
+      expect(handlers.length).toBeGreaterThan(0);
+      expect(new Set(handlers)).toEqual(new Set([handleTableCellTripleClick]));
+    });
+  });
+
+  describe('task list items in read mode', () => {
+    it('renders task list items with interactive checkboxes', async () => {
+      const html = '<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox"><span></span></label><div><p>Read task</p></div></li></ul>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        expect(container.querySelector('ul[data-type="taskList"]')).toBeTruthy();
+      });
+
+      const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+      expect(checkbox).toBeTruthy();
+      expect(checkbox.checked).toBe(false);
+
+      fireEvent.click(checkbox);
+      expect(checkbox.checked).toBe(true);
+    });
+  });
+
+  describe('text color and highlight in read mode', () => {
+    it('renders text color span in view mode', async () => {
+      const html = '<p><span style="color: rgb(239, 68, 68)">Colored text</span></p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const span = container.querySelector('span[style*="color"]');
+        expect(span).toBeTruthy();
+        expect(span?.textContent).toBe('Colored text');
+      });
+    });
+
+    it('renders text highlight mark in view mode', async () => {
+      const html = '<p><mark data-color="#fef08a" style="background-color: #fef08a">Highlighted text</mark></p>';
+      const { container } = render(<ArticleViewer content={html} />);
+
+      await waitFor(() => {
+        const mark = container.querySelector('mark');
+        expect(mark).toBeTruthy();
+        expect(mark?.textContent).toBe('Highlighted text');
+      });
     });
   });
 });

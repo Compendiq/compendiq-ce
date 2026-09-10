@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { confluenceToHtml } from '../../core/services/content-converter.js';
-import { getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings } from '../../domains/llm/services/embedding-service.js';
+import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings, getAdminChunkSettings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
@@ -168,6 +168,8 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
       // Phase 2: Embed each page, reporting progress
       let completed = 0;
       let errors = 0;
+      // Resolved once per tree, mirroring processDirtyPages' per-batch read.
+      const chunkOpts = await getAdminChunkSettings();
 
       for (const page of allPages) {
         if (controller.signal.aborted) break;
@@ -204,7 +206,10 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
             const bodyHtml = confluenceToHtml(storageXhtml, page.id, resolvedSpaceKey);
             const resolvedBodyHtml = cachedRow.rows[0].body_html ?? bodyHtml;
 
-            await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml);
+            // Same admin chunk options the dirty-page worker passes — without
+            // them the two paths chunk the same page differently, and the
+            // admin setting looks intermittently broken (#1265 verification).
+            await embedPage(userId, cachedRow.rows[0].id, page.title, resolvedSpaceKey, resolvedBodyHtml, chunkOpts);
           }
 
           completed++;
@@ -252,6 +257,12 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
     preHandler: fastify.requireAdmin,
     config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
   }, async (_request, _reply) => {
+    // Checked BEFORE firing: reEmbedAll() carries the same guard, but this
+    // caller is fire-and-forget, so its 409 would land in a log line while the
+    // admin read "Re-embedding started" — the one door of the four that never
+    // actually refused to the admin's face (review r9).
+    await assertNoShadowMigration();
+
     reEmbedAll().catch((err) => {
       logger.error({ err }, 'Re-embed all failed');
     });

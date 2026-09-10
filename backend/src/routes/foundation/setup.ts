@@ -6,10 +6,22 @@
  * initial admin account, and testing LLM connectivity before persisting config.
  */
 
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
+
+function isCookieSecure(request: FastifyRequest): boolean {
+  if (process.env.COOKIE_SECURE !== undefined) {
+    return process.env.COOKIE_SECURE === 'true';
+  }
+  const proto = request.headers['x-forwarded-proto'];
+  if (typeof proto === 'string') {
+    return proto.split(',')[0]?.trim() === 'https';
+  }
+  return process.env.NODE_ENV === 'production' && request.protocol === 'https';
+}
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
+import { LLM_HEALTH_TIMEOUT_MS } from './health.js';
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -99,7 +111,7 @@ export async function setupRoutes(fastify: FastifyInstance) {
         const health = await Promise.race([
           providerCheckHealth(cfg),
           new Promise<{ connected: false }>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), 5000),
+            setTimeout(() => reject(new Error('timeout')), LLM_HEALTH_TIMEOUT_MS),
           ),
         ]);
         llmConnected = health.connected;
@@ -167,8 +179,8 @@ export async function setupRoutes(fastify: FastifyInstance) {
       reply
         .setCookie(REFRESH_COOKIE, refreshToken, {
           httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
+          secure: isCookieSecure(request),
+          sameSite: 'lax',
           path: '/api/auth',
           maxAge: REFRESH_MAX_AGE,
         })

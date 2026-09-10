@@ -7,6 +7,7 @@ import { LlmCache, buildLlmCacheKey } from '../../domains/llm/services/llm-cache
 import { GenerateDiagramRequestSchema } from '@compendiq/contracts';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { estimateTokens } from '../../domains/llm/services/llm-audit-hook.js';
 import {
   checkCacheWithLock,
   sendCachedSSE,
@@ -37,7 +38,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
 
     try {
     const body = GenerateDiagramRequestSchema.parse(request.body);
-    const { content, model, diagramType = 'flowchart' } = body;
+    const { content, model, diagramType = 'flowchart', instruction } = body;
 
     if (content.length > MAX_INPUT_LENGTH) {
       throw fastify.httpErrors.badRequest(`Content too large (max ${MAX_INPUT_LENGTH} characters)`);
@@ -51,6 +52,27 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
       await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, { warnings, route: '/llm/generate-diagram' }, request);
     }
 
+    // Optional composer guidance is user content, not an extension of the
+    // system prompt. Strip markup, sanitize it independently so audit events
+    // identify the originating field, and frame it beside the article below.
+    let sanitizedInstruction: string | undefined;
+    if (instruction) {
+      const stripped = instruction.replace(/<[^>]*>/g, '').slice(0, 10_000);
+      const { sanitized: cleanInstruction, warnings: instructionWarnings } = sanitizeLlmInput(stripped);
+      sanitizedInstruction = cleanInstruction;
+      if (instructionWarnings.length > 0) {
+        await logAuditEvent(request.userId, 'PROMPT_INJECTION_DETECTED', 'llm', undefined, {
+          warnings: instructionWarnings,
+          route: '/llm/generate-diagram',
+          field: 'instruction',
+        }, request);
+      }
+    }
+
+    const userContent = sanitizedInstruction
+      ? `${sanitized}\n\n---\n\n## User-provided diagram instructions\n${sanitizedInstruction}`
+      : sanitized;
+
     const systemPrompt = getSystemPrompt(`generate_diagram_${diagramType}` as SystemPromptKey);
 
     // Resolve the `chat` use-case up-front so the cache key includes the
@@ -62,7 +84,7 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
     );
 
     // Check LLM cache with stampede protection
-    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, sanitized, chatConfig.providerId, { thinking: body.thinking });
+    const cacheKey = buildLlmCacheKey(resolvedModel, systemPrompt, userContent, chatConfig.providerId, { thinking: body.thinking });
     const { cached, lockAcquired } = await checkCacheWithLock(llmCache, cacheKey);
     if (cached) {
       sendCachedSSE(reply, cached.content);
@@ -72,11 +94,19 @@ export async function llmDiagramRoutes(fastify: FastifyInstance) {
     try {
       const diagramMessages = [
         { role: 'system' as const, content: systemPrompt },
-        { role: 'user' as const, content: sanitized },
+        { role: 'user' as const, content: userContent },
       ];
-      const generator = streamChat(chatConfig, resolvedModel, diagramMessages, undefined, { thinking: body.thinking });
-
-      await streamSSE(request, reply, generator, undefined, { llmCache, cacheKey });
+      await streamSSE(request, reply,
+        (signal) => streamChat(chatConfig, resolvedModel, diagramMessages, signal, { thinking: body.thinking }),
+        undefined, {
+          llmCache, cacheKey,
+          audit: {
+            userId: request.userId, action: 'diagram', model: resolvedModel, provider: chatConfig.providerId,
+            inputTokens: estimateTokens(diagramMessages.map((m) => m.content).join('')),
+            inputMessages: diagramMessages.map((m) => ({ role: m.role, contentLength: m.content.length })),
+            retrievedChunkIds: [],
+          },
+        });
     } finally {
       if (lockAcquired) await llmCache.releaseLock(cacheKey);
     }

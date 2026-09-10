@@ -47,6 +47,7 @@ import type {
 import { fetchJson } from '../../shared/lib/fetch-json';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 import { cn } from '../../shared/lib/cn';
+import { Button } from '../../shared/components/Button';
 
 // ── Local fetch helper ─────────────────────────────────────────────────────
 // Mirrors the WebhooksTab / IpAllowlistTab pattern — we bypass `apiFetch`
@@ -209,12 +210,12 @@ function BulkUserImportModalInner({
         />
         <Dialog.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-border/60 bg-card/90 shadow-2xl backdrop-blur-xl outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
+            'fixed left-1/2 top-1/2 z-50 w-full max-w-3xl -translate-x-1/2 -translate-y-1/2 nm-card-elevated outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 max-h-[85vh] overflow-y-auto',
           )}
           aria-describedby={undefined}
           data-testid="bulk-import-modal"
         >
-          <div className="flex items-center justify-between border-b border-border/50 px-5 py-4">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <Dialog.Title className="flex items-center gap-2 text-base font-semibold">
               <Users size={16} className="text-action" />
               Bulk import users
@@ -222,7 +223,7 @@ function BulkUserImportModalInner({
             <Dialog.Close asChild>
               <button
                 type="button"
-                className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                className="nm-icon-button"
                 aria-label="Close"
                 data-testid="bulk-import-close"
               >
@@ -238,7 +239,7 @@ function BulkUserImportModalInner({
 
             {step.kind === 'previewing' && (
               <div
-                className="flex items-center gap-3 rounded-lg border border-border/40 bg-foreground/5 p-4 text-sm"
+                className="flex items-center gap-3 rounded-lg border border-border bg-foreground/5 p-4 text-sm"
                 data-testid="bulk-import-previewing"
               >
                 <Loader2 size={16} className="animate-spin" />
@@ -298,7 +299,7 @@ function PickStep({ onFileChosen }: PickStepProps) {
 
       <label
         htmlFor="bulk-import-file"
-        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border/60 bg-foreground/[0.02] p-8 text-sm transition-colors hover:border-primary/60 hover:bg-foreground/5"
+        className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-foreground/[0.02] p-8 text-sm transition-colors hover:border-primary/60 hover:bg-foreground/5"
         data-testid="bulk-import-dropzone"
       >
         <Upload size={20} className="text-muted-foreground" />
@@ -353,21 +354,23 @@ function PreviewStep({
           className="flex flex-wrap gap-2 text-xs"
           data-testid="bulk-import-summary"
         >
-          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 font-medium text-emerald-700 dark:text-emerald-300">
+          <span className="rounded-full bg-success/15 px-2 py-0.5 font-medium text-success">
             {summary.valid} valid
           </span>
           {summary.invalid > 0 && (
-            <span className="rounded-full bg-red-500/15 px-2 py-0.5 font-medium text-red-700 dark:text-red-300">
+            <span className="rounded-full bg-destructive/15 px-2 py-0.5 font-medium text-destructive">
               {summary.invalid} invalid
             </span>
           )}
           {summary.wouldUpdate > 0 && (
-            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+            <span className="rounded-full bg-warning/15 px-2 py-0.5 font-medium text-warning">
               {summary.wouldUpdate} will update
             </span>
           )}
           {summary.wouldCreate > 0 && (
-            <span className="rounded-full bg-sky-500/15 px-2 py-0.5 font-medium text-sky-700 dark:text-sky-300">
+            // Neutral: "new" is the expected outcome of an import, not a
+            // notice — the coloured chips are the ones that need attention.
+            <span className="rounded-full bg-foreground/10 px-2 py-0.5 font-medium text-muted-foreground">
               {summary.wouldCreate} new
             </span>
           )}
@@ -379,7 +382,7 @@ function PreviewStep({
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-border/40">
+      <div className="overflow-hidden rounded-lg border border-border">
         <table className="w-full text-xs">
           <thead className="bg-foreground/5 text-left uppercase tracking-wide text-muted-foreground">
             <tr>
@@ -398,9 +401,9 @@ function PreviewStep({
                 <tr
                   key={idx}
                   className={cn(
-                    'border-t border-border/40',
-                    invalid && 'bg-red-500/5',
-                    !invalid && dup && 'bg-amber-500/5',
+                    'border-t border-border',
+                    invalid && 'bg-destructive/5',
+                    !invalid && dup && 'bg-warning/5',
                   )}
                   data-testid={`bulk-import-row-${idx}`}
                 >
@@ -413,7 +416,7 @@ function PreviewStep({
                   <td className="p-2">
                     {invalid ? (
                       <span
-                        className="flex items-center gap-1 text-red-700 dark:text-red-300"
+                        className="flex items-center gap-1 text-destructive"
                         data-testid={`bulk-import-row-${idx}-invalid`}
                       >
                         <AlertTriangle size={12} />
@@ -421,13 +424,13 @@ function PreviewStep({
                       </span>
                     ) : dup ? (
                       <span
-                        className="text-amber-700 dark:text-amber-300"
+                        className="text-warning"
                         data-testid={`bulk-import-row-${idx}-dup`}
                       >
                         existing {r.existing}
                       </span>
                     ) : (
-                      <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                      <span className="flex items-center gap-1 text-success">
                         <CheckCircle2 size={12} />
                         ready
                       </span>
@@ -441,7 +444,7 @@ function PreviewStep({
       </div>
 
       <fieldset
-        className="space-y-2 rounded-lg border border-border/40 p-3"
+        className="space-y-2 rounded-lg border border-border p-3"
         data-testid="bulk-import-mode"
       >
         <legend className="px-1 text-xs font-medium text-muted-foreground">
@@ -483,26 +486,24 @@ function PreviewStep({
         </label>
       </fieldset>
 
-      <div className="flex justify-end gap-2 border-t border-border/40 pt-4">
-        <button
-          type="button"
+      <div className="flex justify-end gap-2 border-t border-border pt-4">
+        <Button
           onClick={onBack}
-          className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+          variant="secondary"
           data-testid="bulk-import-back"
           disabled={applying}
         >
           Back
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
           onClick={onSubmit}
           disabled={applying || summary.valid === 0}
-          className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={applying}
+          variant="primary"
           data-testid="bulk-import-submit"
         >
-          {applying && <Loader2 size={14} className="animate-spin" />}
           Import {summary.valid} user{summary.valid === 1 ? '' : 's'}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -535,22 +536,21 @@ function PreviewFailedStep({
         className={cn(
           'flex items-start gap-3 rounded-lg border p-4 text-sm',
           isMissingOverlay
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
-            : 'border-red-500/40 bg-red-500/10 text-red-100',
+            ? 'border-warning/40 bg-warning/10 text-warning'
+            : 'border-destructive/40 bg-destructive/10 text-destructive',
         )}
       >
         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
         <div>{message}</div>
       </div>
       <div className="flex justify-end">
-        <button
-          type="button"
+        <Button
           onClick={onBack}
-          className="rounded-md border border-border/60 px-4 py-2 text-sm hover:bg-foreground/5"
+          variant="secondary"
           data-testid="bulk-import-error-back"
         >
           Back
-        </button>
+        </Button>
       </div>
     </div>
   );

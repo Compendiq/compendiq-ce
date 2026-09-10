@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import compress from '@fastify/compress';
+import websocket from '@fastify/websocket';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
@@ -16,16 +17,20 @@ import redisPlugin from './core/plugins/redis.js';
 import { healthRoutes } from './routes/foundation/health.js';
 import { healthApiRoutes, healthApiAdminRoutes } from './routes/foundation/health-api.js';
 import { authRoutes } from './routes/foundation/auth.js';
+import { loginPageConfigRoutes } from './routes/foundation/login-page-config.js';
 import { settingsRoutes } from './routes/foundation/settings.js';
 import { adminRoutes } from './routes/foundation/admin.js';
 import { adminEmbeddingLocksRoutes } from './routes/foundation/admin-embedding-locks.js';
 import { adminIpAllowlistRoutes } from './routes/foundation/admin-ip-allowlist.js';
+import { adminBackupRoutes } from './routes/foundation/admin-backup.js';
+import { backupDownloadRoutes } from './routes/foundation/backup-download.js';
 import { rbacRoutes } from './routes/foundation/rbac.js';
 import { adminUsersRoutes } from './routes/foundation/admin-users.js';
 // Confluence routes
 import { spacesRoutes } from './routes/confluence/spaces.js';
 import { syncRoutes } from './routes/confluence/sync.js';
 import { attachmentRoutes } from './routes/confluence/attachments.js';
+import { attachmentSweepRoutes } from './routes/confluence/attachments-sweep.js';
 // LLM routes
 import { llmImproveRoutes } from './routes/llm/llm-improve.js';
 import { llmGenerateRoutes } from './routes/llm/llm-generate.js';
@@ -41,14 +46,24 @@ import { llmProviderRoutes } from './routes/llm/llm-providers.js';
 import { llmUsecaseRoutes } from './routes/llm/llm-usecases.js';
 import { llmEmbeddingReembedRoutes } from './routes/llm/llm-embedding-reembed.js';
 import { llmEmbeddingProbeRoutes } from './routes/llm/llm-embedding-probe.js';
-import { llmPdfRoutes } from './routes/llm/llm-pdf.js';
+import { llmEmbeddingShadowRoutes } from './routes/llm/llm-embedding-shadow.js';
+import { llmImageIndexRoutes } from './routes/llm/llm-image-index.js';
+import { llmInlineCompletionRoutes } from './routes/llm/llm-inline-completion.js';
+import { llmClientAssetRoutes } from './routes/llm/llm-client-assets.js';
+import { llmClientAssetAdminRoutes } from './routes/llm/llm-client-assets-admin.js';
+import { extractDocumentRoutes } from './routes/llm/extract-document.js';
+import { prepareImageRoutes } from './routes/llm/prepare-image.js';
 // Knowledge routes
 import { pagesCrudRoutes } from './routes/knowledge/pages-crud.js';
+import { pagesIconRoutes } from './routes/knowledge/pages-icon.js';
+import { pagesRelocateRoutes } from './routes/knowledge/pages-relocate.js';
 import { pagesPresenceRoutes } from './routes/knowledge/pages-presence.js';
+import { pagesCollabRoutes } from './routes/knowledge/pages-collab.js';
 import { pagesBulkProgressRoutes } from './routes/knowledge/pages-bulk-progress.js';
 import { pagesVersionRoutes } from './routes/knowledge/pages-versions.js';
 import { pagesTagRoutes } from './routes/knowledge/pages-tags.js';
 import { pagesEmbeddingRoutes } from './routes/knowledge/pages-embeddings.js';
+import { pagesConnectionRoutes } from './routes/knowledge/pages-connections.js';
 import { pagesDuplicateRoutes } from './routes/knowledge/pages-duplicates.js';
 import { pinnedPagesRoutes } from './routes/knowledge/pinned-pages.js';
 import { analyticsRoutes } from './routes/knowledge/analytics.js';
@@ -64,6 +79,7 @@ import { setupRoutes } from './routes/foundation/setup.js';
 import { searchRoutes } from './routes/knowledge/search.js';
 import { localSpacesRoutes } from './routes/knowledge/local-spaces.js';
 import { localAttachmentsRoutes } from './routes/knowledge/local-attachments.js';
+import { notionRoutes } from './routes/knowledge/notion.js';
 
 import { ZodError } from 'zod';
 import { trackError } from './core/services/error-tracker.js';
@@ -75,6 +91,8 @@ import { bootstrapSsrfAllowlist } from './domains/confluence/services/sync-servi
 import { registerKnowledgeRelationshipProducers } from './domains/knowledge/services/relationship-producers.js';
 import { initSsrfAllowlistBus } from './core/services/ssrf-allowlist-bus.js';
 import { initPresenceBus } from './core/services/presence-service.js';
+import { initCollabBus } from './core/services/collab-room-service.js';
+import { initCollabFlag } from './core/services/collab-flag.js';
 import { initCacheBus, close as closeCacheBus } from './core/services/redis-cache-bus.js';
 import { initUserSecurityCacheBus } from './core/services/user-security-cache.js';
 import { initProviderCacheBus } from './domains/llm/services/cache-bus.js';
@@ -90,7 +108,7 @@ import { initLlmQueueClusterCoordination } from './domains/llm/services/llm-queu
 import { setLlmAuditHook } from './domains/llm/services/llm-audit-hook.js';
 import { defaultLlmAuditWriter } from './domains/llm/services/llm-audit-default-writer.js';
 import { ENTERPRISE_FEATURES } from './core/enterprise/features.js';
-import type { OidcConfig } from '@compendiq/contracts';
+import { COLLAB_WS_PROTOCOL, type OidcConfig } from '@compendiq/contracts';
 
 export async function buildApp() {
   // v0.4 epic §3.4 — replace the previous blanket `trustProxy: true` with a
@@ -165,6 +183,15 @@ export async function buildApp() {
   // floor is a low-cost protective measure even after a fresh image rebuild
   // hypothetically restores the upstream behaviour.
   await app.register(compress, { threshold: 4096 });
+  await app.register(websocket, {
+    options: {
+      maxPayload: 10 * 1024 * 1024,
+      handleProtocols: (protocols: Set<string> | string[]) => {
+        const set = protocols instanceof Set ? protocols : new Set(protocols);
+        return set.has(COLLAB_WS_PROTOCOL) ? COLLAB_WS_PROTOCOL : false;
+      },
+    },
+  });
   await app.register(multipart, {
     limits: {
       fileSize: 20 * 1024 * 1024, // 20 MB
@@ -246,6 +273,11 @@ export async function buildApp() {
     await teardownPresenceBus();
   });
 
+  const teardownCollabBus = await initCollabBus(app.redis);
+  app.addHook('onClose', async () => {
+    await teardownCollabBus();
+  });
+
   // ── Generic cache-bus (v0.4 epic §3.1) ───────────────────────────
   // Cluster-wide invalidation channel used by cached admin_settings
   // (see makeCachedSetting) and future hot-reload consumers. Fails soft
@@ -254,6 +286,8 @@ export async function buildApp() {
   app.addHook('onClose', async () => {
     await closeCacheBus();
   });
+
+  await initCollabFlag();
 
   // ── User security cache bus (#737) ───────────────────────────────
   // Subscribes the per-user liveness/role cache (checked by `authenticate`
@@ -327,9 +361,9 @@ export async function buildApp() {
 
   // ── Knowledge Relationship Producers (issue #359) ───────────────
   // Register cross-domain edge producers (e.g. explicit_link from
-  // body_html anchors) into the embedding-service registry so they run
-  // inside `computePageRelationships()`'s transaction. Idempotent: safe
-  // to call once per process.
+  // body_html anchors) into the shared deterministic engine, used by
+  // authorized Connections/focused graph reads and embedding recomputation.
+  // Idempotent: safe to call once per process.
   registerKnowledgeRelationshipProducers();
 
   // Known Fastify HTTP error names that are safe to expose to clients.
@@ -390,10 +424,17 @@ export async function buildApp() {
       });
     }
 
+    const code = (error as { code?: unknown }).code;
+    const publicCodes = new Set(['collab_session_active', 'confluence_modified']);
+    const remoteVersion = (error as { remoteVersion?: unknown }).remoteVersion;
+    const localVersion = (error as { localVersion?: unknown }).localVersion;
     reply.status(statusCode).send({
       error: safeErrorName(statusCode, error.name),
       message: statusCode === 500 ? 'Internal Server Error' : error.message,
       statusCode,
+      ...(typeof code === 'string' && publicCodes.has(code) ? { code } : {}),
+      ...(code === 'confluence_modified' && typeof remoteVersion === 'number' ? { remoteVersion } : {}),
+      ...(code === 'confluence_modified' && typeof localVersion === 'number' ? { localVersion } : {}),
     });
   });
 
@@ -402,10 +443,13 @@ export async function buildApp() {
   await app.register(healthApiRoutes, { prefix: '/api' });
   await app.register(healthApiAdminRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(loginPageConfigRoutes, { prefix: '/api' });
   await app.register(settingsRoutes, { prefix: '/api' });
   await app.register(adminRoutes, { prefix: '/api' });
   await app.register(adminEmbeddingLocksRoutes, { prefix: '/api' });
   await app.register(adminIpAllowlistRoutes, { prefix: '/api' });
+  await app.register(adminBackupRoutes, { prefix: '/api' });
+  await app.register(backupDownloadRoutes, { prefix: '/api' });
   await app.register(rbacRoutes, { prefix: '/api' });
   await app.register(adminUsersRoutes, { prefix: '/api' });
 
@@ -449,6 +493,7 @@ export async function buildApp() {
   await app.register(spacesRoutes, { prefix: '/api' });
   await app.register(syncRoutes, { prefix: '/api' });
   await app.register(attachmentRoutes, { prefix: '/api' });
+  await app.register(attachmentSweepRoutes, { prefix: '/api' });
 
   // LLM routes
   await app.register(llmImproveRoutes, { prefix: '/api' });
@@ -465,15 +510,25 @@ export async function buildApp() {
   await app.register(llmUsecaseRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingReembedRoutes, { prefix: '/api' });
   await app.register(llmEmbeddingProbeRoutes, { prefix: '/api' });
-  await app.register(llmPdfRoutes, { prefix: '/api' });
+  await app.register(llmEmbeddingShadowRoutes, { prefix: '/api' });
+  await app.register(llmImageIndexRoutes, { prefix: '/api' });
+  await app.register(llmInlineCompletionRoutes, { prefix: '/api' });
+  await app.register(llmClientAssetRoutes, { prefix: '/api' });
+  await app.register(llmClientAssetAdminRoutes, { prefix: '/api' });
+  await app.register(extractDocumentRoutes, { prefix: '/api' });
+  await app.register(prepareImageRoutes, { prefix: '/api' });
 
   // Knowledge routes
   await app.register(pagesCrudRoutes, { prefix: '/api' });
+  await app.register(pagesIconRoutes, { prefix: '/api' });
+  await app.register(pagesRelocateRoutes, { prefix: '/api' });
   await app.register(pagesPresenceRoutes, { prefix: '/api' });
+  await app.register(pagesCollabRoutes, { prefix: '/api' });
   await app.register(pagesBulkProgressRoutes, { prefix: '/api' });
   await app.register(pagesVersionRoutes, { prefix: '/api' });
   await app.register(pagesTagRoutes, { prefix: '/api' });
   await app.register(pagesEmbeddingRoutes, { prefix: '/api' });
+  await app.register(pagesConnectionRoutes, { prefix: '/api' });
   await app.register(pagesDuplicateRoutes, { prefix: '/api' });
   await app.register(pinnedPagesRoutes, { prefix: '/api' });
   await app.register(analyticsRoutes, { prefix: '/api' });
@@ -489,6 +544,7 @@ export async function buildApp() {
   await app.register(searchRoutes, { prefix: '/api' });
   await app.register(localSpacesRoutes, { prefix: '/api' });
   await app.register(localAttachmentsRoutes, { prefix: '/api' });
+  await app.register(notionRoutes, { prefix: '/api' });
 
   return app;
 }

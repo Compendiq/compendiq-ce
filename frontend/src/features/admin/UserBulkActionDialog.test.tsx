@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { UserBulkActionDialog } from './UserBulkActionDialog';
 import { useAuthStore } from '../../stores/auth-store';
@@ -36,7 +37,10 @@ function createWrapper() {
   });
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        {/* Router context for the dialog's <Link> into Settings → Access Control. */}
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
     );
   };
 }
@@ -225,6 +229,15 @@ describe('UserBulkActionDialog', () => {
     fireEvent.change(screen.getByTestId('bulk-action-kind'), {
       target: { value: 'add-to-group' },
     });
+
+    // The group-picker hint links into the live Roles sub-tab as a router
+    // <Link> — the old copy was an <a href="/settings/security/rbac"> that
+    // 404'd (settings-wayfinding.test.ts guards the path; this pins the
+    // rendered element).
+    expect(
+      screen.getByRole('link', { name: /Settings → Access Control → Roles/ }),
+    ).toHaveAttribute('href', '/settings/governance/access?sub=rbac');
+
     fireEvent.change(screen.getByTestId('bulk-action-group'), {
       target: { value: 'group-eng' },
     });
@@ -238,6 +251,33 @@ describe('UserBulkActionDialog', () => {
       type: 'add-to-group',
       groupId: 'group-eng',
     });
+  });
+
+  it('hides the Roles hint when advanced_rbac is not licensed (bulk ops on)', () => {
+    // A licence can grant bulk_user_operations without advanced_rbac. The
+    // Roles sub-tab is then invisible, and SubTabs falls back to the first
+    // visible tab for an unknown ?sub= — the link would silently land the
+    // admin back where they came from. Same gate as UsersAdminPage's pointer.
+    mockHasFeature = (f) => f === 'bulk_user_operations';
+
+    render(
+      <UserBulkActionDialog
+        open={true}
+        onClose={() => {}}
+        selectedUserIds={SAMPLE_IDS}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.change(screen.getByTestId('bulk-action-kind'), {
+      target: { value: 'add-to-group' },
+    });
+
+    // The group input itself stays — only the dead pointer goes.
+    expect(screen.getByTestId('bulk-action-group')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: /Settings → Access Control → Roles/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('shows inline error on 400 and surfaces the message', async () => {

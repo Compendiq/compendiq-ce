@@ -30,6 +30,9 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   embedPage: (...args: unknown[]) => mockEmbedPage(...args),
   isProcessingUser: vi.fn().mockReturnValue(false),
   resetFailedEmbeddings: vi.fn().mockResolvedValue(0),
+  // The route resolves the admin chunk options once per tree (#1265) so both
+  // embed paths chunk identically.
+  getAdminChunkSettings: vi.fn(async () => ({ chunkSize: 500, chunkOverlap: 50 })),
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({

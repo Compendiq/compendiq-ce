@@ -4,6 +4,10 @@ import { m, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, X, Wifi, WifiOff, Server } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { useAuthStore } from '../../../stores/auth-store';
+import {
+  AI_MODELS_SETTINGS_LABEL,
+  AI_MODELS_SETTINGS_PATH,
+} from '../../lib/routes';
 
 interface HealthStatus {
   status: string;
@@ -43,7 +47,7 @@ export function ServiceStatus() {
           label: 'API server is unreachable',
           icon: WifiOff,
           colorClass: 'text-destructive',
-          bgClass: 'bg-destructive/15 border-destructive/30',
+          bgClass: 'border-destructive/40 bg-destructive/10',
         }]);
         return;
       }
@@ -73,8 +77,14 @@ export function ServiceStatus() {
               label,
               icon: Server,
               colorClass: 'text-warning',
-              bgClass: 'bg-warning/15 border-warning/30',
-              link: { to: '/settings/ai/models', label: 'Check LLM settings' },
+              bgClass: 'border-warning/40 bg-warning/10',
+              // Label and path come from routes.ts so this operator-facing
+              // CTA cannot drift from the rail again — it used to say "Check
+              // LLM settings", naming a panel no rail item carries.
+              link: {
+                to: AI_MODELS_SETTINGS_PATH,
+                label: `Check ${AI_MODELS_SETTINGS_LABEL} settings`,
+              },
             });
           }
           if (data.services?.redis === false) {
@@ -84,7 +94,7 @@ export function ServiceStatus() {
               label: 'Redis is unavailable',
               icon: AlertTriangle,
               colorClass: 'text-warning',
-              bgClass: 'bg-warning/15 border-warning/30',
+              bgClass: 'border-warning/40 bg-warning/10',
             });
           }
         }
@@ -105,7 +115,7 @@ export function ServiceStatus() {
         label: 'Network connection lost',
         icon: Wifi,
         colorClass: 'text-destructive',
-        bgClass: 'bg-destructive/15 border-destructive/30',
+        bgClass: 'border-destructive/40 bg-destructive/10',
       }]);
     }
   }, []);
@@ -138,20 +148,30 @@ export function ServiceStatus() {
               animate={{ opacity: 1, height: 'auto', marginBottom: 8 }}
               exit={{ opacity: 0, height: 0, marginBottom: 0 }}
               transition={{ duration: 0.2 }}
+              // One signal, not three. The icon, the label AND the link were all
+              // amber, so a persistent operator condition rendered as the
+              // loudest thing on every screen at 14px against 13px everywhere
+              // else. Now the STATUS COLOUR marks the condition (icon + border)
+              // and nothing else: the label is ordinary foreground text, and the
+              // action takes the accent, because Steel is what "operable" means
+              // in this system. Three colours, three distinct jobs.
+              //
+              // `flex-wrap` + `gap-y`: at 390px the label and its link used to
+              // collide with the dismiss button.
               className={cn(
-                'flex items-center justify-between rounded-lg border px-4 py-2',
+                'flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-1.5',
                 alert.bgClass,
               )}
             >
-              <div className="flex items-center gap-2">
-                <Icon size={16} className={alert.colorClass} />
-                <span className={cn('text-sm font-medium', alert.colorClass)}>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+                <Icon size={14} className={cn('shrink-0', alert.colorClass)} />
+                <span className="text-[13px] font-medium text-foreground">
                   {alert.label}
                 </span>
                 {alert.link && (
                   <Link
                     to={alert.link.to}
-                    className={cn('text-sm underline', alert.colorClass)}
+                    className="text-[13px] font-medium text-primary-ink underline underline-offset-2"
                   >
                     {alert.link.label}
                   </Link>
@@ -159,7 +179,7 @@ export function ServiceStatus() {
               </div>
               <button
                 onClick={() => dismissAlert(alert.id)}
-                className="rounded p-1 text-muted-foreground hover:bg-foreground/5"
+                className="nm-icon-button size-6 shrink-0"
                 aria-label={`Dismiss ${alert.service} alert`}
               >
                 <X size={14} />

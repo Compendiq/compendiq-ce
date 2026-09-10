@@ -5,8 +5,9 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../../test-db-helper.js';
-import { query } from '../../../core/db/postgres.js';
+import { query, getPool } from '../../../core/db/postgres.js';
 import pgvector from 'pgvector';
+import { visiblePagesPredicate } from '../../../core/services/page-visibility.js';
 
 // Deterministic 1024-dim vector for fixtures and queries
 function fakeVec(seed: number): number[] {
@@ -23,7 +24,10 @@ vi.mock('./openai-compatible-client.js', async () => {
     generateEmbedding: vi.fn(async () => [fakeVec(7)]),
   };
 });
-vi.mock('./llm-provider-resolver.js', () => ({
+vi.mock('./llm-provider-resolver.js', async (importOriginal) => ({
+  // Real module for everything else — the #1104 tests exercise the REAL
+  // resolveRerankUsecase against real provider/assignment rows.
+  ...(await importOriginal<typeof import('./llm-provider-resolver.js')>()),
   resolveUsecase: vi.fn(async () => ({
     config: {
       providerId: 'stub',
@@ -37,6 +41,16 @@ vi.mock('./llm-provider-resolver.js', () => ({
     },
     model: 'stub',
   })),
+}));
+
+// #1104: the rerank HTTP boundary is stubbed; resolution runs REAL code
+// against the real llm_providers / llm_usecase_assignments tables.
+const mockRerankCall = vi.fn(async (_cfg: unknown, _model: string, _q: string, docs: string[]) =>
+  docs.map((_, i) => ({ index: docs.length - 1 - i, relevanceScore: 1 - i * 0.1 })),
+);
+vi.mock('./rerank-client.js', () => ({
+  rerank: (...args: unknown[]) => mockRerankCall(...(args as [unknown, string, string, string[]])),
+  RERANK_DOC_MAX_CHARS: 2000,
 }));
 
 // Mutable feature-flag state for the Phase D post-filter tests below.
@@ -59,11 +73,18 @@ vi.mock('../../../core/enterprise/loader.js', async () => {
 
 // Import the functions under test AFTER the mocks above are registered.
 const { hybridSearch, keywordSearch, vectorSearch, flushSearchAnalytics } = await import('./rag-service.js');
-// The logger is spied on below (Phase D overfetch tests) to read the
-// `candidatesBeforeFilter` / `candidatesAfterFilter` counts without poking
-// at the internal vectorSearch/keywordSearch calls — ES module bindings
-// mean vi.spyOn(ragModule, 'vectorSearch') wouldn't intercept the internal
-// call from hybridSearch anyway.
+// Real module (not mocked here): the fetch-width TTL cache must be cleared
+// between tests so a width one test resolves cannot serve the next.
+const { invalidateRagFetchWidthCache } = await import(
+  '../../../core/services/admin-settings-service.js'
+);
+// The logger is spied on below (Phase D overfetch tests) to read the ACL
+// post-filter's `candidatesBeforeFilter` count (the log also carries
+// `candidatesExamined` / `candidatesKept` since #1103; only BeforeFilter is
+// asserted here, via `preFilterCandidates`) without poking at the internal
+// vectorSearch/keywordSearch calls — ES module bindings mean
+// vi.spyOn(ragModule, 'vectorSearch') wouldn't intercept the internal call
+// from hybridSearch anyway.
 const { logger } = await import('../../../core/utils/logger.js');
 
 const dbAvailable = await isDbAvailable();
@@ -80,6 +101,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     // before TRUNCATE, else a late INSERT (FK RowShareLock) deadlocks the reset
     // (AccessExclusiveLock). See #805.
     await flushSearchAnalytics();
+    invalidateRagFetchWidthCache();
     await truncateAllTables();
     // Re-seed system roles that migration 039 inserts on fresh install;
     // truncateAllTables wipes them, so restore the ones we reference below.
@@ -256,15 +278,123 @@ describe.skipIf(!dbAvailable)('rag-service integration — space permission enfo
     expect(ownerKeywordHits.length).toBeGreaterThan(0);
     expect(ownerHybrid.length).toBeGreaterThan(0);
   });
+
+  // #1351: semantic/hybrid search silently ignored the Space filter — a user
+  // scoping to one space got answers from their whole accessible corpus. The
+  // same fixture (postgres in two accessible spaces) reproduces the issue's
+  // live repro against real vectorSearch/keywordSearch/hybridSearch SQL.
+  describe('#1351 — spaceKey scoping (real SQL, both accessible spaces)', () => {
+    const user = 'ffffffff-1351-4000-8000-000000000001';
+
+    beforeEach(async () => {
+      await seedSpaceWithPage({
+        userId: user,
+        spaceKey: 'DEV',
+        pageTitle: 'Postgres tuning',
+        bodyText: 'postgres connection pooling notes',
+        vec: fakeVec(21),
+      });
+      await seedSpaceWithPage({
+        userId: user,
+        spaceKey: 'OPS',
+        pageTitle: 'Postgres runbook',
+        bodyText: 'postgres backup and restore steps',
+        vec: fakeVec(21.05), // close enough to rank alongside the DEV page
+      });
+    });
+
+    it('vectorSearch(spaceKey) returns only the scoped space', async () => {
+      const unscoped = await vectorSearch(user, fakeVec(21), 10);
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await vectorSearch(user, fakeVec(21), 10, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('vectorSearch drops a chunk whose vector is NULL — `1 - null` is a perfect match in JS (#1260)', async () => {
+      // The LIVE column is nullable between a #1116 swap and its cleanup: the
+      // swap renames `embedding_next` (never NOT NULL) onto `embedding` and
+      // drops NOT NULL from the renamed-away column, so a chunk the post-swap
+      // dual-write could not fill returns `distance = NULL`, and `1 - null` is
+      // 1 in JS — a perfect similarity feeding `vectorScore` and
+      // `computeRetrievalConfidence` on the ordinary chat path. The shadow
+      // column has its own SQL guard; this is the case only the JS filter
+      // reaches, because the live column carries no such clause.
+      //
+      // The HNSW index is dropped for the duration because the PLAN decides
+      // whether the filter is reached at all: an index scan never returns a
+      // row the index does not contain, so with `idx_page_embeddings_hnsw` in
+      // place the NULL row is invisible to JS and this test would pass with
+      // the filter deleted. Without a usable index — an instance whose build
+      // failed, a candidate wider than the 4000-dim HNSW ceiling, or any plan
+      // the planner costs towards a scan — the row comes back with
+      // `distance = NULL`, and the filter is the only thing between it and a
+      // 1.0 similarity. Making the two plans agree is the point.
+      await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding DROP NOT NULL`);
+      await query(`DROP INDEX IF EXISTS idx_page_embeddings_hnsw`);
+      try {
+        const unfilled = await seedSpaceWithPage({
+          userId: user,
+          spaceKey: 'DEV',
+          pageTitle: 'Unfilled after the swap',
+          bodyText: 'postgres page whose vector never landed',
+          vec: fakeVec(21),
+        });
+        await query(`UPDATE page_embeddings SET embedding = NULL WHERE page_id = $1`, [unfilled]);
+
+        const hits = await vectorSearch(user, fakeVec(21), 10);
+        expect(hits.map((hit) => hit.pageId)).not.toContain(unfilled);
+        expect(hits.length).toBe(2);
+      } finally {
+        await query(`DELETE FROM page_embeddings WHERE embedding IS NULL`);
+        await query(`ALTER TABLE page_embeddings ALTER COLUMN embedding SET NOT NULL`);
+        await query(
+          `CREATE INDEX IF NOT EXISTS idx_page_embeddings_hnsw
+           ON page_embeddings USING hnsw (embedding vector_cosine_ops)
+           WITH (m = 16, ef_construction = 200)`,
+        );
+      }
+    });
+
+    it('keywordSearch(spaceKey) returns only the scoped space', async () => {
+      const unscoped = await keywordSearch(user, 'postgres', 10);
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await keywordSearch(user, 'postgres', 10, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('hybridSearch(opts.spaceKey) returns only the scoped space', async () => {
+      const unscoped = await hybridSearch(user, 'postgres');
+      expect(unscoped.length).toBe(2);
+
+      const scoped = await hybridSearch(user, 'postgres', 5, undefined, { spaceKey: 'DEV' });
+      expect(scoped.length).toBe(1);
+      expect(scoped[0]!.spaceKey).toBe('DEV');
+    });
+
+    it('a space outside the accessible set yields zero results, not the whole corpus', async () => {
+      // Reproduces the issue's `spaceKey=ZZZZ` case: a nonexistent (and
+      // therefore inaccessible) space must narrow to nothing, never fall
+      // back to ignoring the filter.
+      const scoped = await hybridSearch(user, 'postgres', 5, undefined, { spaceKey: 'ZZZZ' });
+      expect(scoped).toHaveLength(0);
+    });
+  });
 });
 
-// ─── Phase D: per-page ACL post-filter + 1.5x overfetch (issue #112) ────────
+// ─── Phase D: per-page ACL post-filter + overfetch compensation (issue #112) ─
 //
 // These tests exercise the `rag_permission_enforcement` feature flag. When
-// the flag is OFF the rag-service behaviour must be bit-identical to v0.3
-// (same candidate pool, no ACE consultation). When the flag is ON, each
-// candidate returned by RRF is gated through `userCanAccessPage`, and the
-// per-stage fetch limit is bumped by 1.5x to compensate for the drops.
+// the flag is OFF, no ACE is ever consulted and the post-filter never runs.
+// When the flag is ON, each candidate returned by RRF is gated through
+// `userCanAccessPage`. The per-leg candidate pool is `resolveStageLimit`
+// in BOTH branches since #1103 — max(fetch width, topK), plus a
+// ceil(topK*1.5) floor when the flag is ON — so flag-OFF is deliberately no
+// longer bit-identical to v0.3's fixed 10/leg (that retirement is the #1103
+// bug fix; see rag-service.ts for the arithmetic and #1263).
 //
 // Feature-flag plumbing: `isFeatureEnabled` is mocked above to read the
 // local `ragPermissionEnforcementEnabled` variable, which each `it` block
@@ -280,6 +410,7 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
   beforeEach(async () => {
     // Drain fire-and-forget search-analytics writes before TRUNCATE (see #805).
     await flushSearchAnalytics();
+    invalidateRagFetchWidthCache();
     await truncateAllTables();
     await query(
       `INSERT INTO roles (name, display_name, is_system, permissions) VALUES
@@ -591,92 +722,301 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     }
   });
 
-  // Case 8: stage fetch limit is ceil(topK * 1.5) when ON, default (no
-  // explicit limit) when OFF. We verify via the pre-filter candidate count
-  // logged by the post-filter branch. For the OFF branch we assert on
-  // return-count stability instead, since the OFF branch doesn't log the
-  // pre-filter count (it doesn't run the filter at all).
-  it.each([
-    { topK: 10, expectedCeil: 15 },
-    { topK: 7, expectedCeil: 11 },
-    { topK: 1, expectedCeil: 2 },
-  ])('flag ON — stage fetch limit = ceil(topK * 1.5) [topK=$topK]', async ({ topK, expectedCeil }) => {
-    ragPermissionEnforcementEnabled = true;
+  // ── #1103 stage-limit cases ────────────────────────────────────────────────
+  //
+  // Shared fixture with a DETERMINISTIC merged-candidate count, so the
+  // assertions below can be exact rather than ranges:
+  // - vector leg: page i's vector is a blend `(1 - t_i)·q + t_i·o` with t_i
+  //   strictly increasing, so cosine distance to the query vector q strictly
+  //   increases with i — the leg's top-N is pages 0..N-1, always. (The naive
+  //   `fakeVec(7 + i·0.001)` used elsewhere is NOT monotonic in i — measured:
+  //   page 4 lands farther from q than page 13.)
+  // - keyword leg: ONLY pages 0..8 contain the query term at all, so the
+  //   keyword leg returns at most 9 rows and — for every stage limit >= 10 —
+  //   they are a SUBSET of the vector leg's top-N. The merged union is
+  //   therefore exactly the vector stage limit, with no dependence on
+  //   ts_rank tie ordering. (An earlier version graded ts_rank by repeating
+  //   the term (count - i) times; measured, ts_rank SATURATES at ~10
+  //   repetitions and the top pages tie, so "strictly decreasing rank" was
+  //   false and the determinism rested on Postgres's heap-scan tie order.)
+  function blendVec(i: number): number[] {
+    const q = fakeVec(7);
+    const o = fakeVec(999);
+    const t = (i + 1) * 0.01;
+    return q.map((v, idx) => (1 - t) * v + t * o[idx]!);
+  }
 
-    const user = 'feedface-feed-face-feed-facefeedface';
+  const KEYWORD_MATCHING_PAGES = 9; // < every stage limit these tests exercise
+
+  async function seedLimPages(user: string, count: number): Promise<void> {
     await ensureUser(user);
     await ensureSpaceAndViewerRole(user, 'LIM');
-
-    // Seed enough candidates that the stage limit (not the seeded-row
-    // count) is the binding constraint. 30 matching pages >> any topK * 1.5
-    // we test.
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < count; i++) {
       await insertPage({
         spaceKey: 'LIM',
         title: `Limit page ${i}`,
-        bodyText: `overfetch ceil-check ${i}`,
-        vec: fakeVec(7 + i * 0.001),
+        bodyText: i < KEYWORD_MATCHING_PAGES ? `overfetch ceil-check ${i}` : `overfetch filler ${i}`,
+        vec: blendVec(i),
       });
     }
+  }
 
+  /**
+   * Run one hybrid search and return the ACL post-filter's logged pre-filter
+   * candidate count, or null when the post-filter never ran (flag OFF).
+   */
+  async function preFilterCandidates(user: string, topK: number): Promise<number | null> {
     const debugSpy = vi.spyOn(logger, 'debug');
     await hybridSearch(user, 'ceil-check', topK);
-
-    // The post-filter debug log records the pre-filter candidate count.
-    // Since RRF dedupes by pageId and all 30 pages are unique, the vector
-    // stage and keyword stage each contribute up to `ceil(topK*1.5)` rows
-    // but they overlap, so the post-filter sees between ceil(topK*1.5) and
-    // 2*ceil(topK*1.5) candidates. We assert:
-    //   (a) candidatesBeforeFilter >= ceil(topK * 1.5)   (overfetch ran)
-    //   (b) candidatesBeforeFilter <= 2 * ceil(topK * 1.5) (no more than
-    //       both stages combined)
-    const debugCalls = debugSpy.mock.calls.filter((c) => {
+    const call = debugSpy.mock.calls.find((c) => {
       const payload = c[0] as Record<string, unknown> | undefined;
       return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
     });
-    expect(debugCalls.length).toBeGreaterThan(0);
-    const payload = debugCalls[0]![0] as { candidatesBeforeFilter: number };
-    expect(payload.candidatesBeforeFilter).toBeGreaterThanOrEqual(expectedCeil);
-    expect(payload.candidatesBeforeFilter).toBeLessThanOrEqual(2 * expectedCeil);
+    return call ? (call[0] as { candidatesBeforeFilter: number }).candidatesBeforeFilter : null;
+  }
+
+  // Case 8 (#1103): the per-leg stage limit is max(fetchWidth, topK,
+  // ceil(topK*1.5)) when the ACL post-filter is ON. At the default width (10
+  // — the legacy per-leg limit, deliberately: see RAG_FETCH_WIDTH_DEFAULT)
+  // the binding floor per topK is max(10, ceil(topK*1.5)). 30 seeded pages
+  // >> any floor we test, so the stage limit (not the seeded-row count) is
+  // the binding constraint, and the deterministic fixture makes the merged
+  // count exactly the per-leg limit.
+  it.each([
+    { topK: 10, floor: 15 }, // ceil(10*1.5)
+    { topK: 7, floor: 11 }, // ceil(7*1.5)
+    { topK: 1, floor: 10 }, // the width — ceil(1*1.5)=2 may not shrink it (#1263)
+  ])(
+    'flag ON — stage fetch limit = max(width, ceil(topK*1.5)) [topK=$topK]',
+    async ({ topK, floor }) => {
+      ragPermissionEnforcementEnabled = true;
+      const user = 'feedface-feed-face-feed-facefeedface';
+      await seedLimPages(user, 30);
+      expect(await preFilterCandidates(user, topK)).toBe(floor);
+    },
+  );
+
+  // Regression for #1263: the EE chat path (topK=5) used to fetch
+  // ceil(5*1.5) = 8 rows per leg while CE fetched 10 — ACL "compensation" as
+  // a net under-fetch. With the fixture's keyword rows a subset of the vector
+  // head, the merged count IS the vector stage limit: 10 under the fix, and
+  // at most 9 under the old code (vector {0..7} ∪ keyword ⊆ {0..8}) — this
+  // assertion fails against the bug it guards, deterministically.
+  it('flag ON — chat-path (topK=5) candidates are not fewer than the old CE default (#1263)', async () => {
+    ragPermissionEnforcementEnabled = true;
+    const user = 'feedface-feed-face-feed-facefeedface';
+    await seedLimPages(user, 12);
+    expect(await preFilterCandidates(user, 5)).toBe(10);
   });
 
-  it('flag OFF — stage fetch limit is the v0.3 default (10), not topK', async () => {
+  // Raising `rag_fetch_width` genuinely widens the candidate pool — this is
+  // the knob #1104's reranker turns up to get a pool worth re-scoring. This
+  // is also the test that proves the admin row is READ at all: without the
+  // INSERT the width is 10 and the count below reads 10, not 30.
+  it('flag ON — an admin-raised rag_fetch_width widens the pre-filter pool', async () => {
+    ragPermissionEnforcementEnabled = true;
+    const user = 'feedface-feed-face-feed-facefeedface';
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('rag_fetch_width', '30')
+       ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
+    );
+    await seedLimPages(user, 40);
+    expect(await preFilterCandidates(user, 5)).toBe(30);
+  });
+
+  // Regression (#1103): /api/search?mode=hybrid&limit=12 used to be
+  // unsatisfiable — both legs capped at 10 candidates regardless of the
+  // requested limit. The stage limit is now floored at topK. (A width BELOW
+  // the legacy default is deliberately not honoured — the knob clamps at
+  // [RAG_FETCH_WIDTH_DEFAULT, RAG_FETCH_WIDTH_MAX], pinned in the unit
+  // suite — so there is no observable "small width" case to test here.)
+  it('flag OFF — a topK above the old per-leg default (10) is satisfiable', async () => {
     ragPermissionEnforcementEnabled = false;
-
     const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 14);
+    const results = await hybridSearch(user, 'ceil-check', 12);
+    expect(results).toHaveLength(12);
+  });
+
+  it('filterAccessiblePages matches userCanAccessPage verdict-for-verdict (#1104)', async () => {
+    // The batched filter is spec-matched to the per-page function; this test
+    // IS that spec-match, across every fixture shape the per-page function
+    // distinguishes. Change one, change both.
+    ragPermissionEnforcementEnabled = true;
+    const user = 'feedface-feed-face-feed-facefeedface';
+    const stranger = 'cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd';
     await ensureUser(user);
-    await ensureSpaceAndViewerRole(user, 'LIM');
+    await ensureUser(stranger);
+    await ensureSpaceAndViewerRole(user, 'EQ');
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('NOEQ','NOEQ') ON CONFLICT DO NOTHING`);
 
-    // Seed 12 matching pages (more than v0.3 default 10, but a small topK
-    // below default). With the flag OFF, the stages must still pull 10
-    // candidates each (v0.3 default), so slice(0, topK=3) returns 3.
-    for (let i = 0; i < 12; i++) {
-      await insertPage({
-        spaceKey: 'LIM',
-        title: `Limit page ${i}`,
-        bodyText: `overfetch ceil-check ${i}`,
-        vec: fakeVec(7 + i * 0.001),
-      });
+    const ids: number[] = [];
+    // inherit_perms=true in an accessible space → allowed
+    ids.push(await insertPage({ spaceKey: 'EQ', title: 'open', bodyText: 'x', vec: fakeVec(3) }));
+    // inherit_perms=true in an INACCESSIBLE space → denied
+    ids.push(await insertPage({ spaceKey: 'NOEQ', title: 'closed-space', bodyText: 'x', vec: fakeVec(3.1) }));
+    // ACE granted to the user → allowed
+    const aceMine = await insertPage({ spaceKey: 'EQ', title: 'ace-mine', bodyText: 'x', vec: fakeVec(3.2), inheritPerms: false });
+    await insertConfluenceReadAce(aceMine, user);
+    ids.push(aceMine);
+    // ACE granted to someone else → denied
+    const aceTheirs = await insertPage({ spaceKey: 'EQ', title: 'ace-theirs', bodyText: 'x', vec: fakeVec(3.3), inheritPerms: false });
+    await insertConfluenceReadAce(aceTheirs, stranger);
+    ids.push(aceTheirs);
+    // standalone shared → allowed; standalone private own → allowed;
+    // standalone private foreign → denied
+    const mk = async (visibility: string, owner: string) => {
+      const r = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html, visibility, created_by_user_id)
+         VALUES (gen_random_uuid()::text, 'standalone', NULL, 'sa', 'x', '', '', $1, $2::uuid) RETURNING id`,
+        [visibility, owner],
+      );
+      return r.rows[0]!.id;
+    };
+    ids.push(await mk('shared', stranger));
+    ids.push(await mk('private', user));
+    ids.push(await mk('private', stranger));
+    // ACE granted via GROUP membership → allowed (the batch SQL's group arm
+    // is a hand-written re-implementation of the per-page group join — this
+    // fixture is what keeps the two from drifting, #1267 verification 7)
+    const grp = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-group', 'x', 'local') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO group_memberships (group_id, user_id) VALUES ($1, $2::uuid)`,
+      [grp.rows[0]!.id, user],
+    );
+    const aceGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-group', bodyText: 'x', vec: fakeVec(3.35), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceGroup, grp.rows[0]!.id],
+    );
+    ids.push(aceGroup);
+    // ACE granted to a group the user is NOT in → denied
+    const grp2 = await query<{ id: number }>(
+      `INSERT INTO groups (name, description, source) VALUES ('eq-other-group', 'x', 'local') RETURNING id`,
+    );
+    const aceOtherGroup = await insertPage({ spaceKey: 'EQ', title: 'ace-other-group', bodyText: 'x', vec: fakeVec(3.36), inheritPerms: false });
+    await query(
+      `INSERT INTO access_control_entries (resource_type, resource_id, principal_type, principal_id, permission, source)
+       VALUES ('page', $1, 'group', $2::text, 'read', 'local')`,
+      [aceOtherGroup, grp2.rows[0]!.id],
+    );
+    ids.push(aceOtherGroup);
+    // soft-deleted page → denied
+    const deleted = await insertPage({ spaceKey: 'EQ', title: 'gone', bodyText: 'x', vec: fakeVec(3.4) });
+    await query(`UPDATE pages SET deleted_at = NOW() WHERE id = $1`, [deleted]);
+    ids.push(deleted);
+    // missing id → denied
+    ids.push(99999999);
+
+    const { userCanAccessPage: perPage, filterAccessiblePages: batch } = await vi.importActual<
+      typeof import('../../../core/services/rbac-service.js')
+    >('../../../core/services/rbac-service.js');
+
+    const batchVerdicts = await batch(user, ids);
+    for (const id of ids) {
+      expect({ id, allowed: batchVerdicts.has(id) }).toEqual({ id, allowed: await perPage(user, id) });
     }
+    // Admin bypass: everything the DB knows about is allowed.
+    const admin = '99999999-9999-9999-9999-999999999999';
+    await ensureUser(admin, 'admin');
+    const adminVerdicts = await batch(admin, ids);
+    for (const id of ids) {
+      expect(adminVerdicts.has(id)).toBe(await perPage(admin, id));
+    }
+  });
 
-    const results = await hybridSearch(user, 'ceil-check', 3);
-    // With flag OFF: both stages fetch up to 10 candidates each (v0.3
-    // default), RRF merges by pageId, slice(0,3) returns 3. Diverges from
-    // the brief's "topK exactly" wording on purpose — the brief's
-    // competing constraint "behaviour MUST match v0.3 exactly when OFF"
-    // wins, because passing `topK` would halve the candidate pool (default
-    // 10 → user's topK, often ≤5) and hurt recall. See the design-notes
-    // section in the PR description / commit body.
-    expect(results).toHaveLength(3);
-    // Extra check: the post-filter debug log should NOT appear in the OFF
-    // branch (the filter is never invoked).
-    const debugSpy = vi.spyOn(logger, 'debug');
-    await hybridSearch(user, 'ceil-check', 3);
-    const filterLogs = debugSpy.mock.calls.filter((c) => {
-      const payload = c[0] as Record<string, unknown> | undefined;
-      return payload && typeof payload === 'object' && 'candidatesBeforeFilter' in payload;
+  it('rerank stage end-to-end: real assignment resolves, pool reranks, analytics record hybrid_rerank (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    // Real provider + assignment rows — resolveRerankUsecase reads these.
+    const prov = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
+       VALUES ('rerank-box', 'http://rr/v1', 'none', TRUE, 'bge-reranker-v2-m3')
+       RETURNING id`,
+    );
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+       VALUES ('rerank', $1, NULL)`,
+      [prov.rows[0]!.id],
+    );
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, {
+      rerank: true,
+      // #1284, review r1 — the surface travels on the same row, and the
+      // readout filters on it. Declared here so the SELECT below binds all
+      // three new columns to the params that fill them.
+      surface: 'ask',
     });
-    expect(filterLogs).toHaveLength(0);
+    expect(mockRerankCall).toHaveBeenCalledTimes(1);
+    const [cfg, model, , docs] = mockRerankCall.mock.calls[0]! as [
+      { providerId: string; baseUrl: string },
+      string,
+      string,
+      string[],
+    ];
+    expect(cfg.baseUrl).toBe('http://rr/v1');
+    expect(model).toBe('bge-reranker-v2-m3'); // provider default_model fallback
+    // Pool = all 12 candidates (< default 30); the stub reverses the order.
+    expect(docs).toHaveLength(12);
+    expect(results).toHaveLength(3);
+    expect(results.every((r) => r.rerankScore != null)).toBe(true);
+
+    await flushSearchAnalytics();
+    // #1284, review r1 — this SELECT is what binds the writer's positional
+    // params to the COLUMNS they land in. The unit tests read
+    // `analyticsParams()[8..10]` by array index, so swapping two adjacent
+    // TEXT column names in the 11-placeholder INSERT ('confidence,
+    // confidence_basis, surface' → 'confidence, surface,
+    // confidence_basis') left the whole suite green while writing 'ask' into
+    // `confidence_basis` and 'rerank' into `surface` — which makes
+    // `GET /analytics/confidence-distribution`, whose predicate is
+    // `surface = 'ask'` grouped by `confidence_basis`, answer count 0 forever
+    // on every real deployment. The write is fire-and-forget behind a
+    // swallowing catch, so nothing surfaces it either.
+    const row = await query<{
+      search_type: string;
+      rerank_score: number | null;
+      confidence: number | null;
+      confidence_basis: string | null;
+      surface: string | null;
+    }>(
+      `SELECT search_type, rerank_score, confidence, confidence_basis, surface
+         FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid_rerank');
+    expect(row.rows[0]!.rerank_score).not.toBeNull();
+    expect(row.rows[0]!.surface).toBe('ask');
+    expect(row.rows[0]!.confidence_basis).toBe('rerank');
+    expect(row.rows[0]!.confidence).not.toBeNull();
+  });
+
+  it('rerank requested but unassigned: stage silently off, analytics stay hybrid (#1104)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+
+    const results = await hybridSearch(user, 'ceil-check', 3, undefined, { rerank: true });
+    expect(mockRerankCall).not.toHaveBeenCalled();
+    expect(results).toHaveLength(3);
+
+    await flushSearchAnalytics();
+    const row = await query<{ search_type: string; rerank_score: number | null }>(
+      `SELECT search_type, rerank_score FROM search_analytics ORDER BY id DESC LIMIT 1`,
+    );
+    expect(row.rows[0]!.search_type).toBe('hybrid');
+    expect(row.rows[0]!.rerank_score).toBeNull();
+  });
+
+  it('flag OFF — the post-filter never runs (no candidatesBeforeFilter log)', async () => {
+    ragPermissionEnforcementEnabled = false;
+    const user = 'deaddead-dead-dead-dead-deaddeaddead';
+    await seedLimPages(user, 12);
+    expect(await preFilterCandidates(user, 3)).toBeNull();
   });
 
   // Case 9: post-filter preserves RRF rank order.
@@ -720,5 +1060,596 @@ describe.skipIf(!dbAvailable)('rag-service integration — per-page ACL post-fil
     const ids = results.map((r) => r.pageId);
     // P2 blocked, so only [P1, P3] survive in that exact order.
     expect(ids).toEqual([p1, p3]);
+  });
+});
+
+describe.skipIf(!dbAvailable)('rag-service integration — #1106 raw fetch plans onto the HNSW index', () => {
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    // Seed real rows: on an EMPTY table every plan costs ~0 and the GUC
+    // penalties below stop discriminating — the planner can pick anything
+    // and the probe becomes a coin flip (#1269 review follow-up on m11).
+    await query(
+      `INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`,
+    );
+    for (let i = 0; i < 6; i++) {
+      const page = await query<{ id: number }>(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES ($1, 'confluence', 'DEV', $2, 'probe fixture', '', '') RETURNING id`,
+        [`explain-probe-${i}`, `Probe ${i}`],
+      );
+      await query(
+        `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+         VALUES ($1, 0, 'probe chunk', $2, '{"page_title":"Probe","section_title":"S","space_key":"DEV"}')`,
+        [page.rows[0]!.id, pgvector.toSql(Array.from({ length: 1024 }, (_, d) => Math.sin((d + 1) * (i + 2)) * 0.01))],
+      );
+    }
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  it('the REAL widened vector query shape is HNSW-index-compatible at the raw cap', async () => {
+    // The risk an EXPLAIN guards against is a QUERY-SHAPE change defeating
+    // the index (an ORDER BY expression that stops matching the opclass, or
+    // a join/predicate combination the planner cannot serve from an index
+    // path) — at which point the leg silently degrades to a full scan on
+    // the chat path. The probe therefore mirrors vectorSearch's query
+    // BYTE-FOR-SHAPE: same JOIN, same visiblePagesPredicate, same
+    // deleted_at filter, same select list — a bare single-table probe
+    // certifies a layer that was never at risk (#1269 review m11). Tiny
+    // fixture tables make the planner prefer a seq scan on cost alone, so
+    // disable it: what we assert is that the shape CAN use the index.
+    // Precondition, asserted loudly: the probe DEPENDS on seeded rows — on
+    // an empty table every plan costs ~0 and the GUC penalties stop
+    // discriminating. A concurrent suite truncating mid-file (a live
+    // scenario under parallel agents) must fail this named assertion, not
+    // silently restore the coin flip (#1269 re-verification note 3).
+    const seeded = await query<{ n: number }>('SELECT count(*)::int AS n FROM page_embeddings');
+    expect(seeded.rows[0]!.n).toBeGreaterThan(0);
+    const vec = pgvector.toSql(Array.from({ length: 1024 }, (_, i) => Math.sin(i + 1) * 0.01));
+    // One CLIENT, not the pool helper: SET LOCAL is transaction-scoped and
+    // pooled query() calls can land on different connections, which would
+    // silently turn this probe into a cost-based coin flip.
+    const client = await getPool().connect();
+    let text: string;
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL enable_seqscan = off');
+      // Sorts too: on a tiny fixture the planner happily satisfies the
+      // ORDER BY with an explicit Sort of nine rows, index or no index.
+      // With both off, the ordered HNSW index path is the only non-penalized
+      // way to produce the ORDER BY — so its presence in the plan genuinely
+      // discriminates shape compatibility.
+      await client.query('SET LOCAL enable_sort = off');
+      const r = await client.query<{ 'QUERY PLAN': string }>(
+        `EXPLAIN SELECT cp.id AS page_id, cp.confluence_id, pe.chunk_text, pe.chunk_index, pe.metadata,
+                pe.embedding <=> $2 AS distance
+         FROM page_embeddings pe
+         JOIN pages cp ON pe.page_id = cp.id
+         WHERE ${visiblePagesPredicate(1, 4)}
+         AND cp.deleted_at IS NULL
+         ORDER BY pe.embedding <=> $2
+         LIMIT $3`,
+        [['DEV'], vec, 500, '00000000-0000-4000-8000-000000000001'],
+      );
+      text = r.rows.map((row) => row['QUERY PLAN']).join('\n');
+    } finally {
+      // ROLLBACK in the finally, not the happy path: a throwing EXPLAIN
+      // must not release a client mid-transaction back to the pool, where
+      // the aborted state poisons the next borrower.
+      await client.query('ROLLBACK').catch(() => {});
+      client.release();
+    }
+    expect(text).toContain('idx_page_embeddings_hnsw');
+    // The positive assertion can pass with the index appearing in a
+    // subordinate role; the negative one makes an accidental pass harder.
+    expect(text).not.toContain('Seq Scan on page_embeddings');
+  });
+});
+
+describe.skipIf(!dbAvailable)('rag-service integration — #1107 identifier pin lookups (real SQL)', () => {
+  const USER = 'aaaaaaaa-1107-4000-8000-000000001107';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['INC-2203 postmortem', 'incident INC-2203 details and remediation'],
+      ['Deployment Runbook', 'how we deploy'],
+      ['Unrelated Notes', 'nothing to see'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => {
+    await teardownTestDb();
+  });
+
+  it('verifies an issue key via the real title-ILIKE/tsv path and pins it (#1270-F11 lesson: real SQL, not a mocked shape)', async () => {
+    const out = await hybridSearch(USER, 'what is INC-2203 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0]!.pageTitle).toBe('INC-2203 postmortem');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('verifies a quoted title via the real pg_trgm % path', async () => {
+    const out = await hybridSearch(USER, 'find "Deployment Runbook"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('Deployment Runbook');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('an NL query with an uppercase token pins nothing — real end-to-end negative', async () => {
+    const out = await hybridSearch(USER, 'how does DEV handle deployment approvals', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+
+  it("'page N' prose never pins an arbitrary page — the dense-SERIAL trap, end-to-end (#1273 B1)", async () => {
+    // The reviewer proved 'page 43561 of the deployment guide' pinned
+    // 'Quarterly planning notes'. Post-fix the cued shape needs >=5 digits
+    // AND small prose numbers never reach a lookup at all.
+    const out = await hybridSearch(USER, 'what does page 2 say', 5, undefined, { pinIdentifiers: true });
+    expect(out.every((r) => r.pinned === undefined)).toBe(true);
+  });
+
+  it('the page the key NAMES beats pages that merely CONTAIN it, regardless of heap order (#1273 B2)', async () => {
+    // Re-targeted: this was written against the body-mention tier, which
+    // fork F1 removed — mention-only pages can no longer match at all, so
+    // the old fixture made the assertion vacuous and stopped exercising
+    // the ORDER BY it exists for. The live ordering question is now among
+    // pages whose TITLES all carry the key: starts-with beats contains,
+    // shorter beats longer, and insertion order must not decide.
+    //
+    // The two CONTAINING titles are deliberately SHORTER than the
+    // starts-with one, so `length(title) ASC` alone would pick the wrong
+    // page. Only the `(cp.title ~* '^KEY…') DESC` term produces the
+    // expected answer — with equal-length fixtures this test passed on
+    // length and left the tiebreak it is named for unexercised.
+    for (const [title, body] of [
+      ['Re: INC-9001 sync', 'earliest by heap order, and the shortest title'],
+      ['Notes on INC-9001', 'also contains the key, also shorter'],
+      ['INC-9001 postmortem and remediation plan', 'full analysis of the incident'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+    const out = await hybridSearch(USER, 'what is INC-9001 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('INC-9001 postmortem and remediation plan');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('the confluence_id namespace really does outrank the internal PK (NULLS LAST)', async () => {
+    // `ORDER BY (cp.confluence_id = $2) DESC` is NULLS FIRST by SQL
+    // default, and the expression is NULL for a locally-created page — so
+    // a PK match on a local page sorted ABOVE the page whose confluence_id
+    // actually equals the queried value, inverting the preference this
+    // ORDER BY exists to state. Only real Postgres shows this.
+    const local = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (NULL, 'standalone', 'DEV', 'Local scratch page', 'local body', '', '') RETURNING id`,
+    );
+    const localId = local.rows[0]!.id;
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES ($1::text, 'confluence', 'DEV', 'The page that owns this id', 'confluence body', '', '')`,
+      [String(localId)],
+    );
+    const out = await hybridSearch(USER, String(localId), 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('The page that owns this id');
+  });
+
+  it('an issue key matches as a TOKEN, never a substring — a longer key\'s page is not pinned', async () => {
+    // `ILIKE '%INC-220%'` matched every INC-2203/INC-22030 page, and the
+    // starts-with tiebreak then picked one confidently: a pin on a
+    // DIFFERENT identifier, which is the failure this stage exists to
+    // prevent. Real SQL, because the boundary is a regex behaviour.
+    // A key with NO exact-match page anywhere in the corpus, so the longer
+    // key's page is the only candidate the substring form could reach —
+    // otherwise an exact-match row elsewhere wins the ORDER BY and the
+    // test passes without exercising the boundary at all.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'ZZQ-44001 postmortem', 'unrelated incident', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is ZZQ-4400 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+    // The page the key genuinely names still pins, boundary and all.
+    const exact = await hybridSearch(USER, 'what is ZZQ-44001 about', 5, undefined, { pinIdentifiers: true });
+    expect(exact[0]!.pageTitle).toBe('ZZQ-44001 postmortem');
+    expect(exact[0]!.pinned).toBe(true);
+  });
+
+  it('a longer sibling key never outranks the page the queried key names — sequential numbering makes this ordinary', async () => {
+    // The reviewer's end-to-end repro: with both pages present the shorter
+    // key's own page has the LONGER title, so `length ASC` promoted the
+    // wrong ticket to rank 1 — and every 2-digit key is a prefix of some
+    // 3-digit key in a sequentially-numbered project.
+    for (const title of ['PPX-12 Spike: caching strategy for the gateway', 'PPX-123']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const out = await hybridSearch(USER, 'what is PPX-12 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('PPX-12 Spike: caching strategy for the gateway');
+  });
+
+  it('a sub-task key is a different identifier — the boundary excludes the hyphen', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'QQR-330-1 sub-task', 'body', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is QQR-330 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a title pin requires EXACT match — a sibling in a versioned family is never pinned', async () => {
+    // Measured on this Postgres: a TYPO of the right page scores 0.850
+    // ('Deployment Runbok' vs 'Deployment Runbook') and a DIFFERENT page
+    // in a versioned family scores 0.846 ('… 2023' vs '… 2024'). No
+    // threshold separates them, so a pin — which leads the results and
+    // suppresses the #1105 gate — requires equality, not similarity.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Quarterly Runbook 2024', 'the 2024 one', '', '')`,
+    );
+    const wrongYear = await hybridSearch(USER, '"Quarterly Runbook 2023"', 5, undefined, { pinIdentifiers: true });
+    expect(wrongYear.some((r) => r.pinned)).toBe(false);
+
+    const typo = await hybridSearch(USER, '"Quarterly Runbok 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(typo.some((r) => r.pinned)).toBe(false);
+
+    // Exact still pins, and normalisation covers case and inner spacing.
+    const exact = await hybridSearch(USER, '"Quarterly Runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(exact[0]!.pageTitle).toBe('Quarterly Runbook 2024');
+    expect(exact[0]!.pinned).toBe(true);
+
+    const messy = await hybridSearch(USER, '"quarterly   runbook 2024"', 5, undefined, { pinIdentifiers: true });
+    expect(messy[0]!.pageTitle).toBe('Quarterly Runbook 2024');
+    expect(messy[0]!.pinned).toBe(true);
+  });
+
+  it('normalisation applies to the STORED title too, not just the typed one', async () => {
+    // The messy-query case above exercises only the typed side. This one
+    // pins the COLUMN side: a title stored with doubled and trailing
+    // whitespace must normalise onto a cleanly typed query.
+    //
+    // It is NOT a regression test for the JS/SQL divergence — the column
+    // was already normalised before that fix, so this case passed then
+    // too. Its non-vacuity was established by deleting the column-side
+    // normalisation and watching it fail, not by reverting a commit.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      ['  Capacity   Planning  Notes '],
+    );
+    const out = await hybridSearch(USER, '"Capacity Planning Notes"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('  Capacity   Planning  Notes ');
+  });
+
+  it('a title carrying a NON-BREAKING space still pins — JS and SQL must normalise alike', async () => {
+    // JavaScript's \s matches U+00A0; Postgres's does not. Without
+    // translate() the SQL side produced a string the JS side could never
+    // match, so a page whose title carries the NBSP that Confluence and
+    // Word paste routinely became permanently unpinnable, silently.
+    const nbspTitle = 'Incident\u00A0Review\u00A0Board';
+    expect(nbspTitle).not.toBe('Incident Review Board');
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+      [nbspTitle],
+    );
+    // The user types ordinary spaces, as they always would.
+    const out = await hybridSearch(USER, '"Incident Review Board"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe(nbspTitle);
+  });
+
+  it('a Turkish dotted capital and an uppercase Greek title pin — one normaliser, not two', async () => {
+    // Postgres lower() and JS toLowerCase() disagree on U+0130 (PG gives
+    // 'i', JS gives 'i' + U+0307) and on a word-final sigma (PG 'σ', JS
+    // 'ς'). While the query was normalised in JS and the column in SQL,
+    // these titles could not be pinned by ANY query — the unreachable
+    // value was the stored one. Both sides now run the same SQL.
+    const turkish = '\u0130stanbul Ofis Rehberi';
+    const greek = '\u039F\u0394\u0397\u0393\u039F\u03A3 \u0391\u039D\u0391\u03A0\u03A4\u03A5\u039E\u0397\u03A3';
+    for (const title of [turkish, greek]) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const tr = await hybridSearch(USER, `"${turkish}"`, 5, undefined, { pinIdentifiers: true });
+    expect(tr[0]!.pinned).toBe(true);
+    expect(tr[0]!.pageTitle).toBe(turkish);
+
+    const el = await hybridSearch(USER, `"${greek}"`, 5, undefined, { pinIdentifiers: true });
+    expect(el[0]!.pinned).toBe(true);
+    expect(el[0]!.pageTitle).toBe(greek);
+  });
+
+  it('a hyphenated WORD suffix is the same ticket; a hyphenated DIGIT is a sub-task', async () => {
+    // The boundary must reject what continues an identifier and admit what
+    // merely follows it. Excluding every hyphen got the second half wrong:
+    // `INC-7777-postmortem` is a common title form for the ticket itself.
+    for (const title of ['TKT-7777-postmortem notes', 'TKT-8888-1 sub-task']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const wordSuffix = await hybridSearch(USER, 'what is TKT-7777 about', 5, undefined, { pinIdentifiers: true });
+    expect(wordSuffix[0]!.pinned).toBe(true);
+    expect(wordSuffix[0]!.pageTitle).toBe('TKT-7777-postmortem notes');
+
+    const subTask = await hybridSearch(USER, 'what is TKT-8888 about', 5, undefined, { pinIdentifiers: true });
+    expect(subTask.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a key adjacent to a non-spaced script still pins — the boundary is ASCII, not [[:alnum:]]', async () => {
+    // Under en_US.utf8 the POSIX class matches CJK and Hangul, so a
+    // perfectly ordinary Japanese title refused the key outright. Issue
+    // keys are ASCII by construction, so the boundary should be too.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'JPN-4242対応手順', '本文', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is JPN-4242 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('JPN-4242対応手順');
+  });
+
+  it('a sentence period after a key is punctuation, not a sub-task dot', async () => {
+    // `.` and `-` continue an identifier only before a DIGIT. Treating `.`
+    // as an unconditional continuation refused an ordinary title that
+    // simply ends a sentence after naming the ticket.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Root cause of RCA-5150.', 'body', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is RCA-5150 about', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pageTitle).toBe('Root cause of RCA-5150.');
+  });
+
+  it('a dotted or underscored sub-task key is a different identifier too', async () => {
+    for (const title of ['PRD-77.1 sub-task notes', 'PRD-78_old archive']) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, 'body', '', '')`,
+        [title],
+      );
+    }
+    const dotted = await hybridSearch(USER, 'what is PRD-77 about', 5, undefined, { pinIdentifiers: true });
+    expect(dotted.some((r) => r.pinned)).toBe(false);
+    const underscored = await hybridSearch(USER, 'what is PRD-78 about', 5, undefined, { pinIdentifiers: true });
+    expect(underscored.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a key living only in BODY text pins NOTHING — verification is title-only (#1273 fork F1)', async () => {
+    // The former ranked-tsv fallback verified a MENTION, and the issue-key
+    // shape admits SHA-256/UTF-8/ISO-8601 — so any short query carrying a
+    // hyphenated uppercase token pinned an arbitrary mentioning page at
+    // rank 1. The page stays reachable through ordinary retrieval; it just
+    // does not get promoted as a verified exact match.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Outage timeline', 'incident SEC-0731 was contained', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'what is SEC-0731 about', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a technical acronym compound pins nothing even when a page MENTIONS it (#1273 fork F1)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Password storage', 'we hash passwords with SHA-256 today', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'SHA-256 vs MD5', 5, undefined, { pinIdentifiers: true });
+    expect(out.some((r) => r.pinned)).toBe(false);
+  });
+
+  it('a quoted ALL-CAPS title verifies through the real trgm path (#1273 fork F10)', async () => {
+    // Quoted used to reclassify as a space key, which verifies nothing, so
+    // a page genuinely titled 'SLA' could never be pinned by naming it.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'SLA', 'service level agreement targets', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'find "SLA"', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('SLA');
+    expect(out[0]!.pinned).toBe(true);
+  });
+
+  it('the called-cue survives trailing punctuation across the real 0.3 trigram threshold (#1273 fork F13)', async () => {
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'FAQ', 'frequently asked questions', '', '')`,
+    );
+    const out = await hybridSearch(USER, 'the page called FAQ?', 5, undefined, { pinIdentifiers: true });
+    expect(out[0]!.pageTitle).toBe('FAQ');
+    expect(out[0]!.pinned).toBe(true);
+  });
+});
+
+// ─── #1110 (split): websearch_to_tsquery on the lexical leg ──────────────────
+//
+// The Corrections split this off from the P3 title leg as an immediately
+// shippable win. It is not only additive: with `plainto_tsquery`, a leading
+// `-` is parsed as an ordinary term, so `-logging` REQUIRES the word the user
+// asked to exclude — the exact opposite of the intent. Quoted phrases are
+// likewise flattened to loose ANDs.
+describe.skipIf(!dbAvailable)('rag-service integration — #1110 websearch_to_tsquery', () => {
+  const USER = 'aaaaaaaa-1110-4000-8000-000000001110';
+  beforeAll(async () => {
+    await setupTestDb();
+    await truncateAllTables();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'user', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    await query(`INSERT INTO spaces (space_key, space_name) VALUES ('DEV', 'DEV') ON CONFLICT (space_key) DO NOTHING`);
+    await query(
+      `INSERT INTO roles (name, display_name, is_system, permissions)
+       VALUES ('viewer', 'Viewer', TRUE, ARRAY['read']) ON CONFLICT (name) DO NOTHING`,
+    );
+    const role = await query<{ id: number }>(`SELECT id FROM roles WHERE name = 'viewer'`);
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ('DEV', 'user', $1, $2) ON CONFLICT DO NOTHING`,
+      [USER, role.rows[0]!.id],
+    );
+    for (const [title, body] of [
+      ['Graceful shutdown guide', 'delay accepting requests during a graceful shutdown'],
+      ['Logging configuration', 'delay accepting requests is unrelated here; this page is about logging'],
+      ['Accepting payments', 'we delay payouts and describe accepting cards, not requests'],
+    ] as Array<[string, string]>) {
+      await query(
+        `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+         VALUES (gen_random_uuid()::text, 'confluence', 'DEV', $1, $2, '', '')`,
+        [title, body],
+      );
+    }
+  });
+  afterAll(async () => { await truncateAllTables(); });
+
+  it('honours a MINUS exclusion instead of requiring the excluded term', async () => {
+    // With plainto_tsquery this returned the logging page, because `-logging`
+    // parsed as `& 'logging'` — the exclusion read as a requirement.
+    const hits = await keywordSearch(USER, 'delay accepting -logging');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('reduces a hyphen RUN to its parity, so meaning is preserved exactly', async () => {
+    // N hyphens compile to N nested NOTs, so an EVEN run is identity and an
+    // ODD run is a single exclusion. The sanitiser collapses N to N%2, which
+    // is what Postgres would have computed anyway — it bounds the nesting
+    // depth without changing a single query's meaning.
+    const doubled = await keywordSearch(USER, 'delay accepting --logging');
+    expect(doubled.some((h) => h.pageTitle === 'Logging configuration')).toBe(true);
+
+    const tripled = await keywordSearch(USER, 'delay accepting ---logging');
+    expect(tripled.every((h) => h.pageTitle !== 'Logging configuration')).toBe(true);
+  });
+
+  it('a huge punctuation-joined paste never errors — the crash was never about hyphens', async () => {
+    // websearch_to_tsquery RIGHT-NESTS punctuation-joined tokens
+    // (`1,2,3` -> `'1' <-> '2' <-> '3'`) where plainto flattens them, so
+    // ~14,600 comma-separated terms raise 54001 `stack depth limit
+    // exceeded` with ZERO hyphens present. A hyphen guard cannot bound
+    // that, which is why the query falls back to the other PARSER instead.
+    const csv = Array.from({ length: 15000 }, (_, i) => i).join(',');
+    await expect(keywordSearch(USER, csv)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('a fallback query keeps its identifiers — plainto preserves what a rewrite destroyed', async () => {
+    // The previous guard replaced every hyphen with a space above its cap.
+    // Measured: to_tsvector holds `CVE-2024-1234` as the lexemes '-2024'
+    // and '-1234', so a query rewritten to `2024 1234` can never match it.
+    // Switching parser instead keeps the hyphens, so the identifier still
+    // matches even on the fallback path.
+    await query(
+      `INSERT INTO pages (confluence_id, source, space_key, title, body_text, body_storage, body_html)
+       VALUES (gen_random_uuid()::text, 'confluence', 'DEV', 'Advisory register',
+               'advisory CVE-2024-1234 and CVE-2024-5678 and CVE-2023-9999 remediation between 2024-01-15 and 2024-02-01', '', '')`,
+    );
+    // Twelve hyphens: over the cap, so this takes the fallback path. The
+    // page carries every identifier, so the all-AND fallback parse can only
+    // fail if the identifiers themselves were destroyed — which is the
+    // thing under test.
+    const q = 'CVE-2024-1234, CVE-2024-5678, CVE-2023-9999 between 2024-01-15 and 2024-02-01';
+    const hits = await keywordSearch(USER, q);
+    expect(hits.some((h) => h.pageTitle === 'Advisory register')).toBe(true);
+  });
+
+  it('punctuation art never errors — every shape that reached XX000 in review', async () => {
+    // Pending NOTs accumulate on the parser stack ACROSS runs, not only
+    // within one, so no per-run rule can bound this: 33 single spaced
+    // hyphens crash exactly like one run of 33, and a table separator row
+    // crashes with every individual run already at depth 1. Two earlier
+    // fixes modelled Postgres's operand-state grammar and both were
+    // disproved by these inputs, which is why the guard is now a total
+    // hyphen COUNT cap — it needs no grammar model to be sound.
+    const cases = [
+      `| col |${'-'.repeat(35)}|`,                        // markdown table border
+      `${'| - '.repeat(33)}|`,                             // separator row, runs already depth 1
+      `a ${'- '.repeat(33)}b`,                             // spaced single hyphens
+      `A <${'-'.repeat(40)} B`,                            // ascii arrow
+      `why does sync fail ${'-'.repeat(60)} here is the log`,
+      '-'.repeat(60),
+      `a ${'-'.repeat(35)}`,
+    ];
+    for (const q of cases) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
+  });
+
+  it('a CLI flag DOES exclude — the accepted cost of exclusion support (#1110 owner decision)', async () => {
+    // Pinned as known behaviour, not as a protection. `-requests` is a shell
+    // flag to the user and an exclusion to Postgres, so a question carrying
+    // one drops pages containing that word. The owner chose exclusion
+    // support everywhere with user-facing documentation as the mitigation;
+    // this test exists so any future change to that is deliberate.
+    const hits = await keywordSearch(USER, 'graceful shutdown -requests');
+    expect(hits.every((h) => h.pageTitle !== 'Graceful shutdown guide')).toBe(true);
+  });
+
+  it('honours a QUOTED phrase as a phrase, not a bag of words', async () => {
+    // 'Accepting payments' contains both words far apart; only the shutdown
+    // page contains the actual phrase.
+    const hits = await keywordSearch(USER, '"delay accepting"');
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits.every((h) => h.pageTitle !== 'Accepting payments')).toBe(true);
+  });
+
+  it('reads a bare `or` as a DISJUNCTION — the accepted semantic change', async () => {
+    // Pinned deliberately, not incidentally: this leg receives chat
+    // questions, and a bare `or` now splits them into an OR rather than
+    // the all-AND conjunction plainto produced. Measured on the fixture
+    // (7 of 152 queries carry a bare `or`): one improved, none regressed.
+    // A future corpus that shows the disjunction pulling in loose matches
+    // should revisit this — so the behaviour must be visible, not implicit.
+    const hits = await keywordSearch(USER, 'graceful shutdown or payments');
+    const titles = hits.map((h) => h.pageTitle);
+    // The payments page has no 'graceful shutdown'; under an all-AND parse
+    // it could not match at all. Under a disjunction it legitimately does.
+    expect(titles).toContain('Accepting payments');
+  });
+
+  it('still never throws on operator soup — the safety plainto_tsquery gave us', async () => {
+    for (const q of ['a & | ! ( )', '"unclosed', '-', '- -', '&&&', '']) {
+      await expect(keywordSearch(USER, q)).resolves.toBeInstanceOf(Array);
+    }
   });
 });

@@ -6,6 +6,7 @@ import { getClientForUser } from '../../domains/confluence/services/sync-service
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
+import { toPageIdText } from '../../core/utils/page-id-text.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import {
   startBulkJob,
@@ -14,15 +15,22 @@ import {
 import {
   BulkPageFilterSchema,
   resolveBulkSelection,
+  bulkResolutionFailures,
   BulkSelectionError,
   type BulkSelection,
 } from '../../core/services/bulk-page-selection.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
+import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standalone-attachment-cleanup.js';
+import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
+import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
+import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
+import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
-import { processDirtyPages, isProcessingUser } from '../../domains/llm/services/embedding-service.js';
+import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
 import { triggerQualityBatch } from '../../domains/knowledge/services/quality-worker.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, isSystemAdmin } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
+import { toPageIcon } from '../../core/services/page-icon.js';
 import { PageListQuerySchema, PageTreeQuerySchema, CreatePageSchema, UpdatePageSchema, SaveDraftSchema, TrashListResponseSchema } from '@compendiq/contracts';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
@@ -125,6 +133,33 @@ const ALLOWED_IMAGE_MIMES = new Set([
 const ImportImageSchema = z.object({
   url: z.string().url().max(2048),
 });
+
+type ImageUploadPage = {
+  id: number;
+  source: string;
+  confluence_id: string | null;
+  created_by_user_id: string | null;
+  space_key: string | null;
+  visibility: string | null;
+};
+
+/**
+ * Who may attach an image to a page. Matches PUT /pages/:id and
+ * pages-icon assertCanEdit, plus the system-admin bypass that
+ * userCanAccessPage already grants for read — otherwise an admin
+ * who can open the editor is refused at paste.
+ */
+async function userCanUploadPageImage(userId: string, page: ImageUploadPage): Promise<boolean> {
+  if (await isSystemAdmin(userId)) return true;
+  if (page.source === 'standalone') {
+    return page.created_by_user_id === userId || page.visibility === 'shared';
+  }
+  if (page.space_key) {
+    const accessibleSpaces = await getUserAccessibleSpaces(userId);
+    return accessibleSpaces.includes(page.space_key);
+  }
+  return false;
+}
 
 /** Magic-byte signatures for each allowed import MIME. The leading bytes must
  *  match the declared `Content-Type` from the upstream — otherwise a malicious
@@ -468,6 +503,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       summary_status: string;
       source: string;
       visibility: string;
+      icon_kind: string | null;
+      icon_value: string | null;
     };
 
     async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
@@ -494,7 +531,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
                cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
                cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-               cp.summary_status, cp.source, cp.visibility
+               cp.summary_status, cp.source, cp.visibility,
+               cp.icon_kind, cp.icon_value
         FROM pages cp
         ${wc}
         ORDER BY ${ob}
@@ -560,6 +598,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         summaryStatus: row.summary_status,
         source: row.source,
         visibility: row.visibility,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       })),
       total,
       page,
@@ -617,6 +656,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       embedding_status: string;
       embedded_at: Date | null;
       embedding_error: string | null;
+      icon_kind: string | null;
+      icon_value: string | null;
     }>(
       // #959: order by sort_order first so a persisted drag-reorder (written by
       // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
@@ -625,7 +666,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
-              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error
+              cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
+              cp.icon_kind, cp.icon_value
        FROM pages cp
        LEFT JOIN pages parent_page ON (
          parent_page.confluence_id = cp.parent_id
@@ -650,6 +692,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
         embeddingError: row.embedding_error,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       })),
       total: result.rows.length,
     };
@@ -785,6 +828,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       created_by_user_id: string | null;
       has_draft: boolean;
       draft_updated_at: Date | null;
+      verified_at: Date | null;
+      icon_kind: string | null;
+      icon_value: string | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
@@ -796,7 +842,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL AND c2.deleted_at IS NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
-              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at
+              (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
+              cp.verified_at, cp.icon_kind, cp.icon_value
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL`,
@@ -865,6 +912,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       createdByUserId: row.created_by_user_id,
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
+      verifiedAt: row.verified_at,
+      icon: toPageIcon(row.icon_kind, row.icon_value),
     };
   });
 
@@ -901,14 +950,28 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const params = ChildrenQuerySchema.parse(request.query);
     const { sort, order, depth } = params;
 
-    // Resolve page: try confluence_id first, then integer id
+    // Resolve page: try confluence_id first, then integer id.
+    //
+    // The id arm compares `id::text`, not `$1::int` (#1167). `pages.id` is
+    // SERIAL (int4), so casting the *parameter* overflows on any Confluence
+    // content id above 2^31 — and the `confluence_id` arm does not rescue it,
+    // because the cast aborts the statement before the OR can match. Casting
+    // the column instead cannot overflow, and migration 084 indexes exactly
+    // this expression (`pages_id_text_idx ON pages ((id::text))`), so the arm
+    // stays index-served. The numeric guard keeps a non-numeric id off that
+    // arm, where it could never match anyway.
+    //
+    // `toPageIdText` restores the numeric normalisation the `::int` cast used
+    // to provide: text comparison is literal, so a zero-padded '007' would no
+    // longer find page 7. It applies to the id arm ONLY — confluence_id is a
+    // text column and must still be matched verbatim.
     const isNumericId = /^\d+$/.test(id);
     const pageResult = await query<{ id: number; confluence_id: string | null; space_key: string | null; source: string; visibility: string; created_by_user_id: string | null }>(
       `SELECT id, confluence_id, space_key, source, visibility, created_by_user_id FROM pages
-       WHERE ${isNumericId ? '(confluence_id = $1 OR id = $1::int)' : 'confluence_id = $1'}
+       WHERE ${isNumericId ? '(confluence_id = $1 OR id::text = $2)' : 'confluence_id = $1'}
          AND deleted_at IS NULL
        LIMIT 1`,
-      [isNumericId ? id : id],
+      isNumericId ? [id, toPageIdText(id)] : [id],
     );
 
     if (pageResult.rows.length === 0) {
@@ -949,15 +1012,19 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       space_key: string | null;
       parent_id: string | null;
       depth: number;
+      icon_kind: string | null;
+      icon_value: string | null;
     };
 
     const treeResult = await query<FlatChildRow>(
       `WITH RECURSIVE tree AS (
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth,
+                p.icon_kind, p.icon_value
          FROM pages p
          WHERE p.parent_id = $1 AND p.deleted_at IS NULL
          UNION ALL
-         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1
+         SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1,
+                p.icon_kind, p.icon_value
          FROM pages p
          JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
          WHERE p.deleted_at IS NULL AND t.depth < $2
@@ -968,7 +1035,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     );
 
     // Assemble flat rows into nested tree structure
-    type ChildNode = { id: number; confluenceId: string | null; title: string; spaceKey: string | null; children?: ChildNode[] };
+    type ChildNode = {
+      id: number;
+      confluenceId: string | null;
+      title: string;
+      spaceKey: string | null;
+      icon: ReturnType<typeof toPageIcon>;
+      children?: ChildNode[];
+    };
     const nodeMap = new Map<string, ChildNode>();
     const roots: ChildNode[] = [];
 
@@ -978,6 +1052,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         confluenceId: row.confluence_id,
         title: row.title,
         spaceKey: row.space_key,
+        icon: toPageIcon(row.icon_kind, row.icon_value),
       };
       const nodeKey = row.confluence_id ?? String(row.id);
       nodeMap.set(nodeKey, node);
@@ -1004,8 +1079,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const existing = await query<{
       id: number; title: string; source: string;
       created_by_user_id: string | null; deleted_at: Date | null; visibility: string;
+      notion_page_id: string | null;
     }>(
-      'SELECT id, title, source, created_by_user_id, deleted_at, visibility FROM pages WHERE id = $1',
+      'SELECT id, title, source, created_by_user_id, deleted_at, visibility, notion_page_id FROM pages WHERE id = $1',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -1021,6 +1097,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
     if (!page.deleted_at) {
       throw fastify.httpErrors.badRequest('Page is not in trash');
+    }
+
+    if (page.notion_page_id) {
+      const clash = await query<{ id: number }>(
+        `SELECT id FROM pages
+          WHERE created_by_user_id = $1
+            AND deleted_at IS NULL
+            AND id <> $2
+            AND notion_page_id IS NOT NULL
+            AND lower(replace(notion_page_id, '-', '')) = lower(replace($3, '-', ''))
+          LIMIT 1`,
+        [page.created_by_user_id, page.id, page.notion_page_id],
+      );
+      if (clash.rows.length > 0) {
+        throw fastify.httpErrors.conflict('A live import of this Notion page already exists');
+      }
     }
 
     await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);
@@ -1100,16 +1192,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       const result = await query<{ id: number; title: string; version: number }>(
+        // #1115 P2 (review r2) — a create is a body writer, so it queues the
+        // image index too. Bound to the SAME `!isFolder` parameter as
+        // `embedding_dirty`: a folder is excluded by the image worker's own
+        // WHERE, so flagging one is a backlog entry no scan can ever clear.
+        // Unconditional rather than gated: there is no previous body to diff
+        // against, and a create with no image costs one scan that enumerates
+        // nothing and clears the flag.
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, embedding_status, last_synced)
+            page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, 'not_embedded', NOW())
+                 $8, $9, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
-         pageType, !isFolder],
+         pageType, !isFolder, body.labels ?? []],
       );
 
       const newPage = result.rows[0]!;
@@ -1165,11 +1264,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const storageBody = htmlToConfluence(body.bodyHtml);
 
     // Resolve parentId: frontend may send internal DB id (numeric) instead of confluence_id
+    //
+    // #1167: the id arm compares `id::text`, not `$1::int`. `pages.id` is
+    // SERIAL (int4), so casting the parameter overflowed on any Confluence
+    // content id above 2^31 — and because the cast is evaluated before the OR
+    // can match, the `confluence_id` arm never got the chance to rescue it:
+    // the whole statement aborted with 22003 and the create 500ed even though
+    // the parent row was right there.
+    //
+    // `toPageIdText` keeps the numeric normalisation the cast used to provide
+    // (see the children route above). It matters more here than anywhere else:
+    // an unresolved lookup leaves `confluenceParentId` holding the caller's raw
+    // input, which then goes upstream to `client.createPage` as a parent id, so
+    // a silent miss misplaces the page in Confluence rather than 404ing.
     let confluenceParentId = body.parentId;
     if (confluenceParentId && /^\d+$/.test(confluenceParentId)) {
       const parentLookup = await query<{ confluence_id: string | null }>(
-        'SELECT confluence_id FROM pages WHERE id = $1::int OR confluence_id = $2',
-        [confluenceParentId, confluenceParentId],
+        'SELECT confluence_id FROM pages WHERE id::text = $1 OR confluence_id = $2',
+        [toPageIdText(confluenceParentId), confluenceParentId],
       );
       if (parentLookup.rows[0]?.confluence_id) {
         confluenceParentId = parentLookup.rows[0].confluence_id;
@@ -1185,15 +1297,28 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     // Store in local cache (shared table, no user_id)
     await query(
+      // #1115 P2 (review r2) — confluenceToHtml emits /api/attachments/<id>/<file>
+      // for any <ac:image><ri:attachment> the created storage carries, so this
+      // body really can reference images. The DO UPDATE arm re-writes body_html
+      // on a row that may already carry index entries, which is the reconcile's
+      // trigger, so it raises the flag as well.
       `INSERT INTO pages
          (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, 'not_embedded')
+          version, parent_id, source, embedding_dirty, image_embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
-         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW()`,
+         body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
+         image_embedding_dirty = TRUE`,
+      // #1123: bind the RESOLVED `confluenceParentId`, not the raw
+      // `body.parentId`. A Confluence-sourced child must store its parent's
+      // `confluence_id` — binding the frontend's internal numeric id wrote the
+      // standalone flavour into a Confluence row, so the tree CTE resolved the
+      // child against the wrong arm until the next sync silently corrected it.
+      // Relocate rewrites `parent_id` from what is actually stored, so this had
+      // to be right before that code could trust the column.
       [page.id, body.spaceKey, body.title, page.body?.storage?.value ?? storageBody,
-       bodyHtml, bodyText, page.version.number, body.parentId ?? null],
+       bodyHtml, bodyText, page.version.number, confluenceParentId ?? null],
     );
 
     // A new Confluence page is visible to every user with space access (#893),
@@ -1201,6 +1326,21 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // create just changed — clear both caches for every user.
     await cache.invalidateAcrossUsers('pages');
     await cache.invalidateAcrossUsers('spaces');
+
+    // Labels supplied at creation (#1133). Confluence owns them for a synced
+    // page, so they go upstream first and the local row mirrors what stuck. A
+    // failure here must not fail the create: the page exists and is correct.
+    if (body.labels?.length) {
+      try {
+        await client.addLabels(page.id, body.labels);
+        await query('UPDATE pages SET labels = $2 WHERE confluence_id = $1', [page.id, body.labels]);
+      } catch (err) {
+        logger.warn(
+          { err, confluenceId: page.id, labels: body.labels },
+          'Page created but its labels could not be applied in Confluence',
+        );
+      }
+    }
 
     await logAuditEvent(userId, 'PAGE_CREATED', 'page', page.id, { spaceKey: body.spaceKey, title: body.title }, request);
 
@@ -1259,6 +1399,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Not authorized to edit this page');
       }
 
+      await rejectIfLiveCollabRoom(existingPage.id, (m) => fastify.httpErrors.conflict(m));
+
       // Optimistic concurrency check
       if (body.version !== undefined && body.version < existingPage.version) {
         throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -1288,6 +1430,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `UPDATE pages SET
            title = $2, body_html = $3, body_text = $4,
            version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+           -- #1115 P2 (review r1) — the editor is a body writer, so it can add
+           -- an <img> (paste stages the bytes BEFORE this save lands, so the
+           -- attachment-side flag can be cleared against the old body) and it
+           -- can remove one, which nothing else notices: no attachment write
+           -- happens on a delete, so without this the index keeps a row for a
+           -- picture the page no longer shows. Gated on body_html alone —
+           -- that is where the src attributes are, and a title-only save
+           -- cannot move an image.
+           image_embedding_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_embedding_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- #828: the content changed, so re-queue the summary and quality
            -- workers. Reset both status AND retry_count — a page that had
@@ -1310,6 +1464,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       if ((updateResult.rowCount ?? 0) === 0) {
         throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
       }
+
+      await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
       // A shared page's list rows (title/snippet) and a visibility flip both
       // change what OTHER users see (#893) — their cached trees/lists would
@@ -1344,6 +1500,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Access denied to this space');
       }
     }
+
+    await rejectIfLiveCollabRoom(existingPage.id, (m) => fastify.httpErrors.conflict(m));
 
     const client = await getClientForUser(userId);
     if (!client) {
@@ -1382,6 +1540,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       `UPDATE pages SET
          title = $2, body_storage = $3, body_html = $4, body_text = $5,
          version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+         -- #1115 P2 (review r1) — and this path especially: the comment below
+         -- notes the follow-up sync short-circuits on an already-current
+         -- version, so syncPage's own image flag never runs for it.
+         image_embedding_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+           ELSE image_embedding_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          -- #828: content changed on this app-side Confluence push, so re-queue
          -- the summary/quality workers (reset status + retry_count so a
@@ -1400,6 +1565,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       [id, body.title, confPage.body?.storage?.value ?? storageBody,
        bodyHtml, bodyText, confPage.version.number],
     );
+
+    await invalidateCollabDocAfterBodyWrite(existingPage.id);
 
     // Confluence pages are visible to every user with space access (#893), so
     // clear every user's cached lists/trees, not just the editor's.
@@ -1451,13 +1618,29 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
 
       if (queryParams.permanent === 'true') {
-        // Hard delete
-        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [userId, existingPage.id]);
-        await query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+        // Hard delete and attachment cleanup share one barrier-owning client,
+        // so a backup cannot archive the post-delete database with pre-delete
+        // directories (or the inverse).
+        await withLocalAttachmentMutationLock(async (client) => {
+          try {
+            await client.query('BEGIN');
+            await client.query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [
+              userId,
+              existingPage.id,
+            ]);
+            await client.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+            await client.query('COMMIT');
+          } catch (err) {
+            await client.query('ROLLBACK').catch(() => undefined);
+            throw err;
+          }
+          await cleanupStandalonePageAttachmentDirs(existingPage.id, client);
+        });
       } else {
         // Soft delete — move to trash
         await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
       }
+      await tombstoneCollabRoomAfterCommit(existingPage.id);
 
       // A shared standalone page is visible to every user (#893), so its
       // removal must clear all users' cached lists/trees. Private stays per-user.
@@ -1561,11 +1744,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
     // cascades, deleted explicitly for clarity).
     const txClient = await getPool().connect();
+    // Whether the COMMIT really destroyed the row — the icon discard below is
+    // irreversible and must not run on the rollback branch (#1349 fixer r1).
+    let rowDestroyed = false;
     try {
       await txClient.query('BEGIN');
       await txClient.query('DELETE FROM pinned_pages WHERE page_id = $1', [existingPage.id]);
-      await txClient.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+      const destroyed = await txClient.query<{ id: number }>(
+        'DELETE FROM pages WHERE id = $1 RETURNING id',
+        [existingPage.id],
+      );
       await txClient.query('COMMIT');
+      rowDestroyed = (destroyed.rowCount ?? 0) > 0;
     } catch (cleanupErr) {
       await txClient.query('ROLLBACK').catch(() => undefined);
       // The upstream delete already happened and cannot be rolled back. The row
@@ -1585,13 +1775,30 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // transaction — best-effort, never fatal (same pattern as unsyncSpace).
     if (existingPage.confluence_id) {
       try {
-        await cleanPageAttachments(userId, existingPage.confluence_id);
+        await cleanPageAttachments(existingPage.confluence_id);
       } catch (attachErr) {
         logger.warn(
           { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: attachErr instanceof Error ? attachErr.message : String(attachErr) },
           'Attachment cleanup failed after page delete (orphaned files only — DB is consistent)',
         );
       }
+    }
+    // …and the icon store, which `cleanPageAttachments` never touches: it is
+    // keyed by `pages.id`, not by `confluence_id`, and the #1349 sweep is
+    // forbidden to walk it, so this event is the only thing that collects a
+    // hard-deleted Confluence page's uploaded mark (#1349 review r2).
+    //
+    // ONLY when the transaction actually committed (#1349 fixer r1). The catch
+    // above deliberately does not rethrow, so on a rollback the row is still
+    // there — soft-deleted, restorable by sync reconciliation until the 30-day
+    // purge — and still carries `icon_kind = 'image'`. The mark is the only
+    // copy of those bytes (migrations 095/096 persist just the sha) and the
+    // sweep may not walk `page-icons/`, so discarding it here would be
+    // unrecoverable for a page that still exists. `purgeDeletedPages` discards
+    // it after its OWN committed DELETE, so nothing leaks permanently.
+    if (rowDestroyed) {
+      await discardPageIconForDeletedPage(existingPage.id);
+      await tombstoneCollabRoomAfterCommit(existingPage.id);
     }
 
     // Confluence pages are visible to every user with space access (#893), and
@@ -1733,6 +1940,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     if (!page.draft_body_html) throw fastify.httpErrors.badRequest('No draft to publish');
 
+    await rejectIfLiveCollabRoom(page.id, (m) => fastify.httpErrors.conflict(m));
+
     // Atomically: save current live to page_versions, swap draft -> live, clear draft.
     // Must use a dedicated client — pool.query() draws random connections per call,
     // so BEGIN/COMMIT would run on different connections (non-atomic).
@@ -1754,6 +1963,14 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           body_html = draft_body_html, body_text = draft_body_text,
           body_storage = COALESCE(draft_body_storage, body_storage),
           version = version + 1, embedding_dirty = TRUE,
+          -- #1115 P2 (review r1) — publishing a draft is the moment its body
+          -- becomes the live one, so this is the first point at which an
+          -- <img> the draft added or dropped is real. Both sides of the
+          -- comparison read the OLD row, which is what makes the gate work.
+          image_embedding_dirty = CASE
+            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
+            ELSE image_embedding_dirty
+          END,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
           -- Stamp local-edit markers (#305): publishing a draft is a local
@@ -1774,6 +1991,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } finally {
       txClient.release();
     }
+
+    await invalidateCollabDocAfterBodyWrite(page.id);
 
     // For Confluence articles, push updated content upstream (best-effort)
     let publishedVersion = page.version + 1;
@@ -1898,8 +2117,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // --- Partition by source ---
     // #861: standalone delete is owner-only, mirroring DELETE /pages/:id.
@@ -1927,6 +2146,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       ]);
       // Bulk delete is a soft-delete (move to trash) for standalone pages.
       for (const pageId of standaloneNumericIds) {
+        await tombstoneCollabRoomAfterCommit(pageId);
         emitWebhookEvent({
           eventType: 'page.deleted',
           payload: { pageId, isHardDelete: false },
@@ -2016,11 +2236,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         // cascades, deleted explicitly for clarity).
         if (deletedConfluenceNumericIds.length > 0) {
           const txClient = await getPool().connect();
+          // The ids the COMMIT really destroyed — empty on the rollback branch,
+          // which must not reach the irreversible icon discard (#1349 fixer r1).
+          let destroyedNumericIds: number[] = [];
           try {
             await txClient.query('BEGIN');
             await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [deletedConfluenceNumericIds]);
-            await txClient.query('DELETE FROM pages WHERE id = ANY($1::int[])', [deletedConfluenceNumericIds]);
+            const destroyed = await txClient.query<{ id: number }>(
+              'DELETE FROM pages WHERE id = ANY($1::int[]) RETURNING id',
+              [deletedConfluenceNumericIds],
+            );
             await txClient.query('COMMIT');
+            destroyedNumericIds = destroyed.rows.map((r) => r.id);
           } catch (cleanupErr) {
             await txClient.query('ROLLBACK').catch(() => undefined);
             // Upstream deletes already happened — the rows stay soft-deleted
@@ -2033,7 +2260,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             txClient.release();
           }
           // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
-          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(userId, id))));
+          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(id))));
+          // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
+          // and is a second pass rather than a line inside the one above
+          // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it
+          // walks the ids the COMMIT returned rather than the ids we intended
+          // to delete (#1349 fixer r1): the catch above does not rethrow, so on
+          // a rollback every row is still alive with its `icon_kind = 'image'`
+          // and the mark is the only copy of those bytes. Left alone, it is
+          // collected by `purgeDeletedPages` after its own committed DELETE.
+          await Promise.allSettled(
+            destroyedNumericIds.map((pageId) =>
+              bulkLimit(() => discardPageIconForDeletedPage(pageId)),
+            ),
+          );
+          await Promise.allSettled(
+            destroyedNumericIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
+          );
           // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
           for (const pageId of deletedConfluenceNumericIds) {
             emitWebhookEvent({
@@ -2107,8 +2350,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const spaceKeysById = new Map(
       syncableRows.map((r) => [r.confluenceId as string, r.spaceKey ?? '']),
     );
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // Eager-load htmlToText once (avoid repeated dynamic import)
     const { htmlToText } = await import('../../core/services/content-converter.js');
@@ -2130,6 +2373,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             `UPDATE pages SET
                title = $2, body_storage = $3, body_html = $4, body_text = $5,
                version = $6, last_synced = NOW(), embedding_dirty = TRUE,
+               -- #1115 P2 (review r1) — a bulk refresh rewrites body_html
+               -- from upstream, which is exactly what can move an image.
+               image_embedding_dirty = CASE
+                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+                 ELSE image_embedding_dirty
+               END,
                embedding_status = 'not_embedded', embedded_at = NULL,
                -- Clear local-edit markers (#305): this is a bulk
                -- refresh-from-Confluence path (sync-side).
@@ -2163,6 +2412,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/bulk/embed - re-embed multiple pages
   fastify.post('/pages/bulk/embed', async (request, reply) => {
+    // #1116 r9: bounded but real — after a swap these rows carry no
+    // `embedding_prev`, so a rollback re-dirties exactly these pages and
+    // search loses them until the pipeline catches up. Only the post-swap
+    // window is refused; during the backfill embedPage dual-writes.
+    await assertShadowRollbackWindowClear();
     const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
 
@@ -2211,8 +2465,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       succeeded = result.rows.length;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const failed = resolved.notFoundIds.length;
+    const { errors, failed } = bulkResolutionFailures(resolved);
 
     // Fire-and-forget: trigger processing of dirty pages (same pattern as POST /embeddings/process)
     if (succeeded > 0) {
@@ -2272,8 +2525,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       succeeded = result.rowCount ?? 0;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const failed = resolved.notFoundIds.length;
+    const { errors, failed } = bulkResolutionFailures(resolved);
 
     await cache.invalidate(userId, 'pages');
 
@@ -2329,8 +2581,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     const pageMap = new Map(
       resolved.rows.map((r) => [String(r.id), { confluenceId: r.confluenceId, labels: r.labels }]),
     );
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    let failed = resolved.notFoundIds.length;
+    const { errors, failed: resolutionFailed } = bulkResolutionFailures(resolved);
+    let failed = resolutionFailed;
 
     // Process each owned page: compute new labels, update DB, sync to Confluence
     const bulkLimit = pLimit(5);
@@ -2463,8 +2715,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw err;
     }
 
-    const errors: string[] = resolved.notFoundIds.map((id) => `Page ${id} not found`);
-    const initialFailed = resolved.notFoundIds.length;
+    const { errors, failed: initialFailed } = bulkResolutionFailures(resolved);
     const eligible = resolved.rows.map((r) => ({
       id: r.id,
       confluenceId: r.confluenceId,
@@ -2617,11 +2868,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access
     // Support both integer PK (standalone pages) and confluence_id (Confluence pages)
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2638,30 +2886,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const page = pageResult.rows[0]!;
 
-    // Access control: standalone pages require ownership; Confluence pages require space access
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to upload images to this page',
-        });
-      }
-    } else {
-      // No space_key and not standalone — deny access
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to upload images to this page'
+          : 'Access denied',
       });
     }
 
@@ -2735,11 +2966,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Verify the page exists and the user has access. Mirrors the inline
     // upload route's logic exactly so the two stay aligned.
     const isNumericId = /^\d+$/.test(id);
-    const pageResult = await query<{
-      id: number; source: string; confluence_id: string | null;
-      created_by_user_id: string | null; space_key: string | null;
-    }>(
-      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key
+    const pageResult = await query<ImageUploadPage>(
+      `SELECT p.id, p.source, p.confluence_id, p.created_by_user_id, p.space_key, p.visibility
        FROM pages p
        WHERE ${isNumericId ? 'p.id = $1' : 'p.confluence_id = $1'}
          AND p.deleted_at IS NULL`,
@@ -2753,28 +2981,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       });
     }
     const page = pageResult.rows[0]!;
-    if (page.source === 'standalone') {
-      if (page.created_by_user_id !== userId) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else if (page.space_key) {
-      const accessibleSpaces = await getUserAccessibleSpaces(userId);
-      if (!accessibleSpaces.includes(page.space_key)) {
-        return reply.status(403).send({
-          statusCode: 403,
-          error: 'Forbidden',
-          message: 'Not authorized to import images to this page',
-        });
-      }
-    } else {
+    if (!(await userCanUploadPageImage(userId, page))) {
       return reply.status(403).send({
         statusCode: 403,
         error: 'Forbidden',
-        message: 'Access denied',
+        message: page.source === 'standalone' || page.space_key
+          ? 'Not authorized to import images to this page'
+          : 'Access denied',
       });
     }
 

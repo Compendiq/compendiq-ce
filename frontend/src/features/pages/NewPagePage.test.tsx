@@ -4,6 +4,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { NewPagePage } from './NewPagePage';
 
+// Toast is the only channel a failed import has — an assertion that the editor
+// was left alone says nothing about whether the user was told why (#1178).
+const { mockToastError, mockToastSuccess } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+  mockToastSuccess: vi.fn(),
+}));
+vi.mock('sonner', () => ({
+  toast: { error: mockToastError, success: mockToastSuccess },
+}));
+
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -31,16 +41,48 @@ vi.mock('../../shared/hooks/use-pages', () => ({
   }),
 }));
 
-vi.mock('../../shared/hooks/use-spaces', () => ({
-  useSpaces: () => ({
-    data: [
+// Mutable so a test can model an instance with no Confluence spaces at all
+// (Confluence unconfigured, or configured but nothing synced yet) — the case
+// the #1122 preselection has to fall back from.
+const { spacesState } = vi.hoisted(() => ({
+  spacesState: {
+    confluence: [
       { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 10 },
       { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
-    ],
+    ] as { key: string; name: string; homepageId: null; lastSynced: string; pageCount: number }[],
+  },
+}));
+
+const DEFAULT_CONFLUENCE_SPACES = [
+  { key: 'DEV', name: 'Development', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 10 },
+  { key: 'OPS', name: 'Operations', homepageId: null, lastSynced: '2026-03-01T00:00:00Z', pageCount: 5 },
+];
+
+/** What `GET /api/spaces` appends for an RBAC-assigned space with nothing synced. */
+function unsyncedSpace(key: string) {
+  return { key, name: key, homepageId: null, lastSynced: null, pageCount: 0 };
+}
+
+vi.mock('../../shared/hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: spacesState.confluence }),
+}));
+
+vi.mock('../../shared/hooks/use-settings', () => ({
+  useSettings: () => ({
+    data: {
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
+    },
   }),
 }));
 
-const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
+vi.mock('../../shared/hooks/use-inline-completion-availability', () => ({
+  useInlineCompletionAvailability: () => ({ data: true }),
+}));
+
+const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsync, mockCreateTemplateMutateAsync, mockImportMutateAsync, templatesState } = vi.hoisted(() => {
   // Live HTML the fake editor owns. setContent (template apply) and the
   // textarea's onChange (typing) both write here; getHTML reads it — mirroring
   // the real Editor now that the body is read off the instance, not synced to
@@ -50,10 +92,22 @@ const { editorHtml, mockSetContent, mockEditorInstance, mockUseTemplateMutateAsy
   return {
     editorHtml: html,
     mockSetContent: setContent,
-    mockEditorInstance: { commands: { setContent }, getHTML: () => html.current },
+    mockEditorInstance: {
+      commands: { setContent },
+      getHTML: () => html.current,
+      getJSON: () => ({ type: 'doc', content: html.current ? [{ type: 'paragraph' }] : [] }),
+    },
     mockUseTemplateMutateAsync: vi.fn(),
+    mockCreateTemplateMutateAsync: vi.fn(),
     mockImportMutateAsync: vi.fn(),
-    templatesState: { items: [] as { id: number; title: string; category: string | null }[] },
+    templatesState: { items: [] as {
+      id: number;
+      title: string;
+      category: string | null;
+      isGlobal?: boolean;
+      description?: string | null;
+      icon?: string | null;
+    }[] },
   };
 });
 
@@ -61,6 +115,7 @@ vi.mock('../../shared/hooks/use-standalone', () => ({
   // GET /api/templates returns a bare array — mirror the real wire shape.
   useTemplates: () => ({ data: templatesState.items, isLoading: false }),
   useUseTemplate: () => ({ mutateAsync: mockUseTemplateMutateAsync, isPending: false }),
+  useCreateTemplate: () => ({ mutateAsync: mockCreateTemplateMutateAsync, isPending: false }),
   useImportMarkdown: () => ({ mutateAsync: mockImportMutateAsync, isPending: false }),
   useLocalSpaces: () => ({
     data: [
@@ -93,7 +148,13 @@ vi.mock('../../shared/components/article/Editor', async () => {
         />
       );
     },
-    EditorToolbar: () => null,
+    EditorToolbar: ({ pageProperty, actions }: { pageProperty?: React.ReactNode; actions?: React.ReactNode }) => (
+      <div data-testid="editor-toolbar-mock">
+        {pageProperty}
+        {actions}
+      </div>
+    ),
+    EditorContextToolbars: () => null,
     TableContextToolbar: () => null,
     LayoutContextToolbar: () => null,
     ColumnContextToolbar: () => null,
@@ -120,65 +181,340 @@ function createWrapper() {
   };
 }
 
+/**
+ * The form opens on Confluence with a space already chosen since #1122, so a
+ * test about local-space behaviour has to switch type first — which, by design,
+ * clears the preselected space.
+ */
+async function switchToLocal() {
+  await waitFor(() => {
+    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+  });
+  fireEvent.click(screen.getByTestId('article-type-local'));
+}
+
+async function selectLocalSpace(key: string) {
+  await switchToLocal();
+  fireEvent.change(screen.getByTestId('space-selector'), { target: { value: key } });
+}
+
 describe('NewPagePage', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     mockCreateMutateAsync.mockClear();
     mockSetContent.mockClear();
     mockUseTemplateMutateAsync.mockReset();
+    mockCreateTemplateMutateAsync.mockReset();
     mockImportMutateAsync.mockReset();
+    mockToastError.mockClear();
+    mockToastSuccess.mockClear();
     templatesState.items.length = 0;
     editorHtml.current = '';
+    spacesState.confluence = [...DEFAULT_CONFLUENCE_SPACES];
+    localStorage.clear();
   });
 
-  it('navigates to the imported page using articles[0].id from the import envelope', async () => {
-    mockImportMutateAsync.mockResolvedValue({
-      imported: 1,
-      total: 1,
-      articles: [{ id: 'standalone-xyz', title: 'note', success: true }],
+  // ── Import Markdown loads the editor instead of saving (#1133) ────────────
+  // It used to POST to a route that created the page outright, always under the
+  // hardcoded `_standalone` space, then navigate to the read-only view — so the
+  // space picked in this very form was ignored and the user never saw the
+  // content before it was saved.
+
+  describe('import markdown (#1133)', () => {
+    function importFile(name = 'note.md') {
+      const input = screen.getByTestId('import-markdown-input');
+      fireEvent.change(input, { target: { files: [new File(['# hi'], name, { type: 'text/markdown' })] } });
+    }
+
+    it('loads the converted body into the editor and saves nothing', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalledWith('<h1>hi</h1>', { emitUpdate: true }));
+      // No page was created, so there is nowhere to navigate to — the user
+      // stays in the form to review and choose where it goes.
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(mockCreateMutateAsync).not.toHaveBeenCalled();
     });
-    render(<NewPagePage />, { wrapper: createWrapper() });
-    const input = screen.getByTestId('import-markdown-input');
-    const file = new File(['# hi'], 'note.md', { type: 'text/markdown' });
-    fireEvent.change(input, { target: { files: [file] } });
-    // Real bug: the old code read result.id (undefined) → navigated to /pages/undefined.
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/pages/standalone-xyz'));
+
+    it('fills the title from the import when the field is empty', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'Front-Matter Title', bodyHtml: '<p>x</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('Front-Matter Title'));
+    });
+
+    it('replaces a title an earlier import wrote when a second file is imported', async () => {
+      mockImportMutateAsync.mockResolvedValueOnce({
+        title: 'First File', bodyHtml: '<p>one</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile('first.md');
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('First File'));
+
+      mockImportMutateAsync.mockResolvedValueOnce({
+        title: 'Second File', bodyHtml: '<p>two</p>', labels: [],
+      });
+      importFile('second.md');
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalledTimes(2));
+
+      await waitFor(() => expect(screen.getByTestId('title-input')).toHaveValue('Second File'));
+    });
+
+    it('does not overwrite a title the user has already typed', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'Front-Matter Title', bodyHtml: '<p>x</p>', labels: [],
+      });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My own title' } });
+
+      importFile();
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(screen.getByTestId('title-input')).toHaveValue('My own title');
+    });
+
+    // The bug, stated as a test: the create that follows an import must carry
+    // the space the form is showing, not '_standalone'.
+    it('creates the imported page in the selected Confluence space', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'DEV', title: 'note', bodyHtml: '<h1>hi</h1>' }),
+        );
+      });
+      expect(mockCreateMutateAsync).not.toHaveBeenCalledWith(
+        expect.objectContaining({ spaceKey: '_standalone' }),
+      );
+    });
+
+    it('creates the imported page in a selected local space, with its visibility', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<h1>hi</h1>', labels: [],
+      });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await selectLocalSpace('notes');
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'notes', visibility: 'private' }),
+        );
+      });
+    });
+
+    // Labels ride along with the create. They used to be applied afterwards via
+    // PUT /pages/:id/labels, keyed on the id POST /pages returns — which for a
+    // Confluence create is the *Confluence content id*. That id is numeric, and
+    // the labels route reads a numeric id as a database primary key, so the
+    // follow-up labelled whatever local page held that pk, or nothing at all.
+    it('sends front-matter labels with the create, not as a follow-up call', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<p>x</p>', labels: ['api', 'guide'],
+      });
+      // The shape a Confluence create really returns: a Confluence content id.
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: '688130', title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(mockCreateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ spaceKey: 'DEV', labels: ['api', 'guide'] }),
+        );
+      });
+    });
+
+    it('omits labels entirely when the file declared none', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'note', bodyHtml: '<p>x</p>', labels: [] });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(mockCreateMutateAsync.mock.calls[0][0]).not.toHaveProperty('labels');
+    });
+
+    // Applying a template replaces the imported body, so carrying the discarded
+    // file's front-matter labels onto the new page is wrong.
+    it('drops pending labels when a template replaces the imported body', async () => {
+      mockImportMutateAsync.mockResolvedValue({
+        title: 'note', bodyHtml: '<p>imported</p>', labels: ['api'],
+      });
+      templatesState.items.push({ id: 1, title: 'Meeting Notes', category: null });
+      mockUseTemplateMutateAsync.mockResolvedValueOnce({ bodyJson: null, bodyHtml: '<p>Template body</p>' });
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 42, title: 'note', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      importFile();
+      await waitFor(() => expect(mockSetContent).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      fireEvent.click(screen.getByText('Meeting Notes'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('template-gallery-modal')).not.toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByText('Create Page'));
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(mockCreateMutateAsync.mock.calls[0][0]).not.toHaveProperty('labels');
+    });
+
+    it('strips a .markdown extension as well as .md', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'note', bodyHtml: '<p>x</p>', labels: [] });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile('release-notes.markdown');
+
+      await waitFor(() => {
+        expect(mockImportMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'release-notes' }),
+        );
+      });
+    });
+
+    it('reports a failed conversion without touching the editor', async () => {
+      mockImportMutateAsync.mockRejectedValue(new Error('Markdown too large (max ~1MB)'));
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importFile();
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(mockSetContent).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      // The reason has to reach the user. Asserting only that nothing changed
+      // is what made this class of failure so hard to diagnose (#1178): the
+      // test passed just as happily when the toast said nothing usable.
+      await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Markdown too large (max ~1MB)'));
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+    });
+
+    // ── Oversize files are refused here, not by a 413 the user cannot read ───
+    // #1178: there was no size guard at all, so an oversize file round-tripped
+    // to the edge and came back as nginx's HTML "Request Entity Too Large".
+
+    /** A file whose `size` and text are both `chars` characters of ASCII. */
+    function importOversizeFile(chars: number) {
+      const input = screen.getByTestId('import-markdown-input');
+      const file = new File(['x'.repeat(chars)], 'big.md', { type: 'text/markdown' });
+      fireEvent.change(input, { target: { files: [file] } });
+    }
+
+    it('refuses a file past the character limit, naming the limit', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importOversizeFile(1_000_001);
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+      const message = mockToastError.mock.calls[0][0] as string;
+      expect(message).toContain('1,000,000');
+      expect(message).toMatch(/character/i);
+      // No round-trip: the point is to fail before the request.
+      expect(mockImportMutateAsync).not.toHaveBeenCalled();
+      expect(mockSetContent).not.toHaveBeenCalled();
+    });
+
+    it('refuses a file too large to be worth reading, without reading it', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      // 1,000,000 characters is at most ~3 MB of UTF-8, so anything past 4 MB
+      // cannot be under the character limit — refuse it on bytes rather than
+      // pulling it into memory to count.
+      importOversizeFile(4 * 1_000_000 + 1);
+
+      await waitFor(() => expect(mockToastError).toHaveBeenCalled());
+      expect(mockToastError.mock.calls[0][0]).toMatch(/too large|MB/i);
+      expect(mockImportMutateAsync).not.toHaveBeenCalled();
+    });
+
+    it('accepts a file at the character limit', async () => {
+      mockImportMutateAsync.mockResolvedValue({ title: 'big', bodyHtml: '<p>x</p>', labels: [] });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      importOversizeFile(1_000_000);
+
+      await waitFor(() => expect(mockImportMutateAsync).toHaveBeenCalled());
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
   });
 
-  it('renders the New Page title and form fields', () => {
+  it('renders the page form fields and title placeholder', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    expect(screen.getByText('New Page')).toBeInTheDocument();
     expect(screen.getByTestId('title-input')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Untitled page')).toBeInTheDocument();
   });
 
-  it('exposes an accessible name on the back button (#939)', () => {
+  it('exposes a labeled Cancel as the exit from the create form (#939)', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    expect(screen.getByRole('button', { name: /back to pages/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument();
   });
 
-  it('shows article type toggle defaulting to Local Article', () => {
+  it('renders both article type toggle buttons', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     expect(screen.getByTestId('article-type-local')).toBeInTheDocument();
     expect(screen.getByTestId('article-type-confluence')).toBeInTheDocument();
   });
 
-  it('exposes aria-pressed on the article type toggle buttons (#955)', () => {
+  it('exposes aria-pressed on the article type toggle buttons (#955)', async () => {
     // These are toggle buttons — screen-reader users need aria-pressed to know
-    // which type is currently selected. Default is Local.
+    // which type is currently selected. Default is Confluence since #1122.
     render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId('article-type-local'));
     expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'false');
-
-    fireEvent.click(screen.getByTestId('article-type-confluence'));
-    expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('exposes aria-pressed on the visibility toggle buttons (#955)', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Visibility picker only renders once a local space is selected.
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    // Visibility picker only renders once a LOCAL space is selected, and the
+    // form now opens on Confluence (#1122).
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByTestId('visibility-picker')).toBeInTheDocument();
     });
@@ -189,6 +525,163 @@ describe('NewPagePage', () => {
     fireEvent.click(screen.getByTestId('visibility-shared'));
     expect(screen.getByTestId('visibility-private')).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByTestId('visibility-shared')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  // ── Confluence preselected by default (#1122) ─────────────────────────────
+  // The form used to open on Local with an empty picker, so the common case
+  // (most articles are authored in Confluence) cost two extra clicks and the
+  // rare one cost none.
+
+  describe('default source (#1122)', () => {
+    it('opens on Confluence with a space already selected', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+      });
+      // Alphabetical by name, which is the order GET /api/spaces returns.
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      // …and the location picker is live immediately, so the user can see
+      // where the page is about to go.
+      expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+    });
+
+    it('preselects the Confluence space the user last created in', async () => {
+      localStorage.setItem('compendiq:last-confluence-space', 'OPS');
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('OPS');
+      });
+    });
+
+    // The remembered key is per-browser, not per-user, and a space can be
+    // unsynced or a role revoked between visits. Preselecting a space the user
+    // cannot reach would put them in front of a picker whose value is not even
+    // an option — and a create that 403s.
+    it('ignores a remembered space the user can no longer reach', async () => {
+      localStorage.setItem('compendiq:last-confluence-space', 'GONE');
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+    });
+
+    it('records the space after a successful Confluence create', async () => {
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'T', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'OPS' } });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => {
+        expect(localStorage.getItem('compendiq:last-confluence-space')).toBe('OPS');
+      });
+    });
+
+    // Remembering a browsed-to space would make the next visit preselect a
+    // space the user never actually used — and if the create failed because
+    // they could not write there, it would keep doing so.
+    it('does not record the space when the create fails', async () => {
+      mockCreateMutateAsync.mockRejectedValueOnce(new Error('Access denied to this space'));
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+
+      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'OPS' } });
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(localStorage.getItem('compendiq:last-confluence-space')).toBeNull();
+    });
+
+    it('does not record a local space', async () => {
+      mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-id', title: 'T', version: 1 });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await selectLocalSpace('notes');
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
+      fireEvent.click(screen.getByText('Create Page'));
+
+      await waitFor(() => expect(mockCreateMutateAsync).toHaveBeenCalled());
+      expect(localStorage.getItem('compendiq:last-confluence-space')).toBeNull();
+    });
+
+    // Confluence unconfigured, or configured but nothing synced yet: there is
+    // no Confluence space to preselect, so the form must stay exactly as it
+    // was rather than landing on a type with an empty picker.
+    // `GET /api/spaces` appends RBAC-assigned-but-unsynced keys with
+    // `source: 'confluence'` and `lastSynced: null` (spaces.ts,
+    // `unsyncedSelections`), so "nothing synced" does NOT mean "no Confluence
+    // space". They are valid create targets — POST /api/pages writes straight
+    // to Confluence — but a space the user demonstrably works in is a better
+    // guess, so a synced one wins.
+    it('prefers a synced Confluence space over an assigned-but-unsynced one', async () => {
+      spacesState.confluence = [unsyncedSpace('AAA'), ...DEFAULT_CONFLUENCE_SPACES];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+      });
+    });
+
+    it('falls back to an unsynced Confluence space when that is all there is', async () => {
+      spacesState.confluence = [unsyncedSpace('AAA'), unsyncedSpace('BBB')];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('article-type-confluence')).toHaveAttribute('aria-pressed', 'true');
+      });
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('AAA');
+    });
+
+    // A remembered space still wins over both — the user chose it.
+    it('still honours a remembered space even when it is unsynced', async () => {
+      localStorage.setItem('compendiq:last-confluence-space', 'BBB');
+      spacesState.confluence = [unsyncedSpace('BBB'), ...DEFAULT_CONFLUENCE_SPACES];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('BBB');
+      });
+    });
+
+    it('stays on Local when there is no Confluence space', async () => {
+      spacesState.confluence = [];
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+      });
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('');
+      expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
+    });
+
+    it('leaves the user on Local once they have chosen it', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      await switchToLocal();
+
+      // A late re-render must not drag them back to Confluence.
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'Typing' } });
+      await waitFor(() => {
+        expect(screen.getByTestId('title-input')).toHaveValue('Typing');
+      });
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('');
+    });
   });
 
   it('shows space selector always visible', () => {
@@ -203,9 +696,9 @@ describe('NewPagePage', () => {
     expect(screen.getByTestId('space-selector')).toBeInTheDocument();
   });
 
-  it('shows local space options when Local type is active', () => {
+  it('shows local space options when Local type is active', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Default is local — local spaces should appear as options
+    await switchToLocal();
     const selector = screen.getByTestId('space-selector');
     expect(selector).toContainElement(screen.getByRole('option', { name: 'Default Local Space' }));
     expect(selector).toContainElement(screen.getByRole('option', { name: 'My Notes' }));
@@ -235,22 +728,48 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('does not show location picker when no space is selected', () => {
+  it('does not show location picker when no space is selected', async () => {
+    // Reach the no-space state honestly. Clicking the already-pressed
+    // Confluence toggle would also clear it, but only because of a bug — see
+    // the idempotence test below.
+    spacesState.confluence = [];
     render(<NewPagePage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('article-type-confluence'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('article-type-local')).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('');
     expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
   });
 
-  it('does not show location picker for local articles until a space is selected', () => {
+  // Moving the reset out of `useEffect(..., [articleType])` into the click
+  // handler dropped an implicit condition: React bails out of
+  // `setArticleType(sameValue)`, so the effect never re-ran for a click on the
+  // already-pressed button. Without an explicit guard the handler throws away
+  // a space and parent the user has already chosen.
+  it('clicking the already-active type toggle keeps the selected space', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Default is local — no space selected yet, so no location picker
+    await waitFor(() => {
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    });
+    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('article-type-confluence'));
+
+    expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
+  });
+
+  it('does not show location picker for local articles until a space is selected', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    // Switching type clears the space, so there is nothing to locate within.
+    await switchToLocal();
     expect(screen.queryByTestId('location-picker-section')).not.toBeInTheDocument();
   });
 
   it('shows location picker for local articles after selecting a local space', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Default is local — select a local space
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
     });
@@ -258,7 +777,7 @@ describe('NewPagePage', () => {
 
   it('shows visibility picker when a local space is selected', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByTestId('visibility-picker')).toBeInTheDocument();
     });
@@ -277,7 +796,7 @@ describe('NewPagePage', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
 
     // Select a local space
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByTestId('location-picker-section')).toBeInTheDocument();
     });
@@ -289,9 +808,11 @@ describe('NewPagePage', () => {
     });
   });
 
-  it('create button is disabled when no space selected', () => {
+  it('create button is disabled when no space selected', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    // Enter a title but no space selected
+    // A space is preselected on open (#1122), so reach the no-space state the
+    // way a user does: switch type, which clears it.
+    await switchToLocal();
     fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
     const createBtn = screen.getByText('Create Page');
     expect(createBtn.closest('button')).toBeDisabled();
@@ -300,59 +821,75 @@ describe('NewPagePage', () => {
   it('create button is enabled after title and space are both set', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       const createBtn = screen.getByText('Create Page');
       expect(createBtn.closest('button')).not.toBeDisabled();
     });
   });
 
-  it('explains the disabled Create Page button via a hover hint', () => {
+  it('disables Create Page button when title is empty', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect((screen.getByTestId('space-selector') as HTMLSelectElement).value).toBe('DEV');
+    });
     const createBtn = screen.getByText('Create Page').closest('button')!;
     expect(createBtn).toBeDisabled();
-    // nm-button-primary sets pointer-events:none on :disabled, which swallows
-    // a title tooltip placed on the button itself — the wrapping span carries it.
-    const hintCarrier = createBtn.closest('[title]');
-    expect(hintCarrier).not.toBeNull();
-    expect(hintCarrier).toHaveAttribute('title', 'Enter a title and select a space first');
   });
 
-  it('drops the hover hint once the Create Page button is enabled', async () => {
+  it('enables Create Page button when title and space are present', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
     fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    await selectLocalSpace('__local__');
     await waitFor(() => {
       expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
     });
-    expect(screen.getByText('Create Page').closest('[title]')).toBeNull();
   });
 
-  it('shows the disabled-create hint as visible text wired via aria-describedby', () => {
-    // A title tooltip is mouse-only — keyboard, touch and screen-reader users
-    // need the explanation too, so it must exist as real text in the DOM and
-    // be linked to the button for assistive tech.
+  it('renders starter action buttons when the page is empty', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    const createBtn = screen.getByText('Create Page').closest('button')!;
-    expect(createBtn).toBeDisabled();
-
-    const hint = screen.getByText('Enter a title and select a space first', {
-      selector: '#create-page-hint',
-    });
-    expect(hint).toBeInTheDocument();
-    expect(createBtn).toHaveAttribute('aria-describedby', 'create-page-hint');
+    expect(screen.getByTestId('new-page-starter-zone')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-template-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-import-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-notion-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-ai-btn')).toBeInTheDocument();
   });
 
-  it('removes the visible hint once the Create Page button is enabled', async () => {
+  it('opens the Notion import wizard from the starter without touching Markdown import', async () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
-    fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Page' } });
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+    expect(screen.queryByTestId('notion-import-dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('starter-notion-btn'));
+    expect(await screen.findByTestId('notion-import-dialog')).toBeInTheDocument();
+    expect(mockImportMutateAsync).not.toHaveBeenCalled();
+    expect(mockCreateMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('opens AI assistant create modal from starter button', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    expect(screen.queryByTestId('new-page-ai-btn')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('starter-ai-btn'));
+    expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-spec')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-guide')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-notes')).toBeInTheDocument();
+    expect(screen.getByTestId('skill-postmortem')).toBeInTheDocument();
+  });
+
+  it('generates a draft using AI assistant create modal', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByTestId('starter-ai-btn'));
+    expect(await screen.findByTestId('ai-draft-modal')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('skill-spec'));
+    fireEvent.change(screen.getByTestId('ai-prompt-input'), { target: { value: 'Distributed Cache Service' } });
+    fireEvent.click(screen.getByTestId('ai-generate-submit-btn'));
+
     await waitFor(() => {
-      expect(screen.getByText('Create Page').closest('button')).not.toBeDisabled();
+      expect(screen.queryByTestId('ai-draft-modal')).not.toBeInTheDocument();
+      expect(mockSetContent).toHaveBeenCalled();
     });
-    expect(document.querySelector('#create-page-hint')).toBeNull();
-    expect(screen.getByText('Create Page').closest('button')).not.toHaveAttribute('aria-describedby');
   });
+
 
   it('submit uses the selected local spaceKey (not hardcoded __local__)', async () => {
     mockCreateMutateAsync.mockResolvedValueOnce({ id: 'new-page-id', title: 'My Notes Page', version: 1 });
@@ -360,7 +897,7 @@ describe('NewPagePage', () => {
     render(<NewPagePage />, { wrapper: createWrapper() });
 
     // Select the "My Notes" local space
-    fireEvent.change(screen.getByTestId('space-selector'), { target: { value: 'notes' } });
+    await selectLocalSpace('notes');
     fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Notes Page' } });
 
     fireEvent.click(screen.getByText('Create Page'));
@@ -509,7 +1046,7 @@ describe('NewPagePage', () => {
       });
 
       fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'From Template' } });
-      fireEvent.change(screen.getByTestId('space-selector'), { target: { value: '__local__' } });
+      await selectLocalSpace('__local__');
       fireEvent.click(screen.getByText('Create Page'));
 
       await waitFor(() => {
@@ -517,6 +1054,112 @@ describe('NewPagePage', () => {
           expect.objectContaining({ bodyHtml: '<p>Template body</p>' }),
         );
       });
+    });
+
+    it('groups templates into Shared and Mine and shows icon plus description', async () => {
+      templatesState.items.push(
+        { id: 1, title: 'Meeting Notes', category: 'meetings', isGlobal: true, description: 'Agenda and decisions', icon: '📅' },
+        { id: 2, title: 'My standup', category: 'notes', isGlobal: false, description: 'Personal daily notes', icon: '✅' },
+      );
+
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      expect(await screen.findByText('Shared templates')).toBeInTheDocument();
+      expect(screen.getByText('My templates')).toBeInTheDocument();
+      expect(screen.getByText('Agenda and decisions')).toBeInTheDocument();
+      expect(screen.getByText('Personal daily notes')).toBeInTheDocument();
+      expect(screen.getByText('📅')).toBeInTheDocument();
+      expect(screen.getByText('✅')).toBeInTheDocument();
+      expect(screen.getByText('Shared')).toBeInTheDocument();
+      expect(screen.getByText('Mine')).toBeInTheDocument();
+    });
+
+    it('offers Save current as template when the live editor body is non-empty', async () => {
+      mockCreateTemplateMutateAsync.mockResolvedValueOnce({ id: 9, title: 'From editor' });
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Live body</p>' } });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      fireEvent.click(await screen.findByTestId('save-current-as-template-btn'));
+      fireEvent.change(screen.getByTestId('save-template-title-input'), { target: { value: 'From editor' } });
+      fireEvent.click(screen.getByTestId('save-template-submit-btn'));
+
+      await waitFor(() => {
+        expect(mockCreateTemplateMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'From editor',
+            bodyHtml: '<p>Live body</p>',
+            bodyJson: expect.any(String),
+          }),
+        );
+      });
+    });
+
+    it('hides Save current as template when the editor is empty', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+      expect(await screen.findByTestId('template-gallery-modal')).toBeInTheDocument();
+      expect(screen.queryByTestId('save-current-as-template-btn')).not.toBeInTheDocument();
+    });
+
+    it('prefills template title from current page title when saving current as template', async () => {
+      render(<NewPagePage />, { wrapper: createWrapper() });
+
+      fireEvent.change(screen.getByTestId('title-input'), { target: { value: 'My Incident Postmortem' } });
+      fireEvent.change(screen.getByTestId('mock-editor'), { target: { value: '<p>Some notes</p>' } });
+      fireEvent.click(screen.getByTestId('use-template-btn'));
+
+      fireEvent.click(await screen.findByTestId('save-current-as-template-btn'));
+      const titleInput = screen.getByTestId('save-template-title-input') as HTMLInputElement;
+      expect(titleInput.value).toBe('My Incident Postmortem');
+    });
+  });
+
+  it('keeps Cancel and the identity row in the sticky header', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const sticky = await screen.findByTestId('new-page-sticky-header');
+    expect(sticky).toContainElement(screen.getByTestId('cancel-new-page-btn'));
+    expect(sticky).toContainElement(screen.getByTestId('article-type-toggle'));
+    expect(sticky).toContainElement(screen.getByTestId('space-selector'));
+    expect(sticky).not.toContainElement(screen.getByTestId('title-input'));
+  });
+
+  it('Cancel leaves the create form without creating', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    fireEvent.click(await screen.findByTestId('cancel-new-page-btn'));
+    expect(mockNavigate).toHaveBeenCalledWith('/pages');
+    expect(mockCreateMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('renders template and import actions as compact icon buttons beside tag popover', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+    const templateBtn = await screen.findByTestId('use-template-btn');
+    const importBtn = await screen.findByTestId('import-markdown-btn');
+    const tagTrigger = await screen.findByTestId('tag-popover-trigger');
+
+    expect(templateBtn).toHaveClass('nm-icon-button');
+    expect(importBtn).toHaveClass('nm-icon-button');
+    expect(tagTrigger).toHaveClass('nm-icon-button');
+  });
+
+  it('applies draft content and title when compendiq:apply-draft event is dispatched', async () => {
+    render(<NewPagePage />, { wrapper: createWrapper() });
+
+    window.dispatchEvent(
+      new CustomEvent('compendiq:apply-draft', {
+        detail: {
+          markdown: '# Architecture Spec\n\nContent here',
+          html: '<h1>Architecture Spec</h1><p>Content here</p>',
+          title: 'Architecture Spec',
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mockSetContent).toHaveBeenCalledWith('<h1>Architecture Spec</h1><p>Content here</p>', { emitUpdate: true });
+      expect(screen.getByTestId('title-input')).toHaveValue('Architecture Spec');
     });
   });
 });

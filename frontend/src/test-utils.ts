@@ -2,7 +2,7 @@
  * Shared test-only helpers. Not imported by application code.
  */
 
-import { vi } from 'vitest';
+import { expect, vi } from 'vitest';
 
 /**
  * `vi.mock` factory body for `shared/lib/api` that replaces `apiFetch` with a
@@ -60,4 +60,202 @@ export function extractBlock(source: string, openingLine: string): string {
     }
   }
   return '';
+}
+
+/**
+ * Mock element dimensions so @tanstack/react-virtual can compute visible items
+ * in jsdom, which reports every rect as 0x0. Without it the virtual list
+ * renders zero rows and any assertion about a page row silently passes against
+ * nothing.
+ *
+ * The selectors are the virtualizer's own contract: the scroll container the
+ * page finds via `[data-scroll-container]` gets a usable height, and the
+ * `data-index` attribute is what `virtualizer.measureElement` stamps on each
+ * row wrapper. Shared by `PagesPage.test.tsx` and
+ * `pages-row-mobile-title.test.tsx` so the next virtualizer change is a
+ * one-site edit.
+ *
+ * Returns the restore function; call it in afterEach.
+ */
+export function installVirtualizerRectShim(): () => void {
+  const originalGetBCR = Element.prototype.getBoundingClientRect;
+
+  Element.prototype.getBoundingClientRect = function () {
+    // Give the scroll container a usable height for the virtualizer
+    if (this.hasAttribute?.('data-scroll-container')) {
+      return { top: 0, left: 0, bottom: 800, right: 1024, width: 1024, height: 800, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    }
+    // For virtual list items measured by the virtualizer
+    if (this.hasAttribute?.('data-index')) {
+      return { top: 0, left: 0, bottom: 80, right: 1024, width: 1024, height: 80, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+    }
+    return originalGetBCR.call(this);
+  };
+
+  return () => { Element.prototype.getBoundingClientRect = originalGetBCR; };
+}
+
+/**
+ * #1154: assert an AI composer's controls are reachable in reading order
+ * (WCAG 2.4.3).
+ *
+ * Sequential focus navigation follows **document order**; it ignores `order`,
+ * and `display: contents` does not escape it either. So the property worth
+ * pinning is that each zone's card sits immediately before that zone's own
+ * trigger in the markup, which is what the per-zone row structure buys.
+ *
+ * **Both halves are load-bearing, and the second is the one that bites.** jsdom
+ * performs no layout, so a DOM sequence alone cannot tell a correct composer
+ * from the pre-#1154 one — the markup order was already this; it was `order-*`
+ * that moved the boxes away from it. Asserting that no child carries an
+ * `order-*` is therefore what makes the sequence *mean* the visual order: with
+ * no reordering in play, document order is the rendered order. Drop that half
+ * and this test would pass on the very defect it exists to catch.
+ *
+ * Controls are compared whether or not they are `disabled` — a disabled control
+ * is skipped by Tab but does not change the order of the rest, and which
+ * controls are disabled varies with vision capability and prompt emptiness.
+ *
+ * The `order-*` half matches **classes**, so an inline `style={{ order: 2 }}`
+ * slips past it. That is a bounded limit rather than a hole: this codebase orders
+ * with utilities, and the check exists to stop the convention growing back by
+ * habit — not to defeat someone set on reordering a composer by other means.
+ *
+ * The convention holds on all three composer surfaces (the dock, `/ai` Generate,
+ * `/ai` Improve), so the guard lives here rather than in one of the three
+ * suites: a fourth surface should not be able to reintroduce the defect just by
+ * being tested elsewhere.
+ *
+ * @param box       the `.nm-composer` element itself
+ * @param expected  every control the composer contains, in the order it should
+ *                  be reached. Each entry is a `data-testid`, or a bare tag name
+ *                  (`'textarea'`, `'button'`) for the controls that carry no
+ *                  testid — Generate's field and send button.
+ */
+export function expectComposerFocusOrder(box: HTMLElement, expected: string[]): void {
+  const FOCUSABLE = 'button, textarea, input, select, a[href], [tabindex]';
+
+  const controls = Array.from(box.querySelectorAll<HTMLElement>(FOCUSABLE))
+    // Hidden file inputs are `display: none` — not focusable, and no part of
+    // the tab sequence. jsdom computes no styles from Tailwind classes, so the
+    // class is the only signal available here.
+    .filter((el) => !el.classList.contains('hidden'))
+    .filter((el) => el.getAttribute('tabindex') !== '-1');
+
+  expect(controls.length, 'composer rendered no focusable controls').toBeGreaterThan(0);
+  expect(
+    controls.map((el) => el.getAttribute('data-testid') ?? el.tagName.toLowerCase()),
+    'composer controls in document order, i.e. the order Tab reaches them',
+  ).toEqual(expected);
+
+  // `className` on an SVG element is an SVGAnimatedString, not a string, and
+  // lucide renders SVGs throughout — read the attribute instead.
+  //
+  // Variants count: `md:order-2` reorders the boxes at exactly the widths these
+  // composers are used at, while leaving the tab sequence where it was — the
+  // defect verbatim. Matching only the bare utility let the whole responsive
+  // family straight back in.
+  const reordered = [box, ...box.querySelectorAll<HTMLElement>('*')].filter((el) =>
+    /(?:^|\s)(?:[a-z-]+:)*order-(?:\d+|first|last|none)(?:\s|$)/.test(el.getAttribute('class') ?? ''),
+  );
+  expect(
+    reordered.map((el) => `<${el.tagName.toLowerCase()} class="${el.getAttribute('class')}">`),
+    'no composer element may carry order-*: it moves boxes without moving the ' +
+      'tab sequence, which is the WCAG 2.4.3 defect #1154 removed',
+  ).toEqual([]);
+}
+
+/**
+ * sRGB alpha-composite: `fg` at `alpha` over an opaque `bg` — what the browser
+ * paints for a `bg-info/10` or `bg-foreground/10` tint. Contrast must be
+ * measured against the COMPOSITE, not the raw token: a hue can clear AA on the
+ * bare surface and fail on its own tinted panel.
+ *
+ * The argument order is foreground → alpha → background, reading like the
+ * class it models (`bg-info/10` … over a pane). It lives HERE because two
+ * suites measure tints and the second local copy flipped the signature —
+ * `over(fg, bg, alpha)` — and a pair of alpha-composite helpers with reversed
+ * argument orders invites composing surface-over-ink for a plausible-but-wrong
+ * ratio. One helper, one order.
+ */
+export function composite(fg: string, alpha: number, bg: string): string {
+  const channel = (i: number) => {
+    const f = parseInt(fg.slice(i, i + 2), 16);
+    const b = parseInt(bg.slice(i, i + 2), 16);
+    return Math.round(alpha * f + (1 - alpha) * b)
+      .toString(16)
+      .padStart(2, '0');
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/**
+ * A drivable `IntersectionObserver` for jsdom.
+ *
+ * `test-setup.ts` installs a global stub whose constructor DROPS the callback,
+ * so nothing can ever intersect — which is right for the outline's scroll-spy
+ * (it must not fire) and useless for anything that only does work once it is on
+ * screen. This one keeps every callback and every observed target, and
+ * `intersectAll()` reports them all as intersecting.
+ *
+ * `vitest.config.ts` sets `unstubGlobals: true`, so the stub is removed after
+ * each test without the caller restoring anything.
+ */
+export function installIntersectionObserverStub(): {
+  intersectAll: () => void;
+  observedCount: () => number;
+} {
+  const instances: Array<{
+    callback: IntersectionObserverCallback;
+    observer: IntersectionObserver;
+    targets: Element[];
+  }> = [];
+
+  class DrivableIntersectionObserver {
+    readonly root: Element | null = null;
+    readonly rootMargin: string = '';
+    readonly thresholds: ReadonlyArray<number> = [];
+    private readonly targets: Element[] = [];
+
+    constructor(callback: IntersectionObserverCallback) {
+      instances.push({
+        callback,
+        observer: this as unknown as IntersectionObserver,
+        targets: this.targets,
+      });
+    }
+
+    observe(target: Element) {
+      this.targets.push(target);
+    }
+
+    unobserve(target: Element) {
+      const at = this.targets.indexOf(target);
+      if (at >= 0) this.targets.splice(at, 1);
+    }
+
+    disconnect() {
+      this.targets.length = 0;
+    }
+
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+
+  vi.stubGlobal('IntersectionObserver', DrivableIntersectionObserver);
+
+  return {
+    observedCount: () => instances.reduce((n, i) => n + i.targets.length, 0),
+    intersectAll: () => {
+      for (const instance of instances) {
+        const targets = [...instance.targets];
+        if (targets.length === 0) continue;
+        instance.callback(
+          targets.map((target) => ({ target, isIntersecting: true }) as IntersectionObserverEntry),
+          instance.observer,
+        );
+      }
+    },
+  };
 }

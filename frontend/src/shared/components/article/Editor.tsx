@@ -1,37 +1,24 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import * as Popover from '@radix-ui/react-popover';
 import { useEditor, useEditorState, EditorContent } from '@tiptap/react';
-import { TextSelection } from '@tiptap/pm/state';
-import DragHandle from '@tiptap/extension-drag-handle-react';
 import StarterKit from '@tiptap/starter-kit';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { Image } from '@tiptap/extension-image';
 import { TitledCodeBlock } from './TitledCodeBlock';
 import { Placeholder } from '@tiptap/extensions';
-import { Highlight } from '@tiptap/extension-highlight';
+import TextAlign from '@tiptap/extension-text-align';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { Color } from '@tiptap/extension-color';
 import { lowlight } from '../../lib/lowlight';
 import { SearchAndReplaceExtension } from './search-extension';
 import { SearchAndReplace } from './SearchAndReplace';
-import {
-  Bold, Italic, Strikethrough, Code, Heading1, Heading2, Heading3,
-  List, ListOrdered, CheckSquare, Quote, Minus, Undo2, Redo2,
-  Table as TableIcon, Image as ImageIcon, CodeSquare, Columns2,
-  ArrowUpFromLine, ArrowDownFromLine, ArrowLeftFromLine, ArrowRightFromLine,
-  Trash2, Columns3, Rows3, Merge, SplitSquareHorizontal, Square,
-  ToggleLeft, PanelTop, Workflow, Underline, Highlighter, Palette,
-  Badge, ChevronsUpDown, Hash, Paperclip, ListTree, ImagePlus, TableProperties, Table2,
-  Info, TriangleAlert, StickyNote, Lightbulb,
-  GripVertical,
-  Terminal,
-} from 'lucide-react';
+import { ArrowLeftFromLine, ArrowRightFromLine, Trash2, Columns3, Columns2, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { apiFetch } from '../../lib/api';
+import { MIME_TO_EXT, uploadPastedImage } from './editor-image-upload';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
-import { useIsLightTheme } from '../../hooks/use-is-light-theme';
+import { useUiStore } from '../../../stores/ui-store';
 import { MermaidBlock } from './MermaidBlockExtension';
 import {
   ConfluenceLayout,
@@ -60,11 +47,108 @@ import {
   isInConfluenceSection,
   isInConfluenceLayout,
   LAYOUT_PRESETS,
+  ExtendedTable,
+  BlockShortcutsExtension,
+  CommentMark,
+  SafeHighlight,
 } from './article-extensions';
+import { InlineLucideIcon } from './inline-lucide-icon';
 import type { Editor as EditorType } from '@tiptap/react';
 import { VimExtension, type VimState } from './vim-extension';
 import { VimModeIndicator } from './VimModeIndicator';
 import { EditorBubbleMenu } from './EditorBubbleMenu';
+import { CommentPopover } from './CommentPopover';
+import { EditorBlockHandle } from './EditorBlockMenu';
+import { SlashCommandExtension } from './slash-command-extension';
+import { EditorSlashMenu } from './EditorSlashMenu';
+import { TableContextToolbar } from './EditorTableControls';
+export { TableContextToolbar };
+import {
+  handleTableCellClick,
+  handleTableCellTripleClick,
+  handleTableDragStart,
+  syncTableLayoutAttributes,
+} from './table-cell-selection';
+import { ToolbarButton, ToolbarSeparator, LayoutPreview } from './editor-toolbar-primitives';
+import { InlineCompletionExtension } from './InlineCompletionExtension';
+import { SpellcheckExtension } from './SpellcheckExtension';
+import type { SpellLang } from '../../lib/spellcheck/spellcheck-engine';
+import type { InlineCompletionDelay, InlineCompletionMode } from '@compendiq/contracts';
+import {
+  getClientInferenceManager,
+  requestInlineCompletionWithClient,
+} from '../../lib/client-inference/client-inference-manager';
+import { isMac } from '../../lib/platform';
+import Collaboration from '@tiptap/extension-collaboration';
+import CollaborationCaret from '@tiptap/extension-collaboration-caret';
+import type { Doc as YDoc } from 'yjs';
+import type { WebsocketProvider } from 'y-websocket';
+import { renderCollabCaret, selectionRenderCollab } from '../../lib/collab-colors';
+
+export function EditorContextToolbars({
+  editor,
+  className,
+  innerClassName,
+}: {
+  editor: EditorType;
+  className?: string;
+  innerClassName?: string;
+}) {
+  const { inTable, inLayout, inSection } = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      inTable: e.isActive('table'),
+      inLayout: isInConfluenceLayout(e),
+      inSection: isInConfluenceSection(e),
+    }),
+  });
+
+  if (!inTable && !inLayout && !inSection) return null;
+
+  return (
+    <div
+      data-testid="editor-context-toolbars"
+      className={cn(
+        'absolute top-full inset-x-0 z-20 border-b border-border bg-card',
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          'flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 text-xs text-card-foreground motion-safe:animate-in motion-safe:fade-in-50',
+          innerClassName,
+        )}
+      >
+        {inTable && <TableContextToolbar editor={editor} />}
+        {inTable && inLayout && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="mx-0.5 h-4 w-px bg-border max-sm:hidden"
+          />
+        )}
+        {inLayout && <LayoutContextToolbar editor={editor} />}
+        {(inTable || inLayout) && inSection && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            className="mx-0.5 h-4 w-px bg-border max-sm:hidden"
+          />
+        )}
+        {inSection && <ColumnContextToolbar editor={editor} />}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The main toolbar moved to its own module when its 27 flat icons were
+ * restructured into menus; it is re-exported here because `PageViewPage`,
+ * `NewPagePage` and the editor tests all import it alongside `Editor`, and the
+ * three context strips below still live in this file.
+ */
+import { EditorToolbar, EmojiPicker } from './EditorToolbar';
+export { EditorToolbar, EmojiPicker };
 
 const ConfluenceImage = Image.extend({
   addAttributes() {
@@ -261,761 +345,31 @@ interface EditorProps {
   pageId?: string;
   /** Callback to trigger a server-side save (used by vim :w command). */
   onSave?: () => void;
-  /** Controlled vim mode — when provided, overrides internal vim state. */
-  vimEnabled?: boolean;
-}
-
-function ToolbarButton({
-  onClick,
-  active,
-  disabled,
-  children,
-  title,
-}: {
-  onClick: () => void;
-  active?: boolean;
-  disabled?: boolean;
-  children: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-pressed={active}
-      className={cn(
-        'rounded p-1.5 transition-colors',
-        active ? 'bg-action/20 text-action ring-1 ring-action/30' : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-        disabled && 'opacity-30 cursor-not-allowed',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ToolbarSeparator() {
-  return <div role="separator" aria-orientation="vertical" className="mx-1 h-5 w-px bg-foreground/10" />;
-}
-
-function ToolbarGroup({ name, children }: { name: string; children: React.ReactNode }) {
-  return (
-    <div
-      role="group"
-      aria-label={name}
-      data-testid={`toolbar-group-${name}`}
-      className="flex items-center gap-0.5"
-    >
-      {children}
-    </div>
-  );
-}
-
-const STATUS_COLORS = [
-  { label: 'Grey', value: 'grey', bg: '#6b7280' },
-  { label: 'Blue', value: 'blue', bg: '#3b82f6' },
-  { label: 'Green', value: 'green', bg: '#22c55e' },
-  { label: 'Yellow', value: 'yellow', bg: '#eab308' },
-  { label: 'Red', value: 'red', bg: '#ef4444' },
-];
-
-function StatusLabelInsert({ editor }: { editor: EditorType }) {
-  const [open, setOpen] = useState(false);
-  const [selectedColor, setSelectedColor] = useState('blue');
-  const [labelText, setLabelText] = useState('');
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const handleInsert = () => {
-    const text = labelText.trim() || 'STATUS';
-    editor.chain().focus().insertContent({ type: 'confluenceStatus', attrs: { color: selectedColor, label: text } }).run();
-    setLabelText('');
-    setOpen(false);
+  /** #1417: resolved availability, personal controls, and page prompt metadata. */
+  inlineCompletion?: {
+    available: boolean;
+    enabled: boolean;
+    delay: InlineCompletionDelay;
+    mode: InlineCompletionMode;
+    codeOnly: boolean;
+    clientInferenceEnabled?: boolean;
+    clientInferenceWithoutServer?: boolean;
+    clientInferenceAdminEnabled?: boolean;
+    title?: string;
+    spaceKey?: string;
+    language?: string;
   };
-
-  return (
-    <div className="relative" ref={ref}>
-      <ToolbarButton onClick={() => setOpen(!open)} title="Insert Status Label">
-        <Badge size={16} />
-      </ToolbarButton>
-      {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 w-52 rounded-lg border border-border bg-card p-3 shadow-lg">
-          <div className="mb-2 flex gap-1">
-            {STATUS_COLORS.map((c) => (
-              <button
-                key={c.value}
-                title={c.label}
-                onClick={() => setSelectedColor(c.value)}
-                className={cn(
-                  'h-5 w-5 rounded-full border-2 transition-transform',
-                  selectedColor === c.value ? 'border-foreground scale-110' : 'border-transparent',
-                )}
-                style={{ backgroundColor: c.bg }}
-              />
-            ))}
-          </div>
-          <input
-            type="text"
-            value={labelText}
-            onChange={(e) => setLabelText(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === 'Enter' && handleInsert()}
-            placeholder="IN PROGRESS"
-            className="mb-2 w-full rounded-md border border-border bg-background px-2 py-1 text-xs uppercase"
-            autoFocus
-          />
-          <button
-            onClick={handleInsert}
-            className="w-full rounded-md border border-action bg-transparent px-2 py-1 text-xs text-action transition-colors hover:bg-action hover:text-action-foreground"
-          >
-            Insert
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * The four Confluence panel macros, in the same order the content converter
- * and the `.panel-*` stylesheet rules use. `swatch` points at the very token
- * each panel is rendered with, so the picker can't drift from the box the
- * author ends up looking at. Every entry pairs its color with an icon and a
- * text label — the type must stay distinguishable without relying on hue.
- */
-const PANEL_TYPES = [
-  { value: 'info', label: 'Info', Icon: Info, swatch: 'var(--color-info)' },
-  { value: 'warning', label: 'Warning', Icon: TriangleAlert, swatch: 'var(--color-warning)' },
-  { value: 'note', label: 'Note', Icon: StickyNote, swatch: 'var(--color-primary)' },
-  { value: 'tip', label: 'Tip', Icon: Lightbulb, swatch: 'var(--color-success)' },
-] as const;
-
-type PanelType = (typeof PANEL_TYPES)[number]['value'];
-
-/**
- * Inserts an empty panel and leaves the caret inside it, so the author types
- * straight into the box instead of clearing out placeholder copy first.
- */
-function insertPanel(editor: EditorType, panelType: PanelType) {
-  editor
-    .chain()
-    .focus()
-    .insertContent({ type: 'panel', attrs: { panelType }, content: [{ type: 'paragraph' }] })
-    .command(({ tr, dispatch }) => {
-      if (!dispatch) return true;
-      // insertContent parks the caret *after* the new block whenever content
-      // follows it, which would leave the author typing underneath the box
-      // rather than inside it. Panels *can* nest (Panel.content is 'block+'),
-      // so stopping descent at the first panel node meant one inserted
-      // inside an existing panel was never visited, landing the caret in the
-      // *outer* panel instead. Visiting every descendant and keeping the
-      // last match finds the innermost one instead: a nested panel starts at
-      // a higher position than its parent, so it's visited (and overwrites
-      // the match) after it. Same transaction, so a single undo removes the
-      // panel.
-      const { from } = tr.selection;
-      let caret: number | null = null;
-      tr.doc.descendants((node, pos) => {
-        if (node.type.name === 'panel' && pos <= from) {
-          caret = pos + 2;
-        }
-        return true;
-      });
-      if (caret !== null) {
-        tr.setSelection(TextSelection.create(tr.doc, caret));
-      }
-      return true;
-    })
-    .run();
-}
-
-function PanelInsert({ editor }: { editor: EditorType }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <ToolbarButton onClick={() => setOpen(!open)} active={open} title="Insert Panel">
-        <Info size={16} />
-      </ToolbarButton>
-      {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
-          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Panel</p>
-          <div className="grid grid-cols-2 gap-1">
-            {PANEL_TYPES.map(({ value, label, Icon, swatch }) => (
-              <button
-                key={value}
-                title={label}
-                onClick={() => {
-                  insertPanel(editor, value);
-                  setOpen(false);
-                }}
-                className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-foreground/5"
-              >
-                <Icon size={14} style={{ color: swatch }} />
-                <span className="text-[11px] whitespace-nowrap text-muted-foreground">{label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-const PRESET_COLORS = [
-  { label: 'Red', value: '#ef4444' },
-  { label: 'Orange', value: '#f97316' },
-  { label: 'Yellow', value: '#eab308' },
-  { label: 'Green', value: '#22c55e' },
-  { label: 'Blue', value: '#3b82f6' },
-  { label: 'Purple', value: '#a855f7' },
-  { label: 'Pink', value: '#ec4899' },
-  { label: 'Grey', value: '#6b7280' },
-];
-
-/**
- * #353: Color picker built on Radix Popover so keyboard / screen-reader
- * users get proper focus management (Escape to close, focus returns to
- * trigger, click-outside dismiss). Trigger is 36×36 and swatches are
- * 28×28 — both comfortably above the issue's >=32×32 / >=24×24 minimums
- * and the WCAG 2.5.5 24×24 target-size guideline. Each swatch carries
- * `aria-label` with the colour name.
- */
-function ColorPickerDropdown({
-  onSelect,
-  onReset,
-  activeColor,
-  icon,
-  title,
-}: {
-  onSelect: (color: string) => void;
-  onReset: () => void;
-  activeColor: string | undefined;
-  icon: React.ReactNode;
-  title: string;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          title={title}
-          aria-label={title}
-          aria-haspopup="dialog"
-          data-testid="color-picker-trigger"
-          className={cn(
-            'flex h-9 w-9 items-center justify-center rounded-md transition-colors',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1',
-            activeColor ? 'ring-1 ring-primary/30' : '',
-            'text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-          )}
-        >
-          <div className="relative">
-            {icon}
-            {activeColor && (
-              <div
-                className="absolute -bottom-1 left-0 right-0 h-1 rounded-full"
-                style={{ backgroundColor: activeColor }}
-              />
-            )}
-          </div>
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          align="start"
-          sideOffset={4}
-          aria-label={`${title} swatches`}
-          className="z-50 rounded-lg border border-border bg-card p-2.5 shadow-lg outline-none"
-        >
-          <div className="grid grid-cols-4 gap-1.5">
-            {PRESET_COLORS.map((c) => (
-              <button
-                key={c.value}
-                type="button"
-                title={c.label}
-                aria-label={c.label}
-                data-testid="color-picker-swatch"
-                onClick={() => {
-                  onSelect(c.value);
-                  setOpen(false);
-                }}
-                className="h-7 w-7 rounded-md border border-border/50 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                style={{ backgroundColor: c.value }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onReset();
-              setOpen(false);
-            }}
-            className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            Reset
-          </button>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
-export function EditorToolbar({ editor, headerNumbering, onToggleHeaderNumbering, vimEnabled, onToggleVim }: { editor: EditorType; headerNumbering?: boolean; onToggleHeaderNumbering?: () => void; vimEnabled?: boolean; onToggleVim?: () => void }) {
-  // Subscribe to editor state changes so toolbar re-renders on selection/formatting changes (#16)
-  const activeState = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({
-      bold: e.isActive('bold'),
-      italic: e.isActive('italic'),
-      strike: e.isActive('strike'),
-      underline: e.isActive('underline'),
-      code: e.isActive('code'),
-      h1: e.isActive('heading', { level: 1 }),
-      h2: e.isActive('heading', { level: 2 }),
-      h3: e.isActive('heading', { level: 3 }),
-      bulletList: e.isActive('bulletList'),
-      orderedList: e.isActive('orderedList'),
-      taskList: e.isActive('taskList'),
-      blockquote: e.isActive('blockquote'),
-      codeBlock: e.isActive('codeBlock'),
-      textColor: e.getAttributes('textStyle').color as string | undefined,
-      highlightColor: e.getAttributes('highlight').color as string | undefined,
-    }),
-  });
-
-  return (
-    // #353: order is conventional editor IA — inline → block → lists → insert
-    // → captions/index → colors → utilities. Each segment is wrapped in a
-    // `<ToolbarGroup>` (role=group + aria-label + data-testid) and separated
-    // by a vertical `ToolbarSeparator`, so the toolbar reads as clusters
-    // rather than a flat row of icons. `flex-wrap` is preserved so narrow
-    // viewports gracefully wrap to a second row inside the toolbar (no
-    // overflow into article content).
-    <div
-      role="toolbar"
-      aria-label="Page editor toolbar"
-      className="flex flex-wrap items-center gap-0.5 px-2 py-1.5"
-    >
-      <ToolbarGroup name="inline">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBold().run()} active={activeState.bold} title="Bold (Ctrl+B)">
-          <Bold size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleItalic().run()} active={activeState.italic} title="Italic (Ctrl+I)">
-          <Italic size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleUnderline().run()} active={activeState.underline} title="Underline (Ctrl+U)">
-          <Underline size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleStrike().run()} active={activeState.strike} title="Strikethrough (Ctrl+Shift+X)">
-          <Strikethrough size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleCode().run()} active={activeState.code} title="Inline Code (Ctrl+E)">
-          <Code size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="block">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={activeState.h1} title="Heading 1 (Ctrl+Alt+1)">
-          <Heading1 size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={activeState.h2} title="Heading 2 (Ctrl+Alt+2)">
-          <Heading2 size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={activeState.h3} title="Heading 3 (Ctrl+Alt+3)">
-          <Heading3 size={16} />
-        </ToolbarButton>
-        {onToggleHeaderNumbering && (
-          <ToolbarButton onClick={onToggleHeaderNumbering} active={headerNumbering} title="Toggle Header Numbering">
-            <Hash size={16} />
-          </ToolbarButton>
-        )}
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBlockquote().run()} active={activeState.blockquote} title="Blockquote">
-          <Quote size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleCodeBlock().run()} active={activeState.codeBlock} title="Code Block">
-          <CodeSquare size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Horizontal Rule">
-          <Minus size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="lists">
-        <ToolbarButton onClick={() => editor.chain().focus().toggleBulletList().run()} active={activeState.bulletList} title="Bullet List (Ctrl+Shift+8)">
-          <List size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleOrderedList().run()} active={activeState.orderedList} title="Ordered List (Ctrl+Shift+7)">
-          <ListOrdered size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().toggleTaskList().run()} active={activeState.taskList} title="Task List">
-          <CheckSquare size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      <ToolbarGroup name="insert">
-        <ToolbarButton
-          onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
-          title="Insert Table"
-        >
-          <TableIcon size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => {
-            const url = window.prompt('Image URL:');
-            if (url) editor.chain().focus().setImage({ src: url }).run();
-          }}
-          title="Insert Image"
-        >
-          <ImageIcon size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => editor.chain().focus().insertDrawioDiagram().run()}
-          title="Insert Draw.io Diagram"
-        >
-          <Workflow size={16} />
-        </ToolbarButton>
-        <StatusLabelInsert editor={editor} />
-        <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({
-              type: 'details',
-              content: [
-                { type: 'detailsSummary', content: [{ type: 'text', text: 'Click to expand' }] },
-                { type: 'paragraph', content: [{ type: 'text', text: 'Content here...' }] },
-              ],
-            }).run();
-          }}
-          title="Insert Expand/Collapse Section"
-        >
-          <ChevronsUpDown size={16} />
-        </ToolbarButton>
-        <PanelInsert editor={editor} />
-        <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({
-              type: 'confluenceAttachments',
-              attrs: { upload: 'false', old: 'false' },
-            }).run();
-          }}
-          title="Insert Attachments Block"
-        >
-          <Paperclip size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({ type: 'confluenceChildren' }).run();
-          }}
-          title="Insert Children Pages"
-        >
-          <ListTree size={16} />
-        </ToolbarButton>
-        <LayoutPresetPicker editor={editor} />
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      {/* Caption & Index tools (#13) — kept as their own segment because they
-          act on already-inserted figures/tables rather than inserting fresh
-          content. */}
-      <ToolbarGroup name="captions">
-        <ToolbarButton
-          onClick={() => {
-            // Wrap selected image in a figure with caption
-            const { from } = editor.state.selection;
-            const node = editor.state.doc.nodeAt(from);
-            if (node?.type.name === 'image') {
-              editor.chain()
-                .deleteRange({ from, to: from + node.nodeSize })
-                .insertContentAt(from, {
-                  type: 'figure',
-                  content: [
-                    { type: 'image', attrs: node.attrs },
-                    { type: 'figcaption' },
-                  ],
-                })
-                .run();
-            }
-          }}
-          title="Add Caption to Selected Image"
-        >
-          <ImagePlus size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => {
-            // Insert a table caption after the current position
-            editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-          }}
-          title="Insert Table Caption"
-        >
-          <TableProperties size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({ type: 'figureIndex' }).run();
-          }}
-          title="Insert List of Figures"
-        >
-          <ListTree size={16} />
-        </ToolbarButton>
-        <ToolbarButton
-          onClick={() => {
-            editor.chain().focus().insertContent({ type: 'tableIndex' }).run();
-          }}
-          title="Insert List of Tables"
-        >
-          <Table2 size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-
-      <ToolbarSeparator />
-
-      {/* #353: Colors group placed between insert and utilities so it sits
-          near the formatting affordances. Triggers + swatches are bigger
-          here than in the rest of the toolbar — see ColorPickerDropdown. */}
-      <ToolbarGroup name="colors">
-        <ColorPickerDropdown
-          icon={<Palette size={18} />}
-          title="Text Color"
-          activeColor={activeState.textColor}
-          onSelect={(color) => editor.chain().focus().setColor(color).run()}
-          onReset={() => editor.chain().focus().unsetColor().run()}
-        />
-        <ColorPickerDropdown
-          icon={<Highlighter size={18} />}
-          title="Highlight (Ctrl+Shift+H)"
-          activeColor={activeState.highlightColor}
-          onSelect={(color) => editor.chain().focus().toggleHighlight({ color }).run()}
-          onReset={() => editor.chain().focus().unsetHighlight().run()}
-        />
-      </ToolbarGroup>
-
-      <div className="flex-1" />
-
-      <ToolbarGroup name="utilities">
-        {onToggleVim && (
-          <ToolbarButton onClick={onToggleVim} active={vimEnabled} title="Toggle Vim Mode">
-            <Terminal size={16} />
-          </ToolbarButton>
-        )}
-        <ToolbarButton onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} title="Undo">
-          <Undo2 size={16} />
-        </ToolbarButton>
-        <ToolbarButton onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} title="Redo">
-          <Redo2 size={16} />
-        </ToolbarButton>
-      </ToolbarGroup>
-    </div>
-  );
-}
-
-export function TableContextToolbar({ editor }: { editor: EditorType }) {
-  const { isTable } = useEditorState({
-    editor,
-    selector: ({ editor: e }) => ({ isTable: e.isActive('table') }),
-  });
-  if (!isTable) return null;
-
-  return (
-    <div
-      data-testid="table-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
-    >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Table</span>
-
-      <ToolbarSeparator />
-
-      {/* Row operations */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addRowBefore().run()}
-        disabled={!editor.can().addRowBefore()}
-        title="Add row before"
-      >
-        <ArrowUpFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addRowAfter().run()}
-        disabled={!editor.can().addRowAfter()}
-        title="Add row after"
-      >
-        <ArrowDownFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteRow().run()}
-        disabled={!editor.can().deleteRow()}
-        title="Delete row"
-      >
-        <Rows3 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Column operations */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addColumnBefore().run()}
-        disabled={!editor.can().addColumnBefore()}
-        title="Add column before"
-      >
-        <ArrowLeftFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().addColumnAfter().run()}
-        disabled={!editor.can().addColumnAfter()}
-        title="Add column after"
-      >
-        <ArrowRightFromLine size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteColumn().run()}
-        disabled={!editor.can().deleteColumn()}
-        title="Delete column"
-      >
-        <Columns3 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Merge / Split */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().mergeCells().run()}
-        disabled={!editor.can().mergeCells()}
-        title="Merge cells"
-      >
-        <Merge size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().splitCell().run()}
-        disabled={!editor.can().splitCell()}
-        title="Split cell"
-      >
-        <SplitSquareHorizontal size={15} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Header toggles */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().toggleHeaderRow().run()}
-        disabled={!editor.can().toggleHeaderRow()}
-        active={editor.isActive('tableHeader')}
-        title="Toggle header row"
-      >
-        <PanelTop size={15} />
-      </ToolbarButton>
-      <ToolbarButton
-        onClick={() => editor.chain().focus().toggleHeaderColumn().run()}
-        disabled={!editor.can().toggleHeaderColumn()}
-        title="Toggle header column"
-      >
-        <ToggleLeft size={15} />
-      </ToolbarButton>
-
-      <ToolbarSeparator />
-
-      {/* Add table caption (#13) */}
-      <ToolbarButton
-        onClick={() => {
-          // Insert a table caption node after the current table
-          editor.chain().focus().insertContent({ type: 'tableCaption' }).run();
-        }}
-        title="Add Table Caption"
-      >
-        <TableProperties size={15} />
-      </ToolbarButton>
-
-      <div className="flex-1" />
-
-      {/* Delete table */}
-      <ToolbarButton
-        onClick={() => editor.chain().focus().deleteTable().run()}
-        disabled={!editor.can().deleteTable()}
-        title="Delete table"
-      >
-        <Trash2 size={15} className="text-destructive/70" />
-      </ToolbarButton>
-    </div>
-  );
-}
-
-function LayoutPreview({ bars, size = 'sm' }: { bars: readonly number[]; size?: 'sm' | 'md' }) {
-  const h = size === 'sm' ? 'h-4' : 'h-5';
-  const w = size === 'sm' ? 'w-10' : 'w-12';
-  return (
-    <div className={`flex gap-0.5 ${h} ${w}`}>
-      {bars.map((flex, i) => (
-        <div key={i} style={{ flex }} className="rounded-[2px] bg-current opacity-25" />
-      ))}
-    </div>
-  );
-}
-
-function LayoutPresetPicker({ editor }: { editor: EditorType }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <ToolbarButton onClick={() => setOpen(!open)} active={open} title="Insert Layout">
-        <Columns2 size={16} />
-      </ToolbarButton>
-      {open && (
-        <div className="absolute top-full left-0 z-50 mt-1 rounded-lg border border-border/50 bg-card p-2 shadow-lg min-w-max">
-          <p className="mb-1.5 px-1 text-[12px] font-medium text-muted-foreground uppercase tracking-wider">Page Layout</p>
-          <div className="flex gap-1">
-            {LAYOUT_PRESETS.map((preset) => (
-              <button
-                key={preset.type}
-                onClick={() => {
-                  editor.chain().focus().insertLayout({ layoutType: preset.type }).run();
-                  setOpen(false);
-                }}
-                title={preset.label}
-                className="flex flex-col items-center gap-1 rounded-md px-2 py-1.5 hover:bg-foreground/5 transition-colors"
-              >
-                <LayoutPreview bars={preset.bars} size="md" />
-                <span className="text-[11px] text-muted-foreground whitespace-nowrap">{preset.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  spellcheck?: {
+    enabled: boolean;
+    languages: SpellLang[];
+  };
+  /**
+   * Live Y.Doc for collaborative editing (#1447). When set, StarterKit history
+   * is off, Collaboration owns the document, and `content` is ignored.
+   */
+  ydoc?: YDoc;
+  collabProvider?: WebsocketProvider | null;
+  caretUser?: { name: string; color: string };
 }
 
 export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
@@ -1030,10 +384,15 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
 
   return (
     <div
+      role="toolbar"
+      aria-label="Layout editing controls"
       data-testid="layout-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 text-xs text-card-foreground"
     >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Layout</span>
+      <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="layout-toolbar-heading">
+        <Columns2 size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="text-xs font-semibold">Layout</span>
+      </div>
 
       <ToolbarSeparator />
 
@@ -1047,8 +406,6 @@ export function LayoutContextToolbar({ editor }: { editor: EditorType }) {
           <LayoutPreview bars={preset.bars} />
         </ToolbarButton>
       ))}
-
-      <div className="flex-1" />
 
       <ToolbarButton
         onClick={() => editor.chain().focus().deleteLayout().run()}
@@ -1072,10 +429,15 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
 
   return (
     <div
+      role="toolbar"
+      aria-label="Column editing controls"
       data-testid="column-context-toolbar"
-      className="flex flex-wrap items-center gap-0.5 border-t border-action/20 bg-action/5 px-2 py-1.5"
+      className="flex flex-wrap items-center gap-0.5 text-xs text-card-foreground"
     >
-      <span className="mr-1 text-xs font-semibold text-action/70 select-none">Columns</span>
+      <div className="flex h-8 items-center gap-1.5 px-1.5 text-foreground" data-testid="column-toolbar-heading">
+        <Columns3 size={16} strokeWidth={1.9} aria-hidden="true" />
+        <span className="text-xs font-semibold">Columns</span>
+      </div>
 
       <ToolbarSeparator />
 
@@ -1113,8 +475,6 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
         <Square size={15} />
       </ToolbarButton>
 
-      <div className="flex-1" />
-
       {/* Delete row (section = row in Confluence layout model) */}
       <ToolbarButton
         onClick={() => editor.chain().focus().deleteSection().run()}
@@ -1125,51 +485,6 @@ export function ColumnContextToolbar({ editor }: { editor: EditorType }) {
       </ToolbarButton>
     </div>
   );
-}
-
-/** Map MIME type to file extension for pasted images */
-const MIME_TO_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-};
-
-/**
- * Upload a pasted/dropped image file to the server.
- * Returns the served URL on success, or null on failure (shows a toast).
- */
-async function uploadPastedImage(file: File, pageId: string): Promise<string | null> {
-  const ext = MIME_TO_EXT[file.type];
-  if (!ext) {
-    toast.error(`Unsupported image type: ${file.type}`);
-    return null;
-  }
-
-  const hex = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
-  const filename = `paste-${Date.now()}-${hex}.${ext}`;
-
-  const dataUri = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-  try {
-    const result = await apiFetch<{ url: string }>(
-      `/pages/${encodeURIComponent(pageId)}/images`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ dataUri, filename }),
-      },
-    );
-    return result.url;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to upload image';
-    toast.error(message);
-    return null;
-  }
 }
 
 /**
@@ -1354,14 +669,54 @@ export function clearDraft(key: string): void {
   suppressedFlushKeys.add(key);
 }
 
-const VIM_STORAGE_KEY = 'compendiq-vim-mode';
-
 function defaultVimDisplayState(): VimState {
   return { mode: 'normal', pendingKeys: '', countPrefix: '', register: '', commandBuffer: null };
 }
 
-export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, vimEnabled: vimEnabledProp }: EditorProps) {
-  const isLight = useIsLightTheme();
+const INLINE_COMPLETION_DELAYS: Record<InlineCompletionDelay, number | null> = {
+  fast: 300,
+  balanced: 500,
+  deliberate: 800,
+  manual: null,
+};
+
+function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
+  const mac = isMac();
+  const wordKeys = mac ? 'Option + ]' : 'Ctrl + ]';
+  const ariaLabel = mode === 'word'
+    ? 'AI word completion available. Press Tab to accept or Escape to dismiss.'
+    : `AI inline suggestion available. Press Tab to accept, ${wordKeys} to accept one word, or Escape to dismiss.`;
+
+  const action = (keys: string, label: string) => (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <kbd className="rounded border border-border-interactive bg-background px-1.5 py-0.5 font-sans text-[11px] font-semibold leading-none text-foreground">
+        {keys}
+      </kbd>
+      <span>{label}</span>
+    </span>
+  );
+
+  return (
+    <div
+      role="status"
+      aria-label={ariaLabel}
+      data-testid="inline-completion-hint"
+      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+    >
+      {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
+      {mode === 'full' && (
+        <>
+          <span className="h-3 w-px bg-border" aria-hidden="true" />
+          {action(wordKeys, 'Word')}
+        </>
+      )}
+      <span className="h-3 w-px bg-border" aria-hidden="true" />
+      {action('Esc', 'Dismiss')}
+    </div>
+  );
+}
+
+export function Editor({ content, onChange, editable = true, placeholder, draftKey, naked = false, onEditorReady, hideToolbar = false, pageId, onSave, inlineCompletion, spellcheck, ydoc, collabProvider, caretUser }: EditorProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // draftKey of a debounced draft awaiting write, so unmount can flush it
   // (#877). We store only the key and serialize the editor lazily at flush
@@ -1375,6 +730,30 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
   // Keep onSave in a ref so the VimExtension closure always sees the latest callback
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // Extension options are created with the TipTap instance. Read live props
+  // through a ref so settings/assignment queries can settle without remounting
+  // the editor and losing the current selection or unsaved document.
+  const inlineCompletionRef = useRef(inlineCompletion);
+  inlineCompletionRef.current = inlineCompletion;
+  const spellcheckRef = useRef(spellcheck);
+  spellcheckRef.current = spellcheck;
+  const [hunspellReady, setHunspellReady] = useState(false);
+  const [inlineSuggestionActive, setInlineSuggestionActive] = useState(false);
+
+  useEffect(() => {
+    if (!spellcheck?.enabled) setHunspellReady(false);
+  }, [spellcheck?.enabled]);
+
+  useEffect(() => {
+    const mgr = getClientInferenceManager();
+    const adminEnabled = !!inlineCompletion?.clientInferenceAdminEnabled;
+    const userEnabled = !!inlineCompletion?.clientInferenceEnabled;
+    mgr.setFlags({ adminEnabled, userEnabled });
+    if (adminEnabled && userEnabled) void mgr.ensureProbed();
+  }, [
+    inlineCompletion?.clientInferenceAdminEnabled,
+    inlineCompletion?.clientInferenceEnabled,
+  ]);
 
   const [headerNumbering, setHeaderNumbering] = useState(() =>
     localStorage.getItem('editor-header-numbering') === 'true'
@@ -1387,21 +766,19 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     });
   };
 
-  // Vim mode state — use controlled prop when provided, otherwise internal state
-  const [vimEnabledInternal, setVimEnabledInternal] = useState(() =>
-    localStorage.getItem(VIM_STORAGE_KEY) === 'true'
-  );
-  const vimEnabled = vimEnabledProp ?? vimEnabledInternal;
+  // Vim mode is a personal editing preference, toggled from Settings -> Appearance
+  // (ui-store's vimModeEnabled), not from a permanent slot in the toolbar every
+  // document loads with. A single global source means every open editor picks up
+  // the change together, rather than each instance carrying its own copy of the
+  // same on/off switch.
+  const vimEnabled = useUiStore((s) => s.vimModeEnabled);
   const [vimDisplayState, setVimDisplayState] = useState<VimState>(defaultVimDisplayState);
 
-  const toggleVim = () => {
-    setVimEnabledInternal(prev => {
-      const next = !prev;
-      localStorage.setItem(VIM_STORAGE_KEY, String(next));
-      if (!next) setVimDisplayState(defaultVimDisplayState());
-      return next;
-    });
-  };
+  // Reset the status-line state when Vim mode is turned off elsewhere (the
+  // toggle no longer lives in this component to clear it inline).
+  useEffect(() => {
+    if (!vimEnabled) setVimDisplayState(defaultVimDisplayState());
+  }, [vimEnabled]);
 
   const saveDraft = useCallback(() => {
     if (!draftKey) return;
@@ -1463,15 +840,22 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
     return true;
   }, []);
 
+  const collab = Boolean(ydoc);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
         codeBlock: false,
+        ...(collab ? { undoRedo: false } : {}),
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
+        alignments: ['left', 'center', 'right', 'justify'],
       }),
       TextStyle,
       Color,
-      Highlight.configure({ multicolor: true }),
-      Table.configure({ resizable: true }),
+      CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
+      ExtendedTable.configure({ resizable: true }),
       TableRow,
       TableCell,
       TableHeader,
@@ -1502,9 +886,67 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       FigureIndex,
       TableIndex,
       TitledCodeBlock.configure({ lowlight }),
+      InlineLucideIcon,
       ConfluenceImage.configure({ inline: false }),
-      Placeholder.configure({ placeholder: placeholder ?? 'Start writing...' }),
+      Placeholder.configure({
+        placeholder: ({ node, editor }) => {
+          if (placeholder && editor.isEmpty) return placeholder;
+          if (node.type.name === 'heading') {
+            return `Heading ${node.attrs.level}`;
+          }
+          return "Press '/' for commands";
+        },
+        includeChildren: true,
+      }),
       SearchAndReplaceExtension,
+      BlockShortcutsExtension,
+      SlashCommandExtension,
+      InlineCompletionExtension.configure({
+        enabled: () => {
+          const config = inlineCompletionRef.current;
+          if (!editable || !config?.enabled) return false;
+          return getClientInferenceManager().decideGhostAvailability(
+            !!config.available,
+            config.clientInferenceWithoutServer ?? true,
+          );
+        },
+        requestCompletion: (input, signal) => {
+          const config = inlineCompletionRef.current;
+          return requestInlineCompletionWithClient({
+            input,
+            signal,
+            assigned: !!config?.available,
+            withoutServer: config?.clientInferenceWithoutServer ?? true,
+            wordMode: (config?.mode ?? 'full') === 'word',
+            serverRequest: (body, sig) => apiFetch('/llm/inline-completion', {
+              method: 'POST',
+              body: JSON.stringify(body),
+              signal: sig,
+            }),
+          });
+        },
+        delayMs: () => {
+          const config = inlineCompletionRef.current;
+          return config ? INLINE_COMPLETION_DELAYS[config.delay] : null;
+        },
+        mode: () => inlineCompletionRef.current?.mode ?? 'full',
+        codeOnly: () => inlineCompletionRef.current?.codeOnly ?? false,
+        pageId: pageId && /^\d+$/.test(pageId) ? Number(pageId) : undefined,
+        getMetadata: () => ({
+          pageId: pageIdRef.current && /^\d+$/.test(pageIdRef.current)
+            ? Number(pageIdRef.current)
+            : undefined,
+          title: inlineCompletionRef.current?.title,
+          spaceKey: inlineCompletionRef.current?.spaceKey,
+          language: inlineCompletionRef.current?.language,
+        }),
+        onSuggestionStateChange: setInlineSuggestionActive,
+      }),
+      SpellcheckExtension.configure({
+        enabled: () => editable && !!spellcheckRef.current?.enabled,
+        languages: () => spellcheckRef.current?.languages ?? ['en_US', 'de_DE'],
+        onStatus: (status) => setHunspellReady(status === 'ready'),
+      }),
       ...(vimEnabled ? [VimExtension.configure({
         onStateChange: setVimDisplayState,
         onSave: () => {
@@ -1515,8 +957,31 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
           onSaveRef.current?.();
         },
       })] : []),
+      ...(ydoc
+        ? [
+            Collaboration.configure({ document: ydoc, field: 'default' }),
+            ...(collabProvider
+              ? [
+                  CollaborationCaret.configure({
+                    provider: collabProvider,
+                    user: caretUser ?? { name: 'Anonymous', color: '#5C6B8A' },
+                    render: renderCollabCaret,
+                    selectionRender: selectionRenderCollab,
+                  }),
+                ]
+              : []),
+          ]
+        : []),
     ],
     editorProps: {
+      handleDOMEvents: {
+        // #1135 — Prevent browser HTML5 text drag from killing ProseMirror table cell selection
+        dragstart: handleTableDragStart,
+      },
+      // #1135 — Shift+Click range selection and drag-selection preservation in tables.
+      handleClick: handleTableCellClick,
+      // #1135 — triple-click selects the whole cell, not one paragraph.
+      handleTripleClick: handleTableCellTripleClick,
       handlePaste(_view, event) {
         const items = Array.from(event.clipboardData?.items ?? []);
         const imageItem = items.find((i) => i.type.startsWith('image/'));
@@ -1581,7 +1046,7 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
         return handleImageFiles(files);
       },
     },
-    content,
+    content: ydoc ? undefined : content,
     editable,
     immediatelyRender: false,
     onUpdate: () => {
@@ -1592,45 +1057,80 @@ export function Editor({ content, onChange, editable = true, placeholder, draftK
       onChange?.(true);
       saveDraft();
     },
-  }, [vimEnabled]);
+  }, [vimEnabled, ydoc, collabProvider]);
 
   // Keep the editor ref in sync
   editorRef.current = editor;
 
   // Notify parent when editor instance is ready (triggers re-render via setState)
   useEffect(() => {
+    if (editor && !editor.isDestroyed) {
+      syncTableLayoutAttributes(editor);
+    }
     onEditorReady?.(editor);
     return () => onEditorReady?.(null);
   }, [editor, onEditorReady]);
 
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.view.dom.setAttribute(
+      'spellcheck',
+      spellcheck?.enabled && hunspellReady ? 'false' : 'true',
+    );
+  }, [editor, spellcheck?.enabled, hunspellReady]);
+
   return (
-    <div className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}>
+    <div
+      className={cn('relative', naked ? '' : 'nm-card', headerNumbering && 'header-numbering')}
+      data-collab={collab ? 'on' : 'off'}
+    >
+      {collab && !editable && (
+        <p
+          className="px-3 py-2 text-xs leading-5 text-muted-foreground"
+          data-testid="collab-readonly-banner"
+        >
+          You&apos;re following this session as read-only.
+        </p>
+      )}
       {editable && editor && !hideToolbar && (
-        <div className="sticky top-0 z-30 border-b border-border/30 bg-card px-1">
-          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} vimEnabled={vimEnabled} onToggleVim={toggleVim} />
-          <TableContextToolbar editor={editor} />
-          <LayoutContextToolbar editor={editor} />
-          <ColumnContextToolbar editor={editor} />
+        <div className="sticky top-0 z-30 border-b border-border bg-card px-1 relative">
+          <EditorToolbar editor={editor} headerNumbering={headerNumbering} onToggleHeaderNumbering={toggleHeaderNumbering} />
+          <EditorContextToolbars editor={editor} innerClassName="px-1" />
         </div>
       )}
       {editable && editor && <SearchAndReplace editor={editor} />}
-      {editable && editor && <EditorBubbleMenu editor={editor} />}
-      {editable && editor && (
-        <DragHandle editor={editor} className="drag-handle">
-          <GripVertical size={16} />
-        </DragHandle>
-      )}
+      {editable && editor && <EditorBubbleMenu editor={editor} pageId={pageId} />}
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
+      {/* #49 drag handle, #1179 its block context menu. The handle and its
+          menu live together in EditorBlockMenu: they share the hovered-node
+          tracking, the handle lock and the target marker. */}
+      {editable && editor && <EditorBlockHandle editor={editor} />}
+      {editable && editor && <EditorSlashMenu editor={editor} />}
       <EditorContent
         editor={editor}
         className={cn(
           'prose max-w-none',
-          !isLight && 'prose-invert',
-          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:px-10 [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-border/50 [&_td]:p-2 [&_th]:border [&_th]:border-border/50 [&_th]:bg-foreground/5 [&_th]:p-2',
+          '[&_.tiptap]:min-h-[200px] [&_.tiptap]:py-6 [&_.tiptap]:outline-none',
+          // Naked article/new-page editors sit in the page's own
+          // `px-5 sm:px-10` column — a second px-10 here inset the body
+          // (and its tables) past the title. Carded editors keep an inset
+          // so prose does not touch the card edge.
+          naked ? '[&_.tiptap]:px-0' : '[&_.tiptap]:px-10',
+          '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-border [&_td]:p-2 [&_th]:border [&_th]:border-border [&_th]:bg-foreground/5 [&_th]:p-2',
           '[&_pre]:rounded-md [&_pre]:bg-foreground/5 [&_pre:not([data-title])]:p-4 [&_pre[data-title]]:px-4 [&_pre[data-title]]:pb-4',
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
         )}
       />
+      {inlineSuggestionActive && (
+        <div
+          className={cn(
+            'absolute right-2 z-10',
+            vimEnabled ? 'bottom-9' : 'bottom-2',
+          )}
+        >
+          <InlineCompletionHint mode={inlineCompletion?.mode ?? 'full'} />
+        </div>
+      )}
       {vimEnabled && editable && <VimModeIndicator vimState={vimDisplayState} />}
     </div>
   );

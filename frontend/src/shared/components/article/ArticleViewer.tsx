@@ -1,10 +1,14 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
+import { Mark } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+import TextAlign from '@tiptap/extension-text-align';
+import { TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 import { TaskList, TaskItem } from '@tiptap/extension-list';
 import { CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 import { Image } from '@tiptap/extension-image';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
 import { common, createLowlight } from 'lowlight';
 import DOMPurify from 'dompurify';
 import {
@@ -31,14 +35,19 @@ import {
   FigureIndex,
   TableIndex,
   UnknownMacro,
+  ExtendedTable,
+  CommentMark,
+  SafeHighlight,
 } from './article-extensions';
+import { InlineLucideIcon } from './inline-lucide-icon';
 import { MermaidBlock } from './MermaidBlockExtension';
+import { CommentPopover } from './CommentPopover';
 import { fetchAuthenticatedBlob } from '../../hooks/use-authenticated-src';
 import { cn } from '../../lib/cn';
-import { useIsLightTheme } from '../../hooks/use-is-light-theme';
 import type { TocHeading } from './TableOfContents';
+import { handleTableCellTripleClick } from './table-cell-selection';
 
-// Configure DOMPurify to preserve Confluence-specific attributes
+// Configure DOMPurify to preserve Confluence-specific and comment attributes
 DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
   if (
     data.attrName === 'data-diagram-name' ||
@@ -46,15 +55,33 @@ DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
     data.attrName === 'data-confluence-link' ||
     data.attrName === 'data-type' ||
     data.attrName === 'data-checked' ||
+    data.attrName === 'data-layout' ||
     data.attrName === 'data-layout-type' ||
     data.attrName === 'data-cell-width' ||
-    data.attrName === 'data-border'
+    data.attrName === 'data-border' ||
+    data.attrName === 'data-lucide' ||
+    data.attrName === 'data-comment-id' ||
+    data.attrName === 'data-comment-resolved'
   ) {
     data.forceKeepAttr = true;
   }
 });
 
 const lowlight = createLowlight(common);
+
+const VersionInsert = Mark.create({
+  name: 'versionInsert',
+  priority: 1000,
+  parseHTML: () => [{ tag: 'ins' }],
+  renderHTML: ({ HTMLAttributes }) => ['ins', HTMLAttributes, 0],
+});
+
+const VersionDelete = Mark.create({
+  name: 'versionDelete',
+  priority: 1000,
+  parseHTML: () => [{ tag: 'del' }],
+  renderHTML: ({ HTMLAttributes }) => ['del', HTMLAttributes, 0],
+});
 
 interface ArticleViewerProps {
   /** HTML content to render (typically page.bodyHtml) */
@@ -82,7 +109,7 @@ export function ArticleViewer({
   content,
   onImageClick,
   confluenceUrl,
-  pageId: _pageId,
+  pageId,
   confluencePageId,
   onHeadingsReady,
   onRequestSync: _onRequestSync,
@@ -91,7 +118,6 @@ export function ArticleViewer({
 }: ArticleViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isReady, setIsReady] = useState(false);
-  const isLight = useIsLightTheme();
   const headerNumbering = localStorage.getItem('editor-header-numbering') === 'true';
   // #747: tracks the content last parsed into the editor so the setContent
   // effect can skip the no-op re-parse that used to happen on mount (the
@@ -101,7 +127,22 @@ export function ArticleViewer({
   const sanitizedContent = useMemo(
     () =>
       DOMPurify.sanitize(content, {
-        ADD_ATTR: ['data-diagram-name', 'data-drawio', 'data-confluence-link', 'data-type', 'data-checked', 'data-color', 'data-title', 'data-layout-type', 'data-cell-width', 'data-border'],
+        ADD_ATTR: [
+          'data-diagram-name',
+          'data-drawio',
+          'data-confluence-link',
+          'data-type',
+          'data-checked',
+          'data-color',
+          'data-title',
+          'data-layout',
+          'data-layout-type',
+          'data-cell-width',
+          'data-border',
+          'data-lucide',
+          'data-comment-id',
+          'data-comment-resolved',
+        ],
       }),
     [content],
   );
@@ -116,12 +157,22 @@ export function ArticleViewer({
           HTMLAttributes: { target: '_blank', rel: 'noreferrer' },
         },
       }),
-      Table.configure({ resizable: false }),
+      VersionInsert,
+      VersionDelete,
+      TextAlign.configure({
+        types: ['heading', 'paragraph', 'blockquote', 'tableCaption'],
+        alignments: ['left', 'center', 'right', 'justify'],
+      }),
+      TextStyle,
+      Color,
+      CommentMark,
+      SafeHighlight.configure({ multicolor: true }),
+      ExtendedTable.configure({ resizable: false }),
       TableRow,
       TableCell,
       TableHeader,
       TaskList,
-      TaskItem.configure({ nested: true }),
+      TaskItem.configure({ nested: true, onReadOnlyChecked: () => true }),
       CodeBlockLowlight.extend({
         addAttributes() {
           return {
@@ -136,6 +187,7 @@ export function ArticleViewer({
         },
       }).configure({ lowlight }),
       Image.configure({ inline: false }),
+      InlineLucideIcon,
       Details,
       DetailsSummary,
       Panel,
@@ -169,6 +221,11 @@ export function ArticleViewer({
         role: 'document',
         'aria-readonly': 'true',
       },
+      // #1135 — same whole-cell triple-click as the editor. A non-editable
+      // ProseMirror view still routes mousedown through the shared handler
+      // path and still syncs a dispatched selection to the DOM, so this is a
+      // real selection the user can copy, not a no-op.
+      handleTripleClick: handleTableCellTripleClick,
     },
     onCreate: () => {
       // Record the content the editor was created with — `useEditor` already
@@ -185,6 +242,38 @@ export function ArticleViewer({
     if (lastAppliedContentRef.current === sanitizedContent) return;
     lastAppliedContentRef.current = sanitizedContent;
     editor.commands.setContent(sanitizedContent);
+  }, [editor, isReady, sanitizedContent]);
+
+  // TipTap's table extension renders its own DOM wrapper and does not include
+  // custom table attributes in that rendered DOM. Re-apply the persisted
+  // layout after the view has mounted or refreshed so read-only pages keep the
+  // same width choice as the editor.
+  useEffect(() => {
+    if (!editor || !isReady) return;
+
+    const raf = requestAnimationFrame(() => {
+      editor.state.doc.descendants((node, pos) => {
+        if (node.type.name !== 'table') return true;
+
+        const dom = editor.view.nodeDOM(pos) as HTMLElement | null;
+        const table = dom?.tagName === 'TABLE' ? dom : dom?.querySelector('table');
+        if (!table) return true;
+        const wrapper = table.closest('.tableWrapper');
+        const isFullWidth = node.attrs['data-layout'] === 'full-width';
+
+        if (isFullWidth) {
+          table.setAttribute('data-layout', 'full-width');
+          wrapper?.setAttribute('data-layout', 'full-width');
+        } else {
+          table.removeAttribute('data-layout');
+          wrapper?.removeAttribute('data-layout');
+        }
+
+        return true;
+      });
+    });
+
+    return () => cancelAnimationFrame(raf);
   }, [editor, isReady, sanitizedContent]);
 
   // Generate heading IDs and expose them for ToC
@@ -464,10 +553,9 @@ export function ArticleViewer({
         editor={editor}
         className={cn(
           'article-viewer prose max-w-none',
-          !isLight && 'prose-invert',
           '[&_.tiptap]:outline-none',
           // Table styles
-          '[&_table]:border-collapse [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
+          '[&_table]:border-separate [&_table]:border-spacing-0 [&_td]:border [&_td]:border-[var(--glass-border)] [&_td]:p-2',
           '[&_th]:border [&_th]:border-[var(--glass-border)] [&_th]:bg-[oklch(from_var(--color-muted)_l_c_h_/_0.3)] [&_th]:p-2 [&_th]:font-semibold',
           // Task list styles
           '[&_ul[data-type=taskList]]:list-none [&_ul[data-type=taskList]]:pl-0',
@@ -475,6 +563,7 @@ export function ArticleViewer({
           className,
         )}
       />
+      {editor && <CommentPopover editor={editor} pageId={pageId} />}
     </div>
   );
 }

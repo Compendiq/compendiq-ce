@@ -139,11 +139,11 @@ describe('shortcut-registry', () => {
       expect(shortcut!.category).toBe('actions');
     });
 
-    it('includes ai-improve shortcut mapped to alt+i in actions category', () => {
-      const shortcut = SHORTCUTS.find((s) => s.id === 'ai-improve');
+    it('includes ai-assistant shortcut mapped to alt+i in actions category', () => {
+      const shortcut = SHORTCUTS.find((s) => s.id === 'ai-assistant');
       expect(shortcut).toBeDefined();
       expect(shortcut!.keys).toBe('alt+i');
-      expect(shortcut!.label).toBe('AI Improve');
+      expect(shortcut!.label).toBe('AI Assistant');
       expect(shortcut!.category).toBe('actions');
     });
   });

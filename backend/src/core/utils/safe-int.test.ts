@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { safeIntOr } from './safe-int.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { safeIntOr, vitestIntOr } from './safe-int.js';
 
 describe('safeIntOr', () => {
   it('parses a valid integer string', () => {
@@ -27,5 +27,36 @@ describe('safeIntOr', () => {
   it('allows 0 when min = 0 (e.g. chunk overlap)', () => {
     expect(safeIntOr('0', 50, 0)).toBe(0);
     expect(safeIntOr('-1', 50, 0)).toBe(50); // still rejects negatives
+  });
+});
+
+describe('vitestIntOr', () => {
+  const KEY = 'VITEST_INT_OR_PROBE';
+  const prevVitest = process.env.VITEST;
+  const prevKey = process.env[KEY];
+
+  afterEach(() => {
+    if (prevVitest === undefined) delete process.env.VITEST;
+    else process.env.VITEST = prevVitest;
+    if (prevKey === undefined) delete process.env[KEY];
+    else process.env[KEY] = prevKey;
+  });
+
+  it('always returns the production fallback when VITEST is not true', () => {
+    delete process.env.VITEST;
+    process.env[KEY] = '50';
+    expect(vitestIntOr(KEY, 10_000)).toBe(10_000);
+  });
+
+  it('honours a positive override under Vitest', () => {
+    process.env.VITEST = 'true';
+    process.env[KEY] = '200';
+    expect(vitestIntOr(KEY, 10_000)).toBe(200);
+  });
+
+  it('falls back on garbage under Vitest rather than returning NaN', () => {
+    process.env.VITEST = 'true';
+    process.env[KEY] = 'nope';
+    expect(vitestIntOr(KEY, 5_000)).toBe(5_000);
   });
 });

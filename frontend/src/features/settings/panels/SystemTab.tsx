@@ -47,11 +47,11 @@ export function SystemTab() {
     : 'Community (CE)';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
-        <h3 className="text-base font-semibold">Setup Wizard</h3>
+        <h3 className="text-base font-semibold text-foreground">Setup Wizard</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Re-run the initial setup wizard to reconfigure core settings like admin account, LLM provider, and Confluence connection.
+          Re-run the initial setup wizard to reconfigure core settings like administrator account, LLM provider, and Confluence connection.
         </p>
         <button
           onClick={handleRerunSetup}
@@ -62,8 +62,8 @@ export function SystemTab() {
         </button>
       </div>
 
-      <div className="border-t border-border/40 pt-6">
-        <h3 className="text-base font-semibold">Application Info</h3>
+      <div className="border-t border-border pt-6">
+        <h3 className="text-base font-semibold text-foreground">Application Info</h3>
         <div className="mt-3 space-y-2 text-sm text-muted-foreground" data-testid="application-info">
           <div className="flex items-center justify-between">
             <span>Version</span>

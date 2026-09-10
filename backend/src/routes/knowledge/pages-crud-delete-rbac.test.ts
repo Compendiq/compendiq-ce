@@ -396,7 +396,7 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
     expect(pinDelete).toBeDefined();
     expect(mockTxQueryFn).toHaveBeenCalledWith('BEGIN');
     expect(mockTxQueryFn).toHaveBeenCalledWith('COMMIT');
-    expect(cleanPageAttachments).toHaveBeenCalledWith(TEST_USER, 'page-100');
+    expect(cleanPageAttachments).toHaveBeenCalledWith('page-100');
   });
 
   it('surfaces a non-404 Confluence error and does NOT delete locally (no data loss)', async () => {

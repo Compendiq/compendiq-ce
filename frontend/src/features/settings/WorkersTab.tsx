@@ -4,8 +4,10 @@ import { toast } from 'sonner';
 import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import { m, useReducedMotion } from 'framer-motion';
 import { apiFetch } from '../../shared/lib/api';
+import { streamSSE } from '../../shared/lib/sse';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
+import { Button } from '../../shared/components/Button';
 import { cn } from '../../shared/lib/cn';
 
 // ---------------------------------------------------------------------------
@@ -23,6 +25,17 @@ interface NormalizedStatus {
   lastRunAt: string | null;
   intervalMinutes: number;
   model: string;
+}
+
+interface EmbeddingRunProgress {
+  type: 'started' | 'progress' | 'complete' | 'waiting' | 'paused' | 'error';
+  total?: number;
+  completed?: number;
+  failed?: number;
+  percentage?: number;
+  currentPage?: string;
+  reason?: string;
+  error?: string;
 }
 
 type StatusNormalizer = (data: Record<string, unknown>) => NormalizedStatus;
@@ -104,6 +117,68 @@ function useWorkerAction(endpoint: string, successMsg: string) {
   });
 }
 
+/**
+ * Keep the manual embedding action attached to the request that does the work.
+ * The old `/llm/embedding-run-now` endpoint returned before lock acquisition,
+ * so a failed or skipped start looked exactly like success and the button
+ * immediately fell back to Idle. `/embeddings/process` streams authoritative
+ * start/progress/error/completion events and keeps the mutation pending for the
+ * real lifetime of the run.
+ */
+function useEmbeddingRunAction() {
+  const queryClient = useQueryClient();
+  const [progress, setProgress] = useState<EmbeddingRunProgress | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      setProgress({ type: 'started' });
+      let completion: EmbeddingRunProgress | null = null;
+
+      for await (const event of streamSSE<EmbeddingRunProgress>('/embeddings/process', {})) {
+        if (event.type === 'error') {
+          throw new Error(event.error ?? 'Embedding processing failed');
+        }
+        setProgress(event);
+        if (event.type === 'complete') completion = event;
+      }
+
+      if (!completion) {
+        throw new Error('Embedding stream ended before completion');
+      }
+      return completion;
+    },
+    onSuccess: (result) => {
+      const total = result.total ?? 0;
+      const completed = result.completed ?? 0;
+      const failed = result.failed ?? 0;
+      const processed = completed + failed;
+      const remaining = Math.max(0, total - processed);
+      if (total === 0) {
+        toast.info('No pending pages to embed.');
+      } else if (remaining > 0) {
+        toast.warning(
+          `Embedding stopped early: ${processed} of ${total} processed; ${remaining} ${remaining === 1 ? 'page remains' : 'pages remain'} pending. Try again after the embedding provider recovers.`,
+        );
+      } else if (failed > 0) {
+        toast.warning(`Embedding finished: ${completed} completed, ${failed} failed.`);
+      } else {
+        toast.success(`Embedding complete — ${completed} ${completed === 1 ? 'page' : 'pages'} processed.`);
+      }
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : 'Embedding processing failed');
+    },
+    onSettled: () => {
+      setProgress(null);
+      queryClient.invalidateQueries({ queryKey: ['worker-status', 'embedding'] });
+      queryClient.invalidateQueries({ queryKey: ['embeddings'] });
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+
+  return { mutation, progress };
+}
+
 // ---------------------------------------------------------------------------
 // Relative time helper
 // ---------------------------------------------------------------------------
@@ -138,13 +213,13 @@ function deriveWorkerState(status: NormalizedStatus): WorkerState {
 const stateConfig: Record<WorkerState, { label: string; dotClass: string; textClass: string }> = {
   running: {
     label: 'Running',
-    dotClass: 'bg-emerald-500 animate-pulse',
-    textClass: 'text-emerald-600 dark:text-emerald-400',
+    dotClass: 'bg-success animate-pulse',
+    textClass: 'text-success',
   },
   queued: {
     label: 'Queued',
-    dotClass: 'bg-amber-500',
-    textClass: 'text-amber-600 dark:text-amber-400',
+    dotClass: 'bg-warning',
+    textClass: 'text-warning',
   },
   idle: {
     label: 'Idle',
@@ -172,16 +247,18 @@ function StatusBadge({ state }: { state: WorkerState }) {
 // Status pill with animated counter
 // ---------------------------------------------------------------------------
 
-function StatusPill({ count, label, icon: Icon, color }: {
+function StatusPill({ count, label, icon: Icon, color, spin }: {
   count: number;
   label: string;
   icon: typeof CheckCircle;
   color: string;
+  /** Spin the icon — the in-flight signal for the neutral Processing pill. */
+  spin?: boolean;
 }) {
   if (count === 0) return null;
   return (
     <div className={cn('flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium', color)}>
-      <Icon size={12} />
+      <Icon size={12} className={cn(spin && 'animate-spin')} />
       <AnimatedCounter value={count} className="tabular-nums" />
       <span className="text-muted-foreground/60">{label}</span>
     </div>
@@ -231,14 +308,29 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   normalize: StatusNormalizer;
 }) {
   const { data: status, isLoading } = useWorkerStatus(statusKey, statusEndpoint, normalize);
-  const runNow = useWorkerAction(runEndpoint, `${title} batch triggered`);
+  const requestRunNow = useWorkerAction(runEndpoint, `${title} batch triggered`);
+  const embeddingRun = useEmbeddingRunAction();
+  const usesEmbeddingStream = statusKey === 'embedding';
+  const runNow = usesEmbeddingStream ? embeddingRun.mutation : requestRunNow;
   const rescan = useWorkerAction(rescanEndpoint, `${title} rescan started`);
   const resetFailed = useWorkerAction(resetFailedEndpoint ?? '', 'Failed items reset to pending');
   const hasResetFailed = !!resetFailedEndpoint;
   // Rescan-all guard (ConfirmDialog replaces native confirm()).
   const [confirmRescanOpen, setConfirmRescanOpen] = useState(false);
 
-  const workerState = status ? deriveWorkerState(status) : 'idle';
+  const workerState = runNow.isPending
+    ? 'running'
+    : status
+      ? deriveWorkerState(status)
+      : 'idle';
+
+  const embeddingProgress = usesEmbeddingStream ? embeddingRun.progress : null;
+  const processed = (embeddingProgress?.completed ?? 0) + (embeddingProgress?.failed ?? 0);
+  const progressLabel = embeddingProgress?.type === 'waiting' || embeddingProgress?.type === 'paused'
+    ? embeddingProgress.reason
+    : embeddingProgress?.total !== undefined
+      ? `${processed} of ${embeddingProgress.total} pending pages processed`
+      : 'Starting embedding worker…';
 
   return (
     <div className="nm-card p-4 space-y-3" data-testid={`worker-card-${statusKey}`}>
@@ -249,37 +341,43 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           {status && <StatusBadge state={workerState} />}
         </div>
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
             onClick={() => runNow.mutate()}
             disabled={runNow.isPending}
-            className="inline-flex items-center gap-1 rounded-lg border border-action bg-transparent px-2.5 py-1.5 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+            isLoading={runNow.isPending}
+            variant="secondary"
+            size="sm"
+            leftIcon={!runNow.isPending ? <Play size={12} /> : undefined}
             title="Process pending items now"
             data-testid={`${statusKey}-run-now`}
           >
-            {runNow.isPending ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
             Run Now
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => setConfirmRescanOpen(true)}
             disabled={rescan.isPending}
-            className="flex items-center gap-1 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-foreground/10 transition-colors disabled:opacity-50"
+            isLoading={rescan.isPending}
+            variant="ghost"
+            size="sm"
+            leftIcon={!rescan.isPending ? <RotateCcw size={12} /> : undefined}
             title="Reset all pages to re-process"
             data-testid={`${statusKey}-rescan`}
           >
-            {rescan.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
             Rescan All
-          </button>
+          </Button>
           {hasResetFailed && status && status.failed > 0 && (
-            <button
+            <Button
               onClick={() => resetFailed.mutate()}
               disabled={resetFailed.isPending}
-              className="flex items-center gap-1 rounded-lg bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
+              isLoading={resetFailed.isPending}
+              variant="destructive-ghost"
+              size="sm"
+              leftIcon={!resetFailed.isPending ? <RotateCcw size={12} /> : undefined}
               title="Retry failed items"
               data-testid={`${statusKey}-retry-failed`}
             >
-              {resetFailed.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
               Retry Failed
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -296,9 +394,14 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
 
           {/* Status pills */}
           <div className="flex flex-wrap gap-2">
-            <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-amber-500/10 text-amber-600 dark:text-amber-400" />
-            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-blue-500/10 text-blue-600 dark:text-blue-400" />
-            <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" />
+            <StatusPill count={status.pending} label="Pending" icon={Clock} color="bg-warning/10 text-warning" />
+            {/* Neutral: "processing" is queue activity, not an informational
+                notice. The label and the Loader2 glyph (vs Skipped's Clock)
+                are the distinguishing channel; `spin` is a redundant
+                enhancement on top — reduced-motion users may never see it,
+                so it must not be the only difference. */}
+            <StatusPill count={status.processing} label="Processing" icon={Loader2} color="bg-foreground/5 text-muted-foreground" spin />
+            <StatusPill count={status.completed} label="Done" icon={CheckCircle} color="bg-success/10 text-success" />
             <StatusPill count={status.skipped} label="Skipped" icon={Clock} color="bg-foreground/5 text-muted-foreground" />
             <StatusPill count={status.failed} label="Failed" icon={AlertTriangle} color="bg-destructive/10 text-destructive" />
           </div>
@@ -321,6 +424,33 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
           </div>
         </>
       ) : null}
+
+      {usesEmbeddingStream && runNow.isPending && (
+        // `--color-status-embedding` resolves to body ink now (it had been
+        // byte-identical to `--color-primary`, so ambient pipeline telemetry
+        // wore the one colour meaning "you can act on this"). At full strength
+        // the token measures 17.59:1 (Paper) / 14.86:1 (Graphite) on Pane,
+        // which would make this transient progress line the LOUDEST text on a
+        // card whose timing row is muted (5.42 / 7.22:1) and whose emphasised
+        // values sit at 80% ink — an ambient readout outranking the numbers it
+        // annotates. Held at 80% it measures 9.30:1 / 9.81:1: above every
+        // neighbour, far above the 4.5:1 floor for 12px text, and exactly the
+        // emphasis weight the timing row above already uses.
+        //
+        // Hue is not a channel here and never was the only one: `role="status"`
+        // announces it, the Loader2 glyph marks it, and `progressLabel` names
+        // the work. The glyph is what survives `prefers-reduced-motion`, under
+        // which index.css clamps the spin to 0.01ms.
+        <div
+          className="flex min-w-0 items-center gap-2 text-xs text-status-embedding/80"
+          role="status"
+          aria-live="polite"
+          data-testid="embedding-run-progress"
+        >
+          <Loader2 size={12} className="shrink-0 animate-spin" aria-hidden="true" />
+          <span className="min-w-0 break-words">{progressLabel}</span>
+        </div>
+      )}
 
       {/* Rescan-all guard. No destructive styling: everything the rescan
           clears is recomputed automatically by the background worker. */}

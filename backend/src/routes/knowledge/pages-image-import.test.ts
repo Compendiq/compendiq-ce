@@ -11,9 +11,11 @@ vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
   writeAttachmentCache: (...args: unknown[]) => mockWriteAttachmentCache(...args),
 }));
 
+const mockIsSystemAdmin = vi.fn().mockResolvedValue(false);
 vi.mock('../../core/services/rbac-service.js', () => ({
   getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
+  isSystemAdmin: (...args: unknown[]) => mockIsSystemAdmin(...args),
 }));
 
 const mockQuery = vi.fn();
@@ -125,6 +127,8 @@ describe('POST /api/pages/:id/images/import', () => {
     mockQuery.mockReset();
     mockWriteAttachmentCache.mockReset();
     mockWriteAttachmentCache.mockResolvedValue(undefined);
+    mockIsSystemAdmin.mockReset();
+    mockIsSystemAdmin.mockResolvedValue(false);
     mockAssertNonSsrfUrl.mockReset();
     mockAssertNonSsrfUrl.mockResolvedValue(undefined); // allow by default
     if (!originalFetch) originalFetch = globalThis.fetch;
@@ -297,7 +301,10 @@ describe('POST /api/pages/:id/images/import', () => {
 
   it('returns 403 when the user does not own a standalone page', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: 42, source: 'standalone', confluence_id: null, created_by_user_id: 'other-user', space_key: null }],
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
+      }],
     });
 
     const response = await app.inject({
@@ -308,6 +315,45 @@ describe('POST /api/pages/:id/images/import', () => {
 
     expect(response.statusCode).toBe(403);
     expect(mockWriteAttachmentCache).not.toHaveBeenCalled();
+  });
+
+  it('imports onto a shared standalone page the user did not create', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'shared',
+      }],
+    });
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://cdn.example.com/x.png' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
+  });
+
+  it('lets a system admin import onto a private standalone page they did not create', async () => {
+    mockIsSystemAdmin.mockResolvedValue(true);
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 42, source: 'standalone', confluence_id: null,
+        created_by_user_id: 'other-user', space_key: null, visibility: 'private',
+      }],
+    });
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockUpstream());
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/42/images/import',
+      payload: { url: 'https://cdn.example.com/x.png' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockWriteAttachmentCache).toHaveBeenCalledOnce();
   });
 
   it('rejects malformed URLs with 400', async () => {

@@ -327,6 +327,46 @@ describe('Draft-while-published routes', () => {
       expect(mockTxClient.release).toHaveBeenCalled();
     });
 
+    it('re-queues the image index when the published draft changed the body (#1115 P2)', async () => {
+      // Publishing is the moment the draft body becomes the live one, so it
+      // is the first point at which an `<img>` the draft added or dropped is
+      // real. Both sides of the comparison read the OLD row, which is what
+      // makes the gate work — and it must be `body_html` vs `draft_body_html`,
+      // not an unconditional TRUE, or every title-only publish re-scans.
+      const txSql: string[] = [];
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, title')) {
+          return Promise.resolve({
+            rows: [{
+              id: 10, version: 3, title: 'My Article',
+              body_html: '<p>live content</p>', body_text: 'live content',
+              body_storage: null, source: 'standalone',
+              created_by_user_id: TEST_USER, visibility: 'private',
+              confluence_id: null, draft_body_html: '<p>draft content</p>',
+              draft_body_storage: null,
+            }],
+          });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+      mockTxQuery.mockImplementation((sql: string) => {
+        txSql.push(sql);
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/10/draft/publish',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const update = txSql.find((s) => s.includes('UPDATE pages SET'));
+      expect(update).toBeDefined();
+      expect(update).toMatch(
+        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
+      );
+    });
+
     it('returns 400 when no draft exists', async () => {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('SELECT id, version, title')) {

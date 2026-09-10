@@ -391,10 +391,23 @@ const WORKER_RELEASE_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] the
  * ownership so a stale holder cannot delete a lock re-acquired by another pod.
  * Falls back to a generated token when Redis is not available (single-node
  * fallback — callers still proceed on truthiness).
+ *
+ * **`failClosed` inverts that fallback for the Redis ERROR path only** (#1349
+ * review). A configured-but-erroring Redis is not a single-node deployment: a
+ * blip during two concurrent triggers hands BOTH of them a token, and for an
+ * idempotent worker (quality, summary, the image index) that is a wasted pass,
+ * while for a DESTRUCTIVE one it is two concurrent delete loops over the same
+ * tree with no mutual exclusion left anywhere — the refresh guard cannot
+ * notice either, because its own `refreshWorkerLock` keeps erroring too. So a
+ * destructive caller passes `failClosed: true` and gets `null`: "press again"
+ * is strictly safer than unlocked execution. The NO-CLIENT branch is
+ * unaffected in both modes — a deployment with no Redis at all must still be
+ * able to run its workers.
  */
 export async function acquireWorkerLock(
   name: string,
   ttlSeconds = 300,
+  opts: { failClosed?: boolean } = {},
 ): Promise<string | null> {
   const token = randomUUID();
   if (!_redisClient) return token; // single-node fallback
@@ -405,8 +418,8 @@ export async function acquireWorkerLock(
     });
     return result !== null ? token : null;
   } catch (err) {
-    logger.error({ err, name }, 'Failed to acquire worker lock');
-    return token; // degrade to local execution
+    logger.error({ err, name, failClosed: opts.failClosed === true }, 'Failed to acquire worker lock');
+    return opts.failClosed === true ? null : token; // degrade to local execution
   }
 }
 
@@ -425,6 +438,63 @@ export async function releaseWorkerLock(name: string, token: string): Promise<vo
     });
   } catch (err) {
     logger.error({ err, name }, 'Failed to release worker lock');
+  }
+}
+
+/**
+ * Refresh Lua — bump the worker lock's TTL, but only while the caller still
+ * owns it, and return the CURRENT holder either way. The generic twin of
+ * `REFRESH_LOCK_SCRIPT` above (#1115 P2).
+ *
+ *   KEYS[1] = worker:lock:<name>
+ *   ARGV[1] = ownership token
+ *   ARGV[2] = TTL in seconds (stringified)
+ */
+const WORKER_REFRESH_LOCK_SCRIPT = `local cur = redis.call("get", KEYS[1]) if cur == ARGV[1] then redis.call("expire", KEYS[1], ARGV[2]) end return cur`;
+
+/**
+ * Renew a long-running worker lock, and report who holds it (#1115 P2).
+ *
+ * `acquireWorkerLock`'s TTL is a safety bound, not a duration estimate: a
+ * corpus-wide image scan can legitimately outlive it, at which point the key
+ * expires mid-run, another pod acquires it, and two scans walk the same
+ * backlog. Calling this on the guard cadence slides the TTL forward while —
+ * and only while — the caller still owns it, and the returned holder is what
+ * lets the loop abort cleanly when it no longer does. Same contract as
+ * `refreshEmbeddingLock`, including propagating errors so the caller's guard
+ * decides whether to continue.
+ *
+ * Returns the caller's own token when Redis is absent: that is the same
+ * single-node fallback `acquireWorkerLock` already makes, and answering `null`
+ * would abort every run on a Redis-less deployment.
+ */
+export async function refreshWorkerLock(
+  name: string,
+  token: string,
+  ttlSeconds = 300,
+): Promise<string | null> {
+  if (!_redisClient) return token;
+  const result = await _redisClient.eval(WORKER_REFRESH_LOCK_SCRIPT, {
+    keys: [`worker:lock:${name}`],
+    arguments: [token, String(ttlSeconds)],
+  });
+  return typeof result === 'string' ? result : null;
+}
+
+/**
+ * Whether a named worker lock is currently held (#1115 P2).
+ *
+ * Read-only and advisory — it is what lets an admin surface say "a scan is
+ * running" and poll, never a gate. Answers `false` without Redis, matching
+ * `acquireWorkerLock`'s single-node fallback, where no lock exists to hold.
+ */
+export async function isWorkerLocked(name: string): Promise<boolean> {
+  if (!_redisClient) return false;
+  try {
+    return (await _redisClient.get(`worker:lock:${name}`)) !== null;
+  } catch (err) {
+    logger.error({ err, name }, 'Failed to read worker lock state');
+    return false;
   }
 }
 
@@ -517,6 +587,7 @@ const TTL = {
   search: 300,     // 5 minutes
   sync: 60,        // 1 minute (sync status)
   llm: 3600,       // 1 hour (LLM response cache)
+  notion_tree: 120, // 2 minutes (Notion workspace tree cache)
 } as const;
 
 type CacheType = keyof typeof TTL;

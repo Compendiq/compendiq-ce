@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { isDbAvailable } from '../../test-db-helper.js';
+import { maintenancePostgresUrl, workerIdFromEnv } from '../../test-worker-isolation.js';
 import { runMigrations, closePool, query } from './postgres.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,7 +13,8 @@ const dbAvailable = await isDbAvailable();
 
 // Dedicated throwaway database so this test never fights the shared schema
 // used by the rest of the suite (which runs migrations once per file).
-const LOCK_TEST_DB = 'kb_creator_migration_lock_test';
+// Worker-scoped: fileParallelism would otherwise collide on one global name.
+const LOCK_TEST_DB = `kb_creator_migration_lock_w${workerIdFromEnv()}`;
 
 // POSTGRES_URL is set by test-setup.ts before this module loads.
 const baseUrl = process.env.POSTGRES_URL as string;
@@ -23,9 +25,12 @@ function urlForDb(dbName: string): string {
   return url.toString();
 }
 
-/** Run admin DDL (CREATE/DROP DATABASE) on the suite's default database. */
+/** CREATE/DROP DATABASE against the cluster maintenance DB, not a worker DB. */
 async function withAdminClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: baseUrl });
+  const client = new pg.Client({
+    connectionString: maintenancePostgresUrl(baseUrl),
+    connectionTimeoutMillis: 5_000,
+  });
   await client.connect();
   try {
     return await fn(client);
@@ -47,12 +52,14 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
   }, 60_000);
 
   afterAll(async () => {
-    await closePool();
     process.env.POSTGRES_URL = baseUrl;
-    await withAdminClient(async (client) => {
-      await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
-    });
-  }, 60_000);
+    // Drain this file's pool so later files on the worker do not keep
+    // talking to the throwaway database. Do not DROP here: DROP DATABASE
+    // checkpoints the cluster (15s+ under CI load, #1497) and has blown
+    // this hook's 60s budget after every test passed. beforeAll
+    // FORCE-drops leftovers on the next run.
+    await closePool();
+  }, 20_000);
 
   // Must mirror MIGRATIONS_ADVISORY_LOCK_ID in postgres.ts — used to simulate
   // a slow migration winner from a session outside the app pool.
@@ -151,4 +158,5 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
       30_000,
     );
   });
+
 });

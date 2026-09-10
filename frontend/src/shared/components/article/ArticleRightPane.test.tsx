@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ArticleRightPane } from './ArticleRightPane';
+import { apiFetch } from '../../lib/api';
 import { useArticleViewStore } from '../../../stores/article-view-store';
 import { useUiStore } from '../../../stores/ui-store';
+import { useAiDockStore } from '../../../stores/ai-dock-store';
+import { toast } from 'sonner';
 
 const mockNavigate = vi.fn();
 const mockDeletePage = vi.fn();
@@ -27,11 +30,28 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+const mockVerifyPage = vi.fn();
+let mockRelocateAllowed = true;
+
+// Feeds `usePageNotes` through the stubbed `apiFetch` below so the collapsed
+// rail's open-notes badge can be exercised at zero and at a real count.
+let mockNotes: Array<{ id: string; parentId: string | null; resolved: boolean }> = [];
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
 const mockPage = {
   id: 'page-1',
   confluenceId: '98765432',
   title: 'Engineering Handbook',
   spaceKey: 'ENG',
+  source: 'confluence' as const,
   bodyHtml: '<h1>Intro</h1>',
   bodyText: 'Body',
   version: 7,
@@ -55,6 +75,7 @@ const mockPage = {
   qualitySummary: 'Well-written article',
   qualityAnalyzedAt: '2026-03-01T12:00:00Z',
   qualityError: null,
+  verifiedAt: null as string | null,
 };
 
 let currentMockPage: typeof mockPage | (typeof mockPage & { confluenceId: null }) = mockPage;
@@ -77,14 +98,55 @@ vi.mock('../../hooks/use-settings', () => ({
 }));
 
 // Stub apiFetch so the usecase-default query resolves "configured" (Auto-tag visible).
+// RelocateDialog is rendered for real (the pane must hand it the page's own
+// `source`); an empty object is a truthy preview and then crashes on
+// `accessChange.from`.
 vi.mock('../../lib/api', () => ({
-  apiFetch: vi.fn(async (url: string) =>
-    url.includes('usecase-default') ? { provider: 'p1', model: 'bge-x' } : {},
-  ),
+  apiFetch: vi.fn(async (url: string) => {
+    if (url.includes('usecase-default')) return { provider: 'p1', model: 'bge-x' };
+    if (url.includes('/relocate/preview')) {
+      return {
+        pageId: 1,
+        title: 'Engineering Handbook',
+        source: 'standalone',
+        spaceKey: null,
+        confluenceId: null,
+        target: 'confluence',
+        childCount: 0,
+        subtreeEffect: null,
+        attachmentCount: 0,
+        localVersionCount: 0,
+        accessChange: {
+          from: 'Private article — only tester can read it',
+          to: 'Everyone with access to the chosen Confluence space',
+          gains: [],
+          loses: [],
+          truncated: false,
+        },
+        upstreamDeletion: null,
+      };
+    }
+    if (url.includes('/comments')) return mockNotes;
+    return {};
+  }),
+}));
+
+vi.mock('../../hooks/use-permission', () => ({
+  usePermission: (permission: string) => ({
+    allowed: permission === 'pages:relocate' ? mockRelocateAllowed : false,
+    loading: false,
+    error: null,
+  }),
+}));
+
+vi.mock('../../hooks/use-spaces', () => ({
+  useSpaces: () => ({ data: [{ key: 'DEV', name: 'Developer Docs', source: 'confluence' }] }),
 }));
 
 vi.mock('../../hooks/use-standalone', () => ({
   useExportPdf: () => ({ mutateAsync: mockExportPdfAsync, isPending: false }),
+  useVerifyPage: () => ({ mutateAsync: mockVerifyPage, isPending: false }),
+  useLocalSpaces: () => ({ data: [{ key: 'HOME', name: 'Home', source: 'local' }] }),
 }));
 
 vi.mock('../../../features/pages/AutoTagger', () => ({
@@ -93,13 +155,33 @@ vi.mock('../../../features/pages/AutoTagger', () => ({
   ),
 }));
 
+// The pane hosts the assistant as a tab now. DockPanel consumes AiContext and
+// the whole AI data stack; this file is about the PANE, so the panel is stubbed
+// the same way AutoTagger and the badges are. AiDock.test.tsx covers the panel.
+vi.mock('../../../features/ai/dock/DockPanel', () => ({
+  DockPanel: () => <div data-testid="dock-panel-stub" />,
+}));
+
 vi.mock('../badges/FreshnessBadge', () => ({
   FreshnessBadge: ({ lastModified }: { lastModified: string }) => <span>{lastModified}</span>,
 }));
 
 vi.mock('../badges/EmbeddingStatusBadge', () => ({
-  EmbeddingStatusBadge: ({ embeddingStatus }: { embeddingStatus: string }) => (
-    <span data-testid="embedding-status-badge">{embeddingStatus}</span>
+  EmbeddingStatusBadge: ({
+    embeddingStatus,
+    onRetry,
+  }: {
+    embeddingStatus: string;
+    onRetry?: () => void;
+  }) => (
+    <span data-testid="embedding-status-badge">
+      {embeddingStatus}
+      {onRetry && (
+        <button data-testid="mock-embedding-retry-btn" onClick={onRetry}>
+          Retry
+        </button>
+      )}
+    </span>
   ),
 }));
 
@@ -140,12 +222,25 @@ describe('ArticleRightPane', () => {
     mockResyncPage.mockReset();
     mockReembedPage.mockReset();
     mockRequalityPage.mockReset();
+    mockVerifyPage.mockReset().mockResolvedValue(undefined);
+    mockRelocateAllowed = true;
+    mockNotes = [];
     resyncIsPending = false;
     reembedIsPending = false;
     requalityIsPending = false;
     localStorage.clear();
-    useUiStore.setState({ articleSidebarCollapsed: false, articleSidebarWidth: 280 });
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+      articleSidebarWidth: 400,
+    });
     useArticleViewStore.setState({ headings: [], editing: false });
+    // The dock forces this pane into its rail while open (#1126), so a test
+    // that opens it would otherwise change what every later test renders.
+    useAiDockStore.setState({ open: false });
+    // jsdom's default. `useIsDockWideLayout` reads it via matchMedia, and the
+    // pane steps aside entirely below 1100px while the dock is open.
+    window.innerWidth = 1280;
   });
 
   afterEach(() => {
@@ -156,11 +251,119 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
-    expect(screen.getByText('Properties')).toBeInTheDocument();
-    expect(screen.getByText('AI Improve')).toBeInTheDocument();
+    // The "Page context" label and the page title under it are gone: the view
+    // switcher is the header row now. Both were redundant — the article's own
+    // H1 sits a few pixels to the left and never scrolls out from under the
+    // context strip. What the header must still carry is the tablist and the
+    // collapse control, which is what this asserts instead.
+    expect(screen.getByRole('tablist', { name: 'Page context views' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Collapse page sidebar')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByText('Pin')).toBeInTheDocument();
-    expect(screen.getByText('Open in Confluence')).toBeInTheDocument();
-    expect(screen.getByText('Delete')).toBeInTheDocument();
+    expect(screen.getByText('Page details')).toBeInTheDocument();
+    expect(screen.getByText('Move to trash')).toBeInTheDocument();
+  });
+
+  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Pin').closest('details')).toBeNull();
+    expect(screen.getByText('Version history').closest('details')).toBeNull();
+
+    const moreActions = screen.getByText('More actions').closest('details');
+    const dangerZone = screen.getByText('Danger zone').closest('details');
+    expect(moreActions).not.toHaveAttribute('open');
+    expect(dangerZone).not.toHaveAttribute('open');
+
+    fireEvent.click(screen.getByText('More actions'));
+    expect(moreActions).toHaveAttribute('open');
+    expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Open in Confluence').closest('details')).toBe(moreActions);
+    expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
+    fireEvent.click(screen.getByText('Danger zone'));
+    expect(dangerZone).toHaveAttribute('open');
+  });
+  it('renders a synthesized health summary and categorized groups inside More actions', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Synthesized health summary banner
+    expect(screen.getByText(/Indexed for AI search|Verified and ready/)).toBeInTheDocument();
+
+    // Open More actions and verify logical groups
+    const moreActions = screen.getByText('More actions').closest('details')!;
+    fireEvent.click(screen.getByText('More actions'));
+    expect(moreActions).toHaveAttribute('open');
+    expect(screen.getByText('Navigation & Export')).toBeInTheDocument();
+    expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
+  });
+
+
+  it('lists page facts above page actions in Details', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const facts = screen.getByText('Page details');
+    const actions = screen.getByText('Page actions');
+    expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('opens on the outline when the page has document structure', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Introduction')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
+  });
+
+  it('gives outline expand a 24px out-of-flow hit target', () => {
+    useArticleViewStore.setState({
+      headings: [
+        { id: 'intro', text: 'Introduction', level: 1 },
+        { id: 'setup', text: 'Setup', level: 2 },
+      ],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const expand = screen.getByLabelText('Collapse section');
+    expect(expand).toHaveAttribute('aria-hidden', 'true');
+    expect(expand).toHaveAttribute('tabIndex', '-1');
+    expect(expand.className).toMatch(/\bsize-6\b/);
+    expect(expand.className).toMatch(/\babsolute\b/);
+  });
+
+  it('switches between Outline and Details tabs using Alt+O and Alt+D hotkeys', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(window, { key: 'd', altKey: true });
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.keyDown(window, { key: 'o', altKey: true });
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('honors explicit inspector view requests from layout presets', () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+
+    const { rerender } = render(
+      <ArticleRightPane inspectorViewRequest={{ view: 'details', requestId: 1 }} />,
+      { wrapper: createWrapper() },
+    );
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+
+    rerender(<ArticleRightPane inspectorViewRequest={{ view: 'outline', requestId: 2 }} />);
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('collapses to a slim rail when the collapse button is clicked', () => {
@@ -179,8 +382,35 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Expand page sidebar'));
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
 
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+  });
+
+  it('starts collapsed below xl even when the wide-layout preference is expanded', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: false,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane')).not.toBeInTheDocument();
+  });
+
+  it('expands on laptop via the laptop-expanded flag, not the wide persist', () => {
+    window.innerWidth = 1024;
+    useUiStore.setState({
+      articleSidebarCollapsed: true,
+      articleSidebarLaptopExpanded: false,
+    });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
+
+    expect(useUiStore.getState().articleSidebarLaptopExpanded).toBe(true);
     expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
   });
 
@@ -190,7 +420,9 @@ describe('ArticleRightPane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.queryByTestId('article-actions')).not.toBeInTheDocument();
-    expect(screen.queryByText('AI Improve')).not.toBeInTheDocument();
+    // No "AI Assistant" assertion here any more: that control was removed from
+    // Page actions, so asserting its absence would pass whether or not editing
+    // hides anything — a green cell testing nothing.
   });
 
   it('keeps AI-Tagging available in edit mode (#354)', () => {
@@ -228,12 +460,164 @@ describe('ArticleRightPane', () => {
     expect(screen.queryByText('Version history')).not.toBeInTheDocument();
   });
 
-  it('navigates to AI Improve when the button is clicked', () => {
+  it('preserves Page details and Document health in edit mode', () => {
+    useArticleViewStore.setState({ editing: true });
+
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('AI Improve'));
+    expect(screen.getByText('Page details')).toBeInTheDocument();
+    expect(screen.getByText('ENG')).toBeInTheDocument();
+    expect(screen.getByText('v7')).toBeInTheDocument();
+    expect(screen.getByText('Document health')).toBeInTheDocument();
+    expect(screen.getByTestId('embedding-status-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('quality-score-badge')).toBeInTheDocument();
+    expect(screen.getByText('docs')).toBeInTheDocument();
+  });
 
-    expect(mockNavigate).toHaveBeenCalledWith('/ai?mode=improve&pageId=page-1');
+  it('renders Version history in the collapsed rail overflow', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('article-actions-rail'));
+    expect(await screen.findByTestId('article-history-rail-btn')).toBeInTheDocument();
+    expect(screen.getByLabelText('Version history')).toBeInTheDocument();
+  });
+
+  it('wires onRetry on EmbeddingStatusBadge to trigger reembed', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    const retryBtn = screen.getByTestId('mock-embedding-retry-btn');
+    expect(retryBtn).toBeInTheDocument();
+    fireEvent.click(retryBtn);
+
+    expect(mockReembedPage).toHaveBeenCalledTimes(1);
+    expect(mockReembedPage.mock.calls[0]![0]).toBe('page-1');
+  });
+
+  // #1126: the way in used to navigate to /ai?mode=improve&pageId=…, taking the
+  // document off screen to operate on it. It shows the assistant beside the
+  // document instead. #1176: and only shows it — it queues no work.
+  //
+  // The trigger under test is now the TAB. There was also an "AI Assistant"
+  // button in Page actions, which this test used to click; it was removed once
+  // the assistant became the tab immediately to its left, since it duplicated
+  // the tablist one row below it. Both halves that matter are unchanged: no
+  // navigation, and nothing starts on open.
+  it('shows the assistant in this pane instead of navigating away, and starts nothing', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId('page-context-tab-assistant'));
+
+    expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  // These two cells asserted the opposite until the assistant became a tab: the
+  // pane used to collapse to its rail whenever `dockOpen` was set, because the
+  // assistant was a third column that needed the room. There is no column now.
+  //
+  // Re-adding the OR is not a cosmetic regression. `AppLayout` consumes the flag
+  // in an effect — after commit — so the pane starts collapsing, and its width is
+  // a framer spring: measured per rAF, it ran 280 → 1 → 280 over ~30 frames on
+  // the very keystroke meant to open it. jsdom performs no layout, so that is
+  // invisible here; what these cells can pin is the cause, which is whether the
+  // pane consults `dockOpen` at all.
+  it('does not collapse for the dock flag on a wide layout — the assistant is a tab', () => {
+    window.innerWidth = 1400;
+    useAiDockStore.setState({ open: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+  });
+
+  it('expands on its own preference alone, without consulting the dock', () => {
+    window.innerWidth = 1400;
+    useUiStore.setState({ articleSidebarCollapsed: true });
+    useAiDockStore.setState({ open: true });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByLabelText('Expand inspector'));
+
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+    // Untouched: closing the sheet is `AppLayout`'s job and the `.` shortcut's,
+    // not something this pane's expand control reaches sideways to do.
+    expect(useAiDockStore.getState().open).toBe(true);
+  });
+
+  it('steps aside entirely below the wide breakpoint while the dock is open', () => {
+    window.innerWidth = 900;
+    useAiDockStore.setState({ open: true });
+
+    const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('as a sheet stays expanded even when the dock flag is set', () => {
+    window.innerWidth = 500;
+    useAiDockStore.setState({ open: true });
+    useUiStore.setState({ articleSidebarCollapsed: true });
+
+    render(
+      <ArticleRightPane presentation="sheet" />,
+      { wrapper: createWrapper() },
+    );
+
+    expect(screen.getByTestId('article-right-pane')).toBeInTheDocument();
+    expect(screen.queryByTestId('article-right-pane-rail')).not.toBeInTheDocument();
+    expect(screen.queryByRole('separator', { name: 'Resize page sidebar' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Close page inspector')).toBeInTheDocument();
+  });
+
+  it('as a sheet closes via the header control instead of collapsing to a rail', () => {
+    const onRequestClose = vi.fn();
+    render(
+      <ArticleRightPane presentation="sheet" onRequestClose={onRequestClose} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByLabelText('Close page inspector'));
+    expect(onRequestClose).toHaveBeenCalledOnce();
+    expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+  });
+
+  it('falls back to Details when navigating from a structured page to a heading-free page', async () => {
+    useArticleViewStore.setState({
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const router = createMemoryRouter(
+      [{ path: '/pages/:id', element: <ArticleRightPane /> }],
+      { initialEntries: ['/pages/page-1'] },
+    );
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LazyMotion features={domAnimation}>
+          <RouterProvider router={router} />
+        </LazyMotion>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+
+    await act(async () => {
+      await router.navigate('/pages/page-2');
+    });
+    act(() => {
+      useArticleViewStore.getState().setHeadings([]);
+    });
+
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('article-actions')).toBeInTheDocument();
   });
 
   it('renders Re-sync and Re-embed buttons for Confluence-sourced articles', () => {
@@ -284,24 +668,249 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    // Sanity-check the rail rendered with its action stack
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
-    expect(screen.getByTestId('article-actions-rail')).toBeInTheDocument();
-
+    fireEvent.click(screen.getByTestId('article-actions-rail'));
     fireEvent.click(screen.getByTestId('article-requality-rail-btn'));
 
     expect(mockRequalityPage).toHaveBeenCalledTimes(1);
     expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
   });
 
-  it('hides rail actions while editing', () => {
+  it('hides the rail overflow while editing, but keeps Assistant and Outline', () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
-    useArticleViewStore.setState({ editing: true });
+    useArticleViewStore.setState({
+      editing: true,
+      headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+    });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId('article-right-pane-rail')).toBeInTheDocument();
+    expect(screen.getByTestId('article-outline-rail-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('article-assistant-rail-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('article-actions-rail')).not.toBeInTheDocument();
+  });
+
+  describe('collapsed rail hybrid (primary + overflow)', () => {
+    function renderRail() {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      return render(<ArticleRightPane />, { wrapper: createWrapper() });
+    }
+
+    it('is a complementary landmark named Page inspector', () => {
+      renderRail();
+      const rail = screen.getByTestId('article-right-pane-rail');
+      expect(rail.tagName).toBe('ASIDE');
+      expect(rail).toHaveAttribute('aria-label', 'Page inspector');
+    });
+
+    it('keeps the collapsed rail focused on its controls without a redundant view label', () => {
+      renderRail();
+      expect(screen.queryByTestId('inspector-rail-current-view')).not.toBeInTheDocument();
+      expect(screen.getByTestId('article-details-rail-btn')).toHaveAccessibleName('Page details');
+      expect(screen.getByTestId('article-details-rail-btn').className).toMatch(/nm-pill-active/);
+      expect(screen.getByTestId('article-details-rail-btn').className).not.toMatch(/text-action/);
+    });
+
+    it('holds the collapsed rail on the expanded toolbar row’s 48px, unlined', () => {
+      renderRail();
+      const chrome = screen.getByTestId('article-right-pane-rail').querySelector('.h-12');
+      expect(chrome).toHaveClass('h-12');
+      // ADR-010 v1.1 took the 48px rule off every pane; the height is the
+      // alignment now, so a border-b here would be one line starting mid-width.
+      expect(chrome?.className).not.toMatch(/\bborder-b\b/);
+    });
+
+    it('keeps Assistant above Outline and parks pin and maintenance behind More', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      renderRail();
+
+      const assistant = screen.getByTestId('article-assistant-rail-btn');
+      const outline = screen.getByTestId('article-outline-rail-btn');
+      expect(screen.getByLabelText('Expand inspector')).toBeInTheDocument();
+      expect(assistant.compareDocumentPosition(outline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.queryByLabelText('Pin page')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('article-requality-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('article-reembed-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('article-history-rail-btn')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Export PDF')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+
+      expect(screen.getAllByTestId('article-assistant-rail-btn')).toHaveLength(1);
+      expect(screen.getByLabelText('Pin page')).toBeInTheDocument();
+      expect(screen.getByTestId('article-requality-rail-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('article-reembed-rail-btn')).toBeInTheDocument();
+      expect(screen.getByTestId('article-history-rail-btn')).toBeInTheDocument();
+      expect(screen.getByLabelText('Export PDF')).toBeInTheDocument();
+      expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
+    });
+
+    it('names Re-embed without RAG jargon', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+
+      const reembed = await screen.findByTestId('article-reembed-rail-btn');
+      expect(reembed).toHaveAccessibleName(/re-embed for search/i);
+      expect(reembed).not.toHaveAccessibleName(/RAG/i);
+    });
+
+    it('invokes requality from the overflow, not the open rail', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      fireEvent.click(await screen.findByTestId('article-requality-rail-btn'));
+
+      expect(mockRequalityPage).toHaveBeenCalledTimes(1);
+      expect(mockRequalityPage.mock.calls[0]![0]).toBe('page-1');
+    });
+
+    it('expands directly onto the Assistant tab from its rail button', () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-assistant-rail-btn'));
+
+      expect(useUiStore.getState().articleSidebarCollapsed).toBe(false);
+      expect(screen.getByTestId('page-context-tab-assistant')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+    });
+
+    it('marks Pin as pressed and keeps the shared focus ring', () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      const pin = screen.getByLabelText('Pin page');
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      expect(pin.className).toMatch(/focus-visible:ring-2/);
+    });
+
+    it('paints the first-class rail Assistant mark violet', () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-assistant-rail-btn');
+      const mark = trigger.querySelector('svg');
+      expect(mark).not.toBeNull();
+      expect(mark!.className.baseVal || mark!.getAttribute('class') || '').toContain(
+        'text-status-ai',
+      );
+    });
+
+    it('closes the outline flyout when focus leaves it for another rail control', async () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'intro', text: 'Introduction', level: 1 }],
+      });
+      renderRail();
+
+      const outline = screen.getByTestId('article-outline-rail-btn');
+      const expand = screen.getByLabelText('Expand inspector');
+      fireEvent.focus(outline);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.blur(outline, { relatedTarget: expand });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
+    });
+
+    it('closes More actions on Escape and restores focus to its trigger', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-actions-rail');
+      fireEvent.click(trigger);
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    it('closes More actions when the pointer presses outside it', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.pointerDown(document.body);
+
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+    });
+
+    it('keeps a portalled Version History dialog alive above More actions', async () => {
+      renderRail();
+      fireEvent.click(screen.getByTestId('article-actions-rail'));
+      fireEvent.click(screen.getByTestId('article-history-rail-btn'));
+      const dialog = await screen.findByRole('dialog');
+
+      fireEvent.pointerDown(dialog);
+      expect(screen.getByTestId('article-rail-overflow')).toBeInTheDocument();
+
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByTestId('article-rail-overflow')).not.toBeInTheDocument());
+    });
+
+    /**
+     * Open-notes badge on the collapsed rail: geometry, count, and absence.
+     *
+     * 3bfd1aa8 ("shrink and reposition Notes badge in collapsed right rail")
+     * tucked the badge INSIDE the button's corner (`top-0 right-0`) instead of
+     * overhanging it (`-top-1 -right-1`) and shrank it to `h-3.5 min-w-3.5` /
+     * `px-0.5`. Nothing pinned that, so a later refactor could silently undo
+     * it — which is what these two cases exist to prevent.
+     *
+     * `text-[11px]` is asserted DELIBERATELY, and is the one dimension that
+     * must not shrink further: 3bfd1aa8 also took the badge to `text-[10px]`
+     * and ea91c725 ("restore 11px legibility floor on collapsed-rail Notes
+     * badge") put it back, because `src/ui-text-legibility.test.ts` holds an
+     * 11px floor for functional UI text and fails on the source line that
+     * breaks it. So the next person asked to "shrink the badge" fails here
+     * rather than helpfully dropping it to 10px and re-breaking the floor.
+     */
+    it('tucks a sized open-notes badge into the corner of the rail Notes button', async () => {
+      mockNotes = [
+        { id: 'n1', parentId: null, resolved: false },
+        { id: 'n2', parentId: null, resolved: false },
+        // Resolved and threaded notes are not "open" and must not be counted.
+        { id: 'n3', parentId: null, resolved: true },
+        { id: 'n4', parentId: 'n1', resolved: false },
+      ];
+      renderRail();
+
+      // Waiting on the label, not on the badge, is what makes the count
+      // assertion below real: the pre-fetch render also has no badge.
+      const button = await screen.findByLabelText('Notes (2 open)');
+      const badge = button.querySelector('span');
+      expect(badge).not.toBeNull();
+      expect(badge).toHaveTextContent('2');
+      expect(badge).toHaveClass(
+        'absolute',
+        'top-0',
+        'right-0',
+        'h-3.5',
+        'min-w-3.5',
+        'px-0.5',
+        'text-[11px]',
+        'rounded-full',
+        'bg-action',
+        'text-action-foreground',
+      );
+      // The pre-3bfd1aa8 overhanging, larger badge, spelled out so a revert to
+      // it fails on the classes it reintroduces and not only on the ones it drops.
+      expect(badge!.className).not.toMatch(/-top-1|-right-1|\bh-4\b|\bmin-w-4\b|\bpx-1\b/);
+    });
+
+    it('renders no open-notes badge at all when nothing is open', async () => {
+      mockNotes = [];
+      renderRail();
+
+      await waitFor(() =>
+        expect(apiFetch).toHaveBeenCalledWith(expect.stringContaining('/comments')),
+      );
+      const button = screen.getByTestId('article-notes-rail-btn');
+      expect(button).toHaveAccessibleName('Notes (0 open)');
+      // A `0` badge is the failure this pins: the count guard, not the count.
+      expect(button.querySelector('span')).toBeNull();
+    });
   });
 
   it('invokes reembed mutation when Re-embed is clicked', () => {
@@ -345,6 +954,112 @@ describe('ArticleRightPane', () => {
     toastInfoSpy.mockRestore();
   });
 
+  // #1126: collapsing this pane drops the outline entirely — the rail only ever
+  // carried actions. The flyout is what keeps the outline reachable at 40px,
+  // which matters now that opening the dock forces the rail.
+  describe('rail outline flyout', () => {
+    const headings = [
+      { id: 'intro', text: 'Introduction', level: 1 },
+      { id: 'usage', text: 'Usage', level: 2 },
+    ];
+
+    function renderRail() {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      useArticleViewStore.setState({ headings });
+      return render(<ArticleRightPane />, { wrapper: createWrapper() });
+    }
+
+    it('offers no outline trigger when the article has no headings', () => {
+      useUiStore.setState({ articleSidebarCollapsed: true });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('article-outline-rail-btn')).not.toBeInTheDocument();
+    });
+
+    it('reveals the outline on hover', () => {
+      renderRail();
+      expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+
+      fireEvent.mouseEnter(screen.getByTestId('article-outline-rail-btn'));
+
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+      expect(screen.getByText('Introduction')).toBeInTheDocument();
+      expect(screen.queryByText('2 sections')).not.toBeInTheDocument();
+    });
+
+    // WCAG 2.4.7: a hover-only reveal puts the outline out of reach of the
+    // keyboard entirely, so focus has to open it too.
+    it('reveals the outline on keyboard focus, not only on hover', () => {
+      renderRail();
+
+      fireEvent.focus(screen.getByTestId('article-outline-rail-btn'));
+
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+    });
+
+    // WCAG 1.4.13: content on hover or focus must be dismissible.
+    it('dismisses on Escape and returns focus to the trigger', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+      fireEvent.focus(trigger);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.keyDown(trigger, { key: 'Escape' });
+
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(document.activeElement).toBe(trigger);
+      // The panel leaves through AnimatePresence, so it unmounts a frame later.
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
+    });
+
+    it('exposes the trigger as an expandable control naming what it opens', () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+
+      expect(trigger).toHaveAttribute('aria-label', 'Outline');
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveAttribute('aria-controls', 'article-outline-flyout');
+
+      fireEvent.click(trigger);
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByTestId('article-outline-flyout')).toHaveAttribute('id', 'article-outline-flyout');
+      expect(screen.getByTestId('article-outline-flyout')).toHaveTextContent('Same as the Outline tab');
+    });
+
+    it('closes after a click-open when the pointer moves down inside the rail', async () => {
+      renderRail();
+      const trigger = screen.getByTestId('article-outline-rail-btn');
+      fireEvent.click(trigger);
+      expect(screen.getByTestId('article-outline-flyout')).toBeInTheDocument();
+
+      fireEvent.pointerMove(screen.getByTestId('article-actions-rail'));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('article-outline-flyout')).not.toBeInTheDocument();
+      });
+    });
+
+    it('navigates to a heading from inside the flyout', () => {
+      const scrollTo = vi.fn();
+      const scrollRoot = document.createElement('div');
+      scrollRoot.setAttribute('data-scroll-container', '');
+      scrollRoot.scrollTo = scrollTo;
+      document.body.appendChild(scrollRoot);
+      const target = document.createElement('h2');
+      target.id = 'usage';
+      scrollRoot.appendChild(target);
+
+      renderRail();
+      fireEvent.mouseEnter(screen.getByTestId('article-outline-rail-btn'));
+      fireEvent.click(screen.getByText('Usage'));
+
+      expect(scrollTo).toHaveBeenCalled();
+      scrollRoot.remove();
+    });
+  });
+
   it('renders outline headings from the article-view-store', () => {
     useArticleViewStore.setState({
       headings: [
@@ -357,13 +1072,14 @@ describe('ArticleRightPane', () => {
 
     expect(screen.getByText('Introduction')).toBeInTheDocument();
     expect(screen.getByText('Usage')).toBeInTheDocument();
-    expect(screen.getByText('2 sections')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Outline' })).not.toHaveTextContent('2');
   });
 
   it('shows empty message when there are no headings', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('No headings on this page.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Outline' }));
+    expect(screen.getByText('No outline yet')).toBeInTheDocument();
   });
 
   // #880: outline rows were clickable <div>s with focus-visible classes but no
@@ -404,7 +1120,7 @@ describe('ArticleRightPane', () => {
       expect(scrollToSpy).toHaveBeenCalled();
       // setActiveId(headingId) ran → the row gets the active treatment.
       const activeRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
-      expect(activeRow.className).toContain('nm-pill-active');
+      expect(activeRow.className).toContain('nav-selection');
     });
 
     it('prevents the default page-scroll on Space', () => {
@@ -415,6 +1131,46 @@ describe('ArticleRightPane', () => {
       const row = screen.getByText('Introduction').closest('[role="treeitem"]')!;
       const notPrevented = fireEvent.keyDown(row, { key: ' ' });
       expect(notPrevented).toBe(false);
+    });
+
+    it('manages roving tabindex and arrow-key navigation across visible nodes', () => {
+      useArticleViewStore.setState({
+        headings: [
+          { id: 'intro', text: 'Introduction', level: 1 },
+          { id: 'arch', text: 'Architecture', level: 2 },
+          { id: 'deploy', text: 'Deployment', level: 1 },
+        ],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const intro = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      const arch = screen.getByText('Architecture').closest('[role="treeitem"]')!;
+      const deploy = screen.getByText('Deployment').closest('[role="treeitem"]')!;
+
+      // Initially, the first visible node is the roving tab stop
+      expect(intro.getAttribute('tabindex')).toBe('0');
+      expect(arch.getAttribute('tabindex')).toBe('-1');
+      expect(deploy.getAttribute('tabindex')).toBe('-1');
+
+      // ArrowDown moves roving tab stop to next node
+      fireEvent.keyDown(intro, { key: 'ArrowDown' });
+      expect(arch.getAttribute('tabindex')).toBe('0');
+
+      // ArrowDown again moves to Deployment
+      fireEvent.keyDown(arch, { key: 'ArrowDown' });
+      expect(deploy.getAttribute('tabindex')).toBe('0');
+
+      // ArrowUp moves back to Architecture
+      fireEvent.keyDown(deploy, { key: 'ArrowUp' });
+      expect(arch.getAttribute('tabindex')).toBe('0');
+
+      // Home moves to first item (Introduction)
+      fireEvent.keyDown(arch, { key: 'Home' });
+      expect(intro.getAttribute('tabindex')).toBe('0');
+
+      // End moves to last item (Deployment)
+      fireEvent.keyDown(intro, { key: 'End' });
+      expect(deploy.getAttribute('tabindex')).toBe('0');
     });
   });
 
@@ -434,7 +1190,7 @@ describe('ArticleRightPane', () => {
       expect(tree.getAttribute('aria-label')).toBeTruthy();
     });
 
-    it('wraps nested sub-headings in role="group" so nested treeitems have a valid parent', () => {
+    it('wraps nested sub-headings in role="group" with correct aria-level and title', () => {
       // A level-2 heading nests under the preceding level-1 heading; outline
       // branches are expanded by default (collapsedIds is empty).
       useArticleViewStore.setState({
@@ -448,6 +1204,12 @@ describe('ArticleRightPane', () => {
       const group = document.querySelector('[role="group"]');
       expect(group).not.toBeNull();
       expect(group!.querySelector('[role="treeitem"]')).not.toBeNull();
+
+      const introRow = screen.getByText('Introduction').closest('[role="treeitem"]')!;
+      const usageRow = screen.getByText('Usage').closest('[role="treeitem"]')!;
+      expect(introRow).toHaveAttribute('aria-level', '1');
+      expect(usageRow).toHaveAttribute('aria-level', '2');
+      expect(screen.getByText('Usage')).toHaveAttribute('title', 'Usage');
     });
   });
 
@@ -458,10 +1220,49 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText(/ENG/)).toBeInTheDocument();
   });
 
-  it('has a resize handle', () => {
+  it('places a visible resize grip in the gutter beside the pane', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByRole('separator', { name: 'Resize page sidebar' })).toBeInTheDocument();
+    const pane = screen.getByTestId('article-right-pane');
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+    expect(handle).toHaveAttribute('aria-valuenow', '400');
+    expect(handle).toHaveAttribute('aria-valuemin', '400');
+    expect(handle).toHaveAttribute('aria-valuemax', '1200');
+    expect(handle).toHaveAttribute('tabindex', '0');
+    expect(handle).toHaveStyle({ width: 'var(--app-rail-gap)' });
+    expect(pane).not.toContainElement(handle);
+    expect(screen.getByTestId('article-right-pane-resize-grip')).toBeVisible();
+  });
+
+  it('supports keyboard resizing and double-click reset', () => {
+    useUiStore.setState({ articleSidebarWidth: 400 });
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(416);
+
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
+
+    act(() => {
+      useUiStore.setState({ articleSidebarWidth: 1195 });
+    });
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(1200);
+
+    fireEvent.doubleClick(handle);
+    expect(useUiStore.getState().articleSidebarWidth).toBe(400);
+  });
+
+  it('resizes when the gutter handle is dragged', () => {
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+    const handle = screen.getByRole('separator', { name: 'Resize page sidebar' });
+
+    fireEvent.mouseDown(handle, { clientX: 500 });
+    fireEvent.mouseMove(document, { clientX: 460 });
+    expect(useUiStore.getState().articleSidebarWidth).toBe(440);
+    fireEvent.mouseUp(document);
   });
 
   it('renders QualityScoreBadge in properties when quality score is present', () => {
@@ -471,8 +1272,26 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 
+  it('lists source and draft facts in Details, not as header chrome', () => {
+    currentMockPage = {
+      ...mockPage,
+      source: 'standalone',
+      visibility: 'private',
+      hasDraft: true,
+    } as typeof currentMockPage;
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    expect(screen.getByText('Source')).toBeInTheDocument();
+    expect(screen.getByText('Local')).toBeInTheDocument();
+    expect(screen.getByText('Visibility')).toBeInTheDocument();
+    expect(screen.getByText('Private')).toBeInTheDocument();
+    expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
+  });
+
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     const link = screen.getByText('Open in Confluence').closest('a');
     expect(link).toBeInTheDocument();
@@ -511,7 +1330,7 @@ describe('ArticleRightPane', () => {
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Move to trash'));
 
     // Copy must reflect the 30-day soft-delete trash, not the old (false)
     // "cannot be undone" claim from native confirm().
@@ -532,7 +1351,7 @@ describe('ArticleRightPane', () => {
   it('cancelling the move-to-trash dialog does not delete', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByText('Delete'));
+    fireEvent.click(screen.getByText('Move to trash'));
     await screen.findByTestId('confirm-dialog');
     fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
 
@@ -542,12 +1361,33 @@ describe('ArticleRightPane', () => {
     expect(mockDeletePage).not.toHaveBeenCalled();
   });
 
-  it('rail Delete button drives the same move-to-trash dialog', async () => {
+  // Behaviour change: the collapsed rail no longer offers Delete at all.
+  //
+  // Expanded, deleting sits behind a "Danger zone" disclosure and then a
+  // confirm dialog. Collapsing the pane used to PROMOTE it to a top-level icon
+  // among ten unlabelled glyphs — so the safety around destroying a page was a
+  // function of a layout preference. Sharing the confirm (which it did, and
+  // which this test used to assert) made the second step identical; it did
+  // nothing about the first one going missing.
+  it('the collapsed rail offers no Delete control', () => {
     useUiStore.setState({ articleSidebarCollapsed: true });
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    fireEvent.click(screen.getByLabelText('Delete page'));
+    expect(screen.queryByLabelText('Delete page')).not.toBeInTheDocument();
+  });
+
+  it('expanded, Delete still drives the move-to-trash dialog', async () => {
+    useUiStore.setState({ articleSidebarCollapsed: false });
+
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    // Two steps by design: the disclosure, then the confirm. That first step is
+    // exactly what the collapsed rail used to skip. (The expanded control is
+    // labelled by its visible text; `aria-label="Delete page"` belonged to the
+    // rail icon alone, which is why the check above can look for it.)
+    fireEvent.click(screen.getByText('Danger zone'));
+    fireEvent.click(screen.getByText('Move to trash'));
 
     expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
@@ -560,6 +1400,7 @@ describe('ArticleRightPane', () => {
   // --- PDF Export ---
   it('renders the Export PDF button', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
 
     expect(screen.getByText('Export PDF')).toBeInTheDocument();
   });
@@ -573,6 +1414,7 @@ describe('ArticleRightPane', () => {
     globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByText('More actions'));
     fireEvent.click(screen.getByText('Export PDF'));
 
     await waitFor(() => {
@@ -584,14 +1426,223 @@ describe('ArticleRightPane', () => {
     });
   });
 
-  it('shows error toast on export failure', async () => {
-    mockExportPdfAsync.mockRejectedValueOnce(new Error('Server error'));
-
+  it('shows this page in the graph from Details', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('Export PDF'));
+    fireEvent.click(screen.getByText('More actions'));
 
-    await waitFor(() => {
-      expect(mockExportPdfAsync).toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('show-in-graph-btn'));
+    expect(mockNavigate).toHaveBeenCalledWith('/graph?focus=page-1');
+  });
+
+  describe('relocate entry point (#1123)', () => {
+    it('offers "Move to Confluence" on a local article', () => {
+      currentMockPage = {
+        ...mockPage,
+        source: 'standalone',
+        spaceKey: 'HOME',
+        confluenceId: null,
+      };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to Confluence/i);
+    });
+
+    it('offers "Move to a local space" on a Confluence article', () => {
+      currentMockPage = { ...mockPage, source: 'confluence' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('relocate-btn')).toHaveTextContent(/Move to a local space/i);
+    });
+
+    // Hidden, not disabled: `pages:relocate` is seeded onto editor /
+    // space_admin by migration 086 and CE ships no UI for granting
+    // permissions, so a denied user has no in-product path to earning it.
+    it('renders no relocate control without the pages:relocate permission', () => {
+      mockRelocateAllowed = false;
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+
+    it('opens the relocate dialog carrying the article’s own source', async () => {
+      currentMockPage = { ...mockPage, source: 'standalone', confluenceId: null };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('relocate-btn'));
+
+      await screen.findByRole('dialog');
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toHaveTextContent(/move to confluence/i);
+      });
+
+      fireEvent.click(screen.getByTestId('relocate-cancel'));
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('hides the relocate control while the editor is open', () => {
+      currentMockPage = { ...mockPage, source: 'standalone' };
+      useArticleViewStore.setState({ editing: true });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.queryByTestId('relocate-btn')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('verification', () => {
+    it('shows Not verified until a stamp exists, then records one', async () => {
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      expect(screen.getByTestId('verification-chip')).toHaveTextContent('Not verified');
+      const verifyBtn = screen.getByTestId('verify-btn');
+      expect(verifyBtn).toHaveAttribute('aria-busy', 'false');
+      expect(verifyBtn).toHaveTextContent('Record verification');
+
+      fireEvent.click(verifyBtn);
+
+      await waitFor(() => {
+        expect(mockVerifyPage).toHaveBeenCalledWith({ pageId: NaN });
+      });
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith('Page verified — next review reminder rescheduled');
+      });
+    });
+
+    it('renders the last verification date on the chip', () => {
+      currentMockPage = { ...mockPage, verifiedAt: '2026-03-01T12:00:00Z' };
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const expected = new Date('2026-03-01T12:00:00Z').toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+      });
+      expect(screen.getByTestId('verification-chip')).toHaveTextContent(`Verified ${expected}`);
+    });
+  });
+
+  describe('inspector tabs and staging retention', () => {
+    it('sets roving tabIndex on inspector tab buttons (0 on active, -1 on inactive)', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      const assistantTab = screen.getByTestId('page-context-tab-assistant');
+      const outlineTab = screen.getByTestId('page-context-tab-outline');
+      const detailsTab = screen.getByTestId('page-context-tab-details');
+
+      expect(outlineTab).toHaveAttribute('tabIndex', '0');
+      expect(assistantTab).toHaveAttribute('tabIndex', '-1');
+      expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+
+      fireEvent.click(assistantTab);
+
+      expect(assistantTab).toHaveAttribute('tabIndex', '0');
+      expect(outlineTab).toHaveAttribute('tabIndex', '-1');
+      expect(detailsTab).toHaveAttribute('tabIndex', '-1');
+    });
+
+    it('retains the mounted assistant panel with hidden class when switching tabs to preserve staged state', () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      const { container } = render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Initially outline is active, assistant panel is not yet mounted
+      expect(container.querySelector('#page-context-panel-assistant')).toBeNull();
+
+      // Switch to assistant tab
+      fireEvent.click(screen.getByTestId('page-context-tab-assistant'));
+      const panel = container.querySelector('#page-context-panel-assistant');
+      expect(panel).not.toBeNull();
+      expect(panel?.classList.contains('hidden')).toBe(false);
+
+      // Switch back to outline tab
+      fireEvent.click(screen.getByTestId('page-context-tab-outline'));
+      // Panel remains in DOM but is hidden via CSS to preserve state
+      expect(container.querySelector('#page-context-panel-assistant')).not.toBeNull();
+      expect(container.querySelector('#page-context-panel-assistant')?.classList.contains('hidden')).toBe(true);
+    });
+
+    it('renders and supports tab switching on /pages/new create route', () => {
+      useArticleViewStore.setState({
+        headings: [],
+      });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const router = createMemoryRouter(
+        [{ path: '/pages/new', element: <ArticleRightPane /> }],
+        { initialEntries: ['/pages/new'] },
+      );
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <LazyMotion features={domAnimation}>
+            <RouterProvider router={router} />
+          </LazyMotion>
+        </QueryClientProvider>,
+      );
+
+      // On /pages/new with no headings, defaults to Assistant tab
+      expect(screen.getByRole('tab', { name: 'Assistant' })).toHaveAttribute('aria-selected', 'true');
+
+      // Click Details tab
+      fireEvent.click(screen.getByRole('tab', { name: 'Details' }));
+      expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('New page draft')).toBeInTheDocument();
+
+      // Click Outline tab
+      fireEvent.click(screen.getByRole('tab', { name: /Outline/ }));
+      expect(screen.getByRole('tab', { name: /Outline/ })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('No outline yet')).toBeInTheDocument();
+    });
+
+    it('renders Page actions above the Notes section inline in the Details tab', async () => {
+      useArticleViewStore.setState({
+        headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
+      });
+      mockNotes = [
+        { id: 'n1', parentId: null, resolved: false },
+        { id: 'n2', parentId: null, resolved: false },
+      ];
+      render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+      // Top tablist has 3 tabs, not 4
+      expect(screen.queryByTestId('page-context-tab-notes')).toBeNull();
+      const detailsTab = screen.getByTestId('page-context-tab-details');
+      expect(detailsTab).toBeInTheDocument();
+      // Details tab shows open notes count
+      await waitFor(() => expect(detailsTab).toHaveTextContent('2'));
+
+      // Switch to details tab
+      fireEvent.click(detailsTab);
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
+
+      // Page actions section is present above notes
+      const pageActions = screen.getByTestId('article-actions');
+      expect(pageActions).toBeInTheDocument();
+
+      // Notes section is rendered inline inside Details below page actions
+      const notesSection = screen.getByTestId('details-notes-section');
+      expect(notesSection).toBeInTheDocument();
+      expect(notesSection).toHaveTextContent('Notes');
+      expect(notesSection).toHaveTextContent('2 open');
+      expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
+
+      // Verify pageActions precedes notesSection in the DOM order
+      expect(
+        Boolean(pageActions.compareDocumentPosition(notesSection) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ).toBe(true);
+
+      // Alt+N hotkey switches to Details tab
+      fireEvent.click(screen.getByTestId('page-context-tab-outline'));
+      expect(detailsTab).toHaveAttribute('aria-selected', 'false');
+      fireEvent.keyDown(window, { key: 'n', altKey: true });
+      expect(detailsTab).toHaveAttribute('aria-selected', 'true');
     });
   });
 });

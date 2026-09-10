@@ -465,6 +465,7 @@ services:
       SEARXNG_LIMITER: ${SEARXNG_LIMITER:-false}
       SEARXNG_IMAGE_PROXY: ${SEARXNG_IMAGE_PROXY:-false}
       SEARXNG_SECRET_KEY: ${SEARXNG_SECRET_KEY:-}
+      SEARXNG_TRUSTED_PROXIES: ${SEARXNG_TRUSTED_PROXIES:-}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
       interval: 10s

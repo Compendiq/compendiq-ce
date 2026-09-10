@@ -59,6 +59,14 @@ describe('PresenceAvatarStack', () => {
     expect(bobAvatar?.getAttribute('title')).not.toContain('editing');
   });
 
+  it('omits empty role parentheses from the title', () => {
+    const nia: PresenceViewer = { userId: 'u9', name: 'Nia', role: '', isEditing: true };
+    wrap(<PresenceAvatarStack viewers={[nia]} />);
+    const title = screen.getByTestId('presence-avatar').getAttribute('title');
+    expect(title).toContain('Nia');
+    expect(title).not.toContain('()');
+  });
+
   it('respects custom maxVisible', () => {
     wrap(<PresenceAvatarStack viewers={[alice, bob, carol, dave]} maxVisible={2} />);
     expect(screen.getAllByTestId('presence-avatar')).toHaveLength(2);

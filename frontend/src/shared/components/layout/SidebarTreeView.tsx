@@ -4,26 +4,33 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
-  FolderPlus,
   ChevronsUpDown,
   PanelLeft,
   PanelLeftClose,
   Plus,
   Globe,
-  HardDrive,
+  Pin,
   Settings,
+  Trash2,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
+import { ApiError } from '../../lib/api';
+import { getSpaceIcon } from '../spaces/space-icons';
 import { m, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ShortcutHint } from '../ShortcutHint';
 import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
-import { usePageTree, useCreatePage } from '../../hooks/use-pages';
+
+import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
-import { useUiStore } from '../../../stores/ui-store';
+import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
+import { Button, IconButton } from '../Button';
+import { PageIcon } from '../page-icon/PageIcon';
 import type { PageTreeItem } from '../../hooks/use-pages';
 import type { TreeNode } from './sidebar-types';
+import { useTreeRovingFocus } from './sidebar-tree-keyboard';
 
 export type { TreeNode };
 
@@ -82,6 +89,27 @@ function buildTree(pages: PageTreeItem[], homepageId?: string | null): TreeNode[
   return roots;
 }
 
+/**
+ * Compact fallback for the row-suffix disambiguator when a page has no
+ * spaceKey (an unfiled standalone page). A static "Local" label would tell
+ * an unfiled page apart from a Confluence one, but real duplicate-titled
+ * corpora are dominated by same-titled *unfiled* pages — a static label
+ * doesn't distinguish those from each other, which is the actual failure
+ * the disambiguator exists to prevent. A short relative date does, and the
+ * existing `formatRelativeTime` helper is built for a full-width context
+ * ("3d ago", or a locale date string past a week) — too wide for this
+ * suffix's 56px (`max-w-14`) budget, hence a purpose-built short form here.
+ */
+function formatCompactDate(dateStr: string | null): string | null {
+  if (!dateStr) return null;
+  const diffDays = Math.floor((Date.now() - new Date(dateStr).getTime()) / 86_400_000);
+  if (diffDays < 1) return 'today';
+  if (diffDays < 30) return `${diffDays}d`;
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${diffMonths}mo`;
+  return `${Math.floor(diffMonths / 12)}y`;
+}
+
 /** Find ancestor IDs for a given page ID so we can auto-expand the path */
 function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
   const parentMap = new Map<string, string>();
@@ -100,17 +128,54 @@ function findAncestorIds(pages: PageTreeItem[], targetId: string): Set<string> {
 
 const sidebarSpring = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
+/**
+ * One treatment for every section label in this panel. There were four:
+ * "Pages" at 12px sentence case in `text-foreground/85`, "Pinned" at 11px
+ * sentence case in `text-muted-foreground`, and the dropdown's "Confluence" /
+ * "Local" headings at 11px again — four weights and two colours for one role,
+ * inside one 280px column.
+ *
+ * Uppercase at 12px is the settled convention: `SettingsSidebar` uses it for
+ * its group headings, and ADR-010 pins the editor's menu section labels at
+ * "uppercase at 12px, not 11" because `ui-text-legibility.test.ts` holds
+ * capitals to a higher floor than body text. 11px uppercase would fail it.
+ *
+ * Full-strength `text-muted-foreground` (no opacity dilution) measures
+ * 7.46:1 on Graphite and 5.56:1 on Paper — both comfortably clear WCAG
+ * 1.4.3's 4.5:1 floor, since 12px semibold does not qualify as "large text."
+ * The previous `/80` opacity modifier composited down to 3.63:1 on Paper,
+ * failing — Graphite's darker ground happened to still clear it at 5.14:1,
+ * which is exactly the kind of theme-asymmetric failure that hides until
+ * someone measures the specific composited value instead of the token.
+ */
+// Exported since #1361: the conversations pane renders recency headings in the
+// same rail and must not copy the string — SettingsSidebar copied it once and
+// drifted to a /80 opacity that failed contrast on Paper.
+export const SECTION_LABEL = 'text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground';
+
 export interface SidebarTreeNodeProps {
   node: TreeNode;
   level?: number;
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  // #960: derived once by the parent from location.pathname and passed down as
-  // a stable prop. Rows must NOT call useLocation() themselves — that subscribed
-  // every memoized row to every location/searchParams change, defeating the memo
-  // comparator and re-rendering the whole tree on each navigation.
-  isAiRoute: boolean;
+  // #960's per-row AI-route prop is gone (#1361): the conversations pane
+  // replaces this tree on AI routes, so a row has no route-dependent destination left.
+  // The rule it existed to enforce still stands — rows must NOT call
+  // useLocation() themselves, or every memoized row re-renders on every
+  // location/searchParams change and the comparator below never gets to bail.
+  // True only in "All Spaces" scope, where sibling rows can come from
+  // different spaces (and, in a real corpus, can share a title outright —
+  // see the spaceKey suffix below). Scoped to one space, the tree already
+  // carries that context via the panel chrome above it, so the suffix would
+  // be redundant on every row.
+  showSpaceKey: boolean;
+  // Roving-tabindex (#880 follow-up, epic #856): exactly one row is ever
+  // tab-stoppable — the one whose id matches `rovingId`. onRowFocus keeps it
+  // in sync with clicks/Tab; onRowKeyDown drives Up/Down/Left/Right/Home/End.
+  rovingId: string | undefined;
+  onRowFocus: (id: string) => void;
+  onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
 export const SidebarTreeNode = memo(function SidebarTreeNode({
@@ -119,21 +184,28 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
   expandedSet,
   toggleExpand,
   activePageId,
-  isAiRoute,
+  showSpaceKey,
+  rovingId,
+  onRowFocus,
+  onRowKeyDown,
 }: SidebarTreeNodeProps) {
   const navigate = useNavigate();
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
 
+  // A parent row does two jobs — open the page, and (via its own chevron,
+  // indent guide, and ArrowRight/Left) expand its children — and used to
+  // conflate them: clicking the title toggled expansion unconditionally
+  // before navigating, so opening an already-expanded section closed the
+  // very children you clicked through to reach, non-idempotently (the same
+  // click expanded or collapsed depending on what was already open). Now the
+  // click only ever opens a collapsed parent; an already-open one just
+  // navigates, matching the other three expand/collapse paths.
   const handleNavigate = useCallback(() => {
-    if (hasChildren) toggleExpand(node.page.id);
-    if (isAiRoute) {
-      navigate(`/ai?pageId=${node.page.id}`, { replace: true });
-    } else {
-      navigate(`/pages/${node.page.id}`);
-    }
-  }, [navigate, node.page.id, hasChildren, toggleExpand, isAiRoute]);
+    if (hasChildren && !isExpanded) toggleExpand(node.page.id);
+    navigate(`/pages/${node.page.id}`);
+  }, [navigate, node.page.id, hasChildren, isExpanded, toggleExpand]);
 
   const handleToggle = useCallback(
     (e: React.MouseEvent) => {
@@ -150,20 +222,53 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // scroll it into view on reload (its ancestors are auto-expanded first).
         data-active={isActive ? 'true' : undefined}
         data-page-id={node.page.id}
-        // #880: make the row a real keyboard-operable widget. role="treeitem"
+        // #880/#856: make the row a real keyboard-operable widget. role="treeitem"
         // (not "button") because the chevron is a nested <button> — a button
         // role here would nest interactive controls. Enter/Space navigate.
+        // tabIndex follows roving-tabindex: only the current row is a tab
+        // stop, so reaching a page no longer costs one Tab press per row.
         role="treeitem"
-        tabIndex={0}
+        tabIndex={rovingId === node.page.id ? 0 : -1}
         aria-expanded={hasChildren ? isExpanded : undefined}
+        // Hierarchy and "where am I" are the two things a tree exists to
+        // communicate, and neither reached assistive tech: the open page was
+        // conveyed by fill colour and font-weight alone. aria-selected is the
+        // ARIA APG's own signal for "the current item in this tree."
+        aria-selected={isActive}
         className={cn(
-          'group flex items-center gap-1.5 rounded-[10px] h-9 pr-2 text-sm cursor-pointer transition-all duration-200 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+          // 28px rows at 13px. The tree is the tallest thing on screen, so its
+          // row height sets how much of the corpus is reachable without
+          // scrolling — 36px rows cost roughly two pages per viewport.
+          //
+          // `relative` is load-bearing, not tidying: the chevron is positioned
+          // against this row (see below), and without it the chevron would
+          // resolve against the scroll container and land at the panel's edge.
+          'group relative flex items-center rounded-md h-7 pr-2 text-[13px] cursor-pointer transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
           isActive
-            ? 'bg-action text-action-foreground font-medium scale-[1.01]'
+            ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
         )}
-        style={{ paddingLeft: `${level * 16 + 10}px` }}
+        // The horizontal budget is this panel's scarcest resource, and it used
+        // to be spent three ways that bought nothing. (1) A `w-[20px]`
+        // placeholder held the chevron's column on every LEAF row, so pages
+        // with no children paid for a control they never show; the chevron is
+        // out of flow now, hanging in the indent gutter, which keeps sibling
+        // titles aligned without charging leaves for it. (2) A `FileText` glyph
+        // rendered on 100% of rows — identical on parents and leaves alike, so
+        // it discriminated nothing while costing 21px including its gap. (3)
+        // The indent step was 16px when 12 reads just as clearly at this row
+        // height. Together those return ~35px per level-1 row (158 -> 216 at
+        // the new 280px default), which is the difference between reading a
+        // title and reading its first 26 characters.
+        style={{ paddingLeft: `${level * 12 + 28}px` }}
+        // The row has no other way to recover a title clipped by `truncate`
+        // below — no hover card, nothing keyboard- or touch-reachable — so a
+        // long or duplicate title (both routine in a real Confluence corpus)
+        // was unrecoverable without navigating away to check. A native title
+        // tooltip is a small answer, but it's the whole gap in one attribute.
+        title={node.page.title}
         onClick={handleNavigate}
+        onFocus={() => onRowFocus(node.page.id)}
         onKeyDown={(e) => {
           // Ignore keydown bubbling up from the nested chevron button so the
           // row doesn't double-activate when the chevron is focused.
@@ -171,27 +276,82 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault(); // Space would otherwise scroll the page
             handleNavigate();
+            return;
           }
+          onRowKeyDown(e, node.page.id);
         }}
       >
-        {hasChildren ? (
+        {hasChildren && (
+          // Absolutely positioned in the indent gutter rather than laid out in
+          // the row. Two things fall out of that. Titles stay aligned across a
+          // sibling group whether or not each page has children — dropping the
+          // placeholder from the flow instead would leave leaves' text 26px to
+          // the left of their siblings', a ragged edge inside every group. And
+          // the hit area is free: 24x24 clears WCAG 2.5.8 (the old 18x18 button
+          // did not) while costing the title nothing, because out-of-flow width
+          // is not width the text competes for.
           <button
             onClick={handleToggle}
-            className="shrink-0 rounded p-0.5 hover:bg-foreground/10"
+            // z-10 beats `.indent-guide`'s z-index: 1. The guide is a 12px-wide
+            // click target and the indent step is 12px, so a parent's guide and
+            // its children's chevrons now share ~6px of column. Without this the
+            // guide would sit on top and clicking a child's left edge would
+            // collapse its parent instead of toggling the child.
+            className="absolute top-[2px] z-10 flex size-6 items-center justify-center rounded-md text-muted-foreground/80 transition-colors hover:bg-foreground/10 hover:text-foreground"
+            style={{ left: `${level * 12 + 2}px` }}
+            // A MOUSE affordance, and only that — hence out of the tab order and
+            // out of the accessibility tree.
+            //
+            // As a plain <button> it was natively focusable, so the tree's
+            // roving tabindex ("exactly one row is ever tab-stoppable") was
+            // defeated by every parent: a 20-parent tree was 21 tab stops, not
+            // one. And each announced the same bare "Expand" with no object, so
+            // in a list of twenty identical "Expand" buttons none of them could
+            // be told apart anyway.
+            //
+            // Nothing is lost. The row IS the control per ARIA APG: it carries
+            // aria-expanded, and sidebar-tree-keyboard handles ArrowRight to
+            // expand-then-descend and ArrowLeft to collapse, both covered by
+            // its own tests. aria-hidden is safe on a tabindex="-1" element —
+            // axe's aria-hidden-focus rule tests tab-order focusability.
+            //
+            // The aria-label stays as a test hook and an intent marker; it is
+            // not announced.
+            tabIndex={-1}
+            aria-hidden="true"
             aria-label={isExpanded ? 'Collapse' : 'Expand'}
           >
             {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </button>
-        ) : (
-          <span className="w-[20px] shrink-0" />
         )}
-        <FileText size={15} className={cn('shrink-0', isActive ? 'text-action-foreground/80' : 'text-muted-foreground/70')} />
         {/* #767: pin the weight explicitly (conditional, never both classes)
             so titles can't inherit or synthesize a heavier weight while the
             variable font loads or the row sits on a composited layer. */}
-        <span className={cn('truncate text-sm', isActive ? 'font-medium' : 'font-normal')}>
+        {node.page.icon && (
+          <PageIcon icon={node.page.icon} pageId={node.page.id} size="row" className="mr-1.5" />
+        )}
+        <span className={cn('min-w-0 flex-1 truncate text-[13px]', isActive ? 'font-medium' : 'font-normal')}>
           {node.page.title}
         </span>
+        {/* All-Spaces scope merges every space's pages into one flat, sorted
+            run with nothing else distinguishing them — a corpus with any
+            amount of templated content (runbooks, meeting notes) reliably
+            produces same-titled rows next to each other. Same geometry as the
+            Pinned section's spaceKey suffix 80px above, which already solved
+            this for the same object listed a second time in this panel.
+            An unfiled standalone page has no spaceKey to show — and in a real
+            corpus, duplicate titles cluster among exactly those pages, so a
+            static "Local" label wouldn't tell one apart from another. The
+            last-modified date does.
+            No opacity dilution: the inherited `text-muted-foreground` already
+            clears WCAG 1.4.3 on its own (7.46:1 Graphite / 5.56:1 Paper) —
+            the previous `opacity-65` composited that down to 3.76:1 / 2.72:1,
+            failing on the one row whose whole job is disambiguation. */}
+        {showSpaceKey && (
+          <span className="ml-2 max-w-14 shrink-0 truncate text-[11px]">
+            {node.page.spaceKey ?? formatCompactDate(node.page.lastModifiedAt)}
+          </span>
+        )}
       </div>
 
       {hasChildren && isExpanded && (
@@ -199,12 +359,20 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
         // required-parent (a treeitem must be owned by a tree or group).
         <div className="relative" role="group">
           {/* Indent guide line -- click to collapse parent */}
+          {/* Tracks the parent chevron's centre. The chevron sits at
+              `level*12 + 2` and is 24 wide, so its axis is `level*12 + 14`;
+              `.indent-guide` is a 12px click target with its 1px line centred,
+              so the target's left edge is that axis minus 6. */}
           <button
             type="button"
             onClick={handleToggle}
             className="indent-guide"
-            style={{ left: `${level * 16 + 14}px` }}
+            style={{ left: `${level * 12 + 8}px` }}
+            // Same story as the chevron above: a mouse shortcut duplicating a
+            // control the row already exposes, so it is hidden rather than
+            // announced as a second way to do the same thing.
             aria-label={`Collapse ${node.page.title}`}
+            aria-hidden="true"
             tabIndex={-1}
           />
           {node.children.map((child) => (
@@ -215,7 +383,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
+              showSpaceKey={showSpaceKey}
+              rovingId={rovingId}
+              onRowFocus={onRowFocus}
+              onRowKeyDown={onRowKeyDown}
             />
           ))}
         </div>
@@ -228,7 +399,10 @@ export const SidebarTreeNode = memo(function SidebarTreeNode({
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
-    prev.isAiRoute === next.isAiRoute
+    prev.showSpaceKey === next.showSpaceKey &&
+    prev.rovingId === next.rovingId &&
+    prev.onRowFocus === next.onRowFocus &&
+    prev.onRowKeyDown === next.onRowKeyDown
   );
 });
 
@@ -238,9 +412,27 @@ interface SpaceOption {
   pageCount: number;
   source: 'confluence' | 'local';
   homepageId?: string | null;
+  /** Local spaces only: the icon chosen at creation (see space-icons.ts). */
+  icon?: string | null;
 }
 
-export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}) {
+interface SidebarTreeViewProps {
+  onNavigate?: () => void;
+  /** Ephemeral shell pressure: compact the rail without overwriting the saved preference. */
+  forceCollapsed?: boolean;
+  /** Lets a user explicitly reopen a temporarily compacted rail. */
+  onForceExpand?: () => void;
+  /** Pages / AI / Graph live on the chassis on desktop. The mobile drawer
+   *  and isolated tests pass true; AppLayout desktop passes false. */
+  embedMainNav?: boolean;
+}
+
+export function SidebarTreeView({
+  onNavigate,
+  forceCollapsed = false,
+  onForceExpand,
+  embedMainNav = true,
+}: SidebarTreeViewProps = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const treeSidebarCollapsed = useUiStore((s) => s.treeSidebarCollapsed);
@@ -254,22 +446,37 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   // Extract active page ID from pathname (useParams is unavailable here
   // because this component is rendered in AppLayout, outside the inner
   // <Routes> that defines /pages/:id).
-  // On the AI route, also highlight the article selected via ?pageId query param.
+  // The AI-route query-param branch went with #1361: `/ai` carries no page
+  // scope, and `location.search` left the dependency array with it — a
+  // query-string change no longer re-derives the active row.
   const activePageId = useMemo(() => {
     const match = location.pathname.match(/^\/pages\/([^/]+)$/);
     if (match) return match[1];
-    if (location.pathname === '/ai') {
-      const params = new URLSearchParams(location.search);
-      return params.get('pageId') ?? undefined;
-    }
     return undefined;
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
-  const { data: treeData, isLoading } = usePageTree({
+  const { data: pinnedData } = usePinnedPages();
+  const {
+    data: treeData,
+    isLoading,
+    isError: treeIsError,
+    error: treeError,
+    refetch: refetchTree,
+    isFetching: isFetchingTree,
+  } = usePageTree({
     spaceKey: treeSidebarSpaceKey,
   });
+
+  // Two different failures, two different treatments. With nothing cached the
+  // panel has no pages to offer and the error IS the content. With a cached
+  // tree still in hand — a background refetch that failed, the common case —
+  // replacing a working tree with an error screen would take away the
+  // navigation the user is mid-task in, to report a problem that has not yet
+  // cost them anything. That one gets a strip above the tree instead.
+  const treeFailedWithNothingToShow = treeIsError && !treeData;
+  const treeIsStale = treeIsError && !!treeData;
   const reorderPage = useReorderPage();
 
   // Merge confluence + local spaces for the selector
@@ -291,6 +498,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
       name: s.name,
       pageCount: s.pageCount,
       source: 'local',
+      icon: s.icon,
     }));
     return result;
   }, [confluenceSpaces, localSpacesData]);
@@ -303,17 +511,14 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
   const homepageId = selectedSpaceOption?.homepageId;
   const tree = useMemo(() => buildTree(pages, homepageId), [pages, homepageId]);
   const isLocalSpace = selectedSpaceOption?.source === 'local';
-  // #960: derive the /ai signal once here and thread it into every row as a
-  // stable prop so the rows themselves don't subscribe to location.
-  const isAiRoute = location.pathname === '/ai';
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const [spaceDropdownOpen, setSpaceDropdownOpen] = useState(false);
+  const [spaceFilter, setSpaceFilter] = useState('');
+  const spaceFilterRef = useRef<HTMLInputElement>(null);
+  const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
-  const newFolderInputRef = useRef<HTMLInputElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const treeScrollRef = useRef<HTMLDivElement>(null);
   // Snapshot the tree's scroll position the instant a node is pressed — before
@@ -328,34 +533,27 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     if (treeScrollRef.current) scrollTopBeforeToggle.current = treeScrollRef.current.scrollTop;
   }, []);
 
-  const closeSpaceDropdown = useCallback(() => setSpaceDropdownOpen(false), []);
+  // The filter is a scale affordance, so it appears only at scale: below this
+  // the whole list fits and a search box would be a row of chrome above six
+  // items. It also resets whenever the dropdown closes — a remembered filter
+  // would silently hide spaces from the next person to open it.
+  const SPACE_FILTER_THRESHOLD = 8;
+  const showSpaceFilter = allSpaces.length > SPACE_FILTER_THRESHOLD;
+
+  const closeSpaceDropdown = useCallback(() => {
+    setSpaceDropdownOpen(false);
+    setSpaceFilter('');
+  }, []);
   const spaceDropdownRef = useClickOutside<HTMLDivElement>(closeSpaceDropdown, spaceDropdownOpen);
-  const createPage = useCreatePage();
 
-  const handleCreateFolder = useCallback(async () => {
-    const trimmed = newFolderName.trim();
-    if (!trimmed) return;
-
-    const spaceKey = treeSidebarSpaceKey || '__local__';
-    try {
-      await createPage.mutateAsync({
-        spaceKey,
-        title: trimmed,
-        bodyHtml: '',
-        pageType: 'page',
-      });
-      setNewFolderName('');
-      setShowNewFolderInput(false);
-    } catch {
-      // error handled by mutation
-    }
-  }, [newFolderName, treeSidebarSpaceKey, createPage]);
-
+  // Opening the list puts the caret in the filter when there is one, so a
+  // keyboard user can start narrowing immediately instead of tabbing past the
+  // whole list to reach it.
   useEffect(() => {
-    if (showNewFolderInput) {
-      newFolderInputRef.current?.focus();
+    if (spaceDropdownOpen && showSpaceFilter) {
+      spaceFilterRef.current?.focus();
     }
-  }, [showNewFolderInput]);
+  }, [spaceDropdownOpen, showSpaceFilter]);
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
@@ -381,6 +579,22 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     [treeSidebarWidth, setTreeSidebarWidth],
   );
 
+  const handleResizeKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setTreeSidebarWidth(treeSidebarWidth - 16);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setTreeSidebarWidth(treeSidebarWidth + 16);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        setTreeSidebarWidth(282);
+      }
+    },
+    [treeSidebarWidth, setTreeSidebarWidth],
+  );
+
   // Auto-expand path to the currently viewed page
   useEffect(() => {
     if (activePageId && pages.length > 0) {
@@ -395,15 +609,44 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     }
   }, [activePageId, pages]);
 
-  // Auto-select space based on current page
+  // Auto-select space based on current page — but only ever once per mount,
+  // and never again after the user has explicitly touched the scope control.
+  // `treeSidebarSpaceKey === undefined` cannot tell "never chosen" apart from
+  // "explicitly chose All Spaces" — both look identical to this effect — so
+  // without the ref below, picking "All Spaces" while any page is open got
+  // silently reverted to that page's own space on the very next render: the
+  // effect saw the same falsy key and fired again, with no error and no
+  // visible change. `hasAutoSelectedSpaceRef` is set here on the one
+  // legitimate auto-fire AND in every explicit dropdown selection below, so
+  // any user choice — a specific space or "All Spaces" — permanently retires
+  // this convenience default for the rest of the mount.
+  const hasAutoSelectedSpaceRef = useRef(false);
   useEffect(() => {
+    if (hasAutoSelectedSpaceRef.current) return;
     if (activePageId && pages.length > 0 && !treeSidebarSpaceKey) {
       const currentPage = pages.find((p) => p.id === activePageId);
-      if (currentPage) {
-        setTreeSidebarSpaceKey(currentPage.spaceKey);
+      // An unfiled standalone page (spaceKey null) has no space to scope
+      // into at all — there is nothing this convenience could narrow to.
+      if (currentPage && currentPage.spaceKey) {
+        // Narrowing scope to the open page's own space is pointless — and
+        // actively harmful — when that page IS the space's configured
+        // homepage: buildTree's #352 rule hides the homepage from its own
+        // space's tree (it's reachable via the space's dedicated Home link
+        // instead), so auto-scoping here would remove the very row the user
+        // just opened, leaving the panel with no selected row at all. All
+        // Spaces never applies homepage-hiding (buildTree only receives a
+        // homepageId once a single space is selected), so leaving scope
+        // alone keeps the open page visible and correctly selected. Don't
+        // retire the auto-select convenience for the rest of the mount here
+        // — a later navigation to an ordinary sub-page should still get it.
+        const currentSpace = allSpaces.find((s) => s.key === currentPage.spaceKey);
+        if (currentSpace?.homepageId !== currentPage.id) {
+          hasAutoSelectedSpaceRef.current = true;
+          setTreeSidebarSpaceKey(currentPage.spaceKey);
+        }
       }
     }
-  }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey]);
+  }, [activePageId, pages, treeSidebarSpaceKey, setTreeSidebarSpaceKey, allSpaces]);
 
   // #707: keep the open page in view. On reload the tree mounts at the top
   // with the active node's ancestors freshly auto-expanded, so the active row
@@ -472,117 +715,212 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
     });
   }, []);
 
+  // Shared by both tree implementations below (plain + drag-reorder) — they
+  // render into the same `treeScrollRef` container and are mutually
+  // exclusive, so one hook instance covers whichever is mounted.
+  const { rovingId, handleRowFocus, handleRowKeyDown } = useTreeRovingFocus({
+    tree,
+    expandedSet: expandedIds,
+    activePageId,
+    toggleExpand,
+    containerRef: treeScrollRef,
+  });
+
+  // A local space's chosen icon (spaces.icon) brands the selector chip;
+  // unset falls back to the generic HardDrive local mark inside getSpaceIcon.
+  // Confluence spaces and "All Spaces" keep Globe. Computed above the collapsed
+  // branch because the rail shows it too.
+  const SelectedSpaceGlyph =
+    selectedSpaceOption?.source === 'local'
+      ? getSpaceIcon(selectedSpaceOption.icon)
+      : Globe;
   // Collapsed rail -- nav icons + expand toggle
-  if (treeSidebarCollapsed) {
+  const collapsed = treeSidebarCollapsed || forceCollapsed;
+
+  if (collapsed) {
     return (
       <AnimatePresence mode="wait">
-        <m.div
+        {/* <aside>, not <div>. The expanded panel below is an <aside>, so
+            collapsing the rail used to DELETE the complementary landmark from
+            the page — a screen-reader user who collapsed the tree lost the
+            region, not just its contents. Both branches are the same region in
+            two sizes, and both are named: the app renders two unlabelled
+            <aside>s otherwise (this and the article inspector), which announce
+            as two indistinguishable "complementary" regions. */}
+        <m.aside
           key="collapsed-rail"
+          aria-label="Page tree"
           initial={reduceEffects ? false : { width: 0, opacity: 0 }}
-          animate={{ width: 40, opacity: 1 }}
+          animate={{ width: COLLAPSED_TREE_SIDEBAR_WIDTH, opacity: 1 }}
           exit={{ width: 0, opacity: 0 }}
           transition={reduceEffects ? { duration: 0 } : sidebarSpring}
-          className="flex flex-col items-center bg-background border-r border-border overflow-hidden"
+          className="app-sidebar flex flex-col items-center border-r overflow-hidden"
         >
-          {/* Expand toggle */}
-          <button
-            onClick={toggleTreeSidebar}
-            className="mt-2 flex items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="Expand sidebar"
-            title="Expand sidebar (,)"
-          >
-            <PanelLeft size={16} />
-            <ShortcutHint shortcutId="toggle-sidebar" />
-          </button>
+          {/* Keep the collapsed control in the same 48px chrome row as the
+              expanded main-nav toolbar, so both panes start their content on
+              one baseline. No hairline since 2026-08-31 — the height is the
+              alignment now, not a shared line. */}
+          <div className="panel-toolbar flex h-12 w-full shrink-0 items-center justify-center">
+            <button
+              onClick={() => {
+                if (forceCollapsed && !treeSidebarCollapsed) {
+                  onForceExpand?.();
+                } else {
+                  toggleTreeSidebar();
+                }
+              }}
+              className="flex items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+              aria-label="Expand sidebar"
+              title="Expand sidebar (,)"
+            >
+              {/* Shortcut in the tooltip, not glued to the icon — see the twin in
+                  ArticleRightPane. A "," rendered as a bordered chip beside a
+                  rail icon reads as stray punctuation, not a key. */}
+              <PanelLeft size={16} />
+            </button>
+          </div>
 
-          {/* Nav icons */}
-          <MainNavStripCollapsed onNavigate={onNavigate} />
-        </m.div>
+          {embedMainNav && <MainNavStripCollapsed onNavigate={onNavigate} />}
+
+          <IconButton
+            onClick={() => {
+              navigate('/trash');
+              onNavigate?.();
+            }}
+            className={cn(
+              'nm-icon-button mb-2 mt-auto shrink-0',
+              location.pathname === '/trash' && 'nav-selection',
+            )}
+            label="Trash"
+            aria-current={location.pathname === '/trash' ? 'page' : undefined}
+            title="Trash (G then T)"
+            testid="sidebar-trash-collapsed"
+            icon={<Trash2 size={15} aria-hidden="true" />}
+          />
+
+        </m.aside>
       </AnimatePresence>
     );
   }
 
-  // Combine spaces for display, grouped by source
-  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence');
-  const localOptions = allSpaces.filter((s) => s.source === 'local');
+  // Combine spaces for display, grouped by source. Filtering matches name OR
+  // key, because an operator who knows a space as "OPS" should not have to
+  // remember that it is called "Operations Handbook".
+  const spaceFilterQuery = spaceFilter.trim().toLowerCase();
+  const matchesSpaceFilter = (s: SpaceOption) =>
+    !spaceFilterQuery ||
+    s.name.toLowerCase().includes(spaceFilterQuery) ||
+    s.key.toLowerCase().includes(spaceFilterQuery);
+  const confluenceOptions = allSpaces.filter((s) => s.source === 'confluence' && matchesSpaceFilter(s));
+  const localOptions = allSpaces.filter((s) => s.source === 'local' && matchesSpaceFilter(s));
 
   return (
     <m.aside
       ref={sidebarRef}
       key="expanded-sidebar"
+      aria-label="Page tree"
       initial={reduceEffects ? false : { width: 0, opacity: 0 }}
       animate={{ width: treeSidebarWidth, opacity: 1 }}
       transition={reduceEffects || isResizing ? { duration: 0 } : sidebarSpring}
       className={cn(
-        'relative flex flex-col bg-background border-r border-border overflow-hidden',
+        'app-sidebar relative flex max-w-full flex-col border-r overflow-hidden',
         isResizing && 'select-none',
       )}
     >
-      {/* Nav tabs — main app navigation + collapse toggle */}
-      <div className="flex shrink-0 items-center gap-0.5 px-2 pt-2 pb-1">
-        <MainNavStripExpanded onNavigate={onNavigate} />
-        <button
-          onClick={toggleTreeSidebar}
-          className="flex shrink-0 items-center gap-0.5 rounded-lg p-1.5 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (,)"
-        >
-          <PanelLeftClose size={14} />
-          <ShortcutHint shortcutId="toggle-sidebar" />
-        </button>
-      </div>
-
-      {/* Sidebar header — title + actions */}
-      <div className="flex h-8 shrink-0 items-center justify-between px-3">
-        <span className="text-xs font-semibold text-muted-foreground">Pages</span>
-        <div className="flex items-center gap-1">
+      {embedMainNav && (
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
+          <MainNavStripExpanded onNavigate={onNavigate} />
           <button
-            onClick={() => {
-              setShowNewFolderInput((v) => !v);
-              setNewFolderName('');
-            }}
-            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="New Folder"
-            title="Create new folder"
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
           >
-            <FolderPlus size={14} />
+            <PanelLeftClose size={14} />
           </button>
-          <button
-            onClick={() => navigate('/spaces/new')}
-            className="rounded-lg p-1 text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground transition-colors"
-            aria-label="New Space"
-            title="Create new space"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
       </div>
+      )}
 
-      {/* Space selector dropdown */}
-      <div className="px-2 pb-2">
-        <div ref={spaceDropdownRef} className="relative">
+      {/* Space selector + collapse sit in the 48px chrome row the article
+          strip and the inspector tab row also hold. The row draws no line:
+          the selector carries a Workspace fill instead, so the one operable
+          thing in the row is what you see rather than a rule under it.
+          Scope lives on the chip; source/key stay in the title. New Space
+          stays at the foot of the dropdown. */}
+      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
+        <div ref={spaceDropdownRef} className="relative min-w-0 flex-1">
           <button
-            onClick={() => setSpaceDropdownOpen(!spaceDropdownOpen)}
+            // Routed through closeSpaceDropdown on the way shut so the filter
+            // clears here too — wiring only useClickOutside to it left a
+            // filtered list behind whenever you closed with the toggle.
+            onClick={() => (spaceDropdownOpen ? closeSpaceDropdown() : setSpaceDropdownOpen(true))}
             data-testid="space-selector-toggle"
-            className="flex w-full items-center justify-between rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground hover:bg-foreground/8 transition-colors"
+            className="group flex h-8 w-full min-w-0 items-center gap-1.5 rounded-lg bg-background px-2 text-left transition-colors hover:bg-[var(--glass-pill-hover)]"
+            aria-expanded={spaceDropdownOpen}
+            title={
+              selectedSpaceOption
+                ? `${selectedSpaceOption.source === 'local' ? 'Local' : 'Confluence'} · ${selectedSpaceOption.key}`
+                : 'Every connected space'
+            }
           >
-            <span className="flex items-center gap-1.5 truncate">
-              {selectedSpaceOption ? (
-                <>
-                  {selectedSpaceOption.source === 'local'
-                    ? <HardDrive size={10} className="shrink-0 text-action/70" />
-                    : <Globe size={10} className="shrink-0 text-muted-foreground/70" />
-                  }
-                  {selectedSpaceOption.name} ({selectedSpaceOption.key})
-                </>
-              ) : 'All Spaces'}
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary-ink">
+              <SelectedSpaceGlyph size={13} />
             </span>
-            <ChevronsUpDown size={12} className="shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+              {selectedSpaceOption?.name ?? 'All Spaces'}
+            </span>
+            <ChevronsUpDown size={13} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
           {spaceDropdownOpen && (
-            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-xl nm-sidebar p-1">
+            // `nm-popover-glass`, not `nm-sidebar`. nm-sidebar is the PANEL
+            // CHASSIS utility — `background: var(--color-background)` plus a
+            // border-RIGHT — so this floating layer was painting the same
+            // colour as the panel it covers and edging it on one side only.
+            // Measured in Graphite: box-shadow none, background rgb(13,14,17),
+            // identical to the sidebar beneath, and you genuinely could not see
+            // where the dropdown ended and the tree resumed.
+            //
+            // ADR-010 keeps exactly one real shadow, --shadow-overlay, for
+            // "content that genuinely floats above the page: popovers,
+            // dropdowns, dialogs". This is the canonical case. nm-popover-glass
+            // carries that shadow, the measured interactive edge, and the
+            // elevated card surface.
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 flex max-h-72 flex-col nm-popover-glass p-1">
+              {/* A filter, once the list stops fitting. The dropdown was a
+                  capped scroller with no search and no scroll affordance: six
+                  spaces plus two headings already filled it here, and a real
+                  Confluence instance with thirty spaces got a blind 256px
+                  scroller. It appears only when it earns its row, so small
+                  instances keep the list they had.
+
+                  Safe as a text input because this is a plain div of buttons,
+                  not a Radix menu — there is no role="menu" typeahead to
+                  swallow the keystrokes (the trap documented on the editor's
+                  block menu and Insert menu). */}
+              {showSpaceFilter && (
+                <div className="shrink-0 px-1 pb-1 pt-0.5">
+                  <input
+                    ref={spaceFilterRef}
+                    value={spaceFilter}
+                    onChange={(e) => setSpaceFilter(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation();
+                        if (spaceFilter) setSpaceFilter('');
+                        else setSpaceDropdownOpen(false);
+                      }
+                    }}
+                    placeholder="Filter spaces"
+                    aria-label="Filter spaces by name"
+                    className="w-full rounded-lg bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-border/60 transition-colors focus:ring-ring"
+                  />
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-y-auto">
               <button
                 onClick={() => {
+                  hasAutoSelectedSpaceRef.current = true;
                   setTreeSidebarSpaceKey(undefined);
                   setSpaceDropdownOpen(false);
                 }}
@@ -597,13 +935,14 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Confluence spaces */}
               {confluenceOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
+                  <div className={cn('px-2.5 py-1.5', SECTION_LABEL)}>
                     Confluence
                   </div>
                   {confluenceOptions.map((space) => (
                     <button
                       key={space.key}
                       onClick={() => {
+                        hasAutoSelectedSpaceRef.current = true;
                         setTreeSidebarSpaceKey(space.key);
                         setSpaceDropdownOpen(false);
                       }}
@@ -614,9 +953,15 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                           : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
                       )}
                     >
-                      <span className="flex items-center gap-1.5 truncate">
+                      {/* Only the name truncates — the key stays visible so two
+                          identically-named spaces (a real occurrence, not just
+                          seed noise) are still distinguishable. The space
+                          filter above already matches on this key; it just
+                          used to never be shown. */}
+                      <span className="flex min-w-0 items-center gap-1.5">
                         <Globe size={10} className="shrink-0 text-muted-foreground/70" />
-                        {space.name}
+                        <span className="truncate">{space.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">{space.key}</span>
                       </span>
                       <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
                     </button>
@@ -627,33 +972,49 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {/* Local spaces */}
               {localOptions.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground">
+                  <div className={cn('px-2.5 py-1.5', SECTION_LABEL)}>
                     Local
                   </div>
-                  {localOptions.map((space) => (
-                    <button
-                      key={space.key}
-                      onClick={() => {
-                        setTreeSidebarSpaceKey(space.key);
-                        setSpaceDropdownOpen(false);
-                      }}
-                      className={cn(
-                        'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
-                        treeSidebarSpaceKey === space.key
-                          ? 'nm-pill-active text-action font-medium'
-                          : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
-                      )}
-                    >
-                      <span className="flex items-center gap-1.5 truncate">
-                        <HardDrive size={10} className="shrink-0 text-action/70" />
-                        {space.name}
-                      </span>
-                      <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
-                    </button>
-                  ))}
+                  {localOptions.map((space) => {
+                    const SpaceGlyph = getSpaceIcon(space.icon);
+                    return (
+                      <button
+                        key={space.key}
+                        onClick={() => {
+                          hasAutoSelectedSpaceRef.current = true;
+                          setTreeSidebarSpaceKey(space.key);
+                          setSpaceDropdownOpen(false);
+                        }}
+                        className={cn(
+                          'flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-all duration-200',
+                          treeSidebarSpaceKey === space.key
+                            ? 'nm-pill-active text-action font-medium'
+                            : 'text-foreground hover:bg-[var(--glass-pill-hover)]',
+                        )}
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <SpaceGlyph size={10} className="shrink-0 text-action/70" />
+                          <span className="truncate">{space.name}</span>
+                          <span className="shrink-0 text-muted-foreground/60">{space.key}</span>
+                        </span>
+                        <span className="shrink-0 text-muted-foreground ml-2">{space.pageCount}</span>
+                      </button>
+                    );
+                  })}
                 </>
               )}
 
+              {/* Nothing matched the filter. Without this the dropdown just
+                  emptied out and looked broken. */}
+              {showSpaceFilter && confluenceOptions.length === 0 && localOptions.length === 0 && (
+                <p className="px-2.5 py-3 text-center text-[11px] text-muted-foreground">
+                  No spaces match &ldquo;{spaceFilter}&rdquo;
+                </p>
+              )}
+              </div>
+
+              {/* Footer actions stay pinned below the scroller — they are how
+                  you leave this list, so they must not scroll out of it. */}
               {/* Manage the selected local space (settings page is local-only) */}
               {isLocalSpace && treeSidebarSpaceKey && (
                 <button
@@ -662,7 +1023,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                     navigate(`/spaces/${treeSidebarSpaceKey}/settings`);
                   }}
                   data-testid="space-settings-link"
-                  className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
+                  className="flex w-full items-center gap-1.5 border-t border-border/60 mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-foreground hover:bg-[var(--glass-pill-hover)] transition-colors"
                 >
                   <Settings size={10} />
                   Space settings
@@ -675,7 +1036,7 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                   setSpaceDropdownOpen(false);
                   navigate('/spaces/new');
                 }}
-                className="flex w-full items-center gap-1.5 border-t border-[var(--glass-sidebar-divider)] mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
+                className="flex w-full items-center gap-1.5 border-t border-border/60 mt-1 pt-1 rounded-lg px-2.5 py-1.5 text-xs text-action hover:bg-[var(--glass-pill-hover)] transition-colors"
               >
                 <Plus size={10} />
                 New Space
@@ -683,39 +1044,131 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
             </div>
           )}
         </div>
+        {!embedMainNav && (
+          <button
+            onClick={toggleTreeSidebar}
+            className="flex shrink-0 items-center rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (,)"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
       </div>
 
-      {/* Divider */}
-      <div className="mx-3 h-px bg-[var(--glass-sidebar-divider)]" />
-
-      {/* New Folder inline input */}
-      {showNewFolderInput && (
-        <div className="px-2 py-1.5" data-testid="new-folder-input">
-          <div className="flex items-center gap-1.5">
-            <FolderPlus size={14} className="shrink-0 text-action/70" />
-            <input
-              ref={newFolderInputRef}
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleCreateFolder();
-                if (e.key === 'Escape') {
-                  setShowNewFolderInput(false);
-                  setNewFolderName('');
-                }
-              }}
-              placeholder="Folder name..."
-              className="flex-1 rounded-md bg-foreground/5 px-2 py-1 text-xs text-foreground outline-none ring-1 ring-primary/30 focus:ring-primary/60 transition-colors"
-              aria-label="New folder name"
+      {/* A compact navigation shortcut; the Pages dashboard remains the rich
+          pinned overview with excerpts and management controls. */}
+      {pinnedData && pinnedData.items.length > 0 && (
+        <section className="shrink-0 px-2 py-2" aria-labelledby="sidebar-pinned-heading">
+          <button
+            type="button"
+            onClick={() => setPinnedSectionCollapsed((value) => !value)}
+            aria-expanded={!pinnedSectionCollapsed}
+            aria-controls="sidebar-pinned-list"
+            className={cn('flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left transition-colors hover:bg-[var(--glass-pill-hover)] hover:text-foreground', SECTION_LABEL)}
+          >
+            <Pin size={12} className="shrink-0 text-action" aria-hidden="true" />
+            <span id="sidebar-pinned-heading" className="flex-1">Pinned</span>
+            <span className="tabular-nums font-normal">{pinnedData.total}</span>
+            <ChevronDown
+              size={12}
+              className={cn('transition-transform', pinnedSectionCollapsed && '-rotate-90')}
+              aria-hidden="true"
             />
-            <button
-              onClick={handleCreateFolder}
-              disabled={!newFolderName.trim() || createPage.isPending}
-              className="inline-flex items-center rounded-md border border-action bg-transparent px-2 py-1 text-xs font-medium text-action transition-colors hover:bg-action hover:text-action-foreground disabled:opacity-40"
-            >
-              {createPage.isPending ? '...' : 'Add'}
-            </button>
-          </div>
+          </button>
+          {!pinnedSectionCollapsed && (
+            <div id="sidebar-pinned-list" className="mt-1 space-y-0.5">
+              {pinnedData.items.slice(0, 4).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    navigate(`/pages/${item.id}`);
+                    onNavigate?.();
+                  }}
+                  // Same geometry as a tree row (28px / 6px corner / 13px), not
+                  // the 32px / 8px / 12px it used to have. A pinned page and a
+                  // tree page are the same object listed twice in one panel, so
+                  // two row shapes four pixels apart read as a rendering fault
+                  // rather than as a distinction. The Pin glyph is the
+                  // distinction, and it is enough.
+                  className={cn(
+                    'group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    activePageId === item.id
+                      ? 'nav-selection font-medium outline-none'
+                      : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+                  )}
+                  data-testid={`sidebar-pinned-${item.id}`}
+                >
+                  <Pin
+                    size={12}
+                    className={cn('shrink-0 opacity-65', activePageId === item.id && 'fill-current opacity-100')}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  {/* No opacity dilution — see the matching suffix in the main
+                      tree above; the inherited text-muted-foreground clears
+                      WCAG 1.4.3 on its own. */}
+                  <span className="max-w-14 shrink-0 truncate text-[11px]">
+                    {item.spaceKey ?? formatCompactDate(item.lastModifiedAt)}
+                  </span>
+                </button>
+              ))}
+              {pinnedData.items.length > 4 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('/');
+                    onNavigate?.();
+                  }}
+                  className="flex h-7 w-full items-center rounded-md px-2 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)]"
+                >
+                  View all {pinnedData.total} pinned pages
+                </button>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Section label with New Page action — no extra hairline. The space-selector row
+          already draws the 1px rule that meets the article toolbar. */}
+      <div className="flex h-7 shrink-0 items-center justify-between px-3">
+        <span className={SECTION_LABEL}>Pages</span>
+        <button
+          type="button"
+          onClick={() => {
+            navigate('/pages/new');
+            onNavigate?.();
+          }}
+          className="flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="New Page"
+          title="New Page (Alt+N)"
+          data-testid="sidebar-new-page-btn"
+        >
+          <Plus size={13} aria-hidden="true" />
+        </button>
+      </div>
+
+      {/* A refresh failed but the cached tree is still usable. Say so without
+          taking it away — the pages below are real, just possibly behind. */}
+      {treeIsStale && (
+        <div
+          role="status"
+          data-testid="tree-stale-notice"
+          className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5"
+        >
+          <AlertTriangle size={12} className="shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+            Showing the last loaded pages
+          </span>
+          <button
+            onClick={() => refetchTree()}
+            disabled={isFetchingTree}
+            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-action transition-colors hover:bg-[var(--glass-pill-hover)] disabled:opacity-40"
+          >
+            {isFetchingTree ? 'Retrying' : 'Retry'}
+          </button>
         </div>
       )}
 
@@ -737,6 +1190,47 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               />
             ))}
           </div>
+        ) : treeFailedWithNothingToShow ? (
+          // The tree used to consume only { data, isLoading }, so a failed
+          // request left `treeData` undefined, `tree` empty, and the EMPTY
+          // state on screen: "No pages synced yet — Sync a Confluence space to
+          // get started", with a button into Settings. The panel diagnosed a
+          // network failure as an unconfigured integration and pointed the user
+          // at the most expensive wrong action available to them.
+          //
+          // role="alert" because this replaces content the user is waiting on
+          // and it arrives after their navigation, not before it.
+          <div className="flex flex-col items-center px-3 py-8 text-center" role="alert" data-testid="tree-error">
+            {/* Destructive, not warning. ADR-010 reserves amber for
+                warning/attention and red (status-disconnected) for failure, and
+                this request FAILED — the same call `Message.isError` makes. The
+                amber one is the stale strip above the tree, where the pages are
+                real and only possibly behind: that is attention, not failure. */}
+            <div className="mb-3 rounded-full bg-muted p-2.5">
+              <AlertTriangle size={20} className="text-destructive" aria-hidden="true" />
+            </div>
+            <p className="text-xs font-medium text-foreground/70">Couldn&rsquo;t load pages</p>
+            {/* ApiError's message is already curated prose carrying the status
+                code (see api.ts failureMessage) — not a raw server body — so it
+                is safe to show and it is the only place the user learns WHY.
+                Clamped because this pane is 280px and a gateway message is not. */}
+            <p className="mt-1 break-words line-clamp-3 text-[11px] text-muted-foreground">
+              {treeError instanceof ApiError
+                ? treeError.message
+                : 'The request did not complete. Your pages are still there.'}
+            </p>
+            <Button
+              onClick={() => refetchTree()}
+              disabled={isFetchingTree}
+              isLoading={isFetchingTree}
+              variant="secondary"
+              size="sm"
+              leftIcon={!isFetchingTree ? <RefreshCw size={12} aria-hidden="true" /> : undefined}
+              className="mt-3"
+            >
+              {isFetchingTree ? 'Retrying' : 'Try again'}
+            </Button>
+          </div>
         ) : tree.length === 0 ? (
           <div className="flex flex-col items-center px-3 py-8 text-center">
             <div className="mb-3 rounded-full bg-muted p-2.5">
@@ -749,20 +1243,22 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
             </p>
             {!treeSidebarSpaceKey && (
-              <button
+              <Button
                 onClick={() => navigate('/settings')}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-action bg-transparent px-3 py-1.5 text-xs font-medium text-action hover:bg-action hover:text-action-foreground transition-colors"
+                variant="secondary"
+                size="sm"
+                leftIcon={<Plus size={12} />}
+                className="mt-3"
               >
-                <Plus size={12} />
                 Sync a Space
-              </button>
+              </Button>
             )}
           </div>
         ) : isLocalSpace ? (
           <Suspense fallback={
             <div className="space-y-1 px-2">
               {Array.from({ length: 6 }, (_, i) => (
-                <div key={i} className="h-9 animate-pulse rounded-[10px] bg-foreground/5" />
+                <div key={i} className="h-9 animate-pulse rounded-xl bg-foreground/5" />
               ))}
             </div>
           }>
@@ -771,15 +1267,17 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
               expandedIds={expandedIds}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
-              isAiRoute={isAiRoute}
               reorderPage={reorderPage}
+              rovingId={rovingId}
+              onRowFocus={handleRowFocus}
+              onRowKeyDown={handleRowKeyDown}
             />
           </Suspense>
         ) : (
           // #880: role="tree" + label give the role="treeitem" rows a valid
           // required-parent context and expose real tree semantics to screen
-          // readers. Keyboard reorder + full roving-tabindex/arrow-key nav
-          // remain a tracked follow-up (epic #856).
+          // readers. Roving-tabindex + arrow-key nav below closes out the
+          // epic #856 follow-up this comment used to defer.
           <div className="space-y-0.5" role="tree" aria-label="Pages">
             {tree.map((node) => (
               <SidebarTreeNode
@@ -788,33 +1286,73 @@ export function SidebarTreeView({ onNavigate }: { onNavigate?: () => void } = {}
                 expandedSet={expandedIds}
                 toggleExpand={toggleExpand}
                 activePageId={activePageId}
-                isAiRoute={isAiRoute}
+                showSpaceKey={!treeSidebarSpaceKey}
+                rovingId={rovingId}
+                onRowFocus={handleRowFocus}
+                onRowKeyDown={handleRowKeyDown}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Footer stats */}
-      {treeData && (
-        <div className="px-3 py-1.5">
-          <span className="text-[11px] text-muted-foreground">
-            {treeData.total} {treeData.total === 1 ? 'page' : 'pages'}{treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}
-          </span>
-        </div>
-      )}
+      {/* Scope count + low-frequency storage navigation. Out of the scroller
+          so both stay visible under a long tree. Trash belongs with the page
+          corpus, but not beside the Library's primary New Page action. */}
+      <div className="panel-toolbar flex shrink-0 items-center gap-2 border-t px-2 py-1.5">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+          {treeData
+            ? `${treeData.total} ${treeData.total === 1 ? 'page' : 'pages'}${treeSidebarSpaceKey ? ` in ${treeSidebarSpaceKey}` : ''}`
+            : ''}
+        </span>
+        <Button
+          onClick={() => {
+            navigate('/trash');
+            onNavigate?.();
+          }}
+          variant="ghost"
+          size="sm"
+          className={cn(
+            'h-7 shrink-0 px-2 text-xs text-muted-foreground',
+            location.pathname === '/trash' && 'nav-selection text-foreground',
+          )}
+          aria-current={location.pathname === '/trash' ? 'page' : undefined}
+          leftIcon={<Trash2 size={13} aria-hidden="true" />}
+          data-testid="sidebar-trash"
+        >
+          Trash
+        </Button>
+      </div>
 
       {/* Resize handle */}
       <div
         role="separator"
         aria-label="Resize tree sidebar"
         aria-orientation="vertical"
+        aria-valuemin={180}
+        aria-valuemax={600}
+        aria-valuenow={treeSidebarWidth}
+        // Without this a screen reader announces a bare "256" — a number with
+        // no unit, on a control whose whole job is a measurement.
+        aria-valuetext={`${treeSidebarWidth} pixels`}
+        tabIndex={0}
         onMouseDown={handleResizeStart}
+        onDoubleClick={() => setTreeSidebarWidth(282)}
+        onKeyDown={handleResizeKeyDown}
         className={cn(
-          'absolute right-0 top-2 bottom-2 w-1 cursor-col-resize rounded-full transition-colors hover:bg-action/40',
-          isResizing && 'bg-action/60',
+          'group absolute bottom-0 right-0 top-0 z-10 flex w-2 cursor-col-resize items-center justify-end outline-none',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
         )}
-      />
+        title="Drag to resize · Double-click to reset"
+      >
+        <span
+          className={cn(
+            'h-full w-px bg-transparent transition-colors group-hover:bg-action/45 group-focus-visible:bg-action/55',
+            isResizing && 'bg-action/70',
+          )}
+          aria-hidden="true"
+        />
+      </div>
     </m.aside>
   );
 }

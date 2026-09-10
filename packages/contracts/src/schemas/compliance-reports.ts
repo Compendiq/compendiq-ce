@@ -2,7 +2,7 @@
  * Shared schema for the SOC 2 / ISO 27001 compliance-report generator
  * (Compendiq/compendiq-ee#115).
  *
- * Hoisted into `@compendiq/contracts` to deduplicate the seven-id union
+ * Hoisted into `@compendiq/contracts` to deduplicate the report-id union
  * that previously lived in three places:
  *
  *   1. `frontend/src/features/admin/ComplianceReportsTab.tsx` — local
@@ -12,8 +12,8 @@
  *   3. `overlay/backend/src/enterprise/compliance-reports/types.ts` —
  *      `ReportId` union (orchestrator + module registry)
  *
- * All three now import this file. Adding a new report requires editing
- * exactly one place — `REPORT_IDS` below — and the rest cascades.
+ * All three now import this file. New report ids belong in `REPORT_IDS`
+ * below; the frontend catalogue supplies their display copy.
  *
  * Wire-shape source of truth: the actual generate route in
  * `overlay/backend/src/routes/foundation/compliance-reports.ts`. The CE
@@ -29,8 +29,7 @@ import { z } from 'zod';
 
 // ── Report ids ────────────────────────────────────────────────────────
 //
-// The seven reports defined in Compendiq/compendiq-ee#115. Adding a new
-// report:
+// The compliance report catalogue. Adding a new report:
 //   1. Add the id here
 //   2. Add a module under `overlay/backend/src/enterprise/compliance-reports/
 //      reports/<id>.ts` that exports a `ReportModule`
@@ -51,6 +50,7 @@ export const REPORT_IDS = [
   'ai_usage',
   'data_retention',
   'admin_actions',
+  'model_governance',
 ] as const;
 
 export const ReportIdSchema = z.enum(REPORT_IDS);
@@ -80,8 +80,8 @@ export type GenerateComplianceReportRequest = z.infer<
 // ── Catalogue response ────────────────────────────────────────────────
 //
 // Returned by `GET /api/admin/compliance-reports`. `catalogue` is the
-// canonical seven-id list (so deployments at older slice levels can
-// still render coming-soon cards for unwired reports). `available` is
+// canonical report-id list (so older deployments can still render
+// unavailable cards for unwired reports). `available` is
 // the subset of report ids actually wired in the running merged build's
 // registry — driven by the registry, not the catalogue.
 

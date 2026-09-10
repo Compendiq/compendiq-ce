@@ -26,9 +26,19 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   handleReset = () => {
+    const msg = this.state.error?.message ?? '';
+    const isChunkError =
+      msg.includes('dynamically imported module') ||
+      msg.includes('module script') ||
+      msg.includes('Loading chunk');
+
+    if (isChunkError) {
+      window.location.reload();
+      return;
+    }
+
     this.setState({ hasError: false, error: null });
   };
-
   render() {
     if (this.state.hasError) {
       if (this.props.fallback) {
@@ -43,10 +53,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </div>
           </div>
           <h2 className="mb-2 text-xl font-semibold text-foreground">
-            Something went wrong
+            {this.state.error?.message?.includes('module script') ||
+            this.state.error?.message?.includes('dynamically imported module')
+              ? 'New version available'
+              : 'Something went wrong'}
           </h2>
           <p className="mb-6 text-sm text-muted-foreground">
-            An unexpected error occurred. Please try again.
+            {this.state.error?.message?.includes('module script') ||
+            this.state.error?.message?.includes('dynamically imported module')
+              ? 'A new build was deployed. Reload the page to load the latest version.'
+              : 'An unexpected error occurred. Please try again.'}
           </p>
           {this.state.error && (
             <pre className="mb-6 overflow-auto rounded-md bg-foreground/5 p-3 text-left text-xs text-muted-foreground">
@@ -58,12 +74,14 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             className="nm-button-primary"
           >
             <RefreshCw size={14} />
-            Try Again
+            {this.state.error?.message?.includes('module script') ||
+            this.state.error?.message?.includes('dynamically imported module')
+              ? 'Reload Page'
+              : 'Try Again'}
           </button>
         </div>
       );
     }
-
     return this.props.children;
   }
 }

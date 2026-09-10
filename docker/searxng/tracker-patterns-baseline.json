@@ -1,0 +1,35 @@
+{
+  "_provenance": {
+    "source": "https://github.com/ClearURLs/Rules/blob/11086f40512774dcadef54079f1ba023bfacf940/data.min.json",
+    "source_commit": "11086f40512774dcadef54079f1ba023bfacf940",
+    "retrieved": "2026-08-28",
+    "license": "LGPL-3.0-or-later",
+    "license_file": "tracker-patterns-baseline.LICENSE",
+    "selection": "Pinned subset of the upstream globalRules provider covering common cross-site tracking parameters."
+  },
+  "providers": {
+    "globalRules": {
+      "urlPattern": ".*",
+      "completeProvider": false,
+      "rules": [
+        "(?:%3F)?utm(?:_[a-z_]*)?",
+        "(?:%3F)?mtm(?:_[a-z_]*)?",
+        "(?:%3F)?ga_[a-z_]+",
+        "(?:%3F)?fbclid",
+        "(?:%3F)?gclid",
+        "(?:%3F)?srsltid",
+        "(?:%3F)?_ga",
+        "(?:%3F)?_gl",
+        "(?:%3F)?dclid",
+        "(?:%3F)?mc_(?:eid|cid|tc)",
+        "(?:%3F)?msclkid",
+        "(?:%3F)?twclid"
+      ],
+      "referralMarketing": [],
+      "rawRules": [],
+      "exceptions": [],
+      "redirections": [],
+      "forceRedirection": false
+    }
+  }
+}

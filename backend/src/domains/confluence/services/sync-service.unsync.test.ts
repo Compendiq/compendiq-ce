@@ -158,6 +158,90 @@ describe('unsyncSpace', () => {
     await expect(stat(standaloneDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  /**
+   * #1349 review r2: the icon store is a THIRD tree under the same root,
+   * keyed by `pages.id` whatever the page's source, and `cleanPageAttachments`
+   * never touches it. The sweep is forbidden to walk it by name, so an
+   * event-driven delete is the only thing that ever collects a mark — and
+   * removing a space hard-deletes every page in it.
+   */
+  it('removes the uploaded page icons of the pages it deletes (#1349)', async () => {
+    await ensureRoles();
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('ENG','Engineering','confluence')`,
+    );
+    const doomed = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES ('c-icon','ENG','Synced','text','','','confluence') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('OPS','Ops','confluence')`,
+    );
+    const survivor = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source)
+       VALUES ('c-keep','OPS','Other','text','','','confluence') RETURNING id`,
+    );
+
+    // Test-only paths built from serials under a mkdtemp root. nosemgrep
+    const doomedIcon = path.join(tmpRoot, 'page-icons', String(doomed.rows[0]!.id));
+    const survivorIcon = path.join(tmpRoot, 'page-icons', String(survivor.rows[0]!.id));
+    for (const dir of [doomedIcon, survivorIcon]) {
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, `${'a'.repeat(64)}.png`), 'png-bytes');
+    }
+
+    await unsyncSpace('ENG');
+
+    await expect(stat(doomedIcon)).rejects.toMatchObject({ code: 'ENOENT' });
+    // Another space's marks are untouched — the removal is keyed, not a sweep.
+    await expect(stat(survivorIcon)).resolves.toBeTruthy();
+  });
+
+  /**
+   * #1349 review r1: the icon removal must run AFTER the commit. The rows are
+   * restored by a ROLLBACK; the mark is not restorable by anything, because
+   * migration 095 persists only `icon_kind`/`icon_value` (the sha) and the
+   * sweep is forbidden to walk `page-icons/`. Deleting it ahead of the
+   * transaction would leave a live page advertising an icon whose only copy is
+   * gone. A `BEFORE DELETE ON spaces` trigger stands in for any DB failure
+   * inside that block.
+   */
+  it('keeps the uploaded page icons when the transaction rolls back (#1349)', async () => {
+    await ensureRoles();
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source) VALUES ('ENG','Engineering','confluence')`,
+    );
+    const p = await query<{ id: number }>(
+      `INSERT INTO pages (confluence_id, space_key, title, body_text, body_storage, body_html, source, icon_kind, icon_value)
+       VALUES ('c-roll','ENG','Synced','text','','','confluence','image',$1) RETURNING id`,
+      ['a'.repeat(64)],
+    );
+    const pageId = p.rows[0]!.id;
+    // Test-only path built from a serial under a mkdtemp root. nosemgrep
+    const iconDir = path.join(tmpRoot, 'page-icons', String(pageId));
+    await mkdir(iconDir, { recursive: true });
+    await writeFile(path.join(iconDir, `${'a'.repeat(64)}.png`), 'png-bytes');
+
+    await query(`CREATE OR REPLACE FUNCTION unsync_probe_fail() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'unsync probe: forced failure'; END; $$ LANGUAGE plpgsql`);
+    await query(`CREATE TRIGGER unsync_probe_fail_trg BEFORE DELETE ON spaces
+      FOR EACH ROW EXECUTE FUNCTION unsync_probe_fail()`);
+    try {
+      await expect(unsyncSpace('ENG')).rejects.toThrow(/unsync probe: forced failure/);
+    } finally {
+      await query('DROP TRIGGER IF EXISTS unsync_probe_fail_trg ON spaces');
+      await query('DROP FUNCTION IF EXISTS unsync_probe_fail()');
+    }
+
+    // The row is back (all-or-nothing) — and so is the mark it points at.
+    const survived = await query<{ icon_kind: string }>(
+      `SELECT icon_kind FROM pages WHERE id = $1`,
+      [pageId],
+    );
+    expect(survived.rows[0]?.icon_kind).toBe('image');
+    await expect(stat(iconDir)).resolves.toBeTruthy();
+  });
+
   it('returns pagesDeleted=0 when the space has no pages', async () => {
     await query(
       `INSERT INTO spaces (space_key, space_name, source) VALUES ('EMPTY','Empty','confluence')`,

@@ -37,6 +37,39 @@ const COLOR_TABLE_BORDER = rgb(0.75, 0.78, 0.82);
 const COLOR_TABLE_HEADER_BG = rgb(0.96, 0.97, 0.98);
 const COLOR_LIST_BULLET = rgb(0.35, 0.35, 0.4);
 
+// ── Expand-section default labels (#1227) ──────────────────────────
+/**
+ * What Confluence's own renderers show for an expand macro carrying no `title`
+ * parameter. Since #1227 an untitled section genuinely stores nothing, so any
+ * renderer that wants to show a title row has to supply the label itself.
+ *
+ * The app does that with a ProseMirror decoration, which a server-side PDF
+ * render — no stylesheet, no ProseMirror — never sees. Hence this second copy,
+ * deliberately kept in step with `EXPAND_PLACEHOLDER_LABELS` in
+ * `frontend/src/shared/components/article/article-extensions.ts`. They cannot
+ * share a module (backend and frontend share only `@compendiq/contracts`), so
+ * a frontend test reads this file and fails if the two drift apart.
+ *
+ * Both strings were measured, not recalled: `expand` from
+ * `expand-macro.default-title` in the bundled `confluence-expand-macro-19.2.44`
+ * plugin of a Confluence DC 9.2.14 container (note the ellipsis), `ui-expand`
+ * from Refined's public DC demo rendered through
+ * `/rest/api/contentbody/convert/view` (no ellipsis — the near-collision is
+ * real, not a typo).
+ */
+const EXPAND_DEFAULT_LABELS: Record<string, string> = {
+  expand: 'Click here to expand...',
+  'ui-expand': 'Click here to expand',
+};
+
+/**
+ * Shown for a `<details>` with no identity stamp (pre-#1211 body_html, and
+ * editor-created sections) or an unrecognised one. Generic on purpose:
+ * guessing a third-party macro's wording would be the same fabrication in the
+ * export that #1227 removed from the storage format.
+ */
+const DEFAULT_EXPAND_LABEL = 'Click to expand';
+
 // ── Types ──────────────────────────────────────────────────────────
 interface RenderContext {
   doc: PDFDocument;
@@ -235,6 +268,9 @@ function renderNode(ctx: RenderContext, node: Node): void {
     case 'img':
       renderImagePlaceholder(ctx, el);
       break;
+    case 'summary':
+      renderExpandSummary(ctx, el);
+      break;
     case 'div':
     case 'section':
     case 'article':
@@ -288,6 +324,27 @@ function renderHeading(ctx: RenderContext, text: string, fontSize: number): void
     ctx.y -= 4;
   }
 
+  ctx.y -= PARAGRAPH_SPACING / 2;
+}
+
+/**
+ * An expand section's title row (#1227).
+ *
+ * `<summary>` used to fall through to the default branch, which draws its text
+ * as an ordinary body paragraph — and drew *nothing at all* once #1227 stopped
+ * fabricating a title for an untitled section, leaving the section with no
+ * header row and its body running straight on. Bold, and falling back to the
+ * macro's own default label, so an exported page reads the way the section
+ * does in the app and in Confluence's own export.
+ *
+ * The label comes from the parent `<details>`' `data-macro-name` stamp
+ * (#1211); a stray summary with no expand parent gets the generic fallback.
+ */
+function renderExpandSummary(ctx: RenderContext, el: Element): void {
+  const title = extractTextContent(el);
+  const macroName = el.parentElement?.getAttribute('data-macro-name');
+  const label = title || (macroName && EXPAND_DEFAULT_LABELS[macroName]) || DEFAULT_EXPAND_LABEL;
+  renderTextBlock(ctx, label, ctx.fontBold, FONT_SIZE_BODY, COLOR_HEADING);
   ctx.y -= PARAGRAPH_SPACING / 2;
 }
 

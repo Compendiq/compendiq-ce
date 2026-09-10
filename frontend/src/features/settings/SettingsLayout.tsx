@@ -1,10 +1,11 @@
 import { Suspense, useEffect } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { m } from 'framer-motion';
 import { SkeletonFormFields } from '../../shared/components/feedback/Skeleton';
 import { useAuthStore } from '../../stores/auth-store';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
-import { firstVisiblePath, type AccessContext } from './settings-nav';
+import { firstVisiblePath, settingsPanelFromPath, type AccessContext } from './settings-nav';
+import { HeaderHost } from '../../shared/components/layout/header-slot';
 
 /**
  * Extends AccessContext with the license-fetch loading flag so
@@ -26,6 +27,8 @@ export function SettingsLayout() {
   const user = useAuthStore((s) => s.user);
   const isAdmin = user?.role === 'admin';
   const { isEnterprise, hasFeature, isLoading: isEnterpriseLoading } = useEnterprise();
+  const { pathname } = useLocation();
+  const panel = settingsPanelFromPath(pathname);
 
   return (
     <m.div
@@ -33,12 +36,30 @@ export function SettingsLayout() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18 }}
     >
-      <h1 className="mb-6 text-2xl font-bold tracking-[-0.01em]">Settings</h1>
+      <HeaderHost
+        fallbackClassName="sticky -top-5 z-20 -mx-4 -mt-5 mb-4 border-b border-border bg-card sm:-mx-6 [&>h1]:mx-auto [&>h1]:flex [&>h1]:min-h-[calc(3rem-1px)] [&>h1]:max-w-[928px] [&>h1]:items-center [&>h1]:px-4 [&>h1]:py-2 sm:[&>h1]:max-w-[944px] sm:[&>h1]:px-6"
+      >
+        <h1 className="min-w-0 truncate text-[15px] font-semibold sm:text-lg">
+          Settings
+          {panel && (
+            <span className="font-normal text-muted-foreground">
+              {' · '}
+              {panel.label}
+            </span>
+          )}
+        </h1>
+      </HeaderHost>
 
-      {/* nm-card gives a proper neumorphic border + shadow recipe that holds
-          up in both themes — replaces the previous border/40 wash that read
-          ~1.1:1 against linen and disappeared entirely on white card backs. */}
-      <div className="nm-card p-6">
+      {/* No card. The FORM still caps at `max-w-2xl`: without it a "Confluence
+          URL" input stretched the full width of the pane — a single-line field
+          many times longer than anything anyone types into it, with its label
+          stranded from its own help text.
+
+          The cap lives here rather than in each tab so every settings surface
+          inherits it; a tab needing full width (tables, audit logs) opts out
+          with `max-w-none` on its own root. The column itself caps at 896px so
+          settings stays a coherent shape rather than tracking the monitor. */}
+      <div className="mx-auto max-w-4xl [&_form]:max-w-2xl">
         <Suspense fallback={<SkeletonFormFields />}>
           <Outlet
             context={

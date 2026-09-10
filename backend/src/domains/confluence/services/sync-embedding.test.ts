@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
+  processDirtyPageImages: vi.fn().mockResolvedValue({ pages: 0 }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
   getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
@@ -14,6 +15,15 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../llm/services/embedding-service.js', () => ({
   processDirtyPages: mocks.processDirtyPages,
+}));
+
+// #1115 P2 (review r1) — the image index's ONLY scheduled trigger. It rides
+// this cadence rather than getting a repeatable job of its own, so deleting
+// the one line in `syncUser` ships an index that fills only from the two admin
+// buttons. Mocked at the module boundary and asserted below, mirroring
+// `processDirtyPages` beside it.
+vi.mock('../../llm/services/image-embedding-service.js', () => ({
+  processDirtyPageImages: mocks.processDirtyPageImages,
 }));
 
 vi.mock('./confluence-client.js', () => ({
@@ -42,6 +52,17 @@ vi.mock('./attachment-handler.js', () => ({
 
 vi.mock('../../knowledge/services/version-tracker.js', () => ({
   saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
+
+// #1448 inbound sync invalidates leftover BYTEA (or resets a live room).
+// Those calls are extra `query()` / Redis hits this queue does not model —
+// an unqueued DELETE shifts `purgeDeletedPages` onto undefined.
+vi.mock('../../../core/services/collab-guard.js', () => ({
+  isLiveCollabRoom: vi.fn().mockResolvedValue(false),
+  invalidateCollabDocAfterBodyWrite: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../../../core/services/collab-room-service.js', () => ({
+  resetCollabRoomFromHtml: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../../core/utils/crypto.js', () => ({
@@ -79,6 +100,7 @@ describe('syncUser auto-embedding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.processDirtyPages.mockResolvedValue({ processed: 3, errors: 0 });
+    mocks.processDirtyPageImages.mockResolvedValue({ pages: 0 });
   });
 
   function setupSuccessfulSync() {
@@ -111,6 +133,48 @@ describe('syncUser auto-embedding', () => {
     await vi.waitFor(() => {
       expect(mocks.processDirtyPages).toHaveBeenCalledWith('user-1');
     });
+  });
+
+  it('should kick the image index worker after a successful sync (#1115 P2)', async () => {
+    // The image index has no repeatable job: this fire-and-forget call is its
+    // whole automatic cadence, so nothing else notices if it goes away.
+    setupSuccessfulSync();
+
+    await syncUser('user-img-1');
+
+    await vi.waitFor(() => {
+      expect(mocks.processDirtyPageImages).toHaveBeenCalled();
+    });
+  });
+
+  it('should not kick the image index worker when no credentials are configured', async () => {
+    mocks.query.mockResolvedValueOnce({
+      rows: [{ confluence_url: null, confluence_pat: null }],
+    });
+
+    await syncUser('user-img-2');
+
+    expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
+  });
+
+  it('should not kick the image index worker when no spaces are selected', async () => {
+    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]);
+    mocks.query.mockResolvedValueOnce({
+      rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
+    });
+
+    await syncUser('user-img-3');
+
+    expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
+  });
+
+  it('should not block sync completion if the image index scan rejects', async () => {
+    // Fire-and-forget, and the `.catch` beside it is what keeps a provider
+    // being briefly unreachable from taking the process down.
+    mocks.processDirtyPageImages.mockRejectedValueOnce(new Error('VL box offline'));
+    setupSuccessfulSync();
+
+    await expect(syncUser('user-img-4')).resolves.toBeUndefined();
   });
 
   it('should set status to embedding after sync completes', async () => {
@@ -227,6 +291,7 @@ describe('syncPage attachment cache invalidation', () => {
         existingVersion !== null
           ? {
               rows: [{
+                id: 1,
                 version: existingVersion,
                 title: 'Old',
                 body_html: existingBodyHtml,
@@ -293,7 +358,7 @@ describe('syncPage attachment cache invalidation', () => {
     await syncUser('user-cache-clear');
 
     const { cleanPageAttachments } = await import('./attachment-handler.js');
-    expect(cleanPageAttachments).toHaveBeenCalledWith('user-cache-clear', 'page-1');
+    expect(cleanPageAttachments).toHaveBeenCalledWith('page-1');
   });
 
   it('does not clear attachment cache for brand-new pages', async () => {

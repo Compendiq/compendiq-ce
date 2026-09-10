@@ -3,10 +3,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, Loader2, Shield,
+  Plus, Trash2, Copy, CheckCircle2, AlertTriangle, XCircle, Shield,
 } from 'lucide-react';
 import { apiFetch } from '../../shared/lib/api';
-import { cn } from '../../shared/lib/cn';
+import { Button, IconButton } from '../../shared/components/Button';
 import { useEnterprise } from '../../shared/enterprise/use-enterprise';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -46,7 +46,9 @@ function formatDate(value: string | null): string {
   return date.toLocaleDateString();
 }
 
-function tokenStatus(expiresAt: string | null): 'active' | 'expiring' | 'expired' {
+type TokenState = 'active' | 'expiring' | 'expired';
+
+function tokenStatus(expiresAt: string | null): TokenState {
   if (!expiresAt) return 'active';
   const now = Date.now();
   const exp = new Date(expiresAt).getTime();
@@ -56,11 +58,40 @@ function tokenStatus(expiresAt: string | null): 'active' | 'expiring' | 'expired
   return 'active';
 }
 
-const statusDotClass: Record<ReturnType<typeof tokenStatus>, string> = {
-  active: 'bg-emerald-500',
-  expiring: 'bg-amber-500',
-  expired: 'bg-red-500',
+/**
+ * A token's state needs a channel besides hue. The dot this replaced was the
+ * only thing in the row saying "expired" — the Expires column shows a date, not
+ * a state word — and `success` vs `destructive` (and either against
+ * `status-inactive`) collapse to near-identical warm greys under deuteranopia,
+ * so the row read the same whether the token worked or not (WCAG 1.4.1).
+ *
+ * Icon SHAPE carries it visually, in the vocabulary the rest of admin already
+ * uses for these three meanings (CheckCircle2 = healthy, AlertTriangle =
+ * attention, XCircle = failed); the `sr-only` word is the accessible name,
+ * which a `title` would not reliably be.
+ */
+const statusConfig: Record<
+  TokenState,
+  { icon: typeof CheckCircle2; className: string; label: string }
+> = {
+  active: { icon: CheckCircle2, className: 'text-success', label: 'Active' },
+  expiring: { icon: AlertTriangle, className: 'text-warning', label: 'Expiring soon' },
+  expired: { icon: XCircle, className: 'text-destructive', label: 'Expired' },
 };
+
+function TokenStatusIcon({ status }: { status: TokenState }) {
+  const { icon: Icon, className, label } = statusConfig[status];
+  return (
+    <span
+      className="inline-flex shrink-0 items-center"
+      data-testid={`scim-token-status-${status}`}
+    >
+      {/* size 13 matches the row's Trash2 action, not the 18px banner icons. */}
+      <Icon size={13} className={className} aria-hidden="true" />
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -141,11 +172,11 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise Feature</div>
+            <div className="text-sm font-medium text-warning">Enterprise Feature</div>
             <div className="mt-1 text-xs text-muted-foreground">
               SCIM provisioning requires an enterprise license with the SCIM feature enabled.
             </div>
@@ -198,13 +229,13 @@ export function ScimSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="nm-card space-y-4 border border-amber-500/20 p-4"
+          className="nm-card space-y-4 border border-warning/20 p-4"
           data-testid="scim-token-reveal"
         >
-          <div className="flex items-start gap-3 rounded-lg bg-amber-500/5 p-3">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <div className="flex items-start gap-3 rounded-lg bg-warning/5 p-3">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
             <div className="text-xs text-muted-foreground">
-              <span className="font-medium text-amber-200">Copy this token now.</span>{' '}
+              <span className="font-medium text-warning">Copy this token now.</span>{' '}
               It will not be shown again. Store it securely in your identity provider.
             </div>
           </div>
@@ -221,18 +252,18 @@ export function ScimSettingsPage() {
                 className="flex-1 rounded-md bg-foreground/5 px-3 py-2 font-mono text-sm outline-none"
                 data-testid="scim-token-value"
               />
-              <button
+              <Button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10"
+                variant="secondary"
+                leftIcon={<Copy size={14} />}
                 data-testid="scim-copy-token"
               >
-                <Copy size={14} />
                 Copy
-              </button>
+              </Button>
             </div>
           </div>
 
-          <div className="flex items-center justify-between border-t border-border/50 pt-3">
+          <div className="flex items-center justify-between border-t border-border pt-3">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -243,29 +274,29 @@ export function ScimSettingsPage() {
               />
               I have copied this token
             </label>
-            <button
+            <Button
               onClick={handleDismiss}
               disabled={!copiedConfirmed}
-              className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              variant="primary"
+              leftIcon={<CheckCircle2 size={14} />}
               data-testid="scim-dismiss-token"
             >
-              <CheckCircle2 size={14} />
               Dismiss
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
 
       {/* Token creation */}
       {!showCreateForm ? (
-        <button
+        <Button
           onClick={() => setShowCreateForm(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="generate-token-btn"
         >
-          <Plus size={16} />
           Generate Token
-        </button>
+        </Button>
       ) : (
         <m.div
           initial={{ opacity: 0, y: -8 }}
@@ -304,25 +335,27 @@ export function ScimSettingsPage() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleCreate}
               disabled={!tokenName.trim() || createMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={createMutation.isPending}
+              variant="primary"
+              size="sm"
               data-testid="scim-create-submit"
             >
-              {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
               Create
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => {
                 setShowCreateForm(false);
                 setTokenName('');
                 setExpiresInDays('');
               }}
-              className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+              variant="ghost"
+              size="sm"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
@@ -336,7 +369,7 @@ export function ScimSettingsPage() {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Last Used</th>
@@ -358,7 +391,7 @@ export function ScimSettingsPage() {
                   >
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-2">
-                        <div className={cn('h-2 w-2 rounded-full', statusDotClass[status])} />
+                        <TokenStatusIcon status={status} />
                         <span className="font-medium">{t.name}</span>
                       </div>
                     </td>
@@ -372,15 +405,15 @@ export function ScimSettingsPage() {
                       {t.expiresAt ? formatDate(t.expiresAt) : 'Never'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <button
+                      <IconButton
                         onClick={() => revokeMutation.mutate(t.id)}
                         disabled={revokeMutation.isPending}
-                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                        variant="destructive-ghost"
+                        size="sm"
+                        icon={<Trash2 size={13} />}
                         aria-label={`Revoke token ${t.name}`}
                         data-testid={`revoke-token-${t.id}`}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      />
                     </td>
                   </m.tr>
                 );

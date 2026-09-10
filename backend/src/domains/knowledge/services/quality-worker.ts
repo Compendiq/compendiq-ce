@@ -13,8 +13,9 @@
  *        (e.g. admin set provider=openai but no openai_model / usecase
  *        model); applying the Ollama-shaped `qwen3:4b` default would fail.
  *   Admin recovery paths for case (b), in order of preference:
- *     1. Set a model: Settings → LLM → Use case assignments → Quality,
- *        or set the shared `openai_model` / `ollama_model` field.
+ *     1. Set a model for the Quality use case (Settings → AI Models,
+ *        Use case assignments), or set the shared `openai_model` /
+ *        `ollama_model` field.
  *     2. Call `forceQualityRescan()` (exported below) or hit
  *        `POST /api/admin/quality-rescan` — flips every `'skipped'` /
  *        `'failed'` / `'analyzed'` page back to `'pending'` so the next
@@ -281,7 +282,7 @@ export async function processBatch(): Promise<number> {
     );
     logger.warn(
       { providerId: assignment?.config.providerId, flippedToSkipped: flipped.rowCount ?? 0 },
-      'No quality provider/model configured (Settings → LLM → Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
+      'No quality provider/model configured (Settings → AI Models, Use case assignments). Marked pending pages as skipped — admin must call forceQualityRescan() to reprocess after fixing the config.',
     );
     return 0;
   }

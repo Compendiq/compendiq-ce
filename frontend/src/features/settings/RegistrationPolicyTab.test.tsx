@@ -17,14 +17,21 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-function mockFetchWith(settings: Record<string, unknown>) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+function mockFetchWith(settings: Record<string, unknown>, loginConfig: { variant: string } = { variant: 'local-loop' }) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+    const method = init?.method ?? (input as Request)?.method ?? 'GET';
     if (url.includes('/admin/settings')) {
-      if ((input as Request)?.method === 'PUT') {
+      if (method === 'PUT') {
         return new Response(JSON.stringify({ message: 'Updated' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify(settings), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.includes('/auth/login-page-config') || url.includes('/admin/login-page-config')) {
+      if (method === 'PUT') {
+        return new Response(JSON.stringify({ variant: 'change-desk' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(loginConfig), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     return new Response('Not found', { status: 404 });
   });
@@ -120,5 +127,27 @@ describe('RegistrationPolicyTab (#1051)', () => {
 
     fireEvent.change(screen.getByTestId('registration-mode-select'), { target: { value: 'open' } });
     expect(screen.getByTestId('registration-policy-save-btn')).not.toBeDisabled();
+  });
+
+  it('loads the current login design and persists a Change Desk selection', async () => {
+    const fetchSpy = mockFetchWith({ registrationMode: 'closed' }, { variant: 'local-loop' });
+    render(<RegistrationPolicyTab />, { wrapper: createWrapper() });
+
+    const localLoop = await screen.findByRole('radio', { name: /Local Loop/i });
+    expect(localLoop).toBeChecked();
+    expect(screen.getByTestId('apply-login-page-variant')).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('radio', { name: /Change Desk/i }));
+    expect(screen.getByTestId('apply-login-page-variant')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('apply-login-page-variant'));
+
+    await waitFor(() => {
+      const updateCall = fetchSpy.mock.calls.find(
+        ([input, init]) =>
+          String(input).includes('/admin/login-page-config') &&
+          ((init as RequestInit | undefined)?.method === 'PUT' || (input as Request)?.method === 'PUT'),
+      );
+      expect(updateCall).toBeDefined();
+    });
   });
 });

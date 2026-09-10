@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PageIconSchema } from './page-icon.js';
 
 export const PageTypeEnum = z.enum(['page', 'folder']);
 export type PageType = z.infer<typeof PageTypeEnum>;
@@ -17,6 +18,65 @@ export type PageSource = z.infer<typeof PageSourceEnum>;
 
 export const PageVisibilityEnum = z.enum(['private', 'shared']);
 export type PageVisibility = z.infer<typeof PageVisibilityEnum>;
+
+export const ConnectionReasonSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('explicit_link'),
+    direction: z.enum(['incoming', 'outgoing']),
+  }).strict(),
+  z.object({
+    type: z.literal('parent_child'),
+    direction: z.enum(['parent', 'child']),
+  }).strict(),
+  z.object({
+    type: z.literal('embedding_similarity'),
+    score: z.number().min(0).max(1),
+  }).strict(),
+  z.object({
+    type: z.literal('label_overlap'),
+    labels: z.array(z.string().min(1)),
+    score: z.number().min(0).max(1),
+  }).strict(),
+]);
+export type ConnectionReason = z.infer<typeof ConnectionReasonSchema>;
+
+export const ConnectionItemSchema = z.object({
+  pageId: z.string().regex(/^[1-9]\d*$/),
+  title: z.string(),
+  reasons: z.array(ConnectionReasonSchema).min(1),
+}).strict();
+export type ConnectionItem = z.infer<typeof ConnectionItemSchema>;
+
+export const PageConnectionsSchema = z.object({
+  linked: z.array(ConnectionItemSchema),
+  section: z.array(ConnectionItemSchema),
+  related: z.array(ConnectionItemSchema).max(5),
+}).strict();
+export type PageConnections = z.infer<typeof PageConnectionsSchema>;
+
+const ConnectionVisitSchema = z.object({
+  event: z.literal('impression'),
+  visitId: z.string().uuid(),
+}).strict();
+
+const ConnectionClickSchema = z.object({
+  event: z.literal('connection_click'),
+  visitId: z.string().uuid(),
+  targetPageId: z.string().regex(/^[1-9]\d*$/),
+  group: z.enum(['linked', 'section', 'related']),
+}).strict();
+
+const ConnectionGraphLaunchSchema = z.object({
+  event: z.literal('graph_launch'),
+  visitId: z.string().uuid(),
+}).strict();
+
+export const ConnectionEventSchema = z.discriminatedUnion('event', [
+  ConnectionVisitSchema,
+  ConnectionClickSchema,
+  ConnectionGraphLaunchSchema,
+]);
+export type ConnectionEvent = z.infer<typeof ConnectionEventSchema>;
 
 export const PageSummarySchema = z.object({
   id: z.union([z.string(), z.number()]),
@@ -49,6 +109,7 @@ export const PageSummarySchema = z.object({
   createdByUserId: z.union([z.string(), z.number()]).nullable().optional(),
   deletedAt: z.string().nullable().optional(),
   confluenceId: z.string().nullable().optional(),
+  icon: PageIconSchema.nullable().optional(),
 });
 
 export const PageDetailSchema = PageSummarySchema.extend({
@@ -61,6 +122,8 @@ export const PageDetailSchema = PageSummarySchema.extend({
   summaryError: z.string().nullable().optional(),
   hasDraft: z.boolean().default(false),
   draftUpdatedAt: z.coerce.date().nullable().optional(),
+  verifiedAt: z.coerce.date().nullable().optional(),
+  collabSessionActive: z.boolean().optional(),
 });
 
 export const CreatePageSchema = z.object({
@@ -71,6 +134,16 @@ export const CreatePageSchema = z.object({
   pageType: PageTypeEnum.optional().default('page'),
   source: PageSourceEnum.optional(),
   visibility: PageVisibilityEnum.optional().default('shared'),
+  /**
+   * Labels to apply at creation (#1133). Carried here rather than applied by a
+   * follow-up `PUT /pages/:id/labels` because the id this route returns is
+   * ambiguous: for a Confluence create it is the *Confluence content id*, which
+   * is numeric, and the labels route reads a numeric id as a database primary
+   * key — so the follow-up would silently label a different page.
+   *
+   * Bounds mirror the Markdown-import route the front-matter comes from.
+   */
+  labels: z.array(z.string().min(1).max(100)).max(50).optional(),
 });
 
 export const UpdatePageSchema = z.object({
@@ -125,6 +198,7 @@ export const SearchResultItemSchema = z.object({
   spaceKey: z.string().nullable(),
   excerpt: z.string(),
   score: z.number(),
+  icon: PageIconSchema.nullable().optional(),
 });
 export type SearchResultItem = z.infer<typeof SearchResultItemSchema>;
 
@@ -159,6 +233,7 @@ export const PageTreeItemSchema = z.object({
   parentId: z.string().nullable(),
   labels: z.array(z.string()),
   lastModifiedAt: z.coerce.date().nullable(),
+  icon: PageIconSchema.nullable().optional(),
 });
 
 export const PageTreeQuerySchema = z.object({
@@ -202,6 +277,180 @@ export const TrashListResponseSchema = z.object({
   total: z.number().int().nonnegative(),
 });
 export type TrashListResponse = z.infer<typeof TrashListResponseSchema>;
+
+// -- Relocate between a local space and Confluence (Issue #1123) --
+
+/** Which system the article ends up in after the relocate. */
+export const RelocateTargetEnum = z.enum(['confluence', 'local']);
+export type RelocateTarget = z.infer<typeof RelocateTargetEnum>;
+
+/**
+ * A principal that gains or loses access as a result of a relocate. `label` is
+ * display text (username / group name); `kind` distinguishes the well-known
+ * pseudo-principals from real rows so the UI can render them differently.
+ */
+export const RelocatePrincipalSchema = z.object({
+  kind: z.enum(['user', 'group', 'everyone', 'owner']),
+  label: z.string(),
+});
+export type RelocatePrincipal = z.infer<typeof RelocatePrincipalSchema>;
+
+/**
+ * Who can read the article before vs. after the move (product decision 4 on
+ * #1123: the access-model change is warned, then the target model applies —
+ * no hybrid state). `gains`/`loses` are the resolved difference, capped by
+ * `truncated` when a space has more assignments than the preview enumerates.
+ */
+export const RelocateAccessChangeSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  gains: z.array(RelocatePrincipalSchema),
+  loses: z.array(RelocatePrincipalSchema),
+  truncated: z.boolean().default(false),
+});
+
+/**
+ * Query for `GET /api/pages/:id/relocate/preview`. Both are optional: the
+ * dialog fetches the preview once to render the counts, then re-fetches with
+ * the user's chosen destination so `accessChange` names real principals rather
+ * than describing the target model generically.
+ */
+export const RelocatePreviewQuerySchema = z.object({
+  spaceKey: z.string().min(1).optional(),
+  visibility: PageVisibilityEnum.optional(),
+});
+export type RelocatePreviewQuery = z.infer<typeof RelocatePreviewQuerySchema>;
+
+/**
+ * Response of `GET /api/pages/:id/relocate/preview` — everything the
+ * confirmation dialog must state before the user commits.
+ *
+ * `localVersionCount` is the exact number of `page_versions` rows destroyed by
+ * a move to Confluence; the caller must echo it back as
+ * `acknowledgeDiscardedVersions`, so a generic "history will be lost" warning
+ * cannot satisfy the confirmation.
+ */
+export const RelocatePreviewSchema = z.object({
+  pageId: z.number().int().positive(),
+  title: z.string(),
+  source: PageSourceEnum,
+  spaceKey: z.string().nullable(),
+  confluenceId: z.string().nullable(),
+  /** The only direction this page can move in, derived from its current source. */
+  target: RelocateTargetEnum,
+  /**
+   * Direct children whose `parent_id` the move rewrites so the parent link
+   * survives. The children themselves are **not** moved.
+   */
+  childCount: z.number().int().nonnegative(),
+  /**
+   * What the move does to the subtree, when `childCount > 0` (null otherwise).
+   *
+   * Children keep their own `source`, `space_key` and `path` while their
+   * `parent_id` now points across the boundary — so they stay in the origin
+   * space's tree with their parent no longer in it. A bare count cannot convey
+   * that, and the confirmation dialog has no other way to learn it.
+   */
+  subtreeEffect: z
+    .object({
+      /** Space the children remain in after the move. */
+      childrenRemainInSpaceKey: z.string().nullable(),
+      /** Space the page itself ends up in. */
+      pageMovesToSpaceKey: z.string().nullable(),
+      /** True when those differ, i.e. the children visibly detach in the origin tree. */
+      childrenDetachFromOriginTree: z.boolean(),
+    })
+    .nullable(),
+  /** Attachments migrated between the two attachment stores. */
+  attachmentCount: z.number().int().nonnegative(),
+  /** Exact count to echo back in `acknowledgeDiscardedVersions`. 0 for a move to local. */
+  localVersionCount: z.number().int().nonnegative(),
+  accessChange: RelocateAccessChangeSchema,
+  /** Confluence page deleted upstream by this move. Null for a move to Confluence. */
+  upstreamDeletion: z
+    .object({
+      confluenceId: z.string(),
+      spaceKey: z.string(),
+      title: z.string(),
+    })
+    .nullable(),
+});
+export type RelocatePreview = z.infer<typeof RelocatePreviewSchema>;
+
+/**
+ * Body of `POST /api/pages/:id/relocate`.
+ *
+ * Every acknowledgement is a required, non-defaulted field: `z.literal(true)`
+ * cannot be omitted, and the two echo-back fields are verified against live
+ * state server-side (409 on mismatch). A client cannot blind-confirm a move
+ * without naming what it destroys.
+ */
+export const RelocatePageSchema = z.discriminatedUnion('target', [
+  z.object({
+    target: z.literal('confluence'),
+    /** Confluence space the article is published into. Chosen from a picker. */
+    spaceKey: z.string().min(1),
+    /**
+     * Standalone `private`/`shared` visibility has no Confluence analogue —
+     * after the move the space's RBAC governs access, which can widen it.
+     */
+    acknowledgeAccessChange: z.literal(true),
+    /**
+     * Exact `page_versions` count that will be discarded (decision 3). Verified
+     * against the live count; a stale or guessed number is rejected with 409.
+     */
+    acknowledgeDiscardedVersions: z.number().int().nonnegative(),
+  }),
+  z.object({
+    target: z.literal('local'),
+    /** Target local space, or null for a space-less standalone article. */
+    spaceKey: z.string().min(1).nullable().default(null),
+    /**
+     * Required, never inherited: Confluence has no visibility analogue, so the
+     * caller must choose the standalone access model explicitly (decision 4).
+     */
+    visibility: PageVisibilityEnum,
+    acknowledgeAccessChange: z.literal(true),
+    /**
+     * The Confluence page and space deleted upstream (decision 1). Both are
+     * matched against the live row, so the confirmation names exactly what is
+     * being destroyed rather than asserting a bare boolean.
+     */
+    confirmDeleteConfluencePage: z.object({
+      confluenceId: z.string().min(1),
+      /**
+       * Deliberately NOT `.min(1)`: `pages.space_key` is nullable (migration
+       * 029) and both the preview and the route encode that NULL as `''`, so
+       * an empty string here is the no-space encoding rather than an omission.
+       * A `.min(1)` rejects the body before the route can compare it, which
+       * makes a space-less Confluence row impossible to relocate at all. The
+       * confirmation's force comes from matching the live row, not from
+       * non-emptiness.
+       */
+      spaceKey: z.string(),
+    }),
+  }),
+]);
+export type RelocatePageInput = z.infer<typeof RelocatePageSchema>;
+
+/** Response of a successful `POST /api/pages/:id/relocate`. */
+export const RelocatePageResponseSchema = z.object({
+  pageId: z.number().int().positive(),
+  source: PageSourceEnum,
+  spaceKey: z.string().nullable(),
+  confluenceId: z.string().nullable(),
+  childrenRepointed: z.number().int().nonnegative(),
+  versionsDiscarded: z.number().int().nonnegative(),
+  attachmentsMigrated: z.number().int().nonnegative(),
+  /**
+   * False when the local side committed but the upstream Confluence delete
+   * could not be confirmed. The article is safe either way; the Confluence
+   * page may still exist and be re-imported by the next sync as a new row.
+   */
+  upstreamDeleted: z.boolean(),
+  warnings: z.array(z.string()).default([]),
+});
+export type RelocatePageResponse = z.infer<typeof RelocatePageResponseSchema>;
 
 // -- Duplicates & Export validation schemas (Issue #580) --
 

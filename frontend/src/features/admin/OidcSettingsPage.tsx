@@ -4,11 +4,13 @@ import { m } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   Shield, Globe, Key, Link2, Plus, Trash2,
-  Loader2, CheckCircle2, XCircle, TestTube2, AlertTriangle,
+  CheckCircle2, XCircle, TestTube2, AlertTriangle,
 } from 'lucide-react';
 import type { LicenseInfoResponse } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { neutralChipInk } from '../../shared/components/badges/neutral-chip';
+import { Button, IconButton } from '../../shared/components/Button';
 import { checkRedirectUriOrigin } from './oidc-redirect-uri';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -200,10 +202,10 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             <div className={cn(
               'h-2.5 w-2.5 rounded-full',
               data?.configured && data.provider?.enabled
-                ? 'bg-emerald-500'
+                ? 'bg-success'
                 : data?.configured
-                  ? 'bg-amber-500'
-                  : 'bg-zinc-500',
+                  ? 'bg-warning'
+                  : 'bg-status-inactive',
             )} />
             <span className="text-sm font-medium">
               {data?.configured && data.provider?.enabled
@@ -245,19 +247,16 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
               data-testid="oidc-issuer-url"
               disabled={disabled}
             />
-            <button
+            <Button
               onClick={handleTest}
               disabled={disabled || !issuerUrl || testMutation.isPending}
-              className="flex items-center gap-1.5 rounded-md bg-foreground/5 px-3 py-2 text-sm hover:bg-foreground/10 disabled:opacity-50"
+              isLoading={testMutation.isPending}
+              variant="secondary"
+              leftIcon={!testMutation.isPending ? <TestTube2 size={14} /> : undefined}
               data-testid="oidc-test-btn"
             >
-              {testMutation.isPending ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <TestTube2 size={14} />
-              )}
               Test
-            </button>
+            </Button>
           </div>
           {testResult && (
             <m.div
@@ -266,7 +265,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
               className={cn(
                 'mt-2 rounded-md p-3 text-xs',
                 testResult.success
-                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
+                  ? 'bg-success/10 text-success'
                   : 'bg-destructive/10 text-destructive',
               )}
             >
@@ -351,7 +350,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
             <m.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
-              className="mt-2 flex items-start gap-2 rounded-md bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400"
+              className="mt-2 flex items-start gap-2 rounded-md bg-warning/10 p-3 text-xs text-warning"
               data-testid="oidc-redirect-origin-warning"
             >
               <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -412,7 +411,7 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-border/50 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
@@ -424,15 +423,15 @@ function ProviderTab({ disabled }: { disabled?: boolean }) {
           />
           Enable SSO
         </label>
-        <button
+        <Button
           onClick={handleSave}
           disabled={disabled || saveMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          isLoading={saveMutation.isPending}
+          variant="primary"
           data-testid="oidc-save-btn"
         >
-          {saveMutation.isPending && <Loader2 size={14} className="animate-spin" />}
           Save Configuration
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -505,15 +504,15 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
 
       {/* Create mapping */}
       {!showForm ? (
-        <button
+        <Button
           onClick={() => setShowForm(true)}
           disabled={disabled}
-          className="inline-flex items-center gap-2 rounded-lg border border-action bg-transparent px-4 py-2 text-sm font-medium text-action transition-colors hover:bg-action hover:text-action-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          variant="secondary"
+          leftIcon={<Plus size={15} />}
           data-testid="create-mapping-btn"
         >
-          <Plus size={16} />
           New Mapping
-        </button>
+        </Button>
       ) : (
         <m.div
           initial={{ opacity: 0, y: -8 }}
@@ -569,21 +568,23 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={handleCreate}
               disabled={!oidcGroup.trim() || !roleId || createMutation.isPending}
-              className="inline-flex items-center gap-2 rounded-md border border-action bg-transparent px-3 py-1.5 text-sm text-action transition-colors hover:bg-action hover:text-action-foreground disabled:border-muted disabled:text-muted-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              isLoading={createMutation.isPending}
+              variant="primary"
+              size="sm"
               data-testid="submit-mapping"
             >
-              {createMutation.isPending && <Loader2 size={14} className="animate-spin" />}
               Create
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => setShowForm(false)}
-              className="rounded-md bg-foreground/5 px-3 py-1.5 text-sm hover:bg-foreground/10"
+              variant="ghost"
+              size="sm"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </m.div>
       )}
@@ -597,7 +598,7 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
         <div className="nm-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border/50 text-left text-xs text-muted-foreground">
+              <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-4 py-3 font-medium">OIDC Group</th>
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium">Space</th>
@@ -616,7 +617,9 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                 >
                   <td className="px-4 py-2.5 font-mono text-xs">{mapping.oidcGroup}</td>
                   <td className="px-4 py-2.5">
-                    <span className="rounded bg-[#ececea] px-2 py-0.5 text-xs text-[#4a4a48] dark:bg-[#2a2925] dark:text-[#c5bea9]">
+                    {/* Token chip, never `dark:`-hex — with no `@custom-variant
+                        dark`, `dark:` tracks the OS instead of the picked theme. */}
+                    <span className={cn('rounded px-2 py-0.5 text-xs', neutralChipInk)}>
                       {mapping.roleName ?? `Role #${mapping.roleId}`}
                     </span>
                   </td>
@@ -624,15 +627,15 @@ function MappingsTab({ disabled }: { disabled?: boolean }) {
                     {mapping.spaceKey ?? '(global)'}
                   </td>
                   <td className="px-4 py-2.5">
-                    <button
+                    <IconButton
                       onClick={() => deleteMutation.mutate(mapping.id)}
                       disabled={disabled || deleteMutation.isPending}
-                      className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                      variant="destructive-ghost"
+                      size="sm"
+                      icon={<Trash2 size={13} />}
                       aria-label={`Delete mapping for ${mapping.oidcGroup}`}
                       data-testid={`delete-mapping-${mapping.id}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    />
                   </td>
                 </m.tr>
               ))}
@@ -663,12 +666,12 @@ export function OidcSettingsPage() {
         <m.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4"
+          className="flex items-start gap-3 rounded-lg border border-warning/20 bg-warning/5 p-4"
           data-testid="enterprise-required-banner"
         >
-          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
-            <div className="text-sm font-medium text-amber-200">Enterprise License Required</div>
+            <div className="text-sm font-medium text-warning">Enterprise License Required</div>
             <div className="mt-1 text-xs text-muted-foreground">
               SSO / OIDC authentication requires an active enterprise license. The configuration below is read-only.
               Set the <code className="rounded bg-foreground/10 px-1.5 py-0.5">COMPENDIQ_LICENSE_KEY</code> environment variable to enable this feature.
@@ -679,7 +682,7 @@ export function OidcSettingsPage() {
 
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold">SSO / OIDC</h1>
+        <h1 className="text-lg font-semibold">SSO / OIDC</h1>
         <p className="text-sm text-muted-foreground">
           Configure single sign-on with your identity provider
         </p>

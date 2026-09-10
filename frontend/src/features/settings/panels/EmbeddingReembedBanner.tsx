@@ -9,7 +9,10 @@ interface Pending {
 
 interface Props {
   currentDimensions: number;
+  /** Unsaved embedding identity change. Wipe is not offered in this state. */
   pending: Pending | null;
+  /** Live assignment the destructive rebuild actually embeds with. */
+  live?: Pending | null;
 }
 
 type Stage = 'idle' | 'probing' | 'confirm' | 'running';
@@ -36,7 +39,7 @@ interface ReembedJobStatus {
   failedReason?: string;
 }
 
-export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
+export function EmbeddingReembedBanner({ currentDimensions, pending, live }: Props) {
   const [stage, setStage] = useState<Stage>('idle');
   const [newDims, setNewDims] = useState<number | null>(null);
   const [jobStatus, setJobStatus] = useState<ReembedJobStatus | null>(null);
@@ -92,15 +95,17 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   // progress while polling continues — only collapse to null when we're
   // NOT actively tracking a job.
   const hasRunningJob = stage === 'running' && jobStatus !== null;
-  if (!pending && !hasRunningJob) return null;
+  const midFlight = stage === 'probing' || stage === 'confirm' || hasRunningJob;
+  if (pending && !midFlight) return null;
+  if (!pending && !live && !midFlight) return null;
 
   async function start() {
-    if (!pending) return;
+    if (!live) return;
     setStage('probing');
     try {
       const probe = await apiFetch<{ dimensions: number; error?: string }>(
         '/admin/embedding/probe',
-        { method: 'POST', body: JSON.stringify(pending) },
+        { method: 'POST', body: JSON.stringify(live) },
       );
       if (probe.error) {
         toast.error(probe.error);
@@ -143,17 +148,17 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
   if (stage === 'confirm') {
     const heavy = newDims !== null && newDims !== currentDimensions;
     return (
-      <div className="nm-card border-red-500/30 p-3 text-sm">
+      <div className="nm-card border-destructive/30 p-3 text-sm">
         {heavy ? (
           <p>
-            ⚠ Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
+            Dimension change: <b>{currentDimensions} → {newDims}</b>. This will{' '}
             <b>delete all existing embeddings</b>, rewrite the column type, and rebuild the
             HNSW index. Continue?
           </p>
         ) : (
           <p>
-            ⚠ Embedding model changed (dimension stays at {currentDimensions}). Existing
-            vectors will be inconsistent until re-embedded. Continue?
+            This rebuilds the current index (dimension stays at {currentDimensions}). Existing
+            vectors will be replaced. Continue?
           </p>
         )}
         <div className="mt-2 flex gap-2">
@@ -188,28 +193,65 @@ export function EmbeddingReembedBanner({ currentDimensions, pending }: Props) {
     } else if (phase === 'complete') {
       status = 'Complete';
     }
+    const processed = progress?.processed ?? 0;
+    const total = progress?.total ?? 0;
+    // Determinate only where a real pair exists. `embedding` is the one phase
+    // that reports both numbers; `waiting-on-user-locks`, `started` and
+    // `complete` have nothing to divide, and a bar guessing at a width there
+    // would be a claim the server never made.
+    const percent =
+      phase === 'embedding' && total > 0
+        ? Math.min(100, Math.round((processed / total) * 100))
+        : null;
     return (
-      <div
-        className="nm-card border-blue-500/30 flex items-center justify-between p-3 text-sm"
-        data-testid="reembed-progress-banner"
-      >
-        <span>
-          Re-embed in progress: <b>{status}</b>
-        </span>
+      // Plain `nm-card`: the border tint is gone. It used to be a `border-`
+      // utility on `status-embedding` at 30% — pale blue-grey while the token
+      // was Steel (1.569:1 Paper / 1.808:1 Graphite against Pane), but the
+      // token resolves to body ink now and the same 30% measures 1.941:1 /
+      // 2.431:1, i.e. 1.4x and 1.9x the `--color-border` hairline every
+      // ordinary card wears (1.414 / 1.264). A card announcing background work
+      // would have been the most sharply drawn box on the panel.
+      //
+      // Lowering the alpha instead does not work: the largest ink alpha that
+      // clears Graphite's 1.264 ceiling is 8% (1.212:1), which is QUIETER than
+      // an untinted card — the marked surface would read as less defined than
+      // an unmarked one. So the state moves off the border entirely and onto
+      // the two channels that say it outright: the sentence below, and a
+      // determinate bar wherever the job reports pages.
+      <div className="nm-card space-y-2 p-3 text-sm" data-testid="reembed-progress-banner">
+        <div className="flex items-center justify-between">
+          <span>
+            Re-embed in progress: <b>{status}</b>
+          </span>
+        </div>
+        {percent !== null && (
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-foreground/10"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+            aria-label="Re-embed progress"
+            data-testid="reembed-progress-bar"
+          >
+            <div
+              className="bg-action h-full rounded-full transition-[width] duration-300 ease-out"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="nm-card border-yellow-500/30 flex items-center justify-between p-3 text-sm">
-      <span>⚠ Embedding provider/model changed. Probe and re-embed required.</span>
-      <button
-        className="nm-button-primary"
-        disabled={stage !== 'idle'}
-        onClick={start}
-      >
-        {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Probe & re-embed'}
-      </button>
-    </div>
+    <button
+      type="button"
+      className="nm-action-destructive"
+      disabled={stage !== 'idle'}
+      onClick={start}
+    >
+      {stage === 'probing' ? 'Probing…' : stage === 'running' ? 'Queuing…' : 'Wipe current index'}
+    </button>
   );
 }

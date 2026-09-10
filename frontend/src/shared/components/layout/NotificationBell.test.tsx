@@ -75,7 +75,27 @@ function openPanel() {
 describe('NotificationBell', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
-    mockApiFetch = vi.fn().mockResolvedValue(mockNotifications);
+    mockApiFetch = vi.fn().mockResolvedValue({ items: mockNotifications, total: mockNotifications.length });
+  });
+
+  it('does not crash when GET /notifications returns the { items, total } envelope', async () => {
+    mockApiFetch = vi.fn().mockResolvedValue({
+      items: [
+        {
+          id: 7,
+          type: 'mention',
+          title: 'You were mentioned',
+          body: 'On a page',
+          isRead: false,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      total: 1,
+    });
+    renderBell();
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('notification-badge')).toHaveTextContent('1');
+    });
   });
 
   it('renders the bell button', () => {
@@ -90,10 +110,18 @@ describe('NotificationBell', () => {
     });
   });
 
+  it('puts the unread count in the accessible name', async () => {
+    renderBell();
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Notifications, 1 unread' })).toBeInTheDocument();
+    });
+  });
+
   it('does not show badge when no unread notifications', async () => {
-    mockApiFetch = vi.fn().mockResolvedValue(
-      mockNotifications.map((n) => ({ ...n, read: true })),
-    );
+    mockApiFetch = vi.fn().mockResolvedValue({
+      items: mockNotifications.map((n) => ({ ...n, read: true })),
+      total: mockNotifications.length,
+    });
     renderBell();
     // Wait for query to settle, then check badge absence
     await vi.waitFor(() => {
@@ -138,9 +166,7 @@ describe('NotificationBell', () => {
     markAll.focus();
     expect(document.activeElement).toBe(markAll);
 
-    const settings = screen.getByTestId('notification-settings');
-    settings.focus();
-    expect(document.activeElement).toBe(settings);
+    expect(screen.queryByTestId('notification-settings')).not.toBeInTheDocument();
   });
 
   it('navigates and dismisses the panel when a notification is clicked', async () => {

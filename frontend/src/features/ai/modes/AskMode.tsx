@@ -1,12 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Send, Loader2, Link2, X, Plus } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, Send, Link2, X, Plus } from 'lucide-react';
 import { useAiContext, nextMessageId } from '../AiContext';
+import { AssistantActionSelect } from '../AssistantActionSelect';
+import { AI_HOME_ACTIONS } from '../assistant-actions';
+import { DeepSearchToggle } from '../DeepSearchToggle';
+import { ThinkToggle } from '../ThinkToggle';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '../../../shared/lib/api';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
+import { cn } from '../../../shared/lib/cn';
+import { Button, IconButton } from '../../../shared/components/Button';
+import { useAutoGrowTextarea } from '../../../shared/hooks/use-auto-grow-textarea';
+import { buildDocumentReferenceText } from '../../../shared/hooks/use-attachments';
+import { DocumentUploadZone } from '../../../shared/components/upload/DocumentUploadZone';
+import { ImageAttachZone } from '../../../shared/components/upload/ImageAttachZone';
+import { ComposerAttachmentPicker } from '../../../shared/components/upload/ComposerAttachmentPicker';
+import { PROMPT_MAX_LENGTH } from './prompt-limits';
 import { buildAskPrompts } from './ask-example-prompts';
-import { usePages, usePageFilterOptions } from '../../../shared/hooks/use-pages';
+import { usePages, usePageFilterOptions, isZeroEmbeddings } from '../../../shared/hooks/use-pages';
 import { useSpaces } from '../../../shared/hooks/use-spaces';
+import { useOnboardingActions } from '../../../shared/hooks/use-onboarding';
+import { AssistantAttachmentsScope, useAssistantAttachments } from '../AssistantAttachments';
 
 interface McpDocsSettings {
   enabled: boolean;
@@ -17,14 +31,66 @@ interface McpDocsSettings {
  * Supports attaching external URLs for documentation context via MCP sidecar.
  */
 export function AskModeInput() {
+  return (
+    <AssistantAttachmentsScope>
+      <AskModeInputContent />
+    </AssistantAttachmentsScope>
+  );
+}
+
+function AskModeInputContent() {
   const {
     input, setInput, isStreaming, model, conversationId, pageId,
-    includeSubPages, thinkingMode, setMessages, runStream,
+    includeSubPages, thinkingMode, setThinkingMode, setMessages, runStream,
+    chatVision, chatVisionModel, historyTruncated,
+    activeThreadId, composerFocusRequest, threadLoadState,
   } = useAiContext();
 
   const [externalUrls, setExternalUrls] = useState<string[]>([]);
   const [urlInput, setUrlInput] = useState('');
   const [showUrlInput, setShowUrlInput] = useState(false);
+  /**
+   * #1112's multi-query expansion, opted into for ONE question (#1119).
+   *
+   * Plain `useState` in the composer that submits it, and that is the whole
+   * enforcement: there is no store to persist it into, no `AiThread` field to
+   * make it per-conversation sticky, and no localStorage read to seed it. A
+   * remount — a route change, a mode switch — is a fresh `false`. See
+   * `DeepSearchToggle` for why the sticky version would be a measured
+   * regression rather than a taste question.
+   */
+  const [deepSearch, setDeepSearch] = useState(false);
+  const attachments = useAssistantAttachments();
+  const {
+    documents, image, pickFiles, removeDocument, removeImage,
+    isDragOver, isExtracting, isPreparing, isBusy,
+  } = attachments;
+
+  const handlePickFiles = useCallback((files: readonly File[]) => {
+    void pickFiles(files);
+  }, [pickFiles]);
+
+  // #1402: "Ask your first AI question", recorded silently on the answer.
+  const { markComplete } = useOnboardingActions();
+
+  // The one boundary a remount does not cover. Opening another conversation —
+  // or starting a new one — swaps the thread under a composer that stays
+  // mounted, so an unconsumed toggle would carry a choice made about one
+  // conversation into the first question of another.
+  //
+  // Keyed on `activeThreadId` (#1361), NOT on `conversationId`: a promotion
+  // writes the id onto the SAME thread, which is a re-key and not a switch, so
+  // the id both fires when it must not (mid-answer) and stays put when it must
+  // fire (New chat on an already-empty draft — both drafts carry `null`).
+  //
+  // `externalUrls` is the same per-send state and goes with it, along with the
+  // row that adds them: a URL bar left open over a conversation the user has
+  // just switched to is the same carried-over choice.
+  useEffect(() => {
+    setDeepSearch(false);
+    setExternalUrls((prev) => (prev.length === 0 ? prev : []));
+    setShowUrlInput(false);
+  }, [activeThreadId]);
 
   // Check if MCP docs is enabled via public status endpoint (cache for 5 min)
   const { data: mcpSettings } = useQuery<McpDocsSettings>({
@@ -59,24 +125,64 @@ export function AskModeInput() {
     setExternalUrls((prev) => prev.filter((u) => u !== url));
   };
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Doubles as the auto-grow handle and the mount-focus target.
+  const inputRef = useAutoGrowTextarea(input);
 
   // #350: focus input on mount so the user can type immediately. Use a ref +
   // useEffect rather than autoFocus so it survives StrictMode double-mount and
   // route transitions reliably.
+  //
+  // #1361: the same effect answers `composerFocusRequest`, which
+  // `startNewConversation` bumps — New chat lands the caret where the next
+  // question goes (the #1176 dock convention). Opening a row deliberately does
+  // NOT bump it: a keyboard user is mid-list and `aria-current` tells them
+  // where they are.
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [inputRef, composerFocusRequest]);
 
+  // The composer is deliberately NOT gated on embedding status, unlike the
+  // example chips below (#1257 post-review, decided on backend evidence):
+  // POST /llm/ask never refuses over zero embeddings — including under the
+  // #1105 confidence gate, which exempts degraded retrieval (an unembedded
+  // corpus scores null, and null never refuses) — and it is not reduced
+  // to ungrounded chat either: hybridSearch always runs its keyword FTS leg
+  // (rag-service.ts `keywordSearch`, over synced page text, no embeddings
+  // required), so a typed question can still come back grounded and cited;
+  // the route also injects page-tree context (`includeSubPages` + pageId)
+  // and MCP `externalUrls` docs, both embedding-free. Gating send here would
+  // turn a degraded-retrieval state into a total outage of those working
+  // paths. The chips differ: they are app-authored invitations to semantic
+  // jobs ("find duplicates") that specifically need the vector leg, so they
+  // stay inert until it verifiably exists. The amber banner above the thread
+  // keeps naming the degradation in both empty and answered states.
   const handleAsk = useCallback(async () => {
-    if (!input.trim() || isStreaming) return;
+    // `threadLoadState` is checked here as well as on Send: the textarea is not
+    // disabled while a conversation loads, so Enter reaches this handler and
+    // would post a question against a thread whose history has not arrived.
+    // `!== 'ready'` (not `=== 'loading'`): the `error` state is live too —
+    // the composer is not disabled there either, and `conversationId` is
+    // still null on a failed load, so a send would silently fork a brand
+    // new conversation instead of surfacing the failure.
+    if (!input.trim() || isStreaming || isBusy || threadLoadState !== 'ready') return;
     if (!model) {
       toast.error('No model available. Check your LLM provider settings.');
       return;
     }
 
     const question = input.trim();
+    // Read-and-clear at SUBMIT time, beside the input clear and before the
+    // await — not in `onComplete`, and not after `runStream` the way
+    // `externalUrls` is cleared below. runStream never rethrows and swallows
+    // aborts, so a reset placed after it is skipped on exactly the paths where
+    // a still-lit toggle would silently apply the measured regression to the
+    // user's next, ordinary question (#1119).
+    const useDeepSearch = deepSearch;
+    const referenceText = buildDocumentReferenceText(documents);
+    const imageHandle = image?.handle;
     setInput('');
+    setDeepSearch(false);
+    if (imageHandle) removeImage();
     setMessages((prev) => [...prev, { id: nextMessageId(), role: 'user', content: question }]);
 
     const body: Record<string, unknown> = {
@@ -86,6 +192,11 @@ export function AskModeInput() {
       pageId: pageId ?? undefined,
       includeSubPages,
       ...(thinkingMode && { thinking: true }),
+      // Same shape as `thinking` above: omitted entirely when off, so an
+      // untouched toggle sends the wire body it always sent.
+      ...(useDeepSearch && { deepSearch: true }),
+      ...(referenceText && { referenceText }),
+      ...(imageHandle && { imageHandle }),
     };
 
     if (externalUrls.length > 0) {
@@ -93,20 +204,52 @@ export function AskModeInput() {
     }
 
     await runStream('/llm/ask', body, {
+      onError: (err) => {
+        if (!imageHandle || !(err instanceof ApiError) || err.statusCode !== 410) return false;
+        setInput(question);
+        toast.error('The image expired — attach it again.');
+        return true;
+      },
       onComplete: () => {
-        // Sources are attached by runStream automatically
+        // Sources are attached by runStream automatically.
+        //
+        // #1402, milestone 3. `onComplete` fires on runStream's normal path
+        // only — an abort, a thrown request error and an in-band SSE error
+        // frame all return before it — so this is the success signal. The dock
+        // has its own `/llm/ask` call and marks the same milestone itself.
+        markComplete('firstAiQueryMade');
       },
     });
 
     // Clear external URLs after sending
     setExternalUrls([]);
     setShowUrlInput(false);
-  }, [input, model, isStreaming, conversationId, pageId, includeSubPages, thinkingMode, externalUrls, setInput, setMessages, runStream]);
+  }, [
+    input, model, isStreaming, isBusy, conversationId, pageId, includeSubPages, thinkingMode,
+    deepSearch, documents, image, externalUrls, setInput, setMessages, removeImage, runStream,
+    threadLoadState, markComplete,
+  ]);
 
   const handleSubmit = () => handleAsk();
 
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Unchanged contract: Enter submits, Shift+Enter inserts a newline. On a
+    // textarea the bare Enter has to be prevented explicitly, otherwise it
+    // submits *and* leaves the browser's own newline behind in the field.
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
+    }
+  };
+
   return (
-    <div className="mt-3 border-t border-border/40 pt-3">
+    <div className="mt-3 border-t border-border pt-3">
+      {documents.length > 0 && image && (
+        <p className="mb-2 flex items-center gap-1.5 text-xs text-warning" data-testid="ask-attachment-context-warning">
+          <AlertTriangle size={12} className="shrink-0" aria-hidden />
+          Both attachments will be sent — a small model may not fit them.
+        </p>
+      )}
       {/* External URLs chips */}
       {externalUrls.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -120,7 +263,7 @@ export function AskModeInput() {
               <button
                 onClick={() => removeUrl(url)}
                 aria-label={`Remove ${new URL(url).hostname}`}
-                className="hover:text-red-400"
+                className="hover:text-destructive"
               >
                 <X size={10} />
               </button>
@@ -158,40 +301,143 @@ export function AskModeInput() {
         </div>
       )}
 
-      {/* Main input row */}
-      <div className="nm-composer">
-        {mcpEnabled && (
-          <button
-            onClick={() => setShowUrlInput(!showUrlInput)}
-            title="Attach external documentation URL"
-            className={`shrink-0 rounded-md p-1.5 transition-colors ${
-              showUrlInput || externalUrls.length > 0
-                ? 'bg-primary/15 text-primary-ink'
-                : 'text-muted-foreground hover:bg-foreground/5 hover:text-foreground'
-            }`}
-            data-testid="attach-url-button"
-          >
-            <Link2 size={16} />
-          </button>
-        )}
-        <input
+      {/* Deep search used to sit here as a full-width row with its caveat
+          printed beside it. Both moved into the composer's action row below
+          (owner request, 2026-09-01): the chip now sits with Send, where the
+          request it modifies is composed, and the caveat is the popover the
+          dock has always used — the same three facts, one click away and still
+          the control's `aria-describedby`, instead of a line of permanent
+          prose above the field. */}
+
+      {/* #1361, decision 10 made visible. The backend replays whole exchanges
+          only while they fit the model's budget, so a long conversation quietly
+          stops carrying its own beginning; the reader is told rather than left
+          to infer it from an answer that has forgotten something.
+
+          Muted 11px prose and deliberately NOT a live region: it is a standing
+          fact about the thread, not an event, and a live region would announce
+          it again on every re-render this composer does while the user types.
+          `DockPanel` renders the same line — both surfaces post /llm/ask, and
+          the same mechanism on one of two is the divergence CLAUDE.md's refusal
+          note warns about. */}
+      {historyTruncated && (
+        <p className="mb-2 text-[11px] text-muted-foreground" data-testid="ask-history-truncated">
+          Older messages in this conversation are no longer sent to the model.
+        </p>
+      )}
+
+      {/* The composer reads as stacked rows — the dock's arrangement
+          (`DockPanel.tsx`), adopted here so one surface does not teach a
+          different composer than the other: staged attachment cards, the
+          full-width prompt, then every control that acts on it. Keeping the
+          action row AFTER the field is what makes visual and keyboard order
+          match (WCAG 2.4.3). */}
+      <div className="nm-composer flex-col items-stretch">
+        <DocumentUploadZone
+          variant="composer"
+          onPick={(file) => handlePickFiles([file])}
+          onPickFiles={handlePickFiles}
+          isExtracting={isExtracting}
+          extracted={documents[0]?.result ?? null}
+          filename={documents[0]?.filename ?? null}
+          documents={documents}
+          onRemove={removeDocument}
+          disabled={isStreaming}
+          showTrigger={false}
+          usageHint="context for Q&A"
+          isDragOver={isDragOver}
+          testIdPrefix="ask-doc"
+        />
+        <ImageAttachZone
+          vision={chatVision}
+          visionModel={chatVisionModel}
+          image={image}
+          onPick={(file) => handlePickFiles([file])}
+          onRemove={removeImage}
+          isPreparing={isPreparing}
+          disabled={isStreaming}
+          showTrigger={false}
+          testIdPrefix="ask-image"
+        />
+        <textarea
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSubmit()}
+          onKeyDown={handleKeyDown}
           placeholder="Ask a question..."
+          maxLength={PROMPT_MAX_LENGTH}
+          rows={1}
           disabled={isStreaming}
-          className="flex-1 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
+          // The composer wrapper owns the inset surface, border and focus ring,
+          // so the field stays transparent. resize-none because the auto-grow
+          // hook owns the height — a drag handle would fight it.
+          // min-w-0 so a textarea's intrinsic `cols` width can't push the
+          // composer wider than a narrow viewport.
+          className="min-h-10 w-full min-w-0 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/70 disabled:opacity-50"
           data-testid="ask-input"
         />
-        <button
-          onClick={handleSubmit}
-          disabled={isStreaming || !input.trim() || !model}
-          aria-label={isStreaming ? 'Sending...' : 'Send message'}
-          className="shrink-0 flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        <div
+          className="flex w-full min-w-0 items-center gap-1"
+          data-testid="ask-composer-actions"
         >
-          {isStreaming ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-        </button>
+          {/* The controls scroll rather than wrap: a wrapping row grows the
+              composer upward on a narrow viewport and pushes the field off the
+              thread. Send stays outside the scroller so it is never the thing
+              that scrolls out of reach. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {/* One trigger for both kinds (owner request, 2026-09-01). The two
+                zones above keep the staged cards, the drop hint and removal;
+                `useAttachments` routes document-vs-image and refuses an image
+                with the vision reason as a toast, which is what the separate
+                image trigger used to say by being disabled. */}
+            <ComposerAttachmentPicker
+              onPickFiles={handlePickFiles}
+              disabled={isStreaming || isBusy}
+              label="Attach a document or image to this Q&A request"
+              testIdPrefix="ask-attach"
+            />
+            {/* Beside the paperclip, not after the toggles: both buttons add
+                source material to the request, while everything to their right
+                changes how the request is run. */}
+            {mcpEnabled && (
+              <IconButton
+                variant={showUrlInput || externalUrls.length > 0 ? 'secondary' : 'ghost'}
+                size="icon-sm"
+                onClick={() => setShowUrlInput(!showUrlInput)}
+                title="Attach external documentation URL"
+                label="Attach external documentation URL"
+                className={cn('h-8 w-8 shrink-0', (showUrlInput || externalUrls.length > 0) && 'bg-primary/15 text-primary')}
+                testid="attach-url-button"
+                icon={<Link2 size={16} />}
+              />
+            )}
+            <AssistantActionSelect actions={AI_HOME_ACTIONS} showLabel disabled={isStreaming} />
+            <ThinkToggle
+              checked={thinkingMode}
+              onChange={setThinkingMode}
+              disabled={isStreaming}
+              testId="ask-think"
+            />
+            <DeepSearchToggle
+              checked={deepSearch}
+              onChange={setDeepSearch}
+              disabled={isStreaming}
+              testId="ask-deep-search"
+              className="shrink-0"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={handleSubmit}
+            disabled={isStreaming || isBusy || !input.trim() || !model || threadLoadState !== 'ready'}
+            isLoading={isStreaming}
+            aria-label={isStreaming ? 'Sending...' : 'Send message'}
+            className="h-8 shrink-0 px-3"
+            leftIcon={<Send size={14} />}
+          />
+        </div>
       </div>
     </div>
   );
@@ -203,8 +449,37 @@ export const ASK_EMPTY_TITLE = 'Ask questions about your knowledge base';
 // actually distinguishes this from a plain chat box: answers cite pages.
 export const ASK_EMPTY_SUBTITLE = 'Answers are drawn from your synced pages, with links to the ones they came from';
 
+/**
+ * DOM id of the zero-embeddings notice in AiAssistantPage. The example-prompt
+ * chips below reference it via `aria-describedby` while they are inert, so
+ * the banner's explanation is programmatically the chips' disabled reason —
+ * not just text that happens to sit 12px above them.
+ */
+export const NO_EMBEDDINGS_NOTICE_ID = 'ai-no-embeddings-notice';
+
 export function AskExamplePrompts() {
-  const { setInput } = useAiContext();
+  const { setInput, embeddingStatus } = useAiContext();
+
+  // The chips invite exactly the retrieval the zero-embeddings banner above
+  // them says is absent — with nothing embedded, "Find pages that look like
+  // duplicates" can only produce a confident answer over no context. They
+  // re-enable the moment embeddings exist (the status query already polls
+  // while a pass is processing).
+  //
+  // #1257 post-review: the banner's own predicate is NOT the chips' gate.
+  // `isZeroEmbeddings` is false while the status is still undefined — the
+  // first-paint window, and permanently when /embeddings/status errors —
+  // which left the chips live in exactly the windows where nothing is known
+  // to be retrievable. The chips are invitations this app authors, so they
+  // enable only on a RESOLVED status showing at least one embedded page;
+  // brief first-paint inertness on a healthy instance is honest. (A fresh
+  // install, totalPages === 0, is inert too: the banner hides there because
+  // "not embedded yet" would misname the gap, but a retrieval demo over an
+  // empty corpus is no more answerable.) `notEmbedded` still keys the
+  // aria-describedby: the banner only renders on its own verdict, and a
+  // reference to an absent node is a dangling id.
+  const notEmbedded = isZeroEmbeddings(embeddingStatus);
+  const chipsInert = !embeddingStatus || embeddingStatus.embeddedPages === 0;
 
   // Suggestions are built from this instance's real content. The previous
   // hardcoded list named a tag and a space that do not exist in a fresh
@@ -225,10 +500,13 @@ export function AskExamplePrompts() {
   });
 
   const pick = (prompt: string) => {
+    // aria-disabled (unlike native disabled) does not block events, so both
+    // the click and the keydown path funnel through this guard.
+    if (chipsInert) return;
     setInput(prompt);
     // Defer focus to next tick so the input mounts before we focus it.
     requestAnimationFrame(() => {
-      const el = document.querySelector<HTMLInputElement>('[data-testid="ask-input"]');
+      const el = document.querySelector<HTMLTextAreaElement>('[data-testid="ask-input"]');
       el?.focus();
     });
   };
@@ -251,6 +529,13 @@ export function AskExamplePrompts() {
               look more important than the composer. */}
           <button
             type="button"
+            // aria-disabled, not native disabled: a disabled button leaves the
+            // tab order, so a keyboard or screen-reader user would never land
+            // on a chip to hear WHY the suggestions are inert. This keeps them
+            // focusable, announces the disabled state, and aria-describedby
+            // hands AT the banner's explanation as the reason.
+            aria-disabled={chipsInert || undefined}
+            aria-describedby={notEmbedded ? NO_EMBEDDINGS_NOTICE_ID : undefined}
             onClick={() => pick(prompt)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
@@ -258,7 +543,19 @@ export function AskExamplePrompts() {
                 pick(prompt);
               }
             }}
-            className="group flex w-full items-start gap-2.5 rounded-lg border border-border/45 bg-foreground/[0.03] px-3 py-2.5 text-left text-sm text-foreground/85 transition-colors hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+            className={cn(
+              'group flex w-full items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              chipsInert
+                // Explicit muted token, NOT opacity: compositing half-alpha
+                // over the card surface lands differently per theme (measured
+                // 3.64:1 Graphite vs 2.66:1 Paper for opacity-50), while
+                // text-muted-foreground is tuned per palette so both themes
+                // read the same register (6.9:1 / 5.8:1 on the card). The
+                // dropped background tint and hover treatments carry the rest
+                // of the inert reading.
+                ? 'cursor-not-allowed text-muted-foreground'
+                : 'bg-foreground/[0.03] text-foreground/85 hover:border-primary/40 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:border-primary/60',
+            )}
             data-testid="ask-example-prompt"
           >
             {/* No leading icon: the same Sparkles glyph on all four cards

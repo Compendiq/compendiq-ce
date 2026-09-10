@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { authenticateContext, bearerHeaders, registerUser } from './helpers/auth';
 
 /**
  * E2E: Sidebar drag-to-reorder under the pointer-event bridge (#1089, follow-up
@@ -18,15 +19,9 @@ import { test, expect, type Page } from '@playwright/test';
  * emit trusted pointer events and latch the bridge off, so they must NOT be used
  * here.)
  *
- * Primary assertion: no uncaught exception surfaces during the drag — i.e. the
- * bridge swallowed the `setPointerCapture` NotFoundError that @dnd-kit raises at
- * drag start. The reorder actually persisting is a best-effort secondary check.
- *
- * NOTE: correct-by-construction; runs on CI / a live stack only (needs backend +
- * frontend on E2E_BASE_URL). It was NOT executed against a live app locally.
+ * The drag must persist the new order after reload without an uncaught
+ * setPointerCapture exception. A drag that never activates is not a pass.
  */
-
-const TEST_PASS = 'TestPassword123!';
 
 interface Seeded {
   spaceKey: string;
@@ -44,18 +39,9 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     // title) is deterministic: Alpha, Bravo, Charlie top-to-bottom.
     const titlesInOrder = [`Alpha ${suffix}`, `Bravo ${suffix}`, `Charlie ${suffix}`];
 
-    const registerRes = await page.request.post('/api/auth/register', {
-      data: { username, password: TEST_PASS },
-    });
-    if (!registerRes.ok()) {
-      test.skip();
-      return;
-    }
-    const { accessToken, user } = (await registerRes.json()) as {
-      accessToken: string;
-      user: unknown;
-    };
-    const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+    const session = await registerUser(page.request, username);
+    await authenticateContext(page.context(), session);
+    const auth = { headers: bearerHeaders(session) };
 
     // Seed a local space + three root pages so the sidebar has draggable rows.
     // (An empty dev DB — no draggable rows — was the original #1088 blocker.)
@@ -63,40 +49,25 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
       ...auth,
       data: { key: spaceKey, name: `Drag E2E ${suffix}` },
     });
-    if (!spaceRes.ok()) {
-      test.skip();
-      return;
-    }
+    expect(spaceRes.ok(), await spaceRes.text()).toBeTruthy();
     for (const title of titlesInOrder) {
       const pageRes = await page.request.post('/api/pages', {
         ...auth,
         data: { title, bodyHtml: '<p>drag e2e</p>', spaceKey },
       });
-      if (!pageRes.ok()) {
-        test.skip();
-        return;
-      }
+      expect(pageRes.ok(), await pageRes.text()).toBeTruthy();
     }
 
     // Seed auth + pre-select the local space so the tree renders on first load
     // WITHOUT any real click (a click would emit trusted pointer events and
     // latch the bridge off before we can simulate the pointerless drag).
-    await page.goto('/login');
-    await page.evaluate(
-      ({ accessToken, user, spaceKey }) => {
-        localStorage.setItem(
-          'compendiq-auth',
-          JSON.stringify({ state: { accessToken, user, isAuthenticated: true }, version: 0 }),
-        );
-        // zustand persist shallow-merges the persisted slice over the store
-        // defaults, so seeding only treeSidebarSpaceKey is enough.
+    await page.context().addInitScript((spaceKey: string) => {
+        // Preselect the space without a native pointer event.
         localStorage.setItem(
           'compendiq-ui',
           JSON.stringify({ state: { treeSidebarSpaceKey: spaceKey }, version: 0 }),
         );
-      },
-      { accessToken, user, spaceKey },
-    );
+      }, spaceKey);
 
     await page.goto('/');
     await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
@@ -104,7 +75,7 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     seeded = { spaceKey, titlesInOrder };
   });
 
-  test('pointerless drag reorder does not crash on setPointerCapture', async ({ page }) => {
+  test('pointerless drag persists reordered pages without setPointerCapture errors', async ({ page }) => {
     // Wait for the lazy-loaded local-space tree to render its draggable rows.
     const rows = page.locator('[role="treeitem"][data-page-id]');
     await expect(rows).toHaveCount(seeded.titlesInOrder.length, { timeout: 20_000 });
@@ -119,36 +90,19 @@ test.describe('Sidebar drag-reorder (pointer-event bridge)', () => {
     // events, so the bridge stays active and synthesizes the pointer stream that
     // @dnd-kit consumes — including the drag-start setPointerCapture(1) that a
     // real browser rejects with NotFoundError for the synthesized pointer id.
+    const reordered = page.waitForResponse(
+      (res) => /\/api\/pages\/\d+\/reorder$/.test(res.url()) && res.request().method() === 'PUT',
+    );
     await simulatePointerlessDrag(page);
-
-    // Give @dnd-kit's async drag lifecycle (rAF + state commits) time to run and
-    // any deferred exception to surface.
-    await page.waitForTimeout(500);
-
-    // PRIMARY: the drag produced no uncaught exception.
+    expect((await reordered).ok()).toBeTruthy();
     expect(errors).toEqual([]);
 
-    // SECONDARY (best-effort): the reorder persisted. The exact @dnd-kit
-    // activation is timing-sensitive under synthetic events, so a missed reorder
-    // must NOT fail the test — only a persisted-but-broken one would, and that is
-    // covered by the reorder integration tests. We simply reload and confirm the
-    // tree still renders all rows without error.
-    try {
-      const reorderReq = await page.waitForRequest(
-        (req) => /\/api\/pages\/\d+\/reorder$/.test(req.url()) && req.method() === 'PUT',
-        { timeout: 2_000 },
-      );
-      const resp = await reorderReq.response();
-      if (resp) expect(resp.ok()).toBeTruthy();
-    } catch {
-      // No reorder request fired — acceptable for this correctness-of-no-crash test.
-    }
-
     await page.reload();
-    await expect(page.locator('[role="treeitem"][data-page-id]')).toHaveCount(
-      seeded.titlesInOrder.length,
-      { timeout: 20_000 },
-    );
+    await expect(page.locator('[role="treeitem"][data-page-id]')).toHaveText([
+      seeded.titlesInOrder[1]!,
+      seeded.titlesInOrder[2]!,
+      seeded.titlesInOrder[0]!,
+    ]);
     expect(errors).toEqual([]);
   });
 });
@@ -164,9 +118,10 @@ async function simulatePointerlessDrag(page: Page): Promise<void> {
     const rows = Array.from(
       document.querySelectorAll<HTMLElement>('[role="treeitem"][data-page-id]'),
     );
-    if (rows.length < 2) return;
+    if (rows.length < 2) throw new Error('Drag requires at least two sidebar rows');
 
-    const source = rows[0]!;
+    const source = rows[0]!.querySelector<HTMLElement>('.cursor-grab');
+    if (!source) throw new Error('First sidebar row has no drag handle');
     const target = rows[rows.length - 1]!;
     const from = source.getBoundingClientRect();
     const to = target.getBoundingClientRect();

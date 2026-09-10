@@ -6,9 +6,38 @@
  * transport code.
  */
 
+/**
+ * #1154: one content part of a multimodal message, in the OpenAI-compatible
+ * shape that Ollama's `/v1` shim also accepts (ADR-021: the shim is not a
+ * separate protocol). Backend-internal — it is a provider wire shape, not an
+ * API boundary, so it does not belong in @compendiq/contracts.
+ */
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  /**
+   * A bare string for every text-only call site — which is all of them except
+   * the image path in llm-generate / llm-improve.
+   */
+  content: string | ChatContentPart[];
+}
+
+/**
+ * Flatten message content to its text for token estimation and audit payloads.
+ *
+ * Necessary because `.length` exists on both `string` and `Array`, so
+ * `msg.content.length` compiles unchanged under the union above while
+ * silently becoming a part count. Image parts contribute nothing.
+ */
+export function contentToText(content: string | ChatContentPart[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter((p): p is Extract<ChatContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
 }
 
 export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in its ORIGINAL language. If the text is in German, respond in German. If in English, respond in English. Never translate — only improve the text while preserving its language.`;
@@ -18,7 +47,12 @@ export const LANGUAGE_PRESERVATION_INSTRUCTION = `IMPORTANT: Keep the text in it
 // intact. #781 hardened it with a few-shot example (models echo tokens far
 // more reliably when shown one) — and markdownToHtml() now recovers mangled
 // tokens against the known skeleton when the model still misbehaves.
-export const STRUCTURE_PRESERVATION_INSTRUCTION = `The text contains structural placeholder tokens: standalone lines like [[[LAYOUT]]], [[[LAYOUT-SECTION two_equal]]], [[[LAYOUT-CELL]]], [[[SECTION]]], [[[COLUMN width=50%]]] and their matching closing forms ([[[/LAYOUT]]], [[[/LAYOUT-SECTION]]], …), plus opaque CQ_MEDIA_PLACEHOLDER_N tokens. These mark page structure that must survive your edit. Keep every token EXACTLY as written — same UPPERCASE spelling, same triple brackets, each on its own line, in the same order and nesting. Improve only the prose between them. Never delete, rename, translate, reorder, or merge tokens, and never wrap them in code fences or quotes.
+//
+// The enumeration must name EVERY kind htmlToMarkdown({ layoutTokens: true })
+// can emit: a kind the model was never told to keep verbatim is the kind it
+// mangles, and since #781 that costs the user a 422 rather than a silent
+// flatten. Pinned by a test in content-converter.test.ts.
+export const STRUCTURE_PRESERVATION_INSTRUCTION = `The text contains structural placeholder tokens: standalone lines like [[[LAYOUT]]], [[[LAYOUT-SECTION two_equal]]], [[[LAYOUT-CELL]]], [[[SECTION]]], [[[COLUMN width=50%]]], [[[EXPAND name=expand open=0 title=Some%20Title params=]]] and their matching closing forms ([[[/LAYOUT]]], [[[/LAYOUT-SECTION]]], [[[/EXPAND]]], …), plus opaque CQ_MEDIA_PLACEHOLDER_N tokens. These mark page structure that must survive your edit. Keep every token EXACTLY as written — same UPPERCASE spelling, same triple brackets, each on its own line, in the same order and nesting. The text after a token's name is machine-encoded: copy it character for character and never decode, translate or tidy it. Improve only the prose between tokens. Never delete, rename, translate, reorder, or merge tokens, and never wrap them in code fences or quotes.
 
 Example. Given this input:
 [[[LAYOUT]]]
@@ -31,6 +65,9 @@ right text to improve
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
 [[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+collapsible text to improve
+[[[/EXPAND]]]
 
 A correct response keeps every token verbatim and edits only the prose:
 [[[LAYOUT]]]
@@ -42,7 +79,10 @@ The left text, improved.
 The right text, improved.
 [[[/LAYOUT-CELL]]]
 [[[/LAYOUT-SECTION]]]
-[[[/LAYOUT]]]`;
+[[[/LAYOUT]]]
+[[[EXPAND name=expand open=0 title=Rollback%20runbook params=]]]
+The collapsible text, improved. Note that title=Rollback%20runbook was copied character for character.
+[[[/EXPAND]]]`;
 
 const SYSTEM_PROMPTS = {
   improve_grammar: `You are a technical writing assistant. Improve the grammar, spelling, and punctuation of the following article while preserving its meaning and structure. Return the improved text in Markdown format. Only output the improved text, no explanations. ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
@@ -57,6 +97,14 @@ const SYSTEM_PROMPTS = {
 
   generate: `You are a technical documentation writer. Generate a well-structured knowledge base article based on the user's request. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
 
+  generate_spec: `You are a software architect and technical lead. Generate a comprehensive technical specification and RFC with: Overview & Motivation, Architecture & System Design, API Contracts & Interfaces, Data Models & Storage, Rollout & Migration Plan, Security & Failure Modes, and Open Questions. Return in Markdown format.`,
+
+  generate_guide: `You are a technical documentation writer. Generate a step-by-step how-to guide and runbook with: Overview, Prerequisites & Permissions, Step-by-Step Instructions with code/command examples, Verification & Testing, and Troubleshooting & Rollback. Return in Markdown format.`,
+
+  generate_notes: `You are an executive assistant and technical scribe. Generate structured meeting notes with: Meeting Objective & Date/Attendees, Executive Summary, Key Decisions Made, Detailed Discussion Topics, and an Action Items Table with Owner and Due Date columns. Return in Markdown format.`,
+
+  generate_postmortem: `You are a reliability engineer. Generate an incident post-mortem report with: Incident Summary & Severity, Impact & Duration, Timeline of Events (UTC), Root Cause Analysis (5 Whys), Resolution & Recovery, What Went Well / What Went Wrong, and Action Items with Preventative Measures. Return in Markdown format.`,
+
   generate_runbook: `You are a technical documentation writer specializing in operational runbooks. Generate a runbook with: Overview, Prerequisites, Step-by-step procedures, Troubleshooting, and Rollback sections. Return in Markdown format.`,
 
   generate_howto: `You are a technical documentation writer. Generate a how-to guide with: Introduction, Prerequisites, Step-by-step instructions with examples, Tips and best practices, and Common issues sections. Return in Markdown format.`,
@@ -65,11 +113,16 @@ const SYSTEM_PROMPTS = {
 
   generate_troubleshooting: `You are a support engineer creating documentation. Generate a troubleshooting guide with: Symptom description, Possible causes, Diagnostic steps, Resolution steps, and Prevention measures for each issue. Return in Markdown format.`,
 
-  generate_from_pdf: `You are a technical documentation writer. You are given the extracted text of a PDF document as source material. Using this source content and the user's instructions, generate a well-structured knowledge base article. Reorganize, clarify, and improve the content as needed. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
+  // #1132: renamed from `generate_from_pdf` when Generate widened past PDFs,
+  // and the body stopped claiming the source is a PDF — five of the six formats
+  // it now accepts are not. Renaming the key orphans nothing: it is absent from
+  // `CUSTOM_PROMPT_KEYS`, whose schema is `.strict()`, so no user override for
+  // it can exist in `user_settings.custom_prompts`.
+  generate_from_document: `You are a technical documentation writer. You are given the extracted text of a document the user uploaded as source material. Using this source content and the user's instructions, generate a well-structured knowledge base article. Reorganize, clarify, and improve the content as needed. Use clear headings, code examples where appropriate, and follow best practices for technical documentation. Return the article in Markdown format.`,
 
   summarize: `You are a technical writing assistant. Provide a concise summary of the following article. Focus on the key points, decisions, and actionable items. Return ONLY the summary itself in Markdown format — no preamble, no meta-commentary, and no closing questions or offers. Do not begin with phrases like "Here is a summary". ${LANGUAGE_PRESERVATION_INSTRUCTION}`,
 
-  ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context. Answer accurately based on the context. If the context doesn't contain enough information, say so. Always cite which articles your answer is based on. Respond in the same language as the user's question.`,
+  ask: `You are a knowledgeable assistant that answers questions based on the provided knowledge base context and any attached images. Answer accurately based on the context and images. If an image is attached, analyze it to answer questions about the image. If neither the context nor the attached image contains enough information, say so. Always cite which articles your answer is based on when using knowledge base content. Respond in the same language as the user's question.`,
 
   generate_diagram_flowchart: `You are a diagram generation assistant. Analyze the provided article text and generate a Mermaid flowchart diagram that captures the main processes, decisions, and flows described in the content. Use the Mermaid flowchart syntax (graph TD or graph LR). Output ONLY the raw Mermaid diagram code with no markdown fences, no explanations, and no surrounding text. Start directly with "graph" or "flowchart". IMPORTANT: If any node label contains special characters like parentheses (), brackets [], or braces {}, you MUST wrap the entire label text in double quotes. Example: A["Deploy (30min downtime)"] instead of A[Deploy (30min downtime)].`,
 

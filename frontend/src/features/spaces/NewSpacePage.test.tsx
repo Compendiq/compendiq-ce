@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NewSpacePage } from './NewSpacePage';
+import { SPACE_ICONS } from '../../shared/components/spaces/space-icons';
 
 const mockNavigate = vi.fn();
 const mockMutateAsync = vi.fn();
@@ -122,7 +123,7 @@ describe('NewSpacePage', () => {
     fireEvent.change(nameInput, { target: { value: 'Test Space' } });
 
     // Select the "Code" icon
-    fireEvent.click(screen.getByTitle('Code'));
+    fireEvent.click(screen.getByRole('button', { name: 'Code' }));
 
     const submitButton = screen.getByText('Create Space');
     fireEvent.click(submitButton);
@@ -137,16 +138,46 @@ describe('NewSpacePage', () => {
     });
   });
 
-  it('deselects icon on second click', () => {
+  it('renders a real glyph and an accessible name for every icon option', () => {
+    // The picker used to render label text only — svg count was 0 across all
+    // ten options, so users picked an icon by reading its name.
     renderPage();
-    const codeButton = screen.getByTitle('Code');
+    for (const { value, label } of SPACE_ICONS) {
+      const option = screen.getByRole('button', { name: label });
+      expect(
+        option.querySelector(`svg.lucide-${value}`),
+        `option "${label}" should render the ${value} glyph`,
+      ).not.toBeNull();
+      expect(option).toHaveAttribute('aria-pressed', 'false');
+    }
+  });
+
+  it('names the picker group and gives options the interactive treatment', () => {
+    renderPage();
+    // Same recipe as LoginVariantPicker: a named group, and operable surfaces
+    // carrying the interactive border (never the quiet hairline) plus an
+    // explicit focus-visible outline.
+    const group = screen.getByRole('group', { name: 'Space icon' });
+    const options = within(group).getAllByRole('button');
+    expect(options).toHaveLength(SPACE_ICONS.length);
+    for (const option of options) {
+      expect(option.className).toContain('focus-visible:outline');
+      expect(option.className).toMatch(/border-(border-interactive|action)\b/);
+    }
+  });
+
+  it('exposes selection via aria-pressed and deselects on second click', () => {
+    renderPage();
+    const codeButton = screen.getByRole('button', { name: 'Code' });
 
     // Select — icon selection is non-AI chrome (Task 5 — amber reserved for AI affordances).
     fireEvent.click(codeButton);
+    expect(codeButton).toHaveAttribute('aria-pressed', 'true');
     expect(codeButton.className).toContain('border-action');
 
     // Deselect
     fireEvent.click(codeButton);
+    expect(codeButton).toHaveAttribute('aria-pressed', 'false');
     expect(codeButton.className).not.toContain('border-action');
   });
 });

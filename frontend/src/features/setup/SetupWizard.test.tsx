@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -25,7 +25,7 @@ function typeInto(element: HTMLElement, value: string) {
   fireEvent.change(element, { target: { value } });
 }
 
-const fetchSpy = vi.spyOn(globalThis, 'fetch');
+let fetchSpy: MockInstance<typeof fetch>;
 
 function mockFetchForSetup(
   opts: { adminExists: boolean } | { steps: { admin: boolean; llm: boolean; confluence: boolean } },
@@ -68,6 +68,30 @@ function mockFetchForSetup(
       });
     }
 
+    // #1127: the Confluence step's probe + space picker + sync-status poll.
+    if (url.includes('/settings/test-confluence')) {
+      return new Response(JSON.stringify({ success: true, message: 'Connection successful' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/spaces/available')) {
+      return new Response(JSON.stringify([
+        { key: 'ENG', name: 'Engineering Handbook', type: 'global' },
+      ]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (url.includes('/sync/status')) {
+      return new Response(JSON.stringify({ userId: '1', status: 'idle' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
     return new Response(JSON.stringify({}), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -75,10 +99,33 @@ function mockFetchForSetup(
   });
 }
 
+/**
+ * Re-point only `/setup/llm-test` at a failing probe, delegating every other
+ * setup route to the implementation already installed by `mockFetchForSetup`.
+ * Still a network-boundary mock — the step's own code path is untouched.
+ */
+function mockLlmTestFailure(error: string) {
+  const passthrough = fetchSpy.getMockImplementation();
+  if (!passthrough) throw new Error('mockFetchForSetup must run first');
+
+  fetchSpy.mockImplementation(async (input, init) => {
+    const url = typeof input === 'string' ? input : (input as Request).url;
+
+    if (url.includes('/setup/llm-test')) {
+      return new Response(JSON.stringify({ success: false, error, models: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    return passthrough(input, init);
+  });
+}
+
 describe('SetupWizard', () => {
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
     useAuthStore.getState().clearAuth();
     sessionStorage.clear();
 
@@ -224,6 +271,48 @@ describe('SetupWizard', () => {
     expect(screen.getByTestId('goto-settings')).toBeInTheDocument();
   });
 
+  it('completes the Confluence step with no space selected (#1127)', async () => {
+    // The in-wizard space picker is additive: an admin who connects Confluence
+    // but picks nothing must still reach Complete via Continue. The wizard
+    // remains five steps — the picker lives inside the Confluence step.
+    sessionStorage.clear();
+    mockFetchForSetup({ steps: { admin: true, llm: true, confluence: false } });
+
+    renderWizard();
+
+    await waitFor(() => {
+      expect(screen.getByText('Connect Confluence')).toBeInTheDocument();
+    });
+
+    typeInto(screen.getByTestId('confluence-url'), 'https://confluence.example.com');
+    typeInto(screen.getByTestId('confluence-pat'), 'secret-pat');
+    fireEvent.click(screen.getByTestId('test-confluence-btn'));
+
+    // Picker appears, but nothing is selected and no sync is dispatched.
+    await waitFor(() => {
+      expect(screen.getByTestId('space-option-ENG')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('start-sync-btn')).toBeDisabled();
+
+    // Continue is live purely off the passing connection test.
+    const next = screen.getByTestId('confluence-next-btn');
+    expect(next).not.toBeDisabled();
+    fireEvent.click(next);
+
+    await waitFor(() => {
+      expect(screen.getByText(/You're All Set/i)).toBeInTheDocument();
+    });
+
+    expect(
+      fetchSpy.mock.calls.filter(
+        ([url, init]) =>
+          typeof url === 'string' &&
+          url.endsWith('/api/sync') &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toHaveLength(0);
+  });
+
   it('auto-detects Ollama on LLM step mount', async () => {
     renderWizard();
 
@@ -239,14 +328,8 @@ describe('SetupWizard', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
-    });
-
-    // The auto-detect should fire a call to /setup/llm-test
-    await waitFor(() => {
-      const llmCalls = fetchSpy.mock.calls.filter(
-        ([url]) => typeof url === 'string' && url.includes('/setup/llm-test'),
-      );
-      expect(llmCalls.length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByTestId('llm-base-url')).toBeInTheDocument();
+      expect(screen.getByTestId('test-llm-btn')).toBeInTheDocument();
     });
   });
 
@@ -273,6 +356,54 @@ describe('SetupWizard', () => {
     await waitFor(() => {
       expect(screen.getByTestId('llm-test-result')).toBeInTheDocument();
     });
+
+    // #1168: the banner must carry the semantic status tokens, not the literal
+    // emerald shades — those are dark-theme tuned and are not remapped for
+    // Paper, where they measured 1.33:1 (label) and 1.69:1 (icon).
+    const banner = screen.getByTestId('llm-test-result');
+    expect(banner).toHaveClass('border-status-connected/30', 'bg-status-connected/10');
+    expect(banner.className).not.toMatch(/emerald/);
+
+    // The ink lives on the icon/label row so the model list below keeps
+    // reading as body text; the glyph is fill="currentColor" and inherits it.
+    const row = screen.getByText('Connected').parentElement;
+    expect(row).toHaveClass('text-status-connected');
+    const icon = banner.querySelector('svg');
+    expect(icon?.getAttribute('class')).not.toMatch(/emerald|text-(red|green)-/);
+  });
+
+  it('LLM step failure banner uses the disconnected status token', async () => {
+    renderWizard();
+
+    // Navigate to LLM step
+    fireEvent.click(screen.getByTestId('start-setup-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('setup-username')).toBeInTheDocument();
+    });
+    typeInto(screen.getByTestId('setup-username'), 'admin');
+    typeInto(screen.getByTestId('setup-password'), 'securepass123');
+    typeInto(screen.getByTestId('setup-confirm-password'), 'securepass123');
+    fireEvent.click(screen.getByTestId('create-admin-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Configure LLM Provider')).toBeInTheDocument();
+    });
+
+    mockLlmTestFailure('Connection refused');
+    fireEvent.click(screen.getByTestId('test-llm-btn'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Connection refused')).toBeInTheDocument();
+    });
+
+    const banner = screen.getByTestId('llm-test-result');
+    expect(banner).toHaveClass('border-status-disconnected/30', 'bg-status-disconnected/10');
+    expect(banner.className).not.toMatch(/\bred-/);
+
+    const row = screen.getByText('Connection refused').parentElement;
+    expect(row).toHaveClass('text-status-disconnected');
+    const icon = banner.querySelector('svg');
+    expect(icon?.getAttribute('class')).not.toMatch(/text-(red|emerald)-/);
   });
 
   it('skips admin step when admin already exists', async () => {

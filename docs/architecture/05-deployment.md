@@ -28,7 +28,7 @@ flowchart LR
     end
 
     host -- "FRONTEND_PORT → 8081" --> fe
-    fe -- "HTTP proxy /api<br/>(shared frontend-net)" --> be
+    fe -- "HTTP /api + WS /api/collab/<br/>(shared frontend-net)" --> be
     be -- "HTTP (backend-net)" --> mcp
     mcp -- "HTTP" --> searx
     be -- "SQL (data-net)" --> pg
@@ -55,7 +55,7 @@ proxy can reach it) and `data-net` (so it can reach postgres/redis). The
 
 | Network       | internal | Members                         | Purpose |
 |---------------|----------|---------------------------------|---------|
-| `frontend-net`| no       | frontend, backend               | Browser → frontend (host-published) and frontend nginx proxy → backend API. The frontend can reach the backend and nothing else. |
+| `frontend-net`| no       | frontend, backend               | Browser → frontend (host-published) and frontend nginx proxy → backend API (HTTP `/api/` plus WebSocket `/api/collab/`). The frontend can reach the backend and nothing else. |
 | `backend-net` | no       | backend, mcp-docs, searxng, redis | Backend → sidecars (mcp-docs, and mcp-docs → redis). **No frontend** — the browser-facing container cannot reach the sidecars or cache. |
 | `data-net`    | **yes**  | postgres, redis, backend        | No external exposure; DB/cache reachable only from the backend. |
 
@@ -67,8 +67,15 @@ isolation holds trivially.
 
 The `backend` container publishes **no host port** — all API traffic goes
 through the frontend nginx proxy, which applies the CSP / security headers
-(`frontend/nginx-security-headers.conf`). `postgres` and `redis` **must
-not** publish host ports in production. Development overrides
+(`frontend/nginx-security-headers.conf`). Collaborative editing
+(`GET /api/collab/:pageId`) is a WebSocket: the bundled edge has a sibling
+`location ^~ /api/collab/` that issues HTTP/1.1 Upgrade with a 3600s idle
+timeout. The generic `/api/` location stays SSE (`proxy_read_timeout 300`)
+and does **not** Upgrade. Operators who front Compendiq with their own
+proxy must do the same — the corporate nginx guide's server-scope
+`Connection ""` is hostile to Upgrade unless a dedicated `/api/collab/`
+location overrides it. See [`docs/integrations/reverse-proxy/`](../integrations/reverse-proxy/).
+`postgres` and `redis` **must not** publish host ports in production. Development overrides
 (`docker/docker-compose.*.yml`) may expose them for debugging — bound to
 `127.0.0.1` only, and never merged into production.
 
@@ -76,6 +83,27 @@ not** publish host ports in production. Development overrides
 no baked-in defaults; `redis` runs with `maxmemory-policy noeviction`
 because BullMQ stores queue/job state there and eviction would silently
 drop jobs.
+
+### SearXNG proxy and offline-rule boundary
+
+`mcp-docs` connects directly to `searxng` on `backend-net`. The SearXNG
+limiter consequently trusts loopback only by default and treats the mcp-docs
+socket address as the client; it must not trust the whole Docker subnet and
+then demand a forwarded-IP header from that direct caller.
+
+An operator who puts SearXNG behind a reverse proxy may set
+`SEARXNG_TRUSTED_PROXIES` to comma-separated IP addresses or CIDRs. Container
+startup validates and normalizes every entry before generating
+`limiter.toml`, and fails on malformed input. Traefik already supplies
+`X-Forwarded-For` / `X-Real-IP`; only Traefik's actual source address or a
+dedicated proxy-network CIDR belongs in the trusted list. A catch-all CIDR or
+the application network would let callers forge their apparent IP.
+
+The derived SearXNG image keeps upstream's three HTTPS ClearURLs sources as
+the primary rule source. If every request fails, a narrow build-time patch
+loads a pinned LGPL baseline bundled with the image. The image build verifies
+the expected upstream patch point and fails rather than silently shipping an
+unapplied fallback when the upstream module changes.
 
 ## Container hardening (issue #1050)
 
@@ -120,12 +148,32 @@ compose in `scripts/install.sh`):
 
 ### Image pinning
 
-`docker/docker-compose.yml` carries `build:` sections and therefore tags
-images `:dev` — it is the build-and-run source, not a shipped artifact.
-Production deployments that **pull** rather than build MUST pin an immutable
-reference: a version tag (e.g. `:0.6.2`) or, ideally, a `@sha256:...` digest,
-so the running image can never be silently repointed. The installer warns
-when the effective tag is a mutable `latest`/`dev`.
+`docker/docker-compose.yml` is **pull-only**. `docker compose pull &&
+docker compose up -d` fetches
+`ghcr.io/compendiq/compendiq-ce-*:${COMPENDIQ_VERSION:-dev}`. Pin an
+immutable reference for production: `COMPENDIQ_VERSION=0.6.2`, or a
+`@sha256:...` digest on `image:`, so the running artifact can never be
+silently repointed. The installer warns when the effective tag is a mutable
+`latest`/`dev`.
+
+To compile images from this checkout instead of pulling, merge the
+source-build override:
+
+```bash
+docker compose -f docker/docker-compose.yml \
+               -f docker/docker-compose.build.yml up --build
+```
+
+That override is the only compose file that carries `build:` sections.
+
+
+Branch tags (`:dev`, `:latest`) are **linux/amd64 only** — the Docker
+workflow publishes `linux/arm64` solely for `v*` release tags. The four
+Compendiq services (`frontend`, `backend`, `mcp-docs`, `searxng`) therefore
+set `platform: linux/amd64` so `docker compose pull` on Apple Silicon
+requests the amd64 manifest and runs it under Rosetta, instead of 404ing
+on a missing arm64 index. `postgres` and `redis` stay unpinned: they are
+multi-arch and should run native.
 
 ### MCP sidecar authentication
 
@@ -150,14 +198,162 @@ same value; the installer auto-generates it into `.env` on first install and
 | Volume          | Mount                                  | Contents |
 |-----------------|----------------------------------------|----------|
 | `postgres-data` | `/var/lib/postgresql/data` (postgres)  | Primary data + embeddings |
-| `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR` |
+| `attachments`   | `/app/data` (backend)                  | Cached Confluence attachments (images, drawio, PDFs) — also configurable via `ATTACHMENTS_DIR`. Operator-supplied client inference weights live at `/app/data/client-models` (`CLIENT_MODEL_ASSETS_DIR`). |
+
+## Backup process boundaries
+
+```mermaid
+flowchart LR
+    browser(["Admin browser"])
+    publicS3[("Public S3-compatible service")]
+    encrypted["Encrypted backup file"]
+    kms["EE only: AWS KMS / Vault Transit"]
+    replicas[("EE: up to two replica targets<br/>independent prefixes / outcomes")]
+    recoveryConfig["Offline endpoint + credentials<br/>outside protected database"]
+
+    subgraph online["Online backend process"]
+        beBackup["Backup exporter<br/>postgresql17-client: pg_dump<br/>constant-memory stream"]
+        dr["EE DR verifier"]
+    end
+
+    subgraph offline["Standalone restore boundary (Fastify offline)"]
+        cli["backend/scripts/restore-backup.ts<br/>postgresql17-client: pg_restore"]
+        stage[("mode-0700 staging<br/>beside ATTACHMENTS_DIR")]
+    end
+
+    pg[("PostgreSQL 17")]
+    attachments[("Live ATTACHMENTS_DIR<br/>same filesystem as staging")]
+
+    pg -- "pg_dump -Fc" --> beBackup
+    sandbox[("Disposable DR database")]
+    attachments -- "attachment read streams" --> beBackup
+    beBackup -- "30-second ticket download" --> browser
+    beBackup -- "validated public HTTP(S)" --> publicS3
+    browser -- "EE runtime-gated settings; no cloud credentials" --> beBackup
+    beBackup -- "EE: one policy snapshot / wrapped data key" --> kms
+    beBackup -- "EE: version retention + hold reads;<br/>exact-version deletion, no bypass" --> publicS3
+    beBackup -- "EE: bounded, backpressured fanout" --> replicas
+    replicas -- "encrypted object; complete destination key" --> cli
+    recoveryConfig -- "no source configuration DB lookup" --> cli
+    publicS3 -- "latest candidate" --> dr
+    dr -- "authenticated manifest age + restore" --> sandbox
+    dr -- "RPO seconds / duration milliseconds" --> pg
+
+    encrypted --> cli
+    kms -- "EE: unwrap key from archive metadata" --> cli
+    cli -- "authenticate + validate<br/>stream to disk" --> stage
+    stage -- "rename swap after validation" --> attachments
+    cli -- "pg_restore<br/>--single-transaction" --> pg
+
+    classDef ext fill:#fff,stroke:#333
+    classDef svc fill:#eefbe8,stroke:#4caf50
+    classDef data fill:#eef6ff,stroke:#4a90e2
+    class browser,publicS3,encrypted ext
+    class beBackup,cli svc
+    class pg,attachments,stage data
+```
+
+Enterprise uses the unmodified shared frontend. KMS and Object Lock are optional
+backend extensions, gated by the live `enterprise_backup_dr` entitlement on
+configuration writes. KMS policy-read failures refuse backup creation; a
+successfully resolved policy remains fixed for that upload. Object Lock is a
+future-upload policy, not a deletion override: pruning authenticates each
+stored version's retention and legal-hold metadata even after the setting is
+disabled, and refuses deletion when that metadata cannot be read.
+
+The backend runtime image installs `postgresql17-client` in both CE and
+Enterprise runtimes so the online exporter can spawn `pg_dump`. The exporter
+creates a read-only repeatable-read PostgreSQL transaction, exports its
+snapshot, passes `--snapshot` to `pg_dump`, and only then enumerates attachment
+files; the transaction and pooled connection are closed after the child exits.
+No database or attachment payload is staged on the backend root filesystem.
+Restore is not an API and does not run inside the serving Fastify process. The
+operator launches the standalone source-tree CLI where `POSTGRES_URL` can reach
+PostgreSQL, `pg_restore` is installed, and the real `ATTACHMENTS_DIR` is mounted.
+
+The restore stage is a temporary directory under the parent of
+`ATTACHMENTS_DIR`, with mode `0700`. It must be on the same filesystem as the
+live tree so attachment installation and rollback use atomic renames. The
+stage holds a complete decrypted database dump and attachment tree, so its
+filesystem needs that much free capacity in addition to the live data.
+PostgreSQL and the live attachment tree are not touched until the complete
+archive has authenticated and passed manifest, member, checksum, size,
+fingerprint, and migration validation.
 
 ## Additional compose files
 
 - `docker-compose.confluence.yml` — spins up a throwaway Confluence DC for
   local integration testing.
-- `docker-compose.test.yml` — CI services (Postgres on `:5433`, Redis
-  ephemeral) used by `backend` tests and Playwright E2E.
+- `docker-compose.test.yml` — local test services (Postgres on `:5433`, Redis
+  ephemeral). PR Check provisions its PostgreSQL and Redis as job-local services.
+
+## Pull-request browser stack (#1543)
+
+PR Check runs `Playwright E2E` for relevant source, test, configuration and
+workflow changes, and on every manual dispatch. Change-detection failures
+fail open into running the job. It does not need external service secrets.
+
+```mermaid
+flowchart LR
+    pr["Relevant PR or manual dispatch"] --> build["npm ci + build<br/>copy SQL migrations"]
+    build --> backend["Compiled backend<br/>:3051"]
+    build --> preview["Vite preview<br/>:8081"]
+    backend --> pg[("Job-local pgvector 17<br/>kb_e2e")]
+    backend --> redis[("Job-local Redis 8")]
+    preview -->|"API + WebSocket proxy"| backend
+    setup["Fresh-instance setup + open registration"] --> preview
+    setup --> chromium["Chromium specs<br/>one worker"]
+    chromium --> collab["Collab project<br/>provisioned admin"]
+    collab --> report["Executed / skipped summary<br/>selected skips fail"]
+    report -->|"failure"| artifacts["HTML + traces + screenshots<br/>7-day retention"]
+```
+
+`E2E_CI=1` validates loopback URLs and the dedicated `kb_e2e` database name
+before starting servers. The global setup then refuses an already-provisioned
+instance, creates the first admin with `POST /api/setup/admin`, logs in, and
+uses `PUT /api/admin/settings` to open registration. A real registration
+probe verifies that setting; the probe user is deleted afterward.
+
+The disposable instance gets `rateLimitAuth=1000`, `rateLimitGlobal=10000`
+and `rateLimitAdmin=1000`. Serial workers avoid shared-instance races; raising
+the CI-only auth limit avoids exhausting the normal five requests/minute even
+when tests run serially. The collaboration project runs after Chromium and
+restores its instance settings. Production rate-limit defaults are unchanged.
+
+The checked-in CI exclusion list is deliberately narrow:
+
+| Spec | Why it is outside this job |
+|---|---|
+| `confluence-sync.spec.ts` | Real Confluence instance and `E2E_CONFLUENCE_URL` / `E2E_CONFLUENCE_PAT`. The mocked Confluence flow runs in CI. |
+| `llm-providers.spec.ts` | Live Ollama-compatible endpoint (`E2E_LLM_URL`) and a fresh first-admin fixture. |
+| `think-toggle.spec.ts` | Dedicated LLM request-log harness (`E2E_LLM_URL`, `MOCK_REQ_LOG`) and a fresh first-admin fixture. |
+
+These specs remain available in normal local mode; exclusion is not a passing
+test result. Every selected CI test must execute. The custom reporter rejects
+zero executed tests and any selected skip, writes counts to the job summary,
+and preserves failures/timeouts. Playwright also rejects an empty selection.
+
+To reproduce the job locally, start **disposable** PostgreSQL/Redis with a
+fresh `kb_e2e` database. Export `POSTGRES_URL`, `REDIS_URL`, `JWT_SECRET`,
+`PAT_ENCRYPTION_KEY`, `COLLAB_E2E_ADMIN` and `COLLAB_E2E_PASSWORD` for that
+stack, then run from the repository root:
+
+```bash
+npm ci
+npm run build
+cp -R backend/src/core/db/migrations backend/dist/core/db/migrations
+npx playwright install chromium
+npx vitest run --config e2e/vitest.config.ts
+E2E_CI=1 E2E_BASE_URL=http://localhost:8081 \
+  VITE_API_PROXY_TARGET=http://localhost:3051 COOKIE_SECURE=false \
+  npm run test:e2e
+```
+
+The two HTTP ports must be free; CI mode never reuses running servers.
+Recreate only the disposable database and clear only its Redis before another
+CI-mode run. To test an already-running development installation instead, omit
+`E2E_CI` and set `E2E_BASE_URL` plus the existing collaboration admin credentials;
+normal mode neither provisions nor relaxes instance rate limits.
 
 ## Enterprise image
 
