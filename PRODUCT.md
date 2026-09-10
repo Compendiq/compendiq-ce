@@ -76,7 +76,7 @@ Constraints that outlive any redesign:
 - Backend domain import boundaries are ESLint-enforced; the frontend is
   `features/` + `shared/` + `stores/` + `providers/`.
 - Roughly 20 routes across pages, AI, graph, spaces, settings, admin, setup and auth.
-- Version 0.7.2, pre-1.0, SemVer.
+- Version 0.8.0, pre-1.0, SemVer.
 
 Undecided / not established: no confirmed customer count, no published pricing, no
 benchmark numbers, no named reference customers. Future work must not invent them.
