@@ -278,8 +278,9 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             {activePreset.id === 'custom' ? (
               <>
                 For local servers (LM Studio, vLLM) in Docker, use{' '}
-                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. For a hosted
-                API, pick a preset above.
+                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. Paste the
+                API root, not a specific endpoint — <code className="text-foreground">/embeddings</code> is
+                stripped, and <code className="text-foreground">/v1</code> is added only if missing.
               </>
             ) : activePreset.id === 'azure-openai' ? (
               <>

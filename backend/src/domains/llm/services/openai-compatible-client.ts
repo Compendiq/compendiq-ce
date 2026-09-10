@@ -21,7 +21,7 @@ export { LlmHttpError } from './llm-http-error.js';
 
 export interface ProviderConfig {
   providerId: string;
-  baseUrl: string;           // already normalized to end with /v1
+  baseUrl: string;           // OpenAI-compatible root (typically …/v1)
   apiKey: string | null;
   authType: 'bearer' | 'none';
   verifySsl: boolean;

@@ -32,6 +32,7 @@ import {
   listModels as providerListModels,
   type ProviderConfig,
 } from '../../domains/llm/services/openai-compatible-client.js';
+import { normalizeBaseUrl } from '../../domains/llm/services/llm-provider-service.js';
 import { decryptPat } from '../../core/utils/crypto.js';
 import {
   validateUrlSyntaxAndProtocol,
@@ -214,13 +215,14 @@ export async function setupRoutes(fastify: FastifyInstance) {
   }, async (request) => {
     const body = LlmTestSchema.parse(request.body);
 
-    // Normalize the base URL to end in /v1 — all providers expose OpenAI-
-    // compatible endpoints under /v1 (Ollama's /v1 shim is also OK).
-    let baseUrl = (body.baseUrl ?? '').replace(/\/+$/, '');
+    // Normalize to the OpenAI-compatible root. Bare hosts get /v1; a pasted
+    // endpoint like /v1/embeddings is not given a second /v1.
+    let baseUrl = (body.baseUrl ?? '').trim();
     if (!baseUrl) {
       baseUrl = body.provider === 'openai' ? 'https://api.openai.com/v1' : 'http://localhost:11434/v1';
+    } else {
+      baseUrl = normalizeBaseUrl(baseUrl);
     }
-    if (!baseUrl.endsWith('/v1')) baseUrl += '/v1';
 
     // SSRF guard (issue #736) — same EFFECTIVE policy as the admin
     // LLM-provider routes (`routes/llm/llm-providers.ts`): an authenticated

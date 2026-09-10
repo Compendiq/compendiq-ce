@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Settings → AI Models no longer appends `/v1` onto a provider URL that already
+  has an API version. Pasting `https://openrouter.ai/api/v1/embeddings/` used to
+  store `…/embeddings/v1`, which 404s; known endpoint suffixes are stripped so
+  the stored URL is the OpenAI-compatible root the client appends `/embeddings`
+  and `/chat/completions` onto.
+
 ## [0.8.0] - 2026-09-10
 
 > Minor: Notion import, encrypted backup, Connections, custom templates, Paper palette. 649 commits since v0.7.2.

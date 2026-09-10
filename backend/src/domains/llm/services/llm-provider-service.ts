@@ -74,10 +74,61 @@ export async function getProviderById(id: string): Promise<ProviderConfigRow | n
   return r.rows[0] ? rowToConfig(r.rows[0]) : null;
 }
 
+/** OpenAI-compatible resource paths operators paste from provider docs. */
+const RESOURCE_SUFFIXES = [
+  '/chat/completions',
+  '/embeddings',
+  '/completions',
+  '/models',
+  '/rerank',
+] as const;
+
+function stripResourceSuffix(pathname: string): string {
+  let path = pathname.replace(/\/+$/, '');
+  // Prior normalizer appended /v1 onto …/embeddings, so a re-save of that
+  // stored URL must drop the extra version before the resource suffix.
+  if (path.endsWith('/v1')) {
+    const withoutVersion = path.slice(0, -'/v1'.length);
+    if (RESOURCE_SUFFIXES.some((suffix) => withoutVersion.endsWith(suffix))) {
+      path = withoutVersion;
+    }
+  }
+  for (;;) {
+    const hit = RESOURCE_SUFFIXES.find((suffix) => path.endsWith(suffix));
+    if (!hit) return path;
+    path = path.slice(0, -hit.length).replace(/\/+$/, '');
+  }
+}
+
+const API_VERSION_SEGMENT = /^v\d+[a-z0-9.]*$/i;
+
+/**
+ * Provider base URLs are the OpenAI-compatible root. The client appends
+ * `/embeddings`, `/chat/completions`, `/rerank`, etc. onto whatever we store.
+ *
+ * Bare hosts get `/v1`. A path that already has a version segment (`/v1`,
+ * `/v1beta`) is left alone — the previous `ends with /v1` test rewrote
+ * `https://openrouter.ai/api/v1/embeddings/` to `…/embeddings/v1`. Known
+ * resource suffixes are stripped so a pasted docs endpoint becomes that root.
+ */
 export function normalizeBaseUrl(raw: string): string {
-  let s = raw.trim().replace(/\/+$/, '');
-  if (!/\/v1$/.test(s)) s += '/v1';
-  return s;
+  const trimmed = raw.trim();
+  try {
+    const u = new URL(trimmed);
+    let path = stripResourceSuffix(u.pathname);
+    if (!path.split('/').some((seg) => API_VERSION_SEGMENT.test(seg))) {
+      path = `${path.replace(/\/+$/, '')}/v1`;
+    }
+    u.pathname = path || '/v1';
+    u.search = '';
+    u.hash = '';
+    return u.href.replace(/\/+$/, '');
+  } catch {
+    let s = trimmed.replace(/\/+$/, '');
+    s = stripResourceSuffix(s);
+    if (!s.split('/').some((seg) => API_VERSION_SEGMENT.test(seg))) s += '/v1';
+    return s;
+  }
 }
 
 export async function createProvider(input: LlmProviderInput): Promise<LlmProvider> {
