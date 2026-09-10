@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROVIDER_PRESETS, presetWouldOverwrite } from './provider-presets';
+import { PROVIDER_PRESETS, matchPresetByUrl, presetWouldOverwrite } from './provider-presets';
 
 describe('PROVIDER_PRESETS', () => {
   it('is the closed D6 list with Custom last and no vendor enum', () => {
@@ -41,6 +41,25 @@ describe('PROVIDER_PRESETS', () => {
   it('keeps the DeepSeek preset host as api.deepseek.com for the STRICT_HOSTS drift gate', () => {
     const deepseek = PROVIDER_PRESETS.find((p) => p.id === 'deepseek');
     expect(new URL(deepseek!.baseUrl).hostname).toBe('api.deepseek.com');
+  });
+});
+
+describe('matchPresetByUrl', () => {
+  it('returns custom for empty or unknown hosts', () => {
+    expect(matchPresetByUrl('')).toBe('custom');
+    expect(matchPresetByUrl(undefined)).toBe('custom');
+    expect(matchPresetByUrl('http://localhost:11434/v1')).toBe('custom');
+  });
+
+  it('matches a hosted root and an embeddings path on that root', () => {
+    expect(matchPresetByUrl('https://openrouter.ai/api/v1')).toBe('openrouter');
+    expect(matchPresetByUrl('https://openrouter.ai/api/v1/')).toBe('openrouter');
+    expect(matchPresetByUrl('https://openrouter.ai/api/v1/embeddings')).toBe('openrouter');
+    expect(matchPresetByUrl('https://api.openai.com/v1/embeddings/')).toBe('openai');
+  });
+
+  it('prefers the longest matching hosted root', () => {
+    expect(matchPresetByUrl('https://api.groq.com/openai/v1/embeddings')).toBe('groq');
   });
 });
 

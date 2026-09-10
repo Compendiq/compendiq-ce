@@ -8,6 +8,7 @@ import {
   PROVIDER_PRESETS,
   type ProviderPreset,
   type ProviderPresetId,
+  matchPresetByUrl,
   presetById,
   presetWouldOverwrite,
 } from './provider-presets';
@@ -38,7 +39,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const [authType, setAuthType] = useState<'bearer' | 'none'>(initial?.authType ?? 'bearer');
   const [verifySsl, setVerifySsl] = useState(initial?.verifySsl ?? true);
   const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? '');
-  const [presetId, setPresetId] = useState<ProviderPresetId>('custom');
+  const [presetId, setPresetId] = useState<ProviderPresetId>(() => matchPresetByUrl(initial?.baseUrl));
   const [pendingPresetId, setPendingPresetId] = useState<ProviderPresetId | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -54,7 +55,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
   const probeGen = useRef(0);
   // Empty until applyPreset — a stored edit-mode URL is operator-owned, not a fill.
   const lastFilled = useRef({ baseUrl: '', defaultModel: '' });
-  const appliedPresetId = useRef<ProviderPresetId>('custom');
+  const appliedPresetId = useRef<ProviderPresetId>(matchPresetByUrl(initial?.baseUrl));
   const activePreset = presetById(presetId) ?? PROVIDER_PRESETS[PROVIDER_PRESETS.length - 1]!;
 
   function restorePresetFocusFromConfirm() {
@@ -91,8 +92,13 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
 
   function keepCurrentFields() {
     restorePresetFocusFromConfirm();
+    // Keep the preset the operator just picked. Reverting to Custom made a
+    // pasted embeddings URL look like the hosted fill was rejected.
+    if (pendingPresetId) {
+      appliedPresetId.current = pendingPresetId;
+      setPresetId(pendingPresetId);
+    }
     setPendingPresetId(null);
-    setPresetId(appliedPresetId.current);
   }
 
   useEffect(() => {
@@ -288,7 +294,10 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
                 <code className="text-foreground">https://{'{resource}'}.openai.azure.com/openai/v1</code>.
               </>
             ) : (
-              activePreset.urlHelper
+              <>
+                {activePreset.urlHelper} Embeddings POST to this root plus{' '}
+                <code className="text-foreground">/embeddings</code> — paste the root, not that path.
+              </>
             )}
           </p>
         </div>

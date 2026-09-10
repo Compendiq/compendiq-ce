@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   store `…/embeddings/v1`, which 404s; known endpoint suffixes are stripped so
   the stored URL is the OpenAI-compatible root the client appends `/embeddings`
   and `/chat/completions` onto.
+- Settings → AI Models no longer snaps Preset to Custom when the operator
+  pastes or edits an embeddings URL. Keep current keeps the chosen hosted
+  preset with the typed URL; a stored `…/v1/embeddings` path infers that host
+  on edit. Escape still cancels the preset change.
 
 ## [0.8.0] - 2026-09-10
 
