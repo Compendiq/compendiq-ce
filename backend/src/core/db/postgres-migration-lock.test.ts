@@ -53,14 +53,13 @@ describe.skipIf(!dbAvailable)('runMigrations cross-replica locking (issue #745)'
 
   afterAll(async () => {
     process.env.POSTGRES_URL = baseUrl;
-    // Drain this file's pool before DROP. DROP DATABASE checkpoints the
-    // cluster (measured 15s+ under CI load). Doing it while a pool client
-    // is still checked out waits on that backend as well (#1497).
+    // Drain this file's pool so later files on the worker do not keep
+    // talking to the throwaway database. Do not DROP here: DROP DATABASE
+    // checkpoints the cluster (15s+ under CI load, #1497) and has blown
+    // this hook's 60s budget after every test passed. beforeAll
+    // FORCE-drops leftovers on the next run.
     await closePool();
-    await withAdminClient(async (client) => {
-      await client.query(`DROP DATABASE IF EXISTS ${LOCK_TEST_DB} WITH (FORCE)`);
-    });
-  }, 60_000);
+  }, 20_000);
 
   // Must mirror MIGRATIONS_ADVISORY_LOCK_ID in postgres.ts — used to simulate
   // a slow migration winner from a session outside the app pool.
