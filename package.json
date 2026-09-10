@@ -36,13 +36,16 @@
     "vitest": "^5.0.0"
   },
   "//inference-deps-note": "Transformers 4.2.0 still excludes patched sharp and adm-zip. Scope security overrides to its native chain; keep onnxruntime-node/web paired as published. Compatibility and removal criteria: docs/runbooks/client-inference.md#native-dependency-security-overrides.",
+  "//tooling-deps-note": "knip 6.14.1 admits smol-toml ^1.6.1; pin 1.8.0 for GHSA-7w5x-hrqm-74c2. lighthouse 12.6.1 pulls puppeteer-core 24 → @puppeteer/browsers 2.13.2 → extract-zip 2.0.1 (GHSA-7pqw-9j4j-h8q3, GHSA-jmr9-qjv8-65gv, no patched extract-zip). Browsers 3.2.2 dropped that extractor.",
   "overrides": {
     "@huggingface/transformers@4.2.0": {
-      "sharp": "0.35.3",
+      "sharp": "0.35.4",
       "onnxruntime-node@1.24.3": {
         "adm-zip": "0.6.0"
       }
     },
+    "smol-toml": "1.8.0",
+    "@puppeteer/browsers": "3.2.2",
     "vite": "^8.0.16",
     "@tiptap/core": "3.30.5",
     "@tiptap/pm": "3.30.5",
