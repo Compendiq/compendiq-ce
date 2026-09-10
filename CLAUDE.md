@@ -824,7 +824,9 @@ the result. A Knowledge Base with nested pages outruns nginx
 rebuild 504 (browser error, work continues). Never put paced Notion traffic
 back on that HTTP request. Start is `SET NX` on a per-user lock with a 10-minute
 safety TTL (renewed while the walk runs) — a second POST while the lock is held
-is 409. `importing` is not a 24h mutex; a missing Redis status key is idle.
+is 409. Renew, release, and terminal status writes are Lua compare-and-swap on
+the lock token (same as Confluence `SYNC_LOCK_TTL`). `importing` is not a 24h
+mutex; a missing Redis status key is idle. Redis SET NX throwing fail-closes.
 
 
 **That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**

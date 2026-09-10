@@ -484,7 +484,8 @@ duplicates. Every planned result, including discovered failures, is stored on
 the per-user import job (`GET /api/notion/import/status`) after
 `POST /api/notion/import` returns 202 — audit, cache invalidation and the
 result screen read that status, not the POST. Start is `SET NX` with a
-10-minute safety TTL renewed during the walk; a missing Redis key is idle.
+10-minute safety TTL; renew, release and terminal status are Lua
+compare-and-swap on the lock token. A missing Redis key is idle.
 The POST used to wait for every paced Notion call inside one HTTP request;
 nginx `proxy_read_timeout 300` then answered 504 while the importer kept
 running. Later UI batches merge results

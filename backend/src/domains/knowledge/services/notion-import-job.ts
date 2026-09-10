@@ -7,8 +7,10 @@
  * single-process test or a Redis blip still answers GET.
  *
  * `importing` is not a 24h mutex. A separate lock key uses SET NX plus a
- * 10-minute safety TTL (same shape as Confluence `SYNC_LOCK_TTL`), renewed
- * while the importer runs. Redis missing the status key is idle — leftover
+ * 10-minute safety TTL (same shape as Confluence `SYNC_LOCK_TTL`). Renew,
+ * release, and terminal status writes are Lua compare-and-swap on that token
+ * — a lapsed walk must not extend, delete, or overwrite a newer run. Redis
+ * SET NX throwing fail-closes. A missing Redis status key is idle — leftover
  * memory must not 409 after the TTL.
  */
 import { randomUUID } from 'node:crypto';
@@ -22,6 +24,16 @@ const STATUS_TTL_SEC = 24 * 60 * 60;
 /** Safety TTL; heartbeat slides it forward for a long Knowledge Base walk. */
 export const NOTION_IMPORT_LOCK_TTL_SEC = 600;
 const LOCK_RENEW_INTERVAL_MS = Math.floor((NOTION_IMPORT_LOCK_TTL_SEC / 3) * 1000);
+
+/** Lua: only delete the lock if the caller owns it (value matches). */
+const RELEASE_LOCK_SCRIPT =
+  `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`;
+
+/** Lua: only extend lock + importing-status TTL while this caller still owns the lock. */
+const RENEW_LOCK_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then redis.call("expire", KEYS[1], ARGV[2]) redis.call("expire", KEYS[2], ARGV[2]) return 1 else return 0 end`;
+
+/** Lua: write complete/error only while this caller still owns the lock. */
+const WRITE_STATUS_IF_OWNED_SCRIPT = `if redis.call("get", KEYS[1]) == ARGV[1] then redis.call("set", KEYS[2], ARGV[2], "EX", ARGV[3]) return 1 else return 0 end`;
 
 export type NotionImportJobStatus =
   | { status: 'idle' }
@@ -121,6 +133,7 @@ export async function tryStartNotionImport(userId: string): Promise<string | nul
       return token;
     } catch (err) {
       logger.error({ err, userId }, 'Failed to acquire Notion import lock');
+      return null;
     }
   }
   if (localLockHeld(userId)) return null;
@@ -132,7 +145,11 @@ export async function tryStartNotionImport(userId: string): Promise<string | nul
 export async function setNotionImportStatus(
   userId: string,
   status: NotionImportJobStatus,
-): Promise<void> {
+  token?: string,
+): Promise<boolean> {
+  if (status.status !== 'importing' && token !== undefined) {
+    return writeStatusIfOwned(userId, status, token);
+  }
   if (status.status !== 'importing') {
     localLocks.delete(userId);
   } else if (!localLockHeld(userId)) {
@@ -142,6 +159,7 @@ export async function setNotionImportStatus(
     });
   }
   await writeStatus(userId, status);
+  return true;
 }
 
 async function writeStatus(userId: string, status: NotionImportJobStatus): Promise<void> {
@@ -155,20 +173,56 @@ async function writeStatus(userId: string, status: NotionImportJobStatus): Promi
   }
 }
 
+/** Write complete/error only while `token` still owns the lock. */
+async function writeStatusIfOwned(
+  userId: string,
+  status: NotionImportJobStatus,
+  token: string,
+): Promise<boolean> {
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      const result = await redis.eval(WRITE_STATUS_IF_OWNED_SCRIPT, {
+        keys: [lockKey(userId), statusKey(userId)],
+        arguments: [token, JSON.stringify(status), String(ttlFor(status))],
+      });
+      if (result === 1 || result === '1') {
+        localStatus.set(userId, status);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to write Notion import status to Redis');
+    }
+  }
+  const lock = localLocks.get(userId);
+  if (!lock || lock.token !== token || lock.expiresAt <= Date.now()) return false;
+  localStatus.set(userId, status);
+  return true;
+}
+
 export async function renewNotionImportLock(userId: string, token: string): Promise<void> {
+  const redis = getRedisClient();
+  if (redis) {
+    try {
+      const result = await redis.eval(RENEW_LOCK_SCRIPT, {
+        keys: [lockKey(userId), statusKey(userId)],
+        arguments: [token, String(NOTION_IMPORT_LOCK_TTL_SEC)],
+      });
+      if (result === 1 || result === '1') {
+        const lock = localLocks.get(userId);
+        if (lock?.token === token) {
+          lock.expiresAt = Date.now() + NOTION_IMPORT_LOCK_TTL_SEC * 1000;
+        }
+      }
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to renew Notion import lock');
+    }
+    return;
+  }
   const lock = localLocks.get(userId);
   if (lock?.token === token) {
     lock.expiresAt = Date.now() + NOTION_IMPORT_LOCK_TTL_SEC * 1000;
-  }
-  const redis = getRedisClient();
-  if (!redis) return;
-  try {
-    const held = await redis.get(lockKey(userId));
-    if (held !== token) return;
-    await redis.expire(lockKey(userId), NOTION_IMPORT_LOCK_TTL_SEC);
-    await redis.expire(statusKey(userId), NOTION_IMPORT_LOCK_TTL_SEC);
-  } catch (err) {
-    logger.error({ err, userId }, 'Failed to renew Notion import lock');
   }
 }
 
@@ -186,9 +240,10 @@ export async function releaseNotionImportLock(userId: string, token: string): Pr
   const redis = getRedisClient();
   if (!redis) return;
   try {
-    const held = await redis.get(lockKey(userId));
-    if (held !== token) return;
-    await redis.del(lockKey(userId));
+    await redis.eval(RELEASE_LOCK_SCRIPT, {
+      keys: [lockKey(userId)],
+      arguments: [token],
+    });
   } catch (err) {
     logger.error({ err, userId }, 'Failed to release Notion import lock');
   }

@@ -172,7 +172,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
         }
         await cache.invalidate(userId, 'notion_tree');
         expectNoSecret(items, token);
-        await setNotionImportStatus(userId, { status: 'complete', items });
+        await setNotionImportStatus(userId, { status: 'complete', items }, lockId);
       } catch (err) {
         logger.error({ err, userId }, 'Notion import failed');
         const raw =
@@ -180,7 +180,7 @@ export async function notionRoutes(fastify: FastifyInstance) {
             ? err.message
             : 'Notion import failed';
         const message = token && raw.includes(token) ? 'Notion import failed' : raw;
-        await setNotionImportStatus(userId, { status: 'error', error: message });
+        await setNotionImportStatus(userId, { status: 'error', error: message }, lockId);
       } finally {
         stopHeartbeat();
         await releaseNotionImportLock(userId, lockId);
