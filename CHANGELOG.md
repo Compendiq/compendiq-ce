@@ -15,9 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not append `/embeddings` or `/rerank` when the stored URL already ends
   with that path.
 - Listing models for a stored `…/v1/embeddings` provider hits
-  `…/v1/embeddings/models` (OpenRouter's embeddings catalog) instead of the
-  chat `/v1/models` list. A 404 falls back to the sibling `/models`. Use-case
-  pickers accept a typed model id when the list is empty.
+  `…/v1/embeddings/models`. A stored `…/v1/rerank` URL asks
+  `/models?output_modalities=rerank` and never returns the chat catalog
+  (OpenRouter's unfiltered `/v1/models` is hundreds of text models). Name
+  filter is the fallback. Use-case pickers accept a typed model id.
 - Settings → AI Models no longer snaps Preset to Custom when the operator
   pastes or edits an embeddings URL. Keep current keeps the chosen hosted
   preset with the typed URL; a stored `…/v1/embeddings` path infers that host
