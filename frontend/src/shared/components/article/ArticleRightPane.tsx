@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
+  ArrowRightLeft,
+  CheckCircle2,
   ChevronRight,
   Cpu,
   ExternalLink,
@@ -354,16 +356,22 @@ export function ArticleRightPane({
 
   const overallHealth = useMemo(() => {
     if (page?.embeddingError || page?.qualityStatus === 'failed') {
-      return { label: 'Needs attention · Check failures detected', tone: 'warning' as const };
+      return { label: 'Needs attention · Indexing or quality check failed', tone: 'warning' as const };
     }
     if (page?.embeddingStatus === 'embedding' || page?.qualityStatus === 'analyzing') {
-      return { label: 'Pipeline active · Indexing in progress', tone: 'active' as const };
+      return { label: 'Indexing in progress', tone: 'active' as const };
+    }
+    if (page?.embeddingStatus === 'not_embedded') {
+      return { label: 'Not yet indexed for AI search', tone: 'warning' as const };
+    }
+    if (page?.qualityScore !== undefined && page?.qualityScore !== null && page.qualityScore < 50) {
+      return { label: 'Quality attention needed · Low score', tone: 'warning' as const };
     }
     if (verifiedDateStr) {
       return { label: 'Verified and ready for AI search', tone: 'healthy' as const };
     }
     return { label: 'Indexed for AI search', tone: 'neutral' as const };
-  }, [page?.embeddingError, page?.embeddingStatus, page?.qualityStatus, verifiedDateStr]);
+  }, [page?.embeddingError, page?.embeddingStatus, page?.qualityStatus, page?.qualityScore, verifiedDateStr]);
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -1630,38 +1638,46 @@ export function ArticleRightPane({
       ) : page ? (
         <div className="px-3 py-4">
           <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
-          {/* Label/value pairs, no rules. The dividers here drew six lines in a
-              320px pane to separate rows that a 32px rhythm and the
-              muted-label/ink-value contrast already separate — and the sections
-              below ("Document health", "Labels") never had them. */}
-          <dl className="mt-2 text-xs">
-            <div className="flex items-center justify-between gap-3 py-2">
-              <dt className="text-muted-foreground">Space</dt>
-              <dd className="truncate font-medium text-foreground/85">{page.spaceKey}</dd>
+
+          <div className="mt-2 rounded-lg border border-border bg-card p-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                {page.source === 'standalone' ? <FolderOpen size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}
+              </span>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-semibold text-foreground" title={page.spaceKey ?? undefined}>
+                  {page.spaceKey}
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {page.source === 'standalone' ? 'Local space storage' : 'Synced from Confluence Data Center'}
+                </div>
+              </div>
             </div>
-            <div className="flex items-center justify-between gap-3 py-2">
+            {canRelocate && !editing && (
+              <button
+                type="button"
+                onClick={() => setRelocateOpen(true)}
+                data-testid="relocate-btn"
+                title={
+                  page.source === 'standalone'
+                    ? 'Publish this article into a Confluence space'
+                    : 'Pull this page out of Confluence into a local space'
+                }
+                className="mt-2 inline-flex min-h-[28px] w-full items-center justify-center gap-1.5 rounded border border-border-interactive bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowRightLeft size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span>{page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}</span>
+              </button>
+            )}
+          </div>
+
+          <dl className="mt-3 text-xs">
+            <div className="flex items-center justify-between gap-3 py-1.5">
               <dt className="text-muted-foreground">Source</dt>
-              <dd className="flex min-w-0 items-center gap-2 font-medium text-foreground/85">
-                <span className="truncate">{page.source === 'standalone' ? 'Local' : 'Confluence'}</span>
-                {canRelocate && !editing && (
-                  <button
-                    type="button"
-                    onClick={() => setRelocateOpen(true)}
-                    data-testid="relocate-btn"
-                    title={
-                      page.source === 'standalone'
-                        ? 'Publish this article into a Confluence space'
-                        : 'Pull this page out of Confluence into a local space'
-                    }
-                    className="shrink-0 text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  >
-                    {page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}
-                  </button>
-                )}
-              </dd>
+              <dd className="font-medium text-foreground/85">{page.source === 'standalone' ? 'Local' : 'Confluence'}</dd>
             </div>
             {page.source === 'standalone' && (
-              <div className="flex items-center justify-between gap-3 py-2">
+              <div className="flex items-center justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">Visibility</dt>
                 <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
                   {page.visibility === 'shared' ? (
@@ -1673,14 +1689,14 @@ export function ArticleRightPane({
               </div>
             )}
             {'hasDraft' in page && Boolean((page as Record<string, unknown>).hasDraft) && (
-              <div className="flex items-center justify-between gap-3 py-2">
+              <div className="flex items-center justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">Draft</dt>
                 <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
                   <AlertCircle size={13} className="text-muted-foreground" /> Unpublished draft
                 </dd>
               </div>
             )}
-            <div className="flex items-center justify-between gap-3 py-2">
+            <div className="flex items-center justify-between gap-3 py-1.5">
               <dt className="text-muted-foreground">Type</dt>
               <dd className="flex items-center gap-1.5 font-medium text-foreground/85">
                 {page.pageType === 'folder'
@@ -1689,23 +1705,23 @@ export function ArticleRightPane({
               </dd>
             </div>
             {page.author && (
-              <div className="flex items-center justify-between gap-3 py-2">
+              <div className="flex items-center justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">Author</dt>
                 <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
               </div>
             )}
-            <div className="flex items-center justify-between gap-3 py-2">
+            <div className="flex items-center justify-between gap-3 py-1.5">
               <dt className="text-muted-foreground">Version</dt>
               <dd className="font-medium tabular-nums text-foreground/85">v{page.version}</dd>
             </div>
           </dl>
 
-          <div className="mt-4">
-            <div className="text-[11px] font-semibold text-muted-foreground">Document health</div>
-            <div className="mt-1.5 mb-2.5 flex items-center gap-2 text-xs font-medium text-foreground/85">
+          <div className="mt-4 rounded-lg border border-border bg-card p-2.5">
+            <div className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Document health</div>
+            <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
               <span
                 className={cn(
-                  'size-2 rounded-full shrink-0',
+                  'mt-1 size-2 rounded-full shrink-0',
                   overallHealth.tone === 'warning' && 'bg-warning',
                   overallHealth.tone === 'active' && 'bg-status-ai animate-pulse',
                   overallHealth.tone === 'healthy' && 'bg-success',
@@ -1715,29 +1731,34 @@ export function ArticleRightPane({
               />
               <span>{overallHealth.label}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
-              <span
-                className="inline-flex items-center gap-1 rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-                data-testid="verification-chip"
-              >
-                <ShieldCheck size={11} aria-hidden="true" />
-                {verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}
-              </span>
+            <div className="mt-2.5">
               <button
                 type="button"
                 onClick={() => { void handleVerify(); }}
                 disabled={verifyMutation.isPending}
                 data-testid="verify-btn"
                 aria-busy={verifyMutation.isPending}
-                className="text-[11px] font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+                title="Record that this article has been reviewed and verified for accuracy"
+                className="inline-flex min-h-[28px] w-full items-center justify-center gap-1.5 rounded border border-dashed border-border-interactive bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
               >
-                {verifyMutation.isPending ? 'Recording…' : 'Record verification'}
+                <CheckCircle2 size={12} className="shrink-0 opacity-70" aria-hidden="true" />
+                <span>{verifyMutation.isPending ? 'Recording…' : 'Record verification'}</span>
               </button>
               {verifyStatusMsg && (
                 <span className="sr-only" role="status" aria-live="polite">
                   {verifyStatusMsg}
                 </span>
               )}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="document-health-badges">
+              <span
+                className="inline-flex min-h-[24px] items-center gap-1 rounded-full border border-border bg-background/45 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+                data-testid="verification-chip"
+                title={verifiedDateStr ? `Human-verified on ${verifiedDateStr}` : 'Not yet verified by a reviewer'}
+              >
+                <ShieldCheck size={12} aria-hidden="true" />
+                <span>{verifiedDateStr ? `Verified ${verifiedDateStr}` : 'Not verified'}</span>
+              </span>
               {page.lastModifiedAt && <FreshnessBadge lastModified={page.lastModifiedAt} />}
               <EmbeddingStatusBadge
                 embeddingStatus={page.embeddingStatus}
@@ -1746,9 +1767,9 @@ export function ArticleRightPane({
                 embeddingError={page.embeddingError}
                 onRetry={handleReembed}
               />
-              {page.qualityScore !== undefined && page.qualityScore !== null && (
+              {(page.qualityScore !== undefined && page.qualityScore !== null || page.qualityStatus) && (
                 <QualityScoreBadge
-                  qualityScore={page.qualityScore}
+                  qualityScore={page.qualityScore ?? null}
                   qualityStatus={page.qualityStatus ?? null}
                   qualityCompleteness={page.qualityCompleteness}
                   qualityClarity={page.qualityClarity}
@@ -1763,9 +1784,9 @@ export function ArticleRightPane({
             </div>
           </div>
 
-          {page.labels.length > 0 && (
-            <div className="mt-4">
-              <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+            {page.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
                 {page.labels.map((label) => (
                   <span
@@ -1776,8 +1797,10 @@ export function ArticleRightPane({
                   </span>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="mt-1.5 text-xs text-muted-foreground">No labels assigned</p>
+            )}
+          </div>
         </div>
       ) : null}
 
@@ -1952,7 +1975,26 @@ export function ArticleRightPane({
             </div>
           </details>
 
-          <details className="group mt-1">
+        </div>
+      )}
+      {id && page && (
+        <div id="details-notes-section" className="px-3 pb-4 pt-3" data-testid="details-notes-section">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
+            {openNotesCount > 0 && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
+                {openNotesCount} open
+              </span>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <NotesInspectorPanel pageId={id} className="min-h-[240px] max-h-[420px]" />
+          </div>
+        </div>
+      )}
+      {!editing && page && (
+        <div className="px-2 pb-5 pt-1">
+          <details className="group">
             <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground transition-colors marker:content-none hover:bg-destructive/8 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
               <ChevronRight
                 size={13}
@@ -1972,21 +2014,6 @@ export function ArticleRightPane({
               <span className="truncate">Move to trash</span>
             </Button>
           </details>
-        </div>
-      )}
-      {id && page && (
-        <div id="details-notes-section" className="px-3 pb-5 pt-3" data-testid="details-notes-section">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
-            {openNotesCount > 0 && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
-                {openNotesCount} open
-              </span>
-            )}
-          </div>
-          <div className="overflow-hidden rounded-lg border border-border bg-card">
-            <NotesInspectorPanel pageId={id} className="min-h-[320px] max-h-[480px]" />
-          </div>
         </div>
       )}
       </div>
