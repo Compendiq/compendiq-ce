@@ -319,6 +319,8 @@ function ModelPicker({
       onChange={(next) => onChange(next || null)}
       testId={testId}
       ariaLabel={ariaLabel}
+      allowCustom
+      emptyMessage="No listed models. Type an id and press Enter."
     />
   );
 }

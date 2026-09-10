@@ -43,6 +43,49 @@ describe('openai-compatible-client', () => {
   });
 });
 
+describe('openai-compatible-client — nested embeddings/models catalog', () => {
+  let nestSrv: Server;
+  let nestBase: string;
+  beforeAll(async () => {
+    nestSrv = createServer((req, res) => {
+      if (req.url === '/v1/embeddings/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'openai/text-embedding-3-small' }] }));
+        return;
+      }
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'openai/gpt-4o-mini' }] }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((r) => nestSrv.listen(0, r));
+    const { port } = nestSrv.address() as AddressInfo;
+    nestBase = `http://127.0.0.1:${port}/v1`;
+  });
+  afterAll(() => new Promise<void>((r) => nestSrv.close(() => r())));
+
+  it('lists embedding models from …/embeddings/models, not the chat catalog', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'nested-emb',
+      baseUrl: `${nestBase}/embeddings`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['openai/text-embedding-3-small']);
+  });
+
+  it('falls back to sibling /models when nested /rerank/models 404s', async () => {
+    const r = await listModels({
+      ...cfg,
+      providerId: 'nested-rerank',
+      baseUrl: `${nestBase}/rerank`,
+    });
+    expect(r.map((m) => m.name)).toEqual(['openai/gpt-4o-mini']);
+  });
+});
+
 // ─── #1185: listModels finishes the LlmHttpError conversion started by #1181 ─
 describe('openai-compatible-client — listModels surfaces HTTP error as LlmHttpError (#1185)', () => {
   let errSrv: Server;
