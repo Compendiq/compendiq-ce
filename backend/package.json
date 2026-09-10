@@ -1,6 +1,6 @@
 {
   "name": "backend",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "//hoisting-note": "The runtime Docker stage only copies the root node_modules tree, so any prod dep that ends up nested under backend/node_modules disappears at runtime. The @opentelemetry runtime packages are force-hoisted via a mirror in the root package.json `dependencies` block (a conflicting root devDep chain would otherwise nest them) — change those ranges in lockstep with the root mirror. `p-limit` and `ipaddr.js` currently hoist naturally (their old root mirror was removed as redundant); the docker-build smoke step imports all of them and is the safety net, but local repros are faster.",

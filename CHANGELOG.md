@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-10
+
+> Minor: Notion import, encrypted backup, Connections, custom templates, Paper palette. 649 commits since v0.7.2.
+
 ### Added
 
 - Notion Board databases are marked incompatible on import. Compendiq does not become a Kanban: the board itself is not imported, and selected cards become articles under a parent named after the Notion page that contains the database.
