@@ -26,6 +26,7 @@
  */
 import pLimit from 'p-limit';
 import { formatQueryForEmbedding } from '../services/query-instruction.js';
+import { providerResourceUrl } from '../services/provider-url.js';
 import { assertKnownFlags, flagValue, wantsHelp } from './cli-flags.js';
 import { IMAGE_AXIS_CORPUS_CLAIM } from './images-axis.js';
 import { percentile, round } from './latency-stats.js';
@@ -74,8 +75,8 @@ export const BENCHMARK_USAGE = [
   'scripts/benchmark-query-latency.ts — query-time latency under concurrency (#1114)',
   '',
   `  --base-url <url>     embedding endpoint (default: $EVAL_EMBEDDING_BASE_URL; there is no built-in default).`,
-  '                       Spelled exactly as the provider row is: the request goes to <base-url>/embeddings,',
-  '                       which is what generateEmbedding does — nothing here guesses a /v1 for you.',
+  '                       Spelled as the provider row is. generateEmbedding joins /embeddings unless the',
+  '                       stored URL already ends with that path — nothing here guesses a /v1 for you.',
   `  --models a,b         model ids for the EMBEDDING half (default: ${DEFAULT_LATENCY_MODELS.join(',')}).`,
   '                       --mode search and --mode both take exactly ONE model: the search half reads its',
   '                       model from the seeded database, so a second id would be a label with no',
@@ -317,26 +318,13 @@ export function sampleQueries<T>(labels: readonly T[], n: number): T[] {
 
 /**
  * The embeddings endpoint for a base URL: exactly what `generateEmbedding`
- * does with a provider row, which is `${cfg.baseUrl}/embeddings` and no
- * normalisation at all.
+ * does with a provider row (`providerResourceUrl(baseUrl, 'embeddings')`).
  *
- * It used to guess: a base URL without `/v1` was rewritten to
- * `${host}/v1/embeddings`. That guess is not the product's behaviour, and it
- * cost twice (review r3). The embedding half timed a URL the product would
- * never call for such a row — so the number described a different request —
- * and `assertSearchArmMatchesAssignment` compared its two endpoints *through*
- * this function, so a `/v1` arm passed against an assignment pointing at the
- * bare host, whose search half then embedded somewhere else. `--base-url` is
- * the spelling that goes into `llm_providers.base_url` verbatim when
- * `run-retrieval-eval.ts` seeds; the spelling that works there is the one that
- * has to work here.
- *
- * Trailing slashes are trimmed, and only that: `http://h/v1/` and `http://h/v1`
- * are the same endpoint to every server, and the assignment check needs the two
- * spellings not to read as a mismatch.
+ * Trailing slashes are trimmed. A stored `…/v1/embeddings` path is called as
+ * typed — it is not given a second `/embeddings`.
  */
 export function embeddingsUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/embeddings`;
+  return providerResourceUrl(baseUrl, 'embeddings');
 }
 
 /**

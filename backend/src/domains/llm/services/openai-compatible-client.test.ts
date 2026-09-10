@@ -818,6 +818,15 @@ describe('openai-compatible-client — embeddings', () => {
     const r = await generateEmbedding({ ...cfg, baseUrl: embBase }, 'bge-m3', 'a');
     expect(r).toHaveLength(2);  // fake server returns both rows regardless
   });
+
+  it('posts to a stored …/embeddings URL without appending /embeddings again', async () => {
+    const r = await generateEmbedding(
+      { ...cfg, baseUrl: `${embBase}/embeddings` },
+      'bge-m3',
+      ['a'],
+    );
+    expect(r).toEqual([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]);
+  });
 });
 
 // ─── #821 / #1185: HTTP error body must reach the thrown error as a field ───

@@ -284,9 +284,10 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
             {activePreset.id === 'custom' ? (
               <>
                 For local servers (LM Studio, vLLM) in Docker, use{' '}
-                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. Paste the
-                API root, not a specific endpoint — <code className="text-foreground">/embeddings</code> is
-                stripped, and <code className="text-foreground">/v1</code> is added only if missing.
+                <code className="text-foreground">http://host.docker.internal:1234/v1</code>. The URL is
+                stored as typed — <code className="text-foreground">/embeddings</code> and{' '}
+                <code className="text-foreground">/rerank</code> are kept. <code className="text-foreground">/v1</code>{' '}
+                is added only to a bare host.
               </>
             ) : activePreset.id === 'azure-openai' ? (
               <>
@@ -295,8 +296,10 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
               </>
             ) : (
               <>
-                {activePreset.urlHelper} Embeddings POST to this root plus{' '}
-                <code className="text-foreground">/embeddings</code> — paste the root, not that path.
+                {activePreset.urlHelper} The URL is stored as typed. Paste{' '}
+                <code className="text-foreground">…/v1/embeddings</code> or{' '}
+                <code className="text-foreground">…/v1/rerank</code> when this provider is that
+                endpoint.
               </>
             )}
           </p>
