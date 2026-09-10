@@ -284,8 +284,29 @@ describe('ProviderEditModal — presets', () => {
     expect(screen.getByTestId('preset-overwrite-confirm')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /keep current/i }));
     expect(baseUrlInput().value).toBe('http://localhost:11434/v1');
-    expect(presetSelect().value).toBe('custom');
+    expect(presetSelect().value).toBe('openai');
     expect(screen.queryByTestId('preset-overwrite-confirm')).toBeNull();
+  });
+
+  it('keeps the selected preset when the URL is edited to an embeddings path', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(presetSelect(), { target: { value: 'openrouter' } });
+    fireEvent.change(baseUrlInput(), { target: { value: 'https://openrouter.ai/api/v1/embeddings' } });
+    expect(presetSelect().value).toBe('openrouter');
+    expect(baseUrlInput().value).toBe('https://openrouter.ai/api/v1/embeddings');
+  });
+
+  it('reverts the preset on Escape rather than Keep current', () => {
+    const Wrapper = createWrapper();
+    render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
+    fireEvent.change(baseUrlInput(), { target: { value: 'https://openrouter.ai/api/v1/embeddings' } });
+    fireEvent.change(presetSelect(), { target: { value: 'openrouter' } });
+    expect(screen.getByTestId('preset-overwrite-confirm')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('preset-overwrite-confirm')).toBeNull();
+    expect(presetSelect().value).toBe('custom');
+    expect(baseUrlInput().value).toBe('https://openrouter.ai/api/v1/embeddings');
   });
 
   it('replaces a typed URL after confirm and never clears a typed API key', () => {
@@ -398,11 +419,29 @@ describe('ProviderEditModal — edit presets', () => {
     expect(screen.getByTestId('preset-overwrite-confirm')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: /keep current/i }));
     expect(baseUrlInput().value).toBe('http://localhost:11434/v1');
-    expect(presetSelect().value).toBe('custom');
-    fireEvent.change(presetSelect(), { target: { value: 'openai' } });
+    expect(presetSelect().value).toBe('openai');
+    fireEvent.change(presetSelect(), { target: { value: 'deepseek' } });
     fireEvent.click(screen.getByRole('button', { name: /use preset/i }));
-    expect(baseUrlInput().value).toBe('https://api.openai.com/v1');
-    expect(defaultModelInput().value).toBe('gpt-4.1-mini');
+    expect(baseUrlInput().value).toBe('https://api.deepseek.com/v1');
+    expect(defaultModelInput().value).toBe('deepseek-chat');
+  });
+
+  it('infers a hosted preset from a stored embeddings URL instead of Custom', () => {
+    const Wrapper = createWrapper();
+    const initial = {
+      ...savedProvider,
+      name: 'OpenRouter embedder',
+      baseUrl: 'https://openrouter.ai/api/v1/embeddings',
+      defaultModel: 'qwen/qwen3-embedding-8b',
+      hasApiKey: true,
+      keyPreview: 'sk-****abcd',
+    };
+    render(
+      <ProviderEditModal mode="edit" initial={initial} open onClose={() => {}} onSaved={() => {}} />,
+      { wrapper: Wrapper },
+    );
+    expect(presetSelect().value).toBe('openrouter');
+    expect(baseUrlInput().value).toBe('https://openrouter.ai/api/v1/embeddings');
   });
 });
 
