@@ -822,7 +822,11 @@ and runs `runNotionImport` off the request. `GET /api/notion/import/status` is
 the result. A Knowledge Base with nested pages outruns nginx
 `proxy_read_timeout 300` at Notion's 3 req/s; waiting on the POST is the FTS
 rebuild 504 (browser error, work continues). Never put paced Notion traffic
-back on that HTTP request. A second POST while status is `importing` is 409.
+back on that HTTP request. Start is `SET NX` on a per-user lock with a 10-minute
+safety TTL (renewed while the walk runs) — a second POST while the lock is held
+is 409. Renew, release, and terminal status writes are Lua compare-and-swap on
+the lock token (same as Confluence `SYNC_LOCK_TTL`). `importing` is not a 24h
+mutex; a missing Redis status key is idle. Redis SET NX throwing fail-closes.
 
 
 **That 3 req/s budget is spent by `NotionClient`, not by its callers (#1553).**

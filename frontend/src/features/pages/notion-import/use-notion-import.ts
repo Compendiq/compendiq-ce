@@ -8,14 +8,27 @@ import {
 import { ApiError, apiFetch } from '../../../shared/lib/api';
 
 const IMPORT_POLL_MS = 1000;
+/** Redis/replica lag after 202 can answer idle once; fail only after this many. */
+const IDLE_GRACE_POLLS = 5;
 
 async function waitForNotionImport(): Promise<NotionImportResponse> {
+  let idlePolls = 0;
+  let seenImporting = false;
   for (;;) {
     const status = NotionImportStatusSchema.parse(await apiFetch('/notion/import/status'));
     if (status.status === 'complete') return { items: status.items };
     if (status.status === 'error') throw new ApiError(502, status.error);
-    if (status.status === 'idle') {
-      throw new ApiError(502, 'Notion import did not start');
+    if (status.status === 'importing') {
+      seenImporting = true;
+      idlePolls = 0;
+    } else {
+      idlePolls += 1;
+      if (seenImporting || idlePolls >= IDLE_GRACE_POLLS) {
+        throw new ApiError(
+          502,
+          seenImporting ? 'Notion import ended without a result' : 'Notion import did not start',
+        );
+      }
     }
     const { promise, resolve } = Promise.withResolvers<void>();
     setTimeout(resolve, IMPORT_POLL_MS);

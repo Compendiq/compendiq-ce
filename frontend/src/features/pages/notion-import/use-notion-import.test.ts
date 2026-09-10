@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { useAuthStore } from '../../../stores/auth-store';
 import { prefetchNotionConnection, useRunNotionImport } from './use-notion-import';
@@ -113,6 +113,7 @@ describe('useRunNotionImport', () => {
   afterEach(() => {
     useAuthStore.getState().clearAuth();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   function wrapper({ children }: { children: ReactNode }) {
@@ -139,6 +140,52 @@ describe('useRunNotionImport', () => {
     await expect(result.current.mutateAsync({ pageIds: ['notes'], visibility: 'private' })).rejects.toBeInstanceOf(
       ApiError,
     );
+  });
+
+  it('polls through importing then returns items', async () => {
+    vi.useFakeTimers();
+    statusBodies = [
+      { status: 'importing' },
+      { status: 'complete', items: [{ notionPageId: 'notes', status: 'success', localPageId: 11 }] },
+    ];
+    const { result } = renderHook(() => useRunNotionImport(), { wrapper });
+    const pending = result.current.mutateAsync({ pageIds: ['notes'], visibility: 'private' });
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    await expect(pending).resolves.toEqual({
+      items: [{ notionPageId: 'notes', status: 'success', localPageId: 11 }],
+    });
+    expect(calls.filter((c) => c.method === 'GET').length).toBe(2);
+  });
+
+  it('retries an initial idle status then returns items', async () => {
+    vi.useFakeTimers();
+    statusBodies = [
+      { status: 'idle' },
+      { status: 'importing' },
+      { status: 'complete', items: [{ notionPageId: 'notes', status: 'success', localPageId: 11 }] },
+    ];
+    const { result } = renderHook(() => useRunNotionImport(), { wrapper });
+    const pending = result.current.mutateAsync({ pageIds: ['notes'], visibility: 'private' });
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    await expect(pending).resolves.toEqual({
+      items: [{ notionPageId: 'notes', status: 'success', localPageId: 11 }],
+    });
+  });
+
+  it('fails after repeated idle status', async () => {
+    vi.useFakeTimers();
+    statusBodies = [];
+    const { result } = renderHook(() => useRunNotionImport(), { wrapper });
+    const pending = result.current.mutateAsync({ pageIds: ['notes'], visibility: 'private' });
+    const rejection = expect(pending).rejects.toMatchObject({ message: 'Notion import did not start' });
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    await rejection;
   });
 });
 
