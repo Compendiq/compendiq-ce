@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nested pages in a local space can be reordered with drag-and-drop, same
+  as top-level pages. They previously shared one sortable list with the
+  roots, so a parent's droppable swallowed its children.
+
 - Provider URLs are stored as typed. Pasting
   `https://openrouter.ai/api/v1/embeddings` or `…/v1/rerank` no longer strips
   the resource or appends another `/v1`. Bare hosts still get `/v1`. The client

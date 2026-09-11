@@ -25,6 +25,12 @@ export interface DndLocalSpaceTreeProps {
   onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
+// dnd-kit's default (omitted `group`) is one list. Nested rows then share
+// indices with roots (child 0 vs root 0) and a parent's droppable swallows
+// its children, so only top-level reorder worked. One group per visual
+// sibling list. Distinct from any page id (numeric) and from `undefined`.
+const ROOT_SORTABLE_GROUP = '__root__';
+
 interface DndSortableTreeNodeProps {
   node: TreeNode;
   level?: number;
@@ -32,6 +38,7 @@ interface DndSortableTreeNodeProps {
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
   sortableIndex: number;
+  sortableGroup: string;
   rovingId: string | undefined;
   onRowFocus: (id: string) => void;
   onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
@@ -44,6 +51,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   toggleExpand,
   activePageId,
   sortableIndex,
+  sortableGroup,
   rovingId,
   onRowFocus,
   onRowKeyDown,
@@ -71,6 +79,11 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   const sortable = useSortable({
     id: node.page.id,
     index: sortableIndex,
+    group: sortableGroup,
+    // type/accept pinned to the group so a drop cannot reparent. Reparenting
+    // is PUT /pages/:id/move; /reorder only renumbers the current siblings.
+    type: sortableGroup,
+    accept: sortableGroup,
     disabled: false,
     handle: handleRef,
   });
@@ -262,6 +275,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               sortableIndex={idx}
+              sortableGroup={node.page.id}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
               onRowKeyDown={onRowKeyDown}
@@ -278,6 +292,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
     prev.sortableIndex === next.sortableIndex &&
+    prev.sortableGroup === next.sortableGroup &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
     prev.onRowKeyDown === next.onRowKeyDown
@@ -299,10 +314,16 @@ export default function DndLocalSpaceTree({
       if (event.canceled) return;
       const source = event.operation?.source;
       if (!source || !isSortable(source)) return;
+      if (!('initialIndex' in source)) return;
 
       const currentIndex = source.index;
-      const startIndex = 'initialIndex' in source ? (source as { initialIndex: number }).initialIndex : currentIndex;
+      const startIndex = source.initialIndex;
       if (startIndex === currentIndex) return;
+
+      // OptimisticSortingPlugin rewrites `group` when a foreign droppable
+      // accepts the source. /reorder only renumbers the current sibling
+      // group — a group change would persist the wrong index.
+      if (source.initialGroup !== source.group) return;
 
       const pageId = String(source.id);
       reorderPage.mutate({ id: pageId, sortOrder: currentIndex });
@@ -330,6 +351,7 @@ export default function DndLocalSpaceTree({
             toggleExpand={toggleExpand}
             activePageId={activePageId}
             sortableIndex={idx}
+            sortableGroup={ROOT_SORTABLE_GROUP}
             rovingId={rovingId}
             onRowFocus={onRowFocus}
             onRowKeyDown={onRowKeyDown}

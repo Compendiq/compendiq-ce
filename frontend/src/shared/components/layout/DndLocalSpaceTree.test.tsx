@@ -12,17 +12,28 @@ import type { TreeNode } from './sidebar-types';
 // correctly, since the real library's activator-instrumentation behavior
 // (the thing that regressed — see DndLocalSpaceTree.tsx) is exactly what this
 // mock replaces and therefore cannot exercise on its own.
-const { useSortableSpy } = vi.hoisted(() => ({
+const { useSortableSpy, dragEndRef } = vi.hoisted(() => ({
   useSortableSpy: vi.fn((_input: unknown) => ({ ref: { current: null }, isDragging: false })),
+  dragEndRef: { current: undefined as ((event: unknown) => void) | undefined },
 }));
 
 vi.mock('@dnd-kit/react', () => ({
-  DragDropProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DragDropProvider: ({
+    children,
+    onDragEnd,
+  }: {
+    children: React.ReactNode;
+    onDragEnd?: (event: unknown) => void;
+  }) => {
+    dragEndRef.current = onDragEnd;
+    return <>{children}</>;
+  },
 }));
 
 vi.mock('@dnd-kit/react/sortable', () => ({
   useSortable: (input: unknown) => useSortableSpy(input),
-  isSortable: () => false,
+  isSortable: (value: unknown) =>
+    Boolean(value && typeof value === 'object' && 'index' in (value as object)),
 }));
 
 const mockNavigate = vi.fn();
@@ -88,6 +99,7 @@ describe('DndLocalSpaceTree', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     useSortableSpy.mockClear();
+    dragEndRef.current = undefined;
   });
 
   it('renders all root-level pages', () => {
@@ -139,6 +151,100 @@ describe('DndLocalSpaceTree', () => {
     const call = useSortableSpy.mock.calls[0]![0] as { handle?: { current: unknown } };
     expect(call.handle).toBeDefined();
     expect(call.handle!.current).toBe(container.querySelector('.cursor-grab'));
+  });
+
+  // Nested rows used to omit `group`, so they shared dnd-kit's default list
+  // with the roots. Indices collided (child 0 vs root 0) and a parent's
+  // droppable swallowed its children — only top-level reorder worked.
+  // One group per visual sibling list, type/accept pinned to that group.
+  it('isolates nested siblings into their own sortable group', () => {
+    renderTree({
+      expandedIds: new Set(['p2', 'p3']),
+      tree: [
+        makeNode('p1', 'Page One'),
+        makeNode('p2', 'Page Two', [
+          makeNode('p2-c1', 'Child A'),
+          makeNode('p2-c2', 'Child B'),
+        ]),
+        makeNode('p3', 'Page Three', [makeNode('p3-c1', 'Child of Three')]),
+      ],
+    });
+
+    const calls = useSortableSpy.mock.calls.map(
+      ([input]) => input as { id: string; index: number; group?: string; type?: string; accept?: string },
+    );
+    const call = (id: string) => calls.find((c) => c.id === id);
+
+    expect(call('p1')?.group).toBe('__root__');
+    expect(call('p2')?.group).toBe('__root__');
+    expect(call('p3')?.group).toBe('__root__');
+    expect(call('p1')?.index).toBe(0);
+    expect(call('p2')?.index).toBe(1);
+    expect(call('p3')?.index).toBe(2);
+
+    expect(call('p2-c1')?.group).toBe('p2');
+    expect(call('p2-c2')?.group).toBe('p2');
+    expect(call('p2-c1')?.index).toBe(0);
+    expect(call('p2-c2')?.index).toBe(1);
+
+    expect(call('p3-c1')?.group).toBe('p3');
+    expect(call('p3-c1')?.index).toBe(0);
+
+    for (const sortable of calls) {
+      expect(sortable.type).toBe(sortable.group);
+      expect(sortable.accept).toBe(sortable.group);
+    }
+  });
+
+  it('persists a nested sibling drop as that child\'s sortOrder', () => {
+    const mutate = vi.fn();
+    renderTree({
+      expandedIds: new Set(['p2']),
+      reorderPage: { mutate },
+      tree: [
+        makeNode('p1', 'Page One'),
+        makeNode('p2', 'Page Two', [
+          makeNode('p2-c1', 'Child A'),
+          makeNode('p2-c2', 'Child B'),
+        ]),
+      ],
+    });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p2-c2',
+          index: 0,
+          initialIndex: 1,
+          group: 'p2',
+          initialGroup: 'p2',
+        },
+      },
+    });
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith({ id: 'p2-c2', sortOrder: 0 });
+  });
+
+  it('does not persist a drop that changed sortable group (reparent)', () => {
+    const mutate = vi.fn();
+    renderTree({ reorderPage: { mutate } });
+
+    dragEndRef.current?.({
+      canceled: false,
+      operation: {
+        source: {
+          id: 'p2-c1',
+          index: 1,
+          initialIndex: 0,
+          group: '__root__',
+          initialGroup: 'p2',
+        },
+      },
+    });
+
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('navigates to page on click', () => {
