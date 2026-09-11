@@ -2983,10 +2983,15 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 /* Notion-style page links: inherit the article colour and stay underlined.
    `.prose :where(a)` paints every link Steel and only underlines on hover —
    that treatment is chrome, not a document title.
-   Underline the title span, not the flex row: a decoration on the `a` paints
-   each flex item separately and skips spaces, so "File System Issues" would
-   read as three underlines. skip-ink/skip-spaces none keeps one line through
-   the whole phrase. */
+
+   The rule is a 1px background on the *inline* title, not `text-decoration`.
+   Decorating the flex row paints each flex item separately and skips spaces,
+   so "File System Issues" reads as three underlines. `text-decoration-skip-
+   spaces: none` is missing in WebKit and still gaps a multi-word title there.
+   `box-decoration-break: clone` keeps one continuous rule under each wrapped
+   line, spaces included. Mixes stay well below body ink so a dense index
+   does not read as a link farm — Paper's dark-on-light rule is a step quieter
+   than Graphite's because the same mix reads heavier on white. */
 .prose .confluence-children-view a,
 .tiptap .confluence-children-view a {
   color: inherit;
@@ -2996,17 +3001,18 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      pages-list accent fill. Include background so hover eases like a row. */
   transition:
     color 0.15s ease,
-    text-decoration-color 0.15s ease,
     background-color 0.15s ease;
 }
 .prose .confluence-children-view a .children-directory-title,
 .tiptap .confluence-children-view a .children-directory-title {
-  text-decoration: underline;
-  text-decoration-thickness: from-font;
-  text-underline-offset: 0.18em;
-  text-decoration-color: oklch(from var(--color-foreground) l c h / 0.45);
-  text-decoration-skip-ink: none;
-  text-decoration-skip-spaces: none;
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 22%, transparent);
+  text-decoration: none;
+  background-image: linear-gradient(var(--children-title-rule), var(--children-title-rule));
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+  background-position: 0 calc(1em + 0.14em);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .prose .confluence-children-view a:hover,
 .tiptap .confluence-children-view a:hover {
@@ -3015,8 +3021,15 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 }
 .prose .confluence-children-view a:hover .children-directory-title,
 .tiptap .confluence-children-view a:hover .children-directory-title {
-  text-decoration: underline;
-  text-decoration-color: var(--color-foreground);
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 36%, transparent);
+}
+[data-theme-type="light"] .prose .confluence-children-view a .children-directory-title,
+[data-theme-type="light"] .tiptap .confluence-children-view a .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 16%, transparent);
+}
+[data-theme-type="light"] .prose .confluence-children-view a:hover .children-directory-title,
+[data-theme-type="light"] .tiptap .confluence-children-view a:hover .children-directory-title {
+  --children-title-rule: color-mix(in oklab, var(--color-foreground) 28%, transparent);
 }
 
 /* Confluence layout macros — multi-column grid */
