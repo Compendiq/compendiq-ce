@@ -399,7 +399,7 @@ describe('BulkActionBar', () => {
     );
 
     const bar = screen.getByTestId('bulk-action-bar');
-    expect(bar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated', 'rounded-2xl', 'shadow-overlay');
+    expect(bar).toHaveClass('fixed', 'bottom-6', 'nm-popover-glass', 'rounded-2xl');
   });
 });
 

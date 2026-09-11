@@ -3254,7 +3254,7 @@ describe('PagesPage filter persistence (#1124)', () => {
       fireEvent.keyDown(secondRowBtn, { key: ' ' });
       const bulkBar = await screen.findByTestId('bulk-action-bar');
       expect(bulkBar).toBeInTheDocument();
-      expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-card-elevated');
+      expect(bulkBar).toHaveClass('fixed', 'bottom-6', 'nm-popover-glass');
       expect(screen.getByTestId('bulk-selection-count')).toHaveTextContent('1 page selected');
     });
 
