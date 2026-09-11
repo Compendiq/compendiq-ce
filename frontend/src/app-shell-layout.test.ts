@@ -100,8 +100,9 @@ describe('Inset shell tokens', () => {
   });
 
   // Since the workspace and rail hairlines came off (2026-08-31), the Pane over
-  // Canvas step is the ONLY thing drawing the card. Both themes were tuned to
-  // land on the same edge — 1.101:1 Graphite, 1.109:1 Paper — and the failure
+  // Canvas step is the ONLY thing drawing the card. Graphite sits at 1.101:1 and
+  // Paper at 1.149:1 — Paper has been as grey as 1.23:1 (2026-09-07) and as flat
+  // as 1.044:1, and the failure
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and
   // was the reason the frame had to be deepened when the line went away).
@@ -320,13 +321,16 @@ describe('Content panes carry no ring', () => {
     // What is left of the sticky strip is the mode-specific setting, and its
     // under-mask must still cover exactly the bar's box: an absolutely
     // positioned mask past the block-end edge grows scrollable overflow in a
-    // container that has none (#769). The DOM half of this is pinned in
+    // container that has none (#769). It paints `bg-card` — the route pane's own
+    // fill (`app-content-pane`) — since 2026-09-11: on `bg-background` the bar
+    // and its mask painted a Workspace-coloured box around the composer inside a
+    // Pane-coloured page. The DOM half of this is pinned in
     // `AiAssistantPage.test.tsx`, which cannot reach diagram mode on /ai.
     const masks = [...aiPage.matchAll(/aria-hidden\s*\n\s*className="([^"]*)"/g)];
     expect(masks.length, 'the /ai under-masks were not found — this guard is stale')
       .toBeGreaterThan(0);
     for (const [, classes] of masks) {
-      expect(classes).toBe('pointer-events-none absolute inset-0 z-[-1] bg-background');
+      expect(classes).toBe('pointer-events-none absolute inset-0 z-[-1] bg-card');
     }
   });
 });
