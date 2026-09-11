@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Floating pop-up borders use a softened contrast rim across both themes, and light
   mode features matching frosted glass with 12px blur and 82% elevated fill.
 - Floating HUDs and overlays (Bulk action bars, Command palette, Toaster notifications,
-  Image lightbox controls, Page preview hover cards, Find & replace, and inline writing aids)
-  use frosted glass (`nm-popover-glass`) for spatial depth above content.
+  Image lightbox controls, Page preview hover cards, Find & replace, inline writing aids,
+  Knowledge graph node tooltips, pending shortcut sequence HUD, mobile table-of-contents button,
+  and mobile AI assistant bottom sheet) use frosted glass (`nm-popover-glass`) for spatial depth above content.
 
 ### Fixed
 
