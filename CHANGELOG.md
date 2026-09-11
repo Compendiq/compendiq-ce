@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the comments drawer) use frosted glass (`nm-popover-glass`) for spatial depth above content.
   The article inspector tab bar is a translucent overlay; Outline, Details, and Assistant
   content scroll underneath it.
+- Light mode's app-shell frame — the top header, left destination rail, and the
+  gutter on all four sides of the workspace card — is a lighter grey
+  (`#F0EFED`). The frame still reads as a step under the white document, left
+  navigation, and context rail, and the destination rail's labels gain contrast
+  on it. Dark mode is unchanged.
+- The AI page's composer no longer sits in a grey box: the sticky bar behind the
+  input field and the diagram-mode setting strip paint the route pane's own
+  colour, so the composer's hairline is the only edge in that region.
 
 ### Fixed
 

@@ -259,8 +259,11 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // destination rail, top app header) three times on 2026-08-30, landing on
   // #fafaf9; then #f4f3f1 on 2026-08-31 when the workspace and context-rail
   // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
-  // against the frame, which is not an edge; then #ebeae8, and then #e8e8e8 on
-  // 2026-09-07, asked for as "more gray" (1.241:1 on Pane). Asserting a hue rule on it would
+  // against the frame, which is not an edge; then #ebeae8; then #e8e8e8 on
+  // 2026-09-07, asked for as "more gray" (1.23:1 on Pane); and #f0efed on
+  // 2026-09-11, asked for as a lighter shell frame (1.149:1 on Pane — the frame
+  // still a step you can see, without reading as a border around the work).
+  // Asserting a hue rule on it would
   // assert the ramp over the owner's own value, so it gets the stricter check
   // instead — its exact value — which catches drift in EITHER direction rather
   // than trading one unguarded token for another. The card edge is measured in
@@ -268,7 +271,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#e8e8e8',
+    '--app-chassis': '#f0efed',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {

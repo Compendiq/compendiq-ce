@@ -1289,9 +1289,10 @@ describe('AiAssistantPage', () => {
 
   });
 
-  // #703 — chat content must not bleed through the translucent sticky bars.
-  // Every sticky bar carries an opaque bg-background under-mask (z-[-1])
-  // covering exactly the bar's box (inset-0).
+  // #703 — chat content must not bleed through the sticky bars. Every sticky
+  // bar carries an opaque under-mask (z-[-1]) covering exactly the bar's box
+  // (inset-0), in the route pane's own colour (bg-card, 2026-09-11: on
+  // bg-background the bar painted a visible box around the composer).
   //
   // 2026-09-01 — there is one bar left at rest. The top sub-header held a
   // single durable option (`Think`), that chip moved into the composers, and
@@ -1323,7 +1324,7 @@ describe('AiAssistantPage', () => {
   // past them unmatched. An allow-list cannot be evaded, at the cost of
   // failing on any legitimate restyle; for a five-class mask that is a
   // feature, not friction.
-  const UNDER_MASK_CLASSES = 'pointer-events-none absolute inset-0 z-[-1] bg-background';
+  const UNDER_MASK_CLASSES = 'pointer-events-none absolute inset-0 z-[-1] bg-card';
 
   describe('sticky bar under-mask (#703, #769, #1218)', () => {
     it('renders no sticky strip above the message pane in a mode with no secondary setting', () => {

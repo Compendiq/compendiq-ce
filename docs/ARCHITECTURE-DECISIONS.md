@@ -1582,6 +1582,20 @@ Light mode only; Graphite is untouched. The framing chassis around the central w
 - The left navigation sidebar (`app-sidebar`) and the right context rail (`app-context-rail`) paint pure white (`#FFFFFF`, `var(--color-card)` / `var(--app-rail-bg)`), unified with the central document canvas (`app-content-pane`).
 - The outer chassis frame — top app header (`app-header`), left destination rail (`MainNavChassisRail`), and bottom rail (chassis bottom padding) — paints the light gray frame tone (`#E8E8E8`, `var(--app-chassis)`).
 - `--color-muted-foreground` is fitted to `#686866` to maintain WCAG AA contrast (4.56:1) against the `#E8E8E8` chassis while preserving warmth (`r > b`).
+
+### v1.4 — the light frame stops reading as a border (2026-09-11)
+
+**Owner decision.** *"Make the grey of the app-shell — the top, left, bottom and right border — lighter, still visible."*
+
+Light mode only; Graphite is untouched. `--app-chassis` goes from `#E8E8E8` to
+`#F0EFED`: eight 8-bit steps lighter, 1.149:1 against the white Pane (it was
+1.23:1). Nothing else in the ramp moves — a lighter frame only adds contrast to
+the inks and edges fitted against it.
+
+- The frame is still a step you can see. The workspace card and the context rail have carried no hairline since v1.1, so the Canvas→Pane value step is the entire boundary; `app-shell-layout.test.ts` holds a 1.08:1 floor under it, and `workspace-themes.test.ts` pins the owner's exact value.
+- Rail labels gain headroom: 12px `--color-muted-foreground` (`#686866`) on the frame measures 4.86:1, up from 4.56:1 against 1.4.3's 4.5:1. `--color-border-interactive` on the frame is 3.34:1, up from 3.13:1 against 1.4.11's 3:1. The secondary ink is therefore a floor under how GREY the frame may go, never a ceiling on how light.
+- A frame light enough to stop reading as a border necessarily lands inside the state-fill band (hover 1.081:1 → selected 1.193:1). That costs nothing: state fills paint rows inside the panes, the frame paints the gutter outside them, and no surface carries both.
+- `--app-login-ground` (`#FAFAF9`) keeps its split from Canvas. It is the ground the login halo was measured against and is owned by `login-halo-surface.test.ts`; the frame having moved past it again does not re-merge the two tokens.
 ---
 
 ## ADR-011: Docker Deployment Architecture
