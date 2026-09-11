@@ -116,6 +116,13 @@ describe('LoginPage', () => {
     expect(screen.getByPlaceholderText('Enter password')).toBeInTheDocument();
   });
 
+  it('floats the sign-in card on the overlay glass surface', () => {
+    mockApi();
+    renderLoginPage();
+    const heading = screen.getByRole('heading', { name: 'Sign in to Compendiq' });
+    expect(heading.closest('section')).toHaveClass('nm-popover-glass');
+  });
+
   it('renders SSO button with the configured IdP display name when OIDC is enabled', async () => {
     mockApi({
       oidc: { enabled: true, issuer: 'https://idp.example.com', name: 'OrgSSO', enterpriseRequired: false },
