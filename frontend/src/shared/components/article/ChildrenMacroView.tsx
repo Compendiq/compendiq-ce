@@ -19,9 +19,12 @@ interface ChildPage {
 
 const UNUSED_CONFLUENCE_PARAMS = ['page', 'first', 'style', 'excerptType'] as const;
 
-/** Compendiq-local display param: two-column directory vs a single stack. */
+/** Compendiq-local display param: two-column directory vs a single stack.
+ *  Unset defaults to two columns; explicit `'1'` is the single-stack opt-out. */
 function isTwoColumnChildrenLayout(value: unknown): boolean {
-  return value === '2' || value === 2;
+  if (value === '1' || value === 1) return false;
+  if (value === '2' || value === 2) return true;
+  return value == null || value === '';
 }
 
 function hasUnusedConfluenceParams(attrs: Record<string, unknown>): boolean {
@@ -94,7 +97,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
     (event: React.MouseEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      updateAttributes({ columns: twoColumns ? null : '2' });
+      updateAttributes({ columns: twoColumns ? '1' : '2' });
     },
     [twoColumns, updateAttributes],
   );
@@ -103,13 +106,14 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
     // Same hover language as PagesPage / the page tree: a flat accent fill,
     // never a border, lift, or Steel. Padding is always on so the fill has
     // somewhere to land without a layout shift; `px-1.5` not `px-2` — the
-    // latter is the old chrome row this directory was stripped of.
+    // latter is the old chrome row this directory was stripped of. `py-0.5`
+    // keeps listed pages stacked like consecutive document lines.
     const titleClass = cn(
-      'nm-focus-ring flex min-w-0 w-full items-start gap-1.5 break-words rounded-md px-1.5 py-1 transition-colors duration-150',
+      'nm-focus-ring flex min-w-0 w-full items-center gap-1.5 break-words rounded-md px-1.5 py-0.5 leading-snug transition-colors duration-150',
       !isEditable && 'hover:bg-accent focus-visible:bg-accent',
     );
     const mark = child.icon ? (
-      <PageIconMark icon={child.icon} pageId={child.id} size="row" className="mt-0.5" />
+      <PageIconMark icon={child.icon} pageId={child.id} size="row" />
     ) : null;
     if (isEditable) {
       return (
@@ -137,9 +141,9 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
       <ul
         className={cn(
           'children-directory m-0 list-none p-0',
-          split && 'grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2',
-          !split && 'flex flex-col gap-1',
-          !root && 'mt-1',
+          split && 'grid grid-cols-1 gap-x-8 gap-y-0 sm:grid-cols-2',
+          !split && 'flex flex-col gap-0',
+          !root && 'mt-0.5',
         )}
       >
         {items.map((child) => (
