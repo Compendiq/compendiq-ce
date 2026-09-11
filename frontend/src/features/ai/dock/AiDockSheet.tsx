@@ -258,7 +258,7 @@ function SheetSurface({ onClose, reduceEffects }: { onClose: () => void; reduceE
         // resolves to `transparent`, so this rendered nothing at all — a dead
         // shadow that read as live. The sheet is an overlay, so it takes the
         // one overlay shadow, same as the comments drawer.
-        'border-t border-border bg-background shadow-[var(--shadow-overlay)]',
+        'nm-popover-glass rounded-b-none',
         // Height is a plain inline style with a CSS transition rather than a
         // framer `animate` value, so the drag tracks the finger with no
         // animation frame between them. The transition is what makes the

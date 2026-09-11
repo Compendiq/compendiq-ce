@@ -403,7 +403,7 @@ export function LocationPicker({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -4, scale: 0.98 }}
                 transition={{ duration: 0.15, ease: 'easeOut' }}
-                className="w-80 nm-card-elevated"
+                className="w-80 nm-popover-glass"
                 data-location-picker-content=""
               >
                 {/* Search bar */}

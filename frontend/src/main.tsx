@@ -45,7 +45,7 @@ function ThemedToaster() {
       richColors
       theme={isLightTheme(theme) ? 'light' : 'dark'}
       toastOptions={{
-        className: 'bg-card border border-border',
+        className: 'nm-popover-glass text-foreground',
       }}
     />
   );

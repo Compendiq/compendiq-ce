@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A multi-word title keeps one underline through the spaces.
 - Floating pop-up borders use a softened contrast rim across both themes, and light
   mode features matching frosted glass with 12px blur and 82% elevated fill.
+- Floating HUDs and overlays (Bulk action bars, Command palette, Toaster notifications,
+  Image lightbox controls, Page preview hover cards, Find & replace, inline writing aids,
+  Knowledge graph node tooltips, pending shortcut sequence HUD, mobile table-of-contents button,
+  mobile AI assistant bottom sheet, location picker, tag suggestions, use-case help popovers,
+  and the comments drawer) use frosted glass (`nm-popover-glass`) for spatial depth above content.
+  The article inspector tab bar is a translucent overlay; Outline, Details, and Assistant
+  content scroll underneath it.
 
 ### Fixed
 

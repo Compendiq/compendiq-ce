@@ -1042,7 +1042,7 @@ export function ArticleRightPane({
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               Expand inspector · .
             </span>
@@ -1071,7 +1071,7 @@ export function ArticleRightPane({
             </button>
             <span
               role="tooltip"
-              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
             >
               AI Assistant · {assistantHint}
             </span>
@@ -1114,7 +1114,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   Outline · {headings.length} · same as the Outline tab
                 </span>
@@ -1151,7 +1151,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   Notes · {openNotesCount} open · Alt+N
                 </span>
@@ -1182,7 +1182,7 @@ export function ArticleRightPane({
               </button>
               <span
                 role="tooltip"
-                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 Page details
               </span>
@@ -1219,7 +1219,7 @@ export function ArticleRightPane({
                 </button>
                 <span
                   role="tooltip"
-                  className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-card-elevated px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                className="pointer-events-none absolute right-full top-1/2 z-50 mr-2 -translate-y-1/2 whitespace-nowrap rounded-md nm-popover-glass px-2 py-1 text-[11px] text-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                 >
                   More page actions
                 </span>
@@ -1476,7 +1476,7 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
+      <div className="panel-toolbar absolute inset-x-0 top-0 z-20 flex h-12 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
@@ -1626,7 +1626,7 @@ export function ArticleRightPane({
         id="page-context-panel-details"
         role="tabpanel"
         aria-labelledby="page-context-tab-details"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
       >
       {isNewPage ? (
         <div className="px-3 py-4">
@@ -2022,9 +2022,10 @@ export function ArticleRightPane({
       {activeInspectorView === 'outline' && (
       <div
         id="page-context-panel-outline"
+        ref={expandedTreeRef}
         role="tabpanel"
         aria-labelledby="page-context-tab-outline"
-        className="min-h-0 flex flex-1 flex-col"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
@@ -2045,8 +2046,7 @@ export function ArticleRightPane({
 
         {/* Outline tree — with scroll mask */}
         <div
-          ref={expandedTreeRef}
-          className="mt-1 flex-1 overflow-y-auto p-2 scroll-mask"
+          className="mt-1 p-2"
           data-testid="article-outline-tree"
         >
         {headings.length === 0 ? (

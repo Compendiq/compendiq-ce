@@ -64,7 +64,7 @@ function UsecaseInfoPopover({
           side="top"
           sideOffset={6}
           collisionPadding={8}
-          className="nm-card-elevated z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
+          className="nm-popover-glass z-50 w-[min(320px,calc(100vw-24px))] p-3 text-xs leading-relaxed text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95"
           data-testid={testId ? `${testId}-content` : undefined}
         >
           <p className="font-medium text-foreground">{title}</p>

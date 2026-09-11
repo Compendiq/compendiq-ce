@@ -701,7 +701,7 @@ function InlineCompletionHint({ mode }: { mode: InlineCompletionMode }) {
       role="status"
       aria-label={ariaLabel}
       data-testid="inline-completion-hint"
-      className="nm-card-elevated pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
+      className="nm-popover-glass pointer-events-none flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground"
     >
       {action('Tab', mode === 'word' ? 'Accept word' : 'Accept')}
       {mode === 'full' && (

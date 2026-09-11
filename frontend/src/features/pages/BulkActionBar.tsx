@@ -104,7 +104,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         transition={{ duration: 0.18, ease: 'easeOut' }}
         role="region"
         aria-label={`Actions for ${count} selected ${noun}`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-card-elevated flex items-center gap-1.5 sm:gap-2.5 rounded-2xl px-2 py-1.5 sm:px-3 sm:py-2 max-w-[calc(100vw-1.5rem)] shadow-overlay border border-border overflow-x-auto no-scrollbar"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 nm-popover-glass flex items-center gap-1.5 sm:gap-2.5 rounded-2xl px-2 py-1.5 sm:px-3 sm:py-2 max-w-[calc(100vw-1.5rem)] overflow-x-auto no-scrollbar"
         data-testid="bulk-action-bar"
       >
         {/* Selection count badge */}

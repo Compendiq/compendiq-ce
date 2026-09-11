@@ -255,7 +255,7 @@ export function CommandPalette() {
           >
             <Dialog.Title className="sr-only">Command palette</Dialog.Title>
             <div className={cn(
-              'nm-card-elevated overflow-hidden',
+              'nm-popover-glass overflow-hidden',
               // The glow went with the rest of them: a 30px coloured bloom is
               // the retired world's way of saying "this mode is special", and
               // `nm-card-elevated` already carries the one overlay shadow the

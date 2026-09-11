@@ -228,7 +228,7 @@ export function TrashPage() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 16 }}
-            className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 nm-card-elevated flex items-center gap-3 rounded-2xl px-4 py-2.5 shadow-overlay border border-border"
+            className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 nm-popover-glass flex items-center gap-3 rounded-2xl px-4 py-2.5"
             data-testid="trash-bulk-bar"
           >
             <span className="text-xs font-medium text-foreground" data-testid="trash-bulk-count">
