@@ -469,7 +469,7 @@ not a fourth editor format and not a `pages.source = 'notion'` row.
 `backend/src/domains/knowledge/services/notion-block-converter.ts` takes
 already-fetched Notion block objects (nested `children` attached by the
 caller) and returns sanitized `body_html`, `htmlToText()` `body_text`, image
-download intents, and a skip report. It never calls `api.notion.com`, and that
+and PDF download intents, and a skip report. It never calls `api.notion.com`, and that
 is enforced rather than asserted: `backend/eslint.config.js` restricts the
 global `fetch` and any HTTP-client import in that one file, so a violation fails
 lint instead of slipping past a regex over the module's own source.
@@ -489,7 +489,7 @@ compare-and-swap on the lock token. A missing Redis key is idle.
 The POST used to wait for every paced Notion call inside one HTTP request;
 nginx `proxy_read_timeout 300` then answered 504 while the importer kept
 running. Later UI batches merge results
-by normalized identity. Images are written through `putLocalAttachment`; the
+by normalized identity. Images and PDFs are written through `putLocalAttachment`; the
 converter only spells the URL the store already serves:
 
 `buildPageImageUrl({ source: 'local', pageId, key, pageSource: 'standalone' })`
@@ -508,6 +508,8 @@ converter only spells the URL the store already serves:
 | `divider` | `<hr>` |
 | `table` + `table_row` | HTML `<table>` (`has_column_header` → `<thead>` / `<th>`) |
 | `image` | `<img src="/api/local-attachments/…">` plus an attachment intent (bytes are fetched later). Stored filename is `{notionBlockId}-{basename}` so two `image.png` blocks cannot collide. `sourceUrl` must be `http(s)`; other schemes are skipped |
+| `pdf` | `<p><a href="/api/local-attachments/…">` plus an attachment intent. Label is the caption, else the filename. `sourceUrl` must be `http(s)` |
+| `file` | Same as `pdf` when the Notion `name` or URL pathname ends in `.pdf`. Other file types stay omitted |
 | `child_page` | One existing `div.confluence-children-macro` per parent for successfully imported direct children (`data-depth="1"`, `data-sort="title"`). Nested columns share that one list. Nonchild or unavailable pages remain links |
 | `link_to_page`, page mentions | `<a href="/pages/{id}">` for imported identities, otherwise the Notion URL. These references never create or reparent articles; database links stay Notion URLs |
 | `column_list` / `column` / `toggle` / `synced_block` | **transparent**: nested supported blocks import; the wrapper itself is not recreated. A `child_database` inside one is enumerated and rendered like any other |

@@ -969,8 +969,8 @@ async function storeAttachments(
   }
   if (failed.length === 0) return undefined;
   const first = failed[0]!;
-  if (failed.length === 1) return `Could not save image ${first.filename}: ${first.reason}`;
-  return `Could not save ${failed.length} images (${first.filename}: ${first.reason})`;
+  if (failed.length === 1) return `Could not save attachment ${first.filename}: ${first.reason}`;
+  return `Could not save ${failed.length} attachments (${first.filename}: ${first.reason})`;
 }
 
 async function resolveParentLocalId(

@@ -3,9 +3,10 @@
  *
  * Pure: the caller hands in already-fetched block objects (and any nested
  * `children` they chose to attach). This module never talks to Notion, never
- * fetches image bytes, and never persists a page. Image blocks become
- * `/api/local-attachments/{pageId}/{file}` URLs plus a download intent the
- * later import orchestrator writes through the local attachment store.
+ * fetches image or file bytes, and never persists a page. Image, PDF, and
+ * PDF `file` blocks become `/api/local-attachments/{pageId}/{file}` URLs plus
+ * a download intent the later import orchestrator writes through the local
+ * attachment store.
  *
  * Unsupported types (databases, buttons, whiteboards, AI meeting notes, …)
  * are omitted — no stub page, no flatten — and listed in `skips`.
@@ -55,6 +56,8 @@ const SUPPORTED_TYPES = new Set([
   'callout',
   'table',
   'image',
+  'pdf',
+  'file',
   'child_page',
   'child_database',
   'equation',
@@ -82,7 +85,7 @@ export interface NotionBlock {
 
 export interface NotionAttachmentIntent {
   blockId: string;
-  kind: 'image';
+  kind: 'image' | 'file';
   filename: string;
   sourceUrl: string;
   alt: string;
@@ -286,6 +289,10 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
       return renderTable(block, ctx);
     case 'image':
       return renderImage(block, ctx);
+    case 'pdf':
+      return renderFile(block, ctx, 'pdf');
+    case 'file':
+      return renderFile(block, ctx, 'file');
     case 'child_page':
       return renderChildPage(block, ctx);
     case 'child_database':
@@ -451,6 +458,47 @@ function renderImage(block: NotionBlock, ctx: ConvertCtx): string {
     pageSource: 'standalone',
   });
   return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}">`;
+}
+
+/**
+ * PDF embed (`pdf`) and a PDF uploaded as a generic `file` block. Both become
+ * a download link plus an attachment intent — Compendiq has no PDF embed node,
+ * and the Markdown import already uses this `<a href="/api/local-attachments/…">`
+ * shape. Non-PDF `file` blocks stay skipped.
+ */
+function renderFile(block: NotionBlock, ctx: ConvertCtx, type: 'pdf' | 'file'): string {
+  const data = payload(block, type);
+  const sourceUrl = safeHref(fileUrlOf(data));
+  if (!sourceUrl) {
+    skip(block, ctx);
+    return '';
+  }
+  const name = typeof data.name === 'string' ? data.name.trim() : '';
+  if (type === 'file' && !name.toLowerCase().endsWith('.pdf') && !pathnameEndsWithPdf(sourceUrl)) {
+    skip(block, ctx);
+    return '';
+  }
+  const caption = plainOfRichArray(asRichArray(data.caption)).trim();
+  const filename = filenameFromUrl(
+    sourceUrl,
+    typeof block.id === 'string' ? block.id : type,
+    { preferredName: name, fallbackExt: '.pdf' },
+  );
+  ctx.attachments.push({
+    blockId: typeof block.id === 'string' ? block.id : '',
+    kind: 'file',
+    filename,
+    sourceUrl,
+    alt: caption,
+  });
+  const href = buildPageImageUrl({
+    source: 'local',
+    key: filename,
+    pageId: ctx.localPageId,
+    pageSource: 'standalone',
+  });
+  const label = caption || name || path.basename(filename) || 'PDF';
+  return `<p><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></p>`;
 }
 
 function renderChildPage(block: NotionBlock, ctx: ConvertCtx): string {
@@ -773,19 +821,37 @@ function fileUrlOf(data: Record<string, unknown>): string | null {
   return null;
 }
 
-function filenameFromUrl(sourceUrl: string, fallbackId: string): string {
+function filenameFromUrl(
+  sourceUrl: string,
+  fallbackId: string,
+  opts?: { preferredName?: string; fallbackExt?: string },
+): string {
   let base = '';
-  try {
-    base = path.basename(new URL(sourceUrl).pathname);
-  } catch {
-    base = '';
+  if (opts?.preferredName) {
+    base = path.basename(opts.preferredName);
   }
-  const id = normalizeNotionId(fallbackId) || 'image';
+  if (!base) {
+    try {
+      base = path.basename(new URL(sourceUrl).pathname);
+    } catch {
+      base = '';
+    }
+  }
+  const fallbackExt = opts?.fallbackExt ?? '.png';
+  const id = normalizeNotionId(fallbackId) || 'file';
   const ext = path.extname(base);
-  const candidate = canStoreLocalFilename(base) ? `${id}-${base}` : `${id}${ext || '.png'}`;
+  const candidate = canStoreLocalFilename(base) ? `${id}-${base}` : `${id}${ext || fallbackExt}`;
   if (canStoreLocalFilename(candidate)) return candidate;
-  const fallback = `${id.slice(0, 32)}.png`;
-  return canStoreLocalFilename(fallback) ? fallback : 'notion-image.png';
+  const fallback = `${id.slice(0, 32)}${fallbackExt}`;
+  return canStoreLocalFilename(fallback) ? fallback : `notion-file${fallbackExt}`;
+}
+
+function pathnameEndsWithPdf(sourceUrl: string): boolean {
+  try {
+    return decodeURIComponent(new URL(sourceUrl).pathname).toLowerCase().endsWith('.pdf');
+  } catch {
+    return false;
+  }
 }
 
 function asRichArray(value: unknown): Record<string, unknown>[] {
