@@ -108,6 +108,7 @@ describe('ChildrenMacroView', () => {
     // this read as chrome rather than document. Hover uses the same accent
     // fill as PagesPage / the page tree — a background change, not a border.
     expect(links[0].classList.contains('children-directory-link')).toBe(true);
+    expect(links[0].querySelector('.children-directory-title')?.textContent).toBe('Getting Started');
     expect(links[0].className).not.toMatch(/text-primary/);
     expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
     expect(links[0].className).toMatch(/(?:^|\s)py-0\.5(?:\s|$)/);
@@ -383,12 +384,15 @@ describe('ChildrenMacroView link treatment', () => {
 
   it('overrides prose accent links with an inherited, always-underlined title', () => {
     expect(css).toMatch(
-      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*underline/,
+      /\.prose \.confluence-children-view a[\s\S]*?color:\s*inherit[\s\S]*?text-decoration:\s*none/,
     );
     const start = css.indexOf('.prose .confluence-children-view a,');
     expect(start).toBeGreaterThan(-1);
-    const block = css.slice(start, start + 1100);
+    const block = css.slice(start, start + 1600);
     expect(block).not.toMatch(/--color-primary/);
+    expect(block).toMatch(/\.children-directory-title[\s\S]*?text-decoration:\s*underline/);
+    expect(block).toMatch(/text-decoration-skip-ink:\s*none/);
+    expect(block).toMatch(/text-decoration-skip-spaces:\s*none/);
     expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
     expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
     // Prose's `transition: color, text-decoration` would snap the row fill

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Child pages lists use two columns by default. The editor toggle still
   switches to a single stack (`columns=1`); Confluence ignores the param.
   Listed titles sit with tighter vertical spacing, like consecutive document lines.
+  A multi-word title keeps one underline through the spaces.
 - Floating pop-up borders use a softened contrast rim across both themes, and light
   mode features matching frosted glass with 12px blur and 82% elevated fill.
 
