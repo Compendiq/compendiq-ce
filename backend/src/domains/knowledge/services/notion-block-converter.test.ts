@@ -660,6 +660,63 @@ describe('convertNotionBlocks', () => {
     expect(result.skips).toEqual([]);
   });
 
+  it('imports web bookmarks as links, labelled by caption or by the URL itself', () => {
+    const result = convert([
+      block('b1', 'bookmark', { url: 'https://claude.ai/', caption: [rich('Claude')] }),
+      block('b2', 'bookmark', { url: 'https://chatgpt.com/', caption: [] }),
+      block('b3', 'bookmark', { url: 'https://example.com/tools', caption: [rich('   ')] }),
+    ]);
+
+    expect(result.bodyHtml).toContain('<a href="https://claude.ai/">Claude</a>');
+    expect(result.bodyHtml).toContain('<a href="https://chatgpt.com/">https://chatgpt.com/</a>');
+    expect(result.bodyHtml).toContain('<a href="https://example.com/tools">https://example.com/tools</a>');
+    expect(result.skips).toEqual([]);
+    // A page of nothing but bookmarks must not convert to an empty body: the
+    // importer reads an empty `body_html` as an unfinished import.
+    expect(result.bodyText.trim()).not.toBe('');
+  });
+
+  it('takes a bookmark caption as plain text so its own links cannot nest inside the anchor', () => {
+    const result = convert([
+      block('b1', 'bookmark', {
+        url: 'https://example.com/docs',
+        caption: [
+          {
+            ...rich('see here'),
+            text: { content: 'see here', link: { url: 'https://elsewhere.example/' } },
+            href: 'https://elsewhere.example/',
+          },
+        ],
+      }),
+    ]);
+
+    expect(result.bodyHtml).toBe('<p><a href="https://example.com/docs">see here</a></p>');
+  });
+
+  it('skips a bookmark whose URL is not http(s) instead of emitting the scheme', () => {
+    const result = convert([
+      block('b1', 'bookmark', { url: 'javascript:alert(1)', caption: [rich('Click')] }),
+      block('b2', 'bookmark', {}),
+    ]);
+
+    expect(result.bodyHtml).not.toContain('javascript');
+    expect(result.bodyHtml).not.toContain('<a');
+    expect(result.skips.map((s) => s.blockId)).toEqual(['b1', 'b2']);
+    expect(result.skips.every((s) => s.type === 'bookmark' && s.reason === 'unsupported')).toBe(true);
+  });
+
+  it('keeps a bookmark link through sanitization and collaborative save/load', () => {
+    const result = convert([
+      block('b1', 'bookmark', { url: 'https://claude.ai/', caption: [rich('Claude')] }),
+    ]);
+    const doc = htmlToYDoc(result.bodyHtml);
+    try {
+      expect(yDocToHtml(doc)).toContain('href="https://claude.ai/"');
+    } finally {
+      doc.destroy();
+    }
+  });
+
   it('does not treat a Notion-authored /pages/ path as an internal Compendiq URL', () => {
     const result = convert([
       block('p', 'paragraph', {

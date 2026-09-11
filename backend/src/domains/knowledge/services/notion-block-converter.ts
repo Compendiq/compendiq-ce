@@ -59,6 +59,7 @@ const SUPPORTED_TYPES = new Set([
   'child_database',
   'equation',
   'link_to_page',
+  'bookmark',
 ]);
 
 /** Layout wrappers whose nested supported blocks must still import. */
@@ -293,6 +294,8 @@ function convertOne(block: NotionBlock, ctx: ConvertCtx): string {
       return renderEquation(payload(block, type));
     case 'link_to_page':
       return renderLinkToPage(block, ctx);
+    case 'bookmark':
+      return renderBookmark(block, ctx);
     default:
       skip(block, ctx);
       return '';
@@ -671,6 +674,28 @@ function renderLinkToPage(block: NotionBlock, ctx: ConvertCtx): string {
   }
   skip(block, ctx);
   return '';
+}
+
+/**
+ * A web bookmark is a URL block — Notion draws a preview card, Compendiq has no
+ * card, so it imports as the link itself. Dropping it emptied a page whose
+ * whole content is a link collection, and an empty `body_html` is also what
+ * the importer reads as an unfinished import.
+ *
+ * The caption is the label when there is one, otherwise the URL labels itself:
+ * a bare `<a>` with no text is invisible in the editor. The caption is taken as
+ * PLAIN text because it may itself carry links, and an `<a>` inside an `<a>` is
+ * not representable — DOMPurify would hoist it and split the bookmark in two.
+ */
+function renderBookmark(block: NotionBlock, ctx: ConvertCtx): string {
+  const data = payload(block, 'bookmark');
+  const href = safeHref(stringOrNull(data.url));
+  if (!href) {
+    skip(block, ctx);
+    return '';
+  }
+  const caption = plainOfRichArray(asRichArray(data.caption)).trim();
+  return `<p><a href="${escapeHtml(href)}">${escapeHtml(caption || href)}</a></p>`;
 }
 
 function renderRichText(items: readonly Record<string, unknown>[], ctx: ConvertCtx): string {

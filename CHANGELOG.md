@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Notion web bookmarks import as links instead of being dropped. A page whose
+  only content is bookmarks imported with an empty body; re-running the import
+  on it fills the body in without duplicating the page. Embeds, link previews,
+  video and file blocks still stay in Notion.
+
 - Nested pages in a local space can be reordered with drag-and-drop, same
   as top-level pages. They previously shared one sortable list with the
   roots, so a parent's droppable swallowed its children.

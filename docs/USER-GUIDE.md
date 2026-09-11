@@ -133,6 +133,8 @@ This is a **one-shot migrate**, not a live sync. Open it from **Library → Impo
 - Comments, permissions, automations, buttons, Notion AI artefacts, whiteboards/canvases.
 - **Board** databases — Compendiq is not a Kanban board. The picker marks the Board (and a page that only hosts an inline Board) with *Board view is not compatible — import cards as articles*. Tick the Board row to select its cards; each card imports as an article under a parent article named after the Notion page that contains the database.
 
+**Blocks inside a page.** Web bookmarks import as a plain link, labelled with the bookmark's caption or with the URL itself — Notion's preview card is not recreated. Images import as local attachments. Embeds, link previews, videos, audio and file attachments are left behind.
+
 **Database properties.** In *Table* mode the properties **are** the imported content — they become the table’s columns. On an imported row page they become the metadata callout at the top of the page, which is what makes that row an article rather than a bare page. Relations, rollups and formulas render as their plain-text value wherever the converter can read one.
 
 **Inline databases and child pages.** Non-wiki inline databases read *Imports inside its parent article*. Property-only entries become a simple table there. Entries with page content remain articles, and actual embedded pages become subarticles. The parent uses Compendiq's **Child pages** feature to display its children, including pages nested inside Notion columns or toggles. Wiki roots remain selectable and are never flattened into a table.
