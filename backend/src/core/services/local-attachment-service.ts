@@ -441,6 +441,24 @@ export function localAttachmentsRoot(): string {
   return path.join(attachmentsBase(), LOCAL_SUBDIR);
 }
 
+/**
+ * Create ATTACHMENTS_DIR if missing. Named volumes mounted over an empty
+ * image dir are often root-owned; mkdir then throws EACCES and Notion
+ * import drops images / paste fails. Call at boot so a writable volume is
+ * ready before the first write, and so an unwritable one is logged once.
+ */
+export async function ensureAttachmentsRoot(): Promise<void> {
+  const dir = path.resolve(attachmentsBase());
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {
+    logger.error(
+      { err, dir },
+      'Cannot create ATTACHMENTS_DIR; image paste will fail and Notion import will drop images until it is writable by this process',
+    );
+  }
+}
+
 /** The reserved entry name the Confluence-tree walk must skip (#1349). */
 export const LOCAL_STORE_DIRNAME = LOCAL_SUBDIR;
 

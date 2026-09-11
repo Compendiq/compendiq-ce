@@ -121,7 +121,7 @@ COPY --from=chromium /usr/share/fonts/ /usr/share/fonts/
 COPY --from=chromium /etc/fonts/ /etc/fonts/
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/lib/chromium/chromium
 
-RUN mkdir -p /app/data && chown -R 1000:1000 /app
+RUN mkdir -p /app/data/attachments /app/data/client-models && chown -R 1000:1000 /app
 
 WORKDIR /app
 

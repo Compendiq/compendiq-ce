@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -2699,6 +2699,55 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     const att = await query<{ filename: string }>('SELECT filename FROM local_attachments WHERE page_id = $1', [page.rows[0]!.id]);
     expect(att.rows).toHaveLength(1);
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'imports a page when ATTACHMENTS_DIR is not writable',
+    async () => {
+      await chmod(attachmentsDir, 0o555);
+      try {
+        const client = await start({
+          validToken: TOKEN,
+          pages: {
+            home: {
+              object: 'page',
+              id: 'home',
+              parent: { type: 'workspace', workspace: true },
+              properties: titleProp('Knowledge Page'),
+            },
+          },
+          files: {
+            '/files/hero.png': { contentType: 'image/png', body: PNG },
+          },
+          blockChildren: { home: [] },
+        });
+        const imageUrl = `${server.baseUrl}/files/hero.png`;
+        server.state.blockChildren = {
+          home: [
+            {
+              object: 'block',
+              id: 'img-1',
+              type: 'image',
+              image: {
+                type: 'file',
+                file: { url: imageUrl },
+                caption: [],
+              },
+            },
+          ],
+        };
+
+        const items = await runNotionImport({
+          userId, client, pageIds: ['home'], visibility: 'shared',
+        });
+        expect(items[0]?.status).toBe('success');
+        expect(items[0]?.reason).toMatch(/EACCES|permission denied/i);
+        const pages = await query('SELECT id FROM pages WHERE notion_page_id = $1', ['home']);
+        expect(pages.rows).toHaveLength(1);
+      } finally {
+        await chmod(attachmentsDir, 0o755);
+      }
+    },
+  );
 
   it('never logs the integration token', async () => {
     const client = await start({
