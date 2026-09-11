@@ -287,7 +287,7 @@ export function DockPanel({ onClose, variant = 'column' }: { onClose: () => void
           does not chain the scroll into the article underneath — the sheet sits
           over the document, and scroll leaking through it would move the page
           the user is asking about out from under them. */}
-      <div className="scroll-mask min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3" data-testid="ai-dock-thread">
+      <div className={cn('scroll-mask min-h-0 flex-1 overflow-y-auto overscroll-contain px-3', variant === 'tab' ? 'pb-3 pt-12' : 'py-3')} data-testid="ai-dock-thread">
         {messages.length === 0 && !isStreaming ? (
           <DockEmptyState
             pageTitle={page?.title}

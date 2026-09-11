@@ -1183,6 +1183,14 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   background: transparent;
 }
 
+/* The rail and the chrome are the same Pane colour, so the overlay 82–90%
+   fill is invisible. This row is a true overlay: thinner fill, heavier blur. */
+.app-context-rail .panel-toolbar.nm-popover-glass {
+  background-color: color-mix(in srgb, var(--color-card-elevated) 42%, transparent);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
 /* Shell surfaces carry the palette without competing with content. The top
    app header continues the Canvas around the workspace on all four sides.
    The left navigation pane — title, tree, and footer — paints the same
@@ -1997,7 +2005,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Opaque fill, no blur — the interactive edge and overlay shadow remain. */
 @media (prefers-reduced-transparency: reduce) {
-  .nm-popover-glass {
+  .nm-popover-glass,
+  .app-context-rail .panel-toolbar.nm-popover-glass {
     background-color: var(--color-card-elevated);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
