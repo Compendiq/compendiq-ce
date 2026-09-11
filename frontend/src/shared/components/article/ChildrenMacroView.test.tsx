@@ -108,7 +108,10 @@ describe('ChildrenMacroView', () => {
     // this read as chrome rather than document. Hover uses the same accent
     // fill as PagesPage / the page tree — a background change, not a border.
     expect(links[0].classList.contains('children-directory-link')).toBe(true);
-    expect(links[0].querySelector('.children-directory-title')?.textContent).toBe('Getting Started');
+    const titleEl = links[0].querySelector('.children-directory-title');
+    expect(titleEl?.textContent).toBe('Getting Started');
+    // Title stays inline (not a flex item) so the rule paints through spaces.
+    expect(titleEl?.parentElement).not.toBe(links[0]);
     expect(links[0].className).not.toMatch(/text-primary/);
     expect(links[0].className).not.toMatch(/(?:^|\s)px-2(?:\s|$)/);
     expect(links[0].className).toMatch(/(?:^|\s)py-0\.5(?:\s|$)/);
@@ -388,11 +391,16 @@ describe('ChildrenMacroView link treatment', () => {
     );
     const start = css.indexOf('.prose .confluence-children-view a,');
     expect(start).toBeGreaterThan(-1);
-    const block = css.slice(start, start + 1600);
+    const block = css.slice(start, start + 2800);
     expect(block).not.toMatch(/--color-primary/);
-    expect(block).toMatch(/\.children-directory-title[\s\S]*?text-decoration:\s*underline/);
-    expect(block).toMatch(/text-decoration-skip-ink:\s*none/);
-    expect(block).toMatch(/text-decoration-skip-spaces:\s*none/);
+    // Continuous rule under the whole phrase, spaces included. text-decoration
+    // skip-spaces is missing in WebKit and still gaps a multi-word title.
+    expect(block).toMatch(/\.children-directory-title[\s\S]*?background-image:\s*linear-gradient/);
+    expect(block).toMatch(/box-decoration-break:\s*clone/);
+    expect(block).not.toMatch(/text-decoration-skip-spaces/);
+    expect(block).toMatch(/color-mix\(in oklab, var\(--color-foreground\) 22%, transparent\)/);
+    expect(block).toMatch(/\[data-theme-type="light"\][\s\S]*?color-mix\(in oklab, var\(--color-foreground\) 16%, transparent\)/);
+    expect(block).not.toMatch(/text-decoration-color:\s*var\(--color-foreground\)/);
     expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
     expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
     // Prose's `transition: color, text-decoration` would snap the row fill
