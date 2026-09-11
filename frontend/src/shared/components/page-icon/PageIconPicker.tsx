@@ -1,11 +1,19 @@
 import { useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { Smile, Shapes, ImagePlus, Trash2, Hexagon } from 'lucide-react';
+import {
+  PRESET_TEXT_COLORS,
+  getPageBrandIcon,
+  type PageIcon as PageIconValue,
+  type PageIconColor,
+  type SettablePageIcon,
+} from '@compendiq/contracts';
 import { BrandIconGrid } from './BrandIconGrid';
-import type { PageIcon as PageIconValue, SettablePageIcon } from '@compendiq/contracts';
 import { EmojiPickerContent } from '../article/EmojiPicker';
 import { absorbPortalEscape } from '../../lib/absorb-portal-escape';
 import { LucideIconGrid } from './LucideIconGrid';
+import { BrandMark } from './BrandMark';
+import { getPageLucideIcon } from './page-lucide-icons';
 import { cn } from '../../lib/cn';
 import { Button } from '../Button';
 
@@ -34,6 +42,7 @@ export function PageIconPicker({
 }) {
   const [tab, setTab] = useState<PickerTab>('icons');
   const fileRef = useRef<HTMLInputElement>(null);
+  const tintable = asTintable(icon);
 
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
@@ -60,14 +69,20 @@ export function PageIconPicker({
           {tab === 'icons' && (
             <LucideIconGrid
               selected={icon?.kind === 'lucide' ? icon.value : null}
-              onPick={(value) => onSelect({ kind: 'lucide', value })}
+              onPick={(value) => {
+                const color = keptTint(icon);
+                onSelect(color ? { kind: 'lucide', value, color } : { kind: 'lucide', value });
+              }}
             />
           )}
 
           {tab === 'logos' && (
             <BrandIconGrid
               selected={icon?.kind === 'brand' ? icon.value : null}
-              onPick={(value) => onSelect({ kind: 'brand', value })}
+              onPick={(value) => {
+                const color = keptTint(icon);
+                onSelect(color ? { kind: 'brand', value, color } : { kind: 'brand', value });
+              }}
             />
           )}
 
@@ -107,6 +122,19 @@ export function PageIconPicker({
             </div>
           )}
 
+          {(tab === 'icons' || tab === 'logos') && tintable && (
+            <IconColorRow
+              icon={tintable}
+              onPick={(color) =>
+                onSelect(
+                  color
+                    ? { kind: tintable.kind, value: tintable.value, color }
+                    : { kind: tintable.kind, value: tintable.value },
+                )
+              }
+            />
+          )}
+
           {icon && (
             <Button
               type="button"
@@ -123,6 +151,75 @@ export function PageIconPicker({
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+function asTintable(icon: PageIconValue | null | undefined): TintableIcon | null {
+  if (icon?.kind === 'lucide') {
+    return { kind: 'lucide', value: icon.value, color: icon.color };
+  }
+  if (icon?.kind === 'brand') {
+    return { kind: 'brand', value: icon.value, color: icon.color };
+  }
+  return null;
+}
+
+function keptTint(icon: PageIconValue | null | undefined): PageIconColor | undefined {
+  return asTintable(icon)?.color;
+}
+
+type TintableIcon = { kind: 'lucide' | 'brand'; value: string; color?: PageIconColor };
+
+function IconColorRow({
+  icon,
+  onPick,
+}: {
+  icon: TintableIcon;
+  onPick: (color?: PageIconColor) => void;
+}) {
+  const Glyph = icon.kind === 'lucide' ? getPageLucideIcon(icon.value) : null;
+  const brand = icon.kind === 'brand' ? getPageBrandIcon(icon.value) : null;
+  const swatches: Array<{ label: string; value?: PageIconColor }> = [
+    { label: 'Default' },
+    ...PRESET_TEXT_COLORS,
+  ];
+
+  return (
+    <div
+      role="group"
+      aria-label="Icon color"
+      className="mt-2 grid grid-cols-6 gap-1"
+      data-testid="page-icon-color-row"
+    >
+      {swatches.map((swatch) => {
+        const selected = (icon.color ?? undefined) === swatch.value;
+        return (
+          <button
+            key={swatch.label}
+            type="button"
+            title={swatch.label}
+            aria-label={`${swatch.label} icon`}
+            aria-pressed={selected}
+            className={cn(
+              'nm-focus-ring flex size-10 items-center justify-center rounded-md border',
+              selected
+                ? 'border-border-interactive bg-foreground/8'
+                : 'border-transparent hover:bg-foreground/5',
+            )}
+            style={swatch.value ? { color: swatch.value } : undefined}
+            onClick={() => onPick(swatch.value)}
+          >
+            {Glyph ? (
+              <Glyph size={18} aria-hidden className={!swatch.value ? 'text-foreground' : undefined} />
+            ) : brand ? (
+              <span className={!swatch.value ? 'text-foreground' : undefined}>
+                <BrandMark path={brand.path} size={18} />
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

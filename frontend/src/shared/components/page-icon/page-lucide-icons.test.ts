@@ -19,5 +19,9 @@ describe('page lucide catalogue', () => {
     expect(getPageLucideIcon('monitor-smartphone')).toBeTruthy();
     expect(getPageLucideIcon('shield-x')).toBeTruthy();
     expect(getPageLucideIcon('pencil')).toBeTruthy();
+    expect(getPageLucideIcon('footprints')).toBeTruthy();
+    expect(getPageLucideIcon('life-buoy')).toBeTruthy();
+    expect(getPageLucideIcon('sailboat')).toBeTruthy();
+    expect(getPageLucideIcon('volleyball')).toBeTruthy();
   });
 });

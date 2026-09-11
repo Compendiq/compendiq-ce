@@ -71,6 +71,7 @@ const pageRow = {
   deleted_at: null,
   icon_kind: null,
   icon_value: null,
+  icon_color: null,
 };
 
 describe('page icon mutation routes', () => {
@@ -143,8 +144,8 @@ describe('page icon mutation routes', () => {
     expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
     expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
     expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
-      [42, 'emoji', '🚀'],
+      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4 WHERE id = $1',
+      [42, 'emoji', '🚀', null],
     );
     expect(mockInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
   });
@@ -173,8 +174,8 @@ describe('page icon mutation routes', () => {
     expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
     expect(mockWrite).toHaveBeenCalledWith(42, Buffer.from('png'), lockedClient);
     expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1',
-      [42, 'image', 'a'.repeat(64)],
+      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4 WHERE id = $1',
+      [42, 'image', 'a'.repeat(64), null],
     );
   });
 
@@ -293,6 +294,31 @@ describe('page icon mutation routes', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ icon: { kind: 'brand', value: 'docker' } });
+  });
+
+  it('persists a lucide mark with a text-palette colour', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/pages/42/icon',
+      payload: { icon: { kind: 'lucide', value: 'rocket', color: '#3b82f6' } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      icon: { kind: 'lucide', value: 'rocket', color: '#3b82f6' },
+    });
+    expect(mockLockedQuery).toHaveBeenCalledWith(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4 WHERE id = $1',
+      [42, 'lucide', 'rocket', '#3b82f6'],
+    );
+  });
+
+  it('rejects an unknown icon colour', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/pages/42/icon',
+      payload: { icon: { kind: 'lucide', value: 'rocket', color: '#ffffff' } },
+    });
+    expect(response.statusCode).toBe(400);
   });
 
   it('rejects an unknown lucide id', async () => {
