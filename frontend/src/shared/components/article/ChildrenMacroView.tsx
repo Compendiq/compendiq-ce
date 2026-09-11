@@ -115,11 +115,19 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
     const mark = child.icon ? (
       <PageIconMark icon={child.icon} pageId={child.id} size="row" />
     ) : null;
+    // Inner span stays `inline` so the directory rule paints through spaces.
+    // The outer title node is a flex item (blockified) — decorating that box
+    // still gaps a multi-word title.
+    const title = (
+      <span className="min-w-0 break-words">
+        <span className="children-directory-title">{child.title}</span>
+      </span>
+    );
     if (isEditable) {
       return (
         <span className={cn(titleClass, 'text-foreground')} title={child.title}>
           {mark}
-          <span className="children-directory-title min-w-0 break-words">{child.title}</span>
+          {title}
         </span>
       );
     }
@@ -130,7 +138,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
         title={child.title}
       >
         {mark}
-        <span className="children-directory-title min-w-0 break-words">{child.title}</span>
+        {title}
       </Link>
     );
   }
