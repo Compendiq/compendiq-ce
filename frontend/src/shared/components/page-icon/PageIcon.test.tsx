@@ -23,6 +23,13 @@ describe('PageIcon', () => {
     expect(container.querySelector('svg')).toBeTruthy();
   });
 
+  it('applies a text-palette colour to a lucide glyph', () => {
+    const { container } = render(
+      <PageIcon icon={{ kind: 'lucide', value: 'rocket', color: '#3b82f6' }} pageId="1" />,
+    );
+    expect(container.firstElementChild).toHaveStyle({ color: '#3b82f6' });
+  });
+
   it('renders a brand logo for a catalogue slug', () => {
     for (const slug of ['docker', 'microsoft', 'ibm', 'apple', 'google', 'amazon']) {
       const { container } = render(<PageIcon icon={{ kind: 'brand', value: slug }} pageId="1" />);

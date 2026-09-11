@@ -49,7 +49,13 @@ export function PageIcon({
     return (
       <span
         aria-hidden="true"
-        className={cn('inline-flex shrink-0 items-center justify-center text-foreground', dim.box, className)}
+        className={cn(
+          'inline-flex shrink-0 items-center justify-center',
+          !icon.color && 'text-foreground',
+          dim.box,
+          className,
+        )}
+        style={icon.color ? { color: icon.color } : undefined}
       >
         <Glyph size={dim.lucide} strokeWidth={size === 'title' ? 1.5 : 2} />
       </span>
@@ -62,7 +68,13 @@ export function PageIcon({
     return (
       <span
         aria-hidden="true"
-        className={cn('inline-flex shrink-0 items-center justify-center text-foreground', dim.box, className)}
+        className={cn(
+          'inline-flex shrink-0 items-center justify-center',
+          !icon.color && 'text-foreground',
+          dim.box,
+          className,
+        )}
+        style={icon.color ? { color: icon.color } : undefined}
       >
         <BrandMark path={mark.path} size={dim.lucide} />
       </span>

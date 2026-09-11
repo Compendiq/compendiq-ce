@@ -73,7 +73,6 @@ export function PageTitleIcon({
       onOpenChange={setOpen}
       onSelect={(next) => {
         onSelect(next);
-        setOpen(false);
       }}
       onUpload={(file) => {
         onUpload(file);

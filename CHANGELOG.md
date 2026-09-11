@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Page icons can be tinted with the editor text-colour palette, the same
+  Notion-style row of the selected glyph in each hue. Lucide and logo marks
+  keep the colour; emoji and uploads do not.
+- Sports and outdoor marks in the icon picker (hiking, diving, sailing,
+  volleyball) and logos (Strava, Garmin, Adidas, Nike, Puma, The North Face,
+  Komoot, AllTrails, Under Armour). PADI is not in the Simple Icons CC0
+  set, so it is not in the catalogue.
+
 ### Changed
 
 - Child pages lists use two columns by default. The editor toggle still

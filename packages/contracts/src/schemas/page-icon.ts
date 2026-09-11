@@ -273,6 +273,10 @@ export const PAGE_LUCIDE_ICONS = [
   { value: 'shopping-cart', label: 'Cart' },
   { value: 'shopping-bag', label: 'Bag' },
   { value: 'dumbbell', label: 'Fitness' },
+  { value: 'footprints', label: 'Hiking' },
+  { value: 'life-buoy', label: 'Diving' },
+  { value: 'sailboat', label: 'Sailing' },
+  { value: 'volleyball', label: 'Volleyball' },
   { value: 'gamepad-2', label: 'Games' },
   { value: 'dice-5', label: 'Dice' },
   { value: 'party-popper', label: 'Celebrate' },
@@ -681,13 +685,52 @@ export function isPageLucideIconId(value: string): value is PageLucideIconId {
   return LUCIDE_ID_SET.has(value);
 }
 
+/** Same hexes as the editor text-colour row. Lucide/brand marks may carry one. */
+export const PRESET_TEXT_COLORS = [
+  { label: 'Grey', value: '#6b7280' },
+  { label: 'Brown', value: '#b45309' },
+  { label: 'Orange', value: '#f97316' },
+  { label: 'Yellow', value: '#eab308' },
+  { label: 'Green', value: '#22c55e' },
+  { label: 'Teal', value: '#0d9488' },
+  { label: 'Blue', value: '#3b82f6' },
+  { label: 'Purple', value: '#a855f7' },
+  { label: 'Pink', value: '#ec4899' },
+  { label: 'Red', value: '#ef4444' },
+] as const;
+
+export const PRESET_TEXT_COLOR_VALUES = [
+  PRESET_TEXT_COLORS[0].value,
+  PRESET_TEXT_COLORS[1].value,
+  PRESET_TEXT_COLORS[2].value,
+  PRESET_TEXT_COLORS[3].value,
+  PRESET_TEXT_COLORS[4].value,
+  PRESET_TEXT_COLORS[5].value,
+  PRESET_TEXT_COLORS[6].value,
+  PRESET_TEXT_COLORS[7].value,
+  PRESET_TEXT_COLORS[8].value,
+  PRESET_TEXT_COLORS[9].value,
+] as const;
+
+export const PageIconColorSchema = z.enum(PRESET_TEXT_COLOR_VALUES);
+export type PageIconColor = z.infer<typeof PageIconColorSchema>;
+
+export function isPresetTextColor(value: string): value is PageIconColor {
+  return (PRESET_TEXT_COLOR_VALUES as readonly string[]).includes(value);
+}
+
 /** One persisted page mark. `value` is the emoji, Lucide id, brand slug, or image sha. */
 export const PageIconSchema = z.object({
   kind: PageIconKindEnum,
   value: z.string().min(1).max(128),
+  color: PageIconColorSchema.optional(),
 });
 export type PageIcon = z.infer<typeof PageIconSchema>;
-export type SettablePageIcon = { kind: 'emoji' | 'lucide' | 'brand'; value: string };
+export type SettablePageIcon = {
+  kind: 'emoji' | 'lucide' | 'brand';
+  value: string;
+  color?: PageIconColor;
+};
 
 /** PATCH /pages/:id/icon — image marks go through POST /pages/:id/icon-image. */
 export const UpdatePageIconSchema = z.object({
@@ -704,10 +747,12 @@ export const UpdatePageIconSchema = z.object({
       z.object({
         kind: z.literal('lucide'),
         value: z.string().refine(isPageLucideIconId, 'Unknown icon'),
+        color: PageIconColorSchema.optional(),
       }),
       z.object({
         kind: z.literal('brand'),
         value: z.string().refine(isPageBrandIconId, 'Unknown logo'),
+        color: PageIconColorSchema.optional(),
       }),
     ])
     .nullable(),

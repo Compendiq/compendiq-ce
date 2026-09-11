@@ -31,12 +31,13 @@ type PageIconRow = {
   deleted_at: Date | null;
   icon_kind: string | null;
   icon_value: string | null;
+  icon_color: string | null;
 };
 
 async function loadPage(id: string): Promise<PageIconRow | null> {
   const isNumericId = /^\d+$/.test(id);
   const result = await query<PageIconRow>(
-    `SELECT id, source, created_by_user_id, visibility, space_key, deleted_at, icon_kind, icon_value
+    `SELECT id, source, created_by_user_id, visibility, space_key, deleted_at, icon_kind, icon_value, icon_color
        FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}`,
     [isNumericId ? parseInt(id, 10) : id],
   );
@@ -88,14 +89,14 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     page: PageIconRow,
     kind: string | null,
     value: string | null,
+    color: string | null,
     client: PoolClient,
   ) {
-    await client.query('UPDATE pages SET icon_kind = $2, icon_value = $3 WHERE id = $1', [
-      page.id,
-      kind,
-      value,
-    ]);
-    return { icon: toPageIcon(kind, value) };
+    await client.query(
+      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4 WHERE id = $1',
+      [page.id, kind, value, color],
+    );
+    return { icon: toPageIcon(kind, value, color) };
   }
 
   async function finalizeIconMutation(
@@ -123,11 +124,15 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
     const result = await withLocalAttachmentMutationLock(async (client) => {
       if (body.icon === null) {
         await deletePageIconImage(page.id, client);
-        return persistIcon(page, null, null, client);
+        return persistIcon(page, null, null, null, client);
       }
 
       await deletePageIconImage(page.id, client);
-      return persistIcon(page, body.icon.kind, body.icon.value, client);
+      const color =
+        body.icon.kind === 'lucide' || body.icon.kind === 'brand'
+          ? body.icon.color ?? null
+          : null;
+      return persistIcon(page, body.icon.kind, body.icon.value, color, client);
     });
     await finalizeIconMutation(page, body.icon?.kind ?? null, userId, request);
     return result;
@@ -145,7 +150,7 @@ export async function pagesIconRoutes(fastify: FastifyInstance) {
       const bytes = parseDataUri(dataUri);
       const result = await withLocalAttachmentMutationLock(async (client) => {
         const written = await writePageIconImage(page.id, bytes, client);
-        return persistIcon(page, 'image', written.sha, client);
+        return persistIcon(page, 'image', written.sha, null, client);
       });
       await finalizeIconMutation(page, 'image', userId, request);
       return result;

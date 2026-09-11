@@ -29,6 +29,14 @@ describe('PageIconSchema', () => {
       value: 'docker',
     });
   });
+
+  it('accepts a lucide mark with a text-palette colour', () => {
+    expect(PageIconSchema.parse({ kind: 'lucide', value: 'rocket', color: '#3b82f6' })).toEqual({
+      kind: 'lucide',
+      value: 'rocket',
+      color: '#3b82f6',
+    });
+  });
 });
 
 describe('UpdatePageIconSchema', () => {
@@ -88,6 +96,15 @@ describe('PAGE_LUCIDE_ICON_IDS', () => {
     expect(isPageLucideIconId('send')).toBe(true);
     expect(isPageLucideIconId('pencil')).toBe(true);
   });
+
+  it('includes sports and outdoor marks', () => {
+    expect(isPageLucideIconId('footprints')).toBe(true);
+    expect(isPageLucideIconId('life-buoy')).toBe(true);
+    expect(isPageLucideIconId('sailboat')).toBe(true);
+    expect(isPageLucideIconId('volleyball')).toBe(true);
+    expect(isPageLucideIconId('bike')).toBe(true);
+    expect(isPageLucideIconId('mountain-snow')).toBe(true);
+  });
 });
 
 describe('brand marks', () => {
@@ -103,6 +120,20 @@ describe('brand marks', () => {
 
   it('covers an extensive IT company and tech brand catalogue', () => {
     expect(PAGE_BRAND_ICON_IDS.length).toBeGreaterThanOrEqual(200);
+  });
+
+  it('includes sports and outdoor logos', () => {
+    for (const slug of ['strava', 'garmin', 'adidas', 'nike', 'komoot', 'alltrails']) {
+      expect(isPageBrandIconId(slug)).toBe(true);
+    }
+  });
+
+  it('rejects an unknown icon colour on PATCH', () => {
+    expect(() =>
+      UpdatePageIconSchema.parse({
+        icon: { kind: 'lucide', value: 'rocket', color: '#ffffff' },
+      }),
+    ).toThrow();
   });
 
   it('rejects an unknown logo slug', () => {
