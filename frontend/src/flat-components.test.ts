@@ -614,9 +614,9 @@ const SHADOW_UTILITY = new RegExp(
  * The system shadow, in every spelling that resolves to it. `--shadow-overlay`
  * lives in the `@theme` block, so Tailwind 4 generates `shadow-overlay` from it
  * as well — BulkActionBar, LibraryFilterDropdown and TrashPage use that
- * spelling, and the three overlays that are not `nm-card-elevated` use the
- * arbitrary-value form (AiDockSheet and CommentsSidebar are drawers,
- * TableOfContents a round floating button). Allowed by name, per token:
+ * spelling, and overlays that are not `nm-card-elevated` may use the
+ * arbitrary-value form. Drawers and the TOC FAB now wear `nm-popover-glass`
+ * (which carries `--shadow-overlay`). Allowed by name, per token:
  * allowing a whole BODY because one legitimate overlay shadow appears in it,
  * which is what this cell used to do, exempts every other shadow standing next
  * to it.
@@ -862,8 +862,7 @@ describe('the component layer is as flat as the token layer', () => {
     // `transparent`, so it rendered nothing while reading as live code.
     //
     // `shadow-[var(--shadow-overlay)]` is the system shadow spelled as an
-    // arbitrary value, for the overlays that are not `nm-card-elevated`
-    // (two drawers, a round floating button). Allowed by name.
+    // arbitrary value. Allowed by name even when overlays wear `nm-popover-glass`.
     //
     // The body is one call on purpose: `preV4Offenders` is the whole pipeline,
     // the self-test pins its verdict on planted fixtures, and there is nothing
