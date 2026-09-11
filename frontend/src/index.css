@@ -399,6 +399,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      so the edge that marks a selected row fell under 1.4.11. Now 3.48:1 there
      and 4.37:1 on the pane, which is what gave the dark ladder its room. */
   --color-border-interactive: #7c7c85;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 90%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
   --color-ring: #86aec8;
   --color-success: var(--color-status-connected);
   /* Amber is NOT the brand here — it is reserved for warning and attention,
@@ -563,8 +565,8 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      These `--glass-*` tokens stay resolved onto `--color-*` and must not be
      revived as a second glass system.
 
-     Floating popovers are the one exception: `nm-popover-glass` keeps the
-     measured interactive overlay edge (WCAG 1.4.11) and `--shadow-overlay`,
+     Floating popovers are the one exception: `nm-popover-glass` softens border
+     contrast (18% of the interactive edge) and uses frosted glass with 12px blur,
      and `prefers-reduced-transparency` strips its blur and translucency.
 
      The ~80 `bg-[var(--glass-*)]` callsites are left in place deliberately.
@@ -670,6 +672,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      `--color-*` values in the `@theme` block above, which this theme already
      redefines — so both themes follow automatically and there is nothing to
      keep in sync here. */
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
 
   /* Elevation tokens (light) — same contract as Graphite: in-flow surfaces
      cast nothing, and only true overlays get a shadow. See the dark block for
@@ -869,6 +873,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      here was measured against the pass-3 accent, not the one this block
      declares — a stale figure a critique caught before any guard did.) */
   --color-border-interactive: #838281;
+  --popover-glass-bg: color-mix(in srgb, var(--color-card-elevated) 82%, transparent);
+  --popover-glass-border: color-mix(in srgb, var(--color-border-interactive) 18%, transparent);
   --color-ring: #3f627c;
   --color-success: var(--color-status-connected);
   --color-warning: var(--color-status-syncing);
@@ -1390,19 +1396,20 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
   box-shadow: var(--shadow-overlay);
 }
 
-/* Floating popovers and dropdowns. Same overlay contract as `nm-card-elevated`
-   (interactive ≥3:1 edge + `--shadow-overlay`) because Paper Raised == Pane.
-   The 95% fill keeps text and the edge readable even over black/white images;
-   the opaque token alone does not bound contrast on a translucent overlay.
-   `prefers-reduced-transparency` strips the fill's transparency and 10px blur.
+/* Floating popovers and dropdowns (Insert, block context, selected text, etc).
+   Softened border with reduced contrast (18% of interactive edge) and frosted
+   glass with 12px blur in both dark and bright modes.
+   Light mode uses 82% elevated fill so the frosted glass effect is visible
+   over document content, matching dark mode's translucency and blur.
+   `prefers-reduced-transparency` strips the fill's transparency and blur.
    Radius is `--radius-xl` (10px), the top of the workspace scale. */
 @utility nm-popover-glass {
   border-radius: var(--radius-xl);
-  border: 1px solid var(--color-border-interactive);
+  border: 1px solid var(--popover-glass-border, color-mix(in srgb, var(--color-border-interactive) 18%, transparent));
   background-color: var(--color-card-elevated);
-  background-color: color-mix(in srgb, var(--color-card-elevated) 95%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background-color: var(--popover-glass-bg, color-mix(in srgb, var(--color-card-elevated) 90%, transparent));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   box-shadow: var(--shadow-overlay);
 }
 

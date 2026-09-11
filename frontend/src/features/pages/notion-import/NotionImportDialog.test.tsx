@@ -703,6 +703,7 @@ describe('NotionImportDialog connect-step token guidance', () => {
     const input = await screen.findByLabelText(/internal integration token/i);
 
     expect(screen.getByText(/installation access token/i)).toBeInTheDocument();
+    expect(screen.getByText(/developer tools → connections/i)).toBeInTheDocument();
     expect(screen.getByText(/not an oauth app/i)).toBeInTheDocument();
     expect(screen.getByText(/not a personal access token/i)).toBeInTheDocument();
     expect(screen.getByText(/share the pages you want to import/i)).toBeInTheDocument();
@@ -717,12 +718,12 @@ describe('NotionImportDialog connect-step token guidance', () => {
     }
   });
 
-  it('links to Notion’s integrations portal outside the field description', async () => {
+  it('links to Notion Developer tools → Connections outside the field description', async () => {
     renderDialog();
     await screen.findByLabelText(/internal integration token/i);
 
     const link = screen.getByTestId('notion-token-link');
-    expect(link).toHaveAttribute('href', 'https://www.notion.so/my-integrations');
+    expect(link).toHaveAttribute('href', 'https://app.notion.com/developers/connections');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
     expect(link).toHaveTextContent(/create a token in notion/i);
