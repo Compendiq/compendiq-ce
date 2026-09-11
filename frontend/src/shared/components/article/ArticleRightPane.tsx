@@ -1476,7 +1476,7 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar sticky top-0 z-10 flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-t-0 border-x-0 border-b border-border/40 shadow-none">
+      <div className="panel-toolbar sticky top-0 z-10 flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-none shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px

@@ -1179,7 +1179,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    1.10:1 / 1.11:1. Chrome now belongs to the header band of a list INSIDE the
    content pane — the Library results headers, and nothing else — never to a
    pane's own first row. */
-.app-context-rail .panel-toolbar {
+.app-context-rail .panel-toolbar:not(.nm-popover-glass) {
   background: transparent;
 }
 
