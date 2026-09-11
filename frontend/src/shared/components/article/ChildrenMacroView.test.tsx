@@ -401,6 +401,7 @@ describe('ChildrenMacroView link treatment', () => {
     expect(block).toMatch(/color-mix\(in oklab, var\(--color-foreground\) 22%, transparent\)/);
     expect(block).toMatch(/\[data-theme-type="light"\][\s\S]*?color-mix\(in oklab, var\(--color-foreground\) 16%, transparent\)/);
     expect(block).not.toMatch(/text-decoration-color:\s*var\(--color-foreground\)/);
+    expect(block).toMatch(/font-weight:\s*500/);
     expect(css).toMatch(/\.confluence-children-view ul ul\s*\{\s*padding-inline-start:\s*0;/);
     expect(css).toMatch(/\.confluence-children-view li\s*\{\s*padding-inline-start:\s*0;/);
     // Prose's `transition: color, text-decoration` would snap the row fill

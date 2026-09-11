@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { ChevronRight } from 'lucide-react';
 import type { ConnectionEvent, ConnectionItem, ConnectionReason, PageConnections } from '@compendiq/contracts';
 import { apiFetch, ApiError } from '../../lib/api';
 
@@ -51,7 +52,7 @@ function ConnectionList({
       </h3>
       <ul className="space-y-1">
         {items.map((item) => (
-          <li key={item.pageId} className="min-w-0 px-3 py-2">
+          <li key={item.pageId} className="min-w-0 py-1">
             <Link
               to={`/pages/${encodeURIComponent(item.pageId)}`}
               className="nm-focus-ring break-words text-sm font-medium text-primary underline decoration-primary/50 underline-offset-2 hover:decoration-primary"
@@ -172,60 +173,72 @@ export function ArticleConnections({ pageId }: ArticleConnectionsProps) {
 
   return (
     <section ref={panelRef} aria-labelledby="article-connections-heading" className="mt-8 border-t border-border pt-5">
-      <div className="mb-4 flex min-w-0 items-baseline justify-between gap-3 max-sm:flex-wrap">
-        <h2 ref={retryTargetRef} tabIndex={-1} id="article-connections-heading" className="nm-focus-ring text-base font-semibold text-foreground">
-          Connections
-        </h2>
-        <Link
-          to={`/graph?focus=${encodeURIComponent(pageId)}`}
-          className="nm-focus-ring shrink-0 text-sm text-primary underline underline-offset-2"
-          onClick={onGraphLaunch}
-        >
-          Explore connections
-        </Link>
-      </div>
-
-      {loading && <p className="text-sm text-muted-foreground">Loading connections…</p>}
-
-      {failedWithoutCache && (
-        <div role="status" className="text-sm text-muted-foreground">
-          <p>
-            Couldn&apos;t load connections.
-          </p>
-          <button
-            type="button"
-            className="nm-focus-ring mt-2 text-sm font-medium text-primary underline underline-offset-2 aria-disabled:cursor-default aria-disabled:opacity-70"
-            onClick={retry}
-            aria-disabled={retryInFlight || undefined}
+      <details open className="group">
+        <summary className="mb-4 flex min-w-0 cursor-pointer list-none items-center justify-between gap-3 marker:content-none max-sm:flex-wrap [&::-webkit-details-marker]:hidden">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <ChevronRight
+              size={16}
+              className="text-muted-foreground shrink-0 transition-transform group-open:rotate-90"
+              aria-hidden="true"
+            />
+            <h2 ref={retryTargetRef} tabIndex={-1} id="article-connections-heading" className="nm-focus-ring text-base font-semibold text-foreground">
+              Connections
+            </h2>
+          </span>
+          <Link
+            to={`/graph?focus=${encodeURIComponent(pageId)}`}
+            className="nm-focus-ring shrink-0 text-sm text-primary underline underline-offset-2"
+            onClick={(event) => {
+              event.stopPropagation();
+              onGraphLaunch();
+            }}
           >
-            {retryInFlight ? 'Retrying…' : 'Retry'}
-          </button>
-        </div>
-      )}
+            Explore connections
+          </Link>
+        </summary>
 
-      {stale && (
-        <div role="status" className="mb-3 text-sm text-muted-foreground">
-          <p>Couldn&apos;t refresh connections. Showing the last loaded results.</p>
-          <button
-            type="button"
-            className="nm-focus-ring mt-1 text-sm font-medium text-primary underline underline-offset-2 aria-disabled:cursor-default aria-disabled:opacity-70"
-            onClick={retry}
-            aria-disabled={retryInFlight || undefined}
-          >
-            {retryInFlight ? 'Retrying…' : 'Retry'}
-          </button>
-        </div>
-      )}
+        {loading && <p className="text-sm text-muted-foreground">Loading connections…</p>}
 
-      {connections && (connections.linked.length === 0 && connections.section.length === 0 && connections.related.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No connections found for this article.</p>
-      ) : (
-        <div className="space-y-4">
-          {GROUPS.map(({ key }) => (
-            <ConnectionList key={key} group={key} items={connections[key]} onConnectionClick={onConnectionClick} />
-          ))}
-        </div>
-      ))}
+        {failedWithoutCache && (
+          <div role="status" className="text-sm text-muted-foreground">
+            <p>
+              Couldn&apos;t load connections.
+            </p>
+            <button
+              type="button"
+              className="nm-focus-ring mt-2 text-sm font-medium text-primary underline underline-offset-2 aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={retry}
+              aria-disabled={retryInFlight || undefined}
+            >
+              {retryInFlight ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        )}
+
+        {stale && (
+          <div role="status" className="mb-3 text-sm text-muted-foreground">
+            <p>Couldn&apos;t refresh connections. Showing the last loaded results.</p>
+            <button
+              type="button"
+              className="nm-focus-ring mt-1 text-sm font-medium text-primary underline underline-offset-2 aria-disabled:cursor-default aria-disabled:opacity-70"
+              onClick={retry}
+              aria-disabled={retryInFlight || undefined}
+            >
+              {retryInFlight ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        )}
+
+        {connections && (connections.linked.length === 0 && connections.section.length === 0 && connections.related.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No connections found for this article.</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2" data-testid="article-connections-groups">
+            {GROUPS.map(({ key }) => (
+              <ConnectionList key={key} group={key} items={connections[key]} onConnectionClick={onConnectionClick} />
+            ))}
+          </div>
+        ))}
+      </details>
     </section>
   );
 }

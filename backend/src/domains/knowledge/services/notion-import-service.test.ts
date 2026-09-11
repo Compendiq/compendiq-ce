@@ -32,6 +32,7 @@ const PNG = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082',
   'hex',
 );
+const PDF = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
 
 function titleProp(text: string) {
   return {
@@ -2698,6 +2699,71 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(page.rows[0]!.body_html).toContain(`/api/local-attachments/${page.rows[0]!.id}/`);
     const att = await query<{ filename: string }>('SELECT filename FROM local_attachments WHERE page_id = $1', [page.rows[0]!.id]);
     expect(att.rows).toHaveLength(1);
+  });
+
+  it('stores PDF bytes through the local attachment store', async () => {
+    const client = await start({
+      validToken: TOKEN,
+      pages: {
+        docs: {
+          object: 'page',
+          id: 'docs',
+          parent: { type: 'workspace', workspace: true },
+          properties: titleProp('Docs'),
+        },
+      },
+      files: {
+        '/files/spec.pdf': { contentType: 'application/pdf', body: PDF },
+      },
+      blockChildren: { docs: [] },
+    });
+    const pdfUrl = `${server.baseUrl}/files/spec.pdf`;
+    server.state.blockChildren = {
+      docs: [
+        {
+          object: 'block',
+          id: 'pdf-1',
+          type: 'pdf',
+          pdf: {
+            type: 'file',
+            file: { url: pdfUrl },
+            caption: [{ type: 'text', plain_text: 'spec', text: { content: 'spec' } }],
+          },
+        },
+        {
+          object: 'block',
+          id: 'file-1',
+          type: 'file',
+          file: {
+            type: 'file',
+            file: { url: pdfUrl },
+            name: 'Handbook.pdf',
+            caption: [],
+          },
+        },
+      ],
+    };
+
+    const items = await runNotionImport({ userId, client, pageIds: ['docs'], visibility: 'shared' });
+    expect(items[0]?.status).toBe('success');
+    const page = await query<{ id: number; body_html: string }>(
+      'SELECT id, body_html FROM pages WHERE notion_page_id = $1',
+      ['docs'],
+    );
+    const pageId = page.rows[0]!.id;
+    expect(page.rows[0]!.body_html).toContain(`/api/local-attachments/${pageId}/`);
+    expect(page.rows[0]!.body_html).toContain('Handbook.pdf');
+    expect(page.rows[0]!.body_html).not.toContain('<img');
+    const att = await query<{ filename: string; content_type: string }>(
+      'SELECT filename, content_type FROM local_attachments WHERE page_id = $1 ORDER BY filename',
+      [pageId],
+    );
+    expect(att.rows).toHaveLength(2);
+    expect(att.rows.every((row) => row.content_type === 'application/pdf')).toBe(true);
+    expect(att.rows.every((row) => row.filename.toLowerCase().endsWith('.pdf'))).toBe(true);
+    for (const row of att.rows) {
+      expect(readFileSync(join(attachmentsDir, 'local', String(pageId), row.filename))).toEqual(PDF);
+    }
   });
 
   it.skipIf(process.getuid?.() === 0)(

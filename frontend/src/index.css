@@ -3026,7 +3026,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 .prose .confluence-children-view a,
 .tiptap .confluence-children-view a {
   color: inherit;
-  font-weight: inherit;
+  font-weight: 500;
   text-decoration: none;
   /* `.prose :where(a)` only transitions color/decoration and would snap the
      pages-list accent fill. Include background so hover eases like a row. */
@@ -3035,8 +3035,10 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
     background-color 0.15s ease;
 }
 .prose .confluence-children-view a .children-directory-title,
-.tiptap .confluence-children-view a .children-directory-title {
+.tiptap .confluence-children-view a .children-directory-title,
+.confluence-children-view .children-directory-title {
   --children-title-rule: color-mix(in oklab, var(--color-foreground) 22%, transparent);
+  font-weight: 500;
   text-decoration: none;
   background-image: linear-gradient(var(--children-title-rule), var(--children-title-rule));
   background-repeat: no-repeat;

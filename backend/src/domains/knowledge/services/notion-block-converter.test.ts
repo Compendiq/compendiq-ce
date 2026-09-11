@@ -176,6 +176,106 @@ describe('convertNotionBlocks', () => {
     fetchSpy.mockRestore();
   });
 
+  it('turns pdf blocks into local-attachment links and records download intents without fetching', () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const sourceUrl = 'https://files.example.test/spec.pdf?sig=1';
+    const result = convert([
+      block('pdf1', 'pdf', {
+        type: 'file',
+        file: { url: sourceUrl, expiry_time: '2099-01-01T00:00:00.000Z' },
+        caption: [rich('Quarterly spec')],
+      }),
+    ]);
+
+    const filename = 'pdf1-spec.pdf';
+    const expectedHref = buildPageImageUrl({
+      source: 'local',
+      key: filename,
+      pageId: LOCAL_PAGE_ID,
+      pageSource: 'standalone',
+    });
+    expect(result.bodyHtml).toContain(`<a href="${expectedHref}">Quarterly spec</a>`);
+    expect(result.bodyHtml).not.toContain('<img');
+    expect(result.attachments).toEqual([
+      {
+        blockId: 'pdf1',
+        kind: 'file',
+        filename,
+        sourceUrl,
+        alt: 'Quarterly spec',
+      },
+    ]);
+    expect(result.skips).toEqual([]);
+    expect(result.bodyText.trim()).not.toBe('');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('imports a file block named as a PDF using the Notion name as the label', () => {
+    const sourceUrl = 'https://prod-files-secure.s3.example.test/space/uuid/Report.pdf';
+    const result = convert([
+      block('f1', 'file', {
+        type: 'file',
+        file: { url: sourceUrl, expiry_time: '2099-01-01T00:00:00.000Z' },
+        name: 'Handbook.pdf',
+        caption: [],
+      }),
+    ]);
+
+    expect(result.attachments).toEqual([
+      {
+        blockId: 'f1',
+        kind: 'file',
+        filename: 'f1-Handbook.pdf',
+        sourceUrl,
+        alt: '',
+      },
+    ]);
+    expect(result.bodyHtml).toContain('Handbook.pdf</a>');
+    expect(result.skips).toEqual([]);
+  });
+
+  it('skips a non-PDF file block and a pdf block whose sourceUrl is not http(s)', () => {
+    const zip = convert([
+      block('zip', 'file', {
+        type: 'file',
+        file: { url: 'https://files.example.test/archive.zip' },
+        name: 'archive.zip',
+        caption: [],
+      }),
+    ]);
+    expect(zip.bodyHtml).not.toContain('archive.zip');
+    expect(zip.attachments).toEqual([]);
+    expect(zip.skips.map((s) => s.blockId)).toEqual(['zip']);
+
+    const js = convert([
+      block('bad-pdf', 'pdf', {
+        type: 'external',
+        external: { url: 'javascript:alert(1)' },
+        caption: [rich('nope')],
+      }),
+    ]);
+    expect(js.bodyHtml.toLowerCase()).not.toContain('javascript:');
+    expect(js.attachments).toEqual([]);
+    expect(js.skips.map((s) => s.blockId)).toEqual(['bad-pdf']);
+  });
+
+  it('keeps a PDF attachment link through sanitization and collaborative save/load', () => {
+    const result = convert([
+      block('pdf1', 'pdf', {
+        type: 'file',
+        file: { url: 'https://files.example.test/spec.pdf' },
+        caption: [rich('Spec')],
+      }),
+    ]);
+    const doc = htmlToYDoc(result.bodyHtml);
+    try {
+      expect(yDocToHtml(doc)).toContain('/api/local-attachments/42/pdf1-spec.pdf');
+    } finally {
+      doc.destroy();
+    }
+  });
+
   it('rewrites mentions of imported pages to /pages/:id and leaves skipped ones as Notion URLs', () => {
     const importedId = '3c612f56-fdd0-4a30-a4d6-bda7d7426309';
     const skippedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';

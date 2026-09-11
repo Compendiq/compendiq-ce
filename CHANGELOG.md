@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   switches to a single stack (`columns=1`); Confluence ignores the param.
   Listed titles sit with tighter vertical spacing, like consecutive document lines.
   A multi-word title keeps one underline through the spaces.
+  Child page titles are medium weight, like Notion’s page names.
+- Article Connections at the bottom of a page is collapsible and lays its
+  groups out in two columns.
 - Floating pop-up borders use a softened contrast rim across both themes, and light
   mode features matching frosted glass with 12px blur and 82% elevated fill.
 - Floating HUDs and overlays (Bulk action bars, Command palette, Toaster notifications,
@@ -46,7 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Notion web bookmarks import as links instead of being dropped. A page whose
   only content is bookmarks imported with an empty body; re-running the import
   on it fills the body in without duplicating the page. Embeds, link previews,
-  video and file blocks still stay in Notion.
+  and video still stay in Notion.
+
+- Notion PDF embeds and PDF file blocks import as local attachments with a
+  download link on the article. They were skipped, so a page of PDFs arrived
+  empty. Non-PDF file blocks stay in Notion.
 
 - Nested pages in a local space can be reordered with drag-and-drop, same
   as top-level pages. They previously shared one sortable list with the

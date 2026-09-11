@@ -126,6 +126,29 @@ describe('ArticleConnections', () => {
     });
   });
 
+  it('opens as a two-column disclosure and collapses from the Connections heading', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = requestUrl(input);
+      if (url === '/api/pages/12/connections' && (init?.method ?? 'GET') === 'GET') return json(connections);
+      return json({ recorded: true });
+    });
+
+    renderPanel();
+    expect(await screen.findByRole('heading', { name: 'Linked articles' })).toBeInTheDocument();
+
+    const groups = screen.getByTestId('article-connections-groups');
+    expect(groups.className).toMatch(/sm:grid-cols-2/);
+
+    const details = screen.getByRole('heading', { name: 'Connections' }).closest('details');
+    expect(details).toHaveAttribute('open');
+
+    fireEvent.click(screen.getByRole('link', { name: 'Explore connections' }));
+    expect(details).toHaveAttribute('open');
+
+    fireEvent.click(screen.getByRole('heading', { name: 'Connections' }));
+    expect(details).not.toHaveAttribute('open');
+  });
+
   it('distinguishes an empty response from a failed request and retries through the real endpoint', async () => {
     let attempts = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
