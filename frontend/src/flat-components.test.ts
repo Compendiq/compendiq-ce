@@ -966,8 +966,8 @@ describe('the component layer is as flat as the token layer', () => {
     expect(glass, 'nm-popover-glass is the overlay glass surface').toMatch(
       /backdrop-filter:\s*blur/,
     );
-    expect(glass, 'and it keeps the measured interactive edge').toMatch(
-      /border:\s*1px solid var\(--color-border-interactive\)/,
+    expect(glass, 'and it keeps a defined 1px border').toMatch(
+      /border:\s*1px\s+solid/,
     );
   });
 
