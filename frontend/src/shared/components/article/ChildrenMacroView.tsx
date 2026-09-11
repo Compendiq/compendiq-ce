@@ -119,7 +119,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
       return (
         <span className={cn(titleClass, 'text-foreground')} title={child.title}>
           {mark}
-          {child.title}
+          <span className="children-directory-title min-w-0 break-words">{child.title}</span>
         </span>
       );
     }
@@ -130,7 +130,7 @@ export function ChildrenMacroView({ node, updateAttributes, editor }: NodeViewPr
         title={child.title}
       >
         {mark}
-        {child.title}
+        <span className="children-directory-title min-w-0 break-words">{child.title}</span>
       </Link>
     );
   }
