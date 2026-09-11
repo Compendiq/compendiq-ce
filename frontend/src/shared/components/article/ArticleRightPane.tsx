@@ -1476,7 +1476,7 @@ export function ArticleRightPane({
           context strip). It is not free space: the segmented control is 34px
           (28px segments + 2px track inset + 1px borders), so the row has ~7px
           of breathing room and no more. */}
-      <div className="panel-toolbar flex h-12 shrink-0 items-center gap-1 px-2">
+      <div className="panel-toolbar sticky top-0 z-10 flex h-12 shrink-0 items-center gap-1 px-2 nm-popover-glass rounded-none border-t-0 border-x-0 border-b border-border/40 shadow-none">
         {/* Two stable views replace one long mixed-purpose column.
             Same segmented-control shape as the main nav, the settings sub-tabs
             and the search-mode toggle: `rounded-md` track on `bg-muted`, 2px
@@ -1602,7 +1602,7 @@ export function ArticleRightPane({
           role="tabpanel"
           aria-labelledby="page-context-tab-assistant"
           className={cn(
-            'flex min-h-0 flex-1 flex-col',
+            'flex min-h-0 flex-1 flex-col -mt-12 pt-12',
             activeInspectorView !== 'assistant' && 'hidden',
           )}
         >
@@ -1626,7 +1626,7 @@ export function ArticleRightPane({
         id="page-context-panel-details"
         role="tabpanel"
         aria-labelledby="page-context-tab-details"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask"
+        className="min-h-0 flex-1 overflow-y-auto scroll-mask -mt-12 pt-12"
       >
       {isNewPage ? (
         <div className="px-3 py-4">
@@ -2024,7 +2024,7 @@ export function ArticleRightPane({
         id="page-context-panel-outline"
         role="tabpanel"
         aria-labelledby="page-context-tab-outline"
-        className="min-h-0 flex flex-1 flex-col"
+        className="min-h-0 flex flex-1 flex-col -mt-12 pt-12"
       >
         {/* Outline header + progress */}
         {headings.length > 0 && (
