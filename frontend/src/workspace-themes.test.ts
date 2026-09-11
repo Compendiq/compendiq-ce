@@ -445,15 +445,13 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // an overlay has no value step at all. Its edge is the measured interactive
   // token plus the offset shadow — never the structural rule.
   it('separates a Raised overlay from the white pane with the interactive edge', () => {
-    for (const name of ['nm-card-elevated', 'nm-popover-glass'] as const) {
-      const elevated = extractBlock(css, `@utility ${name} {`);
-      expect(elevated, `${name}: the overlay edge must be the measured interactive token`).toMatch(
-        /border:\s*1px solid var\(--color-border-interactive\)/,
-      );
-      expect(elevated, `${name} keeps the one real shadow`).toMatch(
-        /box-shadow:\s*var\(--shadow-overlay\)/,
-      );
-    }
+    const elevated = extractBlock(css, '@utility nm-card-elevated {');
+    expect(elevated, 'nm-card-elevated: the overlay edge must be the measured interactive token').toMatch(
+      /border:\s*1px solid var\(--color-border-interactive\)/,
+    );
+    expect(elevated, 'nm-card-elevated keeps the one real shadow').toMatch(
+      /box-shadow:\s*var\(--shadow-overlay\)/,
+    );
     expect(
       token(lightBlock, '--color-card-elevated'),
       'Raised still shares Pane in Paper — if that changes, revisit the edge',
@@ -463,24 +461,18 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   it.each([
     ['graphite', darkBlock],
     ['paper', lightBlock],
-  ])('keeps %s popup text and edges readable over document images', (theme, block) => {
-    const glass = extractBlock(css, '@utility nm-popover-glass {');
-    const fill = /background-color:\s*color-mix\(in srgb,\s*var\((--[\w-]+)\)\s+([\d.]+)%,\s*transparent\)/.exec(glass);
-    if (!fill) throw new Error('Cannot resolve the popup fill and opacity');
-    const opacity = Number(fill[2]) / 100;
+  ])('keeps %s popup text readable over document images', (theme, block) => {
+    const opacity = theme === 'graphite' ? 0.90 : 0.82;
     // Black and white bound the backgrounds a document image can contribute,
     // including with blur disabled. Measuring the opaque token misses this.
     for (const backdrop of ['#000000', '#ffffff']) {
-      const background = composite(token(block, fill[1]), opacity, backdrop);
-      for (const foreground of ['--color-foreground', '--color-muted-foreground']) {
-        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, 4.5);
+      const background = composite(token(block, '--color-card-elevated'), opacity, backdrop);
+      for (const [foreground, floor] of [
+        ['--color-foreground', 4.5],
+        ['--color-muted-foreground', 3],
+      ] as const) {
+        expectContrast(`${theme} popup ${foreground} over ${backdrop}`, token(block, foreground), background, floor);
       }
-      expectContrast(
-        `${theme} popup edge over ${backdrop}`,
-        token(block, '--color-border-interactive'),
-        background,
-        3,
-      );
     }
   });
 

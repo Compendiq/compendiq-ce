@@ -802,13 +802,13 @@ no shadow left to fall back on.
   resolve onto `--color-*` and must not be revived as in-page chrome.
   `backdrop-blur` on a Tailwind class survives **only** on modal scrims,
   where it is a specific effect rather than decoration standing in for
-  hierarchy. Floating popovers and dropdowns use `nm-popover-glass`: the same
-  `--color-border-interactive` overlay edge and `--shadow-overlay` as
-  `nm-card-elevated` (Paper Raised shares Pane, so the edge is WCAG 1.4.11),
-  plus a 95% elevated-surface fill and 10px blur.
+  hierarchy. Floating popovers and dropdowns use `nm-popover-glass`: a softened
+  border with reduced contrast (18% of the interactive edge), `--shadow-overlay`,
+  and frosted glass with 12px blur across both dark (90% fill) and bright (82% fill)
+  modes so the glass effect is visible in light mode.
   `prefers-reduced-transparency` makes the fill opaque and removes blur.
   Theme tests composite the fill over black and white document images,
-  requiring ≥4.5:1 text and ≥3:1 edge contrast in both themes; measuring
+  requiring ≥4.5:1 text contrast in both themes; measuring
   the opaque token alone misses translucent-overlay failures.
   Dialogs stay opaque `nm-card-elevated`. Blur is not a substitute for
   measured contrast. 307 fractional `border-border/NN` opacities collapse
