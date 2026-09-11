@@ -83,3 +83,13 @@ describe('Docker workflow smoke-test catches demoted collab TipTap packages', ()
     expect(smoke).toMatch(/@tiptap\/extension-code-block/);
   });
 });
+
+describe('backend image provisions ATTACHMENTS_DIR for the node user', () => {
+  it('creates /opt/app/data/attachments in the CE image so a named volume copies a writable tree', () => {
+    expect(dockerfile).toMatch(/mkdir -p \/opt\/app\/data\/attachments/);
+  });
+
+  it('creates /app/data/attachments in the enterprise image', () => {
+    expect(dockerfileEnterprise).toMatch(/mkdir -p \/app\/data\/attachments/);
+  });
+});

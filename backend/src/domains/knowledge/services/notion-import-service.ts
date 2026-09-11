@@ -543,7 +543,9 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         localPageId: job.localPageId,
         importedPages,
       });
-      await storeAttachments(input.client, input.userId, job.localPageId, converted.attachments);
+      job.attachmentWarning = await storeAttachments(
+        input.client, input.userId, job.localPageId, converted.attachments,
+      );
       job.prepared = true;
     } catch (err) {
       if (job.createdPlaceholder) {
@@ -638,13 +640,18 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       // makes it an article rather than a bare page.
       const rowParent = isRecord(job.page.parent) ? job.page.parent : null;
       const isRow = rowParent?.type === 'database_id' || rowParent?.type === 'data_source_id';
+      const reasons = [
+        job.flatten?.kind === 'row-bodies' && (modes.get(normalizeNotionId(job.id)) ?? 'table') === 'table'
+          ? NOTION_TABLE_DOWNGRADE_REASON
+          : undefined,
+        job.attachmentWarning,
+      ].filter((value): value is string => Boolean(value));
       items.set(job.id, {
         notionPageId: job.id,
         status: 'success',
         localPageId: job.localPageId,
         importedAs: job.flatten?.kind === 'table' ? 'table' : isRow ? 'article' : 'page',
-        ...(job.flatten?.kind === 'row-bodies' && (modes.get(normalizeNotionId(job.id)) ?? 'table') === 'table'
-          ? { reason: NOTION_TABLE_DOWNGRADE_REASON } : {}),
+        ...(reasons.length > 0 ? { reason: reasons.join(' ') } : {}),
         ...(job.reuseComplete ? { updated: true } : {}),
       });
     } catch (err) {
@@ -703,6 +710,7 @@ interface ImportJob {
   localPageId?: number;
   createdPlaceholder?: boolean;
   prepared?: boolean;
+  attachmentWarning?: string;
   database?: Record<string, unknown>;
   flatten?: FlattenAttempt;
   foldedInto?: string;
@@ -931,7 +939,8 @@ async function storeAttachments(
   userId: string,
   pageId: number,
   attachments: Array<{ filename: string; sourceUrl: string }>,
-): Promise<void> {
+): Promise<string | undefined> {
+  const failed: Array<{ filename: string; reason: string }> = [];
   for (const att of attachments) {
     try {
       const media = await client.fetchMedia(att.sourceUrl);
@@ -943,10 +952,25 @@ async function storeAttachments(
         userId,
       });
     } catch (err) {
-      logger.warn({ pageId, filename: att.filename, err: failReason(err) }, 'notion-import: attachment download failed');
-      throw err instanceof Error ? err : new Error(failReason(err));
+      const reason = failReason(err);
+      logger.warn({ pageId, filename: att.filename, err: reason }, 'notion-import: attachment download failed');
+      const code = err && typeof err === 'object' && 'code' in err
+        ? (err as NodeJS.ErrnoException).code
+        : undefined;
+      // Local store unwritable (Docker volume owned by root) must not drop the
+      // page — that orphans every child that already imported. Notion 404s
+      // still fail the item so we do not publish a body with broken img srcs.
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+        failed.push({ filename: att.filename, reason });
+        continue;
+      }
+      throw err instanceof Error ? err : new Error(reason);
     }
   }
+  if (failed.length === 0) return undefined;
+  const first = failed[0]!;
+  if (failed.length === 1) return `Could not save image ${first.filename}: ${first.reason}`;
+  return `Could not save ${failed.length} images (${first.filename}: ${first.reason})`;
 }
 
 async function resolveParentLocalId(
