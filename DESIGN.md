@@ -9,13 +9,13 @@ colors:
   canvas-graphite: "#09090a"
   chrome-graphite: "#0c0c0d"
   workspace-graphite: "#0f0f10"
-  pane-graphite: "#161617"
+  pane-graphite: "#19191a"
   raised-graphite: "#1b1b1d"
   ink-graphite: "#e7e9eb"
   muted-ink-graphite: "#a0a4aa"
   border-graphite: "#222225"
   border-interactive-graphite: "#7c7c85"
-  hover-graphite: "#1c1d1d"
+  hover-graphite: "#1d1e1e"
   pressed-graphite: "#212226"
   selected-graphite: "#282a2e"
   canvas-paper: "#ededed"
@@ -148,7 +148,7 @@ components:
 
 Compendiq is a calibrated workspace, not a room and not a brand film. Linear sets the bar for timing, keyboard coverage and type scale; Plane for calm neutral surfaces and row density; Notion for the document surface. The standing preference is the category convention executed at full fidelity — a first-rate modern workspace application, without irony, pastiche or smuggled quirk.
 
-Hierarchy comes from the eight-role surface ladder, type weight, and space. Motion is a 120ms `ease-out` colour change on state, never entrance choreography. Brand lives in Workspace Steel, in the interactive edge, and in what is refused: no lift, no gradient fill, no in-page glass, no colour as the only channel for state.
+Hierarchy comes from the eight-role surface ladder, type weight, and space. Motion is a 120ms `ease-out` colour change on state, never entrance choreography. Brand lives in Workspace Steel, in the interactive edge, and in what is refused: no lift, no gradient fill on panes or controls, no in-page glass, no colour as the only channel for state. The outer chassis alone carries the owner-requested subtle grey wash.
 
 Two themes are a product requirement. Graphite (`:root`) is the dark instrument; Paper is the light one. Neither is a fallback. Default follows the OS; a manual override persists per user.
 
@@ -172,7 +172,7 @@ Workspace Steel is the single brand and interaction accent. Semantic hues are re
 
 Eight production roles (ADR-010). Graphite first, Paper sibling second.
 
-- **Canvas** (`canvas-graphite` / `canvas-paper`): viewport gutter, destination rail, top app header. Draws the workspace card by value, not by a line.
+- **Canvas** (`canvas-graphite` / `canvas-paper`): base colour for viewport gutter, destination rail, top app header. The chassis adds a restrained multi-grey wash; the base remains the overscroll and first-paint fallback. Draws the workspace card by value, not by a line.
 - **Chrome** (`chrome-graphite` / `chrome-paper`): internal panel-header bands that still need a strip (Library results headers). Not the outer frame.
 - **Workspace** (`workspace-graphite` / `workspace-paper`): shell fill inside the card; Graphite navigation/AI rail ground.
 - **Pane** (`pane-graphite` / `pane-paper`): document, left navigation, context rail. Paper Pane is pure white.
@@ -229,7 +229,7 @@ The shell is an inset card on Canvas. Destinations live on the left chassis; the
 - **md (768px):** 12px inset, 12px shell radius, 4px rail gap.
 - **xl (1280px):** 16px inset, 14px shell radius, 6px rail gap. Do not invent a third breakpoint ladder.
 
-Left navigation, document pane, and context rail share Pane. The top header, destination rail, and bottom rail paint Canvas so the outer frame is one colour. Paper document, left nav, and context rail are pure white.
+Left navigation, document pane, and context rail share Pane. The top header is transparent over the chassis so the header, destination rail, and bottom rail share one continuous tonal wash, without restarting the gradient at their boundaries. Paper document, left nav, and context rail are pure white.
 
 Density is Plane-like: tight groups, generous separation, more space above a heading than below it. Controls are 32px tall so a button, an input, and a 28px toolbar chip share one row.
 
@@ -251,6 +251,7 @@ Raised is what leaves the page. Dialogs and opaque overlays use the Raised fill,
 ### Named exceptions
 
 - **Login halo.** The one declared in-page decoration: primary (or AI violet) disc at opacity 0.08, 120px blur, `z-index: -10`. Measured so muted hero ink still clears 4.5:1 on the composite. Ceiling 0.08; 0.12 breaches. Nowhere else.
+- **Chassis grey wash (owner request, 2026-09-12).** Static, low-contrast shading on the outer frame only: Paper blends `#F3F3F3` → base `#EDEDED` → `#E8E8E8` → base; Graphite blends `#101011` → base `#09090A` → `#070708` → base. No texture, animation, shadow, or coloured glow. Every stop must keep rail labels at ≥4.5:1, focus indicators at ≥3:1, and Pane separation at ≥1.08:1. The owner's dark-mode follow-up brightens the shared main, left and right pane to `#19191A`; hover lifts to `#1D1E1E` to stay visible. Panes remain flat; Paper and the separate login ground are unchanged.
 
 **The Overlay-Only Shadow Rule.** In-flow surfaces cast nothing. `--shadow-overlay` is for things that leave the page.
 
@@ -334,7 +335,7 @@ The material that leaves the page. 12px blur, 82–90% Raised, rim at 18% intera
 ### Don't:
 
 - **Don't** lift, scale, or grow a shadow on hover. That is the neumorphic tell.
-- **Don't** paint gradient fills. Steel start and end are the same value on purpose.
+- **Don't** paint gradient fills on panes or controls. The chassis grey wash is the sole outer-frame exception; Steel start and end remain the same value.
 - **Don't** put glass or `backdrop-blur` on in-page chrome.
 - **Don't** use colour as the only channel for state.
 - **Don't** use Steel for embedding, telemetry, or idle pipeline status.

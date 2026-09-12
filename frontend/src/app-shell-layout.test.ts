@@ -110,10 +110,22 @@ describe('Inset shell tokens', () => {
       ['graphite', darkBlock],
       ['paper', lightBlock],
     ] as const) {
-      expect(
-        contrast(tokenHex(block, '--color-card'), tokenHex(block, '--app-chassis')),
-        `${theme}: the unlined workspace card needs a readable value step`,
-      ).toBeGreaterThanOrEqual(1.08);
+      for (const stop of ['--app-chassis-highlight', '--app-chassis', '--app-chassis-shade']) {
+        expect(
+          contrast(tokenHex(block, '--color-card'), tokenHex(block, stop)),
+          `${theme}: the unlined workspace card needs a readable value step at ${stop}`,
+        ).toBeGreaterThanOrEqual(1.08);
+      }
+    }
+  });
+
+  it('keeps navigation labels and focus indicators readable across the chassis wash', () => {
+    for (const block of [darkBlock, lightBlock]) {
+      for (const stop of ['--app-chassis-highlight', '--app-chassis', '--app-chassis-shade']) {
+        const ground = tokenHex(block, stop);
+        expect(contrast(tokenHex(block, '--color-muted-foreground'), ground), stop).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(tokenHex(block, '--color-primary'), ground), stop).toBeGreaterThanOrEqual(3);
+      }
     }
   });
 
@@ -170,15 +182,6 @@ describe('Inset shell utilities', () => {
     expect(nav).toContain('w-[var(--app-nav-rail-width)]');
   });
 
-  it('completes the canvas frame across the top while panel toolbars keep Chrome', () => {
-    const appHeader = extractBlock(css, '@utility app-header {');
-    const panelToolbar = extractBlock(css, '@utility panel-toolbar {');
-    expect(css).toMatch(/--app-header-bg:\s*#0c0c0d/);
-    expect(css).toMatch(/--app-header-bg:\s*#f5f5f4/);
-    expect(appHeader).toMatch(/background:\s*var\(--app-chassis\)/);
-    expect(appHeader).not.toMatch(/background:\s*var\(--app-header-bg\)/);
-    expect(panelToolbar).toMatch(/background:\s*var\(--app-header-bg\)/);
-  });
 
   it('left navigation, including title and footer chrome, paints the same surface as main', () => {
     const sidebar = extractBlock(css, '@utility app-sidebar {');

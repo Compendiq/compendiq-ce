@@ -303,7 +303,7 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      surface and it fails with the measured ratio. */
   --color-background: #0f0f10;          /* Workspace — navigation and AI rail */
   --color-foreground: #e7e9eb;          /* Graphite ink */
-  --color-card: #161617;                /* Pane — softened document and route content */
+  --color-card: #19191a;                /* Pane — shared document, left pane and context rail */
   --color-card-foreground: #e7e9eb;
   --color-card-elevated: #1b1b1d;       /* Raised — popovers and dialogs */
   /* Steel — the single brand AND interaction accent: brand mark, primary
@@ -329,31 +329,13 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
   /* Measured against the WORST surface it lands on (the elevated pane),
      not the darkest — sidebar counts, hints and secondary labels inherit it. */
   --color-muted-foreground: #a0a4aa;
-  /* THREE state fills, not one. Until 2026-08-30 `--color-accent`,
-     `--color-secondary` and `--color-muted` were all #1c1d1d, so hover,
-     selected, pressed and a quiet field fill were the same value: a critique
-     measured ΔE-OK 0.0000 between them, which in a 40-row page tree means a
-     hovered row is indistinguishable from the selected one. Each state now has
-     its own rung above the pane (#161617): hover 1.070:1, pressed 1.138:1,
-     selected 1.258:1 — and selection still adds its interactive outline on top.
-     `--color-muted` stays at the hover value on purpose: it is a resting FIELD
-     fill, not a state.
-
-     WIDENED 2026-08-31. The first split shipped pressed at #1e1f21, one step off
-     hover: ΔE-OK 0.0101 at 1.024:1, which a critique could not tell apart from
-     hover in rendered 13px rows. The guard asserted ordering and distinctness
-     but no perceptual floor, so an invisible step passed. Steps are now ΔE-OK
-     0.0292 / 0.0241 / 0.0321, each at or above Paper's equivalent.
-
-     Widening downward was blocked by two other tokens, and the fix was to move
-     THEM rather than hug a floor: at #282a2e the old --color-border-interactive
-     (#71717a) measured 2.97:1 — the edge that IS the selected state, under
-     1.4.11's 3:1 — and --color-status-inactive (#8b8f99) measured 4.44:1. Both
-     were lifted; see their declarations. The dark ladder was compressed because
-     its edge token was too dark, not because the state values were wrong. */
-  --color-accent: #1c1d1d;             /* hover    — 1.070:1 on Pane */
-  --color-pressed: #212226;            /* :active  — 1.138:1 */
-  --color-selected: #282a2e;           /* current destination — 1.258:1 */
+  /* Separate hover, press and selection fills. The brighter Pane (2026-09-12)
+     needs a small hover lift to preserve the visible state step; press and
+     selection retain their existing values and interactive outline.
+     Muted remains a resting field fill, independent of the state ladder. */
+  --color-accent: #1d1e1e;             /* hover — 1.051:1 on Pane */
+  --color-pressed: #212226;            /* :active — 1.106:1 */
+  --color-selected: #282a2e;           /* current destination — 1.222:1 */
   --color-accent-foreground: #e7e9eb;
   /* Semantic aliases — ALWAYS var() references onto the status tokens below,
      never raw values. ~100 callsites say text-success / text-warning /
@@ -528,6 +510,17 @@ h3, .prose :where(h3) { letter-spacing: -0.014em; }
      A notch blacker than the chrome so the card detaches without going
      crushed OLED. */
   --app-chassis: #09090a;
+  --app-chassis-highlight: #101011;
+  --app-chassis-shade: #070708;
+  /* Owner exception (2026-09-12): a restrained multi-grey wash on the outer
+     frame only. One continuous image; panes and controls remain flat. */
+  --app-chassis-tones: linear-gradient(
+    115deg,
+    var(--app-chassis-highlight) 0%,
+    var(--app-chassis) 32%,
+    var(--app-chassis-shade) 68%,
+    var(--app-chassis) 100%
+  );
   /* The login page's own ground. Identical to the chassis here: Graphite's
      composite under the halo measures 7.25:1 and never forced a split. Paper's
      does — see the token there and `@utility login-backdrop`. */
@@ -972,6 +965,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
      are unaffected: they carry hover and selection with ink and a Steel marker
      line, never a fill. */
   --app-chassis: #ededed;
+  --app-chassis-highlight: #f3f3f3;
+  --app-chassis-shade: #e8e8e8;
   /* The login page keeps the ground its halo was measured against. Canvas left
      it behind on 2026-08-31: at #E8E8E8 the halo composited to #DDDFDF and the
      hero's 18px lead paragraph measured 4.013:1, under 1.4.3's 4.5. This value
@@ -1138,6 +1133,7 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 @utility app-chassis {
   background: var(--app-chassis);
+  background-image: var(--app-chassis-tones);
   /* Destinations live on the left chassis. A matching inset there stacked a
      second grey gutter beside the 48px rail; keep the inset on the end and
      bottom so the workspace card still floats off the right and floor. */
@@ -1223,7 +1219,8 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
    not a chrome band beside a reading pane. The detached context rail is the
    same composition: one pane, its own first row, no band. */
 @utility app-header {
-  background: var(--app-chassis);
+  /* Let the chassis wash continue through the header without restarting. */
+  background: transparent;
   border-color: var(--color-border);
   height: var(--app-header-height);
   min-height: var(--app-header-height);
