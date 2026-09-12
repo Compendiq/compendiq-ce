@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Popover from '@radix-ui/react-popover';
 import { Smile, Shapes, ImagePlus, Trash2, Hexagon } from 'lucide-react';
 import {
@@ -41,7 +41,29 @@ export function PageIconPicker({
   trigger: React.ReactNode;
 }) {
   const [tab, setTab] = useState<PickerTab>('icons');
+  const [filled, setFilled] = useState<boolean>(() =>
+    icon?.kind === 'lucide' ? Boolean(icon.filled) : false,
+  );
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (icon?.kind === 'lucide') {
+      setFilled(Boolean(icon.filled));
+    }
+  }, [icon]);
+
+  const handleFilledChange = (nextFilled: boolean) => {
+    setFilled(nextFilled);
+    if (icon?.kind === 'lucide') {
+      onSelect({
+        kind: 'lucide',
+        value: icon.value,
+        ...(icon.color ? { color: icon.color } : {}),
+        ...(nextFilled ? { filled: true } : {}),
+      });
+    }
+  };
+
   const tintable = asTintable(icon);
 
   return (
@@ -69,9 +91,16 @@ export function PageIconPicker({
           {tab === 'icons' && (
             <LucideIconGrid
               selected={icon?.kind === 'lucide' ? icon.value : null}
+              filled={filled}
+              onFilledChange={handleFilledChange}
               onPick={(value) => {
                 const color = keptTint(icon);
-                onSelect(color ? { kind: 'lucide', value, color } : { kind: 'lucide', value });
+                onSelect({
+                  kind: 'lucide',
+                  value,
+                  ...(color ? { color } : {}),
+                  ...(filled ? { filled: true } : {}),
+                });
               }}
             />
           )}
@@ -125,11 +154,19 @@ export function PageIconPicker({
           {(tab === 'icons' || tab === 'logos') && tintable && (
             <IconColorRow
               icon={tintable}
+              filled={tab === 'icons' && filled}
               onPick={(color) =>
                 onSelect(
-                  color
-                    ? { kind: tintable.kind, value: tintable.value, color }
-                    : { kind: tintable.kind, value: tintable.value },
+                  tintable.kind === 'lucide'
+                    ? {
+                        kind: 'lucide',
+                        value: tintable.value,
+                        ...(color ? { color } : {}),
+                        ...(filled ? { filled: true } : {}),
+                      }
+                    : color
+                      ? { kind: 'brand', value: tintable.value, color }
+                      : { kind: 'brand', value: tintable.value },
                 )
               }
             />
@@ -156,7 +193,7 @@ export function PageIconPicker({
 
 function asTintable(icon: PageIconValue | null | undefined): TintableIcon | null {
   if (icon?.kind === 'lucide') {
-    return { kind: 'lucide', value: icon.value, color: icon.color };
+    return { kind: 'lucide', value: icon.value, color: icon.color, filled: icon.filled };
   }
   if (icon?.kind === 'brand') {
     return { kind: 'brand', value: icon.value, color: icon.color };
@@ -168,13 +205,17 @@ function keptTint(icon: PageIconValue | null | undefined): PageIconColor | undef
   return asTintable(icon)?.color;
 }
 
-type TintableIcon = { kind: 'lucide' | 'brand'; value: string; color?: PageIconColor };
+type TintableIcon =
+  | { kind: 'lucide'; value: string; color?: PageIconColor; filled?: boolean }
+  | { kind: 'brand'; value: string; color?: PageIconColor };
 
 function IconColorRow({
   icon,
+  filled = false,
   onPick,
 }: {
   icon: TintableIcon;
+  filled?: boolean;
   onPick: (color?: PageIconColor) => void;
 }) {
   const Glyph = icon.kind === 'lucide' ? getPageLucideIcon(icon.value) : null;
@@ -210,7 +251,12 @@ function IconColorRow({
             onClick={() => onPick(swatch.value)}
           >
             {Glyph ? (
-              <Glyph size={18} aria-hidden className={!swatch.value ? 'text-foreground' : undefined} />
+              <Glyph
+                size={18}
+                aria-hidden
+                fill={filled ? 'currentColor' : 'none'}
+                className={cn(!swatch.value && 'text-foreground', filled && 'page-icon-filled')}
+              />
             ) : brand ? (
               <span className={!swatch.value ? 'text-foreground' : undefined}>
                 <BrandMark path={brand.path} size={18} />

@@ -36,6 +36,31 @@ describe('PageIconSchema', () => {
       value: 'rocket',
       color: '#3b82f6',
     });
+    expect(PageIconSchema.parse({ kind: 'lucide', value: 'rocket', color: '#6366f1' })).toEqual({
+      kind: 'lucide',
+      value: 'rocket',
+      color: '#6366f1',
+    });
+  });
+
+  it('accepts a lucide mark with filled option', () => {
+    expect(
+      PageIconSchema.parse({ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true }),
+    ).toEqual({
+      kind: 'lucide',
+      value: 'camera',
+      color: '#6366f1',
+      filled: true,
+    });
+    expect(
+      UpdatePageIconSchema.parse({
+        icon: { kind: 'lucide', value: 'camera', filled: true },
+      }).icon,
+    ).toEqual({
+      kind: 'lucide',
+      value: 'camera',
+      filled: true,
+    });
   });
 });
 
