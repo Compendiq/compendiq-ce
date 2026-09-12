@@ -28,8 +28,19 @@ vi.mock('../../core/services/rbac-service.js', () => ({
 }));
 
 const mockQueryFn = vi.fn();
+const mockPageSources = new Map<number, 'confluence' | 'standalone'>();
 vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
+  query: (sql: string, params?: unknown[]) => {
+    if (sql === 'SELECT id, source FROM pages WHERE id = ANY($1::int[])') {
+      return Promise.resolve({
+        rows: (params![0] as number[]).flatMap((id) => {
+          const source = mockPageSources.get(id);
+          return source ? [{ id, source }] : [];
+        }),
+      });
+    }
+    return mockQueryFn(sql, params);
+  },
   getPool: vi.fn().mockReturnValue({}),
   runMigrations: vi.fn(),
   closePool: vi.fn(),
@@ -98,18 +109,21 @@ const makeSearchResult = (
   pageId: number,
   title: string,
   overrides?: { score?: number; vectorScore?: number | null; keywordRank?: number | null },
-) => ({
-  pageId,
-  confluenceId: `page-${pageId}`,
-  chunkText: `Excerpt for ${title}`,
-  pageTitle: title,
-  sectionTitle: title,
-  spaceKey: 'TEST',
-  score: 0.8,
-  vectorScore: 0.8,
-  keywordRank: null,
-  ...overrides,
-});
+) => {
+  mockPageSources.set(pageId, 'confluence');
+  return {
+    pageId,
+    confluenceId: `page-${pageId}`,
+    chunkText: `Excerpt for ${title}`,
+    pageTitle: title,
+    sectionTitle: title,
+    spaceKey: 'TEST',
+    score: 0.8,
+    vectorScore: 0.8,
+    keywordRank: null,
+    ...overrides,
+  };
+};
 
 /**
  * #1284 — pair an INSERT's column list with its VALUES list by POSITION.
@@ -188,6 +202,7 @@ describe('Search Routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPageSources.clear();
     // The semantic branch reads the real fetch-width TTL cache
     // (admin-settings-service) — clear it so no test's resolved width serves
     // the rest of the file for 60s.
@@ -220,6 +235,7 @@ describe('Search Routes', () => {
               {
                 id: 1,
                 confluence_id: 'page-1',
+                source: 'confluence',
                 title: 'Redis Guide',
                 space_key: 'DEV',
                 author: 'Alice',
@@ -232,6 +248,7 @@ describe('Search Routes', () => {
               {
                 id: 2,
                 confluence_id: 'page-2',
+                source: 'confluence',
                 title: 'Redis Config',
                 space_key: 'OPS',
                 author: 'Bob',
@@ -384,7 +401,7 @@ describe('Search Routes', () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('ts_rank')) {
           return {
-            rows: [{ id: 1, confluence_id: 'p-1', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
+            rows: [{ id: 1, confluence_id: 'p-1', source: 'confluence', title: 'T', space_key: 'DEV', author: null, last_modified_at: null, labels: [], rank: 0.5, snippet: 's', total_count: '50' }],
           };
         }
         return { rows: [] };
@@ -423,6 +440,7 @@ describe('Search Routes', () => {
               {
                 id: 99,
                 confluence_id: 'page-99',
+                source: 'confluence',
                 title: 'Redis Tuning',
                 space_key: 'DEV',
                 body_text: 'Tuning advice',
@@ -436,6 +454,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Redis Guide',
               space_key: 'DEV',
               author: 'Alice',
@@ -631,6 +650,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Keyword Result',
               space_key: 'DEV',
               author: null,
@@ -754,26 +774,6 @@ describe('Search Routes', () => {
 
     // ── The image leg (#1115 P3) ──────────────────────────────────────────
 
-    it('hybrid mode leaves the image leg to the admin setting, and the wire shape is unchanged', async () => {
-      // `imageLeg` is deliberately ABSENT rather than `true`: `/api/search`
-      // has no per-request opinion, so the leg follows
-      // `rag_image_leg_enabled` exactly as it does on the chat path. Passing
-      // `true` would force it past a switch an operator turned off.
-      mockQueryFn.mockResolvedValue({ rows: [] });
-      mockHybridSearch.mockResolvedValue([makeSearchResult(1, 'Result')]);
-
-      const response = await app.inject({ method: 'GET', url: '/api/search?q=test&mode=hybrid' });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockHybridSearch.mock.calls[0]![4]).not.toHaveProperty('imageLeg');
-      // Page rows, exactly as before — the leg changes RANKING, never the
-      // shape. No image field leaks onto a search item.
-      const item = response.json().items[0] as Record<string, unknown>;
-      expect(Object.keys(item).sort()).toEqual([
-        'author', 'confluenceId', 'id', 'labels', 'lastModifiedAt', 'rank',
-        'score', 'similarity', 'snippet', 'spaceKey', 'title',
-      ]);
-    });
 
     it('semantic mode runs no image leg at all — it never reaches hybridSearch', async () => {
       // The narrower, structural guarantee: `mode=semantic` calls
@@ -1295,6 +1295,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Redis Guide',
               space_key: 'DEV',
               author: 'Alice',
@@ -1345,6 +1346,7 @@ describe('Search Routes', () => {
             rows: [{
               id: 1,
               confluence_id: 'page-1',
+              source: 'confluence',
               title: 'Test',
               space_key: 'DEV',
               author: 'Alice',

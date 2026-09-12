@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React from 'react';
 import { useSearch } from './use-search';
@@ -34,6 +34,8 @@ function createWrapper() {
 const makeSearchResponse = (overrides: Partial<{
   items: unknown[];
   total: number;
+  page: number;
+  totalPages: number;
   mode: string;
   hasEmbeddings: boolean;
   warning: string;
@@ -45,6 +47,7 @@ const makeSearchResponse = (overrides: Partial<{
       id: 1,
       title: 'Test Result',
       spaceKey: 'DEV',
+      source: 'confluence',
       snippet: 'A snippet of content',
       rank: 0.8,
     },
@@ -177,7 +180,7 @@ describe('useSearch', () => {
 
   it('returns immediateResults from keyword endpoint response', async () => {
     mockFetch(makeSearchResponse({
-      items: [{ id: 42, title: 'Redis Guide', spaceKey: 'DEV', snippet: 'Caching tips', rank: 0.9 }],
+      items: [{ id: 42, title: 'Redis Guide', source: 'confluence', spaceKey: 'DEV', snippet: 'Caching tips', rank: 0.9 }],
       mode: 'keyword',
       hasEmbeddings: true,
     }));
@@ -203,7 +206,7 @@ describe('useSearch', () => {
 
   it('keeps similarity null when the response omits it (keyword mode)', async () => {
     mockFetch(makeSearchResponse({
-      items: [{ id: 42, title: 'Redis Guide', spaceKey: 'DEV', snippet: '', rank: 0.9 }],
+      items: [{ id: 42, title: 'Redis Guide', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.9 }],
       mode: 'keyword',
       hasEmbeddings: true,
     }));
@@ -226,9 +229,9 @@ describe('useSearch', () => {
   // and would exercise a response the server cannot produce.
   it('maps similarity through, distinct from the fusion score', async () => {
     mockFetch(
-      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
       makeSearchResponse({
-        items: [{ id: 7, title: 'Hybrid Hit', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
+        items: [{ id: 7, title: 'Hybrid Hit', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.0328, score: 0.0328, similarity: 0.71 }],
         mode: 'hybrid',
         hasEmbeddings: true,
       }),
@@ -247,9 +250,9 @@ describe('useSearch', () => {
 
   it('preserves an explicit null similarity from a full-text-only hybrid row', async () => {
     mockFetch(
-      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Hit', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
       makeSearchResponse({
-        items: [{ id: 8, title: 'FTS only', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
+        items: [{ id: 8, title: 'FTS only', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.0164, score: 0.0164, similarity: null }],
         mode: 'hybrid',
         hasEmbeddings: true,
       }),
@@ -267,8 +270,8 @@ describe('useSearch', () => {
 
   it('returns enhancedResults from hybrid endpoint response', async () => {
     mockFetch(
-      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Result', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
-      makeSearchResponse({ items: [{ id: 2, title: 'Vector Result', spaceKey: 'DEV', snippet: '', rank: 0.95 }], mode: 'hybrid', hasEmbeddings: true }),
+      makeSearchResponse({ items: [{ id: 1, title: 'Keyword Result', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.5 }], mode: 'keyword' }),
+      makeSearchResponse({ items: [{ id: 2, title: 'Vector Result', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.95 }], mode: 'hybrid', hasEmbeddings: true }),
     );
 
     const { result } = renderHook(
@@ -447,7 +450,7 @@ describe('useSearch', () => {
       }
       const body = url.includes('mode=hybrid')
         ? makeSearchResponse({
-            items: [{ id: 2, title: 'Vector Result', spaceKey: 'DEV', snippet: '', rank: 0.95 }],
+            items: [{ id: 2, title: 'Vector Result', source: 'confluence', spaceKey: 'DEV', snippet: '', rank: 0.95 }],
             mode: 'hybrid',
             hasEmbeddings: true,
             total: 25,
@@ -466,12 +469,62 @@ describe('useSearch', () => {
 
     await waitFor(() => expect(result.current.enhancedResults).toBeDefined());
 
+    expect(result.current.hasCurrentResults).toBe(true);
     rerender({ page: 2 });
 
     // While page 2 is in flight, the previous page's enhanced results must
     // stay visible (placeholderData) instead of dropping to undefined.
     expect(result.current.enhancedResults).toBeDefined();
     expect(result.current.enhancedResults![0].title).toBe('Vector Result');
+    expect(result.current.hasCurrentResults).toBe(false);
+  });
+
+  it('blocks old-query rows during debounce and retained placeholders until the current response arrives', async () => {
+    let resolveNext!: (response: Response) => void;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      if (String(input).includes('q=postgres')) {
+        return new Promise<Response>((resolve) => { resolveNext = resolve; });
+      }
+      return Promise.resolve(Response.json(makeSearchResponse()));
+    });
+    const { result, rerender } = renderHook(
+      ({ query }) => useSearch({ query, mode: 'keyword' }),
+      { wrapper: createWrapper(), initialProps: { query: 'redis' } },
+    );
+    expect(result.current.hasCurrentResults).toBe(false);
+    await waitFor(() => expect(result.current.hasCurrentResults).toBe(true));
+
+    rerender({ query: 'postgres' });
+    expect(result.current.hasCurrentResults).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(resolveNext).toBeDefined());
+    expect(result.current.immediateResults[0].title).toBe('Test Result');
+    expect(result.current.hasCurrentResults).toBe(false);
+
+    await act(async () => {
+      resolveNext(Response.json(makeSearchResponse({
+        items: [{ id: 2, title: 'Postgres', source: 'standalone', spaceKey: 'DEV', snippet: '', rank: 1 }],
+      })));
+    });
+    await waitFor(() => expect(result.current.hasCurrentResults).toBe(true));
+    expect(result.current.immediateResults[0].title).toBe('Postgres');
+  });
+
+  it('allows current keyword rows while same-query enhancement is pending, but not a prior-space placeholder', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('mode=hybrid') || url.includes('spaceKey=OPS')) return new Promise(() => {});
+      return Promise.resolve(Response.json(makeSearchResponse()));
+    });
+    const { result, rerender } = renderHook(
+      ({ spaceKey }) => useSearch({ query: 'redis', mode: 'hybrid', spaceKey }),
+      { wrapper: createWrapper(), initialProps: { spaceKey: 'DEV' } },
+    );
+    await waitFor(() => expect(result.current.hasCurrentResults).toBe(true));
+    expect(result.current.isLoadingEnhanced).toBe(true);
+    rerender({ spaceKey: 'OPS' });
+    expect(result.current.immediateResults[0].title).toBe('Test Result');
+    expect(result.current.hasCurrentResults).toBe(false);
   });
 
   it('passes author, date range, and labels→tags to the query URL', async () => {
