@@ -1596,8 +1596,21 @@ the inks and edges fitted against it.
 - Rail labels gain headroom: 12px `--color-muted-foreground` (`#686866`) on the frame measures 4.86:1, up from 4.56:1 against 1.4.3's 4.5:1. `--color-border-interactive` on the frame is 3.34:1, up from 3.13:1 against 1.4.11's 3:1. The secondary ink is therefore a floor under how GREY the frame may go, never a ceiling on how light.
 - A frame light enough to stop reading as a border necessarily lands inside the state-fill band (hover 1.081:1 → selected 1.193:1). That costs nothing: state fills paint rows inside the panes, the frame paints the gutter outside them, and no surface carries both.
 - `--app-login-ground` (`#FAFAF9`) keeps its split from Canvas. It is the ground the login halo was measured against and is owned by `login-halo-surface.test.ts`; the frame having moved past it again does not re-merge the two tokens.
----
 
+### v1.5 — owner pin: Paper chassis `#EDEDED` (2026-09-12)
+
+**Owner decision.** *"Set --app-chassis color to #ededed also make the background of the tabs in the right panel a bit brighter."*
+
+Light mode only; Graphite is untouched. `--app-chassis` goes from `#F0EFED` to
+`#EDEDED`: a few 8-bit steps deeper and cooler, 1.171:1 against the white Pane
+(it was 1.149:1). Nothing else in the ramp moves. The inspector Assistant /
+Outline / Details track (`panel-tab-track`) mixes muted halfway to Pane in
+Paper so the trough is a light step under the white active chip.
+
+`workspace-themes.test.ts` pins the exact chassis value. Rail-label 4.5:1 on
+Canvas still holds.
+
+---
 ## ADR-011: Docker Deployment Architecture
 
 ### Decision: 4-service stack (frontend + backend + PostgreSQL with pgvector + Redis)

@@ -99,9 +99,8 @@ describe('Inset shell tokens', () => {
     }
   });
 
-  // Since the workspace and rail hairlines came off (2026-08-31), the Pane over
   // Canvas step is the ONLY thing drawing the card. Graphite sits at 1.101:1 and
-  // Paper at 1.149:1 — Paper has been as grey as 1.23:1 (2026-09-07) and as flat
+  // Paper at 1.171:1 — Paper has been as grey as 1.23:1 (2026-09-07) and as flat
   // as 1.044:1, and the failure
   // mode this guards is silent: a chassis retune that keeps "below the pane"
   // true while flattening the edge to invisibility (#fafaf9 gave 1.044:1 and

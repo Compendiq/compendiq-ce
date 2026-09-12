@@ -103,13 +103,13 @@ benchmark numbers, no named reference customers. Future work must not invent the
   reading typography.
 - **Default theme follows the OS**, with a manual override persisted per user. Neither light
   nor dark is a fallback; both are designed and tuned.
-- **Palette commitment (2026-08-20, amended 2026-08-30, 2026-09-07, 2026-09-11):** Graphite and Paper use the
+- **Palette commitment (2026-08-20, amended 2026-08-30, 2026-09-07, 2026-09-11, 2026-09-12):** Graphite and Paper use the
   eight-role ladder recorded in ADR-010 — v0.7 for the roles and Graphite, v0.8 for
   Paper — with the desaturated Steel pair (`#86AEC8` dark / `#3F627C` light) as the
   single brand and interaction accent. Violet remains AI, amber warning, green success,
   and red failure; these semantic colors are not alternate accents. Graphite's document
-  pane stays off near-black to reduce long-session glare. **Paper's document pane, left navigation, and context rail are pure white (`#FFFFFF`)** (owner decisions, 2026-08-30, 2026-09-07, 2026-09-11):
-  the document, left navigation sidebar, and right context rail are `#FFFFFF`; the frame — top app header, left destination rail, and bottom rail — paints the light chassis tone, lightened to `#F0EFED` on 2026-09-11 so the frame reads as the ground the workspace card sits on rather than as a grey border drawn around it.
+  pane stays off near-black to reduce long-session glare. **Paper's document pane, left navigation, and context rail are pure white (`#FFFFFF`)** (owner decisions, 2026-08-30, 2026-09-07, 2026-09-11, 2026-09-12):
+  the document, left navigation sidebar, and right context rail are `#FFFFFF`; the frame — top app header, left destination rail, and bottom rail — paints the light chassis tone, pinned to `#EDEDED` on 2026-09-12 so the frame still reads as the ground the workspace card sits on rather than as a grey border drawn around it.
 - **Colour is never the only channel for state** (2026-08-30, reaffirmed 2026-08-31 when embedding left the hue vocabulary and became body ink plus a progress affordance). Seven semantic hues cannot be mutually
   separated under colour-vision deficiency while every one clears WCAG AA on a white pane — that is
   arithmetic, not an oversight — so every status indicator also carries an icon, shape, or accessible
