@@ -214,15 +214,19 @@ function thinkingExtras(
 }
 
 /**
- * Inline completions have a tiny latency and token budget. On Qwen reasoning
- * models, the default thinking pass can consume that whole budget before any
- * visible continuation reaches `message.content`. Local OpenAI-compatible
- * providers accept these template hints; strict OpenAI hosts must not receive
- * them because they reject unknown fields.
+ * Inline completions have a tiny latency and token budget. A reasoning pass
+ * can consume it before any visible continuation reaches `message.content`.
+ * LM Studio requires reasoning_effort in addition to the Ollama/template
+ * hints; otherwise even a newline stop can end generation inside reasoning.
+ * Keep these hints off strict hosts, whose models may reject them.
  */
 export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
   if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
-  return { think: false, chat_template_kwargs: { enable_thinking: false } };
+  return {
+    think: false,
+    chat_template_kwargs: { enable_thinking: false },
+    reasoning_effort: 'none',
+  };
 }
 
 // Exported for unit testing only — the wire-format assertions on

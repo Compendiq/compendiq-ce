@@ -104,6 +104,30 @@ describe('inline-completion-client (#1417)', () => {
     expect(result.completion).toBe(' access token.');
   });
 
+  it('gets visible text from servers that require reasoning_effort to disable reasoning', async () => {
+    responder = (res) => {
+      const thinkingDisabled = lastBody.reasoning_effort === 'none';
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      // LM Studio can ignore the template hints. Its reasoning then hits the
+      // newline stop before any text reaches message.content.
+      res.end(JSON.stringify({
+        choices: [{
+          message: {
+            content: thinkingDisabled ? 'access the configuration file.' : '',
+            reasoning_content: thinkingDisabled ? '' : 'The user wants',
+          },
+          finish_reason: 'stop',
+        }],
+      }));
+    };
+    const result = await requestInlineCompletion(cfg(), 'gemma-4-26b-a4b-it', {
+      prefix: 'To configure the server, first ',
+      maxTokens: 48,
+    }, new AbortController().signal);
+
+    expect(result.completion).toBe('access the configuration file.');
+  });
+
   it('propagates abort directly to the provider request', async () => {
     responder = (res) => {
       setTimeout(() => res.end(JSON.stringify({ choices: [{ text: 'late' }] })), 5_000).unref();

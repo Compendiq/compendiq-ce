@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Server-backed inline suggestions now send the non-thinking parameter needed
+  by LM Studio to produce visible text instead of stopping inside reasoning.
+
 - Quality and Summary workers share renewed locks across scheduled and manual
   runs, preventing duplicate inference and recovery of articles still in flight.
   Failed articles no longer count as successful processing, and BullMQ records

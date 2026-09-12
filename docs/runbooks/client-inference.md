@@ -56,6 +56,27 @@ under `ATTACHMENTS_DIR`.
   server model is assigned” (default on) allows local ghost text only when
   the worker is ready.
 
+## Server suggestions return no text
+
+An assigned server model does not require WebGPU or an on-device download.
+Check Settings → AI Models → LLM providers → Inline completion against the
+provider's current `/v1/models` list. A stale model ID can be silently routed
+to a different loaded model by the server; a saved assignment alone does not
+prove which model actually ran.
+
+For chat-based inline completion, `message.content` must contain the visible
+continuation. Reasoning is not suggestion text: a reasoning-enabled server
+can hit the newline stop or spend the 8-token word / 48-token full budget
+before producing any content. The non-thinking request sends `think: false`,
+`chat_template_kwargs.enable_thinking: false`, and `reasoning_effort: "none"`
+to tolerant providers. LM Studio can require the last parameter even when it
+accepts the first two. Strict OpenAI, Azure OpenAI, and hosted DeepSeek
+endpoints retain their existing no-extra-fields path.
+
+Do not remove the stop rules, expose reasoning as ghost text, or increase the
+token budget to work around this. Deploy the corrected backend and select a
+model the server actually serves; no frontend rebuild is needed for this fix.
+
 ## CSP
 
 nginx grants `script-src 'wasm-unsafe-eval'` and `worker-src 'self'`.

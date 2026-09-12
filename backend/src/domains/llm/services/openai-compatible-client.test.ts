@@ -547,13 +547,15 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
   });
 
-  it('explicitly disables Qwen-style thinking for tolerant providers only', () => {
+  it('disables reasoning for tolerant providers without sending unsupported hints to strict hosts', () => {
     expect(nonThinkingExtras('http://localhost:1234/v1')).toEqual({
       think: false,
       chat_template_kwargs: { enable_thinking: false },
+      reasoning_effort: 'none',
     });
     expect(nonThinkingExtras('https://api.openai.com/v1')).toEqual({});
     expect(nonThinkingExtras('https://api.deepseek.com/v1')).toEqual({});
+    expect(nonThinkingExtras('https://example.openai.azure.com/v1')).toEqual({});
   });
 
   describe('Strict providers (OpenAI, Azure OpenAI, DeepSeek)', () => {
