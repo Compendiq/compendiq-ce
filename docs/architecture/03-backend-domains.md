@@ -51,6 +51,29 @@ flowchart LR
     dK --> dC
 ```
 
+### Quality and summary batch execution
+
+```mermaid
+flowchart LR
+    schedule["BullMQ scheduler<br/>one active job per queue"] --> batch["knowledge workers<br/>processBatch / runSummaryBatch"]
+    manual["Run Now / rescan / regeneration / legacy timer"] --> batch
+    batch --> lease["Local guard + Redis worker lock<br/>600s TTL, renewed every 60s"]
+    lease --> candidates["Recover orphaned work<br/>select bounded candidates"]
+    candidates --> inference["Sequential provider requests"]
+    inference --> pages["Persist article success, skip or failure"]
+    pages --> result["Separate processed and error counts"]
+    result --> history["BullMQ job_history<br/>any errors means failed batch"]
+```
+
+The exported batch entrypoints own the lease and `isProcessing` state, not
+only the manual/timer wrappers. This prevents a scheduled run from reclaiming
+an article still being processed by a manual run. A configured Redis acquisition
+failure refuses the run; a deployment without a Redis client retains the local
+guard. Lease loss stops the loop before the next article, and release compares
+the ownership token. Batch size and cadence remain unchanged; there is no
+automatic backlog-draining loop. Operator recovery:
+[Background Workers](../ADMIN-GUIDE.md#background-workers).
+
 ### Article Connections (#1314)
 
 ```mermaid

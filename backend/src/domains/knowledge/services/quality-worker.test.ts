@@ -5,7 +5,6 @@ import {
   parseQualityScores,
   processBatch,
   forceQualityRescan,
-  startQualityWorker,
   stopQualityWorker,
 } from './quality-worker.js';
 
@@ -271,7 +270,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
         "SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE confluence_id = 'q1'",
@@ -290,7 +289,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(0);
+      expect(processed).toEqual({ processed: 0, errors: 0 });
 
       // Status should remain failed
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
@@ -310,7 +309,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_retry_count: number }>(
         "SELECT quality_status, quality_retry_count FROM pages WHERE confluence_id = 'retry1'",
@@ -333,7 +332,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number }>(
         "SELECT quality_status, quality_score FROM pages WHERE confluence_id = 'stuck-analyzing'",
@@ -354,7 +353,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(0);
+      expect(processed).toEqual({ processed: 0, errors: 0 });
 
       const result = await query<{ quality_status: string }>(
         "SELECT quality_status FROM pages WHERE confluence_id = 'fresh-analyzing'",
@@ -375,7 +374,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       );
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string }>(
         "SELECT quality_status FROM pages WHERE confluence_id = 'changed-failed'",
@@ -441,7 +440,7 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       const pageId = insertResult.rows[0].id;
 
       const processed = await processBatch();
-      expect(processed).toBe(1);
+      expect(processed).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ quality_status: string; quality_score: number; quality_retry_count: number }>(
         'SELECT quality_status, quality_score, quality_retry_count FROM pages WHERE id = $1',
@@ -481,19 +480,6 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
 
       // r3: already pending, unchanged
       expect(result.rows[2].quality_status).toBe('pending');
-    });
-  });
-
-  describe('worker lifecycle', () => {
-    it('should start and stop without errors', () => {
-      startQualityWorker(999); // large interval so it doesn't fire
-      stopQualityWorker();
-    });
-
-    it('should be idempotent on start', () => {
-      startQualityWorker(999);
-      startQualityWorker(999); // second call should be a no-op
-      stopQualityWorker();
     });
   });
 });

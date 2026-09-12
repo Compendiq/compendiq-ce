@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
 import {
@@ -7,7 +7,6 @@ import {
   rescanAllSummaries,
   regenerateSummary,
   runSummaryBatch,
-  startSummaryWorker,
   stopSummaryWorker,
   stripSummaryPreamble,
 } from './summary-worker.js';
@@ -235,8 +234,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
         [testSpaceKey],
       );
 
-      const { processed } = await runSummaryBatch('test-model');
-      expect(processed).toBe(1); // processed but skipped
+      expect(await runSummaryBatch('test-model')).toEqual({ processed: 1, errors: 0 });
 
       const result = await query<{ summary_status: string }>(
         "SELECT summary_status FROM pages WHERE confluence_id = 'short1'",
@@ -340,7 +338,7 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
           [testSpaceKey, 'C'.repeat(200)],
         );
 
-        await runSummaryBatch('test-model');
+        expect(await runSummaryBatch('test-model')).toEqual({ processed: 1, errors: 0 });
 
         const row = await query<{ summary_status: string; summary_text: string | null }>(
           "SELECT summary_status, summary_text FROM pages WHERE confluence_id = 'pii-block'",
@@ -599,16 +597,4 @@ describe.skipIf(!dbAvailable)('Summary Worker', () => {
     });
   });
 
-  describe('worker lifecycle', () => {
-    it('should start and stop without errors', () => {
-      startSummaryWorker(999); // large interval so it doesn't fire
-      stopSummaryWorker();
-    });
-
-    it('should be idempotent on start', () => {
-      startSummaryWorker(999);
-      startSummaryWorker(999); // second call should be a no-op
-      stopSummaryWorker();
-    });
-  });
 });

@@ -294,6 +294,27 @@ provider rows:
 | `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | **Bootstrap-only** — prefer the Summary use-case assignment. Empty = disabled when no assignment exists. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
+**Run Now runs one batch, not the entire backlog.** Quality and Summary each
+select up to five candidates by default and process them sequentially. More
+eligible pages wait for the next scheduled cycle (60 minutes by default) or
+another Run Now. Short-content skips can make a batch finish quickly.
+
+Both scheduled and manual entrypoints share one lock per worker, renewed
+while inference runs; overlapping triggers do not process the same batch
+again. A failed article is counted as an error, not as processed. BullMQ
+records a batch containing errors as **failed**, including partial progress;
+successful processing counts may include deliberate skips, not just generated
+results. Per-page retries remain capped at three.
+
+If a batch immediately fails, check the backend log and the Quality/Summary
+assignments under **Settings → AI Models**. Use the exact model identifier
+served by the provider's `/v1/models` endpoint, and confirm that a completion
+request succeeds from the backend's network. A responding server or a listed
+model alone does not prove inference works. In particular, LM Studio can
+answer HTTP 400 “No models loaded” for a stale model identifier. Correct the
+assignment/load the model before triggering another batch; retry-exhausted
+pages require a rescan, which also resets previously completed pages.
+
 ### Background Job Queue (BullMQ)
 
 Compendiq uses BullMQ (Redis-backed) for reliable background job processing. Six worker types run as BullMQ queues:

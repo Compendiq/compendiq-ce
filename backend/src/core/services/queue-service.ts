@@ -386,26 +386,32 @@ function registerAllWorkers(): void {
   // Quality scoring
   registerWorkerDef({
     queueName: 'quality',
-    concurrency: 2,
+    concurrency: 1,
     repeatPattern: { every: qualityInterval * 60 * 1000 },
     processor: async () => {
       // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
       const { processBatch } = await import('../../domains/knowledge/services/quality-worker.js');
-      const processed = await processBatch();
-      return `Processed ${processed} pages`;
+      const { processed, errors } = await processBatch();
+      if (errors > 0) {
+        throw new Error(`Quality analysis batch: ${processed} pages processed, ${errors} failed. Check page errors and the configured provider/model.`);
+      }
+      return `Processed ${processed} pages (including deliberate skips)`;
     },
   });
 
   // Summary generation
   registerWorkerDef({
     queueName: 'summary',
-    concurrency: 2,
+    concurrency: 1,
     repeatPattern: { every: summaryInterval * 60 * 1000 },
     processor: async () => {
       // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
       const { runSummaryBatch } = await import('../../domains/knowledge/services/summary-worker.js');
       const result = await runSummaryBatch();
-      return `Summarized ${result.processed} pages (${result.errors} errors)`;
+      if (result.errors > 0) {
+        throw new Error(`Summary generation batch: ${result.processed} pages processed, ${result.errors} failed. Check page errors and the configured provider/model.`);
+      }
+      return `Processed ${result.processed} pages (including deliberate skips)`;
     },
   });
 

@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quality and Summary workers share renewed locks across scheduled and manual
+  runs, preventing duplicate inference and recovery of articles still in flight.
+  Failed articles no longer count as successful processing, and BullMQ records
+  batches containing errors as failed instead of claiming successful generation.
+  Run Now remains a single bounded batch.
+
 - Notion import uses the 3 req/s Notion budget instead of walking pages one
   by one. Sibling block fetches and discovered children overlap; board-view
   probes reuse one lookup per database and skip `/v1/views/:id` when the
