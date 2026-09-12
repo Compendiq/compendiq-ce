@@ -18,6 +18,9 @@ const content = 'This article describes the deployment procedure and recovery st
 const lockKey = 'worker:lock:quality-worker';
 // The setter is non-nullable, although null is its supported no-Redis fallback.
 const noRedis = null as unknown as RedisClientType;
+// Lock, resolver, sweep and candidate queries run against a shared CI Postgres
+// before the provider request lands; the default 1s wait is too tight there.
+const HELD_WAIT = { timeout: 10_000 };
 
 function respondWithReport(res: ServerResponse, text = report): void {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -159,7 +162,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
     };
     const first = entrypoint === 'direct' ? processBatch() : triggerQualityBatch();
     try {
-      await vi.waitFor(() => expect(held).toBeDefined());
+      await vi.waitFor(() => expect(held).toBeDefined(), HELD_WAIT);
       expect((await getQualityStatus()).isProcessing).toBe(true);
       // Make the row look recoverable even to the stale-row sweep. The shared
       // entrypoint lock, not just the timestamp hedge, must prevent recovery.
@@ -214,7 +217,7 @@ describe.skipIf(!dbAvailable)('Quality batch integration', () => {
     // Attach rejection handling immediately, including assertion-failure cleanup.
     const result = run.then((value) => value, (error: unknown) => error);
     try {
-      await vi.waitFor(() => expect(held).toBeDefined());
+      await vi.waitFor(() => expect(held).toBeDefined(), HELD_WAIT);
       const token = await redis!.get(lockKey);
       expect(token).not.toBeNull();
       await redis!.expire(lockKey, 10);

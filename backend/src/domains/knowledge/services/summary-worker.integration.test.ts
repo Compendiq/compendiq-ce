@@ -10,6 +10,9 @@ import { getSummaryStatus, runSummaryBatch, triggerSummaryBatch } from './summar
 const dbAvailable = await isDbAvailable();
 const MODEL = 'summary-integration-model';
 const PRIVATE_PROVIDER_BODY = 'No models loaded; private provider internals';
+// Lock, resolver, sweep and candidate queries run against a shared CI Postgres
+// before the provider request lands; the default 1s wait is too tight there.
+const HELD_WAIT = { timeout: 10_000 };
 let server: Server;
 let baseUrl: string;
 let calls = 0;
@@ -159,7 +162,7 @@ describe.skipIf(!dbAvailable)('summary worker batch outcomes and exclusion', () 
     };
     const first = owner === 'direct' ? runSummaryBatch() : triggerSummaryBatch();
     try {
-      await vi.waitFor(() => expect(heldResponse).toBeDefined());
+      await vi.waitFor(() => expect(heldResponse).toBeDefined(), HELD_WAIT);
       expect((await getSummaryStatus()).isProcessing).toBe(true);
       expect((await readPage(id)).summary_status).toBe('summarizing');
 

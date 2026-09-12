@@ -16,6 +16,8 @@ const queues: Queue[] = [];
 const redis = createClient({ url: process.env.REDIS_URL });
 let server: Server;
 let rejectRequests = true;
+// BullMQ pickup after resume plus a real Postgres + HTTP round trip.
+const JOB_WAIT = { timeout: 15_000 };
 
 function respond(response: ServerResponse) {
   if (rejectRequests) {
@@ -94,7 +96,9 @@ describe.skipIf(!available)('quality and summary job outcomes', () => {
     rejectRequests = true;
     await queue.resume();
     const failed = await queue.add('provider-failure', {}, { attempts: 1 });
-    await expect.poll(() => failed.getState()).toBe('failed');
+    // A worker parked on a paused queue can take over a second to pick up the
+    // first job after resume; the default 1s poll saw 'active' on CI.
+    await expect.poll(() => failed.getState(), JOB_WAIT).toBe('failed');
     const history = await query<{ status: string; error_message: string; result_summary: string | null }>(
       'SELECT status, error_message, result_summary FROM job_history WHERE queue_name = $1 AND job_id = $2',
       [kind, failed.id],
@@ -105,7 +109,7 @@ describe.skipIf(!available)('quality and summary job outcomes', () => {
 
     rejectRequests = false;
     const recovered = await queue.add('provider-recovered', {}, { attempts: 1 });
-    await expect.poll(() => recovered.getState()).toBe('completed');
+    await expect.poll(() => recovered.getState(), JOB_WAIT).toBe('completed');
     const page = await query<{ quality_status: string; summary_status: string }>(
       'SELECT quality_status, summary_status FROM pages',
     );
