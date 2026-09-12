@@ -1636,6 +1636,13 @@ pressed and selected remain distinct at their existing values. The theme
 picker preview follows the pane token. Paper, login, layout and typography
 are unchanged.
 
+**Dependent palette fixes (#1613).** The brand tile follows `--color-card`
+across `Logo.tsx`, all four SVG mirrors and the PNG/ICO icon variants.
+The dusty-rose collaboration caret moves to `#9C4D6E`: the old swatch measured
+2.98:1 on the brighter pane; the replacement measures 3.10:1 on Graphite and
+5.68:1 on Paper. The existing logo-parity and caret-contrast guards remain
+unchanged.
+
 ---
 ## ADR-011: Docker Deployment Architecture
 
