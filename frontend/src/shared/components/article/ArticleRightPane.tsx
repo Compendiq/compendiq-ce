@@ -1830,7 +1830,7 @@ export function ArticleRightPane({
               </span>
             )}
           </div>
-          <NotesInspectorPanel pageId={id} className="min-h-[240px] max-h-[420px]" />
+          <NotesInspectorPanel pageId={id} className="max-h-[420px]" />
         </div>
       )}
 

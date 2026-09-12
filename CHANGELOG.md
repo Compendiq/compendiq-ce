@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The page inspector's Details tab groups the Confluence link with provenance,
   places Notes before secondary page actions, and exposes the quality breakdown,
   timestamp, and full analysis summary through a keyboard- and touch-accessible disclosure.
+- Notes uses readable 13px metadata and 32px controls that wrap on narrow screens.
+  Empty and short lists fit their content; composing hides empty-list guidance,
+  and longer lists retain capped scrolling with a visible keyboard focus outline.
 
 - Child pages lists use two columns by default. The editor toggle still
   switches to a single stack (`columns=1`); Confluence ignores the param.

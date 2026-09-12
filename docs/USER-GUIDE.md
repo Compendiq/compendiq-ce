@@ -198,6 +198,10 @@ Add page notes and replies for discussions and feedback:
 2. Choose **New note** to start a thread, or **Reply** on an existing note.
 3. Write your note and submit. Use **Open** and **Resolved** to filter threads.
 
+The Notes area grows with its content; longer thread lists scroll within it.
+Tab into the thread list to scroll with the keyboard. When starting a note in an
+empty list, the composer replaces the introductory guidance until you cancel.
+
 Unsent notes and replies survive inspector tab switches on the same page.
 **Cancel** discards the draft. Drafts are not stored persistently: submit them
 before closing the inspector or leaving the page.
