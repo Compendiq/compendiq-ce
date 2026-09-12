@@ -53,6 +53,13 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+function stampParent(node: TreeNode, parentId: string): TreeNode {
+  return {
+    page: { ...node.page, parentId },
+    children: node.children.map((c) => stampParent(c, node.page.id)),
+  };
+}
+
 function makeNode(
   id: string,
   title: string,
@@ -69,7 +76,7 @@ function makeNode(
       lastModifiedAt: '2026-03-01T00:00:00Z',
       embeddingDirty: false,
     },
-    children,
+    children: children.map((c) => stampParent(c, id)),
   };
 }
 
@@ -336,7 +343,25 @@ describe('DndLocalSpaceTree', () => {
     );
   });
 
+  it('opens the move menu from the grip context menu and Shift+F10', () => {
+    const { unmount } = renderTree();
+    fireEvent.contextMenu(screen.getByTestId('sidebar-page-grip-p1'));
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sidebar-move-menu')).toBeInTheDocument();
+    unmount();
 
+    renderTree();
+    fireEvent.keyDown(screen.getByTestId('sidebar-page-grip-p1'), { key: 'F10', shiftKey: true });
+    expect(screen.getByTestId('sidebar-move-menu')).toBeInTheDocument();
+  });
+
+  it('does not offer the current parent in the grip menu', () => {
+    renderTree({ expandedIds: new Set(['p2']) });
+    fireEvent.click(screen.getByTestId('sidebar-page-grip-p2-c1'));
+    expect(screen.queryByTestId('sidebar-move-target-p2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-move-target-p1')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-move-to-root')).toBeInTheDocument();
+  });
   it('navigates to page on click', () => {
     renderTree();
     fireEvent.click(screen.getByText('Page One'));

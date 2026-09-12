@@ -55,12 +55,17 @@ export interface MoveTarget {
 }
 
 /**
- * Pages a source article may nest under: every node except itself and its
- * descendants. Depth is visual indent in the picker, not `pages.depth`.
+ * Pages a source article may nest under: every node except itself, its
+ * descendants, and its current parent (already nested there — "Move to
+ * top level" leaves). Depth is visual indent in the picker, not `pages.depth`.
+ *
+ * Current parent is skipped as a *row* but its other children are still
+ * walked, so siblings remain valid targets.
  */
 export function flattenMoveTargets(tree: TreeNode[], sourceId: string): MoveTarget[] {
   const source = findNode(tree, sourceId);
   const blocked = new Set<string>([sourceId]);
+  const currentParentId = source?.page.parentId ?? null;
   if (source) {
     for (const id of descendantIdsOf(source)) blocked.add(id);
   }
@@ -68,7 +73,9 @@ export function flattenMoveTargets(tree: TreeNode[], sourceId: string): MoveTarg
   const walk = (nodes: TreeNode[], depth: number) => {
     for (const node of nodes) {
       if (blocked.has(node.page.id)) continue;
-      out.push({ id: node.page.id, title: node.page.title, depth });
+      if (node.page.id !== currentParentId) {
+        out.push({ id: node.page.id, title: node.page.title, depth });
+      }
       walk(node.children, depth + 1);
     }
   };

@@ -74,6 +74,29 @@ const TREE_SENSORS = [
   KeyboardSensor,
 ];
 
+function persistMove(
+  movePage: PageMoveMutation,
+  tree: TreeNode[],
+  id: string,
+  parentId: string | null,
+  expanded: Set<string>,
+  toggleExpand: (id: string) => void,
+) {
+  if (parentId && !expanded.has(parentId)) toggleExpand(parentId);
+  const parentTitle = parentId ? findNode(tree, parentId)?.page.title : null;
+  movePage.mutate(
+    { id, parentId },
+    {
+      onSuccess: () => {
+        toast.success(parentTitle ? `Moved under ${parentTitle}` : 'Moved to top level');
+      },
+      onError: (error) => {
+        toast.error(error.message || 'Could not move page');
+      },
+    },
+  );
+}
+
 interface DndSortableTreeNodeProps {
   node: TreeNode;
   tree: TreeNode[];
@@ -192,19 +215,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
 
   const commitMove = useCallback(
     (parentId: string | null) => {
-      if (parentId && !expandedSet.has(parentId)) toggleExpand(parentId);
-      const parentTitle = parentId ? findNode(tree, parentId)?.page.title : null;
-      movePage.mutate(
-        { id: node.page.id, parentId },
-        {
-          onSuccess: () => {
-            toast.success(parentTitle ? `Moved under ${parentTitle}` : 'Moved to top level');
-          },
-          onError: (error) => {
-            toast.error(error.message || 'Could not move page');
-          },
-        },
-      );
+      persistMove(movePage, tree, node.page.id, parentId, expandedSet, toggleExpand);
     },
     [expandedSet, movePage, node.page.id, toggleExpand, tree],
   );
@@ -472,21 +483,7 @@ export default function DndLocalSpaceTree({
         return;
       }
       if (intent.kind === 'reparent') {
-        if (intent.parentId && !expandedIds.has(intent.parentId)) {
-          toggleExpand(intent.parentId);
-        }
-        const parentTitle = intent.parentId ? findNode(tree, intent.parentId)?.page.title : null;
-        movePage.mutate(
-          { id: intent.id, parentId: intent.parentId },
-          {
-            onSuccess: () => {
-              toast.success(parentTitle ? `Moved under ${parentTitle}` : 'Moved to top level');
-            },
-            onError: (error) => {
-              toast.error(error.message || 'Could not move page');
-            },
-          },
-        );
+        persistMove(movePage, tree, intent.id, intent.parentId, expandedIds, toggleExpand);
       }
     },
     [expandedIds, movePage, reorderPage, toggleExpand, tree],

@@ -80,7 +80,7 @@ export function SidebarPageMoveMenu({
               />
             </div>
           )}
-          <div className="max-h-64 overflow-y-auto" role="listbox" aria-label="Pages">
+          <div className="max-h-64 overflow-y-auto">
             {filtered.length === 0 ? (
               <p className="px-2.5 py-3 text-center text-xs text-muted-foreground" data-testid="sidebar-move-empty">
                 {query.trim() ? 'No pages matching search.' : 'No other pages to nest under.'}
@@ -90,7 +90,6 @@ export function SidebarPageMoveMenu({
                 <button
                   key={target.id}
                   type="button"
-                  role="option"
                   className={MENU_ITEM}
                   style={{ paddingLeft: `${10 + target.depth * 12}px` }}
                   data-testid={`sidebar-move-target-${target.id}`}

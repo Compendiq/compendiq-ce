@@ -11,6 +11,13 @@ import {
   wouldCreateCycle,
 } from './sidebar-tree-move';
 
+function withParent(n: TreeNode, parentId: string): TreeNode {
+  return {
+    page: { ...n.page, parentId },
+    children: n.children.map((c) => withParent(c, n.page.id)),
+  };
+}
+
 function node(id: string, title: string, children: TreeNode[] = []): TreeNode {
   return {
     page: {
@@ -24,7 +31,7 @@ function node(id: string, title: string, children: TreeNode[] = []): TreeNode {
       lastModifiedAt: null,
       embeddingDirty: false,
     },
-    children,
+    children: children.map((c) => withParent(c, id)),
   };
 }
 
@@ -68,11 +75,25 @@ describe('sidebar-tree-move', () => {
     ]);
   });
 
+  it('omits the current parent but still lists siblings under it', () => {
+    const withSibling: TreeNode[] = [
+      node('a', 'Alpha'),
+      node('b', 'Bravo', [
+        node('b1', 'B1', [node('b1a', 'Leaf')]),
+        node('b2', 'B2'),
+      ]),
+      node('c', 'Charlie'),
+    ];
+    expect(flattenMoveTargets(withSibling, 'b1').map((t) => t.id)).toEqual(['a', 'b2', 'c']);
+  });
+
   it('treats the middle of a row as the nest zone and the edges as not', () => {
     const rect = { left: 0, right: 100, top: 0, bottom: 100 };
     expect(isNestZone({ x: 50, y: 50 }, rect)).toBe(true);
     expect(isNestZone({ x: 50, y: 10 }, rect)).toBe(false);
     expect(isNestZone({ x: 50, y: 90 }, rect)).toBe(false);
+    // sidebar-drag-reorder E2E releases at 0.86 of the last row.
+    expect(isNestZone({ x: 50, y: 86 }, rect)).toBe(false);
     expect(isNestZone({ x: -1, y: 50 }, rect)).toBe(false);
   });
 
