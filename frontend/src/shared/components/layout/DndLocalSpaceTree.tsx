@@ -1,22 +1,57 @@
-import { memo, useCallback, useLayoutEffect, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight,
   ChevronDown,
   GripVertical,
 } from 'lucide-react';
-import { DragDropProvider, type DragEndEvent } from '@dnd-kit/react';
+import {
+  DragDropProvider,
+  KeyboardSensor,
+  PointerSensor,
+  useDroppable,
+  type DragEndEvent,
+} from '@dnd-kit/react';
+import { PointerActivationConstraints } from '@dnd-kit/dom';
 import { useSortable, isSortable } from '@dnd-kit/react/sortable';
+import { toast } from 'sonner';
 import { cn } from '../../lib/cn';
 import { PageIcon } from '../page-icon/PageIcon';
 import type { TreeNode } from './sidebar-types';
+import { SidebarPageMoveMenu } from './SidebarPageMoveMenu';
+import {
+  ROOT_SORTABLE_GROUP,
+  findNode,
+  flattenMoveTargets,
+  nestCollisionDetector,
+  nestDroppableId,
+  resolveSidebarDrop,
+  wouldCreateCycle,
+} from './sidebar-tree-move';
+
+export interface PageTreeMutation {
+  mutate: (
+    args: { id: string; sortOrder: number },
+  ) => void;
+}
+
+export interface PageMoveMutation {
+  mutate: (
+    args: { id: string; parentId: string | null },
+    options?: {
+      onSuccess?: () => void;
+      onError?: (error: Error) => void;
+    },
+  ) => void;
+}
 
 export interface DndLocalSpaceTreeProps {
   tree: TreeNode[];
   expandedIds: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
-  reorderPage: { mutate: (args: { id: string; sortOrder: number }) => void };
+  reorderPage: PageTreeMutation;
+  movePage: PageMoveMutation;
   // Roving-tabindex, computed once by SidebarTreeView (#880 follow-up, epic
   // #856) and threaded through here since the two trees share one focus
   // target and are mutually exclusive in the same rail.
@@ -25,20 +60,53 @@ export interface DndLocalSpaceTreeProps {
   onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
 }
 
-// dnd-kit's default (omitted `group`) is one list. Nested rows then share
-// indices with roots (child 0 vs root 0) and a parent's droppable swallows
-// its children, so only top-level reorder worked. One group per visual
-// sibling list. Distinct from any page id (numeric) and from `undefined`.
-const ROOT_SORTABLE_GROUP = '__root__';
+// Distance so a click on the grip can open the move menu instead of starting
+// a drag. Touch keeps a delay so a sidebar scroll does not pick up a row.
+const TREE_SENSORS = [
+  PointerSensor.configure({
+    activationConstraints: (event) => {
+      if (event.pointerType === 'touch') {
+        return [new PointerActivationConstraints.Delay({ value: 250, tolerance: 5 })];
+      }
+      return [new PointerActivationConstraints.Distance({ value: 8 })];
+    },
+  }),
+  KeyboardSensor,
+];
+
+function persistMove(
+  movePage: PageMoveMutation,
+  tree: TreeNode[],
+  id: string,
+  parentId: string | null,
+  expanded: Set<string>,
+  toggleExpand: (id: string) => void,
+) {
+  if (parentId && !expanded.has(parentId)) toggleExpand(parentId);
+  const parentTitle = parentId ? findNode(tree, parentId)?.page.title : null;
+  movePage.mutate(
+    { id, parentId },
+    {
+      onSuccess: () => {
+        toast.success(parentTitle ? `Moved under ${parentTitle}` : 'Moved to top level');
+      },
+      onError: (error) => {
+        toast.error(error.message || 'Could not move page');
+      },
+    },
+  );
+}
 
 interface DndSortableTreeNodeProps {
   node: TreeNode;
+  tree: TreeNode[];
   level?: number;
   expandedSet: Set<string>;
   toggleExpand: (id: string) => void;
   activePageId: string | undefined;
   sortableIndex: number;
   sortableGroup: string;
+  movePage: PageMoveMutation;
   rovingId: string | undefined;
   onRowFocus: (id: string) => void;
   onRowKeyDown: (event: React.KeyboardEvent, id: string) => void;
@@ -46,12 +114,14 @@ interface DndSortableTreeNodeProps {
 
 const DndSortableTreeNode = memo(function DndSortableTreeNode({
   node,
+  tree,
   level = 0,
   expandedSet,
   toggleExpand,
   activePageId,
   sortableIndex,
   sortableGroup,
+  movePage,
   rovingId,
   onRowFocus,
   onRowKeyDown,
@@ -60,6 +130,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
   const isExpanded = expandedSet.has(node.page.id);
   const hasChildren = node.children.length > 0;
   const isActive = node.page.id === activePageId;
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Without an explicit `handle`, dnd-kit's built-in accessibility plugin
   // (@dnd-kit/dom's Accessibility) makes the DRAGGABLE ELEMENT ITSELF the
@@ -80,12 +151,22 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     id: node.page.id,
     index: sortableIndex,
     group: sortableGroup,
-    // type/accept pinned to the group so a drop cannot reparent. Reparenting
-    // is PUT /pages/:id/move; /reorder only renumbers the current siblings.
+    // type/accept pinned to the group so a drop cannot reparent via sortable
+    // insertion. Nesting uses a dedicated droppable on the row (below).
     type: sortableGroup,
     accept: sortableGroup,
     disabled: false,
     handle: handleRef,
+  });
+
+  const nest = useDroppable({
+    id: nestDroppableId(node.page.id),
+    // Accept any page except this one. Cycle (drop onto a descendant) is
+    // refused on drop rather than here: accept cannot see the drag source's
+    // subtree without threading it through every row on every move.
+    accept: (source) => String(source.id) !== node.page.id,
+    collisionDetector: nestCollisionDetector,
+    data: { kind: 'nest', pageId: node.page.id },
   });
 
   // dnd-kit's Accessibility plugin makes the handle a real keyboard drag
@@ -127,13 +208,32 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
     [toggleExpand, node.page.id],
   );
 
+  const moveTargets = useMemo(
+    () => (menuOpen ? flattenMoveTargets(tree, node.page.id) : []),
+    [menuOpen, tree, node.page.id],
+  );
+
+  const commitMove = useCallback(
+    (parentId: string | null) => {
+      persistMove(movePage, tree, node.page.id, parentId, expandedSet, toggleExpand);
+    },
+    [expandedSet, movePage, node.page.id, toggleExpand, tree],
+  );
+
+  const openMenu = useCallback((event: React.SyntheticEvent) => {
+    event.stopPropagation();
+    setMenuOpen(true);
+  }, []);
+
   return (
     <div ref={sortable.ref}>
       <div
         // #707: mark the active row so the scroll container can find it and
         // scroll it into view on reload (its ancestors are auto-expanded first).
+        ref={nest.ref}
         data-active={isActive ? 'true' : undefined}
         data-page-id={node.page.id}
+        data-nest-target={nest.isDropTarget ? 'true' : undefined}
         // #880: make the row a real keyboard-operable widget. role="treeitem"
         // (not "button") because the chevron is a nested <button> — a button
         // role here would nest interactive controls. Enter/Space navigate.
@@ -161,6 +261,7 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
           isActive
             ? 'nav-selection font-medium outline-none'
             : 'text-muted-foreground hover:bg-[var(--glass-pill-hover)] hover:text-foreground',
+          nest.isDropTarget && 'ring-2 ring-inset ring-ring bg-[var(--glass-pill-hover)] text-foreground',
         )}
         // See SidebarTreeNode for why the gutter is built this way. The grip
         // used to share this left gutter with the chevron (44px vs the plain
@@ -214,16 +315,45 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             user would focus an element with no visual indication of where
             focus is, since it is invisible until hover or focus.
 
+            Click opens the move menu (WCAG 2.5.7: drag cannot be the only
+            nest path). Space on this grip is still dnd-kit's keyboard drag.
+
             `h-6 w-6` (24x24), not the old 18px-wide box: WCAG 2.5.8 wants a
             24x24 minimum target, and the old width fell 6px short of it while
             the row still had 16px on the table for the taking. */}
-        <span
-          ref={handleRef}
-          className="absolute right-0.5 top-[2px] flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-          aria-label={`Reorder ${node.page.title}`}
+        <SidebarPageMoveMenu
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
+          pageTitle={node.page.title}
+          parentId={node.page.parentId}
+          targets={moveTargets}
+          onMove={commitMove}
         >
-          <GripVertical size={12} />
-        </span>
+          <span
+            ref={handleRef}
+            className={cn(
+              'absolute right-0.5 top-[2px] flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity cursor-grab active:cursor-grabbing group-hover:opacity-60 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background',
+              menuOpen && 'opacity-100',
+            )}
+            aria-label={`Move ${node.page.title}`}
+            title="Drag onto a page to nest · Click to move"
+            data-testid={`sidebar-page-grip-${node.page.id}`}
+            onClick={openMenu}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              openMenu(event);
+            }}
+            onKeyDown={(event) => {
+              if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+                event.preventDefault();
+                event.stopPropagation();
+                setMenuOpen(true);
+              }
+            }}
+          >
+            <GripVertical size={12} />
+          </span>
+        </SidebarPageMoveMenu>
         {hasChildren && (
           <button
             onClick={handleToggle}
@@ -270,12 +400,14 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
             <DndSortableTreeNode
               key={child.page.id}
               node={child}
+              tree={tree}
               level={level + 1}
               expandedSet={expandedSet}
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               sortableIndex={idx}
               sortableGroup={node.page.id}
+              movePage={movePage}
               rovingId={rovingId}
               onRowFocus={onRowFocus}
               onRowKeyDown={onRowKeyDown}
@@ -288,11 +420,13 @@ const DndSortableTreeNode = memo(function DndSortableTreeNode({
 }, (prev, next) => {
   return (
     prev.node === next.node &&
+    prev.tree === next.tree &&
     prev.level === next.level &&
     prev.activePageId === next.activePageId &&
     prev.expandedSet === next.expandedSet &&
     prev.sortableIndex === next.sortableIndex &&
     prev.sortableGroup === next.sortableGroup &&
+    prev.movePage === next.movePage &&
     prev.rovingId === next.rovingId &&
     prev.onRowFocus === next.onRowFocus &&
     prev.onRowKeyDown === next.onRowKeyDown
@@ -305,6 +439,7 @@ export default function DndLocalSpaceTree({
   toggleExpand,
   activePageId,
   reorderPage,
+  movePage,
   rovingId,
   onRowFocus,
   onRowKeyDown,
@@ -313,26 +448,49 @@ export default function DndLocalSpaceTree({
     (event: Parameters<DragEndEvent>[0]) => {
       if (event.canceled) return;
       const source = event.operation?.source;
+      const target = event.operation?.target;
       if (!source || !isSortable(source)) return;
       if (!('initialIndex' in source)) return;
 
-      const currentIndex = source.index;
-      const startIndex = source.initialIndex;
-      if (startIndex === currentIndex) return;
+      const sourceId = String(source.id);
+      const sourceNode = findNode(tree, sourceId);
+      const nestParent = typeof target?.id !== 'undefined'
+        ? String(target.id)
+        : undefined;
 
-      // OptimisticSortingPlugin rewrites `group` when a foreign droppable
-      // accepts the source. /reorder only renumbers the current sibling
-      // group — a group change would persist the wrong index.
-      if (source.initialGroup !== source.group) return;
+      if (nestParent?.startsWith('nest:')) {
+        const parentId = nestParent.slice('nest:'.length);
+        if (wouldCreateCycle(tree, sourceId, parentId)) {
+          toast.error("Can't move a page into its own sub-article");
+          return;
+        }
+      }
 
-      const pageId = String(source.id);
-      reorderPage.mutate({ id: pageId, sortOrder: currentIndex });
+      const intent = resolveSidebarDrop({
+        canceled: false,
+        sourceId,
+        sourceIndex: source.index,
+        initialIndex: source.initialIndex,
+        group: String(source.group ?? ''),
+        initialGroup: String(source.initialGroup ?? ''),
+        targetId: target?.id,
+        currentParentId: sourceNode?.page.parentId ?? null,
+        isIllegalParent: (parentId) => wouldCreateCycle(tree, sourceId, parentId),
+      });
+
+      if (intent.kind === 'reorder') {
+        reorderPage.mutate({ id: intent.id, sortOrder: intent.sortOrder });
+        return;
+      }
+      if (intent.kind === 'reparent') {
+        persistMove(movePage, tree, intent.id, intent.parentId, expandedIds, toggleExpand);
+      }
     },
-    [reorderPage],
+    [expandedIds, movePage, reorderPage, toggleExpand, tree],
   );
 
   return (
-    <DragDropProvider onDragEnd={handleDragEnd}>
+    <DragDropProvider sensors={TREE_SENSORS} onDragEnd={handleDragEnd}>
       {/* #880: role="tree" + label give the role="treeitem" rows a valid
           required-parent context and expose real tree semantics to screen
           readers. Roving-tabindex + arrow-key nav (rovingId/onRowFocus/
@@ -347,11 +505,13 @@ export default function DndLocalSpaceTree({
           <DndSortableTreeNode
             key={node.page.id}
             node={node}
+            tree={tree}
             expandedSet={expandedIds}
             toggleExpand={toggleExpand}
             activePageId={activePageId}
             sortableIndex={idx}
             sortableGroup={ROOT_SORTABLE_GROUP}
+            movePage={movePage}
             rovingId={rovingId}
             onRowFocus={onRowFocus}
             onRowKeyDown={onRowKeyDown}

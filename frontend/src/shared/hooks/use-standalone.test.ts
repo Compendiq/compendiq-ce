@@ -22,6 +22,7 @@ import {
   useSubmitFeedback,
   useImportMarkdown,
   useExportPdf,
+  useMovePage,
 } from './use-standalone';
 
 function createWrapper() {
@@ -342,6 +343,26 @@ describe('use-standalone hooks', () => {
       expect(url).toContain('/pages/42/export/pdf');
       expect(opts.method).toBe('POST');
       expect(blob.size).toBeGreaterThan(0);
+    });
+  });
+
+  describe('useMovePage', () => {
+    it('PUTs parentId to /pages/:id/move', async () => {
+      const mock = mockFetch({ id: 10, parentId: '5' });
+      const { result } = renderHook(() => useMovePage(), { wrapper: createWrapper() });
+      await result.current.mutateAsync({ id: '10', parentId: '5' });
+      const [url, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/pages/10/move');
+      expect(opts.method).toBe('PUT');
+      expect(JSON.parse(opts.body as string)).toEqual({ parentId: '5' });
+    });
+
+    it('sends a null parentId to move to the space root', async () => {
+      const mock = mockFetch({ id: 10, parentId: null });
+      const { result } = renderHook(() => useMovePage(), { wrapper: createWrapper() });
+      await result.current.mutateAsync({ id: '10', parentId: null });
+      const [, opts] = mock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(opts.body as string)).toEqual({ parentId: null });
     });
   });
 });

@@ -347,6 +347,20 @@ export function useReorderPage() {
   });
 }
 
+export function useMovePage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
+      apiFetch(`/pages/${id}/move`, {
+        method: 'PUT',
+        body: JSON.stringify({ parentId }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pages'] });
+    },
+  });
+}
+
 // ======== RBAC ========
 
 export function useRoles() {

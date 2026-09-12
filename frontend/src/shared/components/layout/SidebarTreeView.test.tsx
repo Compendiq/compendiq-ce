@@ -115,6 +115,7 @@ vi.mock('../../hooks/use-spaces', () => ({
 vi.mock('../../hooks/use-standalone', () => ({
   useLocalSpaces: () => ({ data: mockLocalSpaces }),
   useReorderPage: () => ({ mutate: vi.fn() }),
+  useMovePage: () => ({ mutate: vi.fn() }),
 }));
 
 function createWrapper(initialPath = '/pages') {

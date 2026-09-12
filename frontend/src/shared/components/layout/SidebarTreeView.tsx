@@ -22,7 +22,7 @@ import { MainNavStripExpanded, MainNavStripCollapsed } from './MainNavStrip';
 
 import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
-import { useLocalSpaces, useReorderPage } from '../../hooks/use-standalone';
+import { useLocalSpaces, useReorderPage, useMovePage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
 import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
@@ -478,6 +478,7 @@ export function SidebarTreeView({
   const treeFailedWithNothingToShow = treeIsError && !treeData;
   const treeIsStale = treeIsError && !!treeData;
   const reorderPage = useReorderPage();
+  const movePage = useMovePage();
 
   // Merge confluence + local spaces for the selector
   const allSpaces = useMemo<SpaceOption[]>(() => {
@@ -1268,6 +1269,7 @@ export function SidebarTreeView({
               toggleExpand={toggleExpand}
               activePageId={activePageId}
               reorderPage={reorderPage}
+              movePage={movePage}
               rovingId={rovingId}
               onRowFocus={handleRowFocus}
               onRowKeyDown={handleRowKeyDown}
