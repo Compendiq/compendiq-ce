@@ -1610,6 +1610,39 @@ Paper so the trough is a light step under the white active chip.
 `workspace-themes.test.ts` pins the exact chassis value. Rail-label 4.5:1 on
 Canvas still holds.
 
+### v1.6 — restrained multi-grey chassis (2026-09-12)
+
+**Owner decision.** Give the app chassis a slight gradient effect using more than one grey.
+
+The outer frame gains a static four-stop wash through three close grey values,
+returning to the base at the final stop. Paper keeps its `#EDEDED` base between
+`#F3F3F3` and `#E8E8E8`; Graphite keeps `#09090A` between `#0C0C0D` and
+`#070708`. The shared `--app-chassis-tones` image is painted by `.app-chassis`
+and the first-paint boot shell once theme CSS is available. The top header is
+transparent so the wash continues into the rails without a seam.
+
+This is a narrow exception to v0.6, not a return to gradient cards: panes,
+controls, login ground, layout and interactions are unchanged. Body overscroll
+keeps the flat base. `app-shell-layout.test.ts` measures every stop for ≥4.5:1
+rail-label contrast, ≥3:1 focus-indicator contrast and ≥1.08:1 separation from
+the unlined document pane.
+
+**Dark-mode follow-up (same day).** The owner asks for the same chassis effect
+in dark mode and slightly brighter, identically coloured main, left and right
+panes. Graphite's highlight lifts to `#101011` to make the wash more apparent;
+the shared `--color-card` lifts from `#161617` to `#19191A`. Hover lifts from
+`#1C1D1D` to `#1D1E1E` to retain ≥1.05:1 contrast against the brighter pane;
+pressed and selected remain distinct at their existing values. The theme
+picker preview follows the pane token. Paper, login, layout and typography
+are unchanged.
+
+**Dependent palette fixes (#1613).** The brand tile follows `--color-card`
+across `Logo.tsx`, all four SVG mirrors and the PNG/ICO icon variants.
+The dusty-rose collaboration caret moves to `#9C4D6E`: the old swatch measured
+2.98:1 on the brighter pane; the replacement measures 3.10:1 on Graphite and
+5.68:1 on Paper. The existing logo-parity and caret-contrast guards remain
+unchanged.
+
 ---
 ## ADR-011: Docker Deployment Architecture
 
