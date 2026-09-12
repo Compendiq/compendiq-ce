@@ -355,23 +355,41 @@ export function ArticleRightPane({
     : null;
 
   const overallHealth = useMemo(() => {
-    if (page?.embeddingError || page?.qualityStatus === 'failed') {
-      return { label: 'Needs attention · Indexing or quality check failed', tone: 'warning' as const };
+    const indexing = page?.embeddingStatus
+      ?? (page?.embeddingDirty ? 'not_embedded' : undefined);
+    if (indexing === 'failed') {
+      return {
+        label: page?.qualityStatus === 'failed'
+          ? 'Search indexing and quality analysis failed'
+          : 'Search indexing failed',
+        tone: 'warning' as const,
+      };
     }
-    if (page?.embeddingStatus === 'embedding' || page?.qualityStatus === 'analyzing') {
-      return { label: 'Indexing in progress', tone: 'active' as const };
+    if (page?.qualityStatus === 'failed') {
+      return { label: 'Quality analysis failed', tone: 'warning' as const };
     }
-    if (page?.embeddingStatus === 'not_embedded') {
+    if (indexing === 'embedding') {
+      return {
+        label: page?.qualityStatus === 'analyzing'
+          ? 'Indexing and quality analysis in progress'
+          : 'Indexing in progress',
+        tone: 'active' as const,
+      };
+    }
+    if (indexing === 'not_embedded') {
       return { label: 'Not yet indexed for AI search', tone: 'warning' as const };
     }
-    if (page?.qualityScore !== undefined && page?.qualityScore !== null && page.qualityScore < 50) {
+    if (page?.qualityStatus === 'analyzing') {
+      return { label: 'Quality analysis in progress', tone: 'active' as const };
+    }
+    if (page?.qualityStatus === 'analyzed' && page.qualityScore != null && page.qualityScore < 50) {
       return { label: 'Quality attention needed · Low score', tone: 'warning' as const };
     }
-    if (verifiedDateStr) {
-      return { label: 'Verified and ready for AI search', tone: 'healthy' as const };
-    }
-    return { label: 'Indexed for AI search', tone: 'neutral' as const };
-  }, [page?.embeddingError, page?.embeddingStatus, page?.qualityStatus, page?.qualityScore, verifiedDateStr]);
+    return {
+      label: indexing === 'embedded' ? 'Indexed for AI search' : 'Search indexing status unavailable',
+      tone: 'neutral' as const,
+    };
+  }, [page?.embeddingStatus, page?.embeddingDirty, page?.qualityStatus, page?.qualityScore]);
 
   // #718: gate the Auto-tag button on the NEW provider source, not the removed
   // legacy settings.llmProvider/ollamaModel/openaiModel fields (ADR-021 / migration
@@ -416,6 +434,8 @@ export function ArticleRightPane({
     isNewPage ? (headings.length > 0 ? 'outline' : 'assistant') : headings.length > 0 ? 'outline' : 'details',
   );
   const [assistantMounted, setAssistantMounted] = useState(() => activeInspectorView === 'assistant' || isNewPage);
+  // Keep local note/reply drafts across tab switches; the page key resets them on navigation.
+  const [detailsMounted, setDetailsMounted] = useState(() => activeInspectorView === 'details');
 
   const scrollToNotesSection = useCallback(() => {
     setTimeout(() => {
@@ -427,6 +447,9 @@ export function ArticleRightPane({
   useEffect(() => {
     if (activeInspectorView === 'assistant') {
       setAssistantMounted(true);
+    }
+    if (activeInspectorView === 'details') {
+      setDetailsMounted(true);
     }
   }, [activeInspectorView]);
 
@@ -1579,7 +1602,9 @@ export function ArticleRightPane({
           <FileText size={13} />
           Details
           {openNotesCount > 0 && (
-            <span className="tabular-nums text-[11px] opacity-65">{openNotesCount}</span>
+            <span className="tabular-nums text-xs text-muted-foreground">
+              {openNotesCount}<span className="sr-only"> open {openNotesCount === 1 ? 'note' : 'notes'}</span>
+            </span>
           )}
         </button>
         </div>
@@ -1619,25 +1644,30 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {activeInspectorView === 'details' && (
+      {(detailsMounted || activeInspectorView === 'details') && (
       <div
+        key={id ?? 'new'}
         id="page-context-panel-details"
         role="tabpanel"
         aria-labelledby="page-context-tab-details"
-        className="min-h-0 flex-1 overflow-y-auto scroll-mask pt-12"
+        hidden={activeInspectorView !== 'details'}
+        className={cn(
+          'min-h-0 flex-1 overflow-y-auto scroll-mask pt-12',
+          activeInspectorView !== 'details' && 'hidden',
+        )}
       >
       {isNewPage ? (
         <div className="px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">New page draft</div>
+          <h3 className="text-xs font-semibold text-foreground">New page draft</h3>
           <p className="mt-2 text-xs text-muted-foreground">
             Configure space, title, and content, then click Create Page to publish.
           </p>
         </div>
       ) : page ? (
         <div className="px-3 py-4">
-          <div className="text-[11px] font-semibold text-muted-foreground">Page details</div>
+          <h3 className="text-xs font-semibold text-foreground">Page details</h3>
 
-          <div className="mt-2 rounded-lg border border-border bg-card p-2.5">
+          <div className="mt-3">
             <div className="flex min-w-0 items-center gap-2">
               <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
                 {page.source === 'standalone' ? <FolderOpen size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}
@@ -1646,34 +1676,25 @@ export function ArticleRightPane({
                 <div className="truncate text-xs font-semibold text-foreground" title={page.spaceKey ?? undefined}>
                   {page.spaceKey}
                 </div>
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-xs text-muted-foreground">
                   {page.source === 'standalone' ? 'Local space storage' : 'Synced from Confluence Data Center'}
                 </div>
               </div>
             </div>
-            {canRelocate && !editing && (
-              <button
-                type="button"
-                onClick={() => setRelocateOpen(true)}
-                data-testid="relocate-btn"
-                title={
-                  page.source === 'standalone'
-                    ? 'Publish this article into a Confluence space'
-                    : 'Pull this page out of Confluence into a local space'
-                }
-                className="mt-2 inline-flex min-h-[28px] w-full items-center justify-center gap-1.5 rounded border border-border-interactive bg-muted/40 px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <ArrowRightLeft size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                <span>{page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}</span>
-              </button>
-            )}
+              {settings?.confluenceUrl && page.confluenceId && (
+                <a
+                  href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-flex min-h-8 items-center gap-1.5 rounded text-xs text-primary-ink underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <ExternalLink size={13} className="shrink-0" aria-hidden="true" />
+                  <span>Open in Confluence</span>
+                </a>
+              )}
           </div>
 
           <dl className="mt-3 text-xs">
-            <div className="flex items-center justify-between gap-3 py-1.5">
-              <dt className="text-muted-foreground">Source</dt>
-              <dd className="font-medium text-foreground/85">{page.source === 'standalone' ? 'Local' : 'Confluence'}</dd>
-            </div>
             {page.source === 'standalone' && (
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">Visibility</dt>
@@ -1705,7 +1726,7 @@ export function ArticleRightPane({
             {page.author && (
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <dt className="text-muted-foreground">Author</dt>
-                <dd className="truncate font-medium text-foreground/85">{page.author}</dd>
+                <dd className="min-w-0 break-words text-right font-medium text-foreground/85">{page.author}</dd>
               </div>
             )}
             <div className="flex items-center justify-between gap-3 py-1.5">
@@ -1714,19 +1735,16 @@ export function ArticleRightPane({
             </div>
           </dl>
 
-          <div className="mt-4 rounded-lg border border-border bg-card p-2.5">
-            <div className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">Document health</div>
+          <div className="mt-5">
+            <h3 className="text-xs font-semibold text-foreground">Document health</h3>
             <div className="mt-1.5 flex items-start gap-2 text-xs font-medium text-foreground/85">
-              <span
-                className={cn(
-                  'mt-1 size-2 rounded-full shrink-0',
-                  overallHealth.tone === 'warning' && 'bg-warning',
-                  overallHealth.tone === 'active' && 'bg-status-ai animate-pulse',
-                  overallHealth.tone === 'healthy' && 'bg-success',
-                  overallHealth.tone === 'neutral' && 'bg-muted-foreground/60',
-                )}
-                aria-hidden="true"
-              />
+              {overallHealth.tone === 'active' ? (
+                <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" aria-hidden="true" />
+              ) : overallHealth.tone === 'warning' ? (
+                <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+              ) : (
+                <Cpu size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              )}
               <span>{overallHealth.label}</span>
             </div>
             <div className="mt-2.5">
@@ -1737,7 +1755,7 @@ export function ArticleRightPane({
                 data-testid="verify-btn"
                 aria-busy={verifyMutation.isPending}
                 title="Record that this article has been reviewed and verified for accuracy"
-                className="inline-flex min-h-[28px] w-full items-center justify-center gap-1.5 rounded border border-dashed border-border-interactive bg-background px-2 text-xs font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                className="nm-button-ghost inline-flex h-8 items-center gap-1.5 px-2 text-xs disabled:opacity-50"
               >
                 <CheckCircle2 size={12} className="shrink-0 opacity-70" aria-hidden="true" />
                 <span>{verifyMutation.isPending ? 'Recording…' : 'Record verification'}</span>
@@ -1767,6 +1785,7 @@ export function ArticleRightPane({
               />
               {(page.qualityScore !== undefined && page.qualityScore !== null || page.qualityStatus) && (
                 <QualityScoreBadge
+                  showDetails={activeInspectorView === 'details'}
                   qualityScore={page.qualityScore ?? null}
                   qualityStatus={page.qualityStatus ?? null}
                   qualityCompleteness={page.qualityCompleteness}
@@ -1783,13 +1802,13 @@ export function ArticleRightPane({
           </div>
 
           <div className="mt-4">
-            <div className="text-[11px] font-semibold text-muted-foreground">Labels</div>
+            <h3 className="text-xs font-semibold text-foreground">Labels</h3>
             {page.labels.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5" data-testid="document-labels">
                 {page.labels.map((label) => (
                   <span
                     key={label}
-                    className="inline-flex items-center rounded-full border border-border bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                    className="inline-flex max-w-full items-center break-words rounded border border-border bg-background/45 px-2 py-0.5 text-xs font-medium text-muted-foreground"
                   >
                     {label}
                   </span>
@@ -1801,13 +1820,26 @@ export function ArticleRightPane({
           </div>
         </div>
       ) : null}
+      {id && page && (
+        <div id="details-notes-section" className="px-3 pb-4" data-testid="details-notes-section">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-foreground">Notes</h3>
+            {openNotesCount > 0 && (
+              <span className="text-xs font-medium text-muted-foreground tabular-nums">
+                {openNotesCount} open
+              </span>
+            )}
+          </div>
+          <NotesInspectorPanel pageId={id} className="max-h-[420px]" />
+        </div>
+      )}
 
 
       {page && id && aiAutoTagAvailable && editing && (
-        <div className="px-2 pb-3 pt-5" data-testid="article-actions-edit">
-          <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
+        <div className="px-3 pb-4" data-testid="article-actions-edit">
+          <h3 className="mb-2 text-xs font-semibold text-foreground">
             Page actions
-          </div>
+          </h3>
           <AutoTagger
             pageId={id}
             currentLabels={page?.labels ?? []}
@@ -1816,11 +1848,11 @@ export function ArticleRightPane({
         </div>
       )}
 
-      {!editing && page && (
-        <div className="space-y-0.5 px-2 pb-3 pt-5" data-testid="article-actions">
-          <div className="mb-1.5 px-1 text-[11px] font-semibold text-muted-foreground">
+      {!editing && page && activeInspectorView === 'details' && (
+        <div className="space-y-0.5 px-3 pb-4" data-testid="article-actions">
+          <h3 className="mb-2 text-xs font-semibold text-foreground">
             Page actions
-          </div>
+          </h3>
 
           {id && (
             <VersionHistory
@@ -1867,9 +1899,9 @@ export function ArticleRightPane({
               <span className="flex-1">More actions</span>
             </summary>
             <div className="mt-1 space-y-0.5">
-              <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-semibold text-muted-foreground">
+              <h4 className="px-2 pt-1.5 pb-0.5 text-xs font-medium text-muted-foreground">
                 Navigation &amp; Export
-              </div>
+              </h4>
               {id && (
                 <button
                   type="button"
@@ -1883,17 +1915,6 @@ export function ArticleRightPane({
                 </button>
               )}
 
-              {settings?.confluenceUrl && page.confluenceId && (
-                <a
-                  href={`${settings.confluenceUrl.replace(/\/+$/, '')}/pages/viewpage.action?pageId=${encodeURIComponent(page.confluenceId)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-                >
-                  <ExternalLink size={15} className="shrink-0 opacity-70" />
-                  <span className="truncate">Open in Confluence</span>
-                </a>
-              )}
 
               <button
                 onClick={handleExportPdf}
@@ -1909,9 +1930,25 @@ export function ArticleRightPane({
                 <span className="truncate">Export PDF</span>
               </button>
 
-              <div className="px-2 pt-2 pb-0.5 text-[11px] font-semibold text-muted-foreground">
+              <h4 className="px-2 pt-2 pb-0.5 text-xs font-medium text-muted-foreground">
                 Maintenance &amp; AI
-              </div>
+              </h4>
+            {canRelocate && (
+              <button
+                type="button"
+                onClick={() => setRelocateOpen(true)}
+                data-testid="relocate-btn"
+                title={
+                  page.source === 'standalone'
+                    ? 'Publish this article into a Confluence space'
+                    : 'Pull this page out of Confluence into a local space'
+                }
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ArrowRightLeft size={15} className="shrink-0 opacity-70" aria-hidden="true" />
+                <span className="text-left">{page.source === 'standalone' ? 'Move to Confluence' : 'Move to a local space'}</span>
+              </button>
+            )}
               {id && aiAutoTagAvailable && (
                 <AutoTagger
                   pageId={id}
@@ -1973,21 +2010,6 @@ export function ArticleRightPane({
             </div>
           </details>
 
-        </div>
-      )}
-      {id && page && (
-        <div id="details-notes-section" className="px-3 pb-4 pt-3" data-testid="details-notes-section">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] font-semibold text-muted-foreground">Notes</div>
-            {openNotesCount > 0 && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary-ink tabular-nums">
-                {openNotesCount} open
-              </span>
-            )}
-          </div>
-          <div className="overflow-hidden rounded-lg border border-border bg-card">
-            <NotesInspectorPanel pageId={id} className="min-h-[240px] max-h-[420px]" />
-          </div>
         </div>
       )}
       {!editing && page && (

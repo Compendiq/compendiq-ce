@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The page inspector's Details tab groups the Confluence link with provenance,
+  places Notes before secondary page actions, and exposes the quality breakdown,
+  timestamp, and full analysis summary through a keyboard- and touch-accessible disclosure.
+- Notes uses readable 13px metadata and 32px controls that wrap on narrow screens.
+  Empty and short lists fit their content; composing hides empty-list guidance,
+  and longer lists retain capped scrolling with a visible keyboard focus outline.
+
 - Child pages lists use two columns by default. The editor toggle still
   switches to a single stack (`columns=1`); Confluence ignores the param.
   Listed titles sit with tighter vertical spacing, like consecutive document lines.
@@ -48,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   colour, so the composer's hairline is the only edge in that region.
 
 ### Fixed
+
+- Document health reports failed indexing even when no error message is returned,
+  and distinguishes quality analysis in progress from search indexing.
+- Unsent page notes and replies survive inspector tab switches on the same page.
+- The shared `text-xs` token now applies the documented 13px label floor in
+  Tailwind; Details section headings and labels use the consistent scale.
 
 - Notion import uses the 3 req/s Notion budget instead of walking pages one
   by one. Sibling block fetches and discovered children overlap; board-view

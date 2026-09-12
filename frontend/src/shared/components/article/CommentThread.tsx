@@ -83,7 +83,7 @@ export function CommentThread({
   };
 
   const actionBtnClass =
-    'inline-flex h-7 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+    'inline-flex h-8 shrink-0 items-center gap-1.5 rounded px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
     <m.div
@@ -103,13 +103,13 @@ export function CommentThread({
           {author.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-sm font-medium">{author}</span>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="whitespace-nowrap text-xs text-muted-foreground">
               {formatRelativeTime(comment.createdAt)}
             </span>
             {isResolved && (
-              <span className="rounded-full bg-muted border border-border/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded-full bg-muted border border-border/60 px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
                 Resolved
               </span>
             )}
@@ -126,7 +126,7 @@ export function CommentThread({
                   onJumpToAnchor?.(comment.id);
                 }
               }}
-              className="my-1.5 flex w-full text-left cursor-pointer items-start gap-1.5 rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs italic text-muted-foreground transition-colors hover:border-border-interactive hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+              className="my-1.5 flex min-h-8 w-full text-left cursor-pointer items-start gap-1.5 rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs italic text-muted-foreground transition-colors hover:border-border-interactive hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
               title="Click to jump to highlighted text in article"
               aria-label={`Jump to highlighted text in article: "${comment.anchorData.quote}"`}
               data-testid={`comment-quote-${comment.id}`}
@@ -139,7 +139,7 @@ export function CommentThread({
           <p className={cn("mt-1 text-sm whitespace-pre-wrap break-words", isResolved ? "text-muted-foreground" : "text-foreground")}>{comment.body}</p>
 
           {/* Actions */}
-          <div className="mt-2 flex items-center gap-1">
+          <div className="mt-2 flex flex-wrap items-center gap-1">
             <button
               type="button"
               onClick={() => setShowReplyForm((v) => !v)}
@@ -226,13 +226,13 @@ export function CommentThread({
               const replyAuthor = reply.authorName ?? reply.username ?? 'Anonymous';
               return (
                 <div key={reply.id} className="flex items-start gap-2" data-testid={`reply-${reply.id}`}>
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-foreground border border-border/50">
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground border border-border/50">
                     {replyAuthor.charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="text-xs font-medium">{replyAuthor}</span>
-                      <span className="text-[11px] text-muted-foreground">
+                      <span className="whitespace-nowrap text-xs text-muted-foreground">
                         {formatRelativeTime(reply.createdAt)}
                       </span>
                     </div>

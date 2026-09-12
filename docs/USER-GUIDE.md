@@ -160,12 +160,23 @@ Skipped and unselected Notion items keep their Notion URLs in imported page bodi
 
 Changes to Confluence-synced pages can be pushed back to Confluence.
 
+### Page Details
+
+Open **Details** in the right-hand page inspector (`Alt+D`). The panel groups
+the page's source and metadata, document health, labels, notes, and page actions.
+**Open in Confluence** sits with the source information. **Pin** and
+**Version history** remain directly available under **Page actions**; relocation,
+re-sync, and AI maintenance are under **More actions**.
+
+Document health distinguishes search indexing from quality analysis. A human
+verification records a review; it does not certify that AI indexing succeeded.
+
 ### Page Versions
 
 Compendiq tracks version history for all pages:
 
 1. Open a page.
-2. Click the **Versions** tab in the right panel.
+2. Open **Details → Page actions → Version history** in the right panel.
 3. View diffs between versions.
 4. Restore a previous version if needed.
 
@@ -181,11 +192,19 @@ Compendiq can automatically suggest tags based on page content using LLM classif
 
 ### Page Comments
 
-Add comments to pages for discussions and feedback:
+Add page notes and replies for discussions and feedback:
 
-1. Open a page.
-2. Scroll to the **Comments** section.
-3. Write your comment and submit.
+1. Open **Details → Notes**, or press `Alt+N`.
+2. Choose **New note** to start a thread, or **Reply** on an existing note.
+3. Write your note and submit. Use **Open** and **Resolved** to filter threads.
+
+The Notes area grows with its content; longer thread lists scroll within it.
+Tab into the thread list to scroll with the keyboard. When starting a note in an
+empty list, the composer replaces the introductory guidance until you cancel.
+
+Unsent notes and replies survive inspector tab switches on the same page.
+**Cancel** discards the draft. Drafts are not stored persistently: submit them
+before closing the inspector or leaving the page.
 
 ### Page Verification
 
@@ -193,7 +212,7 @@ The verification workflow helps maintain knowledge base quality:
 
 1. Admins or reviewers can mark pages for review.
 2. Reviewers verify the content is accurate and up-to-date.
-3. Verified pages display a verification badge with the reviewer and date.
+3. **Details → Document health** displays the verification date separately from AI processing status.
 
 ## Using AI Features
 
@@ -269,9 +288,14 @@ Ask questions across your entire knowledge base:
 
 Compendiq automatically analyzes page quality in the background:
 
-- Pages receive a quality score based on structure, completeness, and readability.
+- Pages receive a quality score based on completeness, clarity, structure, accuracy, and readability.
 - Low-quality pages are highlighted for improvement.
 - View quality scores in the page list or on individual pages.
+- In **Details → Document health**, activate the quality score to see available
+  dimension scores, the analysis timestamp, and the full summary. The disclosure
+  supports keyboard and touch; `Escape` closes it and returns focus to the score.
+  If analysis is pending or failed, it explains that state rather than presenting
+  a previous score as the current result.
 
 ## AI Output Review (Enterprise)
 

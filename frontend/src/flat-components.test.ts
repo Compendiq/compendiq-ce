@@ -822,15 +822,14 @@ function preV4Offenders(files: readonly { path: string; strings: string[] }[]): 
  * The `shadow-xs` call sites Tailwind 4's rename left standing while the guard
  * was still written for v3. They are REGISTERED, not exempted: the cell below
  * requires the register to be exact, so removing one of these classes fails the
- * suite until the entry goes too, and a seventh shadow anywhere — including a
- * second one in the same file — fails immediately. Cleaning up the components is
+ * suite until the entry goes too, and any unregistered shadow — including an
+ * extra one in the same file — fails immediately. Cleaning up the components is
  * a component change and belongs to whoever owns them; this file owns the guard.
  */
 const V4_SHADOW_DEBT: { path: string; token: string; count: number }[] = [
   { path: 'features/pages/PagesPage.tsx', token: 'shadow-xs', count: 1 },
   { path: 'features/pages/notion-import/NotionImportDialog.tsx', token: 'shadow-xs', count: 1 },
   { path: 'shared/components/article/EditorSlashMenu.tsx', token: 'shadow-xs', count: 1 },
-  { path: 'shared/components/article/NotesInspectorPanel.tsx', token: 'shadow-xs', count: 3 },
 ];
 
 function liveShadowTally(): Record<string, number> {
