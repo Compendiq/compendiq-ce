@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Drag an article onto another in a local-space sidebar to nest it as a
+  sub-article. Click the row's drag handle for the same move, including
+  back to top level.
 - Page icons can be tinted with the editor text-colour palette, the same
   Notion-style row of the selected glyph in each hue. Lucide and logo marks
   keep the colour; emoji and uploads do not.
