@@ -30,6 +30,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
       // Truncate the excerpt in SQL, not in JS. The row count is unbounded
       // since #1130, and `body_text` is a TOASTed full-article column — a user
@@ -39,7 +40,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
       `SELECT pp.page_id, pp.pin_order, pp.pinned_at,
               cp.space_key, cp.title, cp.author, cp.last_modified_at,
               substring(cp.body_text, 1, 200) AS body_text,
-              cp.icon_kind, cp.icon_value, cp.icon_color
+              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
        FROM pinned_pages pp
        JOIN pages cp ON cp.id = pp.page_id
        WHERE pp.user_id = $1
@@ -58,7 +59,7 @@ export async function pinnedPagesRoutes(fastify: FastifyInstance) {
         excerpt: row.body_text ? row.body_text.slice(0, 200) : '',
         pinnedAt: row.pinned_at,
         pinOrder: row.pin_order,
-        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       })),
       total: result.rows.length,
     };

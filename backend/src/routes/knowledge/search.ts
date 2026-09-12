@@ -495,9 +495,10 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
-              cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color,
+              cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
               ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
                           'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') AS snippet,
@@ -521,11 +522,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key,
               substring(cp.body_text, 1, 300) AS body_text,
               similarity(cp.title, $1) AS rank,
-              cp.icon_kind, cp.icon_value, cp.icon_color
+              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
        FROM pages cp
        -- cp.title % $1 is the sargable pg_trgm operator: it lets the planner use
        -- the GIN index idx_pages_title_trgm (Bitmap Index Scan) instead of a Seq
@@ -594,7 +596,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       labels: row.labels,
       rank: row.rank,
       snippet: row.snippet,
-      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     }));
 
     const ftsIds = new Set(ftsItems.map((r) => r.id));
@@ -610,7 +612,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
           labels: [],
           rank: trgmRow.rank,
           snippet: trgmRow.body_text,
-          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value, trgmRow.icon_color),
+          icon: toPageIcon(trgmRow.icon_kind, trgmRow.icon_value, trgmRow.icon_color, trgmRow.icon_filled),
         });
       }
     }

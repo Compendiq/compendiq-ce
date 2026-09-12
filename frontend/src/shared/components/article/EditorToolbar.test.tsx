@@ -410,10 +410,12 @@ describe('EditorToolbar', () => {
     expect(screen.getByRole('group', { name: 'Highlight' })).toBeInTheDocument();
 
     const swatches = screen.getAllByTestId('color-picker-swatch');
-    // 10 hues × two roles. The original eight stay; Brown and Teal are the extras.
-    expect(swatches).toHaveLength(20);
+    // 11 hues × two roles. The original eight stay; Brown, Teal, and Indigo are the extras.
+    expect(swatches).toHaveLength(22);
     expect(screen.getByLabelText('Brown text')).toBeInTheDocument();
     expect(screen.getByLabelText('Teal highlight')).toBeInTheDocument();
+    expect(screen.getByLabelText('Indigo text')).toBeInTheDocument();
+    expect(screen.getByLabelText('Indigo highlight')).toBeInTheDocument();
     for (const sw of swatches) expect(sw.getAttribute('aria-label')).toBeTruthy();
   });
 

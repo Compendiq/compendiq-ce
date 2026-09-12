@@ -25,10 +25,37 @@ describe('toPageIcon', () => {
       value: 'rocket',
       color: '#3b82f6',
     });
+    expect(toPageIcon('lucide', 'rocket', '#6366f1')).toEqual({
+      kind: 'lucide',
+      value: 'rocket',
+      color: '#6366f1',
+    });
     expect(toPageIcon('brand', 'strava', '#ef4444')).toEqual({
       kind: 'brand',
       value: 'strava',
       color: '#ef4444',
+    });
+  });
+
+  it('preserves filled flag on lucide marks only', () => {
+    expect(toPageIcon('lucide', 'rocket', '#6366f1', true)).toEqual({
+      kind: 'lucide',
+      value: 'rocket',
+      color: '#6366f1',
+      filled: true,
+    });
+    expect(toPageIcon('lucide', 'rocket', null, true)).toEqual({
+      kind: 'lucide',
+      value: 'rocket',
+      filled: true,
+    });
+    expect(toPageIcon('brand', 'docker', null, true)).toEqual({
+      kind: 'brand',
+      value: 'docker',
+    });
+    expect(toPageIcon('emoji', '🚀', null, true)).toEqual({
+      kind: 'emoji',
+      value: '🚀',
     });
   });
 

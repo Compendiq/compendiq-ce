@@ -694,6 +694,7 @@ export const PRESET_TEXT_COLORS = [
   { label: 'Green', value: '#22c55e' },
   { label: 'Teal', value: '#0d9488' },
   { label: 'Blue', value: '#3b82f6' },
+  { label: 'Indigo', value: '#6366f1' },
   { label: 'Purple', value: '#a855f7' },
   { label: 'Pink', value: '#ec4899' },
   { label: 'Red', value: '#ef4444' },
@@ -710,6 +711,7 @@ export const PRESET_TEXT_COLOR_VALUES = [
   PRESET_TEXT_COLORS[7].value,
   PRESET_TEXT_COLORS[8].value,
   PRESET_TEXT_COLORS[9].value,
+  PRESET_TEXT_COLORS[10].value,
 ] as const;
 
 export const PageIconColorSchema = z.enum(PRESET_TEXT_COLOR_VALUES);
@@ -724,12 +726,14 @@ export const PageIconSchema = z.object({
   kind: PageIconKindEnum,
   value: z.string().min(1).max(128),
   color: PageIconColorSchema.optional(),
+  filled: z.boolean().optional(),
 });
 export type PageIcon = z.infer<typeof PageIconSchema>;
 export type SettablePageIcon = {
   kind: 'emoji' | 'lucide' | 'brand';
   value: string;
   color?: PageIconColor;
+  filled?: boolean;
 };
 
 /** PATCH /pages/:id/icon — image marks go through POST /pages/:id/icon-image. */
@@ -748,6 +752,7 @@ export const UpdatePageIconSchema = z.object({
         kind: z.literal('lucide'),
         value: z.string().refine(isPageLucideIconId, 'Unknown icon'),
         color: PageIconColorSchema.optional(),
+        filled: z.boolean().optional(),
       }),
       z.object({
         kind: z.literal('brand'),

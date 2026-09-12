@@ -4428,3 +4428,80 @@ table caption {
     color: HighlightText;
   }
 }
+
+/* ============================================
+   Page Icon — Filled variant & cutouts
+   Lucide icons default to outline (stroke-only). When icon.filled is true,
+   fill="currentColor" makes them solid. For icons with inner cutout
+   details (e.g. camera lens, gauge needle, gear center, checkmarks),
+   these rules override the inner element's fill and stroke to match
+   the surface background so cutouts render cleanly in both themes.
+   ============================================ */
+.page-icon-filled {
+  --page-icon-cutout: var(--color-card, #ffffff);
+}
+
+/* Page title and list contexts can specify cutout to match their surface */
+.page-icon-title .page-icon-filled {
+  --page-icon-cutout: var(--color-background, #ffffff);
+}
+
+/* Camera: inner circle is the lens cutout */
+.page-icon-filled.lucide-camera circle {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* Gauge / GaugeCircle: first path is needle cutout */
+.page-icon-filled.lucide-gauge path:first-child,
+.page-icon-filled.lucide-gauge-circle path:first-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Settings / Cog: inner circle is center hole */
+.page-icon-filled.lucide-settings circle,
+.page-icon-filled.lucide-cog circle {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* Database: divider lines between tiers */
+.page-icon-filled.lucide-database path:last-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Alert / Info / Help / Circle inner symbols */
+.page-icon-filled.lucide-circle-alert line,
+.page-icon-filled.lucide-alert-circle line,
+.page-icon-filled.lucide-circle-x path,
+.page-icon-filled.lucide-x-circle path,
+.page-icon-filled.lucide-info path,
+.page-icon-filled.lucide-circle-help path,
+.page-icon-filled.lucide-help-circle path,
+.page-icon-filled.lucide-circle-question-mark path {
+  stroke: var(--page-icon-cutout);
+}
+
+/* Circle Check / Checkmark */
+.page-icon-filled.lucide-circle-check path:last-child,
+.page-icon-filled.lucide-circle-check-big path:last-child,
+.page-icon-filled.lucide-check-circle path:last-child {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+
+/* Play circle: play triangle cutout */
+.page-icon-filled.lucide-circle-play path:first-child,
+.page-icon-filled.lucide-play-circle path:first-child {
+  fill: var(--page-icon-cutout);
+  stroke: var(--page-icon-cutout);
+}
+
+/* FileText: document lines */
+.page-icon-filled.lucide-file-text path:nth-child(n+3) {
+  stroke: var(--page-icon-cutout);
+  fill: none;
+}
+

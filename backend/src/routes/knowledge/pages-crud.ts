@@ -506,6 +506,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     };
 
     async function executeSearchQuery(wc: string, vals: unknown[], ob: string, obVals: unknown[] = []) {
@@ -533,7 +534,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
                cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
                cp.summary_status, cp.source, cp.visibility,
-               cp.icon_kind, cp.icon_value, cp.icon_color
+               cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
         FROM pages cp
         ${wc}
         ORDER BY ${ob}
@@ -599,7 +600,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         summaryStatus: row.summary_status,
         source: row.source,
         visibility: row.visibility,
-        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       })),
       total,
       page,
@@ -660,6 +661,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
       // #959: order by sort_order first so a persisted drag-reorder (written by
       // PUT /pages/:id/reorder) survives the tree refetch instead of snapping
@@ -669,7 +671,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               parent_page.id as parent_numeric_id, cp.sort_order,
               cp.labels, cp.last_modified_at,
               cp.embedding_dirty, cp.embedding_status, cp.embedded_at, cp.embedding_error,
-              cp.icon_kind, cp.icon_value, cp.icon_color
+              cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
        FROM pages cp
        LEFT JOIN pages parent_page ON (
          parent_page.confluence_id = cp.parent_id
@@ -694,7 +696,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         embeddingStatus: row.embedding_status,
         embeddedAt: row.embedded_at,
         embeddingError: row.embedding_error,
-        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       })),
       total: result.rows.length,
     };
@@ -834,6 +836,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     }>(
       `SELECT cp.id, cp.confluence_id, cp.space_key, cp.title, cp.page_type,
               cp.body_storage, cp.body_html, cp.body_text,
@@ -846,7 +849,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
               (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
-              cp.verified_at, cp.icon_kind, cp.icon_value, cp.icon_color
+              cp.verified_at, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
        FROM pages cp
        WHERE ${isNumericId ? 'cp.id = $1' : 'cp.confluence_id = $1'}
          AND cp.deleted_at IS NULL`,
@@ -916,7 +919,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       hasDraft: row.has_draft,
       draftUpdatedAt: row.draft_updated_at?.toISOString() ?? null,
       verifiedAt: row.verified_at,
-      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+      icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
     };
   });
 
@@ -1018,17 +1021,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       icon_kind: string | null;
       icon_value: string | null;
       icon_color: string | null;
+      icon_filled: boolean | null;
     };
 
     const treeResult = await query<FlatChildRow>(
       `WITH RECURSIVE tree AS (
          SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, 1 AS depth,
-                p.icon_kind, p.icon_value, p.icon_color
+                p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
          WHERE p.parent_id = $1 AND p.deleted_at IS NULL
          UNION ALL
          SELECT p.id, p.confluence_id, p.title, p.space_key, p.parent_id, t.depth + 1,
-                p.icon_kind, p.icon_value, p.icon_color
+                p.icon_kind, p.icon_value, p.icon_color, p.icon_filled
          FROM pages p
          JOIN tree t ON p.parent_id = COALESCE(t.confluence_id, t.id::text)
          WHERE p.deleted_at IS NULL AND t.depth < $2
@@ -1056,7 +1060,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         confluenceId: row.confluence_id,
         title: row.title,
         spaceKey: row.space_key,
-        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color),
+        icon: toPageIcon(row.icon_kind, row.icon_value, row.icon_color, row.icon_filled),
       };
       const nodeKey = row.confluence_id ?? String(row.id);
       nodeMap.set(nodeKey, node);

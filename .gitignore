@@ -59,8 +59,10 @@ research/
 *.jar
 *.ear
 
-# Claude Code
+# Claude Code & local agent tooling
 .claude/
+.grok/
+.pi/
 frontend/vendor/
 firebase-debug.log
 

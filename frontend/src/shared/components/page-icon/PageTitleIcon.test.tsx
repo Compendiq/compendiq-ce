@@ -101,7 +101,59 @@ describe('PageTitleIcon', () => {
     expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Blue icon' }));
     expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#3b82f6' });
+    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'rocket', color: '#6366f1' });
     expect(screen.getByTestId('page-icon-color-row')).toBeInTheDocument();
+  });
+
+  it('provides an Outline / Filled segmented toggle for lucide icons', () => {
+    const onSelect = vi.fn();
+    render(
+      <PageTitleIcon
+        icon={{ kind: 'lucide', value: 'camera' }}
+        pageId="1"
+        editable
+        onSelect={onSelect}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
+    const outlineBtn = screen.getByTestId('page-icon-style-outline');
+    const filledBtn = screen.getByTestId('page-icon-style-filled');
+    expect(outlineBtn).toBeInTheDocument();
+    expect(filledBtn).toBeInTheDocument();
+    expect(outlineBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(filledBtn).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(filledBtn);
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', filled: true });
+  });
+
+  it('persists filled state when picking new icons and colors', () => {
+    const onSelect = vi.fn();
+    render(
+      <PageTitleIcon
+        icon={{ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true }}
+        pageId="1"
+        editable
+        onSelect={onSelect}
+        onUpload={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Change page icon' }));
+    const filledBtn = screen.getByTestId('page-icon-style-filled');
+    expect(filledBtn).toHaveAttribute('aria-pressed', 'true');
+
+    // Picking a colour retains filled: true
+    fireEvent.click(screen.getByRole('button', { name: 'Indigo icon' }));
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1', filled: true });
+
+    // Switching back to outline
+    const outlineBtn = screen.getByTestId('page-icon-style-outline');
+    fireEvent.click(outlineBtn);
+    expect(onSelect).toHaveBeenCalledWith({ kind: 'lucide', value: 'camera', color: '#6366f1' });
   });
 
   it('lists diving and hiking glyphs in the icon grid', () => {
