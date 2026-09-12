@@ -123,6 +123,25 @@ describe('NotesInspectorPanel', () => {
 
     fireEvent.click(screen.getByTestId('add-page-note-btn'));
     expect(screen.getByPlaceholderText(/Write a note about this page/)).toBeInTheDocument();
+    await screen.findByText('Great article!');
+    expect(screen.getByRole('tabpanel')).toBeVisible();
+  });
+
+  it('hides empty-list guidance while composing and restores it on cancel', async () => {
+    mockApiFetch.mockResolvedValue([]);
+    renderNotesPanel();
+    const emptyOpen = await screen.findByText('No open notes');
+    expect(emptyOpen).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New note' }));
+    expect(screen.getByRole('textbox')).toBeVisible();
+    expect(emptyOpen).not.toBeVisible();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Resolved (0)' }));
+    expect(screen.getByText('No resolved notes')).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('No resolved notes')).toBeVisible();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
   it('shows graceful fallback when pageId is null/unsaved', () => {
@@ -139,6 +158,9 @@ describe('NotesInspectorPanel', () => {
       expect(screen.getByText('Failed to load notes')).toBeInTheDocument();
       expect(screen.getByText('Network error')).toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByRole('button', { name: 'New note' }));
+    expect(screen.getByRole('alert')).toBeVisible();
 
     mockApiFetch.mockResolvedValueOnce(mockComments);
     fireEvent.click(screen.getByText('Retry'));

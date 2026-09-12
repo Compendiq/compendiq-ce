@@ -84,7 +84,6 @@ export function CommentForm({
             type="button"
             onClick={onCancel}
             variant="ghost"
-            size="sm"
             leftIcon={<X size={14} />}
             data-testid="comment-cancel"
           >
@@ -96,7 +95,6 @@ export function CommentForm({
           disabled={!body.trim() || isSubmitting}
           isLoading={isSubmitting}
           variant="primary"
-          size="sm"
           leftIcon={!isSubmitting ? <Send size={14} /> : undefined}
           data-testid="comment-submit"
         >

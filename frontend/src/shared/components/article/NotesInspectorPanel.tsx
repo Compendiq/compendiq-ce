@@ -200,7 +200,7 @@ export function NotesInspectorPanel({
       >
         <MessageSquare size={28} className="text-muted-foreground/30 mb-2" />
         <p className="font-medium text-foreground/80 mb-1">Notes are available on saved pages</p>
-        <p className="text-[11px] leading-relaxed">
+        <p className="text-xs leading-relaxed">
           Save this page to create notes and collaborate with your team.
         </p>
       </div>
@@ -228,17 +228,17 @@ export function NotesInspectorPanel({
   };
   return (
     <div
-      className={cn('flex min-h-0 flex-1 flex-col overflow-hidden bg-card text-card-foreground', className)}
+      className={cn('flex min-h-0 flex-col overflow-hidden bg-card text-card-foreground', className)}
       data-testid="notes-inspector-panel"
     >
       {/* Header with Filters and Add Note button */}
-      <div className="border-b border-border p-3">
-        <div className="flex items-center justify-between gap-2">
+      <div className="shrink-0 border-b border-border p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div
             role="tablist"
             aria-label="Filter notes by status"
             onKeyDown={handleTabKeyDown}
-            className="flex items-center gap-1 rounded-md bg-muted p-0.5 text-xs"
+            className="flex shrink-0 items-center gap-1 rounded-md bg-muted p-0.5 text-xs"
           >
             <button
               type="button"
@@ -249,9 +249,9 @@ export function NotesInspectorPanel({
               tabIndex={filter === 'open' ? 0 : -1}
               onClick={() => setFilter('open')}
               className={cn(
-                'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'inline-flex h-8 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'open'
-                  ? 'bg-card text-foreground shadow-xs'
+                  ? 'nm-pill-active'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-open"
@@ -267,9 +267,9 @@ export function NotesInspectorPanel({
               tabIndex={filter === 'resolved' ? 0 : -1}
               onClick={() => setFilter('resolved')}
               className={cn(
-                'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                'inline-flex h-8 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'resolved'
-                  ? 'bg-card text-foreground shadow-xs'
+                  ? 'nm-pill-active'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-resolved"
@@ -282,7 +282,7 @@ export function NotesInspectorPanel({
             type="button"
             onClick={() => setShowNewNoteForm((v) => !v)}
             aria-expanded={showNewNoteForm}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             data-testid="add-page-note-btn"
           >
             <Plus size={14} />
@@ -292,8 +292,7 @@ export function NotesInspectorPanel({
 
         {/* New Note Form */}
         {showNewNoteForm && (
-          <div className="mt-3 rounded-lg border border-border bg-card p-2.5 shadow-xs">
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Add Page Note</div>
+          <div className="mt-3">
             <CommentForm
               onSubmit={handleNewNoteSubmit}
               onCancel={() => setShowNewNoteForm(false)}
@@ -310,8 +309,9 @@ export function NotesInspectorPanel({
         id="notes-threads-list"
         role="tabpanel"
         aria-labelledby={filter === 'open' ? 'notes-tab-open' : 'notes-tab-resolved'}
+        hidden={showNewNoteForm && !isLoading && !isError && displayedThreads.length === 0}
         tabIndex={0}
-        className="flex-1 overflow-y-auto p-3 space-y-3 focus-visible:outline-none"
+        className="nm-focus-ring min-h-0 flex-1 overflow-y-auto p-3 space-y-3 -outline-offset-2"
       >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-12 text-xs text-muted-foreground">
@@ -322,25 +322,25 @@ export function NotesInspectorPanel({
           <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground px-4" role="alert">
             <AlertCircle size={24} className="text-destructive mb-2 opacity-80" />
             <p className="font-medium text-foreground mb-1">Failed to load notes</p>
-            <p className="text-[11px] leading-relaxed mb-3">
+            <p className="text-xs leading-relaxed mb-3">
               {error instanceof Error ? error.message : 'An error occurred while fetching page notes.'}
             </p>
             <button
               type="button"
               onClick={() => void refetch()}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <RotateCcw size={12} />
               <span>Retry</span>
             </button>
           </div>
         ) : displayedThreads.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground px-4">
+          <div className="flex flex-col items-center justify-center py-4 text-center text-xs text-muted-foreground px-4">
             <MessageSquare size={28} className="text-muted-foreground/30 mb-2" />
             <p className="font-medium text-foreground/80 mb-1">
               {filter === 'open' ? 'No open notes' : 'No resolved notes'}
             </p>
-            <p className="text-[11px] leading-relaxed">
+            <p className="text-xs leading-relaxed">
               {filter === 'open'
                 ? 'Highlight text in the editor to add an inline note, or click "New note" above.'
                 : 'Resolved note threads will appear here.'}
