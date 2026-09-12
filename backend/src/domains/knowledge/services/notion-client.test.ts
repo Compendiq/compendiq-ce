@@ -297,6 +297,35 @@ describe('NotionClient (fake Notion HTTP)', () => {
     // 1 here and makes every caller-side pLimit(5) inert (#1553).
     expect(server.peakConcurrentLookups).toBeGreaterThan(2);
   });
+
+  it('does not GET view details when the views list already types every view', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      views: {
+        crm: [
+          { id: 'v-table', type: 'table' },
+          { id: 'v-list', type: 'list' },
+        ],
+      },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+    await expect(client.databaseHasBoardView('crm')).resolves.toBe(false);
+    expect(server.requests.filter((r) => r.url.startsWith('/v1/views/'))).toEqual([]);
+    expect(server.requests.some((r) => r.url.startsWith('/v1/views?'))).toBe(true);
+  });
+
+  it('GETs untyped view rows once and memoizes the answer', async () => {
+    server = await startFakeNotionServer({
+      validToken: TOKEN,
+      views: {
+        tracker: [{ id: 'view-cfg', configuration: { type: 'board' } }],
+      },
+    });
+    const client = new NotionClient(TOKEN, { baseUrl: server.baseUrl });
+    await expect(client.databaseHasBoardView('tracker')).resolves.toBe(true);
+    await expect(client.databaseHasBoardView('TRACKER')).resolves.toBe(true);
+    expect(server.requests.filter((r) => r.url === '/v1/views/view-cfg')).toHaveLength(1);
+  });
 });
 
 describe('reserveNotionStartSlot', () => {

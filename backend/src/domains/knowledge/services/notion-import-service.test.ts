@@ -2975,6 +2975,33 @@ describe.skipIf(!dbAvailable)('runNotionImport (#1465)', () => {
     expect(subDocPage.depth).toBe(2);
     expect(subDocPage.path).toBe(`/${rootPage.id}/${docPage.id}/${subDocPage.id}`);
   });
+
+  it('fetches sibling discovered page bodies concurrently', async () => {
+    const children = ['a', 'b', 'c', 'd'];
+    const client = await start({
+      validToken: TOKEN,
+      lookupDelayMs: 80,
+      pages: {
+        host: { object: 'page', id: 'host', properties: titleProp('Host') },
+        ...Object.fromEntries(children.map((id) => [id, {
+          object: 'page',
+          id,
+          parent: { type: 'page_id', page_id: 'host' },
+          properties: titleProp(id.toUpperCase()),
+        }])),
+      },
+      blockChildren: {
+        host: children.map((id) => ({ id, type: 'child_page', child_page: { title: id } })),
+        ...Object.fromEntries(children.map((id) => [id, [paragraph(`${id}-p`, id)]])),
+      },
+    });
+    const items = await runNotionImport({
+      userId, client, pageIds: ['host'], visibility: 'shared',
+    });
+    expect(items.filter((item) => item.status === 'success')).toHaveLength(5);
+    // Sequential discovery peaked at 1 here and left the 3 req/s budget idle.
+    expect(server.peakConcurrentLookups).toBeGreaterThan(1);
+  });
 });
 
 describe('extractWikiPageProperties', () => {

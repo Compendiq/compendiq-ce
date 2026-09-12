@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Notion import uses the 3 req/s Notion budget instead of walking pages one
+  by one. Sibling block fetches and discovered children overlap; board-view
+  probes reuse one lookup per database and skip `/v1/views/:id` when the
+  list already typed every view. The cap is unchanged — this cuts idle time
+  and the extra GETs that were triggering 429 backoffs.
+
 - Notion web bookmarks import as links instead of being dropped. A page whose
   only content is bookmarks imported with an empty body; re-running the import
   on it fills the body in without duplicating the page. Embeds, link previews,

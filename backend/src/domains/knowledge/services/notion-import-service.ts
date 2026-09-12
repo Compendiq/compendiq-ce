@@ -323,29 +323,47 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
     }
   }
 
-  for (let index = 0; index < jobs.length; index++) {
-    const job = jobs[index]!;
-    try {
-      if (job.boardContainer) {
-        job.blocks = [];
-        continue;
-      }
+  // Fetch one wave of already-queued jobs in parallel (the client still paces
+  // starts at 3 req/s). Discover/plan stay sequential because they append jobs.
+  const walkLimit = pLimit(NOTION_ROW_CHECK_CONCURRENCY);
+  let cursor = 0;
+  while (cursor < jobs.length) {
+    const waveEnd = jobs.length;
+    const wave = jobs.slice(cursor, waveEnd);
+    const fetchErrors = await Promise.all(wave.map((job) => walkLimit(async (): Promise<unknown> => {
       try {
-        job.blocks = await fetchBlocksDeep(input.client, job.id);
+        if (job.boardContainer) {
+          job.blocks = [];
+          return null;
+        }
+        try {
+          job.blocks = await fetchBlocksDeep(input.client, job.id);
+        } catch (err) {
+          // Ordinary databases have no block body, but wiki databases can have a
+          // real home page. Attempt that body before falling back to metadata.
+          if (!job.database || !isNotionObjectMissing(err)) throw err;
+          job.blocks = [];
+        }
+        return null;
       } catch (err) {
-        // Ordinary databases have no block body, but wiki databases can have a
-        // real home page. Attempt that body before falling back to metadata.
-        if (!job.database || !isNotionObjectMissing(err)) throw err;
-        job.blocks = [];
+        return err;
       }
-      await discover(job.blocks, job.id);
-      await planDatabase(job);
-    } catch (err) {
-      if (job.reuseId && !job.reuseComplete) await abandonPage(job.reuseId, destination.parentId);
-      if (!job.reuseComplete || input.overwriteExisting) {
-        items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+    })));
+    for (let i = 0; i < wave.length; i++) {
+      const job = wave[i]!;
+      try {
+        const fetchErr = fetchErrors[i];
+        if (fetchErr) throw fetchErr;
+        await discover(job.blocks ?? [], job.id);
+        await planDatabase(job);
+      } catch (err) {
+        if (job.reuseId && !job.reuseComplete) await abandonPage(job.reuseId, destination.parentId);
+        if (!job.reuseComplete || input.overwriteExisting) {
+          items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+        }
       }
     }
+    cursor = waveEnd;
   }
 
   // A database may have been visited before its host. Resolve shape and host
@@ -918,9 +936,9 @@ async function classifySelection(client: NotionClient, id: string): Promise<Clas
 
 async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<NotionBlock[]> {
   const raw = await client.getAllBlockChildren(blockId);
-  const out: NotionBlock[] = [];
-  for (const item of raw) {
-    if (!isRecord(item) || typeof item.type !== 'string') continue;
+  const limit = pLimit(NOTION_ROW_CHECK_CONCURRENCY);
+  const blocks = await Promise.all(raw.map((item) => limit(async (): Promise<NotionBlock | null> => {
+    if (!isRecord(item) || typeof item.type !== 'string') return null;
     const block = item as NotionBlock;
     if (
       block.has_children === true &&
@@ -929,9 +947,9 @@ async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<N
     ) {
       block.children = await fetchBlocksDeep(client, block.id);
     }
-    out.push(block);
-  }
-  return out;
+    return block;
+  })));
+  return blocks.filter((block): block is NotionBlock => block !== null);
 }
 
 async function storeAttachments(
