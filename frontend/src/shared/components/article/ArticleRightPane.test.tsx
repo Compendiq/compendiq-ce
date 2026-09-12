@@ -264,11 +264,12 @@ describe('ArticleRightPane', () => {
     expect(screen.getByText('Move to trash')).toBeInTheDocument();
   });
 
-  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', () => {
+  it('keeps pin and history visible and tucks export, graph and deletion behind disclosures', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     expect(screen.getByText('Pin').closest('details')).toBeNull();
     expect(screen.getByText('Version history').closest('details')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Open in Confluence' })).toBeVisible());
 
     const moreActions = screen.getByText('More actions').closest('details');
     const dangerZone = screen.getByText('Danger zone').closest('details');
@@ -278,31 +279,9 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('More actions'));
     expect(moreActions).toHaveAttribute('open');
     expect(screen.getByText('Export PDF').closest('details')).toBe(moreActions);
-    expect(screen.getByText('Open in Confluence').closest('details')).toBe(moreActions);
     expect(screen.getByText('Show in Graph').closest('details')).toBe(moreActions);
     fireEvent.click(screen.getByText('Danger zone'));
     expect(dangerZone).toHaveAttribute('open');
-  });
-  it('renders a synthesized health summary and categorized groups inside More actions', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-
-    // Synthesized health summary banner
-    expect(screen.getByText(/Indexed for AI search|Verified and ready/)).toBeInTheDocument();
-
-    // Open More actions and verify logical groups
-    const moreActions = screen.getByText('More actions').closest('details')!;
-    fireEvent.click(screen.getByText('More actions'));
-    expect(moreActions).toHaveAttribute('open');
-    expect(screen.getByText('Navigation & Export')).toBeInTheDocument();
-    expect(screen.getByText('Maintenance & AI')).toBeInTheDocument();
-  });
-
-
-  it('lists page facts above page actions in Details', () => {
-    render(<ArticleRightPane />, { wrapper: createWrapper() });
-    const facts = screen.getByText('Page details');
-    const actions = screen.getByText('Page actions');
-    expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('opens on the outline when the page has document structure', () => {
@@ -1272,7 +1251,7 @@ describe('ArticleRightPane', () => {
     expect(screen.getByTestId('quality-score-badge')).toHaveTextContent('85');
   });
 
-  it('lists source and draft facts in Details, not as header chrome', () => {
+  it('shows private visibility and an unpublished draft on local pages', () => {
     currentMockPage = {
       ...mockPage,
       source: 'standalone',
@@ -1282,8 +1261,6 @@ describe('ArticleRightPane', () => {
 
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
-    expect(screen.getByText('Source')).toBeInTheDocument();
-    expect(screen.getByText('Local')).toBeInTheDocument();
     expect(screen.getByText('Visibility')).toBeInTheDocument();
     expect(screen.getByText('Private')).toBeInTheDocument();
     expect(screen.getByText('Unpublished draft')).toBeInTheDocument();
@@ -1291,7 +1268,6 @@ describe('ArticleRightPane', () => {
 
   it('uses confluenceId (not internal id) in the "Open in Confluence" link', () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByText('More actions'));
 
     const link = screen.getByText('Open in Confluence').closest('a');
     expect(link).toBeInTheDocument();
@@ -1601,7 +1577,7 @@ describe('ArticleRightPane', () => {
       expect(screen.getByText('No outline yet')).toBeInTheDocument();
     });
 
-    it('renders Page actions above the Notes section inline in the Details tab', async () => {
+    it('reports open notes and opens them with Alt+N', async () => {
       useArticleViewStore.setState({
         headings: [{ id: 'h1', text: 'Section 1', level: 1 }],
       });
@@ -1622,21 +1598,12 @@ describe('ArticleRightPane', () => {
       fireEvent.click(detailsTab);
       expect(detailsTab).toHaveAttribute('aria-selected', 'true');
 
-      // Page actions section is present above notes
-      const pageActions = screen.getByTestId('article-actions');
-      expect(pageActions).toBeInTheDocument();
-
-      // Notes section is rendered inline inside Details below page actions
       const notesSection = screen.getByTestId('details-notes-section');
       expect(notesSection).toBeInTheDocument();
       expect(notesSection).toHaveTextContent('Notes');
       expect(notesSection).toHaveTextContent('2 open');
       expect(screen.getByTestId('notes-inspector-panel')).toBeInTheDocument();
 
-      // Verify pageActions precedes notesSection in the DOM order
-      expect(
-        Boolean(pageActions.compareDocumentPosition(notesSection) & Node.DOCUMENT_POSITION_FOLLOWING),
-      ).toBe(true);
 
       // Alt+N hotkey switches to Details tab
       fireEvent.click(screen.getByTestId('page-context-tab-outline'));

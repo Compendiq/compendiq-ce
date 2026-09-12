@@ -200,7 +200,7 @@ export function NotesInspectorPanel({
       >
         <MessageSquare size={28} className="text-muted-foreground/30 mb-2" />
         <p className="font-medium text-foreground/80 mb-1">Notes are available on saved pages</p>
-        <p className="text-[11px] leading-relaxed">
+        <p className="text-xs leading-relaxed">
           Save this page to create notes and collaborate with your team.
         </p>
       </div>
@@ -251,7 +251,7 @@ export function NotesInspectorPanel({
               className={cn(
                 'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'open'
-                  ? 'bg-card text-foreground shadow-xs'
+                  ? 'nm-pill-active'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-open"
@@ -269,7 +269,7 @@ export function NotesInspectorPanel({
               className={cn(
                 'inline-flex h-7 items-center justify-center rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 filter === 'resolved'
-                  ? 'bg-card text-foreground shadow-xs'
+                  ? 'nm-pill-active'
                   : 'text-muted-foreground hover:text-foreground',
               )}
               data-testid="notes-filter-resolved"
@@ -292,8 +292,7 @@ export function NotesInspectorPanel({
 
         {/* New Note Form */}
         {showNewNoteForm && (
-          <div className="mt-3 rounded-lg border border-border bg-card p-2.5 shadow-xs">
-            <div className="mb-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Add Page Note</div>
+          <div className="mt-3">
             <CommentForm
               onSubmit={handleNewNoteSubmit}
               onCancel={() => setShowNewNoteForm(false)}
@@ -322,7 +321,7 @@ export function NotesInspectorPanel({
           <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground px-4" role="alert">
             <AlertCircle size={24} className="text-destructive mb-2 opacity-80" />
             <p className="font-medium text-foreground mb-1">Failed to load notes</p>
-            <p className="text-[11px] leading-relaxed mb-3">
+            <p className="text-xs leading-relaxed mb-3">
               {error instanceof Error ? error.message : 'An error occurred while fetching page notes.'}
             </p>
             <button
@@ -340,7 +339,7 @@ export function NotesInspectorPanel({
             <p className="font-medium text-foreground/80 mb-1">
               {filter === 'open' ? 'No open notes' : 'No resolved notes'}
             </p>
-            <p className="text-[11px] leading-relaxed">
+            <p className="text-xs leading-relaxed">
               {filter === 'open'
                 ? 'Highlight text in the editor to add an inline note, or click "New note" above.'
                 : 'Resolved note threads will appear here.'}

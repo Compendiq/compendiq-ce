@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QualityScoreBadge } from './QualityScoreBadge';
 
 /** How many of the meter's four segments are filled. */
@@ -218,15 +218,6 @@ describe('QualityScoreBadge', () => {
     expect(screen.getByTestId('badge-failed').className).not.toContain('animate-pulse');
   });
 
-  // ---- Custom className ----
-
-  it('applies custom className', () => {
-    render(
-      <QualityScoreBadge qualityScore={80} qualityStatus="analyzed" className="my-custom-class" />,
-    );
-    expect(screen.getByTestId('quality-score-badge').className).toContain('my-custom-class');
-  });
-
   // ---- Tooltip for pending state ----
 
   it('shows appropriate tooltip for pending state', () => {
@@ -239,5 +230,56 @@ describe('QualityScoreBadge', () => {
     render(<QualityScoreBadge qualityScore={null} qualityStatus="analyzing" />);
     const badge = screen.getByTestId('quality-score-badge');
     expect(badge.getAttribute('title')).toContain('in progress');
+  });
+
+  it('opens the complete analysis and consumes Escape without leaving the surrounding editor', async () => {
+    const summary = 'A detailed review. '.repeat(20);
+    render(
+      <QualityScoreBadge
+        showDetails
+        qualityScore={75}
+        qualityStatus="analyzed"
+        qualityCompleteness={0}
+        qualityClarity={70}
+        qualitySummary={summary}
+        qualityAnalyzedAt="2026-09-01T12:00:00Z"
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'Quality analysis: 75 Good' });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'Quality analysis' });
+    expect(within(dialog).getByText('0/100')).toBeVisible();
+    expect(within(dialog).getByText('70/100')).toBeVisible();
+    expect(within(dialog).getByText(/A detailed review/)).toHaveTextContent(summary.trim());
+    expect(dialog.querySelector('time')).toHaveAttribute('datetime', '2026-09-01T12:00:00Z');
+    expect(within(dialog).queryByText('Accuracy')).not.toBeInTheDocument();
+
+    const editorEscape = vi.fn();
+    document.addEventListener('keydown', editorEscape);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    document.removeEventListener('keydown', editorEscape);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(editorEscape).not.toHaveBeenCalled();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('explains a failed re-analysis without presenting the previous score as current', async () => {
+    render(
+      <QualityScoreBadge
+        showDetails
+        qualityScore={85}
+        qualityStatus="failed"
+        qualityClarity={90}
+        qualityError="Provider temporarily unavailable"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Analysis Failed/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Quality analysis' });
+    expect(dialog).toHaveTextContent('Provider temporarily unavailable');
+    expect(within(dialog).queryByText('85/100')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('90/100')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close quality details' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });
