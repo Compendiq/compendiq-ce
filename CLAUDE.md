@@ -988,6 +988,14 @@ Full reference is `.env.example`. Keys you must set:
 
 Tunable defaults (override only with reason): `EMBEDDING_DIMENSIONS=1024`, `USE_BULLMQ=true`, `SYNC_INTERVAL_MIN=15`, `LLM_CONCURRENCY=4`, `LLM_MAX_QUEUE_DEPTH=50`, `LLM_STREAM_TIMEOUT_MS=300000`, `LLM_CACHE_TTL=3600`, `QUALITY_*` / `SUMMARY_*` batch+interval, `CONFLUENCE_RATE_LIMIT_RPM=60`, `SHUTDOWN_TIMEOUT_MS=50000` (keep below container stop grace period). TLS escape hatches: `LLM_VERIFY_SSL`, `CONFLUENCE_VERIFY_SSL`, `NODE_EXTRA_CA_CERTS`. Observability: `OTEL_ENABLED`, `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`. SMTP: `SMTP_*` (also configurable via admin UI).
 
+Quality/Summary batch entrypoints own their local guard, Redis lease and
+`isProcessing` state for every caller, including BullMQ. Do not put locking
+back only in timer/manual wrappers: scheduled runs would reclaim live rows.
+Their `{processed, errors}` counts exclude failures from processed; deliberate
+skips may count as processed. BullMQ marks batches with errors as failed.
+Run Now is one bounded batch, not a backlog drain; model identifiers must match
+what the configured provider actually serves.
+
 **Removed (do not revive): `FTS_LANGUAGE`** — the keyword-index language lives in `admin_settings.fts_language`, edited in Settings → AI Models → Retrieval; the env var was inert on every migrated instance because migration 049 seeds that row before any request, so the fallback it fed was unreachable, and a leftover value is now reported as ignored at startup. The allow-list is `FTS_LANGUAGES` in `packages/contracts` and stays **closed**: PostgreSQL has no bind-parameter form for a `regconfig`, so the chosen name is interpolated into SQL. It is not one of the Retrieval panel's nine cheap knobs — saving it re-indexes every page inside the request — and the mechanism, its transaction and its failure modes are documented where they belong, in `docs/architecture/09-flow-rag-chat.md` and `docs/ADMIN-GUIDE.md`.
 
 OIDC/SSO is EE-only.

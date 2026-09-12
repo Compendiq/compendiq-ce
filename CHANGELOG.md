@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quality and Summary workers share renewed locks across scheduled and manual
+  runs, preventing duplicate inference and recovery of articles still in flight.
+  Failed articles no longer count as successful processing, and BullMQ records
+  batches containing errors as failed instead of claiming successful generation.
+  Run Now remains a single bounded batch.
 - Document health reports failed indexing even when no error message is returned,
   and distinguishes quality analysis in progress from search indexing.
 - Unsent page notes and replies survive inspector tab switches on the same page.
