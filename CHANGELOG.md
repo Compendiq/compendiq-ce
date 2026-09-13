@@ -56,8 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Server-backed inline suggestions now send the non-thinking parameter needed
-  by LM Studio to produce visible text instead of stopping inside reasoning.
+- Server-backed inline suggestions retry once with `reasoning_effort: "none"`
+  when a tolerant provider (LM Studio) ignores the non-thinking template hints
+  and returns no visible text. The hint is retry-only: vLLM 0.10–0.12 reject
+  it and newer vLLM forwards it into chat templates that can raise, so a
+  failed retry yields the empty first reply and never counts against the
+  provider's circuit breaker.
 
 - Quality and Summary workers share renewed locks across scheduled and manual
   runs, preventing duplicate inference and recovery of articles still in flight.

@@ -67,15 +67,28 @@ prove which model actually ran.
 For chat-based inline completion, `message.content` must contain the visible
 continuation. Reasoning is not suggestion text: a reasoning-enabled server
 can hit the newline stop or spend the 8-token word / 48-token full budget
-before producing any content. The non-thinking request sends `think: false`,
-`chat_template_kwargs.enable_thinking: false`, and `reasoning_effort: "none"`
-to tolerant providers. LM Studio can require the last parameter even when it
+before producing any content. The first request sends `think: false` and
+`chat_template_kwargs.enable_thinking: false` to tolerant providers. If that
+reply carries no visible text, the backend retries ONCE with
+`reasoning_effort: "none"` added — LM Studio can require it even when it
 accepts the first two. Strict OpenAI, Azure OpenAI, and hosted DeepSeek
-endpoints retain their existing no-extra-fields path.
+endpoints get neither hint and no retry.
 
-Do not remove the stop rules, expose reasoning as ghost text, or increase the
-token budget to work around this. Deploy the corrected backend and select a
-model the server actually serves; no frontend rebuild is needed for this fix.
+`reasoning_effort` is retry-only because tolerant hosts parse and validate
+it rather than ignore it: vLLM 0.10–0.12 reject `"none"` with a 400, and
+newer vLLM forwards it into the chat template, where a template that lists
+other values (Qwen3.x) raises and surfaces as a 500. On the retry both
+outcomes are swallowed — the author gets the empty first reply, and the
+failure does not count against the provider's circuit breaker. Diagnose it
+at `LOG_LEVEL=debug` (`inline completion: reasoning_effort retry failed`).
+On such a host every suggestion after an empty reply costs a second bounded
+request; upgrading vLLM, or assigning a model whose template does not
+validate the field, removes that cost.
+
+Do not remove the stop rules, expose reasoning as ghost text, increase the
+token budget, or move `reasoning_effort` onto the first request to work
+around this. Deploy the corrected backend and select a model the server
+actually serves; no frontend rebuild is needed for this fix.
 
 ## CSP
 

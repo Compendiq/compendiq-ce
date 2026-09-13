@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -8,11 +8,13 @@ import {
   supportsFim,
 } from './inline-completion-client.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
+import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
 
 let server: Server;
 let baseUrl: string;
 let lastPath = '';
 let lastBody: Record<string, unknown> = {};
+let requestBodies: Array<Record<string, unknown>> = [];
 let responder: (res: import('node:http').ServerResponse) => void = () => {};
 
 beforeAll(async () => {
@@ -22,6 +24,7 @@ beforeAll(async () => {
     req.on('data', (chunk) => (raw += chunk));
     req.on('end', () => {
       lastBody = JSON.parse(raw) as Record<string, unknown>;
+      requestBodies.push(lastBody);
       responder(res);
     });
   });
@@ -30,6 +33,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+beforeEach(() => {
+  requestBodies = [];
+});
 
 function cfg(): ProviderConfig {
   return {
@@ -99,12 +106,16 @@ describe('inline-completion-client (#1417)', () => {
       think: false,
       chat_template_kwargs: { enable_thinking: false },
     });
+    // A validated field, not an ignored one — vLLM <= 0.12 400s on "none".
+    // It is a retry-only hint (next tests), never on the first request.
+    expect(lastBody).not.toHaveProperty('reasoning_effort');
+    expect(requestBodies).toHaveLength(1);
     expect(JSON.stringify(lastBody)).toContain('Title: PAT rotation');
     expect(JSON.stringify(lastBody)).toContain('<PREFIX>');
     expect(result.completion).toBe(' access token.');
   });
 
-  it('gets visible text from servers that require reasoning_effort to disable reasoning', async () => {
+  it('retries once with reasoning_effort when the first reply carries no visible text', async () => {
     responder = (res) => {
       const thinkingDisabled = lastBody.reasoning_effort === 'none';
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -118,6 +129,7 @@ describe('inline-completion-client (#1417)', () => {
           },
           finish_reason: 'stop',
         }],
+        usage: { prompt_tokens: 20, completion_tokens: thinkingDisabled ? 6 : 48 },
       }));
     };
     const result = await requestInlineCompletion(cfg(), 'gemma-4-26b-a4b-it', {
@@ -125,7 +137,53 @@ describe('inline-completion-client (#1417)', () => {
       maxTokens: 48,
     }, new AbortController().signal);
 
-    expect(result.completion).toBe('access the configuration file.');
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).not.toHaveProperty('reasoning_effort');
+    expect(requestBodies[1]).toMatchObject({
+      reasoning_effort: 'none',
+      think: false,
+      chat_template_kwargs: { enable_thinking: false },
+    });
+    expect(result).toEqual({
+      completion: 'access the configuration file.',
+      strategy: 'chat',
+      usage: { promptTokens: 20, completionTokens: 6 },
+    });
+  });
+
+  it('returns the empty first reply when the retry is rejected, without counting a breaker failure', async () => {
+    // Newer vLLM forwards reasoning_effort into the chat template; a template
+    // that lists other values raises, which surfaces as a 500. That must not
+    // become an error for the author, and must not open the provider's
+    // shared breaker for chat.
+    responder = (res) => {
+      if (lastBody.reasoning_effort === 'none') {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unexpected reasoning effort none. Supported types are xhigh, medium, and low.' } }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '' } }] }));
+    };
+    const config = cfg();
+    const result = await requestInlineCompletion(config, 'Qwen3-32B', {
+      prefix: 'Done.',
+      maxTokens: 48,
+    }, new AbortController().signal);
+
+    expect(requestBodies).toHaveLength(2);
+    expect(result.completion).toBe('');
+    expect(getProviderBreaker(config.providerId).getStatus()).toMatchObject({ state: 'CLOSED', failureCount: 0 });
+  });
+
+  it('does not retry on the FIM path', async () => {
+    json({ choices: [{ text: '' }] });
+    const result = await requestInlineCompletion(cfg(), 'starcoder2', {
+      prefix: 'x', maxTokens: 48,
+    }, new AbortController().signal);
+
+    expect(result.completion).toBe('');
+    expect(requestBodies).toHaveLength(1);
   });
 
   it('propagates abort directly to the provider request', async () => {
