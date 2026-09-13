@@ -74,11 +74,15 @@ async function onRequest(msg: WorkerRequest): Promise<void> {
     if (msg.type === 'complete') {
       // Use the installed model's chat template. A bare instruct prompt can
       // produce a leading newline (discarded by the one-line rule), and Qwen3
-      // otherwise spends the short inline budget on reasoning.
-      const prompt = generator.tokenizer.apply_chat_template(
-        [{ role: 'user', content: buildContinuationPrompt(msg.prefix, msg.suffix) }],
-        { tokenize: false, add_generation_prompt: true, enable_thinking: false },
-      );
+      // otherwise spends the short inline budget on reasoning. A model that
+      // ships no template gets the bare prompt rather than a latched load error.
+      const continuation = buildContinuationPrompt(msg.prefix, msg.suffix);
+      const prompt = generator.tokenizer.chat_template
+        ? generator.tokenizer.apply_chat_template(
+          [{ role: 'user', content: continuation }],
+          { tokenize: false, add_generation_prompt: true, enable_thinking: false },
+        )
+        : continuation;
       const output = await generator(prompt, {
         max_new_tokens: Math.min(64, msg.maxTokens),
         return_full_text: false,

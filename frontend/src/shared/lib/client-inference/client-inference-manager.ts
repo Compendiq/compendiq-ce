@@ -98,6 +98,9 @@ export class ClientInferenceManager {
   private loadWaiters: Array<() => void> = [];
   private loadInFlight: Promise<void> | null = null;
   private loadFailed = false;
+  // A pause-driven request must not re-fetch the manifest and re-probe OPFS
+  // when this browser has no model; only a download can change that.
+  private cacheMissing = false;
   private orgPolicy: ClientInferenceOrgPolicy = INACTIVE_ORG_POLICY;
   private orgPolicyFetched = false;
   private orgPolicyInFlight: Promise<void> | null = null;
@@ -270,6 +273,7 @@ export class ClientInferenceManager {
       loaded += file.bytes;
       onProgress?.(loaded, total);
     }
+    this.cacheMissing = false;
     this.loadFailed = false;
     await this.startLoad();
     if (this.loadFailed) {
@@ -308,15 +312,14 @@ export class ClientInferenceManager {
     await this.ensureOrgPolicy();
     if ((this.orgPolicy ?? INACTIVE_ORG_POLICY).mode === 'disabled_server_only'
       && (this.orgPolicy ?? INACTIVE_ORG_POLICY).active) return;
-    if (this.loadFailed) return;
-    if (this.opts.hasCache) {
-      if (await this.opts.hasCache()) await this.startLoad();
-      return;
-    }
-    const modelId = this.opts.fetchManifest
-      ? activeOnnxId(await this.opts.fetchManifest())
-      : CLIENT_INFERENCE_MODEL_ID;
-    if (await hasOpfsModel(modelId)) await this.startLoad();
+    if (this.loadFailed || this.cacheMissing) return;
+    const cached = this.opts.hasCache
+      ? await this.opts.hasCache()
+      : await hasOpfsModel(this.opts.fetchManifest
+        ? activeOnnxId(await this.opts.fetchManifest())
+        : CLIENT_INFERENCE_MODEL_ID);
+    if (cached) await this.startLoad();
+    else this.cacheMissing = true;
   }
 
   private async startLoad(): Promise<void> {

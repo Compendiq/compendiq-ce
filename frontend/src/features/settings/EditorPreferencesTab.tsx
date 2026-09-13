@@ -376,9 +376,9 @@ export function EditorPreferencesTab({
                 ) : modelDownloaded === true ? (
                   <span
                     data-testid="client-inference-status-downloaded"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-success/30 bg-success/10 px-2.5 py-1 text-xs font-medium text-success"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/60 px-2.5 py-1 text-xs font-medium text-foreground"
                   >
-                    <Check size={13} className="text-success" aria-hidden="true" />
+                    <Check size={13} aria-hidden="true" />
                     Downloaded
                   </span>
                 ) : modelDownloaded === false ? (

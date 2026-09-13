@@ -15,6 +15,7 @@ declare module '@huggingface/transformers' {
     (input: unknown, gen?: Record<string, unknown>): Promise<unknown>;
     dispose(): Promise<void>;
     tokenizer: {
+      chat_template?: string | null;
       apply_chat_template(
         messages: Array<{ role: string; content: string }>,
         options: Record<string, unknown>,

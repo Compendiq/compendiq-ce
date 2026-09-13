@@ -335,6 +335,53 @@ describe('ClientInferenceManager (#1418)', () => {
     }
   });
 
+  it('probes for a missing browser model once, not on every typing pause', async () => {
+    const worker = new FakeWorker();
+    const fetchManifest = vi.fn(async () => ({
+      enabled: true,
+      models: [{
+        id: 'qwen2.5-0.5b-instruct-q4',
+        kind: 'onnx' as const,
+        bytes: 1,
+        installed: true,
+        available: true,
+        files: [{ name: 'config.json', bytes: 1 }],
+      }],
+    }));
+    // No hasCache seam: jsdom has no OPFS, so the real probe reports no model.
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      fetchManifest,
+      downloadFile: async () => new Blob(['x']),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    const args = {
+      input: { prefix: 'The capital of France is ', maxTokens: 8 },
+      signal: new AbortController().signal,
+      assigned: false,
+      withoutServer: true,
+      wordMode: true,
+    };
+    try {
+      for (let i = 0; i < 5; i++) {
+        expect(await mgr.decideComplete(args)).toEqual({ kind: 'off' });
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+      expect(fetchManifest).toHaveBeenCalledTimes(1);
+      expect(worker.messages.some((m) => m.type === 'load')).toBe(false);
+
+      // A download in this browser is the one event that changes the verdict.
+      await mgr.predownload();
+      await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+      expect((await mgr.decideComplete(args)).kind).toBe('local');
+    } finally {
+      mgr.dispose();
+    }
+  });
+
   it('coalesces concurrent load posts', async () => {
     const worker = new FakeWorker({ autoReady: false });
     const mgr = compactManager(worker, true);
