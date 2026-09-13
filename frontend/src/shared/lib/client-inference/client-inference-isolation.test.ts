@@ -11,11 +11,13 @@ function read(rel: string): string {
 }
 
 describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
-  it('does not mention huggingface or onnxruntime from the editor graph', () => {
+  it('does not mention huggingface or onnxruntime from the editor graph or settings UI', () => {
     const editor = read('../../../shared/components/article/Editor.tsx');
     const extension = read('../../../shared/components/article/InlineCompletionExtension.ts');
+    const settingsTab = read('../../../features/settings/EditorPreferencesTab.tsx');
     expect(editor).not.toMatch(/huggingface|onnxruntime/i);
     expect(extension).not.toMatch(/huggingface|onnxruntime/i);
+    expect(settingsTab).not.toMatch(/huggingface/i);
   });
 
   it('does not set COEP', () => {
@@ -62,19 +64,20 @@ describe('client inference isolation (#1418 SPEC-039/011/016)', () => {
     expect(`${worker}\n${env}\n${urls}`).not.toMatch(/jsdelivr|huggingface\.co/i);
   });
 
-  it('imports ORT jsep wasm through the package exports map, not a deep /dist/ path', () => {
+  it('imports the asyncify ORT runtime through the package exports map, not a deep /dist/ path', () => {
     // Vite 8 / Rolldown honours exports. `onnxruntime-web/dist/...` is
     // `./dist/...` in the map, which is not exported, so `vite build`
     // (frontend Docker image) fails with "is not exported under the
-    // conditions [module, browser, production, import]".
+    // conditions [module, browser, production, import]". The asyncify pair is
+    // what Transformers v4's webgpu backend expects (JSEP lacks webgpuInit).
     const urls = read('./ort-wasm-urls.ts');
     expect(urls).not.toMatch(/onnxruntime-web\/dist\//);
     const specifiers = [...urls.matchAll(/from 'onnxruntime-web\/([^']+)\?url'/g)].map(
       (match) => match[1],
     );
     expect(specifiers).toEqual([
-      'ort-wasm-simd-threaded.jsep.mjs',
-      'ort-wasm-simd-threaded.jsep.wasm',
+      'ort-wasm-simd-threaded.asyncify.mjs',
+      'ort-wasm-simd-threaded.asyncify.wasm',
     ]);
     const pkg = JSON.parse(
       readFileSync(resolve(here, '../../../../../node_modules/onnxruntime-web/package.json'), 'utf8'),

@@ -240,7 +240,12 @@ one undoable transaction; dismissing or receiving stale text changes nothing.
 When admin and user on-device flags are on, a dedicated WebGPU worker
 (`frontend/src/shared/lib/client-inference/`) may answer a warm ghost-text
 request without hitting Fastify. The plugin seam is still
-`requestCompletion`. Cold cache, no GPU, or flags off equals #1417.
+`requestCompletion`. Its eligibility gate must allow a cached, unloaded model
+to reach that seam; requiring readiness there deadlocks local-only startup.
+Cold requests warm the worker and use the assigned server, if any, meanwhile.
+Hidden-tab and idle unload await pipeline disposal so GPU/WASM sessions do not
+accumulate across reloads. Inline prompts use the installed tokenizer's chat
+template with thinking disabled and the existing bounded output budget.
 Hunspell EN/DE lint is a second worker (`shared/lib/spellcheck/`), not GPU.
 
 The extension sends roughly 800 tokens before and 200 after the cursor after a
@@ -257,11 +262,23 @@ pointers, and outside code blocks when **Code blocks only** is enabled.
 sequenceDiagram
     participant U as User
     participant T as TipTap plugin
+    participant M as ClientInferenceManager
+    participant W as WebGPU worker
     participant API as /api/llm/inline-completion
     U->>T: pause or manual shortcut
     T->>T: clear ghost + abort stale request
-    T->>API: bounded editor context
-    API-->>T: 204 or short completion
+    T->>M: bounded editor context
+    alt local model ready
+        M->>W: templated continuation
+        W-->>M: visible one-line text
+    else cached but not loaded
+        M->>W: warm model from OPFS
+    end
+    alt no local result and server assigned
+        M->>API: bounded editor context
+        API-->>M: 204 or short completion
+    end
+    M-->>T: completion or no suggestion
     T-->>U: widget ghost text + shortcut hint
     alt accept
         U->>T: Tab / word shortcut
@@ -273,8 +290,9 @@ sequenceDiagram
 ```
 
 Personal controls live at **Settings → Personal → Editor**. The frontend also
-checks the authenticated use-case-default endpoint; an unassigned admin model
-therefore disables requests even when the user's preference remains enabled.
+checks the authenticated use-case-default endpoint. An unassigned model
+disables server requests, but still permits opted-in local-only suggestions.
+The settings cache badge reports downloaded bytes, never GPU readiness.
 
 ## Composer attachments (#1131 documents, #1154 images)
 

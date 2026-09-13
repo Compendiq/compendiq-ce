@@ -49,12 +49,40 @@ under `ATTACHMENTS_DIR`.
 
 ## Behaviour
 
-- Warm ghost text reads OPFS in the worker (same-origin ORT WASM, no jsDelivr).
-- Cold cache, missing GPU, or flags off equals #1417 (`POST /llm/inline-completion`).
+- Warm ghost text reads OPFS in the worker; runtime files also stay same-origin.
+- The editor checks local eligibility, not readiness, so a cached model can
+  start after a reload, hidden tab, or idle unload. The first request warms it;
+  the next pause or manual shortcut can use it once ready.
+- Cold cache, missing GPU, or flags off falls back to the assigned server
+  model. With no assignment, there is no server fallback.
 - ImprovePanel uses the worker when ready, otherwise `POST /llm/improve`.
 - Unassigned `inline_completion` plus “Use on-device suggestions when no
-  server model is assigned” (default on) allows local ghost text only when
-  the worker is ready.
+  server model is assigned” (default on) allows local ghost text. A server
+  provider being offline does not prevent ready local inference.
+- “Downloaded” reports browser storage, not GPU readiness. A worker load
+  failure during pre-download is reported as an error, not “ready”.
+
+## Local suggestions return no text
+
+Check the worker error, not only whether the model is downloaded:
+
+- **Blocked `blob:` module import:** Transformers v4's `useWasmCache` rewrites
+  the runtime factory into a blob. Keep this cache disabled; fingerprinted
+  runtime files use the normal HTTP cache. Do not relax CSP.
+- **Failed `.mjs` import:** nginx must serve it as `application/javascript`,
+  not `application/octet-stream`. Keep `nosniff`.
+- **`webgpuInit is not a function`:** the runtime pair is wrong. Transformers
+  v4's WebGPU backend needs `ort-wasm-simd-threaded.asyncify.mjs` and its
+  matching `.wasm`, not the older JSEP pair.
+- **`std::bad_alloc` after returning to a tab:** unload must dispose the
+  pipeline before another load; dropping the JS reference retains its session.
+- **Empty/whitespace generation despite a ready worker:** use the installed
+  tokenizer's chat template with `enable_thinking: false`. A bare instruct
+  prompt on Qwen3 can start with a newline, so the one-line filter discards
+  its continuation. Keep the existing 8-token word / 48-token full budget.
+
+Deploy both the frontend bundle and nginx MIME configuration, then reload the
+page. Existing OPFS model weights do not need to be downloaded again.
 
 ## Server suggestions return no text
 
@@ -151,6 +179,6 @@ frontend Docker builder for both `linux/amd64` and `linux/arm64`:
 3. Build `frontend/Dockerfile` separately for both target architectures and
    serve the resulting image. In a WebGPU-capable browser, follow **Enable**,
    load the worker, request a completion and a rewrite, and repeat from warm
-   OPFS. Confirm worker and `.jsep.mjs`/`.jsep.wasm` requests return 200 from
+   OPFS. Confirm worker and `.asyncify.mjs`/`.asyncify.wasm` requests return 200 from
    this origin, with no Hugging Face/CDN traffic or native-module requests.
    With WebGPU unavailable, confirm the documented server fallback.

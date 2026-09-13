@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On-device inline suggestions now start without a server-model assignment and
+  recover after tab/idle unload. Fixed Transformers v4 runtime selection,
+  CSP-safe module loading, nginx `.mjs` MIME handling, and chat-template use
+  for Qwen3's short non-thinking completions. GPU sessions are disposed before
+  reload; downloaded model files no longer appear as proof of GPU readiness.
 - Server-backed inline suggestions retry once with `reasoning_effort: "none"`
   when a tolerant provider (LM Studio) ignores the non-thinking template hints
   and returns no visible text. The hint is retry-only: vLLM 0.10–0.12 reject

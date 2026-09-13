@@ -432,7 +432,9 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.click(screen.getByTestId('search-mode-semantic'));
-    const row = await screen.findByRole('button', { name: new RegExp(localTitle) });
+    // Same budget as `renderSearchRow`: the 300ms debounce plus two fetches
+    // overran findByRole's 1s default on a loaded CI runner.
+    const row = await screen.findByRole('button', { name: new RegExp(localTitle) }, { timeout: 2000 });
     expect(row).toHaveTextContent('Local');
     expect(row).not.toHaveTextContent('Confluence');
   });

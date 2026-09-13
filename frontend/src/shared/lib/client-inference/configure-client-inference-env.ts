@@ -6,6 +6,7 @@ export type TransformersEnvLike = {
   remoteHost: string;
   remotePathTemplate: string;
   useBrowserCache: boolean;
+  useWasmCache: boolean;
   useCustomCache: boolean;
   customCache: unknown;
   fetch: typeof fetch;
@@ -58,6 +59,10 @@ export function configureClientInferenceEnv(
   env.remoteHost = `${opts.origin.replace(/\/$/, '')}/api/models/client-assets/`;
   env.remotePathTemplate = '{model}/';
   env.useBrowserCache = false;
+  // Transformers v4's WASM cache imports its factory from a blob URL.
+  // Keep executable code on our origin under script-src 'self'; nginx's
+  // immutable HTTP cache already caches these fingerprinted runtime assets.
+  env.useWasmCache = false;
   env.useCustomCache = true;
   env.customCache = opts.customCache;
   env.fetch = opts.fetch;
