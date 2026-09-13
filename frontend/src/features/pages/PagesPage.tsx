@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, memo, type RefObject } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -118,7 +118,7 @@ function SourceVisibilityBadges({
   showVisibility,
   className,
 }: {
-  pageItem: { id: string; source: 'confluence' | 'standalone'; visibility?: string };
+  pageItem: { id: string | number; source: PageSource; visibility?: string };
   showSource: boolean;
   showVisibility: boolean;
   className?: string;
@@ -590,7 +590,7 @@ export function PagesPage() {
     ? sort
     : (sort === 'relevance' ? 'modified' : sort);
 
-  const { data: pagesData, isLoading, isFetching: isFetchingPages, error: pagesError, refetch: refetchPages } = usePages({
+  const { data: pagesData, isLoading, isFetching: isFetchingPages, isPlaceholderData: isPreviousPages, error: pagesError, refetch: refetchPages } = usePages({
     spaceKey: spaceKey || undefined,
     search: debouncedSearch || undefined,
     author: author || undefined,
@@ -622,6 +622,9 @@ export function PagesPage() {
         ? 'Improving'
         : (searchResults.isLoadingImmediate && hasActiveQuery ? 'Searching' : ''));
   const searchResultsBusy = searchProgressLabel.length > 0;
+  const canFocusResults = useSemanticSearch
+    ? searchResults.hasCurrentResults
+    : searchInput === debouncedSearch && !!pagesData && !isPreviousPages;
 
   const { data: syncStatus } = useSyncStatus();
   const { data: embeddingStatusData } = useEmbeddingStatus();
@@ -866,7 +869,7 @@ export function PagesPage() {
       return displaySearchItems.map((p) => ({
         id: String(p.id),
         confluenceId: p.confluenceId,
-        source: p.spaceKey === '__local__' ? 'standalone' : 'confluence',
+        source: p.source,
       }));
     }
     return pageItems.map((p) => ({
@@ -880,6 +883,27 @@ export function PagesPage() {
     () => (useSemanticSearch ? displaySearchItems.map((p) => String(p.id)) : pageItems.map((p) => p.id)),
     [useSemanticSearch, displaySearchItems, pageItems],
   );
+
+  const committedResultIds = useRef(currentIds);
+  useLayoutEffect(() => {
+    committedResultIds.current = currentIds;
+  }, [currentIds]);
+
+  const restoreSearchFocusOnRemoval = useCallback((element: HTMLDivElement | null) => {
+    if (!element) return;
+    return () => {
+      if (!element.contains(document.activeElement)) return;
+      // Read the committed result set after removal: virtualization can evict
+      // a focused DOM row without removing its page from the results.
+      queueMicrotask(() => {
+        if (!element.isConnected
+          && !committedResultIds.current.includes(element.dataset.resultId!)
+          && document.activeElement === document.body) {
+          searchInputRef.current?.focus();
+        }
+      });
+    };
+  }, []);
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
     setSelectedIds((prev) => {
@@ -1172,15 +1196,15 @@ export function PagesPage() {
           supporting scope and mode controls. */}
       <section
         aria-labelledby="kb-filters-heading"
-        className="space-y-3"
+        className="@container space-y-3"
         data-testid="library-filter-panel"
       >
         <h2 id="kb-filters-heading" className="sr-only">Filter pages</h2>
         {/* Query, retrieval mode and scope are one command surface. The query
             leads; the supporting controls stay inside the same surface and
-            wrap beneath it on narrow screens without changing DOM order. */}
+            use the available pane width without changing DOM order. */}
         <div
-          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:flex-row sm:items-center sm:gap-1 sm:p-2"
+          className="library-search-surface flex w-full flex-col gap-2 rounded-xl p-2.5 sm:p-2 @[44rem]:flex-row @[44rem]:items-center @[44rem]:gap-1"
           data-testid="page-search-field"
           role="search"
           aria-label="Library pages"
@@ -1214,11 +1238,12 @@ export function PagesPage() {
                   setSearchInput('');
                   setFilters({ search: '', page: 1, mode: FILTER_DEFAULTS.mode, ...(sort === 'relevance' ? { sort: 'modified' } : {}) });
                 } else if (e.key === 'Enter' || e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  if (!canFocusResults) return;
                   const firstRow = document.querySelector<HTMLButtonElement>(
                     '[data-search-row-index="0"] button[type="button"], [data-row-index="0"] button[type="button"]',
                   );
                   if (firstRow) {
-                    e.preventDefault();
                     firstRow.focus();
                   }
                 }
@@ -1261,12 +1286,12 @@ export function PagesPage() {
             )}
           </div>
 
-          <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden="true" />
+          <span className="hidden h-5 w-px shrink-0 bg-border @[44rem]:block" aria-hidden="true" />
 
-          <div className="flex w-full items-center gap-1.5 sm:w-auto sm:shrink-0">
+          <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5 @[44rem]:flex @[44rem]:w-auto @[44rem]:shrink-0">
             {/* Inline search strategy switcher */}
             <div
-              className="library-search-modes inline-flex items-center gap-0.5 rounded-md p-0.5 shrink-0"
+              className="library-search-modes col-span-2 inline-flex w-full shrink-0 items-center gap-0.5 rounded-md p-0.5 @[44rem]:w-auto"
               data-testid="search-mode-toggle"
               role="group"
               aria-label="Search strategy"
@@ -1289,7 +1314,7 @@ export function PagesPage() {
                   aria-pressed={searchMode === m}
                   title={SEARCH_MODE_DESCRIPTIONS[m]}
                   className={cn(
-                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:flex-none sm:px-2.5 sm:py-1 sm:text-xs',
+                    'nm-focus-ring min-h-11 flex-1 whitespace-nowrap rounded-sm border border-transparent px-2.5 py-1 text-sm font-medium transition-colors sm:min-h-0 sm:text-xs @[44rem]:flex-none',
                     searchMode === m
                       ? 'library-search-mode-active font-semibold shadow-xs'
                       : 'text-muted-foreground hover:bg-accent hover:text-foreground',
@@ -1806,6 +1831,8 @@ export function PagesPage() {
                           data-search-row-index={i}
                         >
                             <div
+                              ref={restoreSearchFocusOnRemoval}
+                              data-result-id={itemId}
                               className={cn(
                                 'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
                                 isSelected
@@ -1855,47 +1882,11 @@ export function PagesPage() {
                                       <span title={item.spaceKey}>{spaceNameByKey.get(item.spaceKey) ?? item.spaceKey}</span>
                                     </div>
                                   )}
-                                  {item.spaceKey && (
-                                    item.spaceKey !== '__local__' ? (
-                                      <span
-                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
-                                        data-testid="badge-confluence"
-                                        data-source-badge={item.id}
-                                      >
-                                        Confluence
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className={cn('mt-1 sm:hidden shrink-0', neutralChipClass)}
-                                        data-testid="badge-local"
-                                        data-source-badge={item.id}
-                                      >
-                                        Local
-                                      </span>
-                                    )
-                                  )}
+                                  <SourceVisibilityBadges pageItem={item} showSource showVisibility={false} className="mt-1 sm:hidden" />
                                 </div>
 
                                 <div className="hidden shrink-0 items-center gap-2 sm:flex">
-                                  {item.spaceKey && (
-                                    item.spaceKey !== '__local__' ? (
-                                      <span
-                                        className={cn('shrink-0', neutralChipClass)}
-                                        data-testid="badge-confluence"
-                                        data-source-badge={item.id}
-                                      >
-                                        Confluence
-                                      </span>
-                                    ) : (
-                                      <span
-                                        className={cn('shrink-0', neutralChipClass)}
-                                        data-testid="badge-local"
-                                        data-source-badge={item.id}
-                                      >
-                                        Local
-                                      </span>
-                                    )
-                                  )}
+                                  <SourceVisibilityBadges pageItem={item} showSource showVisibility={false} />
                                 </div>
 
                                 {/* Similarity only — renderable cosine distance percentage */}
@@ -2094,7 +2085,7 @@ export function PagesPage() {
                           transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                         }}
                       >
-                        <div>
+                        <div ref={restoreSearchFocusOnRemoval} data-result-id={pageItem.id}>
                           <PageListItem
                             pageItem={pageItem}
                             index={virtualRow.index}

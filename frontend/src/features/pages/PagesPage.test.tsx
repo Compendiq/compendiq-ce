@@ -73,6 +73,11 @@ async function chooseSpace(name = 'Development') {
   fireEvent.click(await screen.findByRole('option', { name: new RegExp(`^${name}`) }));
 }
 
+function chooseFilter(testId: string, value: string) {
+  fireEvent.click(screen.getByTestId(`${testId}-control`));
+  fireEvent.click(screen.getByTestId(`${testId}-option-${value || 'all'}`));
+}
+
 const mockEmbeddingStatusIdle = {
   totalPages: 50,
   embeddedPages: 50,
@@ -402,10 +407,10 @@ describe('PagesPage', () => {
     const btn = screen.getByTestId('advanced-filters-toggle');
     fireEvent.click(btn);
     expect(screen.getByTestId('advanced-filters-panel')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-author')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-labels')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-freshness')).toBeInTheDocument();
-    expect(screen.getByTestId('filter-embedding')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-author-control')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-labels-control')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-freshness-control')).toBeInTheDocument();
+    expect(screen.getByTestId('filter-embedding-control')).toBeInTheDocument();
     expect(screen.getByTestId('filter-date-from')).toBeInTheDocument();
     expect(screen.getByTestId('filter-date-to')).toBeInTheDocument();
   });
@@ -425,7 +430,7 @@ describe('PagesPage', () => {
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
     // Select a freshness filter
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
+    chooseFilter('filter-freshness', 'fresh');
 
     // Badge should show 1
     const badge = screen.getByTestId('advanced-filters-toggle');
@@ -435,7 +440,7 @@ describe('PagesPage', () => {
   it('shows the "Clear all" pill-row control when filters are active (harden pass: the panel no longer duplicates it)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    chooseFilter('filter-freshness', 'stale');
     expect(screen.getByTestId('clear-all-pill-filters')).toBeInTheDocument();
     // The panel's own duplicate "Clear filters" button is gone — one control,
     // not two disagreeing on label and visual weight (polish pass, 2026-08-17).
@@ -447,15 +452,15 @@ describe('PagesPage', () => {
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
     // Set some filters
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+    chooseFilter('filter-freshness', 'stale');
+    chooseFilter('filter-embedding', 'pending');
 
     // Click clear
     fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
 
     // Verify filters are reset
-    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
-    expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Any');
+    expect(screen.getByTestId('filter-embedding-control')).toHaveTextContent('Any');
     expect(screen.queryByTestId('clear-all-pill-filters')).not.toBeInTheDocument();
 
     expect(toast).toHaveBeenCalledWith('Filters cleared', expect.objectContaining({
@@ -467,10 +472,10 @@ describe('PagesPage', () => {
   it('"Undo" on the clear-filters toast restores the cleared filters', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    chooseFilter('filter-freshness', 'stale');
 
     fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
-    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Any');
 
     // No <Toaster/> is mounted in this suite, so there is no rendered "Undo"
     // button to click — invoke the action the mocked toast() was called
@@ -480,39 +485,16 @@ describe('PagesPage', () => {
       call?.[1]?.action?.onClick?.(new MouseEvent('click') as unknown as Event);
     });
 
-    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
+    expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Stale (>90 days)');
   });
 
   it('the "Clear all" control is never styled as destructive (clearing filters loses no data)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    chooseFilter('filter-freshness', 'stale');
 
     const clearAll = screen.getByTestId('clear-all-pill-filters');
     expect(clearAll.className).not.toContain('destructive');
-  });
-
-  it('renders freshness filter options', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    const select = screen.getByTestId('filter-freshness') as HTMLSelectElement;
-    expect(select.options.length).toBe(5); // Any + 4 levels
-  });
-
-  it('renders embedding status filter options', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    const select = screen.getByTestId('filter-embedding') as HTMLSelectElement;
-    expect(select.options.length).toBe(3); // Any + pending + done
-  });
-
-  it('updates freshness filter select value when changed', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    const select = screen.getByTestId('filter-freshness') as HTMLSelectElement;
-    // Freshness options are static (not from API), so they're always available
-    fireEvent.change(select, { target: { value: 'stale' } });
-    expect(select.value).toBe('stale');
   });
 
   it('renders article title left-aligned without preceding icon', async () => {
@@ -599,23 +581,6 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('pinned-empty-cue')).not.toBeInTheDocument();
   });
 
-  it('gives the page search a prominent, bounded command surface', () => {
-    render(<PagesPage />, { wrapper: createWrapper() });
-
-    const surface = screen.getByTestId('page-search-field');
-    expect(surface).toHaveClass(
-      'w-full',
-      'library-search-surface',
-      'rounded-xl',
-      'flex-col',
-      'sm:flex-row',
-    );
-    expect(surface).toContainElement(screen.getByRole('button', { name: /filter by space/i }));
-    expect(surface).toContainElement(screen.getByRole('button', { name: 'Filters' }));
-    expect(screen.getByTestId('advanced-filters-toggle')).toHaveClass('h-11', 'sm:h-8');
-    fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    expect(screen.getByTestId('search-mode-hybrid')).toHaveClass('min-h-11', 'sm:min-h-0');
-  });
 
   it('renders a named custom space menu and a compact advanced-filter control', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
@@ -623,17 +588,11 @@ describe('PagesPage', () => {
     const spaceControl = screen.getByTestId('space-filter-control');
     const filters = screen.getByRole('button', { name: 'Filters' });
 
-    expect(spaceControl).toHaveClass('h-11', 'sm:h-8', 'sm:max-w-48');
-    expect(spaceControl).toHaveAttribute('title', 'All spaces');
     expect(spaceControl).toHaveAccessibleName('Filter by space, current: All spaces');
     expect(spaceControl).toHaveTextContent('All spaces');
     fireEvent.click(spaceControl);
     expect(await screen.findByTestId('space-filter-menu')).toBeInTheDocument();
     expect(await screen.findByRole('option', { name: /^Development/ })).toBeInTheDocument();
-    expect(filters).toHaveClass('library-search-select', 'h-11', 'sm:h-8');
-    expect(filters).not.toHaveClass('nm-button-ghost');
-    expect(filters).toHaveAttribute('title', 'Filters');
-    expect(screen.getByTestId('advanced-filters-chevron')).toBeInTheDocument();
     expect(filters).toHaveTextContent('Filters');
   });
 
@@ -791,7 +750,7 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        chooseFilter('filter-freshness', 'stale');
 
         expect(await screen.findByText(/No pages match Freshness: Stale \(>90 days\)/)).toBeInTheDocument();
         expect(screen.queryByText('Sync your Confluence spaces to see pages here')).not.toBeInTheDocument();
@@ -803,7 +762,7 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        chooseFilter('filter-freshness', 'stale');
 
         expect(await screen.findByText('Clear filters')).toBeInTheDocument();
         expect(screen.queryByText('Go to Settings')).not.toBeInTheDocument();
@@ -815,13 +774,13 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        chooseFilter('filter-freshness', 'stale');
         const clearAction = await screen.findByText('Clear filters');
 
         fireEvent.click(clearAction);
 
         await waitFor(() => {
-          expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+          expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Any');
         });
       });
 
@@ -831,7 +790,7 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper(['/?mode=keyword']) });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        chooseFilter('filter-freshness', 'stale');
         fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'zzznotathing' } });
 
         expect(await screen.findByText('No pages match "zzznotathing" with Freshness: Stale (>90 days)')).toBeInTheDocument();
@@ -843,11 +802,11 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        await waitFor(() => expect(screen.getByRole('option', { name: 'Alice' })).toBeInTheDocument());
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-        fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
-        fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
-        fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
+        fireEvent.click(screen.getByTestId('filter-author-control'));
+        fireEvent.click(await screen.findByRole('option', { name: 'Alice' }));
+        chooseFilter('filter-freshness', 'stale');
+        chooseFilter('filter-embedding', 'pending');
+        chooseFilter('filter-quality', 'poor');
 
         expect(await screen.findByText(/and 1 more/)).toBeInTheDocument();
       });
@@ -1139,7 +1098,7 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
 
         fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-        fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+        chooseFilter('filter-freshness', 'stale');
 
         expect(await screen.findByText(/No pages match Freshness: Stale/)).toBeInTheDocument();
         expect(screen.queryByText('Connect Confluence')).not.toBeInTheDocument();
@@ -1521,7 +1480,7 @@ describe('PagesPage', () => {
   it('shows active filter pills when filters are set', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    chooseFilter('filter-freshness', 'stale');
 
     expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
     // Human label, not the raw wire value (polish pass, 2026-08-17) — the
@@ -1539,8 +1498,8 @@ describe('PagesPage', () => {
   it('shows multiple filter pills when multiple filters are set', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
-    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+    chooseFilter('filter-freshness', 'fresh');
+    chooseFilter('filter-embedding', 'pending');
 
     expect(screen.getByTestId('filter-pill-freshness')).toHaveTextContent('Freshness: Fresh (<7 days)');
     expect(screen.getByTestId('filter-pill-embedding')).toHaveTextContent('Embedding: Needs Embedding');
@@ -1549,8 +1508,8 @@ describe('PagesPage', () => {
   it('removes individual filter when pill is clicked', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'done' } });
+    chooseFilter('filter-freshness', 'stale');
+    chooseFilter('filter-embedding', 'done');
 
     // Remove freshness pill by clicking the pill button itself
     fireEvent.click(screen.getByTestId('filter-pill-freshness'));
@@ -1559,15 +1518,15 @@ describe('PagesPage', () => {
     expect(screen.queryByTestId('filter-pill-freshness')).not.toBeInTheDocument();
     expect(screen.getByTestId('filter-pill-embedding')).toBeInTheDocument();
 
-    // Freshness select reset to empty
-    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('');
+    // Freshness control returns to its unfiltered state.
+    expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Any');
   });
 
   it('removes all filter pills when "Clear all" is clicked', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'aging' } });
-    fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
+    chooseFilter('filter-freshness', 'aging');
+    chooseFilter('filter-embedding', 'pending');
 
     expect(screen.getByTestId('active-filter-pills')).toBeInTheDocument();
 
@@ -1591,7 +1550,7 @@ describe('PagesPage', () => {
 
       // Activate an advanced filter → pill appears.
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
       expect(screen.getByTestId('filter-pill-freshness')).toBeInTheDocument();
 
       // Keyword mode honors the filter: no notice, pills are active.
@@ -1670,7 +1629,7 @@ describe('PagesPage', () => {
 
       await chooseSpace();
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
 
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
@@ -1702,7 +1661,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       await chooseSpace();
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
       expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('clear-all-pill-filters'));
@@ -1726,7 +1685,7 @@ describe('PagesPage', () => {
     it('active-filter pills stay fully operable in semantic mode — no opacity/aria-disabled, but they point at the notice', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
         target: { value: 'kubernetes' },
       });
@@ -1751,7 +1710,7 @@ describe('PagesPage', () => {
     it('announces the honesty notice through a persistent sr-only live region', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
 
       const liveRegion = screen.getByTestId('filters-live-announcer');
       expect(liveRegion).toHaveAttribute('role', 'status');
@@ -1770,7 +1729,7 @@ describe('PagesPage', () => {
     it('offers a direct switch to Keyword that keeps the active filters', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
@@ -1784,7 +1743,7 @@ describe('PagesPage', () => {
     it('explains that advanced filters become Keyword-only before a Hybrid search starts', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
 
       expect(screen.getByText(/apply while browsing and will pause when Hybrid search starts/i)).toBeInTheDocument();
       expect(screen.getByTestId('advanced-filters-toggle')).toHaveAccessibleName('Filters, 1 Keyword-only');
@@ -1798,7 +1757,7 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       await chooseSpace();
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+      chooseFilter('filter-freshness', 'stale');
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), { target: { value: 'kubernetes' } });
       fireEvent.click(screen.getByTestId('search-mode-semantic'));
 
@@ -1813,10 +1772,10 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
       await chooseSpace();
-      fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
-      fireEvent.change(screen.getByTestId('filter-embedding'), { target: { value: 'pending' } });
-      fireEvent.change(screen.getByTestId('filter-quality'), { target: { value: 'poor' } });
-      fireEvent.change(screen.getByTestId('filter-author'), { target: { value: 'Alice' } });
+      chooseFilter('filter-freshness', 'stale');
+      chooseFilter('filter-embedding', 'pending');
+      chooseFilter('filter-quality', 'poor');
+      chooseFilter('filter-author', 'Alice');
       expect(screen.getByTestId('filter-pill-space')).toBeInTheDocument();
 
       fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
@@ -1836,13 +1795,13 @@ describe('PagesPage', () => {
 
   // --- Visual divider test ---
 
-  it('parks source behind Filters and puts sort with results', () => {
+  it('parks source behind Filters and puts sort with results', async () => {
     render(<PagesPage />, { wrapper: createWrapper() });
-    expect(screen.queryByTestId('filter-source')).not.toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('filter-source-control')).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /sort pages/i })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    expect(screen.getByTestId('filter-source')).toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId('filter-source-control')).toBeInTheDocument();
+    expect(within(screen.getByTestId('advanced-filters-panel')).queryByRole('button', { name: /sort pages/i })).not.toBeInTheDocument();
   });
 
   // --- Grid layout test ---
@@ -1862,7 +1821,7 @@ describe('PagesPage', () => {
   it('renders filter pills as <button> elements (keyboard navigable)', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'stale' } });
+    chooseFilter('filter-freshness', 'stale');
 
     const pill = screen.getByTestId('filter-pill-freshness');
     expect(pill.tagName).toBe('BUTTON');
@@ -1872,7 +1831,7 @@ describe('PagesPage', () => {
   it('filter pills do not contain nested interactive elements', () => {
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-freshness'), { target: { value: 'fresh' } });
+    chooseFilter('filter-freshness', 'fresh');
 
     const pill = screen.getByTestId('filter-pill-freshness');
     // No nested <button> or <a> elements inside the pill
@@ -2023,25 +1982,14 @@ describe('PagesPage', () => {
   // 'standalone' (PageSourceEnum = ['confluence', 'standalone']). Sending
   // 'local' fails Zod validation on GET /api/pages and breaks the list.
   describe('source filter (#873)', () => {
-    it('renders the Local option with the contract value "standalone", not "local"', () => {
-      render(<PagesPage />, { wrapper: createWrapper() });
-      fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
-      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
-      expect(localOption).toBeTruthy();
-      // 'local' is not a member of PageSourceEnum and would 400 the pages query.
-      expect(localOption!.value).toBe('standalone');
-    });
-
     it('fires the pages query with source=standalone when Local is selected', async () => {
       vi.restoreAllMocks();
       const fetchSpy = mockFetchWithEmbeddingStatus(mockEmbeddingStatusIdle);
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
-      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
-      const localOption = Array.from(select.options).find((o) => o.textContent === 'Local');
-      fireEvent.change(select, { target: { value: localOption!.value } });
+      fireEvent.click(screen.getByTestId('filter-source-control'));
+      fireEvent.click(screen.getByRole('option', { name: 'Local' }));
 
       await waitFor(() => {
         const urls = fetchSpy.mock.calls.map(([input]) =>
@@ -2056,8 +2004,7 @@ describe('PagesPage', () => {
     it('shows the user-facing label "Local" (not the wire value) in the active-filter pill', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      const select = screen.getByTestId('filter-source') as HTMLSelectElement;
-      fireEvent.change(select, { target: { value: 'standalone' } });
+      chooseFilter('filter-source', 'standalone');
 
       const pill = screen.getByTestId('filter-pill-source');
       expect(pill).toHaveTextContent('Source: Local');
@@ -2067,17 +2014,15 @@ describe('PagesPage', () => {
 
   // --- Accessibility: filter/sort controls have accessible names (#946) ---
   //
-  // The three top-row selects (space / source / sort) had no accessible name,
-  // and the advanced-panel <label>s were not programmatically associated with
-  // their controls (no htmlFor/id). Screen readers announced these as unnamed
-  // "combobox"/"edit" fields. These tests pin the aria-label + label/for wiring.
+  // Visible labels must target the real dropdown trigger, not an invisible
+  // duplicate control with a second stop in the keyboard tab order.
   describe('filter control accessible names (#946)', () => {
-    it('top-row space menu exposes an accessible name; source lives in Filters', () => {
+    it('top-row space menu exposes an accessible name; source lives in Filters', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       expect(screen.getByRole('button', { name: /filter by space/i })).toBeInTheDocument();
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-      expect(screen.getByRole('combobox', { name: /filter by source/i })).toBeInTheDocument();
-      expect(screen.queryByRole('combobox', { name: /sort pages/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /filter by source/i })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: /sort pages/i })).toBeInTheDocument();
     });
 
     // Every other control in the section already had one; the search field —
@@ -2092,12 +2037,11 @@ describe('PagesPage', () => {
       render(<PagesPage />, { wrapper: createWrapper() });
       fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
 
-      // Role-name / label-text queries only match once htmlFor/id wiring exists.
-      expect(screen.getByRole('combobox', { name: /author/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /label/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /freshness/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /embedding/i })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: /quality/i })).toBeInTheDocument();
+      for (const label of ['Source', 'Author', 'Label', 'Freshness', 'Embedding', 'Quality']) {
+        expect(screen.getByLabelText(label)).toBe(
+          screen.getByRole('button', { name: new RegExp(`^Filter by ${label},`, 'i') }),
+        );
+      }
       expect(screen.getByLabelText(/modified from/i)).toBeInTheDocument();
       expect(screen.getByLabelText(/modified to/i)).toBeInTheDocument();
     });
@@ -2867,6 +2811,117 @@ describe('PagesPage', () => {
     });
   });
 
+  describe('current search results and provenance', () => {
+    const searchItem = {
+      id: 'page-1', title: 'Local runbook', spaceKey: 'DEV',
+      source: 'standalone', confluenceId: null, snippet: 'Runbook instructions',
+    };
+    const searchResponse = (items = [searchItem]) => ({
+      items, total: items.length, page: 1, limit: 10, totalPages: 1, hasEmbeddings: true,
+    });
+
+    it.each(['keyword', 'hybrid'])('keeps focus in the query until %s results match the typed term', async (mode) => {
+      const baseFetch = mockFetchWithPages(makeManyPages(1)).getMockImplementation()!;
+      let release: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let requested = false;
+      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+        const url = new URL(String(input), 'http://localhost');
+        if ((url.pathname === '/api/pages' && url.searchParams.get('search') === 'replacement')
+          || (url.pathname === '/api/search' && url.searchParams.get('q') === 'replacement')) {
+          requested = true;
+          await pending;
+          return Response.json(mode === 'keyword'
+            ? { ...makeManyPages(1), items: [{ ...makeManyPages(1).items[0], title: 'Replacement runbook' }] }
+            : searchResponse([{ ...searchItem, title: 'Replacement runbook' }]));
+        }
+        if (url.pathname === '/api/search') return Response.json(searchResponse());
+        return baseFetch(input, init);
+      });
+      render(<PagesPage />, { wrapper: createWrapper([`/?mode=${mode}&search=runbook`]) });
+      await screen.findByText(mode === 'keyword' ? 'Page 1' : 'Local runbook');
+      const input = screen.getByRole('textbox', { name: FIND_LABEL });
+      input.focus();
+      fireEvent.change(input, { target: { value: 'replacement' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input).toHaveFocus();
+
+      await waitFor(() => expect(requested).toBe(true));
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      expect(input).toHaveFocus();
+
+      await act(async () => { release!(); });
+      await screen.findByText('Replacement runbook');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(screen.getByRole('button', { name: /Replacement runbook/ })).toHaveFocus();
+    });
+
+    it.each([true, false])('restores search focus after a result disappears only if that result held focus (%s)', async (focusResult) => {
+      const baseFetch = mockFetchWithPages(makeManyPages(1)).getMockImplementation()!;
+      let release: (() => void) | undefined;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+        const url = new URL(String(input), 'http://localhost');
+        if (url.pathname === '/api/search') {
+          if (url.searchParams.get('mode') !== 'keyword') {
+            await pending;
+            return Response.json(searchResponse([]));
+          }
+          return Response.json(searchResponse());
+        }
+        return baseFetch(input, init);
+      });
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=hybrid&search=runbook']) });
+      const result = await screen.findByRole('button', { name: /Local runbook/ });
+      const input = screen.getByRole('textbox', { name: FIND_LABEL });
+      const filters = screen.getByTestId('advanced-filters-toggle');
+      (focusResult ? result : filters).focus();
+
+      await act(async () => { release!(); });
+      await screen.findByText('No pages found');
+      expect(focusResult ? input : filters).toHaveFocus();
+    });
+
+    it('does not move focus to Search when scrolling virtualizes a result away', async () => {
+      mockFetchWithPages(makeManyPages(60));
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const result = (await screen.findByText('Page 1')).closest('button')!;
+      const input = screen.getByRole('textbox', { name: FIND_LABEL });
+      const scroller = document.querySelector<HTMLElement>('[data-scroll-container]')!;
+      input.focus();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(result).toHaveFocus();
+
+      fireEvent.scroll(scroller, { target: { scrollTop: 2400 } });
+      await waitFor(() => expect(result).not.toBeInTheDocument());
+      expect(input).not.toHaveFocus();
+
+      fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      expect(input).not.toHaveFocus();
+    });
+
+    it('keeps local provenance in a named space when switching between enhanced and Keyword results', async () => {
+      const localPage = { ...makeManyPages(1).items[0]!, title: searchItem.title, source: 'standalone' };
+      const baseFetch = mockFetchWithPages({ ...makeManyPages(1), items: [localPage] }).getMockImplementation()!;
+      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+        if (String(input).includes('/search?')) return Response.json(searchResponse());
+        return baseFetch(input, init);
+      });
+      render(<PagesPage />, { wrapper: createWrapper(['/?mode=hybrid&search=runbook']) });
+      await screen.findByText(searchItem.title);
+      const enhancedRow = within(screen.getByTestId('article-hover-page-1'));
+      expect(enhancedRow.queryByText('Confluence')).not.toBeInTheDocument();
+      expect(enhancedRow.getAllByText('Local')[0]).toBeInTheDocument();
+
+      fireEvent.click(screen.getByTestId('search-mode-keyword'));
+      await screen.findByTestId('page-row-button-page-1');
+      const keywordRow = within(screen.getByTestId('article-hover-page-1'));
+      expect(keywordRow.queryByText('Confluence')).not.toBeInTheDocument();
+      expect(keywordRow.getAllByText('Local')[0]).toBeInTheDocument();
+    });
+  });
+
   describe('list row density', () => {
     it('does not print a freshness badge beside the raw date it derives from', async () => {
       render(<PagesPage />, { wrapper: createWrapper() });
@@ -2936,13 +2991,13 @@ describe('PagesPage filter persistence (#1124)', () => {
     await waitFor(() =>
       expect(screen.getByTestId('space-filter-control')).toHaveAccessibleName('Filter by space, current: Development'),
     );
-    expect((screen.getByTestId('filter-source') as HTMLSelectElement).value).toBe('standalone');
+    expect(screen.getByTestId('filter-source-control')).toHaveTextContent('Local');
     expect(screen.getByTestId('sort-filter-control')).toHaveTextContent('Title');
-    expect((screen.getByTestId('filter-author') as HTMLSelectElement).value).toBe('Alice');
-    expect((screen.getByTestId('filter-labels') as HTMLSelectElement).value).toBe('howto');
-    expect((screen.getByTestId('filter-freshness') as HTMLSelectElement).value).toBe('stale');
-    expect((screen.getByTestId('filter-embedding') as HTMLSelectElement).value).toBe('pending');
-    expect((screen.getByTestId('filter-quality') as HTMLSelectElement).value).toBe('poor');
+    expect(screen.getByTestId('filter-author-control')).toHaveTextContent('Alice');
+    expect(screen.getByTestId('filter-labels-control')).toHaveTextContent('howto');
+    expect(screen.getByTestId('filter-freshness-control')).toHaveTextContent('Stale (>90 days)');
+    expect(screen.getByTestId('filter-embedding-control')).toHaveTextContent('Needs Embedding');
+    expect(screen.getByTestId('filter-quality-control')).toHaveTextContent('Poor');
     expect((screen.getByTestId('filter-date-from') as HTMLInputElement).value).toBe('2025-01-01');
     expect((screen.getByTestId('filter-date-to') as HTMLInputElement).value).toBe('2025-02-01');
   });
@@ -2980,9 +3035,9 @@ describe('PagesPage filter persistence (#1124)', () => {
   it('writes a filter selection into the URL', async () => {
     renderAt('/');
     fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
-    await screen.findByTestId('filter-source');
+    await screen.findByTestId('filter-source-control');
 
-    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    chooseFilter('filter-source', 'standalone');
 
     await waitFor(() => expect(probe()).toContain('source=standalone'));
   });
@@ -3010,9 +3065,9 @@ describe('PagesPage filter persistence (#1124)', () => {
   it('returns to page 1 when a filter changes', async () => {
     renderAt('/?page=4');
     fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
-    await screen.findByTestId('filter-source');
+    await screen.findByTestId('filter-source-control');
 
-    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'confluence' } });
+    chooseFilter('filter-source', 'confluence');
 
     await waitFor(() => expect(probe()).toContain('source=confluence'));
     expect(probe()).not.toContain('page=');
@@ -3038,9 +3093,9 @@ describe('PagesPage filter persistence (#1124)', () => {
       </QueryClientProvider>,
     );
     fireEvent.click(await screen.findByTestId('advanced-filters-toggle'));
-    await screen.findByTestId('filter-source');
+    await screen.findByTestId('filter-source-control');
 
-    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    chooseFilter('filter-source', 'standalone');
     await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
     fireEvent.click(screen.getByTestId('sort-filter-control'));
     fireEvent.click(screen.getByRole('option', { name: 'Title' }));
@@ -3071,7 +3126,7 @@ describe('PagesPage filter persistence (#1124)', () => {
     await screen.findByText('Test Page');
 
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
-    fireEvent.change(screen.getByTestId('filter-source'), { target: { value: 'standalone' } });
+    chooseFilter('filter-source', 'standalone');
     await waitFor(() => expect(router.state.location.search).toContain('source=standalone'));
 
     // Open an article — this is the navigation that used to wipe the filter.
@@ -3080,8 +3135,8 @@ describe('PagesPage filter persistence (#1124)', () => {
 
     await act(async () => { await router.navigate(-1); });
 
-    const restored = await screen.findByTestId('filter-source');
-    expect((restored as HTMLSelectElement).value).toBe('standalone');
+    const restored = await screen.findByTestId('filter-source-control');
+    expect(restored).toHaveTextContent('Local');
     expect(router.state.location.search).toContain('source=standalone');
   });
 

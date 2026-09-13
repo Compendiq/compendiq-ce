@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LibrarySortFilter, SORT_OPTIONS } from './LibrarySortFilter';
 
 describe('LibrarySortFilter', () => {
@@ -41,20 +41,23 @@ describe('LibrarySortFilter', () => {
     expect(onChange).toHaveBeenCalledWith('quality');
   });
 
-  it('supports keyboard navigation through sort options', () => {
+  it('moves keyboard focus without selecting and restores the trigger on Escape', async () => {
     const onChange = vi.fn();
     render(<LibrarySortFilter value="modified" onChange={onChange} />);
 
-    fireEvent.click(screen.getByTestId('sort-filter-control'));
+    const trigger = screen.getByTestId('sort-filter-control');
+    fireEvent.click(trigger);
     const firstOption = screen.getByRole('option', { name: 'Last Modified' });
-
+    expect(firstOption).toHaveFocus();
     fireEvent.keyDown(firstOption, { key: 'ArrowDown' });
     const secondOption = screen.getByRole('option', { name: 'Title' });
-    fireEvent.keyDown(secondOption, { key: 'Enter' });
+    expect(secondOption).toHaveFocus();
+    expect(onChange).not.toHaveBeenCalled();
 
-    // Clicking or pressing triggers selectSort
-    fireEvent.click(secondOption);
-    expect(onChange).toHaveBeenCalledWith('title');
+    fireEvent.keyDown(secondOption, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(trigger).toHaveTextContent('Last Modified');
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it('omits Relevance option when hasSearchQuery is false', () => {
