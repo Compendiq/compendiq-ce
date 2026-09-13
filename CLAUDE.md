@@ -663,9 +663,11 @@ event metadata. Impression semantics and adoption evaluation are documented in
 Search provenance comes from `pages.source`, never a space key, historical
 Confluence ID, or embedding metadata. Keep it consistent across retrieval
 modes and use it for source-sensitive bulk actions. Enter/ArrowDown may focus
-only current-query results; removal of a focused result returns focus to the
-query without stealing focus from another control. Each filter has one visible
-Tab stop. Search controls adapt to pane width, not viewport width alone.
+only current-query results; removal of a focused result from the result set
+returns focus to the query without stealing focus from another control.
+Virtualization eviction is not result removal and must not move focus or scroll.
+Each filter has one visible Tab stop. Search controls adapt to pane width,
+not viewport width alone.
 
 ## UI/UX (ADR-010 v0.7 roles, v0.9 shell — Graphite / Paper with Steel)
 

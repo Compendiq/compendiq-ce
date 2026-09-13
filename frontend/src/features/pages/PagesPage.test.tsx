@@ -2882,6 +2882,25 @@ describe('PagesPage', () => {
       expect(focusResult ? input : filters).toHaveFocus();
     });
 
+    it('does not move focus to Search when scrolling virtualizes a result away', async () => {
+      mockFetchWithPages(makeManyPages(60));
+      render(<PagesPage />, { wrapper: createWrapper() });
+      const result = (await screen.findByText('Page 1')).closest('button')!;
+      const input = screen.getByRole('textbox', { name: FIND_LABEL });
+      const scroller = document.querySelector<HTMLElement>('[data-scroll-container]')!;
+      input.focus();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(result).toHaveFocus();
+
+      fireEvent.scroll(scroller, { target: { scrollTop: 2400 } });
+      await waitFor(() => expect(result).not.toBeInTheDocument());
+      expect(input).not.toHaveFocus();
+
+      fireEvent.scroll(scroller, { target: { scrollTop: 0 } });
+      expect(await screen.findByText('Page 1')).toBeInTheDocument();
+      expect(input).not.toHaveFocus();
+    });
+
     it('keeps local provenance in a named space when switching between enhanced and Keyword results', async () => {
       const localPage = { ...makeManyPages(1).items[0]!, title: searchItem.title, source: 'standalone' };
       const baseFetch = mockFetchWithPages({ ...makeManyPages(1), items: [localPage] }).getMockImplementation()!;

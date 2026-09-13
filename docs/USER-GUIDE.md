@@ -377,6 +377,7 @@ Press `/` to focus Library search. `Enter` or `ArrowDown` moves from the query
 to the first result only when the displayed results match the current query.
 While older results remain visible during an update, focus stays in the query.
 If an update removes a focused result, focus returns to the query field.
+Scrolling a result out of view does not return focus or scroll to the query.
 Each filter has one visible Tab stop; `Escape` closes its menu and returns
 focus to the trigger.
 

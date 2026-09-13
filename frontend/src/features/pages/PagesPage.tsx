@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect, memo, type RefObject } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, memo, type RefObject } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -631,19 +631,6 @@ export function PagesPage() {
   const queryClient = useQueryClient();
   const wasProcessingRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const restoreSearchFocusOnRemoval = useCallback((element: HTMLDivElement | null) => {
-    if (!element) return;
-    return () => {
-      if (!element.contains(document.activeElement)) return;
-      // Ref cleanup runs before removal. Wait for the commit so a surviving
-      // result or another control can retain focus before using the fallback.
-      queueMicrotask(() => {
-        if (!element.isConnected && document.activeElement === document.body) {
-          searchInputRef.current?.focus();
-        }
-      });
-    };
-  }, []);
   const listContainerRef = useRef<HTMLDivElement>(null);
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
 
@@ -896,6 +883,27 @@ export function PagesPage() {
     () => (useSemanticSearch ? displaySearchItems.map((p) => String(p.id)) : pageItems.map((p) => p.id)),
     [useSemanticSearch, displaySearchItems, pageItems],
   );
+
+  const committedResultIds = useRef(currentIds);
+  useLayoutEffect(() => {
+    committedResultIds.current = currentIds;
+  }, [currentIds]);
+
+  const restoreSearchFocusOnRemoval = useCallback((element: HTMLDivElement | null) => {
+    if (!element) return;
+    return () => {
+      if (!element.contains(document.activeElement)) return;
+      // Read the committed result set after removal: virtualization can evict
+      // a focused DOM row without removing its page from the results.
+      queueMicrotask(() => {
+        if (!element.isConnected
+          && !committedResultIds.current.includes(element.dataset.resultId!)
+          && document.activeElement === document.body) {
+          searchInputRef.current?.focus();
+        }
+      });
+    };
+  }, []);
 
   const toggleSelect = useCallback((id: string, shiftKey: boolean) => {
     setSelectedIds((prev) => {
@@ -1824,6 +1832,7 @@ export function PagesPage() {
                         >
                             <div
                               ref={restoreSearchFocusOnRemoval}
+                              data-result-id={itemId}
                               className={cn(
                                 'group nm-focus-ring flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left transition-colors last:border-b-0 max-sm:items-start',
                                 isSelected
@@ -2076,7 +2085,7 @@ export function PagesPage() {
                           transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                         }}
                       >
-                        <div ref={restoreSearchFocusOnRemoval}>
+                        <div ref={restoreSearchFocusOnRemoval} data-result-id={pageItem.id}>
                           <PageListItem
                             pageItem={pageItem}
                             index={virtualRow.index}

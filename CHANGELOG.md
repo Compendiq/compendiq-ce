@@ -59,8 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Library search keeps Local and Confluence provenance consistent across
   Keyword, Semantic, and Hybrid results, including local pages in named spaces.
 - Search keyboard navigation no longer enters stale results while a new query
-  is pending. Removing a focused result returns focus to the query field, and
-  filter dropdowns no longer add invisible duplicate Tab stops.
+  is pending. Removing a focused result returns focus to the query field, but
+  scrolling it out of the virtualized viewport no longer jumps back to Search.
+  Filter dropdowns no longer add invisible duplicate Tab stops.
 - Search modes, space scope, and Filters remain usable on narrow phones and
   sidebar-constrained tablet layouts without clipping or collapsing the scope.
 
