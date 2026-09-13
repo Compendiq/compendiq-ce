@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { SearchHybridQuerySchema } from '@compendiq/contracts';
+import { SearchHybridQuerySchema, type PageSource } from '@compendiq/contracts';
 import { query } from '../../core/db/postgres.js';
 // Use the request-scoped memoised wrapper so the search route and downstream
 // rag-service calls resolve the readable-space set once per request. See
@@ -173,6 +173,16 @@ async function generateSearchEmbedding(
   }
 }
 
+/** Resolve provenance from pages, not retrieval metadata or the page's space. */
+async function getPageSources(pageIds: number[]): Promise<Map<number, PageSource>> {
+  if (pageIds.length === 0) return new Map();
+  const { rows } = await query<{ id: number; source: PageSource }>(
+    'SELECT id, source FROM pages WHERE id = ANY($1::int[])',
+    [pageIds],
+  );
+  return new Map(rows.map((row) => [row.id, row.source]));
+}
+
 export async function searchRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
@@ -294,9 +304,12 @@ export async function searchRoutes(fastify: FastifyInstance) {
         surface: 'search',
       }).catch(() => {});
 
-      const items = deduped.map((r) => ({
+      const sources = await getPageSources(deduped.map((r) => r.pageId));
+      // Pages removed since retrieval no longer have a canonical result to return.
+      const items = deduped.filter((r) => sources.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
+        source: sources.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -366,9 +379,11 @@ export async function searchRoutes(fastify: FastifyInstance) {
         throw err;
       }
 
-      const items = deduped.map((r) => ({
+      const sources = await getPageSources(deduped.map((r) => r.pageId));
+      const items = deduped.filter((r) => sources.has(r.pageId)).map((r) => ({
         id: r.pageId,
         confluenceId: r.confluenceId,
+        source: sources.get(r.pageId)!,
         title: r.pageTitle,
         spaceKey: r.spaceKey,
         author: null as string | null,
@@ -484,6 +499,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const dataQueryPromise = query<{
       id: number;
       confluence_id: string;
+      source: PageSource;
       title: string;
       space_key: string;
       author: string | null;
@@ -497,7 +513,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_color: string | null;
       icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key, cp.author,
+      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key, cp.author,
               cp.last_modified_at, cp.labels, cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled,
               ts_rank(cp.tsv, ${parser}('${ftsLang}', $1)) AS rank,
               ts_headline('${ftsLang}', COALESCE(cp.body_text, ''), ${parser}('${ftsLang}', $1),
@@ -515,6 +531,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const trgmQueryPromise = query<{
       id: number;
       confluence_id: string;
+      source: PageSource;
       title: string;
       space_key: string;
       body_text: string;
@@ -524,7 +541,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
       icon_color: string | null;
       icon_filled: boolean | null;
     }>(
-      `SELECT cp.id, cp.confluence_id, cp.title, cp.space_key,
+      `SELECT cp.id, cp.confluence_id, cp.source, cp.title, cp.space_key,
               substring(cp.body_text, 1, 300) AS body_text,
               similarity(cp.title, $1) AS rank,
               cp.icon_kind, cp.icon_value, cp.icon_color, cp.icon_filled
@@ -589,6 +606,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
     const ftsItems = dataResult.rows.map((row) => ({
       id: row.id,
       confluenceId: row.confluence_id,
+      source: row.source,
       title: row.title,
       spaceKey: row.space_key,
       author: row.author,
@@ -605,6 +623,7 @@ export async function searchRoutes(fastify: FastifyInstance) {
         ftsItems.push({
           id: trgmRow.id,
           confluenceId: trgmRow.confluence_id,
+          source: trgmRow.source,
           title: trgmRow.title,
           spaceKey: trgmRow.space_key,
           author: null,

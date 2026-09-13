@@ -2020,6 +2020,13 @@ test pins that.
   page, and re-ranks using a weighted blend.
 - **Scope** — results are filtered to pages the requesting user can see
   (own pages + spaces they have RBAC access to).
+- **Search provenance.** Every `/api/search` item carries the canonical
+  `pages.source`, including FTS, fuzzy, and degraded results. Keyword SQL
+  selects it directly; semantic/hybrid responses resolve returned page IDs in
+  one batched lookup rather than trusting embedding metadata. Rows whose page
+  no longer exists are omitted. The Library uses this field for both badges
+  and source-sensitive bulk-action IDs, never inferring origin from a space
+  key or a historical Confluence ID.
 - **Space filter (#1351).** `/api/search`'s `spaceKey` param now narrows
   `mode=semantic` and `mode=hybrid` too, not just `mode=keyword` — before
   this, `vectorSearch`/`hybridSearch` built their result set from the query
@@ -2030,9 +2037,9 @@ test pins that.
   `opts.spaceKey`, threaded into `HybridSearchOptions.spaceKey` and applied
   as an `AND cp.space_key = $n` predicate alongside — never instead of —
   `visiblePagesPredicate`, so it can only narrow the ACL-visible set, never
-  widen it. Standalone pages carry no `space_key` (NULL), so scoping to a
-  space excludes them, mirroring keyword mode's own `cp.space_key = $n`
-  filter. Optional and `undefined` by default: `/llm/ask`, deep search
+  widen it. Local pages can belong to named spaces and follow the same
+  `cp.space_key = $n` filter; unassigned pages are excluded by a selected
+  space. Optional and `undefined` by default: `/llm/ask`, deep search
   (`multi-query-search.ts`) and the eval/benchmark harness don't pass it and
   are unaffected — `/api/search`'s semantic and hybrid branches are the only
   callers today.

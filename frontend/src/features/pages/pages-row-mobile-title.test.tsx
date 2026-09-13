@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
+import type { PageSource } from '@compendiq/contracts';
 import { PagesPage } from './PagesPage';
 import { FIND_PLACEHOLDER } from './pages-find';
 import { installVirtualizerRectShim } from '../../test-utils';
@@ -297,12 +298,14 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     id?: string;
     title?: string;
     spaceKey?: string;
+    source?: PageSource;
   } = {}) {
     // `mapItems` in use-search.ts reads `snippet` into the row's excerpt.
     const item = {
       id: overrides.id ?? 'sr-1',
       title: overrides.title ?? searchTitle,
       spaceKey: overrides.spaceKey ?? 'DEV',
+      source: overrides.source ?? 'confluence',
       snippet: searchExcerpt,
       rank: 0.0328,
       similarity: 0.74,
@@ -417,11 +420,11 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     expect(button.textContent).toContain(searchTitle);
   });
 
-  it('keeps a Local source chip visible below sm', async () => {
+  it('renders canonical Local provenance even in a named space', async () => {
     vi.restoreAllMocks();
     restoreRects = installVirtualizerRectShim();
-    const localTitle = 'Local draft: connection pool notes';
-    mockFetchWithSearch({ id: 'sr-local', title: localTitle, spaceKey: '__local__' });
+    const localTitle = 'Draft: connection pool notes';
+    mockFetchWithSearch({ id: 'sr-local', title: localTitle, spaceKey: 'DEV', source: 'standalone' });
 
     render(<PagesPage />, { wrapper: createWrapper() });
     fireEvent.change(screen.getByPlaceholderText(FIND_PLACEHOLDER), {
@@ -429,10 +432,8 @@ describe('PagesPage search row: mobile title layout (semantic/hybrid)', () => {
     });
     fireEvent.click(screen.getByTestId('advanced-filters-toggle'));
     fireEvent.click(screen.getByTestId('search-mode-semantic'));
-    await screen.findByText(localTitle, undefined, { timeout: 2000 });
-
-    const locals = screen.getAllByTestId('badge-local');
-    expect(locals.some((el) => el.className.includes('sm:hidden'))).toBe(true);
-    expect(locals.some((el) => !el.className.includes('sm:hidden'))).toBe(true);
+    const row = await screen.findByRole('button', { name: new RegExp(localTitle) });
+    expect(row).toHaveTextContent('Local');
+    expect(row).not.toHaveTextContent('Confluence');
   });
 });

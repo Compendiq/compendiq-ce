@@ -163,7 +163,7 @@ export function LibrarySpaceFilter({ spaces = [], selectedKey, selectedName, onS
       <Popover.Trigger asChild>
         <button
           type="button"
-          className="library-search-select flex h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:max-w-48 sm:flex-none sm:px-2 sm:text-xs"
+          className="library-search-select flex h-11 min-w-0 flex-1 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground sm:h-8 sm:px-2 sm:text-xs @[44rem]:max-w-48 @[44rem]:flex-none"
           data-testid="space-filter-control"
           title={selectedKey ? `Space: ${selectedName ?? selectedKey}` : 'All spaces'}
           aria-label={`Filter by space, current: ${selectedName ?? 'All spaces'}`}

@@ -365,9 +365,21 @@ Uses vector embeddings to find conceptually similar content. This finds results 
 
 ### Hybrid Search
 
-Combines keyword and semantic search with Reciprocal Rank Fusion (RRF) for the best results. The default mode is keyword; pass `mode=hybrid` to the search API for RRF results.
+Combines keyword and semantic search with Reciprocal Rank Fusion (RRF). The search API defaults to keyword; pass `mode=hybrid` for RRF results.
 
 Access search via the search box in the top bar or the **Command Palette** (`Ctrl+K`).
+
+In Library, the **Local** and **Confluence** badges identify a page's origin,
+independently of its space and the selected search mode. On narrow screens,
+the query, mode choices, and scope controls use separate rows.
+
+Press `/` to focus Library search. `Enter` or `ArrowDown` moves from the query
+to the first result only when the displayed results match the current query.
+While older results remain visible during an update, focus stays in the query.
+If an update removes a focused result, focus returns to the query field.
+Scrolling a result out of view does not return focus or scroll to the query.
+Each filter has one visible Tab stop; `Escape` closes its menu and returns
+focus to the trigger.
 
 ## Knowledge Graph
 
