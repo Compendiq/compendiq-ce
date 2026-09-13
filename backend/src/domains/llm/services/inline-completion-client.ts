@@ -10,11 +10,13 @@
 import { fetch as undiciFetch } from 'undici';
 import type { InlineCompletionRequest } from '@compendiq/contracts';
 import { getProviderBreaker } from '../../../core/services/circuit-breaker.js';
+import { logger } from '../../../core/utils/logger.js';
 import { withSpan } from '../../../telemetry.js';
 import {
   providerRequestInfra,
   LlmHttpError,
   nonThinkingExtras,
+  reasoningOffExtras,
   type ProviderConfig,
 } from './openai-compatible-client.js';
 import { providerResourceUrl } from './provider-url.js';
@@ -115,9 +117,54 @@ export async function requestInlineCompletion(
         ...nonThinkingExtras(cfg.baseUrl),
       };
   const endpoint = strategy === 'fim' ? 'completions' : 'chat/completions';
+  // FIM has no reasoning pass; strict hosts get no hint at all (empty extras).
+  const retryExtras = strategy === 'chat' ? reasoningOffExtras(cfg.baseUrl) : {};
   const deadline = AbortSignal.timeout(
     opts.timeoutMs ?? INLINE_COMPLETION_TIMEOUT_MS,
   );
+  const requestSignal = AbortSignal.any([signal, deadline]);
+
+  const post = async (body: typeof requestBody): Promise<{ raw: string; usage: InlineCompletionResult['usage'] }> => {
+    const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, endpoint), {
+      method: 'POST',
+      headers: providerRequestInfra.headers(cfg),
+      body: JSON.stringify(body),
+      dispatcher: providerRequestInfra.dispatcherFor(cfg),
+      signal: requestSignal,
+    });
+    if (!res.ok) {
+      // A 4xx proves the provider is reachable. Do not let one incompatible
+      // model assignment open the provider's shared breaker for chat.
+      throw new LlmHttpError(
+        'inlineCompletion',
+        res.status,
+        await providerRequestInfra.errorDetail(res),
+        res.status >= 400 && res.status < 500,
+      );
+    }
+    const parsed = (await res.json()) as ProviderCompletionBody;
+    const raw = strategy === 'fim'
+      ? parsed.choices?.[0]?.text
+      : parsed.choices?.[0]?.message?.content;
+    if (typeof raw !== 'string') {
+      throw new LlmHttpError(
+        'inlineCompletion',
+        502,
+        'provider response carried no completion text',
+      );
+    }
+    return {
+      raw,
+      usage: parsed.usage
+        ? { promptTokens: parsed.usage.prompt_tokens, completionTokens: parsed.usage.completion_tokens }
+        : undefined,
+    };
+  };
+
+  const finish = (raw: string): string => {
+    const completion = normalizeInlineCompletion(raw);
+    return /\s$/u.test(input.prefix) ? completion.replace(/^[\t ]+/u, '') : completion;
+  };
 
   const auditStart = Date.now();
   const inputMessages = 'messages' in requestBody
@@ -133,41 +180,32 @@ export async function requestInlineCompletion(
     () => getProviderBreaker(cfg.providerId).execute(async () => {
       signal.throwIfAborted();
       dispatched = true;
-      const res = await undiciFetch(providerResourceUrl(cfg.baseUrl, endpoint), {
-        method: 'POST',
-        headers: providerRequestInfra.headers(cfg),
-        body: JSON.stringify(requestBody),
-        dispatcher: providerRequestInfra.dispatcherFor(cfg),
-        signal: AbortSignal.any([signal, deadline]),
-      });
-      if (!res.ok) {
-        // A 4xx proves the provider is reachable. Do not let one incompatible
-        // model assignment open the provider's shared breaker for chat.
-        throw new LlmHttpError(
-          'inlineCompletion',
-          res.status,
-          await providerRequestInfra.errorDetail(res),
-          res.status >= 400 && res.status < 500,
-        );
+      let reply = await post(requestBody);
+      let completion = finish(reply.raw);
+      if (completion === '' && Object.keys(retryExtras).length > 0) {
+        // Empty text is the one symptom of a server that ignored the template
+        // hints and spent the budget reasoning (LM Studio). One retry with the
+        // stronger hint; any failure of that retry — a host that validates the
+        // field, a template that raises, the deadline — yields the empty first
+        // reply instead. It never reaches the breaker: the hint is a guess,
+        // not evidence of an outage. Only the caller's own abort propagates.
+        try {
+          const retried = await post({ ...requestBody, ...retryExtras });
+          const text = finish(retried.raw);
+          if (text !== '') {
+            reply = retried;
+            completion = text;
+          }
+        } catch (error) {
+          if (signal.aborted) throw error;
+          logger.debug(
+            { providerId: cfg.providerId, model, err: error },
+            'inline completion: reasoning_effort retry failed; returning the empty first reply',
+          );
+        }
       }
-
-      const body = (await res.json()) as ProviderCompletionBody;
-      const raw = strategy === 'fim'
-        ? body.choices?.[0]?.text
-        : body.choices?.[0]?.message?.content;
-      reportedUsage = body.usage
-        ? { promptTokens: body.usage.prompt_tokens, completionTokens: body.usage.completion_tokens }
-        : undefined;
-      if (typeof raw === 'string') rawOutput = raw;
-      if (typeof raw !== 'string') {
-        throw new LlmHttpError(
-          'inlineCompletion',
-          502,
-          'provider response carried no completion text',
-        );
-      }
-      let completion = normalizeInlineCompletion(raw);
-      if (/\s$/u.test(input.prefix)) completion = completion.replace(/^[\t ]+/u, '');
+      rawOutput = reply.raw;
+      reportedUsage = reply.usage;
       return { completion, usage: reportedUsage, strategy };
     }),
     {

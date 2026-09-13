@@ -537,6 +537,7 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
   const {
     thinkingExtras,
     nonThinkingExtras,
+    reasoningOffExtras,
     isStrictOpenAiCompatibleHost,
     isOpenAiReasoningModel,
   } = __test_only__;
@@ -547,13 +548,24 @@ describe('thinkingExtras — provider-strictness × model matrix', () => {
     expect(thinkingExtras('http://localhost:11434/v1', 'qwen3:8b')).toEqual({});
   });
 
-  it('explicitly disables Qwen-style thinking for tolerant providers only', () => {
+  it('disables reasoning for tolerant providers with ignored fields only; strict hosts get nothing', () => {
     expect(nonThinkingExtras('http://localhost:1234/v1')).toEqual({
       think: false,
       chat_template_kwargs: { enable_thinking: false },
     });
+    // reasoning_effort is parsed and validated by tolerant hosts (vLLM <= 0.12
+    // 400s on "none"), so it is the retry-only hint, never on the first request.
+    expect(nonThinkingExtras('http://localhost:1234/v1')).not.toHaveProperty('reasoning_effort');
     expect(nonThinkingExtras('https://api.openai.com/v1')).toEqual({});
     expect(nonThinkingExtras('https://api.deepseek.com/v1')).toEqual({});
+    expect(nonThinkingExtras('https://example.openai.azure.com/v1')).toEqual({});
+  });
+
+  it('offers reasoning_effort: none as the retry hint for tolerant providers only', () => {
+    expect(reasoningOffExtras('http://localhost:1234/v1')).toEqual({ reasoning_effort: 'none' });
+    expect(reasoningOffExtras('https://api.openai.com/v1')).toEqual({});
+    expect(reasoningOffExtras('https://api.deepseek.com/v1')).toEqual({});
+    expect(reasoningOffExtras('https://example.openai.azure.com/v1')).toEqual({});
   });
 
   describe('Strict providers (OpenAI, Azure OpenAI, DeepSeek)', () => {

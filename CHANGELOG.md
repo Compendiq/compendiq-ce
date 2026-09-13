@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Server-backed inline suggestions retry once with `reasoning_effort: "none"`
+  when a tolerant provider (LM Studio) ignores the non-thinking template hints
+  and returns no visible text. The hint is retry-only: vLLM 0.10–0.12 reject
+  it and newer vLLM forwards it into chat templates that can raise, so a
+  failed retry yields the empty first reply and never counts against the
+  provider's circuit breaker.
 - Library search keeps Local and Confluence provenance consistent across
   Keyword, Semantic, and Hybrid results, including local pages in named spaces.
 - Search keyboard navigation no longer enters stale results while a new query

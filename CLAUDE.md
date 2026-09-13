@@ -61,6 +61,19 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 **Client inference (#1418 / ADR-026) is not an ADR-021 use case.** The browser WebGPU SLM never inherits, never talks to Hugging Face, and falls through to #1417 / `/llm/improve` when it is not ready. Unassigned `inline_completion` plus the Editor setting “Use on-device suggestions when no server model is assigned” (default on) may run local ghost text only when the worker is ready. Hunspell EN/DE is a separate MIT worker, not GPU. Runbook: `docs/runbooks/client-inference.md`.
 
+Server inline completion disables reasoning in two steps. The first request
+carries `nonThinkingExtras` (`think: false`,
+`chat_template_kwargs.enable_thinking: false`) — fields tolerant hosts
+IGNORE. `reasoning_effort: 'none'` (`reasoningOffExtras`) goes ONLY on a
+single retry after a reply with no visible text, because tolerant hosts
+PARSE it: vLLM 0.10–0.12 400 on `"none"`, and newer vLLM forwards it into
+chat templates that can raise (a 500). That retry's failure yields the empty
+first reply and never counts against the provider breaker. LM Studio is the
+host that needs the retry. Keep both hints off strict hosts. Never render
+reasoning as ghost text or raise the inline token budget to compensate for
+an ignored thinking hint. Troubleshooting is in the client inference
+runbook, including stale server-model assignments.
+
 **Legacy env vars** (`OLLAMA_BASE_URL`, `OPENAI_*`, `LLM_BEARER_TOKEN`, `DEFAULT_LLM_MODEL`, `SUMMARY_MODEL`, `QUALITY_MODEL`, `LLM_MAX_CONCURRENT_STREAMS_PER_USER`, `COMPENDIQ_LICENSE_KEY`, `RAG_EF_SEARCH`) are **deprecated bootstrap fallbacks** — consulted only on fresh install when the DB row / `admin_settings` value is absent. `EMBEDDING_MODEL` is one rung further gone: it is **fully inert** since migration 054 (#1114) — `llm-provider-bootstrap.ts` keeps it in `DEPRECATED_VARS` only so that setting it logs a notice, and nothing reads its value, so a fresh install resolves the `embedding` use case to the default provider's `default_model` until an admin assigns it. (`EMBEDDING_DIMENSIONS` is unaffected — it is still the fallback for a missing `admin_settings.embedding_dimensions` row.) Don't add new env-driven LLM config; extend the providers table or `admin_settings` instead.
 
 **Deep search reuses `chat` — do not give it a use case (#1112).** Multi-query expansion asks the `chat` model for two paraphrases of the question, retrieves all three phrasings and fuses them (`multi-query-search.ts`, in front of `hybridSearch` — `/api/search` paginates and must never expand). It is one extra completion for a one-sentence rewrite, so a sixth ADR-021 assignment would be a knob every operator has to set before the feature works at all. It is per-request and **default off** (`deepSearch`, the `searchWeb` precedent), it never expands an exact-identifier or pasted-error query (#1107 pins the first, and the second IS the literal FTS matches), and every failure — timeout, open breaker, no assignment, unparseable reply — soft-fails to the original query alone. Design of record: `docs/architecture/09-flow-rag-chat.md`.

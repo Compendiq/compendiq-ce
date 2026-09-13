@@ -123,6 +123,10 @@ export const providerRequestInfra = { headers, dispatcherFor, errorDetail } as c
  * Together, Groq, Fireworks, OpenRouter, etc.) ignores unknown fields, so
  * "tolerant" is the safer default. Adding a host here means the toggle
  * silently no-ops rather than 400s for models that don't support reasoning.
+ * "Unknown" is the load-bearing word: a field a tolerant host PARSES is not
+ * covered by this premise. `reasoning_effort` is the standing example — see
+ * `reasoningOffExtras` — so check a new hint against the servers' request
+ * schemas before adding it to `nonThinkingExtras`.
  *
  * Hosted DeepSeek (`api.deepseek.com`) 400s on `think` /
  * `chat_template_kwargs` the same way OpenAI does, so it is strict — but
@@ -214,15 +218,35 @@ function thinkingExtras(
 }
 
 /**
- * Inline completions have a tiny latency and token budget. On Qwen reasoning
- * models, the default thinking pass can consume that whole budget before any
- * visible continuation reaches `message.content`. Local OpenAI-compatible
- * providers accept these template hints; strict OpenAI hosts must not receive
- * them because they reject unknown fields.
+ * Inline completions have a tiny latency and token budget. A reasoning pass
+ * can consume it before any visible continuation reaches `message.content`.
+ * Local OpenAI-compatible providers accept these template hints; strict
+ * OpenAI hosts must not receive them because they reject unknown fields.
  */
 export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
   if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
   return { think: false, chat_template_kwargs: { enable_thinking: false } };
+}
+
+/**
+ * The second-attempt hint for servers that ignore `nonThinkingExtras`. LM
+ * Studio is the observed case: with only the template hints its reasoning
+ * hits the newline stop before any text reaches `message.content`, and
+ * `reasoning_effort: 'none'` is what turns reasoning off there.
+ *
+ * It is deliberately NOT part of the first request. Unlike `think` and
+ * `chat_template_kwargs`, `reasoning_effort` is a field tolerant hosts parse
+ * and validate rather than ignore: vLLM 0.10–0.12 declare it as
+ * `Literal["low", "medium", "high"]` and 400 on `"none"`, and newer vLLM
+ * forwards it into chat templates that may `raise_exception` on a value they
+ * do not list (vllm-project/vllm#54017) — a 500 that would count against the
+ * provider's shared breaker. So the inline client sends it only after a
+ * first reply carried no visible text, and swallows whatever that retry
+ * returns short of the caller's own abort (see `requestInlineCompletion`).
+ */
+export function reasoningOffExtras(baseUrl: string): Record<string, unknown> {
+  if (isStrictOpenAiCompatibleHost(baseUrl)) return {};
+  return { reasoning_effort: 'none' };
 }
 
 // Exported for unit testing only — the wire-format assertions on
@@ -232,6 +256,7 @@ export function nonThinkingExtras(baseUrl: string): Record<string, unknown> {
 export const __test_only__ = {
   thinkingExtras,
   nonThinkingExtras,
+  reasoningOffExtras,
   isStrictOpenAiCompatibleHost,
   isOpenAiReasoningModel,
   setStreamErrorDetailTimeoutMs: (ms: number) => { streamErrorDetailTimeoutMs = ms; },
