@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LazyMotion, domAnimation } from 'framer-motion';
 import { WorkersTab } from './WorkersTab';
@@ -63,10 +63,9 @@ const embeddingStatus = {
   model: 'bge-m3',
 };
 
-function createWrapper() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+function createWrapper(queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+})) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
@@ -82,12 +81,14 @@ function mockFetch(overrides?: {
   quality?: Partial<typeof qualityStatus>;
   summary?: Partial<typeof summaryStatus>;
   embedding?: Partial<typeof embeddingStatus>;
+  settings?: (options: RequestInit) => Response | Promise<Response>;
 }) {
   const quality = { ...qualityStatus, ...overrides?.quality };
   const summary = { ...summaryStatus, ...overrides?.summary };
   const embedding = { ...embeddingStatus, ...overrides?.embedding };
+  const settings = { qualityBatchSize: 12, summaryBatchSize: 7 };
 
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request, options = {}) => {
     const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
 
     if (path.includes('/api/llm/quality-status')) {
@@ -100,6 +101,14 @@ function mockFetch(overrides?: {
       return new Response(JSON.stringify(embedding), { headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (path.includes('/api/admin/settings')) {
+      if (overrides?.settings) return overrides.settings(options);
+      if (options.method === 'PUT') Object.assign(settings, JSON.parse(options.body as string));
+      return new Response(
+        JSON.stringify(settings),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     // POST endpoints (run-now, rescan, etc.)
     if (path.includes('/api/llm/')) {
       return new Response(JSON.stringify({ message: 'OK' }), { headers: { 'Content-Type': 'application/json' } });
@@ -284,6 +293,125 @@ describe('WorkersTab', () => {
         },
       );
       expect(postCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('pages per batch', () => {
+    it('hydrates each worker input from admin settings; embedding has none', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-batch-size')).toHaveValue(12);
+        expect(screen.getByTestId('summary-batch-size')).toHaveValue(7);
+      });
+      expect(screen.queryByTestId('embedding-batch-size')).not.toBeInTheDocument();
+      expect(screen.getByTestId('quality-batch-size-save')).toBeDisabled();
+    });
+
+    it('saves only the edited worker field and clamps to the allowed range', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-batch-size')).toHaveValue(12);
+      });
+
+      fireEvent.change(screen.getByTestId('quality-batch-size'), { target: { value: '500' } });
+      expect(screen.getByTestId('quality-batch-size')).toHaveValue(100);
+      fireEvent.click(screen.getByTestId('quality-batch-size-save'));
+
+      await waitFor(() => expect(toastMocks.success).toHaveBeenCalled());
+      expect(screen.getByTestId('quality-batch-size')).toHaveValue(100);
+      expect(screen.getByTestId('quality-batch-size-save')).toBeDisabled();
+      expect(screen.getByTestId('summary-batch-size')).toHaveValue(7);
+    });
+
+    it('preserves a newer draft through both the PUT and the following refetch', async () => {
+      fetchSpy.mockRestore();
+      let releasePut!: () => void;
+      let releaseRead!: () => void;
+      let saved = 12;
+      const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+      const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+      fetchSpy = mockFetch({
+        settings: async (options) => {
+          if (options.method === 'PUT') {
+            await putGate;
+            saved = JSON.parse(options.body as string).qualityBatchSize;
+          } else if (saved === 20) {
+            await readGate;
+          }
+          return Response.json({ qualityBatchSize: saved, summaryBatchSize: 7 });
+        },
+      });
+      render(<WorkersTab />, { wrapper: createWrapper() });
+      const input = screen.getByTestId('quality-batch-size');
+      await waitFor(() => expect(input).toHaveValue(12));
+      fireEvent.change(input, { target: { value: '20' } });
+      fireEvent.click(screen.getByTestId('quality-batch-size-save'));
+      fireEvent.change(input, { target: { value: '30' } });
+      await act(async () => { releasePut(); });
+      fireEvent.change(input, { target: { value: '40' } });
+      await act(async () => { releaseRead(); });
+      await waitFor(() => expect(toastMocks.success).toHaveBeenCalled());
+      expect(input).toHaveValue(40);
+      expect(screen.getByTestId('quality-batch-size-save')).toBeEnabled();
+      expect(screen.getByTestId('summary-batch-size')).toHaveValue(7);
+      expect(saved).toBe(20);
+    });
+
+    it('shows no invented value on a failed initial read and keeps Retry focused until recovery', async () => {
+      fetchSpy.mockRestore();
+      let retry = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      fetchSpy = mockFetch({
+        settings: async () => {
+          if (!retry) return Response.json({ error: 'Settings unavailable' }, { status: 500 });
+          await gate;
+          return Response.json({ qualityBatchSize: 18, summaryBatchSize: 9 });
+        },
+      });
+      render(<WorkersTab />, { wrapper: createWrapper() });
+      const card = screen.getByTestId('worker-card-quality');
+      const input = within(card).getByRole('spinbutton', { name: 'Pages per batch' });
+      const retryButton = await within(card).findByRole('button', { name: 'Retry' });
+      expect(input).toHaveValue(null);
+      expect(input).toBeDisabled();
+      expect(within(card).getByRole('status')).toHaveTextContent(/could not be read/i);
+      retry = true;
+      retryButton.focus();
+      fireEvent.click(retryButton);
+      expect(retryButton).toHaveAttribute('aria-disabled', 'true');
+      expect(retryButton).not.toBeDisabled();
+      expect(retryButton).toHaveTextContent('Retrying');
+      expect(retryButton).toHaveFocus();
+      expect(input).toHaveValue(null);
+      await act(async () => { release(); });
+      await waitFor(() => expect(input).toHaveValue(18));
+      expect(input).toHaveFocus();
+      expect(within(card).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(screen.getByTestId('summary-batch-size')).toHaveValue(9);
+    });
+
+    it('keeps cached values and drafts visible after a failed background read', async () => {
+      fetchSpy.mockRestore();
+      let failed = false;
+      fetchSpy = mockFetch({
+        settings: () => failed
+          ? Response.json({ error: 'Settings unavailable' }, { status: 500 })
+          : Response.json({ qualityBatchSize: 12, summaryBatchSize: 7 }),
+      });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<WorkersTab />, { wrapper: createWrapper(client) });
+      const qualityInput = screen.getByTestId('quality-batch-size');
+      await waitFor(() => expect(qualityInput).toHaveValue(12));
+      fireEvent.change(qualityInput, { target: { value: '30' } });
+      failed = true;
+      await act(async () => { await client.refetchQueries({ queryKey: ['admin-settings'] }); });
+      expect(qualityInput).toHaveValue(30);
+      expect(screen.getByTestId('summary-batch-size')).toHaveValue(7);
+      await waitFor(() => expect(within(screen.getByTestId('worker-card-quality')).getByRole('status'))
+        .toHaveTextContent(/last loaded/i));
+      expect(within(screen.getByTestId('worker-card-summary')).getByRole('button', { name: 'Retry' })).toBeEnabled();
     });
   });
 

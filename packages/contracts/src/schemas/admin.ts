@@ -436,6 +436,14 @@ export const AdminSettingsSchema = z.object({
   // that caps requests/minute; this caps concurrently-open streams.
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
   /**
+   * Pages the quality / summary workers take per batch (one bounded batch
+   * per scheduled cycle and per Run Now). Rows `quality_batch_size` /
+   * `summary_batch_size`; default 5, [1, 100]. Replaces the removed
+   * `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` env vars.
+   */
+  qualityBatchSize: z.number().int().min(1).max(100),
+  summaryBatchSize: z.number().int().min(1).max(100),
+  /**
    * Issue #264 — retention (days) for `audit_log` rows where
    * action = 'ADMIN_ACCESS_DENIED'. Consumed by the targeted purge in
    * `data-retention-service.ts :: runAdminAccessDeniedRetention`. Default
@@ -572,6 +580,9 @@ export const UpdateAdminSettingsSchema = z.object({
   reembedHistoryRetention: z.number().int().min(10).max(10_000).optional(),
   // Per-user concurrent SSE-stream cap (#268).
   llmMaxConcurrentStreamsPerUser: z.number().int().min(1).max(20).optional(),
+  /** Worker batch sizes — optional on update; omitted → leave unchanged. */
+  qualityBatchSize: z.number().int().min(1).max(100).optional(),
+  summaryBatchSize: z.number().int().min(1).max(100).optional(),
   /** Issue #264 — optional on update; omitted → leave unchanged. */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
   /**

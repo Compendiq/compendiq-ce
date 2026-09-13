@@ -3,7 +3,8 @@
  *
  * Periodically scans pages and runs LLM quality analysis in batches.
  * Modeled after sync-service.ts: setInterval scheduling, in-memory lock,
- * configurable interval and batch size via env vars.
+ * configurable interval via env var; batch size from admin settings
+ * (`quality_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
  * `quality_status = 'skipped'` recovery:
  *   Pages are marked `'skipped'` in two situations:
@@ -39,10 +40,10 @@ import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { logger } from '../../../core/utils/logger.js';
 import { acquireWorkerLock, releaseWorkerLock, refreshWorkerLock } from '../../../core/services/redis-cache.js';
+import { getWorkerBatchSize } from '../../../core/services/admin-settings-service.js';
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
-const QUALITY_BATCH_SIZE = parseInt(process.env.QUALITY_BATCH_SIZE ?? '5', 10);
 const MAX_RETRIES = 3;
 const LOCK_TTL_SECONDS = 600;
 const LOCK_REFRESH_MS = 60_000;
@@ -312,6 +313,8 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
     );
   }
 
+  const batchSize = await getWorkerBatchSize('quality_batch_size');
+
   // Priority 1: Unscored pages (status = 'pending')
   const pendingResult = await query<{
     id: number;
@@ -327,13 +330,13 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
        AND (body_text IS NOT NULL AND body_text != '')
      ORDER BY last_synced ASC
      LIMIT $1`,
-    [QUALITY_BATCH_SIZE],
+    [batchSize],
   );
 
   // Priority 2: Content changed since last analysis
   let pages = pendingResult.rows;
-  if (pages.length < QUALITY_BATCH_SIZE) {
-    const remaining = QUALITY_BATCH_SIZE - pages.length;
+  if (pages.length < batchSize) {
+    const remaining = batchSize - pages.length;
     const staleResult = await query<{
       id: number;
       body_html: string;
@@ -365,8 +368,8 @@ async function processQualityBatch(assertLockHeld: () => Promise<void>): Promise
   }
 
   // Priority 3: Failed pages (retry up to MAX_RETRIES times)
-  if (pages.length < QUALITY_BATCH_SIZE) {
-    const remaining = QUALITY_BATCH_SIZE - pages.length;
+  if (pages.length < batchSize) {
+    const remaining = batchSize - pages.length;
     const failedResult = await query<{
       id: number;
       body_html: string;
@@ -495,8 +498,8 @@ export function startQualityWorker(intervalMinutes?: number): void {
   }, intervalMs);
 
   logger.info(
-    { intervalMinutes: interval, batchSize: QUALITY_BATCH_SIZE },
-    'Background quality analysis worker started (model resolved at batch time from admin settings)',
+    { intervalMinutes: interval },
+    'Background quality analysis worker started (model and batch size resolved at batch time from admin settings)',
   );
 }
 

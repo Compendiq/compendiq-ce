@@ -31,6 +31,9 @@ const validReadPayload = {
   // can never silently drop the cluster-wide LLM queue settings.
   llmConcurrency: 4,
   llmMaxQueueDepth: 50,
+  // Worker batch sizes — required on read; the Workers tab hydrates from them.
+  qualityBatchSize: 5,
+  summaryBatchSize: 5,
   // Issue #1051 — self-registration policy (required on read).
   registrationMode: 'closed',
   // #1118 — retrieval knobs, required on read. Values are the reader defaults.

@@ -2329,8 +2329,8 @@ That argument no longer holds as of issue #256 (multi-LLM-provider) and #257 (ad
 | Sync | `SYNC_INTERVAL_MINUTES` (15) | All changed pages | N/A | N/A |
 | Embedding | After sync | All dirty pages | `EMBEDDING_MODEL` | N/A |
 | Re-embed-all (#257) | On-demand via `POST /api/admin/embedding/reembed` | All non-folder pages | `EMBEDDING_MODEL` | No automatic retry (fixed `jobId='reembed-all'` collapses concurrent POSTs; admin can re-trigger after completion) |
-| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `QUALITY_BATCH_SIZE` (5) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
-| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `SUMMARY_BATCH_SIZE` (5) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
+| Quality Analysis | `QUALITY_CHECK_INTERVAL_MINUTES` (60) | `admin_settings.quality_batch_size` (5, Settings → AI Models → Workers) | `QUALITY_MODEL` → `DEFAULT_LLM_MODEL` → `qwen3:4b` | 3 (`quality_retry_count`) |
+| Summary | `SUMMARY_CHECK_INTERVAL_MINUTES` (60) | `admin_settings.summary_batch_size` (5, Settings → AI Models → Workers) | `SUMMARY_MODEL` → `DEFAULT_LLM_MODEL` | 3 (`summary_retry_count`) |
 
 #### Legacy worker lifecycle (USE_BULLMQ=false fallback)
 
@@ -2338,7 +2338,7 @@ Describes the `setInterval` path only; the primary BullMQ path is driven by the 
 
 1. **Startup**: `startXxxWorker()` called from `index.ts`, registers `setInterval`
 2. **Initial batch**: Runs 30 seconds after startup via `triggerXxxBatch()` (lock-guarded)
-3. **Interval batches**: Every N minutes, processes up to BATCH_SIZE pages
+3. **Interval batches**: Every N minutes, processes up to the worker's admin-configured batch size (read from `admin_settings` at the start of each batch)
 4. **Priority**: Pending pages first, then stale/changed content, then failed (with retries remaining)
 5. **Shutdown**: `stopXxxWorker()` called on SIGTERM/SIGINT, clears interval
 

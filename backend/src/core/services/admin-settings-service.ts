@@ -1087,6 +1087,40 @@ export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
   return 90;
 }
 
+/**
+ * Pages the quality and summary workers take per batch — one bounded batch
+ * per scheduled cycle and per Run Now; there is no backlog-draining loop.
+ * Rows `quality_batch_size` / `summary_batch_size`, written by the Workers
+ * tab through `PUT /api/admin/settings`. No env var behind them: the former
+ * `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` are gone, not bootstrap-only.
+ *
+ * Clamped to [1, 100]. No caching — read once per batch, and a batch runs at
+ * most once per `*_CHECK_INTERVAL_MINUTES`. Never throws: an unreadable row
+ * answers the default rather than aborting a batch.
+ */
+export const WORKER_BATCH_SIZE_DEFAULT = 5;
+export const WORKER_BATCH_SIZE_MIN = 1;
+export const WORKER_BATCH_SIZE_MAX = 100;
+
+export type WorkerBatchSizeKey = 'quality_batch_size' | 'summary_batch_size';
+
+export async function getWorkerBatchSize(settingKey: WorkerBatchSizeKey): Promise<number> {
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
+      [settingKey],
+    );
+    const raw = r.rows[0]?.setting_value;
+    if (raw) {
+      const n = parseInt(raw, 10);
+      if (Number.isFinite(n) && n >= WORKER_BATCH_SIZE_MIN && n <= WORKER_BATCH_SIZE_MAX) return n;
+    }
+  } catch (err) {
+    logger.warn({ err, settingKey }, 'Failed to read worker batch size — using default');
+  }
+  return WORKER_BATCH_SIZE_DEFAULT;
+}
+
 // ─── LLM queue settings — cluster-wide cached getters (Compendiq/compendiq-ee#113 Phase B-3) ──
 //
 // These wrap `admin_settings.llm_concurrency` and `admin_settings.llm_max_queue_depth`
