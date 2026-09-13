@@ -287,17 +287,23 @@ provider rows:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QUALITY_CHECK_INTERVAL_MINUTES` | `60` | How often the quality analysis worker runs |
-| `QUALITY_BATCH_SIZE` | `5` | Pages analyzed per quality worker cycle |
 | `QUALITY_MODEL` | `DEFAULT_LLM_MODEL` then `qwen3:4b` | **Bootstrap-only** — prefer the Quality use-case assignment under Settings → AI Models |
 | `SUMMARY_CHECK_INTERVAL_MINUTES` | `60` | How often the summary worker scans for pages |
-| `SUMMARY_BATCH_SIZE` | `5` | Max pages to summarize per worker cycle |
 | `SUMMARY_MODEL` | `DEFAULT_LLM_MODEL` then *(disabled)* | **Bootstrap-only** — prefer the Summary use-case assignment. Empty = disabled when no assignment exists. |
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
+Pages per batch for the quality and summary workers is **not** an environment
+variable: set it per worker under **Settings → Workers** (default 5, range
+1–100; `admin_settings.quality_batch_size` / `summary_batch_size`). Each
+scheduled run and each **Run Now** processes at most that many pages; the rest
+wait for the next run. The former `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE`
+variables are ignored.
+
 **Run Now runs one batch, not the entire backlog.** Quality and Summary each
-select up to five candidates by default and process them sequentially. More
-eligible pages wait for the next scheduled cycle (60 minutes by default) or
-another Run Now. Short-content skips can make a batch finish quickly.
+select up to their **Pages per batch** setting (five by default) and process
+them sequentially. More eligible pages wait for the next scheduled cycle
+(60 minutes by default) or another Run Now. Short-content skips can make a
+batch finish quickly.
 
 Both scheduled and manual entrypoints share one lock per worker, renewed
 while inference runs; overlapping triggers do not process the same batch
@@ -2160,7 +2166,7 @@ Migrations run automatically on startup. If a migration fails:
   That means Redis running out of memory stops job enqueue (sync, re-embed,
   summary, quality), not just caching. Watch `used_memory` against `maxmemory`
   in `redis-cli INFO memory`.
-- Reduce `QUALITY_BATCH_SIZE` and `SUMMARY_BATCH_SIZE` to lower worker memory usage.
+- Lower **Pages per batch** for the quality and summary workers under Settings → Workers to lower worker memory usage.
 - Consider increasing Docker container memory limits for the backend if processing large articles.
 
 **Users report "Image staging is temporarily unavailable … near its memory

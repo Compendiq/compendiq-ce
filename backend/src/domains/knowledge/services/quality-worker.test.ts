@@ -280,6 +280,31 @@ describe.skipIf(!dbAvailable)('Quality Worker (DB)', () => {
       expect(result.rows[0].quality_retry_count).toBe(0);
     });
 
+    it('takes at most admin_settings.quality_batch_size pages per run and 5 when the row is absent', async () => {
+      const longContent = 'This is a sufficiently long article body that exceeds the fifty character minimum threshold for quality analysis processing.';
+      for (let i = 0; i < 7; i++) {
+        await query(
+          `INSERT INTO pages (confluence_id, space_key, title, body_text, body_html, quality_status)
+           VALUES ($1, $2, 'Batch Page', $3, $4, 'pending')`,
+          [`batch-${i}`, testSpaceKey, longContent, `<p>${longContent}</p>`],
+        );
+      }
+      await query(
+        `INSERT INTO admin_settings (setting_key, setting_value) VALUES ('quality_batch_size', '2')`,
+      );
+
+      expect(await processBatch()).toEqual({ processed: 2, errors: 0 });
+
+      // No row → the hard default of 5 bounds the remaining backlog.
+      await query(`DELETE FROM admin_settings WHERE setting_key = 'quality_batch_size'`);
+      expect(await processBatch()).toEqual({ processed: 5, errors: 0 });
+
+      const left = await query<{ n: string }>(
+        "SELECT COUNT(*)::text AS n FROM pages WHERE quality_status = 'pending'",
+      );
+      expect(left.rows[0].n).toBe('0');
+    });
+
     it('should not pick up failed pages that have exhausted retries', async () => {
       // Insert a failed page with retry count at MAX_RETRIES (3)
       await query(

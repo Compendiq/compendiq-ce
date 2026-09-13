@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Play, RotateCcw, AlertTriangle, CheckCircle, Clock, Loader2 } from 'lucide-react';
 import { m, useReducedMotion } from 'framer-motion';
+import type { AdminSettings } from '@compendiq/contracts';
 import { apiFetch } from '../../shared/lib/api';
 import { streamSSE } from '../../shared/lib/sse';
 import { AnimatedCounter } from '../../shared/components/effects/AnimatedCounter';
@@ -115,6 +116,84 @@ function useWorkerAction(endpoint: string, successMsg: string) {
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Action failed'),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Batch size — pages the worker takes per scheduled run / Run Now
+// ---------------------------------------------------------------------------
+
+type BatchSizeField = 'qualityBatchSize' | 'summaryBatchSize';
+
+/** Mirrors `WORKER_BATCH_SIZE_*` in the backend admin-settings service. */
+const BATCH_SIZE_DEFAULT = 5;
+const BATCH_SIZE_MIN = 1;
+const BATCH_SIZE_MAX = 100;
+
+function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusKey: string }) {
+  const queryClient = useQueryClient();
+  const { data: settings } = useQuery<AdminSettings>({
+    queryKey: ['admin-settings'],
+    queryFn: () => apiFetch('/admin/settings'),
+  });
+  // Draft-over-server, like EmbeddingTab: `undefined` means "showing the
+  // saved value", so a background refetch never clobbers an unsaved edit.
+  const [draft, setDraft] = useState<number | undefined>(undefined);
+  const saved = settings?.[field] ?? BATCH_SIZE_DEFAULT;
+  const value = draft ?? saved;
+  const dirty = draft !== undefined && draft !== saved;
+
+  const save = useMutation({
+    mutationFn: (size: number) =>
+      apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify({ [field]: size }) }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+      setDraft(undefined);
+      toast.success('Batch size saved — applies from the next run');
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save batch size'),
+  });
+
+  const inputId = `${statusKey}-batch-size`;
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border pt-3">
+      <div className="min-w-0">
+        <label htmlFor={inputId} className="text-xs font-medium">
+          Pages per batch
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <input
+          id={inputId}
+          data-testid={inputId}
+          type="number"
+          min={BATCH_SIZE_MIN}
+          max={BATCH_SIZE_MAX}
+          value={value}
+          disabled={!settings}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (Number.isFinite(v)) {
+              setDraft(Math.max(BATCH_SIZE_MIN, Math.min(BATCH_SIZE_MAX, v)));
+            }
+          }}
+          className="w-20 rounded-[var(--radius-md)] border border-border bg-background px-3 py-1.5 text-right text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+        <Button
+          onClick={() => save.mutate(value)}
+          disabled={!dirty || save.isPending}
+          isLoading={save.isPending}
+          variant="secondary"
+          size="sm"
+          data-testid={`${inputId}-save`}
+        >
+          Save
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -296,7 +375,7 @@ function ProgressBar({ completed, total }: { completed: number; total: number })
 // Worker card
 // ---------------------------------------------------------------------------
 
-function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, rescanDescription, resetFailedEndpoint, normalize }: {
+function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpoint, rescanDescription, resetFailedEndpoint, batchSizeField, normalize }: {
   title: string;
   statusKey: string;
   statusEndpoint: string;
@@ -305,6 +384,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
   /** Per-worker ConfirmDialog copy — must match what the backend rescan route actually does. */
   rescanDescription: string;
   resetFailedEndpoint?: string;
+  /** Which `AdminSettings` field holds this worker's pages-per-batch knob; omit for workers without one. */
+  batchSizeField?: BatchSizeField;
   normalize: StatusNormalizer;
 }) {
   const { data: status, isLoading } = useWorkerStatus(statusKey, statusEndpoint, normalize);
@@ -425,6 +506,8 @@ function WorkerCard({ title, statusKey, statusEndpoint, runEndpoint, rescanEndpo
         </>
       ) : null}
 
+      {batchSizeField && <BatchSizeControl field={batchSizeField} statusKey={statusKey} />}
+
       {usesEmbeddingStream && runNow.isPending && (
         // `--color-status-embedding` resolves to body ink now (it had been
         // byte-identical to `--color-primary`, so ambient pipeline telemetry
@@ -496,6 +579,7 @@ export function WorkersTab() {
         rescanEndpoint="/llm/quality-rescan"
         rescanDescription="Every page is reset to pending and existing quality scores are cleared, then the background worker re-analyzes all pages. This can take a while and uses LLM capacity."
         normalize={normalizeQuality}
+        batchSizeField="qualityBatchSize"
       />
 
       <WorkerCard
@@ -506,6 +590,7 @@ export function WorkersTab() {
         rescanEndpoint="/llm/summary-rescan"
         rescanDescription="Every page is reset to pending and re-summarized by the background worker. Existing summaries stay visible until they are replaced. This can take a while and uses LLM capacity."
         normalize={normalizeSummary}
+        batchSizeField="summaryBatchSize"
       />
 
       <WorkerCard

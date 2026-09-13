@@ -885,6 +885,26 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
   });
 });
 
+describe('PUT /api/admin/settings — worker batch sizes (Settings → Workers)', () => {
+  it('round-trips each size through its own row and reports 5 with no row', async () => {
+    const none = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(none.json())).toMatchObject({ qualityBatchSize: 5, summaryBatchSize: 5 });
+
+    expect((await put({ qualityBatchSize: 40 })).statusCode).toBe(200);
+    expect(rows).toEqual({ quality_batch_size: '40' });
+
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ qualityBatchSize: 40, summaryBatchSize: 5 });
+  });
+
+  it('rejects a size the workers would refuse, rather than saving a lie', async () => {
+    for (const body of [{ qualityBatchSize: 0 }, { summaryBatchSize: 101 }, { summaryBatchSize: 2.5 }]) {
+      expect((await put(body)).statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+});
+
 /**
  * #1285 — `rag_ef_search`, the HNSW `ef_search` floor, joins the panel.
  *

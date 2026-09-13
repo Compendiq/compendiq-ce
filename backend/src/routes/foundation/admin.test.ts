@@ -62,6 +62,9 @@ vi.mock('nodemailer', () => {
 vi.mock('../../core/services/admin-settings-service.js', () => ({
   getEmbeddingDimensions: vi.fn().mockResolvedValue(1024),
   getAdminAccessDeniedRetentionDays: vi.fn().mockResolvedValue(90),
+  // Worker batch sizes — the real row → default cascade is covered in
+  // `admin-retrieval-settings.test.ts` against the real service.
+  getWorkerBatchSize: vi.fn().mockResolvedValue(5),
   // #113 Phase B-3 — synchronous cluster-wide cached getters used by the
   // GET /admin/settings response builder. Test-default values mirror the
   // hardcoded defaults in `admin-settings-service.ts`.

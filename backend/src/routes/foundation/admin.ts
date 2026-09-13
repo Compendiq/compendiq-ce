@@ -16,6 +16,7 @@ import {
 import {
   getEmbeddingDimensions,
   getAdminAccessDeniedRetentionDays,
+  getWorkerBatchSize,
   getLlmConcurrency,
   getLlmMaxQueueDepth,
   getRagFetchWidth,
@@ -400,6 +401,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragAnswerMaxImages,
       imageEmbeddingTargetDimensions,
       efSearch,
+      qualityBatchSize,
+      summaryBatchSize,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -463,6 +466,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // resolved and nothing can be saved — the panel needs to know that to
       // offer the one-key write that retires it.
       resolveRagEfSearch(),
+      // Worker batch sizes — uncached like the retention getters: each is
+      // read once per worker batch, and the batch runs at most hourly.
+      getWorkerBatchSize('quality_batch_size'),
+      getWorkerBatchSize('summary_batch_size'),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -544,6 +551,9 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
       // Per-user concurrent SSE-stream cap (#268)
       llmMaxConcurrentStreamsPerUser,
+      // Pages per batch for the quality / summary workers (Settings → Workers).
+      qualityBatchSize,
+      summaryBatchSize,
       // Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue settings.
       // Read via the cached getters so the response reflects the same value
       // every pod's `_limiter` is using (or will be using within ~1s of any
@@ -709,6 +719,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
         key: 'llm_max_concurrent_streams_per_user',
         value: String(body.llmMaxConcurrentStreamsPerUser),
       });
+    }
+
+    // Worker batch sizes. Zod already enforced [1, 100]; the workers read the
+    // row at the start of their next batch, so no cache to invalidate.
+    if (body.qualityBatchSize !== undefined) {
+      updates.push({ key: 'quality_batch_size', value: String(body.qualityBatchSize) });
+    }
+    if (body.summaryBatchSize !== undefined) {
+      updates.push({ key: 'summary_batch_size', value: String(body.summaryBatchSize) });
     }
 
     // Issue #257 — reembed-all job history retention. Zod already enforced

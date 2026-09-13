@@ -100,6 +100,12 @@ function mockFetch(overrides?: {
       return new Response(JSON.stringify(embedding), { headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (path.includes('/api/admin/settings')) {
+      return new Response(
+        JSON.stringify({ qualityBatchSize: 12, summaryBatchSize: 7 }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     // POST endpoints (run-now, rescan, etc.)
     if (path.includes('/api/llm/')) {
       return new Response(JSON.stringify({ message: 'OK' }), { headers: { 'Content-Type': 'application/json' } });
@@ -284,6 +290,39 @@ describe('WorkersTab', () => {
         },
       );
       expect(postCalls.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('pages per batch', () => {
+    it('hydrates each worker input from admin settings; embedding has none', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-batch-size')).toHaveValue(12);
+        expect(screen.getByTestId('summary-batch-size')).toHaveValue(7);
+      });
+      expect(screen.queryByTestId('embedding-batch-size')).not.toBeInTheDocument();
+      expect(screen.getByTestId('quality-batch-size-save')).toBeDisabled();
+    });
+
+    it('saves only the edited worker field and clamps to the allowed range', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-batch-size')).toHaveValue(12);
+      });
+
+      fireEvent.change(screen.getByTestId('quality-batch-size'), { target: { value: '500' } });
+      expect(screen.getByTestId('quality-batch-size')).toHaveValue(100);
+      fireEvent.click(screen.getByTestId('quality-batch-size-save'));
+
+      await waitFor(() => {
+        const put = fetchSpy.mock.calls.find(([url, opts]) =>
+          String(url).includes('/api/admin/settings') && (opts as RequestInit)?.method === 'PUT',
+        );
+        expect(put).toBeDefined();
+        expect(JSON.parse((put![1] as RequestInit).body as string)).toEqual({ qualityBatchSize: 100 });
+      });
+      await waitFor(() => expect(toastMocks.success).toHaveBeenCalled());
     });
   });
 

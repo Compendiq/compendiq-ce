@@ -6,7 +6,8 @@
  * and generates summaries using the LLM service.
  *
  * Design mirrors sync-service.ts: setInterval scheduling, in-memory lock,
- * configurable batch size and interval.
+ * configurable interval via env var; batch size from admin settings
+ * (`summary_batch_size`, Settings → Workers), read once per batch.
  *
  * NEVER writes summaries back to Confluence — local DB only.
  *
@@ -41,6 +42,7 @@ import {
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { logger } from '../../../core/utils/logger.js';
 import { acquireWorkerLock, releaseWorkerLock, refreshWorkerLock } from '../../../core/services/redis-cache.js';
+import { getWorkerBatchSize } from '../../../core/services/admin-settings-service.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -48,10 +50,6 @@ import { acquireWorkerLock, releaseWorkerLock, refreshWorkerLock } from '../../.
 
 const SUMMARY_CHECK_INTERVAL_MINUTES = parseInt(
   process.env.SUMMARY_CHECK_INTERVAL_MINUTES ?? '60',
-  10,
-);
-const SUMMARY_BATCH_SIZE = parseInt(
-  process.env.SUMMARY_BATCH_SIZE ?? '5',
   10,
 );
 const MAX_RETRIES = 3;
@@ -483,7 +481,7 @@ export async function runSummaryBatch(
       [MIN_BODY_LENGTH],
     );
 
-    const candidates = await findCandidates(SUMMARY_BATCH_SIZE);
+    const candidates = await findCandidates(await getWorkerBatchSize('summary_batch_size'));
     let processed = 0;
     let errors = 0;
 
