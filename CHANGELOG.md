@@ -29,9 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Empty and short lists fit their content; composing hides empty-list guidance,
   and longer lists retain capped scrolling with a visible keyboard focus outline.
 - Pages per batch for the quality and summary workers is now set per worker
-  under Settings → Workers (default 5, range 1–100) and read at the start of
+  under Settings → AI Models → Workers (default 5, range 1–100) and read at the start of
   each batch. The `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` environment
   variables are removed and ignored.
+  The controls preserve edits made during saving, report failed reads with
+  Retry recovery, and use accessible input borders in both themes.
 
 - Child pages lists use two columns by default. The editor toggle still
   switches to a single stack (`columns=1`); Confluence ignores the param.

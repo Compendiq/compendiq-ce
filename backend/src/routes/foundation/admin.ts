@@ -551,7 +551,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
       // Per-user concurrent SSE-stream cap (#268)
       llmMaxConcurrentStreamsPerUser,
-      // Pages per batch for the quality / summary workers (Settings → Workers).
+      // Pages per batch for the quality / summary workers (Settings → AI Models → Workers).
       qualityBatchSize,
       summaryBatchSize,
       // Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue settings.

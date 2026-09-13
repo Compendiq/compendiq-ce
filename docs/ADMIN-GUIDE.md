@@ -293,11 +293,17 @@ provider rows:
 | `SYNC_INTERVAL_MIN` | `15` | Background sync scheduler polling interval (minutes) |
 
 Pages per batch for the quality and summary workers is **not** an environment
-variable: set it per worker under **Settings → Workers** (default 5, range
+variable: set it per worker under **Settings → AI Models → Workers** (default 5, range
 1–100; `admin_settings.quality_batch_size` / `summary_batch_size`). Each
 scheduled run and each **Run Now** processes at most that many pages; the rest
 wait for the next run. The former `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE`
 variables are ignored.
+
+Save applies to the next batch; edits made while saving remain unsaved until
+you save again. If settings cannot be read, the fields stay blank rather than
+claiming the default. **Retry** reloads settings without leaving the page.
+A failed refresh keeps the last loaded settings and any unsaved edits visible
+with a warning.
 
 **Run Now runs one batch, not the entire backlog.** Quality and Summary each
 select up to their **Pages per batch** setting (five by default) and process
@@ -2166,7 +2172,7 @@ Migrations run automatically on startup. If a migration fails:
   That means Redis running out of memory stops job enqueue (sync, re-embed,
   summary, quality), not just caching. Watch `used_memory` against `maxmemory`
   in `redis-cli INFO memory`.
-- Lower **Pages per batch** for the quality and summary workers under Settings → Workers to lower worker memory usage.
+- Lower **Pages per batch** for the quality and summary workers under Settings → AI Models → Workers to lower worker memory usage.
 - Consider increasing Docker container memory limits for the backend if processing large articles.
 
 **Users report "Image staging is temporarily unavailable … near its memory

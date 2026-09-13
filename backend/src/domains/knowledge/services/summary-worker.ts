@@ -7,7 +7,7 @@
  *
  * Design mirrors sync-service.ts: setInterval scheduling, in-memory lock,
  * configurable interval via env var; batch size from admin settings
- * (`summary_batch_size`, Settings → Workers), read once per batch.
+ * (`summary_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
  * NEVER writes summaries back to Confluence — local DB only.
  *

@@ -71,7 +71,7 @@ an article still being processed by a manual run. A configured Redis acquisition
 failure refuses the run; a deployment without a Redis client retains the local
 guard. Lease loss stops the loop before the next article, and release compares
 the ownership token. Batch size is `admin_settings.quality_batch_size` /
-`summary_batch_size` (Settings → Workers), read once at the start of each
+`summary_batch_size` (Settings → AI Models → Workers), read once at the start of each
 batch; cadence stays on the interval env vars, and there is no automatic
 backlog-draining loop. Operator recovery:
 [Background Workers](../ADMIN-GUIDE.md#background-workers).

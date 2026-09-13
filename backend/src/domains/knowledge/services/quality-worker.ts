@@ -4,7 +4,7 @@
  * Periodically scans pages and runs LLM quality analysis in batches.
  * Modeled after sync-service.ts: setInterval scheduling, in-memory lock,
  * configurable interval via env var; batch size from admin settings
- * (`quality_batch_size`, Settings → Workers), read once per batch.
+ * (`quality_batch_size`, Settings → AI Models → Workers), read once per batch.
  *
  * `quality_status = 'skipped'` recovery:
  *   Pages are marked `'skipped'` in two situations:

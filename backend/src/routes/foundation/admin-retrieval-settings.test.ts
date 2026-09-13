@@ -885,7 +885,7 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
   });
 });
 
-describe('PUT /api/admin/settings — worker batch sizes (Settings → Workers)', () => {
+describe('PUT /api/admin/settings — worker batch sizes (Settings → AI Models → Workers)', () => {
   it('round-trips each size through its own row and reports 5 with no row', async () => {
     const none = await app.inject({ method: 'GET', url: '/api/admin/settings' });
     expect(AdminSettingsSchema.parse(none.json())).toMatchObject({ qualityBatchSize: 5, summaryBatchSize: 5 });
