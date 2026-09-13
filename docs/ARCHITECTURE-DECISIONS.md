@@ -3695,4 +3695,12 @@ Missing WebGPU, a cold cache, or a failed load falls through to the existing
 server paths. Dual opt-in (admin + user) defaults off. No Hugging Face Hub,
 no new ADR-021 use case, no COEP.
 
+The local-only editor gate admits eligible requests before the worker is ready,
+allowing the request path to warm OPFS after reload/unload without a server
+assignment. The worker uses the installed tokenizer's chat template with
+thinking disabled for inline completion and disposes the pipeline on unload.
+Transformers v4's matching ORT runtime is the asyncify pair; nginx serves its
+`.mjs` as JavaScript. `useWasmCache` is off to avoid executable blob imports
+without weakening CSP; model weights remain in OPFS.
+
 See `docs/runbooks/client-inference.md`.

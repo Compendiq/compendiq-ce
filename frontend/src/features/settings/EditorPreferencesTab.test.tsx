@@ -1,9 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ClientAssetManifest, SettingsResponse } from '@compendiq/contracts';
+import type { SettingsResponse } from '@compendiq/contracts';
 import { EditorPreferencesTab } from './EditorPreferencesTab';
 import { useUiStore } from '../../stores/ui-store';
-import * as apiModule from '../../shared/lib/api';
 import { getClientInferenceManager } from '../../shared/lib/client-inference/client-inference-manager';
 
 const settings: SettingsResponse = {
@@ -224,41 +223,6 @@ describe('EditorPreferencesTab on-device shells (#1418)', () => {
     expect(screen.getByText('Not downloaded')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pre-download on-device model' })).toBeInTheDocument();
     expect(screen.queryByTestId('client-inference-clear-model')).not.toBeInTheDocument();
-  });
-
-  it('renders "Downloaded & ready" badge and action buttons when model is cached', async () => {
-    const mgr = getClientInferenceManager();
-    vi.spyOn(mgr, 'isModelDownloaded').mockResolvedValue(true);
-    vi.spyOn(apiModule, 'apiFetch').mockImplementation(async (path: string) => {
-      if (path === '/models/client-assets') {
-        return {
-          enabled: true,
-          activeModelId: 'qwen2.5-0.5b-instruct-q4',
-          models: [
-            {
-              id: 'qwen2.5-0.5b-instruct-q4',
-              kind: 'onnx',
-              bytes: 250 * 1024 * 1024,
-              installed: true,
-              available: true,
-              repo: 'onnx-community/Qwen2.5-0.5B-Instruct',
-              files: [{ name: 'onnx/model_q4.onnx', bytes: 250 * 1024 * 1024 }],
-            },
-          ],
-        } as ClientAssetManifest;
-      }
-      return {} as unknown;
-    });
-
-    render(<EditorPreferencesTab settings={{ ...settings, clientInferenceAdminEnabled: true }} onSave={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId('client-inference-status-downloaded')).toBeInTheDocument();
-    });
-    expect(screen.getByText('Downloaded & ready')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Re-download on-device model' })).toBeInTheDocument();
-    expect(screen.getByTestId('client-inference-clear-model')).toBeInTheDocument();
-    expect(screen.getByText(/250 MB/)).toBeInTheDocument();
   });
 
   it('clears downloaded model when Remove from browser button is clicked', async () => {

@@ -61,6 +61,18 @@ N named `openai-compatible` providers in `llm_providers` table, configured via S
 
 **Client inference (#1418 / ADR-026) is not an ADR-021 use case.** The browser WebGPU SLM never inherits, never talks to Hugging Face, and falls through to #1417 / `/llm/improve` when it is not ready. Unassigned `inline_completion` plus the Editor setting “Use on-device suggestions when no server model is assigned” (default on) may run local ghost text only when the worker is ready. Hunspell EN/DE is a separate MIT worker, not GPU. Runbook: `docs/runbooks/client-inference.md`.
 
+The editor's availability gate checks GPU eligibility, not worker readiness:
+the completion path must remain reachable to warm a cached local-only model
+after a reload, hidden tab, or idle unload. Render only completed inference.
+Transformers v4 uses ORT's **asyncify** WebGPU runtime, not JSEP; keep its
+`.mjs` JavaScript MIME type and `.wasm` same-origin, and disable
+`env.useWasmCache` because that cache imports executable `blob:` URLs which
+CSP deliberately refuses. Inline generation applies the installed tokenizer's
+chat template with `enable_thinking: false`; never spend the 8/48-token budget
+on reasoning or render it as ghost text. Unload must await pipeline disposal,
+not just drop its reference: otherwise reload can fail with `std::bad_alloc`.
+Downloaded bytes are not GPU readiness; settings must not claim they are.
+
 Server inline completion disables reasoning in two steps. The first request
 carries `nonThinkingExtras` (`think: false`,
 `chat_template_kwargs.enable_thinking: false`) — fields tolerant hosts

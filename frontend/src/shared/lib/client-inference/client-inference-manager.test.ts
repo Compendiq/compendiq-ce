@@ -123,6 +123,40 @@ describe('ClientInferenceManager (#1418)', () => {
     });
   });
 
+  it('can warm a cached local-only model through the editor availability gate', async () => {
+    const worker = new FakeWorker();
+    const mgr = compactManager(worker);
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    await mgr.ensureProbed();
+    const args = {
+      input: { prefix: 'The capital of France is ', maxTokens: 8 },
+      signal: new AbortController().signal,
+      assigned: false,
+      withoutServer: true,
+      wordMode: true,
+    };
+    try {
+      // The editor never calls decideComplete while this gate is closed.
+      expect(mgr.decideGhostAvailability(false, true)).toBe(true);
+      await mgr.decideComplete(args);
+      await waitForLoad(worker);
+      await Promise.resolve();
+      expect((await mgr.decideComplete(args)).kind).toBe('local');
+
+      // Returning to a hidden tab must not strand the same cached model.
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      visibility.mockRestore();
+      expect(mgr.isReady()).toBe(false);
+      expect(mgr.decideGhostAvailability(false, true)).toBe(true);
+      await mgr.decideComplete(args);
+      await vi.waitFor(() => expect(mgr.isReady()).toBe(true));
+      expect((await mgr.decideComplete(args)).kind).toBe('local');
+    } finally {
+      mgr.dispose();
+    }
+  });
+
   it('stays off when unassigned and withoutServer is false (SPEC-018)', async () => {
     const worker = new FakeWorker();
     const mgr = compactManager(worker);
@@ -267,6 +301,38 @@ describe('ClientInferenceManager (#1418)', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(worker.messages.filter((m) => m.type === 'load').length).toBeGreaterThan(1);
+  });
+
+  it('rejects predownload when cached bytes cannot start the GPU model', async () => {
+    const worker = new FakeWorker({ autoReady: false });
+    const mgr = new ClientInferenceManager({
+      createWorker: () => worker as unknown as Worker,
+      probe: async () => COMPACT,
+      fetchManifest: async () => ({
+        enabled: true,
+        models: [{
+          id: 'qwen2.5-0.5b-instruct-q4',
+          kind: 'onnx',
+          bytes: 1,
+          installed: true,
+          available: true,
+          files: [{ name: 'config.json', bytes: 1 }],
+        }],
+      }),
+      downloadFile: async () => new Blob(['x']),
+      fetchOrgPolicy: async () => INACTIVE_POLICY,
+    });
+    mgr.setFlags({ adminEnabled: true, userEnabled: true });
+    try {
+      const downloading = mgr.predownload();
+      const rejected = expect(downloading).rejects.toThrow(/could not start/);
+      const load = await waitForLoad(worker);
+      worker.emit({ id: load.id, type: 'error', code: 'webgpu', message: 'module import failed' });
+      await rejected;
+      expect(mgr.isReady()).toBe(false);
+    } finally {
+      mgr.dispose();
+    }
   });
 
   it('coalesces concurrent load posts', async () => {

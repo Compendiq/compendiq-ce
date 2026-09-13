@@ -12,6 +12,7 @@ function emptyEnv(): TransformersEnvLike {
     remoteHost: 'https://huggingface.co/',
     remotePathTemplate: '{model}/resolve/{revision}/',
     useBrowserCache: true,
+    useWasmCache: true,
     useCustomCache: false,
     customCache: null,
     fetch,
@@ -38,6 +39,7 @@ describe('configureClientInferenceEnv', () => {
     expect(env.useCustomCache).toBe(true);
     expect(env.customCache).toBe(cache);
     expect(env.useBrowserCache).toBe(false);
+    expect(env.useWasmCache).toBe(false);
     expect(env.allowLocalModels).toBe(false);
   });
 });

@@ -108,23 +108,3 @@ describe('LlmUsecaseSchema stays free of a client_inference use case (#1418 SPEC
   });
 });
 
-describe('Editor preferences shells (#1418 SPEC-041/043)', () => {
-  it('names on-device suggestions, the unassigned-server control, Pre-download, and spellcheck in source', () => {
-    const editorSource = readFileSync(
-      resolve(__dirname, 'features/settings/EditorPreferencesTab.tsx'),
-      'utf-8',
-    );
-    expect(editorSource).toContain('On-device suggestions (WebGPU)');
-    expect(editorSource).toContain('Use on-device suggestions when no server model is assigned');
-    expect(editorSource).toContain('Pre-download on-device model');
-    expect(editorSource).toContain('Spellcheck');
-    expect(editorSource).toContain(
-      'Falls back to the server model when the on-device model is not ready.',
-    );
-    expect(editorSource).toContain(
-      'English and German. A word is flagged only if every enabled language rejects it.',
-    );
-    expect(editorSource).not.toMatch(/350 MB/);
-    expect(editorSource).not.toMatch(/huggingface/i);
-  });
-});

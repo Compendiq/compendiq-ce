@@ -153,9 +153,11 @@ export class ClientInferenceManager {
   decideGhostAvailability(assigned: boolean, withoutServer: boolean): boolean {
     const policy = this.orgPolicy ?? INACTIVE_ORG_POLICY;
     if (policy.active && policy.mode === 'disabled_server_only') return assigned;
-    if (policy.active && policy.mode === 'mandated_offline_only') return this.isReady();
+    // Eligibility, not readiness: decideComplete warms the cached worker.
+    // Requiring isReady here prevents that path after reload/idle unload.
+    if (policy.active && policy.mode === 'mandated_offline_only') return this.canUseGpu();
     if (assigned) return true;
-    return this.userEnabled && withoutServer && this.isReady();
+    return withoutServer && this.canUseGpu();
   }
 
   async decideComplete(args: {
@@ -270,6 +272,9 @@ export class ClientInferenceManager {
     }
     this.loadFailed = false;
     await this.startLoad();
+    if (this.loadFailed) {
+      throw new Error(`The model is downloaded, but on-device inference could not start (${this.lastError?.code ?? 'load'}). Check browser WebGPU support and retry.`);
+    }
   }
   async isModelDownloaded(modelId?: string, files?: string[]): Promise<boolean> {
     if (this.opts.hasCache) {

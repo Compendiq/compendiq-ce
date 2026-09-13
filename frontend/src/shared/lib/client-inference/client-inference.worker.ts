@@ -1,3 +1,4 @@
+import type { TextGenerationPipeline } from '@huggingface/transformers';
 import {
   buildContinuationPrompt,
   normalizeInlineCompletion,
@@ -8,7 +9,7 @@ import { opfsTransformersCache } from './opfs-model-cache';
 import { ortWasmPaths } from './ort-wasm-urls';
 import { CLIENT_INFERENCE_MODEL_ID, type WorkerEvent, type WorkerRequest } from './worker-protocol';
 
-let generator: ((input: unknown, gen?: Record<string, unknown>) => Promise<unknown>) | null = null;
+let generator: TextGenerationPipeline | null = null;
 let loadedModel: string | null = null;
 const aborted = new Set<string>();
 let configured = false;
@@ -54,6 +55,7 @@ async function onRequest(msg: WorkerRequest): Promise<void> {
     return;
   }
   if (msg.type === 'unload') {
+    await generator?.dispose();
     generator = null;
     loadedModel = null;
     return;
@@ -70,10 +72,17 @@ async function onRequest(msg: WorkerRequest): Promise<void> {
       return;
     }
     if (msg.type === 'complete') {
-      const prompt = buildContinuationPrompt(msg.prefix, msg.suffix);
+      // Use the installed model's chat template. A bare instruct prompt can
+      // produce a leading newline (discarded by the one-line rule), and Qwen3
+      // otherwise spends the short inline budget on reasoning.
+      const prompt = generator.tokenizer.apply_chat_template(
+        [{ role: 'user', content: buildContinuationPrompt(msg.prefix, msg.suffix) }],
+        { tokenize: false, add_generation_prompt: true, enable_thinking: false },
+      );
       const output = await generator(prompt, {
         max_new_tokens: Math.min(64, msg.maxTokens),
         return_full_text: false,
+        do_sample: false,
       });
       if (aborted.has(msg.id)) {
         post({ id: msg.id, type: 'error', code: 'aborted', message: 'aborted' });
