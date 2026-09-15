@@ -161,13 +161,14 @@ erDiagram
         text format "sniffed: png | jpeg | webp | gif"
         text status "pending | analyzed | failed | failed_terminal | skipped"
         text skip_reason "missing | unsupported | oversized | too_large | external | capped"
-        uuid provider_id FK "inference identity (ADR-027 D5) with model and base_url; recorded per attempt"
+        uuid provider_id FK "the RETAINED identity (ADR-027 D5/D7) with model and base_url, stamped per attempt; the worker refuses to call when the live assignment resolves elsewhere"
         text identity_hash "sha256 over the three identity fields; valid only while it equals the retained identity"
         int prompt_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_PROMPT_VERSION"
         int schema_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_SCHEMA_VERSION"
         jsonb payload "ImageAnalysisPayloadV1, validated before write; kept across a sweep re-pend, NULLed on new bytes"
         int analysis_version "+1 per successful payload write"
-        int attempts "failures since the last success; deterministic classes go terminal at 5"
+        int attempts "failures since the last success, Retry failed or new bytes; deterministic classes go terminal at 5"
+        timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
         text error "failure class; admin-only"
     }
 
@@ -753,12 +754,18 @@ together, which matters most for #1114's query-side prefix.
   language change, and combined with `pages.tsv` at query time so a lexical
   page hit resolves to the matching chunk (ADR-027 D10). No runtime DDL, no
   second vector width, no third RRF leg. The worker's batch is sweep →
-  reconcile → analyze, and only the analyze step needs the assignment: an
-  unassigned instance still re-pends replaced images, drops rows for removed
-  references and takes rows that fail the validity predicate (identity or
-  version changed) out of composition, so a pause never composes an obsolete
-  description (ADR-027 D7/D13). Deterministic failures stop at five attempts
-  (`failed_terminal`). Readiness is derived from the rows
+  reconcile → analyze, and only the analyze step needs the assignment — and
+  it needs the assignment to resolve to the SAME identity the settings row
+  retains, or it skips with `identity_drift` and writes nothing (a provider
+  `base_url` edit is a pause ended by the operator's re-check, never a
+  per-batch loop): an unassigned or drifted instance still re-pends replaced
+  images, drops rows for removed references, takes rows that fail the
+  validity predicate (identity or version changed) out of composition and
+  flips re-pended rows whose kept payload is valid again back to `analyzed`
+  without a call (`reused`), so a pause never composes an obsolete
+  description and a rollback loses nothing (ADR-027 D7/D13). Deterministic
+  failures stop at five attempts (`failed_terminal`); a provider-level 4xx
+  ends the batch and re-probes instead. Readiness is derived from the rows
   (`none | pending | partial | complete | failed | skipped`) beside
   `NOT embedding_dirty` for "analysis complete, text embedding pending".
   Design of record: ADR-027 in `docs/ARCHITECTURE-DECISIONS.md`.
