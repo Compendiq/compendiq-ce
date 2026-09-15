@@ -3979,7 +3979,7 @@ contract *(epic)*. Zod schema in
 {
   schemaVersion: 1,
   kind: 'screenshot' | 'diagram' | 'chart' | 'table' | 'photo' | 'other',
-  language: string,          // BCP-47 primary tag of the visible text, or 'none'
+  language: string,          // ≤ 16 chars: BCP-47 tag of the visible text ('de', 'de-CH', 'zh-Hant'), or 'none'
   description: string,       // ≤ 1200 chars, retrieval-oriented, only what is visible
   visibleText: string,       // ≤ 2500 chars, verbatim transcription in reading order, '' when none
   structured?: {             // at most ONE block, and only the one matching `kind`
@@ -3993,14 +3993,24 @@ contract *(epic)*. Zod schema in
 }
 ```
 
+Every string bound above is on the **emitted** length — the JSON-encoded
+string without its quotes, `JSON.stringify(s).length - 2` — so a line break
+or a quote inside `visibleText` costs the two characters the model actually
+writes (`\n`, `\"`), not one. The Zod schema refines each bound that way (a
+`max` on the raw length would admit a 2,500-character transcription that
+encodes to 5,000), which is what makes the budget below exact rather than
+"plus escapes".
+
 **Output budget invariant.** The bounds are sized against the token ceiling,
 not the other way round, and the rate they are sized at is the floor, not
-an average. The largest conforming JSON of any kind is ≤ 8,150
-characters — table: ≈ 80 (fixed fields) + 1,200 + 2,500 + 3,120 (30 rows
-with quotes and commas) + 720 + ≈ 300 (keys, escapes) = 7,920; diagram: the
-same with 3,350 for nodes and edges = 8,150; chart ≈ 5,800 — which at
-**one token per character** is under `IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` =
-8,192. One per character is the honest floor for the classes the epic
+an average. The largest conforming JSON of any kind — every string at its
+emitted bound, `language` at 16, the keys and punctuation of the encoding
+counted — is exact, not estimated: **table 7,671**, **diagram 8,116**,
+**chart 5,611**, and 4,557 for the kinds that carry no block; the largest,
+8,116, at **one token per character** is under
+`IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` = 8,192 by 76 characters, and because
+the bounds are on emitted length there is no escape residual outside that
+figure. One per character is the honest floor for the classes the epic
 targets: the O8 candidate's pre-tokenizer (`tokenizer.json`, a bare
 `\p{N}` alternative in its split regex) emits one token per **digit**, and
 the repo's own `CHARS_PER_TOKEN` comment (`embedding-service.ts:56`) records
@@ -4012,10 +4022,12 @@ vocabulary carries only as byte fragments (emoji, combining sequences,
 scripts outside its merges — not Latin, German or the digits and
 punctuation of a table); it is handled as `truncated` below, not assumed
 away. #1615's schema test builds the maximal payload of each kind with
-every string at its bound and filled from the one-token-per-character
-alphabet (digits and separators) and asserts
+every string at its emitted bound and filled from the one-token-per-character
+alphabet (digits and separators, which encode to themselves) and asserts
 `JSON.stringify(payload).length ≤ IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` — a
-token bound at the floor rate, where the two constants compare directly. It
+token bound at the floor rate, where the two constants compare directly;
+the four figures above are what it computes, and a bound that moves moves
+them. It
 deliberately uses **no model tokenizer** (the contract is provider-agnostic)
 and neither of the repo's estimators: `CHARS_PER_TOKEN` (3) sizes chunks
 and `estimateTokens` (4 chars/token, `llm-audit-hook.ts`) prices audits;
@@ -4027,9 +4039,11 @@ payload the floor covers; it is a reply that ignored the bounds — and at
 `truncated` is a deterministic failure class below (the retry is the same
 reply, the cap stops paying for it), not a transient one. The served model
 must admit the ceiling: `max_model_len` ≥ visual tokens + prompt + 8,192
-(≈ 10k; every O8 candidate has 32k or more), and a server that refuses it
-answers 400 on every image, which the card shows as a corpus-wide
-`rejected` count and the runbook names. A typical payload is a few hundred
+(≈ 10k; every O8 candidate has 32k or more). A server that refuses it
+answers 400 on every image — a server fact arriving as a per-request
+status, which is why D13's uniform-rejection stop ends the batch after
+three identical `rejected` answers, names the status on the card, and
+the runbook names the remedy. A typical payload is a few hundred
 tokens; the ceiling is a bound, not the norm, and O11's budget is stated as
 a corpus mean for that reason.
 
@@ -4073,16 +4087,28 @@ substantive), **refused** (the reply matches the provider refusal patterns
 'length'`: a reply that ignored the bounds, or in the residual case above
 spent more than a token per character — either way the same request cuts
 at the same place), **rejected** (a 4xx the provider attributes to *this
-request body*: 400, 413, 415, 422 — payload too large, unsupported image,
-an invalid content part, a ceiling the served context refuses). The sixth,
-**transient** class (`unavailable`) is a transport error, timeout, 408,
-429, 5xx, open breaker, **or a provider-level 4xx — 401, 403, 404 (unknown
-model or path), 402** — statuses that are facts about the endpoint or the
-key, not about the image, so they never go terminal and, uniquely, end the
-batch and re-run the capability probe (D13). All six leave the row
+request body*: **exactly** 400, 413, 415, 422 — payload too large,
+unsupported image, an invalid content part, a ceiling the served context
+refuses). The sixth, **transient** class (`unavailable`) is everything
+else that is not a reply: a transport error, timeout, open breaker, 408,
+429, any 5xx, **and every other 4xx** — 401, 402, 403, 404 (unknown model
+or path) by name, and 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431,
+451 or any status this ADR does not list by the **default arm**. The
+classing is total: the implementer's `switch` has one `case` list for
+`rejected`, one for the statuses that keep the batch running (408, 429,
+5xx, non-HTTP failures), and a `default` that is the **provider-level**
+treatment — `unavailable` for the row, and the batch **ends** before its
+next call and re-runs the capability probe (D13). The default goes to the
+side that stops spending: a status this ADR did not foresee is a fact
+about the endpoint until an operator has looked, costs one call per batch
+at most, never goes terminal, and `error` carries the status
+(`unavailable:405`) so the card can show it. All six leave the row
 `failed`, in D13's backoff, re-selected as work when due; a deterministic
 class at the attempt cap moves the row to `failed_terminal` (D13); none is
-ever composed.
+ever composed. One more stop is batch-level, not per row: when the first
+**three** calls of a batch all fail `rejected` with the **same** status,
+the fact is about the server, not three images (D13's uniform-rejection
+stop).
 
 **D9 — `embedPage` composes authored and derived chunks in one pass, and
 these are the composition rules.** In order:
@@ -4233,13 +4259,19 @@ is three steps, in order:
    page the same way, and is counted as **`reused`**, the word the card
    shows — the flip needs no model, so it is never behind the step-3 gate,
    and a bump-then-rollback during a pause leaves nothing valid out of
-   composition. Also in this step, a `failed_terminal` row whose recorded
-   identity or versions differ from the current ones returns to `failed`
-   with `attempts = 0, next_attempt_at = NOW()` — due at once; a new model
-   or prompt gets a fresh attempt budget. All three are one
-   `UPDATE … RETURNING page_id` each, idempotent, and no-ops when nothing
-   changed — the mechanism that makes "an obsolete description is never
-   composed" true without a settings rewrite on deploy.
+   composition. Also in this step, every `failed` **or** `failed_terminal`
+   row whose recorded identity or versions differ from the current ones
+   becomes `failed` with `attempts = 0, next_attempt_at = NOW()` — due at
+   once, with a fresh attempt budget: what failed under the old model or
+   prompt is no evidence about the new one, and a stale `failed` row would
+   otherwise carry its old count (one attempt from terminal) and its old
+   backoff (up to 24 h) into an identity it has never been tried under,
+   behind the terminal rows the sweep made due at once. The `UPDATE`'s
+   `WHERE` excludes a row already in that state (`failed`, `attempts = 0`,
+   due), so a gate-shut instance does not rewrite it every batch. All three
+   are one `UPDATE … RETURNING page_id` each, idempotent, and no-ops when
+   nothing changed — the mechanism that makes "an obsolete description is
+   never composed" true without a settings rewrite on deploy.
 2. **Reconcile** every dirty page (D6.2; cheap: hashes and rows).
 3. **Analyze** up to the batch size of work rows.
 
@@ -4253,7 +4285,11 @@ the batch returns
 `{ processed: 0, reused, skipped, failed: 0, terminal: 0, reason: 'unassigned' | 'capability' | 'identity_drift' }`
 carrying the sweep's and reconcile's counts — the result shape is the same
 on every path (the #1612 review's open warning is closed here rather than
-inherited). The third term is what pins the row's identity source: **every
+inherited). A batch that opened the gate and then **stopped early** (the
+two stops below) returns the same shape with its real counts and
+`reason: 'provider_status' | 'uniform_rejection'` plus `httpStatus`; a
+batch that ran to its size carries no `reason`. The third term is what
+pins the row's identity source: **every
 row the worker writes carries the retained identity** — the D7 snapshot,
 the hash composition compares against — and the equality check is what
 makes that also the identity the bytes went to. A provider `base_url` edit
@@ -4269,12 +4305,16 @@ replaced image is still re-pended and its old text dropped, a removed
 reference still loses its row, a stale row still leaves composition, a
 returned identity still gets its payloads back; only the vision call waits.
 
-Work rows are `status = 'pending'`, or `status = 'failed' AND next_attempt_at <= NOW()`,
-pending first, then oldest `next_attempt_at`, `LIMIT` batch size (the
-partial work index below serves exactly this). A `failed` row always has a
-`next_attempt_at` (migration 115's CHECK): the backoff, or `NOW()` when
-**Retry failed** or the sweep returned it — so there is no `failed` row the
-query cannot reach. The row invariant behind reuse: the identity columns
+**Work predicate** — the one definition of "due" (the worker's selection,
+the partial index; the readiness section below deliberately does not read
+it): a row is **work** when
+`status = 'pending'`, or `status = 'failed' AND next_attempt_at <= NOW()`.
+Step 3 selects work rows pending first, then oldest `next_attempt_at`,
+`LIMIT` batch size (the partial work index below serves exactly this). A
+`failed` row always has a `next_attempt_at` (migration 115's CHECK): the
+backoff, or `NOW()` when **Retry failed** or the sweep returned it — so
+there is no `failed` row the predicate cannot reach. The row invariant
+behind reuse: the identity columns
 describe the **last attempt**, and `payload` is non-NULL only when it was
 produced under exactly those columns — a success writes both, a failure
 writes the identity columns and NULLs `payload`, the reconcile NULLs
@@ -4294,22 +4334,49 @@ not evidence that a sixth will differ, and the alternative was one vision
 call per such image per day, forever. `unavailable` never goes terminal (it
 is a fact about the provider, not the image), but it does count in
 `attempts`, so an outage shortens a row's deterministic budget — the
-direction that stops spending, and **Retry failed** restores it. A
-**provider-level** 4xx (D8: 401, 403, 404, 402) is `unavailable` for the row
-it hit and additionally **ends the batch** before the next call and re-runs
+direction that stops spending, and **Retry failed** restores it. Every 4xx
+**outside** D8's `rejected` list — 401, 402, 403, 404 by name and every
+other 4xx by D8's default arm — is **provider-level**: `unavailable` for the
+row it hit, `error = 'unavailable:<status>'`, and additionally **ends the
+batch** before the next call (`reason: 'provider_status'`) and re-runs
 `refreshVisionCapability` for the pair: rows not yet attempted are not
 charged, and a verdict other than `true` shuts the gate (`capability`) until
 the operator's re-check restores it — a bad key or a renamed model costs one
-call, not five per image corpus-wide. Success resets `attempts = 0`.
+call, not five per image corpus-wide. The **uniform-rejection stop** is the
+same treatment for a server fact that arrives as a per-request `rejected`
+status: when the first `IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT` (**3**) calls of
+a batch all fail `rejected` with one HTTP status and nothing in the batch
+has succeeded, the batch ends before its next call, those three rows are
+rewritten `failed (unavailable:<status>)` — same backoff, attempts already
+counted, never terminal, because a fact about the server is not evidence
+about the images — the probe re-runs exactly as above, and the result
+carries `reason: 'uniform_rejection', httpStatus`. Three, because one
+rejection is any image, two can be two bad images in a row, and three
+identical statuses before any success is the shape of `max_model_len`
+refusing the ceiling (400 on every image, D8) or a text model swapped in
+behind the vision model's name (415 on every image — the probe's own
+unconditional "not vision" status, `vision-probe.ts`, so that re-probe shuts
+the gate); a false trip costs one batch delayed to the next cadence, a
+missed one at most two more cheap calls. Without it a server fact cost five
+calls per image corpus-wide, `failed_terminal` everywhere, and a manual
+**Retry failed** after the fix. The operator surface is the card's last-run
+line, from the batch result: *"Stopped after 3 images: the provider
+rejected each with HTTP 400. This is a server-side limit, not the images —
+check `max_model_len` and the served model, then Run Now; Retry failed
+makes the three rows due at once."* Success resets `attempts = 0`.
 Terminal rows are counted apart from `failed` on the card and in the batch
 result (`failed` is the batch's failures, `terminal` the rows that hit the
 cap in it), and leave `failed_terminal` only three ways, each of which makes
 the row selectable at once: the sweep (identity or version changed:
-`failed, attempts = 0, next_attempt_at = NOW()`), **Retry failed**
+`failed, attempts = 0, next_attempt_at = NOW()` — the same write it gives a
+stale non-terminal `failed` row, step 1), **Retry failed**
 (`status = 'failed', attempts = 0, next_attempt_at = NOW()` for every
 `failed` and `failed_terminal` row in scope — the `error` class stays
 readable on the inspection route until the next attempt overwrites it), or
-a reconcile that sees new bytes (`pending`, budget reset). Per-image
+a reconcile that sees new bytes (`pending`, budget reset). The attempt
+budget therefore has exactly four resetters — success, Retry failed, new
+bytes, and the sweep's return of a row whose identity or versions changed —
+and the `attempts` column comment lists the same four. Per-image
 failures are counted apart from processed and skipped, and a batch with
 errors fails the BullMQ job with its partial counts and **no provider
 bodies**. Inference goes through the shared LLM queue and the per-provider
@@ -4390,12 +4457,16 @@ CREATE TABLE IF NOT EXISTS page_image_analyses (
   -- write and by the reconcile when the bytes change; kept across a sweep re-pend so a return to
   -- the same identity is `reused`, not re-analyzed. The chunk text is derived from it at embed time (D8/D9).
   payload          JSONB,                          -- ImageAnalysisPayloadV1, validated before write
-  analysis_version INTEGER      NOT NULL DEFAULT 0, -- +1 on every successful payload write
-  attempts         INTEGER      NOT NULL DEFAULT 0, -- failures since the last success, Retry failed, or new bytes (D13)
-  -- Due time while failed: the backoff, or NOW() when Retry failed / the sweep return a terminal row
-  -- (due at once). NULL for every other status; the CHECK below makes "failed but never due" unrepresentable.
+  analysis_version INTEGER      NOT NULL DEFAULT 0, -- +1 on every successful payload write; a sweep-inverse flip (reused) does not bump it
+  -- Failures since the last reset. Four resetters (D13): success, Retry failed, new bytes, and the
+  -- sweep returning a failed / failed_terminal row whose identity or versions changed.
+  attempts         INTEGER      NOT NULL DEFAULT 0,
+  -- Due time while failed: the backoff, or NOW() when Retry failed / the sweep return a row (due at
+  -- once). NULL for every other status; the CHECK below makes "failed but never due" unrepresentable.
   next_attempt_at  TIMESTAMPTZ,
-  error            TEXT,                           -- failure class + category; admin-only; never the provider body
+  -- Failure class (D8), with the HTTP status when one was received: 'rejected:413', 'unavailable:404',
+  -- 'malformed'. Admin-only; never the provider body.
+  error            TEXT,
   analyzed_at      TIMESTAMPTZ,
   created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -4407,7 +4478,7 @@ CREATE TABLE IF NOT EXISTS page_image_analyses (
   CHECK (status <> 'skipped' OR skip_reason IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS page_image_analyses_page_id_idx ON page_image_analyses (page_id);
--- The worker's question: "what is pending, or failed and due?"
+-- The worker's question, D13's work predicate: "what is pending, or failed and due?"
 CREATE INDEX IF NOT EXISTS page_image_analyses_work_idx
   ON page_image_analyses (next_attempt_at) WHERE status IN ('pending', 'failed');
 
@@ -4478,17 +4549,21 @@ route, read by composition and readiness; **not** seeded), `image_analysis_batch
 ```mermaid
 flowchart LR
   W[image reference or byte writer<br/>sync, import, edit, upload, restore, sweep, lazy re-fetch] -->|raise| F[pages.image_analysis_dirty]
-  SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused] -->|re-pend| P[status pending]
+  SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused;<br/>failed or failed_terminal rows under an old identity or version: failed, attempts 0, due now] -->|re-pend| P[status pending]
   SW --> B[pages.image_analysis_revision+1<br/>pages.embedding_dirty = TRUE]
+  SW -->|stale failed or terminal row| FL
   F --> R[reconcile, second step, runs assigned or not:<br/>claim flag, enumerate body_html refs, sha256 bytes, upsert rows]
   R -->|new or changed hash| P
   R -->|policy or format| S[status skipped + reason]
   R -->|ref gone| X[row deleted]
-  P -->|sweep: kept payload passes the predicate, no call| OK[status analyzed, identity + versions, analysis_version+1]
+  P -->|sweep inverse: kept payload passes the predicate, no call, status only| RU[status analyzed again = reused<br/>payload, identity, versions, analysis_version unchanged]
   P -->|assigned, verdict true, resolved identity = retained| A[analyze, third step: chat completion with data-URL image,<br/>validate, commit WHERE content_hash matches]
-  A -->|ok| OK
+  A -->|ok| OK[status analyzed, identity + versions stamped, analysis_version+1]
   A -->|unavailable, or a deterministic class below the cap| FL[status failed, attempts+1, backoff due]
   A -->|deterministic class at attempts = 5| FT[status failed_terminal<br/>until the sweep, Retry failed or new bytes make it due]
+  A -->|4xx outside the rejected list, or 3 identical rejected statuses first| ST[batch ends before the next call, re-probe;<br/>reason provider_status or uniform_rejection + httpStatus]
+  ST --> FL
+  RU --> B
   OK --> B
   X --> B
   S -->|was analyzed| B
@@ -4522,16 +4597,25 @@ derived chunks on its next pass even if no analysis has yet succeeded — and
 the reconcile runs whether or not a vision model is assigned (D13), so a
 pause never composes a description of bytes that are gone.
 
-Readiness (#1616 computes it, #1618 renders it): per page, from the rows,
-the retained identity and the version constants (D5's predicate) — `none`
-(no rows), `pending` (no valid row, ≥1 pending or due), `partial` (≥1 valid
-row and ≥1 pending/failed/terminal), `complete` (every row valid or skipped,
-≥1 valid), `failed` (no valid row, ≥1 `failed` or `failed_terminal`, none
-pending), `skipped` (only skipped rows). Orthogonally, **embedding
-readiness** = `NOT pages.embedding_dirty`; "analysis complete, text
-embedding pending" is `complete AND embedding_dirty` *(epic)*. The card
-counts rows by status (terminal apart from failed) and skip reason, the last
-run, the retained identity and the batch result.
+Readiness (#1616 computes it, #1618 renders it): per page, from the rows'
+`status`, the retained identity and the version constants (D5's predicate
+decides **valid**) — and from nothing else: readiness never reads the
+clock, so a `failed` row whose backoff has elapsed is still `failed` here
+until the worker selects it under D13's work predicate and rewrites it,
+and a page's readiness changes only when a row is written. An `analyzed`
+row that fails the predicate (stale between an identity change and the
+next sweep) counts as `pending` here, which the sweep then makes literal.
+The states are disjoint by construction, evaluated in this order, first
+match wins: `none` (no rows); `complete` (≥1 valid row, every row valid or
+`skipped`); `partial` (≥1 valid row, and ≥1 row `pending`, `failed` or
+`failed_terminal`); `pending` (no valid row, ≥1 `pending` row); `failed`
+(no valid row, no `pending` row, ≥1 `failed` or `failed_terminal` row);
+`skipped` (only `skipped` rows). Orthogonally, **embedding readiness** =
+`NOT pages.embedding_dirty`; "analysis complete, text embedding pending" is
+`complete AND embedding_dirty` *(epic)*. The card counts rows by status
+(terminal apart from failed) and skip reason, the last run, the retained
+identity and the batch result (including a stop's `reason` and
+`httpStatus`, D13).
 
 ### Retrieval flow (#1617)
 
@@ -4562,13 +4646,21 @@ deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
   key with the same non-inheriting comment as `rerank`/`image_embedding`.
   `ImageAnalysisPayloadV1Schema` (D8). `SourceSchema` gains the four
   provenance fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`.
+  The scope preview below has both halves in `@compendiq/contracts`:
+  `ImageAnalysisReanalysisScopeQuerySchema` (`{ providerId: uuid, model?:
+  non-empty string }`) on the way in and `ImageAnalysisReanalysisScopeSchema`
+  (`{ identityHash: string, changed: boolean, reanalyzeRows: int ≥ 0 }`) on
+  the way out — every boundary here is a named Zod schema, like
+  `VisionCapabilityDetailSchema` and `ImageEmbeddingProbeSchema` beside it.
 - **Resolver.** `resolveImageAnalysisUsecase()` beside
   `resolveImageEmbeddingUsecase()` in `llm-provider-resolver.ts`, through
   `resolveExplicitOnlyUsecase('image_analysis')`; `resolveNonInheriting` in
   `routes/llm/llm-usecases.ts` dispatches it.
 - **Assignment PUT** (`PUT /admin/llm-usecases`, `image_analysis: { providerId, model? }`):
-  resolve the pair the row *would* produce (assignment model, else
-  `provider.default_model`, else 422 `no_model`); run
+  resolve the pair the row *would* produce (a `providerId` no provider row
+  carries → 422 `{ reason: 'no_provider' }`, the image-embedding PUT's "that
+  provider no longer exists" answer in `llm-usecases.ts`; assignment model,
+  else `provider.default_model`, else 422 `{ reason: 'no_model' }`); run
   `refreshVisionCapability(providerId, model)` synchronously with the same
   bounded timeout the image-embedding probe uses; `true` → write the row with
   the **resolved** model pinned (ADR-025 D7's reason) and, when the resolved
@@ -4577,18 +4669,30 @@ deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
   replacement invalidated, the after-the-fact figure; `false` → 422
   `{ reason: 'text_only' }`; `null` → 422 `{ reason: 'unconfirmed' }`
   (transport, auth, 429 and breaker-open all land here — none is a negative
-  vision verdict *(epic)*). Both refusals leave the previous assignment and
-  the retained identity untouched. Clearing the assignment
+  vision verdict *(epic)*). All four refusals leave the previous assignment
+  and the retained identity untouched. Clearing the assignment
   (`providerId: null`) writes the NULL row and nothing else.
-- **Scope preview** (`GET /admin/llm-usecases/image_analysis/reanalysis-scope?providerId=&model=`,
-  admin-only): resolves the pair by the PUT's rule, computes its
-  `identity_hash`, and answers `{ identityHash, changed, reanalyzeRows }` —
-  `changed` is "differs from the retained identity", `reanalyzeRows` the
-  count of analyzed rows that would fail D5's predicate under it. No probe,
-  no write, no call: it is what #1618's confirm dialog shows **before** the
-  operator commits a PUT or a re-check, and the PUT's own `reanalyzeRows`
-  is the same count after the write, so the two can be compared. With no
-  identity retained it answers `changed: true, reanalyzeRows: 0`.
+- **Scope preview** (`GET /admin/llm-usecases/image_analysis/reanalysis-scope`,
+  query `ImageAnalysisReanalysisScopeQuerySchema`, response
+  `ImageAnalysisReanalysisScopeSchema`, `requireAdmin` like every other
+  admin route in `routes/llm/llm-usecases.ts`, where the handler lives beside
+  the capability routes; the resolution, the hash and the count are one
+  `domains/llm` service, `image-analysis-identity.ts`, the same module that
+  hashes for the PUT, the re-check and the worker — #1615 owns it):
+  resolves the pair by the PUT's rule, computes its `identity_hash`, and
+  answers `{ identityHash, changed, reanalyzeRows }` — `changed` is
+  "differs from the retained identity", `reanalyzeRows` the count of
+  analyzed rows that would fail D5's predicate under it. Its refusals are
+  the PUT's resolution refusals with the PUT's reasons — 422
+  `{ reason: 'no_provider' }` for an unknown `providerId`, 422
+  `{ reason: 'no_model' }` when nothing resolves — and never the probe's
+  (`text_only`, `unconfirmed`), because it does not probe; an unparseable
+  query is the boundary's ordinary 400, and 404 is not an answer here (the
+  route exists; the provider is a parameter). No probe, no write, no call:
+  it is what #1618's confirm dialog shows **before** the operator commits a
+  PUT or a re-check, and the PUT's own `reanalyzeRows` is the same count
+  after the write, so the two can be compared. With no identity retained it
+  answers `changed: true, reanalyzeRows: 0`.
 - **Capability routes.** `GET /admin/llm-usecases/image_analysis/capability`
   → `VisionCapabilityDetailSchema` for the assigned pair (admin-only, the
   provider's error body stays here as #1184 requires);
@@ -4624,14 +4728,15 @@ Enumerated so #1616 and #1619 can exercise each:
 | Attachment bytes replaced mid-analysis | Reconcile rewrote `content_hash` and nulled the payload; the worker's commit updates 0 rows and is discarded. |
 | Assignment changed mid-batch | The retained identity and the resolved pair are read once per batch (D13); rows committed in that batch carry the identity read at its start, fail D5's validity predicate under the new retained one, and the next batch's sweep re-pends them (payloads kept) and drops their chunks; the worker re-analyzes them under the new identity. One extra pass bounded by the batch size; nothing stale is composed. |
 | Provider `base_url` edited (no assignment PUT) | The resolved identity no longer equals the retained one: the sweep and reconcile run, the analyze step is skipped with `reason: 'identity_drift'`, no row is written, and every valid row stays composed — a pause, not a purge. The card names the drift; the operator's **Re-check** (or a re-save of the assignment) re-probes the moved endpoint and, on `true`, adopts the new identity through D7 with the scope disclosed by the preview route first. Reverting the URL resumes without a call. There is no batch on which a row is written under a hash the next sweep disagrees with (D13). |
-| Prompt/schema version bumped by a deploy | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |
+| Prompt/schema version bumped by a deploy, or the identity replaced | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. In the same step every `failed` and `failed_terminal` row recorded under the old identity or versions becomes `failed, attempts = 0, next_attempt_at = NOW()`: a fresh budget, due at once, terminal or not. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |
 | Operator returns to a previous identity, or a deploy is rolled back | The sweep had re-pended those rows with payloads kept; the next sweep (step 1, assigned or not) flips each back to `analyzed` without a call (`reused`) and the page recomposes. |
 | Lease lost | `assertLockHeld` fails before the next write; the batch stops; rows already committed stand; the BullMQ job fails with partial counts. |
 | Worker restart | No transaction spanned inference; pending rows are re-selected; a row is never analyzed twice for the same `(content_hash, identity_hash, prompt_version, schema_version)`. |
 | `embedPage` and analysis completion race | D6 rule 3: `embedding_dirty` is cleared only if `image_analysis_revision` is unchanged since the snapshot. |
-| Provider down / breaker open / 5xx / timeout | Rows → `failed (unavailable)`, backoff, never terminal; authored indexing continues; card shows failed count; text RAG unaffected. |
-| Provider-level 4xx (401, 403, 404 on the model or path, 402) | The row → `failed (unavailable)`; the batch stops before its next call (rows not yet attempted are not charged an attempt) and `refreshVisionCapability` re-runs for the pair; a verdict other than `true` shuts the D13 gate (`reason: 'capability'`) until the operator's re-check restores it. One bad key costs one call, not five per image. |
-| Malformed / empty / refused / truncated / rejected reply | Rows → `failed (<class>)`, backoff; never composed. At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
+| Provider down / breaker open / 5xx / timeout / 408 / 429 | Rows → `failed (unavailable)`, backoff, never terminal, batch continues through the breaker; authored indexing continues; card shows failed count; text RAG unaffected. |
+| Any 4xx outside the `rejected` list — 401, 402, 403, 404 by name; 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431, 451 and anything unlisted by D8's default arm | The row → `failed (unavailable:<status>)`; the batch stops before its next call (rows not yet attempted are not charged an attempt), returns `reason: 'provider_status', httpStatus`, and `refreshVisionCapability` re-runs for the pair; a verdict other than `true` shuts the D13 gate (`reason: 'capability'`) until the operator's re-check restores it. One bad key, or a status this ADR did not foresee, costs one call per batch, not five per image. |
+| Malformed / empty / refused / truncated / rejected (400, 413, 415, 422) reply | Rows → `failed (<class>)`, backoff; never composed. At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
+| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` (backoff, never terminal — the fact is about the server), `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the remedy (fix the server, Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
 | Unassigned, capability not `true`, or identity drift | The sweep and the reconcile still run (a replaced image is re-pended and its old text dropped, a removed reference loses its row, a stale row leaves composition, a valid kept payload is `reused`); only the analyze step is skipped, and the batch returns the skipped result shape with the reconcile's counts. Still-valid rows remain composed. |
 | Bulk conflict (re-analyze all vs shadow backfill vs re-embed all) | 409 under the one-active-run rule; the holder is named per the #1260 wording rule. |
 | Attachment orphan sweep deletes a file | Sweep prunes the `page_image_analyses` row (#1618 re-points the prune and the `RETENTION_PRUNED` `table`) and raises the page flag. |
@@ -4813,7 +4918,8 @@ marked confirmed with the date.
 
 **Stage 1 — prepare (after #1617, on an isolated candidate):** the Image
 analysis progress card (analyzed / reused / pending / failed / terminal /
-skipped by reason, last run, retained identity, Retry failed / Process now /
+skipped by reason, last run with a stop's reason and HTTP status (D13),
+retained identity, Retry failed / Process now /
 Re-analyze all with the D7 scope disclosure); the selector relabel and the removal of
 MRL width, image-embedding probe chip and the Image leg toggle from the UI;
 the forward migration (below) written but not merged; the backup/restore

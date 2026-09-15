@@ -167,9 +167,9 @@ erDiagram
         int schema_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_SCHEMA_VERSION"
         jsonb payload "ImageAnalysisPayloadV1, validated before write; kept across a sweep re-pend, NULLed on new bytes"
         int analysis_version "+1 per successful payload write"
-        int attempts "failures since the last success, Retry failed or new bytes; deterministic classes go terminal at 5"
+        int attempts "failures since the last reset: success, Retry failed, new bytes, or the sweep returning a failed/terminal row whose identity or versions changed; deterministic classes go terminal at 5"
         timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
-        text error "failure class; admin-only"
+        text error "failure class + HTTP status when received (rejected:413, unavailable:404); admin-only"
     }
 
     page_relationships {
@@ -764,8 +764,11 @@ together, which matters most for #1114's query-side prefix.
   flips re-pended rows whose kept payload is valid again back to `analyzed`
   without a call (`reused`), so a pause never composes an obsolete
   description and a rollback loses nothing (ADR-027 D7/D13). Deterministic
-  failures stop at five attempts (`failed_terminal`); a provider-level 4xx
-  ends the batch and re-probes instead. Readiness is derived from the rows
+  failures (`rejected` is exactly 400/413/415/422) stop at five attempts
+  (`failed_terminal`); every other 4xx is `unavailable` and ends the batch
+  with a re-probe, as do three identical `rejected` statuses at the head of
+  a batch (a server fact such as `max_model_len`). Readiness is derived
+  from the rows' status alone, never the clock
   (`none | pending | partial | complete | failed | skipped`) beside
   `NOT embedding_dirty` for "analysis complete, text embedding pending".
   Design of record: ADR-027 in `docs/ARCHITECTURE-DECISIONS.md`.

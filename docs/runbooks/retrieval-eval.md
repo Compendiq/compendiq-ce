@@ -1199,8 +1199,12 @@ confirms**, after which this list gains the date:
 - Cost budget: cold ≥ **0.5 img/s**, cached ≥ 50 img/s, mean ≤ **3,500**
   tokens per image (prompt + completion; the per-request ceiling is ≈ 1.3k
   visual + prompt + 8,192 output — the schema's largest payload at one token
-  per character, so serve the model with `max_model_len` ≥ ≈ 10k or every
-  image comes back `rejected`), corpus backfill ≤ 10 min and ≤ 6 h per
+  per character, so serve the model with `max_model_len` ≥ ≈ 10k; a server
+  that refuses it answers 400 on every image, the worker's uniform-rejection
+  stop ends the batch after three identical answers and the card's last-run
+  line names the status — fix the server and **Run Now**; **Retry failed**
+  only makes the three stopped rows due at once, nothing went terminal),
+  corpus backfill ≤ 10 min and ≤ 6 h per
   10k images (each from the 0.5 img/s floor with slack), failure rate ≤ 2%,
   ≤ 3 `page_embeddings` rows per image, B query p95 ≤ 1.10 × C and ≤ A.
 - Judges: two named humans plus a named adjudicator, recorded here before
