@@ -75,10 +75,13 @@ export const IMAGE_ANALYSIS_PROMPT = [
  * describing. ADR-027 D8 names "the provider refusal patterns
  * `sanitize-llm-input.ts` already knows"; that module carries prompt-INJECTION
  * patterns only, so the refusal list lives here, beside the one prompt it is
- * matched against (erratum recorded in ADR-027). Matched against the reply
- * when no JSON object was found, and against `description` when the payload
- * parsed but transcribed nothing — a refusal wrapped in the requested JSON is
- * still a refusal.
+ * matched against (erratum recorded in ADR-027). Matched against the whole
+ * reply when no JSON object was found, and against the parsed `description`
+ * otherwise — a refusal wrapped in the requested JSON is still a refusal,
+ * however long the sentence, so this runs BEFORE the substantive floor
+ * (review r1: a 54-character wrapped refusal passed the floor and was `ok`).
+ * `visibleText` is deliberately NOT matched: it is a transcription of what
+ * the image shows, and a screenshot of a chat refusal is a legitimate image.
  */
 export const REFUSAL_PATTERNS: readonly RegExp[] = [
   /\bI(?:'m| am) (?:sorry|unable|not able)\b/i,
@@ -162,7 +165,8 @@ export interface ImageAnalysisFailure {
   message: string;
 }
 
-export type ImageAnalysisResult = ImageAnalysisSuccess | ImageAnalysisFailure;
+/** The seam name #1616's `image-analysis-provider.ts` declares; the swap is a pure re-export. */
+export type AnalyzeImageResult = ImageAnalysisSuccess | ImageAnalysisFailure;
 
 /**
  * What the row's `error` column carries (D13): the class with the number it
@@ -265,7 +269,7 @@ function failure(
  * identity whose provider row cannot be loaded is `unavailable`, not a throw,
  * because the worker treats it like any other endpoint fact).
  */
-export async function analyzeImage(input: AnalyzeImageInput): Promise<ImageAnalysisResult> {
+export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeImageResult> {
   const { identity, maxOutputTokens } = input;
 
   let cfg: ProviderConfig;
@@ -359,14 +363,10 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<ImageAnaly
   }
   const payload = validated.data;
 
-  if (substantiveChars(payload) < MIN_SUBSTANTIVE_ANALYSIS_CHARS) {
-    // A refusal delivered inside the requested JSON is still a refusal; only
-    // then is the short description "empty".
-    if (payload.visibleText.trim() === '' && REFUSAL_PATTERNS.some((p) => p.test(payload.description))) {
-      return failure('refused');
-    }
-    return failure('empty');
-  }
+  // Order matters (D8): a refusal delivered inside the requested JSON is a
+  // refusal whether or not it clears the floor — a polite one easily does.
+  if (REFUSAL_PATTERNS.some((p) => p.test(payload.description))) return failure('refused');
+  if (substantiveChars(payload) < MIN_SUBSTANTIVE_ANALYSIS_CHARS) return failure('empty');
 
   return {
     ok: true,

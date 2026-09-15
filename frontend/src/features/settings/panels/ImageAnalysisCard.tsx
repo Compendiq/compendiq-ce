@@ -137,10 +137,13 @@ export function ImageAnalysisCard({
   const probeError = capability?.probeError ?? null;
 
   return (
-    // Indented to the assignment grid's second column, so the strip reads as
-    // detail belonging to the row above rather than a tenth use case.
-    <div className="grid grid-cols-[140px_1fr] gap-2" data-testid="image-analysis-card">
-      <span aria-hidden="true" />
+    // Indented to the assignment grid's second column from `sm` up, so the
+    // strip reads as detail belonging to the row above rather than a tenth
+    // use case. Below `sm` the spacer collapses and the strip takes the full
+    // width: a 140 px column inside a ~324 px card left the description, the
+    // identity line and the ceiling input clipped (review r1, AC-6).
+    <div className="grid gap-2 sm:grid-cols-[140px_1fr]" data-testid="image-analysis-card">
+      <span aria-hidden="true" className="hidden sm:block" />
       <div className="space-y-1.5">
         <p className="text-muted-foreground text-xs">{IMAGE_ANALYSIS_DESCRIPTION}</p>
         {/*
@@ -201,10 +204,20 @@ export function ImageAnalysisCard({
               // Blocking on the server: a chat completion with a test image
               // through the queue and the per-provider breaker, bounded at the
               // probe's 60 s budget. The control says what it is doing rather
-              // than appearing inert, and keeps focus while it does.
-              className="nm-button-ghost px-2.5 py-1 text-xs"
-              onClick={() => recheck.mutate()}
-              disabled={recheck.isPending}
+              // than appearing inert, and keeps focus while it does — as
+              // `aria-disabled` plus a REFUSING handler, never native
+              // `disabled`: the HTML focus fixup blurs a focused control the
+              // moment it stops being focusable, so `disabled` dropped the
+              // keyboard to `<body>` for the whole probe (review r1; the
+              // `ImageIndexCard` / `RetrievalTab` recipe, #1532).
+              className="nm-button-ghost px-2.5 py-1 text-xs aria-disabled:cursor-not-allowed aria-disabled:opacity-90 aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
+              onClick={() => {
+                // `aria-disabled` blocks no events: a second press mid-probe
+                // would be a second 60 s probe against the same pair.
+                if (recheck.isPending) return;
+                recheck.mutate();
+              }}
+              aria-disabled={recheck.isPending || undefined}
               aria-busy={recheck.isPending}
             >
               {recheck.isPending ? (
@@ -223,10 +236,22 @@ export function ImageAnalysisCard({
         )}
 
         {/*
-          The three-state copy under the badge. `null` is the one that needs a
-          sentence: the badge's "Unconfirmed" must not be read as a verdict.
+          The copy under a `null` verdict. Two states share the badge's
+          "Unconfirmed" and must not share a sentence: a probe that RAN and
+          got no answer, and a pair that has not been probed at all. The
+          second is the D7 drift flow — a provider edit discards the stored
+          verdict (`invalidateProviderCapabilities`), the PUT probes before
+          every write, so "assigned and never checked" only ever means "the
+          provider changed under a saved assignment" — and it must not be
+          described as a probe outcome that never happened (review r1).
         */}
-        {assigned && capability?.vision === null && (
+        {assigned && capability?.vision === null && capability.probedAt === null && (
+          <p className="text-muted-foreground text-xs" data-testid="image-analysis-unchecked-note">
+            This pair has not been checked since the provider was edited, so the earlier verdict no
+            longer applies. No image is analyzed until a re-check confirms it reads images.
+          </p>
+        )}
+        {assigned && capability?.vision === null && capability.probedAt !== null && (
           <p className="text-muted-foreground text-xs" data-testid="image-analysis-unconfirmed-note">
             The provider did not answer the probe — unreachable, an authentication or rate-limit error,
             or an open breaker. That is not evidence the model is text-only. No image is analyzed

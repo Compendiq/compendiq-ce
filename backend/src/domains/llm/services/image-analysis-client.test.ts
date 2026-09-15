@@ -33,8 +33,8 @@ const PNG = Buffer.from(
 
 let srv: Server;
 let baseUrl: string;
-/** The next response the fake provider gives; set per test. */
-let respond: (body: Record<string, unknown>) => { status: number; body: unknown };
+/** The next response the fake provider gives; set per test. `null` = never answer (the timeout case). */
+let respond: (body: Record<string, unknown>) => { status: number; body: unknown } | null;
 /** Every request body the fake provider received. */
 let received: Array<Record<string, unknown>>;
 
@@ -61,16 +61,17 @@ beforeAll(async () => {
     req.on('end', () => {
       const body = JSON.parse(raw) as Record<string, unknown>;
       received.push(body);
-      const { status, body: out } = respond(body);
-      res.writeHead(status, { 'content-type': 'application/json' });
-      res.end(typeof out === 'string' ? out : JSON.stringify(out));
+      const answer = respond(body);
+      if (!answer) return; // hold the socket open: the client's own budget must end this
+      res.writeHead(answer.status, { 'content-type': 'application/json' });
+      res.end(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body));
     });
   });
   await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
   baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/v1`;
 });
 
-afterAll(() => new Promise<void>((r) => srv.close(() => r())));
+afterAll(() => new Promise<void>((r) => { srv.closeAllConnections(); srv.close(() => r()); }));
 
 let seq = 0;
 let provider: ProviderConfig;
@@ -167,8 +168,9 @@ describe('analyzeImage — the five deterministic classes', () => {
     expect(await run()).toMatchObject({ ok: false, class: 'empty' });
   });
 
-  it('refused: a bare refusal, and a refusal wrapped in the requested JSON', async () => {
-    respond = () => ({ status: 200, body: chatReply("I'm sorry, but I can't help with analyzing this image.") });
+  it('refused: a bare refusal, and a refusal wrapped in the requested JSON — short or long', async () => {
+    const bare = "I'm sorry, but I can't help with analyzing this image.";
+    respond = () => ({ status: 200, body: chatReply(bare) });
     expect(await run()).toMatchObject({ ok: false, class: 'refused' });
 
     respond = () => ({
@@ -176,6 +178,25 @@ describe('analyzeImage — the five deterministic classes', () => {
       body: chatReply(JSON.stringify({ ...OK_PAYLOAD, description: 'I cannot assist.', visibleText: '' })),
     });
     expect(await run()).toMatchObject({ ok: false, class: 'refused' });
+
+    // Review r1: the same refusal sentence inside a conforming payload is 54
+    // characters — well past the 20-character floor — and was `ok`.
+    respond = () => ({ status: 200, body: chatReply(JSON.stringify({ ...OK_PAYLOAD, description: bare, visibleText: '' })) });
+    expect(await run()).toMatchObject({ ok: false, class: 'refused' });
+
+    respond = () => ({
+      status: 200,
+      body: chatReply(JSON.stringify({ ...OK_PAYLOAD, description: 'As an AI language model I cannot see pictures.', visibleText: 'n/a' })),
+    });
+    expect(await run()).toMatchObject({ ok: false, class: 'refused' });
+  });
+
+  it('refused is the model\'s voice, not the image\'s: a transcribed refusal in visibleText stays ok', async () => {
+    respond = () => ({
+      status: 200,
+      body: chatReply(JSON.stringify({ ...OK_PAYLOAD, visibleText: "Assistant: I'm sorry, but I can't help with that request." })),
+    });
+    expect((await run()).ok).toBe(true);
   });
 
   it('truncated: finish_reason length, carrying the ceiling it overran', async () => {
@@ -207,11 +228,24 @@ describe('analyzeImage — the transient class and the provider-level default ar
     expect(r).toMatchObject({ ok: false, class: 'unavailable', httpStatus: status, providerLevel: true });
   });
 
-  it('a request that never completes is unavailable with no status', async () => {
+  it('a connection that is refused is unavailable with no status', async () => {
     const r = (await run({ provider: { ...provider, baseUrl: 'http://127.0.0.1:1/v1' }, identity: { ...identity, baseUrl: 'http://127.0.0.1:1/v1' } })) as ImageAnalysisFailure;
     expect(r).toMatchObject({ ok: false, class: 'unavailable', providerLevel: false });
     expect(r.httpStatus).toBeUndefined();
     expect(encodeImageAnalysisError(r)).toBe('unavailable');
+  });
+
+  it('a provider that accepts the request and never answers is unavailable once timeoutMs elapses', async () => {
+    respond = () => null;
+    const started = Date.now();
+    const r = (await run({ timeoutMs: 300 })) as ImageAnalysisFailure;
+    const elapsed = Date.now() - started;
+    expect(r).toMatchObject({ ok: false, class: 'unavailable', providerLevel: false });
+    expect(r.httpStatus).toBeUndefined();
+    // The budget, not the queue's own 300 s ceiling, is what ended it.
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(5_000);
+    expect(received).toHaveLength(1);
   });
 
   it('the classing is total: every status lands in exactly one of the three arms', () => {

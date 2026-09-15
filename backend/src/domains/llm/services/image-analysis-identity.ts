@@ -6,7 +6,7 @@ import {
 } from '@compendiq/contracts';
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
-import { loadProviderConfig, resolveImageAnalysisUsecase } from './llm-provider-resolver.js';
+import { loadProviderConfig, ProviderNotFoundError, resolveImageAnalysisUsecase } from './llm-provider-resolver.js';
 import { IMAGE_ANALYSIS_PROMPT_VERSION, type ImageAnalysisIdentityTriple } from './image-analysis-client.js';
 import type { ProviderConfig } from './openai-compatible-client.js';
 
@@ -84,8 +84,11 @@ export async function resolveCandidateImageAnalysisIdentity(candidate: {
   let config;
   try {
     config = await loadProviderConfig(candidate.providerId);
-  } catch {
-    throw new ImageAnalysisResolutionError('no_provider');
+  } catch (err) {
+    // Only "no such row" is the operator's refusal; a DB or key-decryption
+    // failure stays a 500 at the route (review r1).
+    if (err instanceof ProviderNotFoundError) throw new ImageAnalysisResolutionError('no_provider');
+    throw err;
   }
   const model = candidate.model || config.defaultModel || '';
   if (!model) throw new ImageAnalysisResolutionError('no_model');

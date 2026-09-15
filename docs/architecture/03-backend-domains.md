@@ -484,11 +484,15 @@ writes a `page_image_analyses` row (the worker, the reconcile and the sweep are
   `response_format`, the image as a `data:` URL. It validates the first JSON
   object of the reply against `imageAnalysisPayloadSchema(T)` from
   `@compendiq/contracts` and answers one of D8's six classes on failure —
-  `malformed`, `empty`, `refused` (matched against `REFUSAL_PATTERNS`, which
-  live HERE and not in `sanitize-llm-input.ts`; ADR-027 erratum), `truncated`
-  (with the ceiling), `rejected` (exactly 400/413/415/422, with the status) and
-  `unavailable` (408, 429, 5xx and non-HTTP failures keep the batch running;
-  every other 4xx is the provider-level default arm, `providerLevel: true`).
+  `malformed`, `refused` (matched against `REFUSAL_PATTERNS`, which live HERE
+  and not in `sanitize-llm-input.ts`, ADR-027 erratum; on the bare reply when
+  no JSON parsed, else on the parsed `description` BEFORE the substantive
+  floor, so a polite wrapped refusal cannot pass as a description — never on
+  `visibleText`, which transcribes the image), `empty` (below the floor),
+  `truncated` (with the ceiling), `rejected` (exactly 400/413/415/422, with
+  the status) and `unavailable` (408, 429, 5xx and non-HTTP failures keep the
+  batch running; every other 4xx is the provider-level default arm,
+  `providerLevel: true`).
   `encodeImageAnalysisError` spells the row's `error` column
   (`truncated:8192`, `rejected:413`, `unavailable:405`). It refuses to post
   bytes at a provider whose `base_url` differs from the identity it was handed.

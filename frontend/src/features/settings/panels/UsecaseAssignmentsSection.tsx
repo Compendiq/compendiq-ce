@@ -183,11 +183,23 @@ export function UsecaseAssignmentsSection({
         // model anywhere). Without this, the row looks configured while the
         // stage is silently disabled. The image and inline-completion legs have
         // the same state: none inherits, so none has a fallback to fall back to.
+        //
+        // Read from the SAVED row, like every other verdict on this surface
+        // (#1615 review r1): `resolved` is the server's answer for what is
+        // saved, so a draft pick of a provider that HAS a default model still
+        // carried the NIL the saved NULL row resolves to, and the line called
+        // the stage disabled for a choice the server had not yet seen.
+        const saved = savedAssignments[u] ?? row;
         const assignedButUnresolvable =
-          u in NON_INHERITING && row.providerId !== null && row.resolved.providerId === NIL_UUID;
+          u in NON_INHERITING && saved.providerId !== null && saved.resolved.providerId === NIL_UUID;
         return (
           <div key={u} data-testid={`usecase-row-${u}`} className="space-y-1.5">
-            <div className="grid grid-cols-[140px_180px_1fr_auto] items-center gap-2">
+            {/*
+              Four columns from `sm` up; one stacked column below it, where
+              140 + 180 px of fixed columns cannot fit a ~324 px card and the
+              row clipped instead of reflowing (#1615 review r1, AC-6).
+            */}
+            <div className="grid items-center gap-2 sm:grid-cols-[140px_180px_1fr_auto]">
               <span className="flex items-center gap-1 text-sm font-medium">
                 {USECASE_LABELS[u]}
                 {u === 'embedding' && (

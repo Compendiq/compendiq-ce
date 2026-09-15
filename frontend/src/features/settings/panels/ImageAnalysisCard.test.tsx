@@ -159,13 +159,15 @@ describe('ImageAnalysisCard', () => {
     expect(screen.getByTestId('image-analysis-recheck')).toBeEnabled();
   });
 
-  it('unconfirmed is explained as not-a-verdict; text-only as a pause; the provider body sits behind a disclosure, escaped', async () => {
+  it('a probe that ran and got no answer is explained as not-a-verdict; text-only as a pause; the provider body sits behind a disclosure, escaped', async () => {
     const hostile = 'chat HTTP 401: {"error":"no key for tenant-7 at llm-internal.corp.lan"} <img src=x onerror=alert(1)>';
-    mockRoutes({ capability: detail({ vision: null, probedAt: null, probeError: hostile }) });
+    mockRoutes({ capability: detail({ vision: null, probeError: hostile }) });
     const { unmount } = renderCard({ savedAssignment: assigned });
     expect(await screen.findByTestId('vision-badge')).toHaveTextContent('Unconfirmed');
-    expect(screen.getByTestId('image-analysis-probed-at')).toHaveTextContent('Never checked');
+    expect(screen.getByTestId('image-analysis-probed-at')).toHaveTextContent(/^Checked /);
+    expect(screen.getByTestId('image-analysis-unconfirmed-note')).toHaveTextContent(/did not answer the probe/i);
     expect(screen.getByTestId('image-analysis-unconfirmed-note')).toHaveTextContent(/not evidence the model is text-only/i);
+    expect(screen.queryByTestId('image-analysis-unchecked-note')).not.toBeInTheDocument();
     expect(screen.queryByTestId('image-analysis-text-only-note')).not.toBeInTheDocument();
     const errorText = screen.getByTestId('image-analysis-probe-error-text');
     expect(errorText).toHaveTextContent('tenant-7');
@@ -178,6 +180,20 @@ describe('ImageAnalysisCard', () => {
     expect(await screen.findByTestId('vision-badge')).toHaveTextContent('Text-only');
     expect(screen.getByTestId('image-analysis-text-only-note')).toHaveTextContent(/paused until a vision-capable model/i);
     expect(screen.queryByTestId('image-analysis-unconfirmed-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('image-analysis-unchecked-note')).not.toBeInTheDocument();
+  });
+
+  it('a pair that was never probed (the verdict discarded by a provider edit) is "not checked", never "did not answer"', async () => {
+    mockRoutes({ capability: detail({ vision: null, probedAt: null, probeError: null }) });
+    renderCard({ savedAssignment: assigned });
+    expect(await screen.findByTestId('vision-badge')).toHaveTextContent('Unconfirmed');
+    expect(screen.getByTestId('image-analysis-probed-at')).toHaveTextContent('Never checked');
+    const note = screen.getByTestId('image-analysis-unchecked-note');
+    expect(note).toHaveTextContent(/not been checked since the provider was edited/i);
+    expect(note).toHaveTextContent(/re-check/i);
+    expect(screen.queryByTestId('image-analysis-unconfirmed-note')).not.toBeInTheDocument();
+    expect(screen.queryByText(/did not answer the probe/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('image-analysis-probe-error')).not.toBeInTheDocument();
   });
 
   it('names identity drift and what Re-check will do about it', async () => {
@@ -189,7 +205,7 @@ describe('ImageAnalysisCard', () => {
     expect(drift).toHaveAttribute('role', 'status');
   });
 
-  it('Re-check: keeps focus on the button while pending, then seeds the new verdict and toasts it', async () => {
+  it('Re-check: stays focusable and refuses a second press while pending, then seeds the new verdict and toasts it', async () => {
     let release!: () => void;
     const hold = new Promise<void>((r) => { release = r; });
     mockRoutes({
@@ -205,10 +221,19 @@ describe('ImageAnalysisCard', () => {
     fireEvent.click(button);
     await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'true'));
     expect(button).toHaveTextContent('Checking…');
+    // Native `disabled` would blur the focused button in a real browser (the
+    // HTML focus fixup; jsdom does not model it): the held state is announced
+    // through `aria-disabled` and enforced by the handler instead.
+    expect(button).not.toHaveAttribute('disabled');
+    expect(button).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(recheckHits).toBe(1);
 
     release();
     await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'false'));
+    expect(button).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(button);
     expect(screen.getByTestId('vision-badge')).toHaveTextContent('Vision');
     expect(screen.queryByTestId('image-analysis-probe-error')).not.toBeInTheDocument();
     expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/confirmed/i));

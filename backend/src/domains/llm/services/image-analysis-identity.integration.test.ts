@@ -244,4 +244,13 @@ describe.skipIf(!dbAvailable)('resolution — the live assignment and a candidat
     await expect(resolveCandidateImageAnalysisIdentity({ providerId: '00000000-0000-4000-8000-0000000000ff' })).rejects.toBeInstanceOf(ImageAnalysisResolutionError);
     await expect(resolveCandidateImageAnalysisIdentity({ providerId: '00000000-0000-4000-8000-0000000000ff' })).rejects.toMatchObject({ reason: 'no_provider' });
   });
+
+  it('only a missing row is no_provider: a database error while loading the provider propagates as itself', async () => {
+    // A malformed uuid makes Postgres itself fail the lookup — a real DB
+    // error, not "no such provider" — and the route turns an unclassified
+    // throw into a 500 rather than telling the operator the provider is gone.
+    const attempt = resolveCandidateImageAnalysisIdentity({ providerId: 'not-a-uuid' });
+    await expect(attempt).rejects.not.toBeInstanceOf(ImageAnalysisResolutionError);
+    await expect(attempt).rejects.toThrow(/invalid input syntax for type uuid/);
+  });
 });

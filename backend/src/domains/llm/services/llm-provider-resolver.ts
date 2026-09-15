@@ -87,6 +87,18 @@ function loadProviderFromRow(
 }
 
 /**
+ * `loadProviderConfig`'s "no such row" outcome, distinguishable from a DB or
+ * decryption failure so a caller mapping it to a user-facing refusal (the
+ * #1615 PUT's 422 `no_provider`) does not swallow a 500 under the same copy.
+ */
+export class ProviderNotFoundError extends Error {
+  constructor(providerId: string) {
+    super(`Provider ${providerId} not found.`);
+    this.name = 'ProviderNotFoundError';
+  }
+}
+
+/**
  * #1154: load a single provider's config by id, for callers that already
  * know the provider (the vision-capability store) rather than resolving a
  * use-case. Same column aliases as the override query below, routed through
@@ -111,7 +123,7 @@ export async function loadProviderConfig(
     [providerId],
   );
   const row = rows[0];
-  if (!row) throw new Error(`Provider ${providerId} not found.`);
+  if (!row) throw new ProviderNotFoundError(providerId);
   return loadProviderFromRow(row);
 }
 
