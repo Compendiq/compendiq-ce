@@ -41,6 +41,8 @@ import {
   invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
+  getImageAnalysisMaxOutputTokens,
+  invalidateImageAnalysisMaxOutputTokensCache,
   resolveRagEfSearch,
   noteRagEfSearchRowSaved,
 } from '../../core/services/admin-settings-service.js';
@@ -399,6 +401,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragImageIndexExternal,
       ragImageLegEnabled,
       ragAnswerMaxImages,
+      imageAnalysisMaxOutputTokens,
       imageEmbeddingTargetDimensions,
       efSearch,
       qualityBatchSize,
@@ -451,6 +454,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // reason again — it is read once per ask that reaches a completion, and
       // it is the only one of the three whose 0 is meaningful.
       getRagAnswerMaxImages(),
+      // #1615 (ADR-027 D8) — the image-analysis output-token ceiling, through
+      // its own cached reader: the worker reads it once per batch, and an
+      // unparseable or out-of-range row reads as the default there, so this
+      // is the value the next batch will send as `max_tokens`.
+      getImageAnalysisMaxOutputTokens(),
       // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
       // per admin action, and a stale one would let a probe fired seconds after
       // the width was saved measure the OLD width and type the column to it.
@@ -583,6 +591,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragImageLegEnabled,
       // #1115 P4 — the answer half.
       ragAnswerMaxImages,
+      // #1615 — the image-analysis output-token ceiling (ADR-027 D8).
+      imageAnalysisMaxOutputTokens,
       // #1114 — which model each threshold was tuned against, and whether it
       // is still the live one. Provider id + model name only: this payload is
       // the settings document, not the provider document.
@@ -861,6 +871,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_answer_max_images',
         invalidateRagAnswerMaxImagesCache,
         body.ragAnswerMaxImages !== undefined ? String(body.ragAnswerMaxImages) : undefined,
+      ],
+      // #1615 (ADR-027 D8) — the image-analysis output-token ceiling. Saved
+      // through the same key table as the image knobs above; the reader's TTL
+      // cache is dropped so the next worker batch sends the new `max_tokens`.
+      // It is deliberately NOT part of the retained identity: saving it fires
+      // no probe, no re-check and no re-analysis.
+      [
+        'image_analysis_max_output_tokens',
+        invalidateImageAnalysisMaxOutputTokensCache,
+        body.imageAnalysisMaxOutputTokens !== undefined
+          ? String(body.imageAnalysisMaxOutputTokens)
+          : undefined,
       ],
       // #1285 — the `ef_search` floor. The moment this row lands, the
       // deprecated `RAG_EF_SEARCH` variable stops being consulted: the reader

@@ -8,8 +8,9 @@ import type {
   UsecaseAssignments,
   UpdateUsecaseAssignmentsInput,
 } from '@compendiq/contracts';
-import { LlmUsecaseSchema } from '@compendiq/contracts';
-import { apiFetch } from '../../../shared/lib/api';
+import { LlmUsecaseSchema, IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT } from '@compendiq/contracts';
+import { apiFetch, ApiError } from '../../../shared/lib/api';
+import { reanalysisDisclosure } from './image-analysis-copy';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
@@ -28,6 +29,19 @@ const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 const DEFAULT_CONCURRENT_STREAMS_CAP = 3;
 const MIN_CONCURRENT_STREAMS_CAP = 1;
 const MAX_CONCURRENT_STREAMS_CAP = 20;
+
+/**
+ * #1615 — headlines for the four reasons the image-analysis assignment PUT
+ * refuses with (ADR-027 D3). The server's `error` is the sentence with the
+ * remedy; this is the line above it. Deliberately distinguishes a NEGATIVE
+ * verdict (text-only) from an UNCONFIRMED one.
+ */
+const IMAGE_ANALYSIS_REFUSAL_HEADLINE: Record<string, string> = {
+  no_provider: 'Image analysis not saved — provider not found',
+  no_model: 'Image analysis not saved — no model resolves',
+  text_only: 'Image analysis not saved — the model refused the test image',
+  unconfirmed: 'Image analysis not saved — image support could not be confirmed',
+};
 
 export function LlmTab() {
   const qc = useQueryClient();
@@ -77,6 +91,11 @@ export function LlmTab() {
   // field re-seeds from the value the server actually stored.
   const [imageTargetDims, setImageTargetDims] = useState<number | null>(null);
   const [imageTargetInitialized, setImageTargetInitialized] = useState(false);
+  // #1615 — the image-analysis output-token ceiling, same guard, same reset.
+  const [imageAnalysisMaxTokens, setImageAnalysisMaxTokens] = useState<number>(
+    IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
+  );
+  const [imageAnalysisMaxTokensInitialized, setImageAnalysisMaxTokensInitialized] = useState(false);
 
   // Mirror the server-provided assignments once per load. Using useEffect
   // keeps the setState out of render (avoids an infinite update loop).
@@ -108,6 +127,19 @@ export function LlmTab() {
   }, [adminSettings, imageTargetInitialized]);
 
   const savedImageTargetDims = adminSettings?.imageEmbeddingTargetDimensions ?? null;
+  // #1615 — the image-analysis output-token ceiling. `?? default` covers a
+  // backend older than the field; the contract requires it on read otherwise.
+  useEffect(() => {
+    if (adminSettings && !imageAnalysisMaxTokensInitialized) {
+      setImageAnalysisMaxTokens(
+        adminSettings.imageAnalysisMaxOutputTokens ?? IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
+      );
+      setImageAnalysisMaxTokensInitialized(true);
+    }
+  }, [adminSettings, imageAnalysisMaxTokensInitialized]);
+
+  const savedImageAnalysisMaxTokens =
+    adminSettings?.imageAnalysisMaxOutputTokens ?? IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT;
 
   const embeddingPending = useMemo(() => {
     if (!rawAssignments || !assignments) return null;
@@ -138,21 +170,27 @@ export function LlmTab() {
     const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
     const imageTargetChanged =
       imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
-    return Object.keys(diff).length > 0 || imageTargetChanged;
+    const imageAnalysisMaxTokensChanged =
+      imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
+    return Object.keys(diff).length > 0 || imageTargetChanged || imageAnalysisMaxTokensChanged;
   }, [
     rawAssignments,
     assignments,
     imageTargetDims,
     imageTargetInitialized,
     savedImageTargetDims,
+    imageAnalysisMaxTokens,
+    imageAnalysisMaxTokensInitialized,
+    savedImageAnalysisMaxTokens,
   ]);
 
   const save = useMutation<
-    { ok: boolean; imageIndexWarning?: string },
+    { ok: boolean; imageIndexWarning?: string; reanalyzeRows?: number },
     Error,
     {
       diff: UpdateUsecaseAssignmentsInput;
       imageTargetDimensions?: number | null;
+      imageAnalysisMaxOutputTokens?: number;
       keepEmbeddingDraft?: boolean;
     }
   >({
@@ -160,11 +198,16 @@ export function LlmTab() {
     // width is what the probe SENDS, so it has to be stored before the
     // assignment PUT re-probes; a probe run against the old width would type
     // the column for a request the leg no longer makes.
-    mutationFn: async ({ diff, imageTargetDimensions }) => {
-      if (imageTargetDimensions !== undefined) {
+    mutationFn: async ({ diff, imageTargetDimensions, imageAnalysisMaxOutputTokens }) => {
+      if (imageTargetDimensions !== undefined || imageAnalysisMaxOutputTokens !== undefined) {
         await apiFetch('/admin/settings', {
           method: 'PUT',
-          body: JSON.stringify({ imageEmbeddingTargetDimensions: imageTargetDimensions }),
+          body: JSON.stringify({
+            ...(imageTargetDimensions !== undefined
+              ? { imageEmbeddingTargetDimensions: imageTargetDimensions }
+              : {}),
+            ...(imageAnalysisMaxOutputTokens !== undefined ? { imageAnalysisMaxOutputTokens } : {}),
+          }),
         });
       }
       if (Object.keys(diff).length === 0) return { ok: true };
@@ -187,7 +230,10 @@ export function LlmTab() {
     // admin's typed value must survive so they can correct it in place.
     onSettled: async (_result, error) => {
       await qc.invalidateQueries({ queryKey: ['admin-settings'] });
-      if (!error) setImageTargetInitialized(false);
+      if (!error) {
+        setImageTargetInitialized(false);
+        setImageAnalysisMaxTokensInitialized(false);
+      }
     },
     onSuccess: async (result, variables) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
@@ -220,9 +266,29 @@ export function LlmTab() {
         toast.warning(result.imageIndexWarning);
         return;
       }
+      // #1615 — ADR-027 D7: the assignment adopted a new model identity and
+      // the count is what that invalidated. Amber, because the next run will
+      // re-analyze those images (their stored descriptions are kept until
+      // then); a resume answers 0 and takes the ordinary success toast.
+      if (result?.reanalyzeRows !== undefined && result.reanalyzeRows > 0) {
+        toast.warning(reanalysisDisclosure(result.reanalyzeRows));
+        return;
+      }
       toast.success('Use-case assignments saved');
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => {
+      // #1615 — the four machine-readable refusals of the image-analysis PUT
+      // (ADR-027 D3). The server's sentence names the remedy; the reason picks
+      // the headline, so a toast reads as "what happened" before "what to do".
+      // Every other draft survives: the form re-hydrates only on success.
+      const reason = e instanceof ApiError ? e.reason : undefined;
+      const headline = reason ? IMAGE_ANALYSIS_REFUSAL_HEADLINE[reason] : undefined;
+      if (headline) {
+        toast.error(headline, { description: e.message });
+        return;
+      }
+      toast.error(e.message);
+    },
   });
 
   // Runtime-limits mutation is deliberately separate from the use-case save
@@ -284,7 +350,13 @@ export function LlmTab() {
     const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
     const imageTargetChanged =
       imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
-    if (Object.keys(diff).length === 0 && !imageTargetChanged) {
+    // #1615 — the ceiling is a settings row like the width, saved first for
+    // the same one-Save reason, but it is NOT a change to the assignment: it
+    // re-sends nothing and re-probes nothing (ADR-027 D8 — it is outside the
+    // retained identity, and saving it must fire no probe).
+    const imageAnalysisMaxTokensChanged =
+      imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
+    if (Object.keys(diff).length === 0 && !imageTargetChanged && !imageAnalysisMaxTokensChanged) {
       toast.message('No changes');
       return;
     }
@@ -302,6 +374,7 @@ export function LlmTab() {
       diff,
       keepEmbeddingDraft: embeddingPending !== null,
       ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
+      ...(imageAnalysisMaxTokensChanged ? { imageAnalysisMaxOutputTokens: imageAnalysisMaxTokens } : {}),
     });
   }
 
@@ -330,6 +403,8 @@ export function LlmTab() {
         onChange={setAssignments}
         imageTargetDimensions={imageTargetDims}
         onImageTargetDimensionsChange={setImageTargetDims}
+        imageAnalysisMaxOutputTokens={imageAnalysisMaxTokens}
+        onImageAnalysisMaxOutputTokensChange={setImageAnalysisMaxTokens}
         embeddingAction={
           <div className="space-y-2">
             <EmbeddingShadowMigrationCard

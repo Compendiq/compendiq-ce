@@ -71,6 +71,14 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
+    // #1615 — unassigned, like the two above: the card renders its copy and
+    // the ceiling row; the capability strip inside it is gated on the SAVED
+    // assignment.
+    image_analysis: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -97,6 +105,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
         embeddingAction={<button type="button">Start re-embed</button>}
       />,
@@ -115,6 +125,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -136,6 +148,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -157,6 +171,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -178,6 +194,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -208,6 +226,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -225,6 +245,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -256,6 +278,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -274,6 +298,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={4}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -290,6 +316,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={4000}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -303,6 +331,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -319,6 +349,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -359,6 +391,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -415,6 +449,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },

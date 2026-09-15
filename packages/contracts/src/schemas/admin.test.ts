@@ -55,6 +55,8 @@ const validReadPayload = {
   ragImageLegEnabled: true,
   // #1115 P4 — how many retrieved images the answer path may show the model.
   ragAnswerMaxImages: 2,
+  // #1615 — the image-analysis output-token ceiling, required on read.
+  imageAnalysisMaxOutputTokens: 8192,
   // #1285 — the HNSW ef_search floor, required on read like every knob above.
   ragEfSearch: 100,
   // #1285 review r1 — and where it came from, so the panel can tell an
@@ -508,6 +510,8 @@ describe('retrieval knobs (#1118)', () => {
       'ragImageLegEnabled',
       // #1115 P4 — and the answer-path cap.
       'ragAnswerMaxImages',
+      // #1615 — and the image-analysis ceiling.
+      'imageAnalysisMaxOutputTokens',
       // #1285 — and the ef_search floor.
       'ragEfSearch',
       // #1285 review r1 — and its provenance. Required for the same reason
@@ -547,6 +551,24 @@ describe('retrieval knobs (#1118)', () => {
       expect(() =>
         AdminSettingsSchema.parse({ ...validReadPayload, ragImageIndexExternal: 'off' }),
       ).toThrow();
+    });
+  });
+
+  describe('#1615 — the image-analysis output-token ceiling (ADR-027 D8)', () => {
+    it('accepts [4096, 16384] integers on both schemas', () => {
+      expect(UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 4096 }).imageAnalysisMaxOutputTokens).toBe(4096);
+      expect(UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 16384 }).imageAnalysisMaxOutputTokens).toBe(16384);
+      expect(AdminSettingsSchema.parse({ ...validReadPayload, imageAnalysisMaxOutputTokens: 6000 }).imageAnalysisMaxOutputTokens).toBe(6000);
+    });
+
+    it('rejects a ceiling below the floor, above twice the reference, or fractional', () => {
+      // Below 4,096 the structured blocks stop carrying what the epic's target
+      // classes need; above 16,384 nothing grows and the whole ceiling is
+      // charged against the served context on every request.
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 4095 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 16385 })).toThrow();
+      expect(() => UpdateAdminSettingsSchema.parse({ imageAnalysisMaxOutputTokens: 8192.5 })).toThrow();
+      expect(() => AdminSettingsSchema.parse({ ...validReadPayload, imageAnalysisMaxOutputTokens: 0 })).toThrow();
     });
   });
 

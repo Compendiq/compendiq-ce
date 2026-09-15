@@ -451,6 +451,87 @@ same `hybridSearch` and `embedPageImages` the product runs, which is the point:
 a harness with its own copy measures its own copy. Recipe and report fields:
 `docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
 
+## Image analysis: assignment, identity and the inference client (#1615, ADR-027)
+
+The candidate that replaces the leg above (ADR-027; epic #1611). #1615 lands the
+configuration half — the use case, its probe-gated assignment, the retained
+identity, the settings ceiling and the pure inference client — and nothing that
+writes a `page_image_analyses` row (the worker, the reconcile and the sweep are
+#1616's). Two modules in `domains/llm/services`, both `llm → core` only:
+
+- **`image-analysis-identity.ts`** — the ONE place that hashes (ADR-027 D5):
+  `computeIdentityHash({providerId, model, baseUrl})` =
+  `sha256(providerId + '\n' + model + '\n' + baseUrl)`; `resolveImageAnalysisIdentity()`
+  (the live assignment through `resolveImageAnalysisUsecase`, null when
+  unassigned); `resolveCandidateImageAnalysisIdentity({providerId, model?})` (the
+  PUT's resolution rule — assignment model, else `default_model`, else the typed
+  `no_provider` / `no_model` refusal — shared with the scope preview so the two
+  cannot disagree); the retained identity's read
+  (`getRetainedImageAnalysisIdentity`, `admin_settings.image_analysis_identity`,
+  JSON `{providerId, model, baseUrl, identityHash, assignedAt}`, never seeded)
+  and its ONLY writer (`retainImageAnalysisIdentity`, D7: equal hash → resume,
+  different → replace and count the analyzed rows that fail D5's validity
+  predicate under the new one — `countRowsInvalidatedBy` /
+  `reanalysisScopeFor`, both constants bound from code). It re-exports
+  `IMAGE_ANALYSIS_PROMPT_VERSION` so the worker binds the predicate from one
+  import.
+- **`image-analysis-client.ts`** — `analyzeImage(...)`, pure: no row is read or
+  written, no page context enters the prompt, nothing of the reply or the bytes
+  is logged (D14). One chat completion through `chatCompletion()` (the
+  `openai-compatible-client.ts` sibling of `chat()` that also answers
+  `finish_reason` and `usage`; `chat()` is now a one-line wrapper over it) with
+  `temperature: 0`, `max_tokens` = the ceiling, no `tools`, no
+  `response_format`, the image as a `data:` URL. It validates the first JSON
+  object of the reply against `imageAnalysisPayloadSchema(T)` from
+  `@compendiq/contracts` and answers one of D8's six classes on failure —
+  `malformed`, `empty`, `refused` (matched against `REFUSAL_PATTERNS`, which
+  live HERE and not in `sanitize-llm-input.ts`; ADR-027 erratum), `truncated`
+  (with the ceiling), `rejected` (exactly 400/413/415/422, with the status) and
+  `unavailable` (408, 429, 5xx and non-HTTP failures keep the batch running;
+  every other 4xx is the provider-level default arm, `providerLevel: true`).
+  `encodeImageAnalysisError` spells the row's `error` column
+  (`truncated:8192`, `rejected:413`, `unavailable:405`). It refuses to post
+  bytes at a provider whose `base_url` differs from the identity it was handed.
+  `IMAGE_ANALYSIS_PROMPT_VERSION` is defined here, beside the prompt it versions.
+
+`vision-probe.ts` / `model-capabilities.ts` gained an optional `timeoutMs`
+(`refreshVisionCapability(providerId, model, { timeoutMs })`): the assignment PUT
+runs the known-content probe synchronously inside an admin request and bounds it
+at the image-embedding probe's `IMAGE_PROBE_TIMEOUT_MS`; the chat path's
+fire-and-forget refresh is unchanged. `core/services/admin-settings-service.ts`
+gained `getImageAnalysisMaxOutputTokens()` (`image_analysis_max_output_tokens`,
+default 8192, range [4096, 16384], strict-shape read — an unparseable or
+out-of-range row is the DEFAULT, never clamped — 60 s TTL, invalidated by the
+admin PUT's key table), the ceiling the worker reads once per batch and the
+client sizes the payload schema from.
+
+Two admin surfaces, all `requireAdmin`. `routes/llm/llm-usecases.ts` owns the
+CONFIGURATION: the pre-write probe branch in `PUT /admin/llm-usecases` (four
+422 reasons — `no_provider`, `no_model`, `text_only`, `unconfirmed` — each
+leaving the previous row AND the retained identity untouched; `true` pins the
+resolved model, commits, then retains the identity and answers
+`{ ok, reanalyzeRows }`), `GET /admin/llm-usecases/image_analysis/capability`
+(`ImageAnalysisCapabilityDetailSchema`: the chat detail plus `identity`,
+`identityDrift` — resolved hash ≠ retained hash, the state a provider
+`base_url` edit produces — and, on the re-check only, `reanalyzeRows`),
+`POST …/image_analysis/recheck` (D7's second writer: a `true` verdict on a
+drifted identity adopts it; `false`/`null` touch nothing) and
+`GET …/image_analysis/reanalysis-scope?providerId&model` (the D7 scope preview:
+resolves by the PUT's rule, hashes, counts — no probe, no write, no call; 422
+with the PUT's two resolution reasons, never the probe's). The new
+**`routes/llm/llm-page-image-analyses.ts`** owns the D14 diagnostic:
+`GET /admin/pages/:id/image-analyses[?payload=1]` — page visibility through
+`visiblePagesPredicate` BEFORE any row is read (404 either way, so a shared
+`content_hash` grants nothing), rows without `payload` unless asked, `error` as
+the D8 class, and `valid` as D5's predicate evaluated against the retained
+identity and the running constants.
+
+Migration `115_page_image_analyses.sql` (the ADR's SQL verbatim): the table,
+the two indexes, the use-case CHECK re-added with `image_analysis`, the NULL
+assignment row and the `image_analysis_max_output_tokens = '8192'` seed. The
+worker-side columns (`pages.image_analysis_dirty` / `_revision`,
+`page_embeddings.chunk_tsv`) are migration 116, #1616.
+
 ## Attachment bytes: one reader in `core`, the writers in `confluence` (#1115)
 
 `core/services/attachment-store.ts` holds the path resolution and the READ half

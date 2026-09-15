@@ -152,6 +152,18 @@ export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
 }
 
 /**
+ * #1615 (ADR-027 D3): image analysis is the third rung of the same rule, and
+ * the assignment IS the egress control. Unassigned means NO new inference,
+ * ever — never the default provider, never the chat provider, never a cloud
+ * fallback — because no page image may leave the host until an administrator
+ * has explicitly named the provider that receives it. The Enterprise override
+ * does not apply, for the reason it does not apply to the two above.
+ */
+export async function resolveImageAnalysisUsecase(): Promise<Resolved | null> {
+  return resolveExplicitOnlyUsecase('image_analysis');
+}
+
+/**
  * #1417: inline completion is opt-in. Its high request frequency and strict
  * latency/token budget make silently inheriting the default chat provider an
  * unsafe operational surprise, so an unassigned row means ghost text is off.
@@ -167,8 +179,8 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
 }
 
 /**
- * Shared body of the three ADR-021 use cases that NEVER inherit. One function
- * rather than three, so a future fourth cannot quietly gain a fallback that the
+ * Shared body of the four ADR-021 use cases that NEVER inherit. One function
+ * rather than four, so a future fifth cannot quietly gain a fallback that the
  * others refuse — the `usecase` is the only difference between them.
  *
  * A model must resolve too: an assignment without a model falls back to the
@@ -176,7 +188,7 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
  * rather than posting an empty model name at a non-OpenAI-shaped endpoint.
  */
 async function resolveExplicitOnlyUsecase(
-  usecase: 'rerank' | 'image_embedding' | 'inline_completion',
+  usecase: 'rerank' | 'image_embedding' | 'inline_completion' | 'image_analysis',
 ): Promise<Resolved | null> {
   const rows = await query<ResolveRow>(
     `SELECT
@@ -225,6 +237,13 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   if (usecase === 'inline_completion') {
     throw new Error(
       "resolveUsecase must not resolve 'inline_completion' — use resolveInlineCompletionUsecase (unassigned = ghost text disabled)",
+    );
+  }
+  // #1615: and for image analysis, where the failure is a data-egress one —
+  // page images posted at a provider nobody chose for them.
+  if (usecase === 'image_analysis') {
+    throw new Error(
+      "resolveUsecase must not resolve 'image_analysis' — use resolveImageAnalysisUsecase (unassigned = no image analysis)",
     );
   }
   // Enterprise override: when org LLM policy is enabled, EE returns the

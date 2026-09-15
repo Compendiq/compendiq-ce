@@ -1,6 +1,6 @@
 import { query } from '../../../core/db/postgres.js';
 import { loadProviderConfig } from './llm-provider-resolver.js';
-import { probeVision } from './vision-probe.js';
+import { probeVision, type ProbeVisionOptions } from './vision-probe.js';
 import { logger } from '../../../core/utils/logger.js';
 
 /**
@@ -163,9 +163,10 @@ function isOutsideCooldown(probedAt: string): boolean {
 export async function refreshVisionCapability(
   providerId: string,
   model: string,
+  opts?: ProbeVisionOptions,
 ): Promise<VisionCapabilityDetail> {
   const cfg = await loadProviderConfig(providerId);
-  const { vision, error } = await probeVision(cfg, model);
+  const { vision, error } = await probeVision(cfg, model, opts);
   const probedAt = await persist(providerId, model, vision, error);
   return { vision, probedAt, probeError: truncateProbeError(error) };
 }

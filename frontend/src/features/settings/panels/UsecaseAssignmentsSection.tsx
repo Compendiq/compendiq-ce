@@ -6,6 +6,7 @@ import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
 import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
+import { ImageAnalysisCard } from './ImageAnalysisCard';
 import { SearchableSelect } from '../../../shared/components/SearchableSelect';
 import { filterModelsForKind, type ModelKindFilter } from './model-kind';
 import { Info } from 'lucide-react';
@@ -19,6 +20,7 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   rerank: 'Rerank',
   image_embedding: 'Image embedding',
   inline_completion: 'Inline completion',
+  image_analysis: 'Image analysis (vision)',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
@@ -31,6 +33,7 @@ const NON_INHERITING: Record<string, string> = {
   rerank: 'Disabled (no reranking)',
   image_embedding: 'Disabled (no image search)',
   inline_completion: 'Disabled (no inline suggestions)',
+  image_analysis: 'Disabled (no image analysis)',
 };
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -117,6 +120,14 @@ interface Props {
   imageTargetDimensions: number | null;
   onImageTargetDimensionsChange: (next: number | null) => void;
   /**
+   * #1615 — the image-analysis output-token ceiling
+   * (`admin_settings.image_analysis_max_output_tokens`). Rides through this
+   * section for the same reason the width above does: the control belongs
+   * beside the row it bounds, the value belongs with the panel's Save.
+   */
+  imageAnalysisMaxOutputTokens: number;
+  onImageAnalysisMaxOutputTokensChange: (next: number) => void;
+  /**
    * The embedding row's next action (re-embed). Lives under this row so the
    * control that starts the index change sits where the assignment changed —
    * not above the form, and not competing with Save.
@@ -131,6 +142,8 @@ export function UsecaseAssignmentsSection({
   onChange,
   imageTargetDimensions,
   onImageTargetDimensionsChange,
+  imageAnalysisMaxOutputTokens,
+  onImageAnalysisMaxOutputTokensChange,
   embeddingAction,
 }: Props) {
   function update(u: LlmUsecase, patch: Partial<UsecaseAssignments[LlmUsecase]>) {
@@ -273,6 +286,20 @@ export function UsecaseAssignmentsSection({
                 assigned={savedAssignments[u]?.providerId != null}
                 targetDimensions={imageTargetDimensions}
                 onTargetDimensionsChange={onImageTargetDimensionsChange}
+              />
+            )}
+            {/*
+              #1615: the image-analysis strip is always rendered too — its copy
+              is what tells an operator which provider receives page images
+              and that unassigning is a pause — and, like the strip above, it
+              reads the SAVED assignment for everything that describes the
+              live leg (the egress sentence, the capability query, Re-check).
+            */}
+            {u === 'image_analysis' && (
+              <ImageAnalysisCard
+                savedAssignment={savedAssignments[u]}
+                maxOutputTokens={imageAnalysisMaxOutputTokens}
+                onMaxOutputTokensChange={onImageAnalysisMaxOutputTokensChange}
               />
             )}
           </div>

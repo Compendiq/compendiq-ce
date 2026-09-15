@@ -124,10 +124,12 @@ describe('UsecaseAssignmentsSchema', () => {
       rerank: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       image_embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       inline_completion: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
+      image_analysis: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
     expect(parsed.image_embedding).toBeDefined();
     expect(parsed.inline_completion).toBeDefined();
+    expect(parsed.image_analysis).toBeDefined();
   });
 });
 

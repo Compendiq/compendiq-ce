@@ -105,10 +105,33 @@ const assignments = {
     model: null,
     resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
   },
+  // #1615 — unassigned by default; `analysisAssigned` flips it.
+  image_analysis: {
+    providerId: null,
+    model: null,
+    resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+  },
 };
 
 /** #1115 — the last record a re-probe wrote, so GET reflects it (see below). */
 let lastImageProbe: Record<string, unknown> | null = null;
+/** #1615 — the last detail a re-check wrote. */
+let lastAnalysisCapability: Record<string, unknown> | null = null;
+const DEFAULT_ANALYSIS_CAPABILITY = {
+  providerId: providerB.id,
+  model: 'qwen3-vl',
+  vision: true,
+  probedAt: '2026-09-15T10:00:00.000Z',
+  probeError: null,
+  identity: {
+    providerId: providerB.id,
+    model: 'qwen3-vl',
+    baseUrl: 'http://localhost:11434/v1',
+    identityHash: 'a'.repeat(64),
+    assignedAt: '2026-09-15T10:00:00.000Z',
+  },
+  identityDrift: false,
+};
 
 function mockRoutes(options?: {
   concurrentStreamsCap?: number;
@@ -131,8 +154,19 @@ function mockRoutes(options?: {
   putResult?: Record<string, unknown>;
   /** #1115 — the stored MRL truncation width in the settings document. */
   imageTargetDimensions?: number | null;
+  /** #1615 — the machine-readable reason beside `putError`. */
+  putReason?: string;
+  /** #1615 — serve `image_analysis` as ASSIGNED to providerB / qwen3-vl. */
+  analysisAssigned?: boolean;
+  /** #1615 — the capability detail, or `null` for a 404. */
+  analysisCapability?: Record<string, unknown> | null;
+  /** #1615 — what `POST …/image_analysis/recheck` answers with. */
+  analysisRecheckResult?: Record<string, unknown>;
+  /** #1615 — the stored ceiling in the settings document. */
+  imageAnalysisMaxOutputTokens?: number;
 }) {
   lastImageProbe = null;
+  lastAnalysisCapability = null;
   const cap = options?.concurrentStreamsCap ?? 3;
   const settingsBody: Record<string, unknown> = {
     ftsLanguage: 'simple',
@@ -142,24 +176,37 @@ function mockRoutes(options?: {
     llmMaxConcurrentStreamsPerUser: cap,
     // #1115 — null on every instance that has not asked for MRL truncation.
     imageEmbeddingTargetDimensions: options?.imageTargetDimensions ?? null,
+    // #1615 — the image-analysis output-token ceiling, at its default.
+    imageAnalysisMaxOutputTokens: options?.imageAnalysisMaxOutputTokens ?? 8192,
   };
   if (options?.embeddingDimensions !== null) {
     settingsBody.embeddingDimensions = options?.embeddingDimensions ?? 1024;
   }
-  const servedAssignments = options?.imageUnassigned
-    ? {
-        ...assignments,
-        image_embedding: {
-          providerId: null,
-          model: null,
-          resolved: {
-            providerId: '00000000-0000-0000-0000-000000000000',
-            providerName: '',
-            model: '',
+  const servedAssignments = {
+    ...assignments,
+    ...(options?.imageUnassigned
+      ? {
+          image_embedding: {
+            providerId: null,
+            model: null,
+            resolved: {
+              providerId: '00000000-0000-0000-0000-000000000000',
+              providerName: '',
+              model: '',
+            },
           },
-        },
-      }
-    : assignments;
+        }
+      : {}),
+    ...(options?.analysisAssigned
+      ? {
+          image_analysis: {
+            providerId: providerB.id,
+            model: 'qwen3-vl',
+            resolved: { providerId: providerB.id, providerName: 'OpenAI', model: 'qwen3-vl' },
+          },
+        }
+      : {}),
+  };
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init = {}) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
     if (url.endsWith('/admin/llm-providers') && (init as RequestInit).method !== 'POST') {
@@ -174,10 +221,10 @@ function mockRoutes(options?: {
     }
     if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
       if (options?.putError) {
-        return new Response(JSON.stringify({ error: options.putError, statusCode: 422 }), {
-          status: 422,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({ error: options.putError, statusCode: 422, ...(options.putReason ? { reason: options.putReason } : {}) }),
+          { status: 422, headers: { 'Content-Type': 'application/json' } },
+        );
       }
       return new Response(JSON.stringify(options?.putResult ?? servedAssignments), {
         headers: { 'Content-Type': 'application/json' },
@@ -216,6 +263,25 @@ function mockRoutes(options?: {
         error: null,
       };
       return new Response(JSON.stringify(lastImageProbe), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // #1615 — the image-analysis capability detail for the SAVED pair.
+    if (url.endsWith('/admin/llm-usecases/image_analysis/capability')) {
+      if (options?.analysisCapability === null) {
+        return new Response(JSON.stringify({ error: 'unassigned' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify(lastAnalysisCapability ?? options?.analysisCapability ?? DEFAULT_ANALYSIS_CAPABILITY),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.endsWith('/admin/llm-usecases/image_analysis/recheck')) {
+      lastAnalysisCapability = options?.analysisRecheckResult ?? { ...DEFAULT_ANALYSIS_CAPABILITY, probedAt: '2026-09-15T11:00:00.000Z' };
+      return new Response(JSON.stringify(lastAnalysisCapability), {
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1696,5 +1762,117 @@ describe('LlmTab', () => {
         expect.stringContaining('chat-embeddings shape'),
       );
     });
+  });
+});
+
+/**
+ * #1615 — the image-analysis card's save paths, one layer above the card.
+ */
+describe('LlmTab — image analysis (#1615)', () => {
+  beforeEach(() => {
+    useAuthStore.getState().setAuth('test-token', { id: '1', username: 'admin', role: 'admin' });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useAuthStore.getState().clearAuth();
+  });
+
+  const putsOf = (spy: ReturnType<typeof mockRoutes>) =>
+    spy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT');
+  const urlOf = (c: unknown[]) => (typeof c[0] === 'string' ? (c[0] as string) : (c[0] as URL).toString());
+
+  it('renders the row with its non-inheriting option and the card beneath it', async () => {
+    mockRoutes();
+    render(<LlmTab />, { wrapper: createWrapper() });
+    const row = await screen.findByTestId('usecase-row-image_analysis');
+    expect(within(row).getByText('Image analysis (vision)')).toBeInTheDocument();
+    expect(within(row).getByRole('option', { name: 'Disabled (no image analysis)' })).toBeInTheDocument();
+    expect(within(row).getByTestId('image-analysis-egress')).toHaveTextContent(/no page image leaves this host/i);
+    expect(within(row).getByLabelText('Max output tokens')).toHaveValue(8192);
+  });
+
+  it('saves the ceiling through /admin/settings alone — no assignment re-send, no probe', async () => {
+    const spy = mockRoutes({ analysisAssigned: true });
+    render(<LlmTab />, { wrapper: createWrapper() });
+    const input = await screen.findByLabelText('Max output tokens');
+    fireEvent.change(input, { target: { value: '6000' } });
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => expect(putsOf(spy)).toHaveLength(1));
+    const [put] = putsOf(spy);
+    expect(urlOf(put!)).toMatch(/\/admin\/settings$/);
+    expect(JSON.parse((put![1] as RequestInit).body as string)).toEqual({ imageAnalysisMaxOutputTokens: 6000 });
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Use-case assignments saved'));
+    // Nothing re-probed: the recheck route was never called.
+    expect(spy.mock.calls.some(([u]) => String(u).endsWith('/image_analysis/recheck'))).toBe(false);
+    // The field re-hydrates from the stored value, not the default.
+    await waitFor(() => expect(screen.getByLabelText('Max output tokens')).toHaveValue(6000));
+  });
+
+  it('saves the ceiling BEFORE the assignment PUT when both changed', async () => {
+    const spy = mockRoutes();
+    render(<LlmTab />, { wrapper: createWrapper() });
+    const input = await screen.findByLabelText('Max output tokens');
+    fireEvent.change(input, { target: { value: '4096' } });
+    fireEvent.blur(input);
+    fireEvent.change(screen.getByTestId('usecase-image_analysis-provider'), { target: { value: providerB.id } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() => expect(putsOf(spy)).toHaveLength(2));
+    const puts = putsOf(spy);
+    expect(urlOf(puts[0]!)).toMatch(/\/admin\/settings$/);
+    expect(urlOf(puts[1]!)).toMatch(/\/admin\/llm-usecases$/);
+    expect(JSON.parse((puts[1]![1] as RequestInit).body as string)).toEqual({
+      image_analysis: { providerId: providerB.id },
+    });
+  });
+
+  it.each([
+    ['text_only', /refused the test image/],
+    ['unconfirmed', /could not be confirmed/],
+    ['no_model', /no model resolves/],
+    ['no_provider', /provider not found/],
+  ])('a 422 %s keeps every other draft and toasts the reason headline over the server sentence', async (reason, headline) => {
+    mockRoutes({ putError: 'Server sentence naming the remedy.', putReason: reason });
+    render(<LlmTab />, { wrapper: createWrapper() });
+    await screen.findByTestId('usecase-row-image_analysis');
+
+    // An unrelated draft beside the refused one.
+    fireEvent.change(screen.getByTestId('usecase-summary-provider'), { target: { value: providerB.id } });
+    fireEvent.change(screen.getByTestId('usecase-image_analysis-provider'), { target: { value: providerB.id } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+
+    await waitFor(() =>
+      expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+        expect.stringMatching(headline),
+        expect.objectContaining({ description: expect.stringContaining('Server sentence naming the remedy.') }),
+      ),
+    );
+    expect(screen.getByTestId('usecase-summary-provider')).toHaveValue(providerB.id);
+    expect(screen.getByTestId('usecase-image_analysis-provider')).toHaveValue(providerB.id);
+  });
+
+  it('discloses reanalyzeRows in amber when the save adopted a new identity, and not on a resume', async () => {
+    const spy = mockRoutes({ putResult: { ok: true, reanalyzeRows: 3 } });
+    render(<LlmTab />, { wrapper: createWrapper() });
+    await screen.findByTestId('usecase-row-image_analysis');
+    fireEvent.change(screen.getByTestId('usecase-image_analysis-provider'), { target: { value: providerB.id } });
+    fireEvent.click(screen.getByText('Save use-case assignments'));
+    await waitFor(() =>
+      expect(vi.mocked(toast.warning)).toHaveBeenCalledWith(expect.stringMatching(/^3 image analyses are no longer valid/)),
+    );
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    spy.mockRestore();
+
+    vi.mocked(toast.warning).mockClear();
+    mockRoutes({ putResult: { ok: true, reanalyzeRows: 0 } });
+    render(<LlmTab />, { wrapper: createWrapper() });
+    const rows = await screen.findAllByTestId('usecase-row-image_analysis');
+    const select = within(rows[rows.length - 1]!).getByTestId('usecase-image_analysis-provider');
+    fireEvent.change(select, { target: { value: providerB.id } });
+    fireEvent.click(screen.getAllByText('Save use-case assignments').at(-1)!);
+    await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalledWith('Use-case assignments saved'));
+    expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
   });
 });

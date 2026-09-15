@@ -443,6 +443,28 @@ of claiming an index it cannot see, and why the Retrieval group's unassigned
 notice **points back at** LLM providers while leaving its own controls enabled —
 they are settings, not actions.
 
+**A fourth surface arrived with #1615 (ADR-027): the Image analysis (vision)
+row** on **LLM providers** (`UsecaseAssignmentsSection` + `ImageAnalysisCard`).
+The row is the ordinary provider select and `ModelPicker` (manual model IDs
+accepted; the probe on Save validates them); the card beneath it is gated on the
+SAVED assignment, never the draft, for everything that describes the live leg:
+the egress sentence ("Page images are sent to *provider*" / "no page image leaves
+this host"), the `VisionBadge` tri-state with **Checked …** / **Never checked**
+and **Re-check** (`aria-busy`, label swap, focus kept), the `null`-is-not-a-verdict
+and text-only-is-a-pause sentences, the retained **Index identity** line
+(model · endpoint · short hash · adopted when) with an amber `role="status"`
+drift notice when the provider's endpoint moved, the escaped **Why this
+verdict?** disclosure, and — its own row below all of that, never inside the
+identity line — **Max output tokens** (`NumberRow`, extracted from `RetrievalTab`
+into `panels/NumberRow.tsx`, draft-on-keystroke, clamp-on-commit). `LlmTab`
+saves the ceiling through `PUT /admin/settings` BEFORE the assignments PUT and
+re-sends no assignment for it (it is outside the retained identity and fires no
+probe); a 422 from the assignment PUT keeps every other draft and toasts a
+headline chosen from `ApiError.reason` (`no_provider` / `no_model` / `text_only`
+/ `unconfirmed`) over the server's sentence; a save or re-check that adopted a
+new identity toasts the `reanalyzeRows` disclosure in amber, a resume the
+ordinary success.
+
 **A text-only chat model is invisible here, on purpose** (ADR-025 D8). Nothing
 on an answer, in the sources or in the announcement says a picture was withheld;
 the fact is stated exactly once, under **Images shown to the model**, and that
