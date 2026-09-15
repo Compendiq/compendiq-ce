@@ -1121,8 +1121,23 @@ Two things this pipeline nonetheless owns, because the index depends on them:
 
 `buildPageImageUrl` (`core/services/image-references.ts`) is the exact inverse
 of that enumerator and shares its directory rule, so the reader's key and the
-citation's URL cannot drift. Design of record: ADR-025; operations:
-`docs/runbooks/image-index.md`.
+citation's URL cannot drift. Design of record: ADR-025 (the ACTIVE design);
+operations: `docs/runbooks/image-index.md`.
+
+**Candidate (ADR-027, PLANNED #1615/#1616): analysis text is DERIVED data,
+still never a conversion rule.** The paragraph above stays true under the
+candidate. A generative vision model reads the attachment's bytes at
+ingestion and its output is stored in `page_image_analyses` and composed by
+`embedPage` into `page_embeddings` rows — it is never written into
+`body_storage`, `body_html` or `body_text`, never shown in the editor, and
+never round-tripped to Confluence or Notion. `<img>` still converts to
+`<img>`; `htmlToEmbeddingText` still contributes only the alt text;
+`document-extractor.ts` still has no image branch; there is still no OCR
+*step in this pipeline* — the transcription lives beside the page as
+searchable evidence with `metadata.source = 'image_analysis'`, and the two
+enumerator rules above (URL-decoded key, store from the prefix) are exactly
+what the candidate's reconcile reuses to find the bytes. Design of record:
+ADR-027.
 
 See [`08-flow-sync.md`](./08-flow-sync.md) for where this hooks into the
 sync pipeline.

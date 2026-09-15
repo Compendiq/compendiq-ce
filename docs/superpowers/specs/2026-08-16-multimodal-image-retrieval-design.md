@@ -1,5 +1,15 @@
 # Multimodal Image Retrieval — Design
 
+> **Superseded in part by ADR-027 (epic #1611, 2026-09-15).** This document
+> is the design of record for the **active** ADR-025 deployment — the
+> `image_embedding` use case, `page_image_embeddings`, the third RRF leg and
+> the answer-path attachment — and stays accurate for it until #1618 retires
+> that deployment after the #1619 quality gate. Its D1 is superseded on scope
+> and its D6 is reversed by ADR-027 (`docs/ARCHITECTURE-DECISIONS.md`), which
+> replaces image embeddings with ingestion-time image *analysis* indexed as
+> text. Read this file as "what runs today", ADR-027 as "what the candidate
+> does", and do not treat anything here as a decision for the candidate.
+
 **Date:** 2026-08-16
 **Issue:** #1115 (Phase 2 of epic #1100)
 **Status:** **APPROVED 2026-08-17** (owner interview; the rulings are folded

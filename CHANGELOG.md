@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   volleyball) and logos (Strava, Garmin, Adidas, Nike, Puma, The North Face,
   Komoot, AllTrails, Under Armour). PADI is not in the Simple Icons CC0
   set, so it is not in the catalogue.
+- ADR-027 records the image-aware RAG architecture (#1611, #1614): page
+  images are analysed once at ingestion by an explicitly assigned generative
+  vision model and the resulting text is indexed by the ordinary text
+  embedder beside the page's own chunks, replacing the separate image
+  embedding space and its retrieval leg. The ADR fixes the storage, identity,
+  invalidation, lexical-index and citation contracts for the implementing
+  packages, specifies the vision reply's output-token ceiling as an admin
+  setting outside the analysis cache key, and pre-registers the paired
+  A/B/C quality gate — margins, sample size, single-judge protocol and a
+  quality-only decision rule, all confirmed by the owner — that decides the
+  cutover; the shipped image leg is unchanged until that gate passes.
 
 ### Changed
 

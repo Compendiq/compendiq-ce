@@ -25,6 +25,16 @@ signal in the code (§8).
 Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 `docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`.
 
+> **Active versus candidate.** This runbook operates the ACTIVE leg. ADR-027
+> (epic #1611) records the CANDIDATE that replaces it — ingestion-time image
+> analysis by a generative vision model (`image_analysis`), indexed as text
+> chunks by the ordinary embedder, no image space and no third leg — and the
+> pre-registered A/B/C measurement (`retrieval-eval.md`, "Arm protocol") that
+> decides the cutover. Until #1618 retires this leg after that gate, every
+> section below is what runs; nothing about the candidate is measured yet, and
+> the operator surface for it (an **Image analysis (vision)** selector and an
+> **Image analysis** progress card) arrives with #1615/#1618.
+
 ---
 
 ## 0. What this runbook covers

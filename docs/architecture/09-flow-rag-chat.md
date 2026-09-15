@@ -280,6 +280,35 @@ and its `alt` is usually empty. #1115 embeds page images into their own index
 (`page_image_embeddings`, filled by P2) and P3 makes that index **retrievable**
 as a third RRF leg, in `domains/llm/services/image-leg-search.ts`.
 
+> **Active versus candidate (ADR-027, epic #1611).** Everything in this
+> section and in "Image retrieval leg — configuration and probe" and "Answer
+> path" below describes the **active** release. ADR-027 records the
+> **candidate** that #1615–#1617 implement and #1619 measures before #1618
+> retires the leg: no image space and no third RRF leg at all. Page images
+> are analyzed once at ingestion by a generative vision model
+> (`image_analysis`, non-inheriting, probed before its row is written); the
+> text is one `page_embeddings` row per image with
+> `metadata.source = 'image_analysis'`, embedded by the ordinary text embedder
+> and indexed lexically through `page_embeddings.chunk_tsv`. The **vector
+> leg** retrieves derived rows like any chunk; the **lexical leg** unions
+> `pages.tsv` with derived `chunk_tsv` matches, ranks a page by the greater
+> of the two, and resolves every lexical or exact-identifier page hit to the
+> best-ranked chunk of that page (`ORDER BY (chunk_tsv @@ q) DESC, ts_rank DESC, chunk_index`)
+> instead of `substring(body_text, 1, 500)` — a change that reaches authored
+> keyword hits too, which is why the protocol runs arm C on the candidate
+> revision. Fusion stays page-denominated over two legs; MMR and rerank score
+> the derived text as-is; sibling assembly never crosses the authored/derived
+> boundary (a derived anchor returns only itself); the derived row is a
+> measured row for `computeRetrievalConfidence`, so `imageTextSynthesized`
+> and `image_only_context` retire with the leg. Sources keep the
+> `kind: 'image'` entry and add `attachmentStore`, `attachmentKey`,
+> `contentHash`, `analysisVersion` (ADR-027 D12); the optional retrieved-image
+> attachment for a vision-capable chat model survives, re-sourced from
+> derived-chunk provenance, with its gate still in `llm-ask.ts`. Until #1618
+> merges, the leg below is what runs, and the shut gate still costs what this
+> section says it costs. Do not read the candidate as measured: better RAG is
+> the hypothesis the pre-registered A/B/C gate in ADR-027 tests.
+
 **Dual space, fused by RANK.** The images are embedded by a vision-language
 model into a different vector space from the text (ADR-025 D1), and the query
 is embedded a second time by that same model for this leg only. The two spaces
