@@ -95,8 +95,8 @@ erDiagram
         uuid created_by_user_id FK
         bool embedding_dirty
         bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
-        bool image_analysis_dirty "PLANNED #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
-        bigint image_analysis_revision "PLANNED #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
+        bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
+        bigint image_analysis_revision "migration 116, #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
@@ -134,8 +134,8 @@ erDiagram
         int chunk_index
         text chunk_text
         vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
-        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (PLANNED #1616, ADR-027 D9)"
-        tsvector chunk_tsv "PLANNED #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
+        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (#1616, ADR-027 D9)"
+        tsvector chunk_tsv "migration 116, #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
     }
 
     page_image_embeddings {
@@ -722,10 +722,15 @@ together, which matters most for #1114's query-side prefix.
     as the work queue. Design of record: ADR-025. **This is the ACTIVE
     design; ADR-027 supersedes it in part and the bullet below is the
     CANDIDATE.**
-- **PLANNED (#1615 / #1616, ADR-027) — image analysis in the text index.**
-  Nothing in this bullet is merged yet; the entities above carrying `PLANNED`
-  are the contract those packages implement, and the legacy table, flag and
-  leg stay live beside them until #1618 retires them after the #1619 gate.
+- **ADR-027 — image analysis in the text index (#1616 ingestion half SHIPPED;
+  #1615 assignment half PLANNED).** Migration 116, the worker, the reconcile,
+  `embedPage` composition, coverage and readiness are merged (#1616); the
+  `page_image_analyses` table (migration 115), the `image_analysis` use case,
+  the retained identity writer and the client are #1615's, and until it lands
+  the worker's gate is shut (`reason: 'unassigned'`) and every reader of the
+  table degrades to "no derived rows" when it is absent. The legacy table,
+  flag and leg stay live beside them until #1618 retires them after the #1619
+  gate.
   A generative vision model (`image_analysis`, a non-inheriting use case
   probed with the tri-state vision probe BEFORE its row is written) reads
   each referenced raster once at ingestion; the result is **derived data** in

@@ -439,6 +439,50 @@ one nothing would.
   "not assigned" — that would send an operator whose leg is working to go and
   assign it — and both actions stay live, because they are the recovery.
 
+## 5b. Image analysis worker (ADR-027, #1616)
+
+The candidate's ingestion side ships beside this leg. It is driven by ONE
+queue, `image-analysis` (BullMQ concurrency 1, the sync cadence, plus the
+post-sync kick beside `processDirtyPageImages`), under the lease
+`worker:lock:image-analysis` (600 s, renewed every 60 s, checked before every
+write). Every batch is three steps, and only the last needs a model:
+
+1. **Sweep.** `analyzed` rows that fail the validity predicate (retained
+   identity, prompt/schema version) become `pending` with their payload kept;
+   `pending` rows whose kept payload passes it flip back (`reused`, no call);
+   stale `failed` / `failed_terminal` rows return to `failed, attempts 0, due
+   now`; `truncated:<ceiling>` rows re-open when **Max output tokens** is
+   raised above the recorded ceiling.
+2. **Reconcile** every `pages.image_analysis_dirty` page: claim the flag
+   first, enumerate `body_html`, hash the bytes through the same intake this
+   runbook's §5 describes, upsert `page_image_analyses`. Any row change bumps
+   `image_analysis_revision` and raises `embedding_dirty`, so `embedPage`
+   drops stale derived chunks even before a new analysis exists.
+3. **Analyze** up to `image_analysis_batch_size` images (Settings → AI Models
+   → Workers, default 50, [1, 500]) — only when `image_analysis` is assigned,
+   its vision verdict is `true` and the resolved identity equals the retained
+   one. Unassigned, `capability` and `identity_drift` all skip this step and
+   the batch result says which (`reason`).
+
+Failures back off `LEAST(15 min × 2^attempts, 24 h)`; a deterministic class
+(malformed, empty, refused, truncated, rejected) at 5 attempts goes
+`failed_terminal`; `unavailable` never does. A 4xx outside 400/413/415/422
+ends the batch (`provider_status`) and re-probes the pair; three identical
+`rejected` statuses first end it too (`uniform_rejection`, the rows rewritten
+`unavailable:<status>`, never terminal) — serve the model with a larger
+context or lower Max output tokens, then Run Now. The last batch result is in
+`admin_settings.image_analysis_last_run`; the operator card, Run Now, Retry
+failed and Re-analyze all arrive with #1618. While migration 115 (#1615) is
+absent the worker is idle and logs so once.
+
+Derived chunks are ordinary `page_embeddings` rows after every authored index
+with `metadata.source = 'image_analysis'`; they are excluded from both page
+averages, indexed lexically through `page_embeddings.chunk_tsv` (rebuilt with
+`pages.tsv` on a language change), and never assembled as siblings of
+authored text. Unlike the leg below, an unassigned instance pays no probe
+here at all — the gate is a settings read, and the sweep and reconcile still
+run so a pause is a pause, not a purge.
+
 ## 6. Retrieval — the image leg (#1115 P3)
 
 The index is read by a **third RRF leg** beside the semantic and keyword ones.

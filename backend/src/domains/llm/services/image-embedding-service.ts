@@ -49,7 +49,6 @@
  *    tried again. The two must never be conflated in the counters, because one
  *    is "working as designed" and the other is "your provider is down".
  */
-import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 import pgvector from 'pgvector/pg';
 import { getPool, query } from '../../../core/db/postgres.js';
@@ -59,12 +58,7 @@ import {
   isExternalImageKey,
   type PageImageReference,
 } from '../../../core/services/image-references.js';
-import { resolveAttachmentBytes } from '../../../core/services/attachment-store.js';
-import {
-  MAX_IMAGE_BYTES,
-  MAX_IMAGE_DIMENSION,
-  readImageDimensions,
-} from '../../../core/services/image-validator.js';
+import { intakePageImage } from './image-intake.js';
 import {
   getRagImageIndexExternal,
   getRagImagesPerPageMax,
@@ -271,40 +265,17 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
   let error: string | undefined;
 
   for (const ref of refs) {
-    const bytes = await resolveAttachmentBytes({
-      pageId: page.id,
-      confluenceId: page.confluence_id,
-      pageSource: page.source,
-      source: ref.source,
-      key: ref.key,
-    });
-    if (!bytes) {
-      skipped.missing++;
+    // Intake (bytes, sniff, bounds, hash) is the shared module under #1616's
+    // ownership (ADR-027); the skip taxonomy is unchanged.
+    const intake = await intakePageImage(page, ref);
+    if (intake.kind === 'skipped') {
+      if (intake.reason === 'missing') skipped.missing++;
+      else if (intake.reason === 'too_large') skipped.tooLarge++;
+      else if (intake.reason === 'oversized') skipped.oversized++;
+      else skipped.unsupported++;
       continue;
     }
-    if (bytes.sniffedFormat === null) {
-      // SVG, draw.io XML behind a `.png`, a PDF, a truncated download. All the
-      // same verdict: this is not something a vision encoder can read.
-      skipped.unsupported++;
-      continue;
-    }
-    if (bytes.bytes.length > MAX_IMAGE_BYTES) {
-      skipped.tooLarge++;
-      continue;
-    }
-    const dims = readImageDimensions(bytes.bytes, bytes.sniffedFormat);
-    if (!dims || dims.width <= 0 || dims.height <= 0) {
-      // A header we cannot read is not a header we can clear the ceiling with,
-      // so it joins `unsupported` rather than being embedded on trust.
-      skipped.unsupported++;
-      continue;
-    }
-    if (dims.width > MAX_IMAGE_DIMENSION || dims.height > MAX_IMAGE_DIMENSION) {
-      skipped.oversized++;
-      continue;
-    }
-
-    const sha256 = createHash('sha256').update(bytes.bytes).digest('hex');
+    const sha256 = intake.sha256;
     const prior = existing.get(`${ref.source}:${ref.key}`);
     if (prior && prior.sha256 === sha256 && prior.model === resolved.model) {
       reused++;
@@ -315,7 +286,7 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
       const [embedding] = await embedImagesVl(
         resolved.config,
         resolved.model,
-        [{ bytes: bytes.bytes, format: bytes.sniffedFormat }],
+        [{ bytes: intake.bytes, format: intake.format }],
         {
           ...(targetDimensions !== null ? { dimensions: targetDimensions } : {}),
           timeoutMs: IMAGE_EMBED_TIMEOUT_MS,
@@ -339,9 +310,9 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
       prepared.push({
         ref,
         sha256,
-        format: bytes.sniffedFormat,
-        width: dims.width,
-        height: dims.height,
+        format: intake.format,
+        width: intake.width,
+        height: intake.height,
         model: resolved.model,
         embedding,
       });

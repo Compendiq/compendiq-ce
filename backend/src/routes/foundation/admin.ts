@@ -403,6 +403,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       efSearch,
       qualityBatchSize,
       summaryBatchSize,
+      imageAnalysisBatchSize,
     ] = await Promise.all([
       getEmbeddingDimensions(),
       getAiGuardrails(),
@@ -470,6 +471,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // read once per worker batch, and the batch runs at most hourly.
       getWorkerBatchSize('quality_batch_size'),
       getWorkerBatchSize('summary_batch_size'),
+      getWorkerBatchSize('image_analysis_batch_size'),
     ]);
     const result = await query<{ setting_key: string; setting_value: string }>(
       `SELECT setting_key, setting_value FROM admin_settings
@@ -551,9 +553,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
       rateLimitLlmEmbedding: rateLimits.llmEmbedding.max,
       // Per-user concurrent SSE-stream cap (#268)
       llmMaxConcurrentStreamsPerUser,
-      // Pages per batch for the quality / summary workers (Settings → AI Models → Workers).
+      // Items per batch for the quality / summary / image-analysis workers (Settings → AI Models → Workers).
       qualityBatchSize,
       summaryBatchSize,
+      imageAnalysisBatchSize,
       // Compendiq/compendiq-ee#113 Phase B-3 — cluster-wide LLM queue settings.
       // Read via the cached getters so the response reflects the same value
       // every pod's `_limiter` is using (or will be using within ~1s of any
@@ -721,13 +724,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Worker batch sizes. Zod already enforced [1, 100]; the workers read the
-    // row at the start of their next batch, so no cache to invalidate.
+    // Worker batch sizes. Zod already enforced the per-key range; the workers
+    // read the row at the start of their next batch, so no cache to invalidate.
     if (body.qualityBatchSize !== undefined) {
       updates.push({ key: 'quality_batch_size', value: String(body.qualityBatchSize) });
     }
     if (body.summaryBatchSize !== undefined) {
       updates.push({ key: 'summary_batch_size', value: String(body.summaryBatchSize) });
+    }
+    if (body.imageAnalysisBatchSize !== undefined) {
+      updates.push({ key: 'image_analysis_batch_size', value: String(body.imageAnalysisBatchSize) });
     }
 
     // Issue #257 — reembed-all job history retention. Zod already enforced
@@ -1130,6 +1136,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
             $1::regconfig,
             coalesce(title, '') || ' ' || coalesce(body_text, '')
           )`,
+          [body.ftsLanguage],
+        );
+        // ADR-027 D10: the per-chunk lexical document is rebuilt in the SAME
+        // transaction, or a language switch leaves derived (and authored) chunk
+        // text indexed under the previous configuration with the panel
+        // reporting the new one. Every row, like `pages.tsv` above.
+        await client.query(
+          `UPDATE page_embeddings SET chunk_tsv = to_tsvector($1::regconfig, coalesce(chunk_text, ''))`,
           [body.ftsLanguage],
         );
         await client.query('COMMIT');

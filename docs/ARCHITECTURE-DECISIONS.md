@@ -4779,7 +4779,11 @@ deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
   (`IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE`, `IMAGE_ANALYSIS_FIXED_CHARS`,
   and the bounds table) so the backend validates and the schema test
   computes from one definition. `SourceSchema` gains the four provenance
-  fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`.
+  fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`
+  (*erratum, #1616:* the setting, its `WorkerBatchSizeKey` member, the
+  `imageAnalysisBatchSize` contract field and the Workers-tab row ship with
+  #1616, whose migration 116 seeds the row and whose worker reads it — not
+  with #1615 as this bullet's placement implies).
   The scope preview below has both halves in `@compendiq/contracts`:
   `ImageAnalysisReanalysisScopeQuerySchema` (`{ providerId: uuid, model?:
   non-empty string }`) on the way in and `ImageAnalysisReanalysisScopeSchema`

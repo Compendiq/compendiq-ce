@@ -236,7 +236,7 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
     it('raises image_embedding_dirty when the restore changes the body', async () => {
       await query(
         `UPDATE pages SET version = 3, body_html = '<p>a</p><img src="/api/attachments/1/pic.png">',
-                          image_embedding_dirty = FALSE
+                          image_embedding_dirty = FALSE, image_analysis_dirty = FALSE
            WHERE id = $1`,
         [pageId],
       );
@@ -245,11 +245,11 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
 
       await restoreVersion(pageId, 2);
 
-      const r = await query<{ image_embedding_dirty: boolean }>(
-        'SELECT image_embedding_dirty FROM pages WHERE id = $1',
+      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean }>(
+        'SELECT image_embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1',
         [pageId],
       );
-      expect(r.rows[0]!.image_embedding_dirty).toBe(true);
+      expect(r.rows[0]).toEqual({ image_embedding_dirty: true, image_analysis_dirty: true });
     });
 
     it('leaves image_embedding_dirty alone for a title-only restore', async () => {
@@ -258,7 +258,7 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
       // its pictures is pure cost.
       await query(
         `UPDATE pages SET version = 3, title = 'Now', body_html = '<p>same</p>', body_text = 'same',
-                          image_embedding_dirty = FALSE
+                          image_embedding_dirty = FALSE, image_analysis_dirty = FALSE
            WHERE id = $1`,
         [pageId],
       );
@@ -266,12 +266,11 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
 
       await restoreVersion(pageId, 2);
 
-      const r = await query<{ image_embedding_dirty: boolean; title: string }>(
-        'SELECT image_embedding_dirty, title FROM pages WHERE id = $1',
+      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean; title: string }>(
+        'SELECT image_embedding_dirty, image_analysis_dirty, title FROM pages WHERE id = $1',
         [pageId],
       );
-      expect(r.rows[0]!.title).toBe('Then');
-      expect(r.rows[0]!.image_embedding_dirty).toBe(false);
+      expect(r.rows[0]).toEqual({ title: 'Then', image_embedding_dirty: false, image_analysis_dirty: false });
     });
 
     it('derives body_text from body_html when the snapshot lacks body_text', async () => {

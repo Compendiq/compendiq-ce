@@ -32,6 +32,8 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
+import { getRetainedImageAnalysisIdentity } from './image-analysis-provider.js';
+import { imageAnalysisStorePresent, validityParamValues, validitySql } from './image-analysis-validity.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import {
@@ -1066,6 +1068,15 @@ export const DEGRADED_COVERAGE_THRESHOLD = 0.95;
 
 export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCoverage> {
   const covSpaces = await getUserAccessibleSpaces(userId);
+  // ADR-027 D9.5: an image-only page with a currently valid analysis is
+  // embeddable, so the denominator counts it beside the prose pages, under
+  // the same validity predicate composition uses. While migration 115 is
+  // absent the clause is omitted and the count is what it was.
+  const withAnalyses = await imageAnalysisStorePresent();
+  const retained = withAnalyses ? await getRetainedImageAnalysisIdentity() : null;
+  const analyzedClause = withAnalyses
+    ? ` OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = cp.id AND ${validitySql('a', 3, 4, 5)})`
+    : '';
   const result = await query<{ embedded: number; total: number }>(
     `SELECT
        COUNT(*) FILTER (WHERE EXISTS (
@@ -1077,8 +1088,10 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
        AND cp.deleted_at IS NULL
        AND COALESCE(cp.page_type, 'page') != 'folder'
        AND cp.body_html IS NOT NULL
-       AND char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}`,
-    [covSpaces, userId],
+       AND (char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}${analyzedClause})`,
+    withAnalyses
+      ? [covSpaces, userId, ...validityParamValues({ identityHash: retained?.identityHash ?? null })]
+      : [covSpaces, userId],
   );
   const embedded = result.rows[0]?.embedded ?? 0;
   const total = result.rows[0]?.total ?? 0;
@@ -2263,6 +2276,13 @@ async function hybridSearchInner(
              JOIN unnest($1::int[], $2::int[]) AS a(page_id, anchor)
                ON pe.page_id = a.page_id
              WHERE pe.chunk_index BETWEEN a.anchor - $3 AND a.anchor + $3
+               -- ADR-027 D2: sibling assembly never crosses the authored /
+               -- derived boundary. Derived rows (metadata.source =
+               -- 'image_analysis') are not siblings of anything, and a
+               -- derived ANCHOR is not expanded at all: its own row is
+               -- excluded here, the text check below then finds no anchor
+               -- and the result keeps its chunk text — itself, and only itself.
+               AND (pe.metadata->>'source') IS DISTINCT FROM 'image_analysis'
              ORDER BY pe.page_id, pe.chunk_index`,
             [anchored.map((r) => r.pageId), anchored.map((r) => r.chunkIndex!), SIBLING_FETCH_SPAN],
           );

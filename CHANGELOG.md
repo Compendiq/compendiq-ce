@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image analysis in the text index — ingestion half (ADR-027, #1616).**
+  Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
+  and a trigger-maintained, GIN-indexed `page_embeddings.chunk_tsv` (rebuilt in
+  the same transaction as `pages.tsv` on an FTS-language change). A new
+  `image-analysis` worker (one bounded batch per sync cadence, lease
+  `worker:lock:image-analysis`) sweeps stale analyses, reconciles every
+  changed page's image references into `page_image_analyses`, and analyzes
+  pending images with the assigned vision model — with backoff, a terminal
+  state at 5 attempts, provider-status and uniform-rejection stops. `embedPage`
+  composes valid analyses as derived chunks after the authored ones
+  (`metadata.source = 'image_analysis'`), excluded from both page averages and
+  from sibling assembly; an image-only page with a substantive analysis is
+  embeddable and counted by coverage. Every image writer raises the new flag
+  beside `image_embedding_dirty`. New Workers-tab knob `imageAnalysisBatchSize`
+  (default 50, [1, 500]). Inference stays paused until #1615's assignment,
+  identity and client land behind the `image-analysis-provider.ts` seam.
 - Drag an article onto another in a local-space sidebar to nest it as a
   sub-article. Click the row's drag handle for the same move, including
   back to top level.

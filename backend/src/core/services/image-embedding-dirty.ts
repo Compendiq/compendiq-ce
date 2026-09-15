@@ -1,5 +1,7 @@
 /**
- * #1115 P2 — raising `pages.image_embedding_dirty`.
+ * #1115 P2 — raising `pages.image_embedding_dirty`; ADR-027 D4 (#1616) —
+ * raising `pages.image_analysis_dirty` beside it, from the same writers, in
+ * the same statements, until #1618 retires the legacy flag.
  *
  * **The flag is the queue.** `processDirtyPageImages` walks nothing else, so a
  * write that does not raise it leaves `page_image_embeddings` describing bytes
@@ -75,7 +77,7 @@ export async function markPageImagesDirty(
   pageId: number,
   client?: Pick<PoolClient, 'query'>,
 ): Promise<boolean> {
-  const statement = `UPDATE pages SET image_embedding_dirty = TRUE
+  const statement = `UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
         WHERE id = $1 AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'`;
   try {
     if (client) {
@@ -134,7 +136,7 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
   try {
     const byConfluenceId = await query<{ existed: boolean }>(
       `WITH marked AS (
-         UPDATE pages SET image_embedding_dirty = TRUE
+         UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
            WHERE confluence_id = $1
              AND deleted_at IS NULL
              AND COALESCE(page_type, 'page') != 'folder'
@@ -155,7 +157,7 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
       return;
     }
     await query(
-      `UPDATE pages SET image_embedding_dirty = TRUE
+      `UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
         WHERE id = $1
           AND source <> 'confluence'
           AND deleted_at IS NULL

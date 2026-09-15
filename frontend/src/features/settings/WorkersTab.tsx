@@ -122,11 +122,34 @@ function useWorkerAction(endpoint: string, successMsg: string) {
 // Batch size — pages the worker takes per scheduled run / Run Now
 // ---------------------------------------------------------------------------
 
-type BatchSizeField = 'qualityBatchSize' | 'summaryBatchSize';
+type BatchSizeField = 'qualityBatchSize' | 'summaryBatchSize' | 'imageAnalysisBatchSize';
 
-/** Mirrors `WORKER_BATCH_SIZE_*` in the backend admin-settings service. */
-const BATCH_SIZE_MIN = 1;
-const BATCH_SIZE_MAX = 100;
+/**
+ * Per-field bounds and copy. Mirrors `WORKER_BATCH_SIZE_*` and
+ * `IMAGE_ANALYSIS_BATCH_SIZE_*` in the backend admin-settings service: pages
+ * for the quality / summary workers, images for the analysis worker (ADR-027
+ * D13, one bounded batch per scheduled cycle and per Run Now).
+ */
+const BATCH_SIZE_FIELDS: Record<BatchSizeField, { label: string; description: string; min: number; max: number }> = {
+  qualityBatchSize: {
+    label: 'Pages per batch',
+    description: 'Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.',
+    min: 1,
+    max: 100,
+  },
+  summaryBatchSize: {
+    label: 'Pages per batch',
+    description: 'Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.',
+    min: 1,
+    max: 100,
+  },
+  imageAnalysisBatchSize: {
+    label: 'Images per batch',
+    description: 'Each scheduled run and Run Now sends at most this many images to the vision model; the rest wait for the next run.',
+    min: 1,
+    max: 500,
+  },
+};
 
 function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusKey: string }) {
   const queryClient = useQueryClient();
@@ -178,6 +201,7 @@ function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusK
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Failed to save batch size'),
   });
 
+  const bounds = BATCH_SIZE_FIELDS[field];
   const inputId = `${statusKey}-batch-size`;
   const noticeId = `${inputId}-notice`;
   const showFailure = isError || retryInFlight;
@@ -185,10 +209,10 @@ function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusK
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border pt-3">
       <div className="min-w-0">
         <label htmlFor={inputId} className="text-xs font-medium">
-          Pages per batch
+          {bounds.label}
         </label>
         <p className="text-xs text-muted-foreground">
-          Each scheduled run and Run Now processes at most this many pages; the rest wait for the next run.
+          {bounds.description}
         </p>
         <p
           role="status"
@@ -222,14 +246,14 @@ function BatchSizeControl({ field, statusKey }: { field: BatchSizeField; statusK
           id={inputId}
           data-testid={inputId}
           type="number"
-          min={BATCH_SIZE_MIN}
-          max={BATCH_SIZE_MAX}
+          min={bounds.min}
+          max={bounds.max}
           value={value ?? ''}
           disabled={saved === undefined}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
             if (Number.isFinite(v)) {
-              setDraft(Math.max(BATCH_SIZE_MIN, Math.min(BATCH_SIZE_MAX, v)));
+              setDraft(Math.max(bounds.min, Math.min(bounds.max, v)));
             }
           }}
           className="nm-input w-20 text-right"
@@ -658,6 +682,20 @@ export function WorkersTab() {
         resetFailedEndpoint="/llm/embedding-reset-failed"
         normalize={normalizeEmbedding}
       />
+
+      {/* ADR-027 D13 (#1616): the image analysis worker's one knob. Its
+          status, Run Now, Retry failed and Re-analyze all arrive with #1618's
+          progress card under AI Models; until then the batch size lives here
+          beside the other worker knobs. */}
+      <div className="nm-card p-4 space-y-3" data-testid="worker-card-image-analysis">
+        <div>
+          <h3 className="text-sm font-semibold">Image Analysis</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Runs after every sync: re-enumerates changed pages, then analyzes pending images with the assigned vision model.
+          </p>
+        </div>
+        <BatchSizeControl field="imageAnalysisBatchSize" statusKey="image-analysis" />
+      </div>
     </div>
   );
 }

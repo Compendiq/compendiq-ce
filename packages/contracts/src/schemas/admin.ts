@@ -444,6 +444,12 @@ export const AdminSettingsSchema = z.object({
   qualityBatchSize: z.number().int().min(1).max(100),
   summaryBatchSize: z.number().int().min(1).max(100),
   /**
+   * ADR-027 D13 (#1616) — images the analysis worker takes per batch (one
+   * bounded batch per scheduled cycle and per Run Now). Row
+   * `image_analysis_batch_size`, seeded `'50'` by migration 116; [1, 500].
+   */
+  imageAnalysisBatchSize: z.number().int().min(1).max(500),
+  /**
    * Issue #264 — retention (days) for `audit_log` rows where
    * action = 'ADMIN_ACCESS_DENIED'. Consumed by the targeted purge in
    * `data-retention-service.ts :: runAdminAccessDeniedRetention`. Default
@@ -583,6 +589,7 @@ export const UpdateAdminSettingsSchema = z.object({
   /** Worker batch sizes — optional on update; omitted → leave unchanged. */
   qualityBatchSize: z.number().int().min(1).max(100).optional(),
   summaryBatchSize: z.number().int().min(1).max(100).optional(),
+  imageAnalysisBatchSize: z.number().int().min(1).max(500).optional(),
   /** Issue #264 — optional on update; omitted → leave unchanged. */
   adminAccessDeniedRetentionDays: z.number().int().min(7).max(3650).optional(),
   /**

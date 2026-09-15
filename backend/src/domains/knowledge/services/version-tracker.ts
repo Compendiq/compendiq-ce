@@ -228,6 +228,10 @@ export async function restoreVersion(
            WHEN body_html IS DISTINCT FROM $3 THEN TRUE
            ELSE image_embedding_dirty
          END,
+         image_analysis_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+           ELSE image_analysis_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          local_modified_at = NOW()
        WHERE id = $1`,

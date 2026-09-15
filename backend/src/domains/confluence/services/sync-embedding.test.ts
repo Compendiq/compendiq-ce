@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   processDirtyPageImages: vi.fn().mockResolvedValue({ pages: 0 }),
+  runImageAnalysisBatch: vi.fn().mockResolvedValue({ processed: 0, reason: 'unassigned' }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
   getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
@@ -24,6 +25,12 @@ vi.mock('../../llm/services/embedding-service.js', () => ({
 // `processDirtyPages` beside it.
 vi.mock('../../llm/services/image-embedding-service.js', () => ({
   processDirtyPageImages: mocks.processDirtyPageImages,
+}));
+
+// ADR-027 D13 (#1616) — the analysis worker's post-sync kick, beside the
+// legacy image scan; same rule, same assertions.
+vi.mock('../../llm/services/image-analysis-worker.js', () => ({
+  runImageAnalysisBatch: mocks.runImageAnalysisBatch,
 }));
 
 vi.mock('./confluence-client.js', () => ({
@@ -144,6 +151,7 @@ describe('syncUser auto-embedding', () => {
 
     await vi.waitFor(() => {
       expect(mocks.processDirtyPageImages).toHaveBeenCalled();
+      expect(mocks.runImageAnalysisBatch).toHaveBeenCalled();
     });
   });
 
@@ -155,6 +163,7 @@ describe('syncUser auto-embedding', () => {
     await syncUser('user-img-2');
 
     expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
+    expect(mocks.runImageAnalysisBatch).not.toHaveBeenCalled();
   });
 
   it('should not kick the image index worker when no spaces are selected', async () => {
@@ -166,12 +175,14 @@ describe('syncUser auto-embedding', () => {
     await syncUser('user-img-3');
 
     expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
+    expect(mocks.runImageAnalysisBatch).not.toHaveBeenCalled();
   });
 
   it('should not block sync completion if the image index scan rejects', async () => {
     // Fire-and-forget, and the `.catch` beside it is what keeps a provider
     // being briefly unreachable from taking the process down.
     mocks.processDirtyPageImages.mockRejectedValueOnce(new Error('VL box offline'));
+    mocks.runImageAnalysisBatch.mockRejectedValueOnce(new Error('Postgres hiccup'));
     setupSuccessfulSync();
 
     await expect(syncUser('user-img-4')).resolves.toBeUndefined();

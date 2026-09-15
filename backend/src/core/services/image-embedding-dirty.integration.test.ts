@@ -70,20 +70,29 @@ async function seed(opts: {
   return r.rows[0]!.id;
 }
 
-async function flags(pageId: number): Promise<{ image: boolean; text: boolean }> {
-  const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean }>(
-    `SELECT image_embedding_dirty, embedding_dirty FROM pages WHERE id = $1`,
-    [pageId],
-  );
-  return { image: r.rows[0]!.image_embedding_dirty, text: r.rows[0]!.embedding_dirty };
+interface Flags {
+  image: boolean;
+  text: boolean;
+  /** ADR-027 D4 (#1616): raised wherever `image` is, from the same statement. */
+  analysis: boolean;
 }
 
-async function flagsByConfluenceId(confluenceId: string): Promise<{ image: boolean; text: boolean }> {
-  const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean }>(
-    `SELECT image_embedding_dirty, embedding_dirty FROM pages WHERE confluence_id = $1`,
+async function flags(pageId: number): Promise<Flags> {
+  const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean; image_analysis_dirty: boolean }>(
+    `SELECT image_embedding_dirty, embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  const row = r.rows[0]!;
+  return { image: row.image_embedding_dirty, text: row.embedding_dirty, analysis: row.image_analysis_dirty };
+}
+
+async function flagsByConfluenceId(confluenceId: string): Promise<Flags> {
+  const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean; image_analysis_dirty: boolean }>(
+    `SELECT image_embedding_dirty, embedding_dirty, image_analysis_dirty FROM pages WHERE confluence_id = $1`,
     [confluenceId],
   );
-  return { image: r.rows[0]!.image_embedding_dirty, text: r.rows[0]!.embedding_dirty };
+  const row = r.rows[0]!;
+  return { image: row.image_embedding_dirty, text: row.embedding_dirty, analysis: row.image_analysis_dirty };
 }
 
 describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => {
@@ -123,7 +132,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
     it('raises the image flag and leaves the text flag alone', async () => {
       const pageId = await seed({ title: 'A' });
       await markPageImagesDirty(pageId);
-      expect(await flags(pageId)).toEqual({ image: true, text: false });
+      expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
     });
 
     it('does not raise it on a folder or a soft-deleted page', async () => {
@@ -133,8 +142,8 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       const deleted = await seed({ title: 'D', deleted: true });
       await markPageImagesDirty(folder);
       await markPageImagesDirty(deleted);
-      expect((await flags(folder)).image).toBe(false);
-      expect((await flags(deleted)).image).toBe(false);
+      expect(await flags(folder)).toEqual({ image: false, text: false, analysis: false });
+      expect(await flags(deleted)).toEqual({ image: false, text: false, analysis: false });
     });
 
     // The whole reason the signature became `Promise<boolean>` (#1349 review)
@@ -166,7 +175,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
     it("matches a Confluence page by its confluence_id — the tree's key", async () => {
       const pageId = await seed({ title: 'C', source: 'confluence', confluenceId: '778899' });
       await markPageImagesDirtyByAttachmentKey('778899');
-      expect(await flags(pageId)).toEqual({ image: true, text: false });
+      expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
     });
 
     it('matches a standalone page by its numeric id, which is where pasted images land', async () => {
@@ -266,7 +275,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       // The paste route and the external-image import both land here.
       const pageId = await seed({ title: 'Paste' });
       await writeAttachmentCache('u1', String(pageId), 'pasted.png', PNG);
-      expect(await flags(pageId)).toEqual({ image: true, text: false });
+      expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
     });
 
     it('putLocalAttachment raises the flag (the draw.io save on a local page)', async () => {
@@ -286,7 +295,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         data: PNG,
         userId: OWNER,
       });
-      expect(await flags(pageId)).toEqual({ image: true, text: false });
+      expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
     });
 
     /**
@@ -318,7 +327,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         await syncImageAttachments(
           clientReturning(PNG), 'u1', '5150', body, attachment('pic.png'), 'DEV',
         );
-        expect(await flags(pageId)).toEqual({ image: true, text: false });
+        expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
 
         // The file is on disk now, so the second pass downloads nothing.
         await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
@@ -337,7 +346,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         await syncDrawioAttachments(
           clientReturning(PNG), 'u1', '5151', body, attachment('topology.png'),
         );
-        expect(await flags(pageId)).toEqual({ image: true, text: false });
+        expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
 
         await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [pageId]);
         await syncDrawioAttachments(
@@ -367,7 +376,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         });
 
         expect(bytes).not.toBeNull();
-        expect(await flags(pageId)).toEqual({ image: true, text: false });
+        expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
       });
     });
 
@@ -386,7 +395,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
 
       await cleanPageAttachments('4242');
 
-      expect(await flags(pageId)).toEqual({ image: true, text: false });
+      expect(await flags(pageId)).toEqual({ image: true, text: false, analysis: true });
     });
   });
 
@@ -422,7 +431,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
 
     it('marks a freshly-created page for an image scan', async () => {
       await run('sync-new');
-      expect(await flagsByConfluenceId('sync-new')).toEqual({ image: true, text: true });
+      expect(await flagsByConfluenceId('sync-new')).toEqual({ image: true, text: true, analysis: true });
     });
 
     it('marks an existing page on a new version, because the body can move an <img>', async () => {
@@ -431,7 +440,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
 
       await run('sync-upd');
 
-      expect(await flags(pageId)).toEqual({ image: true, text: true });
+      expect(await flags(pageId)).toEqual({ image: true, text: true, analysis: true });
     });
 
     it('marks a page RESTORED from Confluence trash — the clause no other writer covers', async () => {
@@ -459,7 +468,7 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
         [pageId],
       );
       expect(restored.rows[0]!.deleted_at).toBeNull();
-      expect(await flags(pageId)).toEqual({ image: true, text: true });
+      expect(await flags(pageId)).toEqual({ image: true, text: true, analysis: true });
     });
   });
 });

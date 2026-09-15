@@ -119,6 +119,8 @@ export interface RelocatablePage {
    * back from a compensation still carrying the moved value.
    */
   image_embedding_dirty: boolean;
+  /** ADR-027 D4 (#1616) — the analysis flag, written and restored beside the legacy one. */
+  image_analysis_dirty: boolean;
   embedding_status: string | null;
   embedded_at: Date | null;
 }
@@ -126,7 +128,7 @@ export interface RelocatablePage {
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
   'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
-  'local_modified_by, embedding_dirty, image_embedding_dirty, embedding_status, embedded_at';
+  'local_modified_by, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status, embedded_at';
 
 /** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
 interface PageAce {
@@ -566,6 +568,7 @@ async function relocateToConfluence(opts: {
              last_synced = NOW(),
              embedding_dirty = TRUE,
              image_embedding_dirty = TRUE,
+             image_analysis_dirty = TRUE,
              embedding_status = 'not_embedded',
              embedded_at = NULL
            WHERE id = $1`,
@@ -749,6 +752,7 @@ async function relocateToLocal(opts: {
          -- moves every image onto /api/local-attachments/ while the index
          -- still keys them under source = 'confluence'.
          image_embedding_dirty = TRUE,
+         image_analysis_dirty = TRUE,
          embedding_status = 'not_embedded',
          embedded_at = NULL,
          local_modified_at = NOW(),
@@ -897,7 +901,7 @@ async function restorePreMoveState(
          source = $2, confluence_id = $3, space_key = $4, visibility = $5,
          created_by_user_id = $6, body_html = $7, body_storage = $8,
          inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
-         embedding_dirty = $12, image_embedding_dirty = $13,
+         embedding_dirty = $12, image_embedding_dirty = $13, image_analysis_dirty = $16,
          embedding_status = $14, embedded_at = $15
        WHERE id = $1`,
       [
@@ -916,6 +920,7 @@ async function restorePreMoveState(
         snapshot.image_embedding_dirty,
         snapshot.embedding_status,
         snapshot.embedded_at,
+        snapshot.image_analysis_dirty,
       ],
     );
     await invalidateCollabDocAfterBodyWrite(snapshot.id, txClient);

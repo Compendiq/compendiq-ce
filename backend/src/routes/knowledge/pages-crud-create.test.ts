@@ -513,10 +513,12 @@ describe('POST /api/pages - parentId validation', () => {
       // Bound to the SAME parameter as `embedding_dirty` (`!isFolder`), so a
       // folder cannot be queued for a scan whose own WHERE excludes it — a
       // flag no worker can ever clear reads as a backlog that never drains.
-      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty/);
-      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
+      // ADR-027 D4: the analysis flag rides the same parameter.
+      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*image_analysis_dirty/);
+      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
       expect(embeddingDirtyParam).not.toBeNull();
       expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![2]);
+      expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![3]);
     });
 
     it('marks a Confluence create image_embedding_dirty, on the insert and the conflict arm', async () => {
@@ -541,8 +543,8 @@ describe('POST /api/pages - parentId validation', () => {
 
       expect(response.statusCode).toBe(200);
       const sql = insertPagesSql();
-      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*embedding_status/);
-      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_embedding_dirty = TRUE/);
+      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*image_analysis_dirty,\s*embedding_status/);
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_embedding_dirty = TRUE,\s*image_analysis_dirty = TRUE/);
     });
   });
 

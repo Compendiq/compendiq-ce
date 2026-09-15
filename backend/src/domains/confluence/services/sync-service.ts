@@ -13,6 +13,7 @@ import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getM
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
+import { runImageAnalysisBatch } from '../../llm/services/image-analysis-worker.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
@@ -364,6 +365,14 @@ export async function syncUser(userId: string): Promise<void> {
     // them would make an image scan wait on a text re-embed of the corpus.
     void processDirtyPageImages().catch((err) => {
       logger.error({ err, userId }, 'Post-sync image indexing failed');
+    });
+
+    // ADR-027 D13 (#1616) — the analysis worker's post-sync kick, beside the
+    // legacy image scan and for the same reason it rides the sync cadence.
+    // One bounded batch: sweep, reconcile, and (when a vision model is
+    // assigned) analyze. Its own lease serializes it with the BullMQ repeat.
+    void runImageAnalysisBatch().catch((err) => {
+      logger.error({ err, userId }, 'Post-sync image analysis batch failed');
     });
 
     // Trigger embedding for dirty pages; update status when complete
@@ -796,12 +805,13 @@ async function syncPage(
     // (migration 093) because the reverse is not true — an attachment changing
     // under an unchanged version must re-embed the images and not the text,
     // which is what the `syncImageAttachments` / `syncDrawioAttachments`
-    // writers handle.
+    // writers handle. ADR-027 D4 (#1616): `image_analysis_dirty` is raised
+    // wherever `image_embedding_dirty` is, until #1618 retires the latter.
     `INSERT INTO pages
        (confluence_id, space_key, title, body_storage, body_html, body_text,
         version, parent_id, labels, author, last_modified_at, embedding_dirty,
-        image_embedding_dirty, summary_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, 'pending')
+        image_embedding_dirty, image_analysis_dirty, summary_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, TRUE, TRUE, 'pending')
      ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
        title = EXCLUDED.title,
        body_storage = EXCLUDED.body_storage,
@@ -815,6 +825,7 @@ async function syncPage(
        last_synced = NOW(),
        embedding_dirty = TRUE,
        image_embedding_dirty = TRUE,
+       image_analysis_dirty = TRUE,
        summary_status = 'pending',
        -- Clear local-edit markers (#305) — see matching note in the
        -- version-mismatch branch above.
@@ -1074,6 +1085,10 @@ async function applyConflictPolicyForExistingPage(
            image_embedding_dirty = CASE
              WHEN body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE image_embedding_dirty
+           END,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+             ELSE image_analysis_dirty
            END,
            summary_status = CASE
              WHEN body_text IS DISTINCT FROM $5
