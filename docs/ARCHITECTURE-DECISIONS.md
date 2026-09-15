@@ -3728,9 +3728,10 @@ See `docs/runbooks/client-inference.md`.
 
 **Date:** 2026-09-15
 **Status:** Accepted as the **binding contract** for #1615–#1619. The
-architecture below is decided. The evaluation numbers under "Owner decisions"
-are **proposed, pending owner confirmation**, and nothing in this ADR claims a
-measured result: better RAG is the hypothesis #1619 tests.
+architecture below is decided, and the evaluation numbers under "Owner
+decisions" were **confirmed by the owner on 2026-09-15** (each O-item is
+marked). Nothing in this ADR claims a measured result: better RAG is the
+hypothesis #1619 tests.
 **GitHub:** #1611 (epic) · #1614 (this package) · consumed by #1615 (analysis
 and assignment), #1616 (ingestion and indexing), #1617 (evidence and
 citations), #1618 (migration and retirement), #1619 (quality gate).
@@ -3873,8 +3874,8 @@ context — title, caption, nearest heading — is **never sent to the vision
 model** (D8): `embedPage` composes it into the derived chunk from the page's
 *current* state (D9), so a title or caption edit is a recompose with no
 vision call and nothing about it is hashed or stored on the row. **Which
-settings enter the key: none.** Everything that changes the request for
-*every* image — the prompt text, the output schema, the max output tokens,
+settings enter the key: none.** Everything that changes what the request
+asks of the model for *every* image — the prompt text, the output schema,
 temperature, the image-detail hint — is a constant folded into
 `IMAGE_ANALYSIS_PROMPT_VERSION`; bumping it is the documented way to force
 corpus-wide re-analysis from code. The settings that do exist and
@@ -3885,9 +3886,20 @@ images have rows, not what an analysis says (a change flips rows to
 `MAX_IMAGE_DIMENSION` are intake bounds with the same property;
 `fts_language` re-indexes derived text without touching the analysis; the
 text `embedding` assignment re-embeds cached descriptions *(epic)*;
-`rag_answer_max_images` is answer-time. #1615's "every identity dimension"
-test therefore has exactly six dimensions to exercise: the three identity
-fields, the two version constants, and `content_hash` for the bytes.
+`rag_answer_max_images` is answer-time; and
+**`image_analysis_max_output_tokens`** (the output-token ceiling, an admin
+setting since the owner's 2026-09-15 decision — D8) bounds how *much* a
+reply may say, never what the image shows or which model read it: an
+analysis written under a smaller ceiling is a shorter valid analysis of the
+same bytes, so the ceiling is not in the identity, not in the hash, and a
+change to it invalidates **no** analyzed row (a stored `payload` is
+validated against the bounds in force at write time and is never
+re-validated on read — D8). Its one effect on existing rows is targeted and
+forward-only: raising it re-opens rows that failed **`truncated`** under a
+lower ceiling (D13's sweep). #1615's "every identity dimension" test
+therefore has exactly six dimensions to exercise: the three identity
+fields, the two version constants, and `content_hash` for the bytes — and a
+seventh negative case, the ceiling, which must change nothing.
 
 **D6 (Q4) — The revision token is the content hash per row, a
 claim-before-work on the page flag, a per-page `image_analysis_revision`
@@ -3967,8 +3979,11 @@ is the fixed instruction and the image, **nothing from the page**: no title,
 caption or heading, so the model reports only what it sees, an author's
 caption cannot be echoed back as an observation, and the analysis is
 reusable across every edit of the text around it (D5). `tools` omitted,
-`temperature: 0`, `max_tokens = IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` (**8,192**,
-sized to the schema below at one token per character — see the budget
+`temperature: 0`, `max_tokens` = **`admin_settings.image_analysis_max_output_tokens`**
+(the output-token ceiling — an admin setting by the owner's 2026-09-15
+decision, default **8,192**, allowed range **[4,096, 16,384]**, read once
+per batch — "Settings and capability semantics" below; the schema's bounds
+are derived from it at one token per character — see the budget
 invariant). No `response_format`: JSON is requested in the prompt and the
 first JSON object in the reply is parsed after stripping code fences, so
 providers without structured-output features go through the same validated
@@ -3980,18 +3995,26 @@ contract *(epic)*. Zod schema in
   schemaVersion: 1,
   kind: 'screenshot' | 'diagram' | 'chart' | 'table' | 'photo' | 'other',
   language: string,          // ≤ 16 chars: BCP-47 tag of the visible text ('de', 'de-CH', 'zh-Hant'), or 'none'
-  description: string,       // ≤ 1200 chars, retrieval-oriented, only what is visible
-  visibleText: string,       // ≤ 2500 chars, verbatim transcription in reading order, '' when none
+  description: string,       // ≤ 1200 chars, retrieval-oriented, only what is visible — FIXED, never scaled (D11's rerank window)
+  visibleText: string,       // ≤ 2500 × s chars, verbatim transcription in reading order, '' when none
   structured?: {             // at most ONE block, and only the one matching `kind`
-    tableRows?: string[],    // kind 'table': ≤ 30 rows × ≤ 100 chars, cells joined by ' | ', header row first
+    tableRows?: string[],    // kind 'table': ≤ 30 rows × ≤ 100 × s chars, cells joined by ' | ', header row first
     chart?: { xAxis?: string; yAxis?: string; trend?: string; series?: string[] },
-                             // kind 'chart': ≤ 120 chars each, series ≤ 10 × ≤ 60 chars
+                             // kind 'chart': ≤ 120 × s chars each, series ≤ 10 × ≤ 60 × s chars
     diagram?: { nodes?: string[]; edges?: string[] },
-                             // kind 'diagram': nodes ≤ 25 × ≤ 50, edges ≤ 30 × ≤ 70 chars, 'A -> B: label', direction only when drawn
+                             // kind 'diagram': nodes ≤ 25 × ≤ 50 × s, edges ≤ 30 × ≤ 70 × s chars, 'A -> B: label', direction only when drawn
   },
-  limitations: string[],     // ≤ 6 × ≤ 120 chars: unreadable regions, cut-off text, ambiguity
+  limitations: string[],     // ≤ 6 × ≤ 120 × s chars: unreadable regions, cut-off text, ambiguity
 }
 ```
+
+`s` is the **ceiling scale** — `1` at the default ceiling, below `1` under a
+smaller one, never above `1` — defined in the budget invariant below;
+`× s` bounds are `floor(base × s)`. The **counts** (30 rows, 10 series, 25
+nodes, 30 edges, 6 limitations), `description`, `language` and `kind` never
+scale: a smaller ceiling shortens what each row, node or limitation may
+say, not how many there are, and the description keeps the width D11's
+rerank window is sized to.
 
 Every string bound above is on the **emitted** length — the JSON-encoded
 string without its quotes, `JSON.stringify(s).length - 2` — so a line break
@@ -4001,50 +4024,105 @@ writes (`\n`, `\"`), not one. The Zod schema refines each bound that way (a
 encodes to 5,000), which is what makes the budget below exact rather than
 "plus escapes".
 
-**Output budget invariant.** The bounds are sized against the token ceiling,
-not the other way round, and the rate they are sized at is the floor, not
-an average. The largest conforming JSON of any kind — every string at its
+**Output budget invariant.** The bounds are sized against the token
+ceiling, not the other way round, and the rate they are sized at is the
+floor, not an average. The ceiling `T` is the admin setting
+`image_analysis_max_output_tokens`, and the bounds follow it through one
+formula, with three code constants beside the schema in
+`@compendiq/contracts` (#1615 owns them): the **reference** ceiling
+`IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE = 8192` at which the base bounds
+above are sized (a part of schema v1's definition — moving it is a
+`schema_version` bump); the **fixed characters**
+`IMAGE_ANALYSIS_FIXED_CHARS = 1622`, which is the largest per-kind sum of
+everything that does not scale — `description` at 1,200, `language` at 16,
+`kind`, `schemaVersion`, every key, quote, comma and bracket of the
+encoding (1,546 for the diagram kind, the largest) — plus the 76-character
+headroom; and the scale
+
+```
+s(T) = min(1, (T − 1622) / (8192 − 1622))
+```
+
+where `8192 − 1622 = 6,570` is exactly the diagram kind's scaled string
+budget at the reference. Every `× s` bound in the schema is
+`floor(base × s(T))`, computed by the schema module from the ceiling it is
+given; the Zod schema is built per ceiling (`imageAnalysisPayloadSchema(T)`),
+and the worker builds it once per batch from the same read that sets
+`max_tokens`. The largest conforming JSON of any kind — every string at its
 emitted bound, `language` at 16, the keys and punctuation of the encoding
-counted — is exact, not estimated: **table 7,671**, **diagram 8,116**,
-**chart 5,611**, and 4,557 for the kinds that carry no block; the largest,
-8,116, at **one token per character** is under
-`IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` = 8,192 by 76 characters, and because
-the bounds are on emitted length there is no escape residual outside that
-figure. One per character is the honest floor for the classes the epic
-targets: the O8 candidate's pre-tokenizer (`tokenizer.json`, a bare
-`\p{N}` alternative in its split regex) emits one token per **digit**, and
-the repo's own `CHARS_PER_TOKEN` comment (`embedding-service.ts:56`) records
-that code and tables run at 1 char/token — a digit-dense table or chart
-near the bounds is the payload this design exists for, and it is exactly the
-one a 2-chars/token estimate undercounts by half. The one residual above
-that floor is a payload dominated by characters the candidate's byte-level
-vocabulary carries only as byte fragments (emoji, combining sequences,
-scripts outside its merges — not Latin, German or the digits and
-punctuation of a table); it is handled as `truncated` below, not assumed
-away. #1615's schema test builds the maximal payload of each kind with
-every string at its emitted bound and filled from the one-token-per-character
-alphabet (digits and separators, which encode to themselves) and asserts
-`JSON.stringify(payload).length ≤ IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS` — a
-token bound at the floor rate, where the two constants compare directly;
-the four figures above are what it computes, and a bound that moves moves
-them. It
-deliberately uses **no model tokenizer** (the contract is provider-agnostic)
-and neither of the repo's estimators: `CHARS_PER_TOKEN` (3) sizes chunks
-and `estimateTokens` (4 chars/token, `llm-audit-hook.ts`) prices audits;
-both are averages, and an average is the wrong side of this inequality.
-Neither constant can move without the other. A `finish_reason = 'length'`
-is therefore never a conforming answer cut off by the ceiling for any
-payload the floor covers; it is a reply that ignored the bounds — and at
-`temperature: 0` the same request produces the same cut, which is why
-`truncated` is a deterministic failure class below (the retry is the same
-reply, the cap stops paying for it), not a transient one. The served model
-must admit the ceiling: `max_model_len` ≥ visual tokens + prompt + 8,192
-(≈ 10k; every O8 candidate has 32k or more). A server that refuses it
-answers 400 on every image — a server fact arriving as a per-request
-status, which is why D13's uniform-rejection stop ends the batch after
-three identical `rejected` answers, names the status on the card, and
-the runbook names the remedy. A typical payload is a few hundred
-tokens; the ceiling is a bound, not the norm, and O11's budget is stated as
+counted — is exact, not estimated. At the reference, and at every ceiling
+above it (`s = 1`): **table 7,671**, **diagram 8,116**, **chart 5,611**,
+and 4,557 for the kinds that carry no block, so the largest, 8,116, at
+**one token per character** is under 8,192 by 76 characters, and every
+token above the reference is pure headroom. At the floor of the range,
+4,096 (`s ≈ 0.377`: `visibleText` ≤ 941, table cells ≤ 37, chart fields
+≤ 45, series ≤ 22, nodes ≤ 18, edges ≤ 26, limitations ≤ 45 characters
+each): table 3,772, diagram 3,987, chart 2,997, no-block 2,548. The
+invariant holds at every integer ceiling in `[4,096, 16,384]` — **the
+largest conforming payload of every kind is at most `T − 76`** — and it
+holds by construction, not by check: for `s ≤ 1` the diagram kind's
+maximum is `s × 6,570 + 1,546 = T − 76` exactly, every other kind has
+fewer fixed and fewer scaled characters, and above the reference nothing
+grows. Because the bounds are on emitted length there is no escape
+residual outside those figures. The range's two ends are chosen, not
+derived: **4,096** is the smallest ceiling at which every transcription
+bound keeps at least a third of its width (an edge still fits
+`A -> B: label`; a table cell still holds a number and its unit) — below it
+the structured blocks stop carrying what the epic's target classes need,
+and a smaller `max_tokens` would be an unconditional refusal to transcribe
+rather than a budget; **16,384** is twice the reference, and since nothing
+grows above the reference every token past 8,192 buys only headroom for
+the residual scripts named below, while the whole ceiling is charged
+against the served context on every request (`max_model_len` must admit
+visual tokens + prompt + `T`; a server that cannot answers 400 on every
+image — below). One per character is the honest floor for the classes the
+epic targets: byte-level BPE pre-tokenizers of the Qwen family
+(`tokenizer.json`, a bare `\p{N}` alternative in the split regex) emit one
+token per **digit**, and the repo's own `CHARS_PER_TOKEN` comment
+(`embedding-service.ts:56`) records that code and tables run at 1
+char/token — a digit-dense table or chart near the bounds is the payload
+this design exists for, and it is exactly the one a 2-chars/token estimate
+undercounts by half. The one residual above that floor is a payload
+dominated by characters a byte-level vocabulary carries only as byte
+fragments (emoji, combining sequences, scripts outside its merges — not
+Latin, German or the digits and punctuation of a table); it is handled as
+`truncated` below, not assumed away, and a raised ceiling is the
+operator's remedy for it (D13 re-opens exactly those rows). #1615's schema
+test builds the maximal payload of each kind with every string at its
+emitted bound and filled from the one-token-per-character alphabet (digits
+and separators, which encode to themselves) and asserts
+`JSON.stringify(payload).length ≤ T − 76` for **three ceilings**: the
+minimum 4,096 (where the four figures are the floor ones above), the
+reference 8,192 (where they are 7,671 / 8,116 / 5,611 / 4,557 exactly) and
+the maximum 16,384 (where they are unchanged and the headroom is
+8,268) — a token bound at the floor rate, where the setting and the
+payload compare directly; a base bound or a fixed-character constant that
+moves moves those figures, and the test names them. It deliberately uses
+**no model tokenizer** (the contract is provider-agnostic) and neither of
+the repo's estimators: `CHARS_PER_TOKEN` (3) sizes chunks and
+`estimateTokens` (4 chars/token, `llm-audit-hook.ts`) prices audits; both
+are averages, and an average is the wrong side of this inequality. A
+`finish_reason = 'length'` is therefore never a conforming answer cut off
+by the ceiling for any payload the floor covers; it is a reply that ignored
+the bounds — and at `temperature: 0` the same request produces the same
+cut, which is why `truncated` is a deterministic failure class below (the
+retry is the same reply, the cap stops paying for it), not a transient
+one; the ceiling the reply overran is recorded with the class
+(`truncated:8192`), which is what lets a later, higher ceiling re-open
+the row (D13). **Validation is at write time only.** A stored `payload`
+was validated against the bounds of the ceiling in force when it was
+written and is never re-validated on read: composition (D9), coverage and
+readiness take the row as it is, so lowering the ceiling never orphans a
+row written under a higher one, and the ceiling stays out of the cache key
+(D5). The served model must admit the ceiling: `max_model_len` ≥ visual
+tokens + prompt + `T` (≈ 10k at the default; the assigned model's context
+is the operator's to check — O8 no longer mandates a checkpoint). A server
+that refuses it answers 400 on every image — a server fact arriving as a
+per-request status, which is why D13's uniform-rejection stop ends the
+batch after three identical `rejected` answers, names the status on the
+card, and the runbook names the two remedies: serve a larger context, or
+lower the ceiling in Settings. A typical payload is a few hundred tokens;
+the ceiling is a bound, not the norm, and O11 reports tokens per image as
 a corpus mean for that reason.
 
 Serialization (`serializeImageAnalysis(payload, context)`, deterministic,
@@ -4200,7 +4278,9 @@ long `visibleText` falls outside it. That is deliberate — the legs that
 *found* the chunk (vector, `chunk_tsv`) scored its full text, and the
 reranker re-scores the head the description is written to carry; #1617 must
 not widen the window for derived rows, and #1619's eval measures the
-consequence rather than discovering it.
+consequence rather than discovering it. That is also why the description
+bound is the one bound the output-token ceiling never scales (D8): at any
+allowed ceiling the head the reranker sees is the same width.
 Sibling assembly obeys the boundary in D2. Bounded page context keeps the
 matched derived chunk even when the image sits at the end of a long page —
 the anchor is never dropped for budget. `computeRetrievalConfidence` treats
@@ -4268,8 +4348,22 @@ is three steps, in order:
    backoff (up to 24 h) into an identity it has never been tried under,
    behind the terminal rows the sweep made due at once. The `UPDATE`'s
    `WHERE` excludes a row already in that state (`failed`, `attempts = 0`,
-   due), so a gate-shut instance does not rewrite it every batch. All three
-   are one `UPDATE … RETURNING page_id` each, idempotent, and no-ops when
+   due), so a gate-shut instance does not rewrite it every batch. A
+   **fourth** `UPDATE` in this step answers the one setting that can
+   change a row's prospects without changing its identity: every `failed`
+   **or** `failed_terminal` row whose `error` is `truncated:<ceiling>` with
+   a recorded ceiling **below** the current
+   `image_analysis_max_output_tokens` gets the same write — `failed`,
+   `attempts = 0`, `next_attempt_at = NOW()` — with the same
+   already-in-that-state exclusion; the row's `error` keeps naming the
+   ceiling it overran until the next attempt overwrites it. A reply that
+   ignored the bounds at 8,192 may or may not fit at 16,384, and the raised
+   ceiling is exactly the operator's remedy for the byte-fragment residual
+   D8 names, so the rows it can help are tried once more under it, at a
+   fresh budget, without a **Retry failed** over every unrelated failure.
+   Lowering the ceiling re-opens nothing (a reply that overran 16,384
+   overruns 8,192) and, per D5, invalidates nothing. All four are one
+   `UPDATE … RETURNING page_id` each, idempotent, and no-ops when
    nothing changed — the mechanism that makes "an obsolete description is
    never composed" true without a settings rewrite on deploy.
 2. **Reconcile** every dirty page (D6.2; cheap: hashes and rows).
@@ -4280,7 +4374,12 @@ and its gate has three terms read **once per batch** before the first call:
 the use case is assigned, the stored verdict for the assigned pair is
 `true`, and the identity the assignment **resolves to** now —
 `(provider_id, assignment model, provider base_url)` hashed exactly as D5
-hashes it — equals the **retained** identity of D7. When the gate is shut
+hashes it — equals the **retained** identity of D7. The same once-per-batch
+read takes `image_analysis_max_output_tokens` (D8), which sets
+`max_tokens` and builds the batch's payload schema; a change to the
+setting mid-batch applies from the next batch, and since the ceiling is
+not in the identity that is a bound changing, not a row invalidated.
+When the gate is shut
 the batch returns
 `{ processed: 0, reused, skipped, failed: 0, terminal: 0, reason: 'unassigned' | 'capability' | 'identity_drift' }`
 carrying the sweep's and reconcile's counts — the result shape is the same
@@ -4324,7 +4423,11 @@ with a valid kept payload, every work row step 3 selects goes to the model.
 
 **Backoff and the terminal state.** A failure sets `attempts = attempts + 1`,
 `next_attempt_at = NOW() + LEAST(15 min × 2^attempts, 24 h)` and the class
-in `error`. When the class is deterministic (malformed, empty, refused,
+in `error` — with the number that class needs read back later beside it:
+the HTTP status for `rejected` and `unavailable` (`rejected:413`), and the
+ceiling the reply overran for `truncated` (`truncated:8192`, the batch's
+`image_analysis_max_output_tokens`), which is what the sweep's re-open
+compares against. When the class is deterministic (malformed, empty, refused,
 truncated, rejected — D8) and `attempts` has reached
 `IMAGE_ANALYSIS_MAX_ATTEMPTS` (**5**; the quality worker's `MAX_RETRIES`
 shape at 3, two attempts wider because a lease loss or a timeout mid-reply
@@ -4369,21 +4472,24 @@ calls per image corpus-wide, `failed_terminal` everywhere, and a manual
 **Retry failed** after the fix. The operator surface is the card's last-run
 line, from the batch result: *"Stopped after 3 images: the provider
 rejected each with HTTP 400. This is a server-side limit, not the images —
-check `max_model_len` and the served model, then Run Now; Retry failed
-makes the three rows due at once."* Success resets `attempts = 0`.
+serve the model with a larger context, or lower Max output tokens below,
+then Run Now; Retry failed makes the three rows due at once."* Success
+resets `attempts = 0`.
 Terminal rows are counted apart from `failed` on the card and in the batch
 result (`failed` is the batch's failures, `terminal` the rows that hit the
 cap in it), and leave `failed_terminal` only three ways, each of which makes
-the row selectable at once: the sweep (identity or version changed:
+the row selectable at once: the sweep (identity or version changed, **or**
+`truncated` under a ceiling lower than the current one:
 `failed, attempts = 0, next_attempt_at = NOW()` — the same write it gives a
 stale non-terminal `failed` row, step 1), **Retry failed**
 (`status = 'failed', attempts = 0, next_attempt_at = NOW()` for every
 `failed` and `failed_terminal` row in scope — the `error` class stays
 readable on the inspection route until the next attempt overwrites it), or
 a reconcile that sees new bytes (`pending`, budget reset). The attempt
-budget therefore has exactly four resetters — success, Retry failed, new
-bytes, and the sweep's return of a row whose identity or versions changed —
-and the `attempts` column comment lists the same four. Per-image
+budget therefore has exactly five resetters — success, Retry failed, new
+bytes, the sweep's return of a row whose identity or versions changed, and
+the sweep's re-open of a `truncated` row under a raised ceiling — and the
+`attempts` column comment lists the same five. Per-image
 failures are counted apart from processed and skipped, and a batch with
 errors fails the BullMQ job with its partial counts and **no provider
 bodies**. Inference goes through the shared LLM queue and the per-provider
@@ -4406,15 +4512,19 @@ before any derived text or byte is read. Derived text never touches
 `body_storage`, `body_html`, `body_text`, editor content or any upstream
 round trip *(epic)*.
 
-**D15 — The quality gate is pre-registered here, and it decides the cutover.**
-The arms, revisions, endpoints, statistics, sample size, judging protocol and
-budget are in "Measurement plan" below. The harness changes that execute it
-(the `--arm` axis, the per-arm answer generation and the blind judgment
-sheet) are #1614's deliverable but **not this PR**: they land in a follow-up
-PR on #1614 before #1619 runs them — unless the owner re-homes that tooling to
-#1619, which changes nothing in the protocol. No result in this ADR is
-measured; ADR-025 **Measured** is historical evidence about the legacy
-design and is never re-labelled as evidence for this one.
+**D15 — The quality gate is pre-registered here, and it decides the cutover
+on quality alone.** The arms, revisions, endpoints, statistics, sample
+size, judging protocol and the cost measurements are in "Measurement plan"
+below; cost is measured and reported there but is **not a gate** (owner
+decision, 2026-09-15 — O11). The harness changes that execute it (the
+`--arm` axis, the per-arm answer generation, the blind judgment sheet and
+fresh A and C baselines) are #1614's deliverable but **not this PR**: they
+are **PR2 on #1614** (owner decision, 2026-09-15), a second PR that runs
+**in parallel with #1615 and #1616** — it touches only the eval harness
+and its artifacts, so it needs nothing from either package — and lands
+before #1619 runs it. No result in this ADR is measured; ADR-025
+**Measured** is historical evidence about the legacy design and is never
+re-labelled as evidence for this one.
 
 **D16 — Retirement happens in two halves, and the destructive half is gated
 on #1619's verdict.** #1618 stage 1 prepares the candidate UI, forward
@@ -4463,16 +4573,20 @@ CREATE TABLE IF NOT EXISTS page_image_analyses (
   -- Non-NULL only when produced under the identity columns beside it (D13): NULLed by a failure
   -- write and by the reconcile when the bytes change; kept across a sweep re-pend so a return to
   -- the same identity is `reused`, not re-analyzed. The chunk text is derived from it at embed time (D8/D9).
-  payload          JSONB,                          -- ImageAnalysisPayloadV1, validated before write
+  -- ImageAnalysisPayloadV1, validated before write against the bounds of the ceiling
+  -- (image_analysis_max_output_tokens) in force at that write; never re-validated on read (D8).
+  payload          JSONB,
   analysis_version INTEGER      NOT NULL DEFAULT 0, -- +1 on every successful payload write; a sweep-inverse flip (reused) does not bump it
-  -- Failures since the last reset. Four resetters (D13): success, Retry failed, new bytes, and the
-  -- sweep returning a failed / failed_terminal row whose identity or versions changed.
+  -- Failures since the last reset. Five resetters (D13): success, Retry failed, new bytes, the
+  -- sweep returning a failed / failed_terminal row whose identity or versions changed, and the
+  -- sweep re-opening a 'truncated:<ceiling>' row once the ceiling setting is above <ceiling>.
   attempts         INTEGER      NOT NULL DEFAULT 0,
   -- Due time while failed: the backoff, or NOW() when Retry failed / the sweep return a row (due at
   -- once). NULL for every other status; the CHECK below makes "failed but never due" unrepresentable.
   next_attempt_at  TIMESTAMPTZ,
-  -- Failure class (D8), with the HTTP status when one was received: 'rejected:413', 'unavailable:404',
-  -- 'malformed'. Admin-only; never the provider body.
+  -- Failure class (D8), with the number the class needs read back: the HTTP status when one was
+  -- received ('rejected:413', 'unavailable:404'), the overrun ceiling for 'truncated:8192', bare
+  -- otherwise ('malformed'). Admin-only; never the provider body.
   error            TEXT,
   analyzed_at      TIMESTAMPTZ,
   created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -4497,6 +4611,11 @@ ALTER TABLE llm_usecase_assignments ADD CONSTRAINT llm_usecase_assignments_useca
                      'image_embedding', 'inline_completion', 'image_analysis'));
 INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
 VALUES ('image_analysis', NULL, NULL) ON CONFLICT (usecase) DO NOTHING;
+
+-- The output-token ceiling (D8): an admin setting, default 8192, [4096, 16384]. NOT part of the
+-- retained identity and NOT in any row's cache key; the reader owns the same default for a missing row.
+INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+VALUES ('image_analysis_max_output_tokens', '8192', NOW()) ON CONFLICT (setting_key) DO NOTHING;
 ```
 
 **Migration 116 — `116_image_analysis_index.sql` (#1616):**
@@ -4547,18 +4666,20 @@ counterpart.
 
 Settings rows: `image_analysis_identity` (JSON, D7; written by the assignment
 route, read by composition and readiness; **not** seeded), `image_analysis_batch_size`
-(above). Retained and relabelled in #1618: `rag_images_per_page_max`,
-`rag_image_index_external`, `rag_answer_max_images`. Everything under
-`image_embedding_*` and `rag_image_leg_enabled` is legacy and retired by #1618.
+(above), `image_analysis_max_output_tokens` (migration 115, D8; the
+ceiling — not part of the identity). Retained and relabelled in #1618:
+`rag_images_per_page_max`, `rag_image_index_external`,
+`rag_answer_max_images`. Everything under `image_embedding_*` and
+`rag_image_leg_enabled` is legacy and retired by #1618.
 
 ### Ingestion flow (#1616)
 
 ```mermaid
 flowchart LR
   W[image reference or byte writer<br/>sync, import, edit, upload, restore, sweep, lazy re-fetch] -->|raise| F[pages.image_analysis_dirty]
-  SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused;<br/>failed or failed_terminal rows under an old identity or version: failed, attempts 0, due now] -->|re-pend| P[status pending]
+  SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused;<br/>failed or failed_terminal rows under an old identity or version,<br/>or truncated under a ceiling below the current setting: failed, attempts 0, due now] -->|re-pend| P[status pending]
   SW --> B[pages.image_analysis_revision+1<br/>pages.embedding_dirty = TRUE]
-  SW -->|stale failed or terminal row| SR[status failed, attempts 0, due now]
+  SW -->|stale failed or terminal row, or truncated under a lower ceiling| SR[status failed, attempts 0, due now]
   F --> R[reconcile, second step, runs assigned or not:<br/>claim flag, enumerate body_html refs, sha256 bytes, upsert rows]
   R -->|new or changed hash| P
   R -->|policy or format| S[status skipped + reason]
@@ -4653,14 +4774,50 @@ deep search's opt-in/reset behaviour; the #1107 pin's identifier detection.
 - **Contracts.** `LlmUsecaseSchema` gains `'image_analysis'`;
   `UsecaseAssignmentsSchema` / `UpdateUsecaseAssignmentsInputSchema` gain the
   key with the same non-inheriting comment as `rerank`/`image_embedding`.
-  `ImageAnalysisPayloadV1Schema` (D8). `SourceSchema` gains the four
-  provenance fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`.
+  `ImageAnalysisPayloadV1Schema` (D8) is exported as the factory
+  `imageAnalysisPayloadSchema(maxOutputTokens)` beside the three constants
+  (`IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE`, `IMAGE_ANALYSIS_FIXED_CHARS`,
+  and the bounds table) so the backend validates and the schema test
+  computes from one definition. `SourceSchema` gains the four provenance
+  fields (D12). `WorkerBatchSizeKey` gains `image_analysis_batch_size`.
   The scope preview below has both halves in `@compendiq/contracts`:
   `ImageAnalysisReanalysisScopeQuerySchema` (`{ providerId: uuid, model?:
   non-empty string }`) on the way in and `ImageAnalysisReanalysisScopeSchema`
   (`{ identityHash: string, changed: boolean, reanalyzeRows: int ≥ 0 }`) on
   the way out — every boundary here is a named Zod schema, like
   `VisionCapabilityDetailSchema` and `ImageEmbeddingProbeSchema` beside it.
+- **The output-token ceiling** (owner decision, 2026-09-15: *"Make it
+  configurable in the settings"*). Row `admin_settings.image_analysis_max_output_tokens`
+  (seeded `'8192'` by migration 115). Contract: `AdminSettingsSchema` /
+  `UpdateAdminSettingsSchema` gain `imageAnalysisMaxOutputTokens:
+  z.number().int().min(4096).max(16384)` (optional on update, like
+  `ragImagesPerPageMax` beside it), with a doc comment carrying D8's range
+  reasoning. Reader: `getImageAnalysisMaxOutputTokens()` in
+  `core/services/admin-settings-service.ts` with
+  `IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT = 8192`, `_MIN = 4096`,
+  `_MAX = 16384` (the contract mirrors these, as `RAG_IMAGES_PER_PAGE_MAX_*`
+  does), cached and invalidated through the admin PUT's key table
+  (`'image_analysis_max_output_tokens'` → `invalidateImageAnalysisMaxOutputTokensCache`,
+  the `rag_images_per_page_max` → `invalidateRagImageIntakeCache` row's
+  shape); an unparseable or out-of-range row reads as the default, never as
+  a refusal. The worker reads it once per batch (D13). **UI:** a `NumberRow`
+  **"Max output tokens"** (unit *tokens*, min 4,096, max 16,384, default
+  8,192) on the #1615 **image-analysis card** in Settings → AI Models —
+  the card that carries the `image_analysis` selector, its capability chip
+  and the re-check, the counterpart of `ImageIndexCard.tsx` — saved through
+  `PUT /admin/settings` exactly as the Retrieval tab's image knobs are.
+  Copy beside it: *"The most tokens one image analysis may return. Lower it
+  if the vision model's context refuses the default; raise it for scripts
+  that tokenize below one character per token. Changing it never
+  re-analyzes an image: analyses already stored stay valid, and only images
+  that failed because their reply was cut off are tried again under a
+  higher value."* It is **not** part of the retained identity, the
+  selector's disclosure and the scope preview ignore it, and the card must
+  not render it inside the identity row (provider, model, endpoint, hash):
+  it is its own row below the selector and the capability chip, with the
+  copy above, and #1618's progress card (which the #1615 card grows into)
+  keeps it there. Saving it triggers no probe, no re-check and no
+  `reanalyzeRows` disclosure.
 - **Resolver.** `resolveImageAnalysisUsecase()` beside
   `resolveImageEmbeddingUsecase()` in `llm-provider-resolver.ts`, through
   `resolveExplicitOnlyUsecase('image_analysis')`; `resolveNonInheriting` in
@@ -4744,8 +4901,10 @@ Enumerated so #1616 and #1619 can exercise each:
 | `embedPage` and analysis completion race | D6 rule 3: `embedding_dirty` is cleared only if `image_analysis_revision` is unchanged since the snapshot. |
 | Provider down / breaker open / 5xx / timeout / 408 / 429 | Rows → `failed (unavailable)`, backoff, never terminal, batch continues through the breaker; authored indexing continues; card shows failed count; text RAG unaffected. |
 | Any 4xx outside the `rejected` list — 401, 402, 403, 404 by name; 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431, 451 and anything unlisted by D8's default arm | The row → `failed (unavailable:<status>)`; the batch stops before its next call (rows not yet attempted are not charged an attempt), returns `reason: 'provider_status', httpStatus`, and `refreshVisionCapability` re-runs for the pair; a verdict other than `true` shuts the D13 gate (`reason: 'capability'`) until the operator's re-check restores it. One bad key, or a status this ADR did not foresee, costs one call per batch, not five per image. |
-| Malformed / empty / refused / truncated / rejected (400, 413, 415, 422) reply | Rows → `failed (<class>)`, backoff; never composed. At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
-| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` with `next_attempt_at = NOW() + backoff(attempts)` set unconditionally and `attempts` unchanged — never terminal: for a row the rejection had just taken to `failed_terminal`, the rewrite takes precedence over the cap (the fact is about the server) — `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the remedy (fix the server, Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
+| Malformed / empty / refused / truncated / rejected (400, 413, 415, 422) reply | Rows → `failed (<class>)`, backoff; never composed; `truncated` records the ceiling it overran (`truncated:8192`). At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed, or `truncated` under a ceiling below the current setting), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
+| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` with `next_attempt_at = NOW() + backoff(attempts)` set unconditionally and `attempts` unchanged — never terminal: for a row the rejection had just taken to `failed_terminal`, the rewrite takes precedence over the cap (the fact is about the server) — `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the two remedies (serve a larger context or lower **Max output tokens**, then Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
+| `image_analysis_max_output_tokens` raised | No row is invalidated (D5: the ceiling is not in the identity or the cache key; stored payloads are never re-validated). The next batch's sweep (step 1, assigned or not) returns every `failed` / `failed_terminal` row whose `error` is `truncated:<ceiling>` with `<ceiling>` below the new value to `failed, attempts = 0, next_attempt_at = NOW()`; the next batch under an open gate sends them with the higher `max_tokens` (and, when the old ceiling was below the reference, the wider scaled bounds — above it the bounds do not move and the extra is headroom). Nothing else is touched; no page is re-embedded. |
+| `image_analysis_max_output_tokens` lowered | No row is invalidated and none is re-opened (a reply that overran a higher ceiling overruns a lower one). From the next batch `max_tokens` and the scaled bounds are the lower ones; rows already `analyzed` under the higher ceiling stay valid and composed. This is the in-product remedy for a server whose context refuses the default (the 400 uniform stop above). |
 | Unassigned, capability not `true`, or identity drift | The sweep and the reconcile still run (a replaced image is re-pended and its old text dropped, a removed reference loses its row, a stale row leaves composition, a valid kept payload is `reused`); only the analyze step is skipped, and the batch returns the skipped result shape with the reconcile's counts. Still-valid rows remain composed. |
 | Bulk conflict (re-analyze all vs shadow backfill vs re-embed all) | 409 under the one-active-run rule; the holder is named per the #1260 wording rule. |
 | Attachment orphan sweep deletes a file | Sweep prunes the `page_image_analyses` row (#1618 re-points the prune and the `RETENTION_PRUNED` `table`) and raises the page flag. |
@@ -4777,9 +4936,11 @@ off if none is assigned); `rag_ef_search` 100; `rag_fetch_width`,
 the confidence thresholds — all production defaults, recorded; the answer
 model (below) with `rag_answer_max_images = 0` in **every** arm so no image
 byte ever reaches the chat model and the endpoint measures text-only
-grounding; corpus and query-set hashes; prompts. The report refuses a pair
-whose arm, revision, corpus hash, query-set hash, embedder, FTS language,
-rerank assignment or answer model differ.
+grounding; corpus and query-set hashes; prompts; and, for arm B,
+`image_analysis_max_output_tokens` at the value the backfill ran under
+(recorded, not prescribed). The report refuses a pair whose arm, revision,
+corpus hash, query-set hash, embedder, FTS language, rerank assignment or
+answer model differ.
 
 **Corpus and labels.** Start from `eval/corpus-de-images/` (65 pages / 187
 images, CC BY-SA and friends) and `fixture-de-images.json` (309 labels, 285
@@ -4790,7 +4951,7 @@ existing label as **image-dependent** (the fact is absent from the surrounding
 prose) or not, and adds EN/DE image-dependent items across the classes the
 epic names — screenshots/error codes, charts/units, tables, directional and
 nearly identical diagrams, unreadable text, decorative images — plus new
-image-negative questions, until the counts under "Owner decisions" are met.
+image-negative questions, until the counts under "Owner decisions" (O2, confirmed) are met.
 Labels are written from the source image, never from any model description,
 and never appear in any prompt.
 
@@ -4811,13 +4972,20 @@ exclude the margin is **inconclusive**, and any inconclusive gate endpoint
 blocks cutover *(epic)*. Multiple questions per page are handled by the
 page-cluster bootstrap and by the design effect in the sample size.
 
-**Decision rule (pass requires all):** (1) primary point estimate ≥ the
-margin **and** its cluster-bootstrap 95% CI excludes 0; (2) every
-non-inferiority endpoint's one-sided 95% lower bound is above its margin; (3)
-neither safety endpoint worsens beyond its margin at the one-sided 95% level;
-(4) the cost budget is met on the named hardware. Otherwise: fail, or
-inconclusive where an interval straddles — both block automatic cutover and
-the "improved RAG" claim, and go back to the owner as a measured tradeoff.
+**Decision rule (pass requires all three; quality only, owner decision
+2026-09-15):** (1) primary point estimate ≥ the margin **and** its
+cluster-bootstrap 95% CI excludes 0; (2) every non-inferiority endpoint's
+one-sided 95% lower bound is above its margin — for image-evidence R@5 the
+margin is a deliberately underpowered guardrail (O5) and its CI is reported
+beside the verdict; (3) neither safety endpoint worsens beyond its margin
+at the one-sided 95% level. **There is no cost gate**: throughput, tokens
+per image, backfill wall-clock and query p50/p95 are measured under the
+protocol below and **reported** in the same document as the verdict, and
+none of them can fail the gate — the retirement decision is on quality
+alone, and cost goes to the owner as information beside it. Otherwise:
+fail, or inconclusive where an interval straddles — both block automatic
+cutover and the "improved RAG" claim, and go back to the owner as a
+measured tradeoff.
 
 **Sample size (primary endpoint).** For McNemar's test on paired binary
 outcomes with discordant proportion ψ = p₁₀ + p₀₁ and true difference
@@ -4843,10 +5011,10 @@ power is the test's power. With the design effect throughout: ≈ 0.80 at
 N = 144, ≈ 0.82 at N = 150, **≈ 0.90 at N = 190** (N_eff ≈ 136, rejection
 threshold ≈ 0.092, SE(δ̂) ≈ 0.045). A more pessimistic pilot (ψ = 0.25,
 δ = 0.12) needs 134 × 1.4 = **188**, and N = 190 gives ≈ 0.80 there;
-ψ = 0.25, δ = 0.10 needs 272 and is declared out of budget. The proposal is
-**N = 190** so the second scenario is also powered; if the pilot's
-discordant rate is below 0.20, stop and report the run as inconclusive by
-design rather than judge more.
+ψ = 0.25, δ = 0.10 needs 272 and is declared out of budget. **N = 190**
+(O2, confirmed by the owner 2026-09-15) so the second scenario is also
+powered; if the pilot's discordant rate is below 0.20, stop and report the
+run as inconclusive by design rather than judge more.
 
 **Non-inferiority arithmetic, stated so the margin is chosen with eyes open.**
 The controls are clustered by page too (O3, cluster bootstrap for every
@@ -4860,75 +5028,100 @@ power ≈ 0.87 pooled. Image-evidence R@5 runs on the primary set and carries
 its DE = 1.4: at n = 190 (N_eff ≈ 136), ψ ≈ 0.15, SE ≈ 0.033, a 1-point
 margin has power ≈ 0.09 and cannot be decided at any plausible N; a
 **5-point** margin has power ≈ 0.44 at δ = 0 — a guard against collapse,
-not a fine comparison. Hence the proposal below keeps the epic's 1-point
-margin **only** where it is decidable and asks the owner to either accept a
-wider margin or accept that the endpoint will most likely read inconclusive.
+not a fine comparison. The owner confirmed both on 2026-09-15 (O4, O5):
+2 points on the pooled text controls, where it is decidable, and 5 points
+on image-evidence R@5 **explicitly as an underpowered guardrail** — the
+report states its power (≈ 0.44) and prints the endpoint's one-sided CI
+beside the verdict, so a pass on it is read as "no collapse", never as
+parity.
 
-**Judging protocol.** Humans, blind to arm, judge against the source image
-and page. The per-arm answer generation runs the real ask path per label with
+**Judging protocol (single judge, owner decision 2026-09-15).** The judge
+is the repository owner (Simon), blind to arm, judging against the source
+image and page; there is **no second rater and no adjudicator**, and the
+report is labelled **single-judge** wherever a correctness figure appears.
+The per-arm answer generation runs the real ask path per label with
 the fixed answer model and budgets, and writes one artifact per run:
 `answers-<runId>.jsonl` with `{ itemId, question, answer, refused, sources: [{ pageTitle, attachmentUrl? }], evidenceImages: [paths] }`
 where `itemId` is a random UUID and **no arm, query id, run config or chunk
 provenance appears**; the mapping `itemId → { arm, queryId }` is written to a
 separate `mapping-<runId>.json` whose sha256 is recorded in the report before
 judging starts. The judgment sheet (`judgments-<runId>.jsonl`, one row per
-item per judge) carries `{ itemId, judge, correctness: 'correct' | 'partial' | 'incorrect' | 'refused', citationFaithful: 'yes' | 'no' | 'na', unsupportedClaim: boolean, notes, judgedAt }`.
-Every item is judged by **two** judges independently; disagreements on the
-primary field go to a third for adjudication, whose row carries
-`adjudicates: [judgeA, judgeB]`; Cohen's κ is reported. An LLM judge may run
+item) carries `{ itemId, judge, correctness: 'correct' | 'partial' | 'incorrect' | 'refused', citationFaithful: 'yes' | 'no' | 'na', unsupportedClaim: boolean, notes, judgedAt }`;
+`judge` is kept on the row so the sheet's shape does not change if a second
+rater is ever added, and there is no `adjudicates` field. **No
+inter-rater statistic is reported** — Cohen's κ needs two raters and none is
+computed or substituted; the report says so in one sentence beside the
+primary result, as the protocol's stated limitation. An LLM judge may run
 first to **flag** items for extra scrutiny and to pre-screen obvious
-refusals; it contributes no published number, because the candidate's own
-descriptions sit in the context it would be judging *(epic)*. Un-blinding
-(`--unblind`) refuses until every item has two judgments and every
-disagreement an adjudication; paired scoring runs only after un-blinding.
-Raw anonymised judgments and the mapping are preserved with the report.
+refusals — a pre-screen only: it contributes no published number and
+never fills a judgment row, because the candidate's own descriptions sit
+in the context it would be judging *(epic)*. Un-blinding (`--unblind`)
+refuses until every item has exactly one judgment; paired scoring runs only
+after un-blinding. Raw anonymised judgments and the mapping are preserved
+with the report.
 
-**Cost and operational qualification** (measured on the named hardware, with
-concurrent ingestion): cold and cached analysis throughput (img/s), total
-backfill wall-clock for the corpus and extrapolated per 10k images, vision
-tokens per image (prompt + completion, from `usage`), failure/skip rates,
+**Cost and operational qualification — measured and reported, never a
+gate** (owner decision 2026-09-15; on the hardware that serves the assigned
+model, O9, with concurrent ingestion): cold and cached analysis throughput
+(img/s), total backfill wall-clock for the corpus and extrapolated per 10k
+images, vision tokens per image (prompt + completion, from `usage`, as a
+corpus mean beside the ceiling in force), failure/skip rates,
 `page_embeddings` row and byte growth, `chunk_tsv` GIN size, query p50/p95
 for B and C against A through `benchmark-query-latency.ts` — fewer calls is
-not a latency claim; the extra chunks and the shared queue are in the number.
+not a latency claim; the extra chunks and the shared queue are in the
+number. The protocol is kept exactly so the figures are comparable across
+runs; none of them enters the decision rule.
 
 **Report provenance** (refused if absent): commit SHAs per arm; corpus
 manifest sha; query-set sha; per-arm provider/model/endpoint for embedder,
-reranker, answer model, vision model; embedder width; `fts_language`; every
-retrieval knob; prompts and their versions; hardware; judge identities;
-mapping-file sha; per-query paired outcomes.
+reranker, answer model, vision model; `image_analysis_max_output_tokens`
+in force for arm B's backfill; embedder width; `fts_language`; every
+retrieval knob; prompts and their versions; hardware; the judge's identity
+and the single-judge statement; mapping-file sha; per-query paired outcomes.
 
-### Owner decisions — proposed, pending owner confirmation
+### Owner decisions — confirmed by the owner on 2026-09-15
 
-None of the following is approved by this ADR. Each is a concrete proposal
-with its reasoning so the owner can confirm or amend before #1615/#1616 start
-tuning and before #1619 judges anything. Once confirmed, the numbers are
-copied into `docs/runbooks/retrieval-eval.md` "Arm protocol" and this list is
-marked confirmed with the date.
+Every item below was confirmed by the repository owner on 2026-09-15 and is
+binding as written; the same numbers are copied into
+`docs/runbooks/retrieval-eval.md` "Arm protocol", which must say the same
+thing. Two items changed from the proposal in the confirmation and the
+body of this ADR follows the confirmed form: **O11** (cost is measured and
+reported, never gated) and **O12/O13** (a single judge). O8 names no
+checkpoint: the candidate is whatever vision model is assigned on the
+instance under test, and the output-token ceiling that used to be a
+constant in D8 is an admin setting by the same decision.
 
-| # | Decision | Proposed | Why this number |
-|---|---|---|---|
-| O1 | Primary-endpoint margin | **+5 absolute points**, B vs A, point estimate ≥ 0.05 and cluster-bootstrap 95% CI excluding 0 | The epic's proposal; the power calculation shows it is decidable at N = 190 under the stated assumptions |
-| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at 197 each; pilot of 30 pairs checks ψ | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is |
-| O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses |
-| O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87. If the owner keeps 1 point, the ADR records that the endpoint is expected to be inconclusive |
-| O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); 5 points has power ≈ 0.44 — a guard against collapse, not a fine comparison, and the primary endpoint is where the answer quality is decided |
-| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, one-sided 95% upper bound of the difference ≤ 0.05 | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch |
-| O7 | Image-negative leakage margin | leakage@1 may exceed A's by at most **2 queries of 48** (≈ 4 points) | ADR-025 measured 2/22 losses on this class for the legacy leg; the candidate must not do worse than that shape |
-| O8 | Vision candidate | **Qwen3-VL-8B-Instruct** (Apache-2.0, image-text-to-text) on vLLM `/v1/chat/completions`, bf16; **Qwen3-VL-4B-Instruct** as the fallback if O11's throughput floor is missed | The epic's reasonable candidate; not the similarly named embedding checkpoint; model-card claims are not measurements |
-| O9 | Hardware | the ADR-025 production card: **1× RTX 6000 96 GB Blackwell**, vision model and text embedder co-resident; Postgres and Redis on the same host as production | The only card a real backfill will run on; "representative" means this one |
-| O10 | Answer model and budgets | the production `chat` assignment at freeze time (proposal: **Qwen3-8B** instruct if none is pinned), text-only by construction via `rag_answer_max_images = 0`; `temperature 0`; `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable |
-| O11 | Ingestion/cost budget | cold ≥ **0.5 img/s** and cached ≥ **50 img/s** (no call) on O9; mean ≤ **3,500** tokens per image (prompt + completion from `usage`, averaged over the corpus; the per-request ceiling is ≈ 1.3k visual + prompt + 8,192 output, so the served context must admit ≈ 10k — D8); corpus backfill ≤ **10 min** (187 images) and ≤ **6 h per 10k images** — each is the 0.5 img/s floor (6.2 min, 5.6 h) with slack, not one extrapolated from the other; failure rate ≤ 2% and skip rate reported; `page_embeddings` rows grow by ≤ 3 per image; query p95 for B ≤ 1.10 × C's and ≤ A's | The legacy 2B embedder did 4.26 img/s on a laptop shim; a generative 8B on a 96 GB card at ~1.3k visual tokens plus a typical few-hundred-token payload (8,192 is the ceiling, not the norm, and an unspent ceiling costs nothing) should clear 0.5 img/s; the query bound is the "no promised latency win" rule made checkable |
-| O12 | Judges | two named human judges from the project (proposal: the owner and one engineer who did not implement #1615–#1617), a third named adjudicator; all three named in the runbook before the run | Blind human judging is the epic's rule; naming is what makes it a commitment |
-| O13 | Judging burden | all three arms double-judged (≈ 3 × 238 items × 2 judges ≈ 1,430 judgments at ~2 min each ≈ 48 judge-hours); if that is too much, C is single-judged and A/B stay double-judged | The primary endpoint is B vs A; C's correctness is secondary |
-| O14 | Gate granularity | #1618 split into stage-1 (blocked by #1617) and stage-2 (blocked by #1619) sub-issues so the native graph matches the two halves | The issue text already authorises the split; making it native removes the "blocked but allowed" reading |
-| O15 | Labelling additions | independent labeller who has seen no candidate output; ≥ 10 items per class in the epic's list; licence of every added image recorded per the corpus's existing attribution file | The labels must not leak from or into the candidate |
+| # | Decision | Confirmed value | Why this number | Status |
+|---|---|---|---|---|
+| O1 | Primary-endpoint margin | **+5 absolute points**, B vs A, paired image-dependent answer correctness, point estimate ≥ 0.05 and cluster-bootstrap 95% CI excluding 0 | The epic's proposal; the power calculation shows it is decidable at N = 190 under the stated assumptions | Confirmed by owner 2026-09-15 |
+| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
+| O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses | Confirmed by owner 2026-09-15 |
+| O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87 | Confirmed by owner 2026-09-15 |
+| O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set — **explicitly an underpowered guardrail**: the report states power ≈ 0.44 at δ = 0 and prints the one-sided CI beside the verdict; a pass reads "no collapse", never parity | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); the primary endpoint is where the answer quality is decided | Confirmed by owner 2026-09-15 |
+| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, one-sided 95% upper bound of the difference ≤ 0.05 | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 |
+| O7 | Image-negative leakage margin | leakage@1 may exceed A's by at most **2 queries of 48** (≈ 4 points) | ADR-025 measured 2/22 losses on this class for the legacy leg; the candidate must not do worse than that shape | Confirmed by owner 2026-09-15 |
+| O8 | Vision candidate | **The vision model assigned to `image_analysis` in Settings → AI Models on the instance under test** — no mandated checkpoint, no fallback list; the report records `provider:model@endpoint` and the ceiling in force. **On the local instance at ADR time (read 2026-09-15): UNASSIGNED** — the one configured provider is `RTX3090` (`openai-compatible`, no auth, `http://192.168.178.47:1234/v1` — an LM Studio-style host), no vision-capable use case is assigned (`image_embedding` has no row) and the only two probed pairs (`google/gemma-4-26b-a4b-qat`, `qwen/qwen3.8-27b`) carry a `null` vision verdict (`fetch failed` / model failed to load). **The owner must assign a vision-capable model before the #1615 smoke test and before #1619.** | The candidate is the operator's choice, and the ADR's contract (D3's probe, D8's ceiling setting, D13's stops) is what makes any assigned model safe to run; a model-card claim is not a measurement | Confirmed by owner 2026-09-15 |
+| O9 | Hardware | the host that serves the assigned vision model (O8), recorded in the report by name, GPU and server software; text embedder, Postgres and Redis wherever production runs them, recorded the same way. The ADR-025 96 GB card is no longer mandated | Cost is reported, not gated (O11), so the hardware is provenance, not a pass condition; "representative" means "the one the report names" | Confirmed by owner 2026-09-15 (follows from O8/O11) |
+| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; `temperature 0`; `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
+| O11 | Ingestion cost — **measured and reported, no gate** | Measured under the "Cost and operational qualification" protocol on O9: cold and cached throughput (img/s), tokens per image (prompt + completion from `usage`, corpus mean beside the ceiling in force — the per-request ceiling is ≈ 1.3k visual + prompt + `image_analysis_max_output_tokens`, default 8,192, so the served context must admit ≈ 10k at the default — D8), corpus backfill wall-clock (187 images) and the per-10k extrapolation, failure and skip rates, `page_embeddings` rows per image, query p50/p95 for B and C against A. **None of these can fail the gate**; the retirement decision is on quality alone (decision rule) and the figures go to the owner beside the verdict | The owner's call: a slow but better candidate is a scheduling problem, not a quality verdict; the measurement protocol is kept exactly so runs stay comparable | Confirmed by owner 2026-09-15 |
+| O12 | Judges | **one judge: the repository owner (Simon)**, blind to arm; no second rater, no adjudicator; the report is labelled single-judge and states that no inter-rater statistic exists. An LLM may pre-screen and flag only | Blind human judging is the epic's rule; the owner is the one person who will act on the verdict, and a single named judge with the limitation stated is more honest than a second rater recruited for the statistic | Confirmed by owner 2026-09-15 |
+| O13 | Judging burden | all three arms single-judged: ≈ 3 × 238 items ≈ **714 judgments** at ~2 min each ≈ **24 judge-hours**; C may be judged last, since its correctness is secondary | The primary endpoint is B vs A; C's correctness is secondary | Confirmed by owner 2026-09-15 |
+| O14 | Gate granularity | #1618 split into stage-1 (blocked by #1617) and stage-2 (blocked by #1619) sub-issues so the native graph matches the two halves | The issue text already authorises the split; making it native removes the "blocked but allowed" reading | Confirmed by owner 2026-09-15 |
+| O15 | Labelling additions | independent labeller who has seen no candidate output; ≥ 10 items per class in the epic's list; licence of every added image recorded per the corpus's existing attribution file | The labels must not leak from or into the candidate | Confirmed by owner 2026-09-15 |
+
+Also confirmed on the same date, as designed in the body: no page context
+in vision inference (D5/D8); `failed_terminal` after 5 attempts and the
+uniform-rejection stop after 3 (D13); the three-step sweep → reconcile →
+analyze batch (D13); PR2's placement (D15); and the output-token ceiling
+as an admin setting (D8, "Settings and capability semantics").
 
 ### Retirement plan (#1618, two halves)
 
 **Stage 1 — prepare (after #1617, on an isolated candidate):** the Image
 analysis progress card (analyzed / reused / pending / failed / terminal /
 skipped by reason, last run with a stop's reason and HTTP status (D13),
-retained identity, Retry failed / Process now /
+retained identity, the Max output tokens row carried over from #1615,
+Retry failed / Process now /
 Re-analyze all with the D7 scope disclosure); the selector relabel and the removal of
 MRL width, image-embedding probe chip and the Image leg toggle from the UI;
 the forward migration (below) written but not merged; the backup/restore
@@ -5005,12 +5198,24 @@ There is no in-product rollback mode.
   composed) made visible, not a defect — and payloads are kept, so a return
   to the previous identity costs no call.
 - **Ingestion cost moved from cheap embeddings to generative inference.**
-  A 1,280-visual-token image plus a few hundred output tokens (ceiling
-  8,192, sized to the schema at one token per character) per image is the
-  shape; O11 bounds the mean, the backfill is resumable and bounded per
-  batch, the cache key makes unchanged reprocessing free, and the attempt cap
-  (D13) makes an image the model cannot describe a fixed cost rather than a
-  daily one.
+  A ~1.3k-visual-token image plus a few hundred output tokens (ceiling
+  `image_analysis_max_output_tokens`, default 8,192, an admin setting whose
+  value sizes the schema's transcription bounds at one token per character)
+  per image is the shape; O11 measures and reports the mean but **no cost
+  figure gates the cutover** (owner decision 2026-09-15), the backfill is
+  resumable and bounded per batch, the cache key makes unchanged
+  reprocessing free, and the attempt cap (D13) makes an image the model
+  cannot describe a fixed cost rather than a daily one.
+- **One setting can change a request without invalidating a row.** The
+  output-token ceiling is deliberately outside the identity and the cache
+  key (D5): lowering it shortens what new analyses may say and orphans
+  nothing; raising it re-opens only the rows that failed `truncated` under
+  the lower value (D13). An operator who wants every image re-read under a
+  new ceiling has Re-analyze all, the same action as for an in-place server
+  upgrade.
+- **The gate is single-judge and says so.** The primary endpoint is judged
+  by one named person (O12); the report carries that as a stated limitation
+  beside the result rather than a κ it cannot compute.
 - **The lexical leg gains a per-chunk index.** `chunk_tsv` plus its GIN index
   is the price of returning the matching chunk; `pages.tsv` and every
   authored ranking stay as they were.

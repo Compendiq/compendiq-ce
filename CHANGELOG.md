@@ -25,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedder beside the page's own chunks, replacing the separate image
   embedding space and its retrieval leg. The ADR fixes the storage, identity,
   invalidation, lexical-index and citation contracts for the implementing
-  packages and pre-registers the paired A/B/C quality gate that decides the
+  packages, specifies the vision reply's output-token ceiling as an admin
+  setting outside the analysis cache key, and pre-registers the paired
+  A/B/C quality gate — margins, sample size, single-judge protocol and a
+  quality-only decision rule, all confirmed by the owner — that decides the
   cutover; the shipped image leg is unchanged until that gate passes.
 
 ### Changed

@@ -165,11 +165,11 @@ erDiagram
         text identity_hash "sha256 over the three identity fields; valid only while it equals the retained identity"
         int prompt_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_PROMPT_VERSION"
         int schema_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_SCHEMA_VERSION"
-        jsonb payload "ImageAnalysisPayloadV1, validated before write; kept across a sweep re-pend, NULLed on new bytes"
+        jsonb payload "ImageAnalysisPayloadV1, validated at write time against the bounds of the ceiling then in force (never re-validated on read); kept across a sweep re-pend, NULLed on new bytes"
         int analysis_version "+1 per successful payload write"
-        int attempts "failures since the last reset: success, Retry failed, new bytes, or the sweep returning a failed/terminal row whose identity or versions changed; deterministic classes go terminal at 5"
+        int attempts "failures since the last reset: success, Retry failed, new bytes, the sweep returning a failed/terminal row whose identity or versions changed, or the sweep re-opening a truncated row under a raised ceiling; deterministic classes go terminal at 5"
         timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
-        text error "failure class + HTTP status when received (rejected:413, unavailable:404); admin-only"
+        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling); admin-only"
     }
 
     page_relationships {
@@ -735,7 +735,13 @@ together, which matters most for #1114's query-side prefix.
   identity is `(provider_id, model, base_url)`, the two versions are code
   constants compared on every read, page context (title, caption, heading)
   never reaches the model — it is composed into the chunk at embed time — and
-  the closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5).
+  the closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5):
+  in particular `image_analysis_max_output_tokens` — the vision reply's
+  token ceiling, an admin setting (default 8,192, [4,096, 16,384]) that also
+  sizes the payload schema's transcription bounds — is deliberately outside
+  the identity and the cache key; changing it invalidates no row (payloads
+  are validated at write time only), and raising it re-opens only rows that
+  failed `truncated` under the lower value (ADR-027 D8/D13).
   `embedPage` — still the only writer of `page_embeddings` — composes the
   page's authored chunks **and** one chunk per valid analysis (status
   `analyzed`, `identity_hash` equal to the retained
