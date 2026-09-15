@@ -21,6 +21,7 @@ erDiagram
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
     pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
+    pages ||--o{ page_image_analyses : "PLANNED #1615 (ADR-027): one analysis row per referenced image; its text becomes derived page_embeddings rows"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -94,6 +95,8 @@ erDiagram
         uuid created_by_user_id FK
         bool embedding_dirty
         bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
+        bool image_analysis_dirty "PLANNED #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
+        bigint image_analysis_revision "PLANNED #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
@@ -131,7 +134,8 @@ erDiagram
         int chunk_index
         text chunk_text
         vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
-        jsonb metadata
+        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (PLANNED #1616, ADR-027 D9)"
+        tsvector chunk_tsv "PLANNED #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
     }
 
     page_image_embeddings {
@@ -146,6 +150,25 @@ erDiagram
         text model "provider model id that produced the vector"
         vector embedding "vector(n) or halfvec(n) — n is the probed IMAGE model's width; no HNSW until the probe"
         timestamptz created_at
+    }
+
+    page_image_analyses {
+        bigint id PK "PLANNED #1615 (ADR-027 D4, migration 115) — the derived-analysis store"
+        int page_id FK "ON DELETE CASCADE"
+        text source "confluence | local — which attachment store the key resolves in"
+        text attachment_key "URL-decoded filename inside that store"
+        text content_hash "sha256 of the analyzed bytes; the reference revision (ADR-027 D6)"
+        text format "sniffed: png | jpeg | webp | gif"
+        text status "pending | analyzed | failed | skipped"
+        text skip_reason "missing | unsupported | oversized | too_large | external | capped"
+        uuid provider_id FK "inference identity (ADR-027 D5) with model, base_url, prompt_version, schema_version"
+        text identity_hash "sha256 over the five identity fields; row is valid only while it equals the retained identity"
+        text context_hash "sha256 of the bounded page context supplied to the prompt"
+        jsonb payload "ImageAnalysisPayloadV1, validated before write"
+        text serialized_text "deterministic serialization; the derived chunk text"
+        int analysis_version "+1 per successful payload write"
+        int attempts "failed rows back off on next_attempt_at"
+        text error "failure class; admin-only"
     }
 
     page_relationships {
@@ -321,7 +344,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion — plus image_analysis once migration 115 lands (PLANNED #1615, ADR-027 D3)"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -695,7 +718,41 @@ together, which matters most for #1114's query-side prefix.
     restore and an Apply are the two ways a page's `img` set moves with no
     attachment write to notice it). It is CLEARED only
     by a page whose scan had no failure, so the flag is the retry queue as well
-    as the work queue. Design of record: ADR-025.
+    as the work queue. Design of record: ADR-025. **This is the ACTIVE
+    design; ADR-027 supersedes it in part and the bullet below is the
+    CANDIDATE.**
+- **PLANNED (#1615 / #1616, ADR-027) — image analysis in the text index.**
+  Nothing in this bullet is merged yet; the entities above carrying `PLANNED`
+  are the contract those packages implement, and the legacy table, flag and
+  leg stay live beside them until #1618 retires them after the #1619 gate.
+  A generative vision model (`image_analysis`, a non-inheriting use case
+  probed with the tri-state vision probe BEFORE its row is written) reads
+  each referenced raster once at ingestion; the result is **derived data** in
+  `page_image_analyses` (migration **115**, #1615): one row per
+  `(page_id, source, attachment_key)`, keyed for reuse on
+  `(content_hash, identity_hash, context_hash)` where the identity is
+  `(provider_id, model, base_url, prompt_version, schema_version)` and the
+  closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5).
+  `embedPage` — still the only writer of `page_embeddings` — composes the
+  page's authored chunks **and** one chunk per valid analysis (status
+  `analyzed` and `identity_hash` equal to the retained
+  `admin_settings.image_analysis_identity`), appended after every authored
+  index with `metadata.source = 'image_analysis'` plus the attachment
+  provenance, embedded by the ordinary text embedder, dual-written under a
+  #1116 shadow, and **excluded from both page averages** by predicate
+  (ADR-027 D2/D9). Migration **116** (#1616) adds `pages.image_analysis_dirty`
+  (raised by the same writer list as `image_embedding_dirty`, consumed by a
+  claim-first reconcile), `pages.image_analysis_revision` (the token
+  `embedPage` checks before clearing `embedding_dirty`, so neither worker
+  loses the other's update) and `page_embeddings.chunk_tsv` — a per-chunk
+  tsvector maintained by a trigger that reads `admin_settings.fts_language`
+  like migration 049's, rebuilt in the SAME transaction as `pages.tsv` on a
+  language change, and combined with `pages.tsv` at query time so a lexical
+  page hit resolves to the matching chunk (ADR-027 D10). No runtime DDL, no
+  second vector width, no third RRF leg. Readiness is derived from the rows
+  (`none | pending | partial | complete | failed | skipped`) beside
+  `NOT embedding_dirty` for "analysis complete, text embedding pending".
+  Design of record: ADR-027 in `docs/ARCHITECTURE-DECISIONS.md`.
 - **The attachment stores are filesystem-only, and #1349 gives them a
   reconciler.** Two trees under `ATTACHMENTS_DIR`:
   `<confluence_id | page id>/<file>` (the Confluence cache — pasted images on

@@ -24,7 +24,12 @@ rather than measured.
   reports side by side, never through `--baseline` — or, for the question that
   actually decides a swap, on **your own corpus** via #1260. This corpus is
   vendored OSS docs; a model that wins on it has not been shown to win on your
-  pages.
+  pages. **Answers are the one exception being built**: ADR-027's quality gate
+  needs per-arm *answer* generation and blind human judgment, and that
+  tooling — the `--arm A|B|C` axis, the answer artifacts and the judgment
+  sheet — is #1614's follow-up harness PR, not yet in this checkout. Its
+  protocol is frozen below under "Arm protocol (ADR-027)" so it cannot drift
+  while the code lands.
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
 - **Has a second axis.** Everything above describes the text gate. `--images`
@@ -1100,6 +1105,120 @@ four labels written by the merger rather than a blind labeller — **#1370** has
 since replaced them with six blind-labelled ones, which is why the next run of
 this axis measures a different negative slice and must say so beside
 `delta.perStyle['image-negative']`.
+
+## Arm protocol (ADR-027, epic #1611)
+
+The pre-registered comparison that decides whether the ADR-027 candidate
+(image analysis in the text index) replaces the ADR-025 image leg. **The
+contract is ADR-027's "Measurement plan" and "Owner decisions"**; this
+section is the operator-facing copy and must say the same thing. The
+tooling that runs it (`--arm A|B|C`, per-arm answer generation, the
+arm-blinded judgment sheet, `--unblind`) is #1614's follow-up harness PR and
+is **not in this checkout**; #1619 executes it and does not build a second
+one. Nothing here is a measured result.
+
+### The three arms and the revision each runs on
+
+| Arm | What | Revision | Index state |
+|---|---|---|---|
+| A | legacy text + `page_image_embeddings` leg | the last `dev` commit before #1618 stage 2 (SHA recorded in the baseline artifact) | `image_embedding` assigned to the REAL VL endpoint (production vLLM, not the shim); legacy index filled |
+| B | candidate: vision-analysis chunks, no image leg | candidate revision (post-#1617) | `image_analysis` assigned; backfill complete |
+| C | ablation: authored text only | the SAME candidate revision as B | `image_analysis` unassigned; no derived chunks; `page_image_embeddings` empty |
+
+B − C isolates vision enrichment. B − A measures the whole product change,
+including #1617's lexical chunk resolution. A legacy-revision C, if captured,
+is a regression control for that change and is labelled so; it is never
+substituted for C. The 2026-08-18 numbers above and every 307/22 shim result
+are historical and unpairable.
+
+### Held fixed across arms
+
+Text embedder (Qwen3-Embedding-4B @ 2560 `halfvec`) and its prefix;
+`--fts-language german` on the image corpus, `simple` (EN) and `german` (DE)
+on the controls, recorded per block; the rerank assignment (the production
+one at freeze time, identical in every arm, off if none); `rag_ef_search`
+100; fetch width, rerank candidates, `rag_context_chars_per_page`, pin stage
+and confidence thresholds at production defaults, recorded; the answer model
+with `rag_answer_max_images = 0` in EVERY arm so the chat model is text-only
+by construction; corpus and query-set hashes; prompts. The report refuses a
+pair whose arm, revision, corpus hash, query-set hash, embedder, FTS
+language, rerank assignment or answer model differ.
+
+### Endpoints and the decision rule
+
+Primary: **image-dependent answer correctness, B vs A, paired per query**,
+judged by humans blind to arm against the source image — McNemar exact on the
+discordant pairs plus a 95% cluster-bootstrap CI resampling pages. Secondary:
+the same for B vs C and C vs A, citation faithfulness. Safety:
+unsupported-claim rate and image-negative leakage@1, B vs A, against
+pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
+(A from leg hits keyed on `page_image_embeddings.attachment_key`; B from a
+top-5 chunk whose `metadata.attachment_key` is an expected image; C reports
+none). Controls: the EN and DE text suites (197 each), non-inferiority.
+
+Pass requires ALL of: primary point estimate ≥ margin AND its CI excludes 0;
+every non-inferiority lower bound above its margin; neither safety endpoint
+worse than its margin; cost budget met on the named hardware. Anything else is
+fail or **inconclusive** — non-significance is not non-inferiority, and both
+block the cutover and the "improved RAG" claim.
+
+### Sample size
+
+McNemar (Connor 1987): $N = (z_{0.975}\sqrt{\psi} + z_{0.80}\sqrt{\psi-\delta^2})^2/\delta^2$
+times a design effect $1+(m-1)\rho$ for m = 5 labels per page. Pre-registered
+assumptions ψ = 0.30 (discordant share), δ = 0.15, ρ = 0.10 give 103 × 1.4 =
+**144**; the pessimistic ψ = 0.25, δ = 0.12 gives **188**. A 30-pair pilot
+checks ψ before the full run; a pilot ψ below 0.20 stops the run as
+inconclusive by design. The 1-point non-inferiority margin the epic proposed
+is underpowered on 394 pooled control queries (≈ 0.40 at δ = 0), which is why
+ADR-027 proposes 2 points there and 5 on image-evidence R@5.
+
+### Proposed numbers — pending owner confirmation
+
+Copied from ADR-027 "Owner decisions"; **not approved until the owner
+confirms**, after which this list gains the date:
+
+- Primary margin **+5 pp**, CI excluding 0. N = **190** image-dependent
+  queries (floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48**
+  image-negative; controls at 197 each.
+- Non-inferiority: **2 pp** on ordinary-text R@5/MRR (EN + DE pooled), **5 pp**
+  on image-evidence R@5.
+- Safety: unsupported claims ≤ A + **3 pp** (one-sided 95% upper bound ≤ 5 pp);
+  image-negative leakage@1 ≤ A + **2 of 48**.
+- Vision candidate **Qwen3-VL-8B-Instruct** on vLLM chat completions
+  (fallback 4B); hardware **1× RTX 6000 96 GB Blackwell**; answer model = the
+  production `chat` assignment at freeze time (proposal Qwen3-8B), text-only
+  via `rag_answer_max_images = 0`, production context budgets.
+- Cost budget: cold ≥ **0.5 img/s**, cached ≥ 50 img/s, ≤ **3,500** vision
+  tokens per image, corpus backfill ≤ 10 min (≤ 6 h per 10k images), failure
+  rate ≤ 2%, ≤ 3 `page_embeddings` rows per image, B query p95 ≤ 1.10 × C
+  and ≤ A.
+- Judges: two named humans plus a named adjudicator, recorded here before
+  the run; all arms double-judged (C may be single-judged if the burden is
+  refused).
+
+### Blinding and judging
+
+The answer run writes `answers-<runId>.jsonl` (`itemId` = random UUID,
+question, answer, refused, cited page titles and thumbnails, evidence image
+paths — **no arm, query id, config or chunk provenance**) and a separate
+`mapping-<runId>.json` whose sha256 goes into the report before judging
+starts. Judges fill `judgments-<runId>.jsonl`
+(`correctness: correct | partial | incorrect | refused`, `citationFaithful:
+yes | no | na`, `unsupportedClaim`, notes) — two judges per item,
+disagreements on correctness adjudicated by a third, Cohen's κ reported. An
+LLM may pre-screen and flag; it publishes no number. `--unblind` refuses
+until every item has two judgments and every disagreement an adjudication.
+For the primary endpoint `correct` is 1 and everything else is 0; `partial`
+is reported separately.
+
+### Provenance the report must carry
+
+Commit SHAs per arm; corpus manifest sha; query-set sha; embedder, reranker,
+answer-model and vision-model `provider:model@endpoint`; embedder width;
+`ftsLanguage` per block; every retrieval knob; prompt versions; hardware;
+judge identities; mapping sha; paired per-query outcomes and commands. A
+report missing any of these is refused, not annotated.
 
 ## The `vocabulary-gap` slice (#1112)
 
