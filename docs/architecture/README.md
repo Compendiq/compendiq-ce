@@ -58,7 +58,7 @@ Quick reference for what to update when:
 | `image-embedding-service.ts`, `image-embedding-dirty.ts`, the `image_embedding_dirty` writers, or the image-index admin routes | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md` |
 | `image-leg-search.ts`, the third RRF leg's fusion in `rag-service.ts`, or the `kind: 'image'` source shape | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
 | `retrieved-images.ts`, the vision gate on the answer path, or `rag_answer_max_images` | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
-| The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
+| The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) or the ADR-027 arm axis (`eval/arms.ts`, `answers.ts`, `judgments.ts`, `scripts/run-arm-answers.ts`, `scripts/judge-arms.ts`, `eval/artifacts/1611/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
 | The ADR-027 candidate (PLANNED #1615/#1616/#1617): `page_image_analyses`, the `image_analysis` assignment/capability routes, the analysis worker and reconcile, derived `page_embeddings` rows, `chunk_tsv`, or lexical chunk resolution | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md`, `09-flow-rag-chat.md`, `11-content-pipeline.md` + ADR-027 |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |

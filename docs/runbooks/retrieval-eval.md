@@ -24,13 +24,14 @@ rather than measured.
   reports side by side, never through `--baseline` — or, for the question that
   actually decides a swap, on **your own corpus** via #1260. This corpus is
   vendored OSS docs; a model that wins on it has not been shown to win on your
-  pages. **Answers are the one exception being built**: ADR-027's quality gate
-  needs per-arm *answer* generation and blind human judgment, and that
-  tooling — the `--arm A|B|C` axis, the answer artifacts, the judgment
-  sheet and fresh A/C baselines — is **PR2 on #1614**, a second PR that runs
-  in parallel with #1615/#1616 and is not yet in this checkout. Its
-  protocol is frozen below under "Arm protocol (ADR-027)" so it cannot drift
-  while the code lands.
+  pages. **Answers are the one exception**: ADR-027's quality gate needs
+  per-arm *answer* generation and blind human judgment, and that tooling —
+  the `--arm A|B|C` axis on this script, `scripts/run-arm-answers.ts` (the
+  arm-blinded answer artifacts) and `scripts/judge-arms.ts` (the judgment
+  sheet, `--unblind`, the paired statistics) — shipped as **PR2 on #1614**.
+  The protocol and the recipe are under "Arm protocol (ADR-027)" below. No
+  arm has been measured yet: the baselines are #1619's, and the artifacts
+  directory says why none is committed.
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
 - **Has a second axis.** Everything above describes the text gate. `--images`
@@ -1113,12 +1114,75 @@ The pre-registered comparison that decides whether the ADR-027 candidate
 (image analysis in the text index) replaces the ADR-025 image leg. **The
 contract is ADR-027's "Measurement plan" and "Owner decisions"** (confirmed
 by the owner on 2026-09-15); this section is the operator-facing copy and
-must say the same thing. The tooling that runs it (`--arm A|B|C`, per-arm
-answer generation, the arm-blinded judgment sheet, `--unblind`, fresh A and
-C baselines) is **PR2 on #1614** — a second PR, in parallel with #1615 and
-#1616, landing before #1619 — and is **not in this checkout**; #1619
-executes it and does not build a second one. Nothing here is a measured
-result.
+must say the same thing. The tooling is in this checkout (**PR2 on #1614**):
+`run-retrieval-eval.ts --images --arm A|B|C` (one arm's retrieval run and
+its provenance), `run-arm-answers.ts` (one arm's answers through the real
+ask route, arm-blinded) and `judge-arms.ts` (`--merge` the arms into one
+blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
+executes it and does not build a second one. **Nothing here is a measured
+result**: no arm has been captured on any revision, and
+`backend/src/domains/llm/eval/artifacts/1611/README.md` records why.
+
+### Running it (the recipe #1619 follows)
+
+One arm per database state, one command per artifact. Every retrieval run
+records the revision (`git rev-parse HEAD`), the corpus and query-set
+hashes, the embedder, the FTS configuration, the rerank and `chat`
+assignments it resolved, every RAG knob and `EVAL_HARDWARE` (O9 — set it,
+or `--unblind` refuses the report).
+
+```bash
+export EVAL_HARDWARE="rtx3090-host · RTX 3090 24 GB · vLLM 0.x"   # O9, recorded verbatim
+export EVAL_EMBEDDING_BASE_URL=… EVAL_EMBEDDING_MODEL=…           # Qwen3-Embedding-4B, held fixed
+
+# Arm A — legacy revision, image_embedding on the REAL VL endpoint (never the shim)
+EVAL_IMAGE_EMBEDDING_BASE_URL=… EVAL_IMAGE_EMBEDDING_MODEL=… \
+  npx tsx scripts/run-retrieval-eval.ts --images --arm A --fts-language german --out arm-A.json
+npx tsx scripts/run-arm-answers.ts --arm A --run-id A-<date> --report arm-A.json --out-dir artifacts/
+
+# Arm C — candidate revision, image_analysis UNASSIGNED (refuses EVAL_IMAGE_EMBEDDING_*)
+npx tsx scripts/run-retrieval-eval.ts --images --arm C --fts-language german --out arm-C.json
+npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json --out-dir artifacts/
+
+# Arm B — same candidate revision, image_analysis assigned; the seed is followed by the
+# PRODUCT's backfill on this database (start the worker against it), which the run waits for
+npx tsx scripts/run-retrieval-eval.ts --images --arm B --fts-language german --backfill-timeout 7200 --out arm-B.json
+npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json --out-dir artifacts/
+
+# EN/DE controls: the ordinary text gate on each revision (B's and C's revision are the same)
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-C.json           # on C's revision
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-C.json
+
+# One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts
+npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/ \
+  --answers artifacts/answers-A-<date>.jsonl,artifacts/answers-B-<date>.jsonl,artifacts/answers-C-<date>.jsonl \
+  --mappings artifacts/mapping-A-<date>.json,artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
+# … the judge fills artifacts/judgments-sheet-<date>.jsonl from answers-sheet-<date>.jsonl ALONE …
+npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl --judgments artifacts/judgments-sheet-<date>.jsonl
+npx tsx scripts/judge-arms.ts --unblind --run-id sheet-<date> --out-dir artifacts/ \
+  --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json \
+  --control-b control-en-B.json,control-de-B.json --control-c control-en-C.json,control-de-C.json \
+  --out artifacts/verdict-sheet-<date>.json
+```
+
+`--arm A|B|C` needs `--images`; `--arm A` requires the `EVAL_IMAGE_EMBEDDING_*`
+endpoint and `--arm B`/`--arm C` refuse it. `--arm C` asserts
+`page_image_embeddings` is empty after the seed; `--arm B` refuses at once on a
+revision without `page_image_analyses` (#1616) and D11's `derived` provenance
+(#1617), and otherwise waits for the backfill to analyse every corpus image.
+`--baseline <other arm's report>` prints the retrieval endpoints of the pair
+(McNemar exact, page-cluster bootstrap) and no verdict; the verdict is
+`--unblind`'s. A `--control legacy-revision-C` run on the legacy revision is
+the regression control the ADR names and is refused as C of any pair. Cost
+figures come from `benchmark-query-latency.ts` and the backfill card, as
+before; none of them enters the rule.
+
+**What is still a human deliverable.** O2's 190 image-dependent and 48
+image-negative labels come from O15's independent labelling pass: the
+fixture schema now carries `imageDependent` and `class` per label, the
+shipped fixture carries neither, and `--unblind` refuses to decide below
+O2's counts (`--allow-underpowered` scores a sheet as **tooling verification
+only**). The harness never invents a label.
 
 ### The three arms and the revision each runs on
 
@@ -1210,7 +1274,11 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
   `google/gemma-4-26b-a4b-qat`, vision verdict unconfirmed) — **assign one
   before the #1615 smoke test and before this run.** Answer model = the
   production `chat` assignment at freeze time, text-only via
-  `rag_answer_max_images = 0`, production context budgets.
+  `rag_answer_max_images = 0` (written to the eval database by
+  `run-arm-answers.ts` and read back before the first question), production
+  context budgets, and the temperature at the **provider default, recorded
+  in provenance** (ADR erratum: the ask path exposes no temperature option;
+  pin it on the provider server-side if a fixed value is wanted).
 - Cost — **measured and reported, never a gate**: cold and cached
   throughput (img/s), mean tokens per image (prompt + completion from
   `usage`; the per-request ceiling is ≈ 1.3k visual + prompt +
@@ -1238,28 +1306,46 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
 
 ### Blinding and judging
 
-The answer run writes `answers-<runId>.jsonl` (`itemId` = random UUID,
-question, answer, refused, cited page titles and thumbnails, evidence image
-paths — **no arm, query id, config or chunk provenance**) and a separate
-`mapping-<runId>.json` whose sha256 goes into the report before judging
-starts. The judge fills `judgments-<runId>.jsonl`
-(`correctness: correct | partial | incorrect | refused`, `citationFaithful:
-yes | no | na`, `unsupportedClaim`, notes) — one row per item, one judge,
-no adjudication, no κ (there is one rater; the report says so). An LLM may
-pre-screen and flag; it publishes no number and fills no row. `--unblind`
-refuses until every item has exactly one judgment.
-For the primary endpoint `correct` is 1 and everything else is 0; `partial`
-is reported separately.
+`run-arm-answers.ts` writes, per arm, `answers-<runId>.jsonl` (`itemId` =
+random UUID, question, answer, refused, `sources[{pageTitle,
+attachmentUrl?}]`, `evidenceImages` — the label's source images, identical
+across arms — and **no arm, query id, config or chunk provenance**; the
+writer walks every key and refuses one that would leak), a separate
+`mapping-<runId>.json` (`itemId → {arm, queryId}`) and
+`provenance-<runId>.json` (the run's configuration and both files'
+sha256). `judge-arms.ts --merge` shuffles the arms' answers into ONE sheet
+(`answers-<sheet>.jsonl`, rows in item-id order, so neither file nor
+position tells arms apart) and records every hash in `sheet-<sheet>.json`
+**before judging starts**; `--unblind` refuses a mapping that no longer
+hashes to it. The judge fills `judgments-<sheet>.jsonl` from the sheet
+alone (`{ itemId, judge, correctness: correct | partial | incorrect |
+refused, citationFaithful: yes | no | na, unsupportedClaim, notes,
+judgedAt }`) — one row per item, one judge, no adjudication field, no κ
+(there is one rater; the report says so in `singleJudgeStatement`).
+`--check` reports progress and refuses a malformed row. An LLM may
+pre-screen and flag; it publishes no number and fills no row — no such
+pre-screen ships, and one would live outside `judge-arms.ts`. `--unblind`
+refuses until every item has exactly one judgment by one judge, then joins
+the mapping, pairs the arms and runs the paired scoring: for the primary
+endpoint `correct` is 1 and everything else 0; `partial` is reported
+separately; the pilot ψ over the first 30 image-dependent pairs stops the
+run below 0.20; the verdict document is labelled single-judge, prints every
+condition of the decision rule with its interval, and sets the exit code to
+non-zero for anything but a pass.
 
 ### Provenance the report must carry
 
-Commit SHAs per arm; corpus manifest sha; query-set sha; embedder, reranker,
-answer-model and vision-model `provider:model@endpoint`; the
-`image_analysis_max_output_tokens` arm B was backfilled under; embedder
-width; `ftsLanguage` per block; every retrieval knob; prompt versions;
-hardware; the judge's identity and the single-judge statement; mapping sha;
-paired per-query outcomes and commands. A report missing any of these is
-refused, not annotated.
+Commit SHAs per arm; corpus manifest sha; query-set sha (sha256 of the
+fixture file); embedder, reranker, answer-model and vision-model
+`provider:model@endpoint`; the `image_analysis_max_output_tokens` arm B was
+backfilled under; embedder width; `ftsLanguage` per block; every retrieval
+knob; prompts (pinned by the revision sha — they are in the tree);
+hardware (`EVAL_HARDWARE`, O9); the judge's identity and the single-judge
+statement; mapping sha; paired per-query outcomes and commands. A report
+missing any of these is refused, not annotated: `ArmRunReportSchema`
+(`eval/arms.ts`) is the retrieval half, `AnswerRunProvenanceSchema`
+(`eval/answers.ts`) the answer half, and `--unblind` parses both before it
+reads a judgment.
 
 ## The `vocabulary-gap` slice (#1112)
 

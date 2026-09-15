@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -56,10 +56,13 @@ const { seedImageCorpus, prepareImageIndex, stageEvalAttachmentsDir, imageAttach
   await import('./seed-images.js');
 const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } = await import('./seed.js');
 const { loadImageCorpusManifest, IMAGE_CORPUS_DIR } = await import('./corpus-images.js');
-const { runImageEval, ImageLegSilentError } = await import('./runner-images.js');
+const { runImageEval, runArmEval, ImageLegSilentError } = await import('./runner-images.js');
+const { hybridSearch } = await import('../services/rag-service.js');
+type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
+const { imageEvidenceRecallAtK } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -98,6 +101,20 @@ function fixtureOf(labels: ImageFixtureLabel[]): ImageFixture {
 }
 
 type VlStub = Awaited<ReturnType<typeof startVlStubServer>>;
+
+/** First file named `name` under `root`, or null — the attachment tree's layout is the store's business. */
+function findFile(root: string, name: string): string | null {
+  for (const entry of readdirSync(root)) {
+    const full = join(root, entry);
+    if (statSync(full).isDirectory()) {
+      const found = findFile(full, name);
+      if (found) return found;
+    } else if (entry === name) {
+      return full;
+    }
+  }
+  return null;
+}
 
 describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
   let vl: VlStub;
@@ -351,5 +368,144 @@ describe.skipIf(!dbAvailable)('paired image runner (#1115 P5b)', () => {
 
     await expect(runImageEval(fixture, { userId: USER, pageIdByFile, topK: 10 }))
       .rejects.toThrow(/never seeded/i);
+  }, 120_000);
+});
+
+/**
+ * #1614 PR2 — the single-arm runner on the same rig: arm A is the leg-on
+ * arm above, one arm per process; arm C seeds WITHOUT the image phase and
+ * must leave `page_image_embeddings` empty; arm B's attribution reads D11's
+ * `derived.attachmentKey`, which no row on this revision carries, so the
+ * test decorates the real search's rows through the `_search` seam.
+ */
+describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () => {
+  let vl: VlStub;
+  let attachmentsDir: string;
+  const previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
+
+  beforeAll(async () => {
+    await setupTestDb();
+    vl = await startVlStubServer({ dimensions: VL_DIMS });
+  }, 60_000);
+
+  afterAll(async () => {
+    await vl.close();
+    if (attachmentsDir) await rm(attachmentsDir, { recursive: true, force: true });
+    if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
+    await ensureVectorDimensions(1024);
+    await teardownTestDb();
+  });
+
+  beforeEach(async () => {
+    await truncateAllTables();
+    invalidateRagImageLegCache();
+    await query(
+      `INSERT INTO users (id, username, email, role, password_hash)
+       VALUES ($1::uuid, $1::text, $1::text || '@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
+      [USER],
+    );
+    vl.reset();
+    vl.axisFor((req) => {
+      if (req.isImage) return req.imageDataUrl === TARGET_DATA_URL ? 1 : 2;
+      return req.text === STEERED_QUERY ? 1 : 3;
+    });
+    attachmentsDir = await stageEvalAttachmentsDir();
+    await ensureVectorDimensions(TEXT_MODEL_DIMS);
+    await configureEmbeddingProvider({ baseUrl: 'http://stub/v1', model: 'stub-embed' });
+    await resetEvalCorpus();
+  }, 120_000);
+
+  const imageRows = async (): Promise<number> =>
+    (await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_image_embeddings`)).rows[0]!.n;
+
+  it('arm A: one search per label, leg forced on, evidence keyed like the fixture and ranked by page', async () => {
+    await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
+    const { pageIdByFile } = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES });
+    vl.clearRequests();
+    const fixture = fixtureOf([
+      label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] }),
+      label({ id: 'n1', query: 'Eine Frage ohne passendes Bild', style: 'image-negative' }),
+    ]);
+
+    const result = await runArmEval(fixture, { arm: 'A', userId: USER, pageIdByFile, topK: 10 });
+
+    expect(result.runs.map((r) => r.queryId)).toEqual(['q1', 'n1']);
+    expect(result.runs[0]!.cluster).toBe(target.file);
+    expect(result.runs[0]!.expectedImageKeys).toEqual([imageAttachmentKey(targetImage.file)]);
+    expect(result.runs[0]!.evidence.map((e) => e.key)).toContain(imageAttachmentKey(targetImage.file));
+    expect(result.runs[0]!.evidence.every((e) => e.rank >= 1)).toBe(true);
+    expect(result.imageEvidenceParticipatingQueries).toBeGreaterThanOrEqual(1);
+    // One VL query embed per label — one arm, one search.
+    expect(vl.textRequests()).toHaveLength(2);
+    expect(result.assemblyParticipatingQueries).toBe(2);
+  }, 120_000);
+
+  it('arm C: seeds text and attachment bytes only, leaves page_image_embeddings empty and carries no evidence', async () => {
+    const seeded = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });
+    expect(seeded.imagesEmbedded).toBe(0);
+    expect(seeded.imageEmbedWallClockMs).toBe(0);
+    expect(await imageRows()).toBe(0);
+    // The bytes are on disk exactly as arm A has them: the arms differ in
+    // what the revision does with them, not in what they are given.
+    const stored = findFile(attachmentsDir, imageAttachmentKey(targetImage.file));
+    expect(stored, 'the attachment bytes were written').not.toBeNull();
+    expect(readFileSync(stored!).equals(readFileSync(join(IMAGE_CORPUS_DIR, targetImage.file)))).toBe(true);
+
+    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+    const result = await runArmEval(fixture, { arm: 'C', userId: USER, pageIdByFile: seeded.pageIdByFile, topK: 10 });
+
+    expect(result.runs[0]!.evidence).toEqual([]);
+    expect(result.imageEvidenceParticipatingQueries).toBe(0);
+    expect(vl.requests).toHaveLength(0);
+    // The evidence scorer reports arm C as none, never as a zero.
+    expect(imageEvidenceRecallAtK('C', result.runs, 5)).toBeNull();
+  }, 120_000);
+
+  it('arm B: attributes evidence to a row\'s derived.attachmentKey (D11), and to nothing when the key mismatches', async () => {
+    const seeded = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });
+    const targetPageId = seeded.pageIdByFile.get(target.file)!;
+    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+    // No row on this revision carries `derived` (#1617), so the seam
+    // decorates the REAL search's rows with the D11 shape.
+    const decorated = (key: string): typeof hybridSearch => async (...args) => {
+      const rows = await hybridSearch(...args);
+      return rows.map((r): SearchResult => (r.pageId === targetPageId ? { ...r, derived: { attachmentKey: key } } as SearchResult : r));
+    };
+
+    const hit = await runArmEval(fixture, { arm: 'B', userId: USER, pageIdByFile: seeded.pageIdByFile, topK: 10, _search: decorated(imageAttachmentKey(targetImage.file)) });
+    expect(hit.runs[0]!.evidence.map((e) => e.key)).toEqual([imageAttachmentKey(targetImage.file)]);
+    expect(hit.imageEvidenceParticipatingQueries).toBe(1);
+    expect(imageEvidenceRecallAtK('B', hit.runs, 10)).toBe(1);
+
+    const miss = await runArmEval(fixture, { arm: 'B', userId: USER, pageIdByFile: seeded.pageIdByFile, topK: 10, _search: decorated('some-other-image.png'), minEvidenceParticipation: 0 });
+    expect(imageEvidenceRecallAtK('B', miss.runs, 10)).toBe(0);
+    expect(vl.requests).toHaveLength(0);
+  }, 120_000);
+
+  it('arm B REFUSES a run in which no derived evidence ever surfaced, instead of publishing text retrieval as the candidate', async () => {
+    const seeded = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });
+    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+    const boom = runArmEval(fixture, { arm: 'B', userId: USER, pageIdByFile: seeded.pageIdByFile, topK: 10 });
+    await expect(boom).rejects.toBeInstanceOf(ImageLegSilentError);
+    await expect(boom).rejects.toThrow(/backfill/);
+  }, 120_000);
+
+  it('arm C REFUSES a database whose image index is filled — the ablation is not an ablation', async () => {
+    await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
+    const { pageIdByFile } = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES });
+    expect(await imageRows()).toBeGreaterThan(0);
+    vl.clearRequests();
+    const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
+    // The runner forces the leg OFF on C, so the filled index yields no leg
+    // hits and no evidence — the entrypoint's row-count assertion is what
+    // catches this state. What the runner itself guarantees is that C does
+    // no VL work at all.
+    const result = await runArmEval(fixture, { arm: 'C', userId: USER, pageIdByFile, topK: 10 });
+    expect(result.runs[0]!.evidence).toEqual([]);
+    expect(vl.textRequests()).toHaveLength(0);
+    // …and a C row that somehow carried evidence is refused on that query.
+    const leaking: typeof hybridSearch = async (...args) => (await hybridSearch(...args)).map((r): SearchResult => ({ ...r, derived: { attachmentKey: 'x.png' } } as SearchResult));
+    await expect(runArmEval(fixture, { arm: 'C', userId: USER, pageIdByFile, topK: 10, _search: leaking })).rejects.toThrow(/arm C carrying image evidence/);
   }, 120_000);
 });

@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A/B/C quality gate — margins, sample size, single-judge protocol and a
   quality-only decision rule, all confirmed by the owner — that decides the
   cutover; the shipped image leg is unchanged until that gate passes.
+- The retrieval eval can run ADR-027's pre-registered A/B/C comparison
+  (#1614 PR2): `run-retrieval-eval.ts --images --arm A|B|C` measures one
+  arm of the image corpus with the provenance the ADR requires (revision,
+  corpus and query-set hashes, embedder, FTS, rerank and answer-model
+  assignments, hardware) and refuses a mismatched pair;
+  `run-arm-answers.ts` asks every fixture question through the real ask
+  route with `rag_answer_max_images = 0` and writes arm-blinded answer
+  artifacts; `judge-arms.ts` merges the arms into one blinded judgment
+  sheet, refuses to un-blind until every item has exactly one judgment by
+  one judge, and scores the paired endpoints with McNemar exact, a
+  page-cluster bootstrap and the owner's margins into a single-judge
+  verdict that decides nothing below the pre-registered sample. No arm has
+  been measured yet — the baselines and the image-dependent labelling pass
+  are #1619's and the labeller's; the ADR records that the answer model
+  runs at the provider's default temperature.
 
 ### Changed
 

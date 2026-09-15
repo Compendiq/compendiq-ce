@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS } from './cli-flags.js';
+import {
+  ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS,
+  JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS,
+} from './cli-flags.js';
 
 /**
  * #1114 review r1 — the eval entrypoints are the one place no other test can
@@ -56,11 +59,11 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
     // the value parseFtsLanguageArg returned. Any `ftsLanguage: <expr>`
     // outside a type declaration is a label decoupled from the run.
     //
-    // Counted, not merely present (#1115 P5b): there are two report builders
-    // now — the text gate's and the image axis's — and a second one that
-    // published a constant while the first kept the shorthand would pass a
-    // bare `toMatch`.
-    expect(raw.match(/\n\s*ftsLanguage,\n/g)).toHaveLength(2);
+    // Counted, not merely present (#1115 P5b): there are three report builders
+    // now — the text gate's, the image axis's and the arm axis's (#1614 PR2) —
+    // and one that published a constant while the others kept the shorthand
+    // would pass a bare `toMatch`.
+    expect(raw.match(/\n\s*ftsLanguage,\n/g)).toHaveLength(3);
     const annotated = [...raw.matchAll(/ftsLanguage:\s*([^,;\n]+)/g)].map((m) => m[1]!.trim());
     expect([...new Set(annotated)]).toEqual(['string']);
   });
@@ -209,7 +212,7 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     // file the runbook tells operators to keep and pass as --baseline. The two
     // are not interchangeable: `assertComparableAxis` refuses the pair outright,
     // so there is no reading under which one path serves both.
-    expect(flat).toContain("arg('out') ?? (imageAxis ? 'retrieval-eval-images.json' : 'retrieval-eval.json')");
+    expect(flat).toContain("arg('out') ?? (arm ? `retrieval-eval-arm-${arm}.json` : imageAxis ? 'retrieval-eval-images.json' : 'retrieval-eval.json')");
     // …and the flag reference says so, or the default is a fact only the source
     // carries — the contract EVAL_USAGE is held to for every other flag.
     expect(EVAL_USAGE).toContain('retrieval-eval-images.json');
@@ -271,10 +274,11 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     // aimed at the wrong corpus could no longer tell the two apart, and the
     // refusal switched off for the state it exists to catch.
     expect(raw.indexOf('await recordCorpusLanguage(IMAGE_AXIS_CORPUS_CLAIM)', seed)).toBeGreaterThan(seed);
-    // One call each, so the image axis cannot quietly go back to writing the
-    // language while the constant sits unused beside it.
+    // One call each on the paired axis and the arm axis (#1614 PR2 seeds the
+    // same corpus once more, under the same claim), so neither can quietly go
+    // back to writing the language while the constant sits unused beside it.
     expect(raw.match(/recordCorpusLanguage\(language\)/g)).toHaveLength(1);
-    expect(raw.match(/recordCorpusLanguage\(IMAGE_AXIS_CORPUS_CLAIM\)/g)).toHaveLength(1);
+    expect(raw.match(/recordCorpusLanguage\(IMAGE_AXIS_CORPUS_CLAIM\)/g)).toHaveLength(2);
     expect(raw.indexOf('await recordCorpusLanguage(language)')).toBeLessThan(seed);
   });
 
@@ -331,6 +335,146 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
 
   it('prints the paired verdict table rather than the text gate\'s redundancy line', () => {
     expect(flat).toContain('formatImageAxisVerdict(report.images)');
+  });
+});
+
+/**
+ * #1614 PR2 — the arm axis's wiring in the same script, and the two new
+ * entrypoints. Same argument as both blocks above: `main()` runs at import,
+ * so the seams between tested modules are pinned on the source.
+ */
+describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
+  const raw = source('run-retrieval-eval.ts');
+  const flat = collapsed('run-retrieval-eval.ts');
+
+  it('parses the arm and reads its environment beside the other flags, before the database is touched', () => {
+    expect(flat).toContain('const arm = parseArmFlag(process.argv)');
+    expect(flat).toContain('const armImageEnv = arm ? readArmImageEnv(arm) : null');
+    const parse = raw.indexOf('parseArmFlag(process.argv)');
+    const env = raw.indexOf('readArmImageEnv(arm)');
+    const db = raw.indexOf('assertDisposableDatabase(');
+    expect(parse).toBeGreaterThan(-1);
+    expect(env).toBeGreaterThan(parse);
+    expect(db).toBeGreaterThan(env);
+    // The paired axis still reads its own environment; the arm axis never
+    // falls back to it (B and C REFUSE those variables).
+    expect(flat).toContain('const imageEnv = arm ? armImageEnv : imageAxis ? readImageAxisEnv() : null');
+  });
+
+  it('seeds the image index on A only, removes the leg assignment on B and C, and asserts the empty index', () => {
+    expect(flat).toContain("imageIndex: arm === 'A'");
+    expect(flat).toContain("DELETE FROM llm_usecase_assignments WHERE usecase = 'image_embedding'");
+    expect(flat).toContain('SELECT COUNT(*)::int AS n FROM page_image_embeddings');
+    // B waits for the product's backfill AFTER the seed and BEFORE the queries.
+    const seed = raw.lastIndexOf('await seedImageCorpus(');
+    const backfill = raw.indexOf('await awaitArmBBackfill(');
+    const run = raw.indexOf('await runArmEval(');
+    expect(backfill).toBeGreaterThan(seed);
+    expect(run).toBeGreaterThan(backfill);
+    // …and refuses at once on a revision without the candidate's table.
+    expect(flat).toContain("SELECT to_regclass('public.page_image_analyses') AS exists");
+  });
+
+  it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
+    expect(flat).toContain('axis: ARM_AXIS');
+    expect(flat).toContain('revisionSha: sha');
+    expect(flat).toContain('querySetSha: querySetSha()');
+    expect(flat).toContain('rerank: held.rerank');
+    expect(flat).toContain('answerModel: held.answerModel');
+    expect(flat).toContain('imageEvidenceRecallAt5: imageEvidenceRecallAtK(arm, run.runs, 5)');
+    expect(flat).toContain('imageNegativeLeakAt1: imageNegativeLeakAt1(run.runs)');
+    expect(flat).toContain("const hardware = process.env.EVAL_HARDWARE?.trim() || null");
+    expect(code('run-retrieval-eval.ts')).not.toMatch(/imageEvidenceRecallAt5:\s*(0|null)\b/);
+  });
+
+  it('refuses a cross-axis baseline before parsing it as an arm report, then pairs through the shared comparison', () => {
+    const axisGuard = raw.indexOf('assertComparableAxis(json.axis, ARM_AXIS)');
+    const parse = raw.indexOf('parseArmRunReport(json, armBaselinePath)');
+    expect(axisGuard).toBeGreaterThan(-1);
+    expect(parse).toBeGreaterThan(axisGuard);
+    expect(flat).toContain('compareArmRetrieval(baseline, candidate, { seed: 1614 })');
+    // No verdict is decided here: the gate needs the judged endpoints.
+    expect(code('run-retrieval-eval.ts')).not.toMatch(/decideGate\(/);
+  });
+});
+
+describe('run-arm-answers.ts wiring (#1614 PR2)', () => {
+  const raw = source('run-arm-answers.ts');
+  const flat = collapsed('run-arm-answers.ts');
+  const body = code('run-arm-answers.ts');
+
+  it('refuses an unknown flag and knows every flag it reads', () => {
+    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_USAGE, ARM_ANSWERS_VALUELESS_FLAGS)');
+    const inSource = new Set([
+      ...[...body.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!),
+      ...[...body.matchAll(/\barg\('([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!),
+    ]);
+    expect(inSource.size).toBeGreaterThanOrEqual(3);
+    expect([...inSource].filter((f) => !(ARM_ANSWERS_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    expect([...ARM_ANSWERS_VALUELESS_FLAGS].every((f) => (ARM_ANSWERS_KNOWN_FLAGS as readonly string[]).includes(f))).toBe(true);
+  });
+
+  it('guards the database, then writes rag_answer_max_images = 0 and drops its cache before the app is built', () => {
+    const guard = raw.indexOf('assertDisposableDatabase(');
+    const migrate = raw.indexOf('await runMigrations()');
+    const write = raw.indexOf("VALUES ('rag_answer_max_images', '0', NOW())");
+    const invalidate = raw.indexOf('invalidateRagAnswerMaxImagesCache()');
+    const app = raw.indexOf('await buildApp()');
+    expect(guard).toBeGreaterThan(-1);
+    expect(migrate).toBeGreaterThan(guard);
+    expect(write).toBeGreaterThan(migrate);
+    expect(invalidate).toBeGreaterThan(write);
+    expect(app).toBeGreaterThan(invalidate);
+    // …and refuses to ask a single question if the read-back is not 0.
+    expect(flat).toContain('if (held.retrieval.rag_answer_max_images !== 0)');
+  });
+
+  it('asks through the real route with a signed token and records the provenance from what was written', () => {
+    expect(flat).toContain('generateArmAnswers(askThroughRoute(app, token), fixture, {');
+    expect(flat).toContain("generateAccessToken({ sub: EVAL_USER_ID, username: 'eval-runner', role: 'admin' })");
+    expect(flat).toContain('answersSha256: written.answersSha256');
+    expect(flat).toContain('mappingSha256: written.mappingSha256');
+    expect(flat).toContain("temperature: 'provider default'");
+    expect(flat).toContain('deepSearch: false');
+    // The chat model is never mocked here: no vi, no stub, no fake ask.
+    expect(body).not.toMatch(/\b(mock|stub|fake)\b/i);
+  });
+});
+
+describe('judge-arms.ts wiring (#1614 PR2)', () => {
+  const raw = source('judge-arms.ts');
+  const flat = collapsed('judge-arms.ts');
+  const body = code('judge-arms.ts');
+
+  it('refuses an unknown flag and knows every flag and every switch it reads', () => {
+    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), JUDGE_KNOWN_FLAGS, JUDGE_USAGE, JUDGE_VALUELESS_FLAGS)');
+    const inSource = new Set([
+      ...[...body.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!),
+      ...[...body.matchAll(/\b(?:arg|list)\('([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!),
+    ]);
+    expect(inSource.size).toBeGreaterThanOrEqual(8);
+    expect([...inSource].filter((f) => !(JUDGE_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    const switches = [...body.matchAll(/process\.argv\.includes\(`--\$\{m\}`\)|process\.argv\.includes\('--([a-z][a-z0-9-]*)'\)/g)]
+      .map((m) => m[1]).filter((f): f is string => f !== undefined);
+    expect([...new Set(switches)].filter((f) => !(JUDGE_VALUELESS_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    expect([...JUDGE_VALUELESS_FLAGS].every((f) => (JUDGE_KNOWN_FLAGS as readonly string[]).includes(f))).toBe(true);
+  });
+
+  it('un-blinds only through buildArmVerdict, which refuses an incomplete sheet, and never joins the mapping itself', () => {
+    expect(flat).toContain('buildArmVerdict({');
+    expect(body).not.toMatch(/\bunblind\(/);
+    expect(body).not.toMatch(/readMapping\(/);
+    // The verdict is written before it is printed, and anything but a pass
+    // sets the exit code — the gate's answer is the process's answer.
+    const write = raw.indexOf('writeFileSync(out,');
+    const print = raw.indexOf('formatArmVerdict(report)');
+    expect(write).toBeGreaterThan(-1);
+    expect(print).toBeGreaterThan(write);
+    expect(flat).toContain("if (report.decision.verdict !== 'pass') process.exitCode = 1");
+  });
+
+  it('touches no database', () => {
+    expect(body).not.toMatch(/postgres\.js|runMigrations|closePool/);
   });
 });
 
