@@ -159,15 +159,15 @@ erDiagram
         text attachment_key "URL-decoded filename inside that store"
         text content_hash "sha256 of the analyzed bytes; the reference revision (ADR-027 D6)"
         text format "sniffed: png | jpeg | webp | gif"
-        text status "pending | analyzed | failed | skipped"
+        text status "pending | analyzed | failed | failed_terminal | skipped"
         text skip_reason "missing | unsupported | oversized | too_large | external | capped"
-        uuid provider_id FK "inference identity (ADR-027 D5) with model, base_url, prompt_version, schema_version"
-        text identity_hash "sha256 over the five identity fields; row is valid only while it equals the retained identity"
-        text context_hash "sha256 of the bounded page context supplied to the prompt"
-        jsonb payload "ImageAnalysisPayloadV1, validated before write"
-        text serialized_text "deterministic serialization; the derived chunk text"
+        uuid provider_id FK "inference identity (ADR-027 D5) with model and base_url; recorded per attempt"
+        text identity_hash "sha256 over the three identity fields; valid only while it equals the retained identity"
+        int prompt_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_PROMPT_VERSION"
+        int schema_version "code constant at the attempt; valid only while it equals IMAGE_ANALYSIS_SCHEMA_VERSION"
+        jsonb payload "ImageAnalysisPayloadV1, validated before write; kept across a sweep re-pend, NULLed on new bytes"
         int analysis_version "+1 per successful payload write"
-        int attempts "failed rows back off on next_attempt_at"
+        int attempts "failures since the last success; deterministic classes go terminal at 5"
         text error "failure class; admin-only"
     }
 
@@ -730,13 +730,16 @@ together, which matters most for #1114's query-side prefix.
   each referenced raster once at ingestion; the result is **derived data** in
   `page_image_analyses` (migration **115**, #1615): one row per
   `(page_id, source, attachment_key)`, keyed for reuse on
-  `(content_hash, identity_hash, context_hash)` where the identity is
-  `(provider_id, model, base_url, prompt_version, schema_version)` and the
-  closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5).
+  `(content_hash, identity_hash, prompt_version, schema_version)` where the
+  identity is `(provider_id, model, base_url)`, the two versions are code
+  constants compared on every read, page context (title, caption, heading)
+  never reaches the model — it is composed into the chunk at embed time — and
+  the closed list of analysis-affecting `admin_settings` is empty (ADR-027 D5).
   `embedPage` — still the only writer of `page_embeddings` — composes the
   page's authored chunks **and** one chunk per valid analysis (status
-  `analyzed` and `identity_hash` equal to the retained
-  `admin_settings.image_analysis_identity`), appended after every authored
+  `analyzed`, `identity_hash` equal to the retained
+  `admin_settings.image_analysis_identity`, versions equal to the running
+  code's — ADR-027 D5's validity predicate), appended after every authored
   index with `metadata.source = 'image_analysis'` plus the attachment
   provenance, embedded by the ordinary text embedder, dual-written under a
   #1116 shadow, and **excluded from both page averages** by predicate
@@ -749,7 +752,13 @@ together, which matters most for #1114's query-side prefix.
   like migration 049's, rebuilt in the SAME transaction as `pages.tsv` on a
   language change, and combined with `pages.tsv` at query time so a lexical
   page hit resolves to the matching chunk (ADR-027 D10). No runtime DDL, no
-  second vector width, no third RRF leg. Readiness is derived from the rows
+  second vector width, no third RRF leg. The worker's batch is sweep →
+  reconcile → analyze, and only the analyze step needs the assignment: an
+  unassigned instance still re-pends replaced images, drops rows for removed
+  references and takes rows that fail the validity predicate (identity or
+  version changed) out of composition, so a pause never composes an obsolete
+  description (ADR-027 D7/D13). Deterministic failures stop at five attempts
+  (`failed_terminal`). Readiness is derived from the rows
   (`none | pending | partial | complete | failed | skipped`) beside
   `NOT embedding_dirty` for "analysis complete, text embedding pending".
   Design of record: ADR-027 in `docs/ARCHITECTURE-DECISIONS.md`.

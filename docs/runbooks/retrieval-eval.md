@@ -1165,13 +1165,20 @@ block the cutover and the "improved RAG" claim.
 ### Sample size
 
 McNemar (Connor 1987): $N = (z_{0.975}\sqrt{\psi} + z_{0.80}\sqrt{\psi-\delta^2})^2/\delta^2$
-times a design effect $1+(m-1)\rho$ for m = 5 labels per page. Pre-registered
-assumptions ψ = 0.30 (discordant share), δ = 0.15, ρ = 0.10 give 103 × 1.4 =
-**144**; the pessimistic ψ = 0.25, δ = 0.12 gives **188**. A 30-pair pilot
-checks ψ before the full run; a pilot ψ below 0.20 stops the run as
-inconclusive by design. The 1-point non-inferiority margin the epic proposed
-is underpowered on 394 pooled control queries (≈ 0.40 at δ = 0), which is why
-ADR-027 proposes 2 points there and 5 on image-evidence R@5.
+times a design effect $1+(m-1)\rho$ for m = 5 labels per page (O2's cap for
+the image-dependent set). Pre-registered assumptions ψ = 0.30 (discordant
+share), δ = 0.15, ρ = 0.10 give 103 × 1.4 = **144** (power 0.80 by
+construction); the pessimistic ψ = 0.25, δ = 0.12 gives **188**. With the
+design effect applied throughout, N = 190 has power ≈ 0.90 under the first
+pair and ≈ 0.80 under the second; the +5 pp point-estimate condition adds
+nothing because the test's rejection threshold is already above 0.05. A
+30-pair pilot checks ψ before the full run; a pilot ψ below 0.20 stops the
+run as inconclusive by design. The 1-point non-inferiority margin the epic
+proposed is underpowered on 394 pooled control queries (≈ 0.40 at δ = 0;
+those suites average 1.22 labels per page, so clustering barely moves it)
+and on image-evidence R@5 (≈ 0.09 with the primary set's design effect),
+which is why ADR-027 proposes 2 points there (≈ 0.87) and 5 on
+image-evidence R@5 (≈ 0.44 — a collapse guard, not a fine comparison).
 
 ### Proposed numbers — pending owner confirmation
 
@@ -1189,10 +1196,11 @@ confirms**, after which this list gains the date:
   (fallback 4B); hardware **1× RTX 6000 96 GB Blackwell**; answer model = the
   production `chat` assignment at freeze time (proposal Qwen3-8B), text-only
   via `rag_answer_max_images = 0`, production context budgets.
-- Cost budget: cold ≥ **0.5 img/s**, cached ≥ 50 img/s, ≤ **3,500** vision
-  tokens per image, corpus backfill ≤ 10 min (≤ 6 h per 10k images), failure
-  rate ≤ 2%, ≤ 3 `page_embeddings` rows per image, B query p95 ≤ 1.10 × C
-  and ≤ A.
+- Cost budget: cold ≥ **0.5 img/s**, cached ≥ 50 img/s, mean ≤ **3,500**
+  tokens per image (prompt + completion; the per-request ceiling is ≈ 1.3k
+  visual + prompt + 4,096 output), corpus backfill ≤ 10 min and ≤ 6 h per
+  10k images (each from the 0.5 img/s floor with slack), failure rate ≤ 2%,
+  ≤ 3 `page_embeddings` rows per image, B query p95 ≤ 1.10 × C and ≤ A.
 - Judges: two named humans plus a named adjudicator, recorded here before
   the run; all arms double-judged (C may be single-judged if the burden is
   refused).
