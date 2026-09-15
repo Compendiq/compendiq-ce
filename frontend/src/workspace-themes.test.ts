@@ -250,10 +250,10 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  // Paper is a near-neutral warm ramp: every surface, fill, border and ink under
-  // it sits on the warm side of the hue circle. A cool grey slipping back in is
-  // the regression this guards — it is what the palette was before, and one
-  // stray #f7f7f8 reads as a blue patch against the rest.
+  // Paper is a near-neutral cool slate ramp (Nordic Slate, 2026-09-15): every
+  // surface, fill, border and ink under it sits on the cool side of the hue
+  // circle (B > R), replacing the earlier warm ramp (R > B) to eliminate the
+  // warm/ivory cast.
   //
   // One token is NOT under the ramp: the owner pinned --app-chassis (frame, left
   // destination rail, top app header) three times on 2026-08-30, landing on
@@ -261,9 +261,9 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // hairlines were removed — at #fafaf9 the unlined white card measured 1.044:1
   // against the frame, which is not an edge; then #ebeae8; then #e8e8e8 on
   // 2026-09-07, asked for as "more gray" (1.23:1 on Pane); #f0efed on
-  // 2026-09-11, asked for as a lighter shell frame (1.149:1 on Pane); and
-  // #ededed on 2026-09-12 (1.171:1 on Pane — still a step you can see, without
-  // reading as a border around the work). Asserting a hue rule on it would
+  // 2026-09-11, asked for as a lighter shell frame (1.149:1 on Pane); #ededed
+  // on 2026-09-12 (1.171:1 on Pane); and on 2026-09-15 to #e8ecf0 (Nordic Slate
+  // Edition 2: Balanced Console, 1.171:1 on Pane). Asserting a hue rule on it would
   // assert the ramp over the owner's own value, so it gets the stricter check
   // instead — its exact value — which catches drift in EITHER direction rather
   // than trading one unguarded token for another. The card edge is measured in
@@ -271,7 +271,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
   // --color-accent was pinned alongside it at #fdfdfd and is back under the ramp
   // now that the owner asked for a darker grey and a fitted palette.
   const OWNER_PINNED = {
-    '--app-chassis': '#ededed',
+    '--app-chassis': '#e8ecf0',
   } as const;
 
   it('keeps the owner-pinned Paper neutral at its exact value', () => {
@@ -296,7 +296,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
     );
   });
 
-  it('keeps every other Paper neutral on the warm side of the hue circle', () => {
+  it('keeps every other Paper neutral on the cool slate side of the hue circle', () => {
     const neutrals = [
       '--color-background',
       '--color-foreground',
@@ -323,7 +323,7 @@ describe('Surface hierarchy — reading comfort in dark, warm paper in light', (
         number,
         number,
       ];
-      expect(r, `${name} (${hex}) must be warm: red channel above blue`).toBeGreaterThan(b);
+      expect(b, `${name} (${hex}) must be cool slate: blue channel above red`).toBeGreaterThan(r);
     }
   });
 

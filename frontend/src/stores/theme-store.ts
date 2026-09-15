@@ -120,9 +120,9 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'paper',
     label: 'Paper',
-    description: 'Warm paper surfaces with one Steel accent',
+    description: 'Cool Nordic Slate surfaces with one Steel accent',
     category: 'light',
-    preview: { bg: '#f8f8f7', card: '#ffffff', primary: '#3f627c', accent: '#191918' },
+    preview: { bg: '#f4f6f8', card: '#ffffff', primary: '#31638a', accent: '#111827' },
   },
 ];
 
