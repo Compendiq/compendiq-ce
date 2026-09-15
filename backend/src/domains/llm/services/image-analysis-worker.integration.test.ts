@@ -5,7 +5,7 @@ import os from 'os';
 import { createHash } from 'crypto';
 import { createClient, type RedisClientType } from 'redis';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from '../../../test-image-analysis-store.js';
+import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { invalidateRagImageIntakeCache } from '../../../core/services/admin-settings-service.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
@@ -150,7 +150,10 @@ async function seedPending(names: string[]): Promise<{ pageId: number; ids: numb
 
 interface Row {
   id: number;
+  attachment_key: string;
+  content_hash: string;
   status: string;
+  skip_reason: string | null;
   attempts: number;
   next_attempt_at: Date | null;
   error: string | null;
@@ -165,8 +168,8 @@ interface Row {
 }
 async function rowsFor(pageId: number): Promise<Row[]> {
   const r = await query<Row>(
-    `SELECT id, status, attempts, next_attempt_at, error, payload, identity_hash, prompt_version, schema_version,
-            analysis_version, provider_id, model, base_url
+    `SELECT id, attachment_key, content_hash, status, skip_reason, attempts, next_attempt_at, error, payload,
+            identity_hash, prompt_version, schema_version, analysis_version, provider_id, model, base_url
        FROM page_image_analyses WHERE page_id = $1 ORDER BY attachment_key`,
     [pageId],
   );
@@ -228,6 +231,31 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(c.calls).toHaveLength(0);
     expect((await rowsFor(pageId)).map((r) => r.status)).toEqual(['pending', 'skipped']);
     expect((await pageState(pageId)).analysisDirty).toBe(false);
+  });
+
+  it('the first batch after 115 lands drains 116\'s backlog seed into pending rows without re-embedding one page (D6.3)', async () => {
+    // An existing, fully embedded corpus: every image page was flagged by
+    // migration 116's backlog seed and is NOT text-dirty. Store just landed,
+    // nothing assigned yet.
+    await retain(null);
+    const pages: number[] = [];
+    for (const n of ['a', 'b', 'c']) {
+      const pageId = await seedPage(`<p>prose</p><img src="/api/attachments/1/${n}.png">`);
+      await writeAttachment(pageId, `${n}.png`, png(4, 4));
+      await query(`UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'embedded' WHERE id = $1`, [pageId]);
+      pages.push(pageId);
+    }
+
+    const result = await runImageAnalysisBatch({ deps: deps({}, null) });
+
+    expect(result).toMatchObject({ reconciledPages: 3, reason: 'unassigned', processed: 0 });
+    for (const pageId of pages) {
+      expect((await rowsFor(pageId)).map((r) => r.status)).toEqual(['pending']);
+      // No valid derived set moved: no revision bump, no text re-embed queued.
+      expect(await pageState(pageId)).toEqual({ revision: 0, embeddingDirty: false, analysisDirty: false });
+    }
+    const dirty = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM pages WHERE embedding_dirty`);
+    expect(dirty.rows[0]!.n).toBe(0);
   });
 
   it('shuts the gate on a non-true verdict and on identity drift, with no call either way', async () => {
@@ -523,6 +551,69 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect((await pageState(pageId)).analysisDirty).toBe(true);
   });
 
+  it('rows whose bytes are unreadable at call time leave the work window as skipped (missing) and cannot starve a later pending row', async () => {
+    const retained = identityFor('http://vision/v1');
+    await retain(retained);
+    // Two rows whose attachments were cleaned after the reconcile (their
+    // references stay in the body), then one readable row. With a window of
+    // two, the unreadable pair fills every batch unless it is taken out.
+    const { pageId, ids } = await seedPending(['gone-1.png', 'gone-2.png', 'ok.png']);
+    await fs.rm(path.join(attachmentsDir, String(pageId), 'gone-1.png'));
+    await fs.rm(path.join(attachmentsDir, String(pageId), 'gone-2.png'));
+    await query(`UPDATE pages SET image_analysis_revision = 0, embedding_dirty = FALSE WHERE id = $1`, [pageId]);
+    const c = client();
+
+    const first = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+
+    expect(first).toMatchObject({ processed: 0, skipped: 2, failed: 0 });
+    expect(c.calls).toHaveLength(0);
+    let rows = await rowsFor(pageId);
+    expect(rows.slice(0, 2).map((r) => [r.status, r.skip_reason, r.content_hash, r.attempts, r.next_attempt_at, r.error])).toEqual([
+      ['skipped', 'missing', '', 0, null, null],
+      ['skipped', 'missing', '', 0, null, null],
+    ]);
+    // Nothing composed before or after: no bump, and the page is not
+    // re-queued for a reconcile that would find the same absent files.
+    expect(await pageState(pageId)).toEqual({ revision: 0, embeddingDirty: false, analysisDirty: false });
+
+    // The next batch reaches the readable row.
+    const second = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    expect(second).toMatchObject({ processed: 1, skipped: 0 });
+    expect(c.calls).toHaveLength(1);
+    expect((await rowsFor(pageId)).map((r) => r.status)).toEqual(['skipped', 'skipped', 'analyzed']);
+
+    // Recovery: the bytes come back and their writer raises the page flag —
+    // the reconcile re-pends the skipped row and the batch analyzes it.
+    await writeAttachment(pageId, 'gone-1.png', png(4, 4));
+    await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
+    const third = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage, getBatchSize: async () => 2 }, retained) });
+    expect(third).toMatchObject({ reconciledPages: 1, processed: 1 });
+    rows = await rowsFor(pageId);
+    expect(rows.map((r) => [r.attachment_key, r.status, r.skip_reason])).toEqual([
+      ['gone-1.png', 'analyzed', null],
+      ['gone-2.png', 'skipped', 'missing'],
+      ['ok.png', 'analyzed', null],
+    ]);
+    expect(ids).toHaveLength(3);
+  });
+
+  it('bytes that are no longer a raster at call time are skipped with the intake\'s reason under the hash predicate', async () => {
+    const retained = identityFor('http://vision/v1');
+    await retain(retained);
+    const { pageId } = await seedPending(['diagram.png']);
+    // draw.io XML behind a .png name replaced the raster after the reconcile.
+    await writeAttachment(pageId, 'diagram.png', Buffer.from('<mxfile host="Confluence"><diagram/></mxfile>', 'utf8'));
+    const c = client();
+
+    const result = await runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+
+    expect(result).toMatchObject({ processed: 0, skipped: 1 });
+    expect(c.calls).toHaveLength(0);
+    const rows = await rowsFor(pageId);
+    expect(rows[0]).toMatchObject({ status: 'skipped', skip_reason: 'unsupported', attempts: 0, next_attempt_at: null });
+    expect(rows[0]!.content_hash).toHaveLength(64);
+  });
+
   it.skipIf(!redis)('lease loss: the batch stops before its next write, committed rows stand, the result says so', async () => {
     const retained = identityFor('http://vision/v1');
     await retain(retained);
@@ -552,7 +643,9 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(rows.map((r) => r.status)).toEqual(['analyzed', 'pending', 'pending']);
     // The other holder's lock survives the stand-down: release is ownership-checked.
     expect(await redis!.get(`worker:lock:${IMAGE_ANALYSIS_WORKER_LOCK}`)).toBe('someone-else');
-    expect(await readImageAnalysisLastRun()).toMatchObject({ reason: 'lease_lost', processed: 1 });
+    // D6.4: the loser writes nothing after the loss — not even the last-run
+    // line; the partial counts are the failed job's message.
+    expect(await readImageAnalysisLastRun()).toBeNull();
   });
 
   it.skipIf(!redis)('a second trigger while a batch holds the lease does nothing', async () => {

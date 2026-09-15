@@ -4719,11 +4719,16 @@ leaves the terminal state here), and the old text is not eligible while the
 new bytes wait *(epic)*. The reconcile compares
 bytes and policy only, never page text: a caption, heading or title edit
 changes no row, because those lines are composed from the current page at
-embed time (D8/D9). Any row change bumps `image_analysis_revision` and
-raises `embedding_dirty` in one statement, so `embedPage` drops stale
-derived chunks on its next pass even if no analysis has yet succeeded — and
-the reconcile runs whether or not a vision model is assigned (D13), so a
-pause never composes a description of bytes that are gone.
+embed time (D8/D9). A row change that moves the page's **valid** derived set
+(D6.3 — an `analyzed` row deleted, re-pended under new bytes, or moved to
+`skipped`) bumps `image_analysis_revision` and raises `embedding_dirty` in
+one statement, so `embedPage` drops stale derived chunks on its next pass
+even if no analysis has yet succeeded; a new `pending` or `skipped` row, or
+a `pending`/`failed` row re-pended, composes nothing before or after and
+bumps nothing (the first batch after 115 lands drains 116's backlog seed
+into `pending` rows without a corpus-wide re-embed) — and the reconcile runs
+whether or not a vision model is assigned (D13), so a pause never composes a
+description of bytes that are gone.
 
 Readiness (#1616 computes it, #1618 renders it): per page, from the rows'
 `status`, the retained identity and the version constants (D5's predicate
@@ -4896,6 +4901,7 @@ Enumerated so #1616 and #1619 can exercise each:
 |---|---|
 | Page body edited mid-analysis | Writer raises `image_analysis_dirty` (and `embedding_dirty`) after the claim; the in-flight row commit still passes (bytes unchanged) or fails the `content_hash` predicate (bytes replaced) — the next reconcile settles the rows. A title, caption or heading edit changes no row: the recompose rebuilds the context lines from the current page (D9.9). |
 | Attachment bytes replaced mid-analysis | Reconcile rewrote `content_hash` and nulled the payload; the worker's commit updates 0 rows and is discarded. |
+| Work row's bytes unreadable at call time (attachment cleaned while its reference stayed in `body_html`, cache evicted) | The analyze step writes the row `skipped (missing)` — or the intake's other reason when the bytes read but are no longer a raster — under the `content_hash` commit predicate: out of the work window, no attempt charged, no call spent, no page bump (a `pending`/`failed` row composes nothing). The reconcile keeps such a row (an unreadable file is not a deletion) and, when a writer raises the page flag with the bytes back, re-pends it as it does any `skipped` row whose bytes read. Bytes that read but hash differently from the row re-raise the page flag instead, and the reconcile re-pends under the new hash. Without this, ≥ `image_analysis_batch_size` such rows filled every batch's window forever (#1626 review r1). |
 | Assignment changed mid-batch | The retained identity and the resolved pair are read once per batch (D13); rows committed in that batch carry the identity read at its start, fail D5's validity predicate under the new retained one, and the next batch's sweep re-pends them (payloads kept) and drops their chunks; the worker re-analyzes them under the new identity. One extra pass bounded by the batch size; nothing stale is composed. |
 | Provider `base_url` edited (no assignment PUT) | The resolved identity no longer equals the retained one: the sweep and reconcile run, the analyze step is skipped with `reason: 'identity_drift'`, no row is written, and every valid row stays composed — a pause, not a purge. The card names the drift; the operator's **Re-check** (or a re-save of the assignment) re-probes the moved endpoint and, on `true`, adopts the new identity through D7 with the scope disclosed by the preview route first. Reverting the URL resumes without a call. There is no batch on which a row is written under a hash the next sweep disagrees with (D13). |
 | Prompt/schema version bumped by a deploy, or the identity replaced | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. In the same step every `failed` and `failed_terminal` row recorded under the old identity or versions becomes `failed, attempts = 0, next_attempt_at = NOW()`: a fresh budget, due at once, terminal or not. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |

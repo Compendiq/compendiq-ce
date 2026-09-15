@@ -1142,6 +1142,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
         // transaction, or a language switch leaves derived (and authored) chunk
         // text indexed under the previous configuration with the panel
         // reporting the new one. Every row, like `pages.tsv` above.
+        //
+        // This is now the widest write the app takes (`page_embeddings` ≫
+        // `pages`), and its row locks hold every concurrent `embedPage`
+        // DELETE/INSERT until COMMIT — deliberately: splitting the chunk
+        // rebuild out (batched, after the commit) would publish a language the
+        // chunk index does not yet have, which is the mixed state the one
+        // transaction exists to prevent. The PUT is slower by the chunk
+        // rewrite; the settings copy and the runbook (§5b) say so.
         await client.query(
           `UPDATE page_embeddings SET chunk_tsv = to_tsvector($1::regconfig, coalesce(chunk_text, ''))`,
           [body.ftsLanguage],

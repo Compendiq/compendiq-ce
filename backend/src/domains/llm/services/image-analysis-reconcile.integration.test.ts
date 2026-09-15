@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { createHash } from 'crypto';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from '../../../test-image-analysis-store.js';
+import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { invalidateRagImageIntakeCache } from '../../../core/services/admin-settings-service.js';
 import { ImageAnalysisLeaseLostError, reconcileDirtyPages, reconcilePageImageAnalyses } from './image-analysis-reconcile.js';
@@ -134,33 +134,37 @@ describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)
     }
   });
 
-  it('inserts pending rows for new references, re-pends a changed hash with a fresh budget, deletes gone references', async () => {
+  it('inserts pending rows for new references without bumping, re-pends a changed hash with a fresh budget, deletes gone references', async () => {
     const pageId = await seedPage({ bodyHtml: '<img src="/api/attachments/1/a.png"><img src="/api/attachments/1/b.png">' });
     await writeAttachment(pageId, 'a.png', png(4, 4));
     await writeAttachment(pageId, 'b.png', png(5, 5));
 
     const first = await reconcilePageImageAnalyses(pageId);
-    expect(first).toMatchObject({ claimed: true, pended: 2, removed: 0, unchanged: 0, changed: true });
+    expect(first).toMatchObject({ claimed: true, pended: 2, removed: 0, unchanged: 0, changed: true, bumped: false });
     const rows = await rowsFor(pageId);
     expect(rows.map((r) => [r.attachment_key, r.status, r.content_hash, r.format, r.width])).toEqual([
       ['a.png', 'pending', sha(png(4, 4)), 'png', 4],
       ['b.png', 'pending', sha(png(5, 5)), 'png', 5],
     ]);
+    // D6.3: two pending rows compose nothing — the valid derived set did not
+    // change, so the page is neither bumped nor re-embedded.
     const afterFirst = await pageState(pageId);
-    expect(afterFirst).toEqual({ dirty: false, revision: 1, embeddingDirty: true });
+    expect(afterFirst).toEqual({ dirty: false, revision: 0, embeddingDirty: false });
 
     // A terminal row whose bytes change gets a fresh budget and leaves the
-    // terminal state; b is removed from the body.
+    // terminal state (no bump: it composed nothing); b, analyzed meanwhile,
+    // is removed from the body — an analyzed row leaving IS a bump.
     await query(
       `UPDATE page_image_analyses SET status = 'failed_terminal', attempts = 5, error = 'malformed', next_attempt_at = NULL
         WHERE page_id = $1 AND attachment_key = 'a.png'`,
       [pageId],
     );
+    await markAnalyzed(pageId, 'b.png');
     await writeAttachment(pageId, 'a.png', png(6, 6));
     await query(`UPDATE pages SET body_html = '<img src="/api/attachments/1/a.png">', image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
 
     const second = await reconcilePageImageAnalyses(pageId);
-    expect(second).toMatchObject({ claimed: true, pended: 1, removed: 1, changed: true });
+    expect(second).toMatchObject({ claimed: true, pended: 1, removed: 1, changed: true, bumped: true });
     const after = await rowsFor(pageId);
     expect(after).toHaveLength(1);
     expect(after[0]).toMatchObject({
@@ -172,10 +176,36 @@ describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)
       next_attempt_at: null,
       error: null,
     });
-    expect((await pageState(pageId)).revision).toBe(2);
+    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 1, embeddingDirty: true });
   });
 
-  it('bumps the revision exactly once per changed pass, and not at all when nothing changed', async () => {
+  it('bumps only for an analyzed row: a pending row re-pended under new bytes does not, an analyzed one does', async () => {
+    const pageId = await seedPage({ bodyHtml: '<img src="/api/attachments/1/a.png"><img src="/api/attachments/1/b.png">' });
+    await writeAttachment(pageId, 'a.png', png(4, 4));
+    await writeAttachment(pageId, 'b.png', png(5, 5));
+    await reconcilePageImageAnalyses(pageId);
+    await markAnalyzed(pageId, 'b.png');
+
+    // Only the pending row's bytes change.
+    await writeAttachment(pageId, 'a.png', png(6, 6));
+    await query(`UPDATE pages SET image_analysis_dirty = TRUE, embedding_dirty = FALSE WHERE id = $1`, [pageId]);
+    const pendingReplaced = await reconcilePageImageAnalyses(pageId);
+    expect(pendingReplaced).toMatchObject({ pended: 1, unchanged: 1, changed: true, bumped: false });
+    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 0, embeddingDirty: false });
+
+    // Now the analyzed row's bytes change: its composed text is stale.
+    await writeAttachment(pageId, 'b.png', png(7, 7));
+    await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
+    const analyzedReplaced = await reconcilePageImageAnalyses(pageId);
+    expect(analyzedReplaced).toMatchObject({ pended: 1, unchanged: 1, changed: true, bumped: true });
+    expect((await rowsFor(pageId)).map((r) => [r.attachment_key, r.status, r.payload])).toEqual([
+      ['a.png', 'pending', null],
+      ['b.png', 'pending', null],
+    ]);
+    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 1, embeddingDirty: true });
+  });
+
+  it('bumps the revision exactly once per pass that moved the valid set, and not at all when nothing changed', async () => {
     const pageId = await seedPage({ bodyHtml: '<img src="/api/attachments/1/a.png">' });
     await writeAttachment(pageId, 'a.png', png(4, 4));
     await reconcilePageImageAnalyses(pageId);
@@ -183,8 +213,8 @@ describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)
 
     const again = await reconcilePageImageAnalyses(pageId);
 
-    expect(again).toMatchObject({ claimed: true, pended: 0, unchanged: 1, changed: false });
-    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 1, embeddingDirty: false });
+    expect(again).toMatchObject({ claimed: true, pended: 0, unchanged: 1, changed: false, bumped: false });
+    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 0, embeddingDirty: false });
   });
 
   it('leaves an existing row alone when its file is unreadable, and records missing only for a never-rowed reference', async () => {
@@ -291,8 +321,8 @@ describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)
 
     const outcome = await reconcilePageImageAnalyses(pageId);
 
-    expect(outcome).toMatchObject({ claimed: true, pended: 0, unchanged: 1, changed: false });
-    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 1, embeddingDirty: false });
+    expect(outcome).toMatchObject({ claimed: true, pended: 0, unchanged: 1, changed: false, bumped: false });
+    expect(await pageState(pageId)).toEqual({ dirty: false, revision: 0, embeddingDirty: false });
   });
 
   it('re-raises the flag when the pass throws', async () => {

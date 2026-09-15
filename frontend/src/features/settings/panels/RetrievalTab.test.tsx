@@ -454,14 +454,16 @@ describe('RetrievalTab — keyword index language (#1114)', () => {
     expect(puts[0]).toEqual({ ftsLanguage: 'german' });
   });
 
-  it('names the cost of saving: every page is re-indexed', async () => {
+  it('names the cost of saving: every page and every chunk is re-indexed', async () => {
     mockApi();
     renderTab();
     await ready();
     // Unlike the nine numeric knobs, this one does corpus-wide work inside the
-    // request that saves it. A control that does not say so is a trap.
+    // request that saves it — pages AND chunks (ADR-027 D10), in one
+    // transaction that embedding writes wait on. A control that does not say
+    // so is a trap.
     expect(screen.getByTestId('retrieval-fts-language')).toHaveTextContent(
-      /rebuilds the keyword index for every page/i,
+      /rebuilds the keyword index for every page and every embedded chunk/i,
     );
   });
 

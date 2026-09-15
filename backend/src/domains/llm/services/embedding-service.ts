@@ -575,9 +575,15 @@ export async function embedPage(
 
   if (authoredChars + derived.substantiveChars < MIN_EMBEDDABLE_TEXT_CHARS) {
     logger.debug({ pageId, pageTitle }, 'Skipping empty/short page for embedding');
+    // ADR-027 D6.3 on the settle path too: an analysis committing between
+    // `planDerivedChunks` and this write re-raised `embedding_dirty` with a
+    // new revision; clearing it unconditionally would hide that page from the
+    // next pass until another writer touched it. Same guard as the embed write.
     await query(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [pageId],
+      `UPDATE pages SET embedding_dirty = CASE WHEN image_analysis_revision = $2 THEN FALSE ELSE embedding_dirty END,
+              embedding_status = 'not_embedded', embedding_error = NULL
+        WHERE id = $1`,
+      [pageId, derived.revision],
     );
     return 0;
   }

@@ -414,17 +414,22 @@ it consumes are #1615's and reach it through one seam:
   current references (new → `pending`; changed hash → `pending`, fresh
   budget; gone → deleted; unreadable → row kept, `missing` only when never
   rowed; policy → `skipped`), and bump `image_analysis_revision` +
-  `embedding_dirty` in one statement when any row changed.
+  `embedding_dirty` in one statement only when the VALID derived set changed
+  (an `analyzed` row deleted, re-pended or skipped — D6.3); a new
+  `pending`/`skipped` row bumps nothing.
 - **`image-analysis-worker.ts`** — D13: `runImageAnalysisBatch()` on the
   #1612 pattern (`worker:lock:image-analysis`, 600 s / 60 s, `assertLockHeld`
-  before every write). Step 1 sweep (+ inverse `reused`, stale-failed return,
-  `truncated:<ceiling>` re-open), step 2 reconcile, step 3 analyze behind the
-  three-term gate; backoff `LEAST(15 min × 2^attempts, 24 h)`,
+  before every write, the last-run line included). Step 1 sweep (+ inverse
+  `reused`, stale-failed return, `truncated:<ceiling>` re-open), step 2
+  reconcile, step 3 analyze behind the three-term gate; a work row whose
+  bytes are unreadable at call time → `skipped (missing)`, out of the work
+  window; backoff `LEAST(15 min × 2^attempts, 24 h)`,
   `IMAGE_ANALYSIS_MAX_ATTEMPTS` = 5, provider-status and uniform-rejection
   stops with re-probe; `retryFailedImageAnalyses`, `reanalyzeAllImages` (409
   under the one-active-run rule) and `readImageAnalysisLastRun` for #1618's
   card. Queue `image-analysis` (concurrency 1, sync cadence) in
-  `core/services/queue-service.ts`; post-sync kick in `sync-service.ts`.
+  `core/services/queue-service.ts` is its one scheduled trigger; sync does
+  not kick it.
 - **`image-analysis-serialize.ts`** — D8's deterministic
   `serializeImageAnalysis(payload, context)` (fixed labels, bounded context
   lines, ≤ 3 parts over `CHUNK_HARD_LIMIT`) and `substantiveChars`.

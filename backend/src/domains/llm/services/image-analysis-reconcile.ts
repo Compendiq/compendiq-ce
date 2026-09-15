@@ -21,14 +21,17 @@
  *  - external keys are `skipped (external)` while `rag_image_index_external`
  *    is off, the first `rag_images_per_page_max` survivors are kept and the
  *    rest are `skipped (capped)`; a policy change flips rows in place.
- *
  * The reconcile compares bytes and policy only, never page text: a caption,
  * heading or title edit changes no row, because those lines are composed from
- * the current page at embed time (D8/D9). Any row change bumps
- * `pages.image_analysis_revision` and raises `embedding_dirty` in ONE
- * statement (D6.3), so `embedPage` drops stale derived chunks on its next pass
- * even when no analysis has succeeded yet — and because this runs unassigned
- * too, a pause never composes a description of bytes that are gone.
+ * the current page at embed time (D8/D9). The page is bumped —
+ * `pages.image_analysis_revision + 1` and `embedding_dirty = TRUE` in ONE
+ * statement (D6.3) — only when its VALID derived set changed: an `analyzed`
+ * row was deleted, re-pended under new bytes, or moved to `skipped`. A new
+ * `pending` or `skipped` row, or a `pending`/`failed` row re-pended, composes
+ * nothing before and nothing after, so it bumps nothing: the first batch after
+ * migration 115 lands over an existing corpus inserts `pending` rows for every
+ * image page without re-embedding one of them. Because the reconcile runs
+ * unassigned too, a pause never composes a description of bytes that are gone.
  *
  * A reconcile that throws re-raises the flag (D6.2).
  */
@@ -88,7 +91,13 @@ export function emptyReconcileCounts(): ReconcileCounts {
 
 export type ReconcileOutcome =
   | { claimed: false }
-  | ({ claimed: true; /** Whether any row changed (and the page was bumped). */ changed: boolean } & ReconcileCounts);
+  | ({
+      claimed: true;
+      /** Whether any row was written or deleted. */
+      changed: boolean;
+      /** Whether the page was bumped (D6.3): an `analyzed` row left the valid derived set. */
+      bumped: boolean;
+    } & ReconcileCounts);
 
 interface ClaimedPage {
   id: number;
@@ -145,7 +154,7 @@ export async function reconcilePageImageAnalyses(
 async function reconcileClaimedPage(
   page: ClaimedPage,
   assertLockHeld: () => Promise<void>,
-): Promise<ReconcileCounts & { changed: boolean }> {
+): Promise<ReconcileCounts & { changed: boolean; bumped: boolean }> {
   const counts = emptyReconcileCounts();
   const [perPageMax, indexExternal] = await Promise.all([getRagImagesPerPageMax(), getRagImageIndexExternal()]);
 
@@ -190,6 +199,11 @@ async function reconcileClaimedPage(
   await assertLockHeld();
   const client: PoolClient = await getPool().connect();
   let changed = false;
+  // `status = 'analyzed'` stands for "in the valid derived set": step 1 of
+  // the same batch re-pended (and bumped for) every analyzed row that fails
+  // the predicate, so what is still `analyzed` here is composed. An analyzed
+  // row that turned stale since is over-bumped — one recompose — never missed.
+  let bumped = false;
   try {
     await client.query('BEGIN');
 
@@ -197,6 +211,7 @@ async function reconcileClaimedPage(
       const del = await client.query(`DELETE FROM page_image_analyses WHERE id = ANY($1::bigint[])`, [gone.map((r) => r.id)]);
       counts.removed = del.rowCount ?? 0;
       changed = changed || counts.removed > 0;
+      bumped = bumped || gone.some((r) => r.status === 'analyzed');
     }
 
     for (const { ref, want } of desired.values()) {
@@ -225,6 +240,7 @@ async function reconcileClaimedPage(
         );
         counts.pended++;
         changed = true;
+        bumped = bumped || prior?.status === 'analyzed';
         continue;
       }
       // want.kind === 'skip'
@@ -250,9 +266,10 @@ async function reconcileClaimedPage(
       );
       counts.skipped[want.reason]++;
       changed = true;
+      bumped = bumped || prior?.status === 'analyzed';
     }
 
-    if (changed) {
+    if (bumped) {
       // D6.3: the revision and the text flag move together, in one statement.
       await client.query(
         `UPDATE pages SET image_analysis_revision = image_analysis_revision + 1, embedding_dirty = TRUE
@@ -268,7 +285,7 @@ async function reconcileClaimedPage(
     client.release();
   }
 
-  return { ...counts, changed };
+  return { ...counts, changed, bumped };
 }
 
 /**

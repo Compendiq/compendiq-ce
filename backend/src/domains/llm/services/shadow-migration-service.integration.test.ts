@@ -92,7 +92,7 @@ const {
 const { embedPage, enqueueReembedAll, reEmbedAll, assertNoShadowMigration, assertShadowRollbackWindowClear } = await import('./embedding-service.js');
 const { logger } = await import('../../../core/utils/logger.js');
 const { invalidateRagConfidenceThresholdCache } = await import('../../../core/services/admin-settings-service.js');
-const { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } = await import('../../../test-image-analysis-store.js');
+const { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } = await import('./__fixtures__/image-analysis-store.js');
 const { computeIdentityHash, IMAGE_ANALYSIS_IDENTITY_KEY, IMAGE_ANALYSIS_PROMPT_VERSION, IMAGE_ANALYSIS_SCHEMA_VERSION } = await import('./image-analysis-provider.js');
 
 const dbAvailable = await isDbAvailable();

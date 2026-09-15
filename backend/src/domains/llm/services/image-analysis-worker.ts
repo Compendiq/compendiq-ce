@@ -23,7 +23,16 @@
  *     for the pair is `true`, and the identity the assignment resolves to
  *     equals the RETAINED identity (D7). Every row written carries the
  *     retained identity, so a provider `base_url` edit cannot start a loop:
- *     the worker writes nothing under it (`identity_drift`).
+ *     the worker writes nothing under it (`identity_drift`). A work row whose
+ *     bytes cannot be read at call time leaves the work window as `skipped`
+ *     with the intake's reason (`missing` for an attachment that is gone —
+ *     the reconcile's `missing` skip, written here because the reconcile
+ *     keeps an existing row on purpose); no attempt is charged, no call is
+ *     spent, and the page is not bumped. The lazy re-fetch and attachment
+ *     writers raise the page flag when bytes arrive, and the reconcile
+ *     re-pends a `skipped` row whose bytes read — the same road a policy skip
+ *     takes back to work. Bytes that read but hash differently from the row
+ *     re-raise the flag instead: the reconcile re-pends under the new hash.
  *
  * The result shape is the same on every path. A gate that is shut returns
  * `{ processed: 0, …, reason: 'unassigned' | 'capability' | 'identity_drift' }`
@@ -111,7 +120,7 @@ export interface ImageAnalysisBatchResult {
   processed: number;
   /** Rows the sweep's inverse flipped back to `analyzed` without a call. */
   reused: number;
-  /** Rows skipped: reconcile skips (policy, format, missing) plus rows whose bytes moved before their call. */
+  /** Rows skipped: reconcile skips (policy, format, missing) plus rows whose bytes moved or became unreadable before their call. */
   skipped: number;
   /** Rows that failed in this batch (every class; `terminal` counts apart). */
   failed: number;
@@ -253,8 +262,12 @@ export async function runImageAnalysisBatch(
       await assertLockHeld();
     } catch (err) {
       if (!(err instanceof ImageAnalysisLeaseLostError)) throw err;
+      // D6.4: the lease is gone, so the last-run line is not written either —
+      // the new holder owns it. The partial counts reach the operator through
+      // the failed BullMQ job (queue-service.ts) and this log line.
       logger.warn({ ...result }, 'Image analysis worker lock lost — batch stopped with partial counts');
       result.reason = 'lease_lost';
+      return result;
     }
     await recordLastRun(result);
     return result;
@@ -454,10 +467,29 @@ async function analyzeWorkRows(
       { id: row.page_id, confluence_id: row.confluence_id, source: row.page_source },
       { source: row.source, key: row.attachment_key },
     );
-    if (intake.kind !== 'ok' || intake.sha256 !== row.content_hash) {
-      // The bytes moved (or went) under the row since the reconcile: not the
-      // image the row describes, so no call is spent and the page is
-      // re-queued for the reconcile to settle. Not charged an attempt.
+    // Fresh check after the file I/O: the lease may have gone while reading.
+    await assertLockHeld();
+    if (intake.kind !== 'ok') {
+      // Unreadable now (attachment cleaned while its reference stayed in the
+      // body, a cache evicted) or no longer a raster: the row leaves the work
+      // window as `skipped` with the intake's reason, hash and format by the
+      // reconcile's convention, attempt budget untouched and no call spent.
+      // The commit predicate keeps a concurrent reconcile's rewrite intact.
+      await query(
+        `UPDATE page_image_analyses a
+            SET status = 'skipped', skip_reason = $3, content_hash = $4, format = '',
+                width = NULL, height = NULL, payload = NULL, attempts = 0, next_attempt_at = NULL, error = NULL,
+                updated_at = NOW()
+          WHERE a.id = $1 AND a.content_hash = $2`,
+        [row.id, row.content_hash, intake.reason, intake.sha256 ?? ''],
+      );
+      result.skipped++;
+      continue;
+    }
+    if (intake.sha256 !== row.content_hash) {
+      // The bytes moved under the row since the reconcile: not the image the
+      // row describes, so no call is spent and the page is re-queued for the
+      // reconcile to settle. Not charged an attempt.
       await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [row.page_id]);
       result.skipped++;
       continue;
@@ -605,13 +637,14 @@ export interface ImageAnalysisLastRun extends ImageAnalysisBatchResult {
  * `image_index_last_run` precedent). Written when the batch did anything or
  * stopped early — a gate-shut no-op on a settled corpus must not overwrite
  * the last real run's counters, or a "Stopped after 3 images" line, with
- * zeroes every cadence.
+ * zeroes every cadence. Never reached after a lost lease (D6.4): the caller
+ * returns before this write.
  */
 async function recordLastRun(result: ImageAnalysisBatchResult): Promise<void> {
   const didSomething =
     result.processed + result.reused + result.skipped + result.failed + result.repended +
       result.returned + result.reopened + result.reconciledPages + result.removed > 0;
-  const stopped = result.reason === 'provider_status' || result.reason === 'uniform_rejection' || result.reason === 'lease_lost';
+  const stopped = result.reason === 'provider_status' || result.reason === 'uniform_rejection';
   if (!didSomething && !stopped) return;
   const run: ImageAnalysisLastRun = { ...result, at: new Date().toISOString() };
   try {

@@ -8,6 +8,16 @@
 -- whole migration session — the `UPDATE page_embeddings` backfill is one pass
 -- over the chunk table (like 049's page rebuild) and must not be cut off by a
 -- deployment's PG_STATEMENT_TIMEOUT.
+--
+-- Cost, stated once (docs/runbooks/image-index.md §5b carries the operator
+-- line): `runMigrations` wraps the file in ONE transaction, so the backfill is
+-- a single rewrite of every chunk row that has no `chunk_tsv` yet — the heap
+-- carries the old tuple versions until (auto)vacuum reclaims them — followed
+-- by the NOT NULL scan and a non-concurrent GIN build, all under the ACCESS
+-- EXCLUSIVE lock the ADD COLUMN took. `embedPage` writes wait for the COMMIT.
+-- Batching the UPDATE inside that transaction would change neither the bloat
+-- nor the lock, so it is one statement, guarded on `chunk_tsv IS NULL`: a
+-- re-run (or a manual replay) rewrites nothing that is already filled.
 
 -- The page-level backlog carrier (ADR-027 D4): "re-enumerate this page's
 -- images". Raised by every writer that raises image_embedding_dirty (the two
@@ -38,7 +48,8 @@ CREATE TRIGGER trg_page_embeddings_tsv
   FOR EACH ROW EXECUTE FUNCTION page_embeddings_tsv_update();
 UPDATE page_embeddings SET chunk_tsv = to_tsvector(
   COALESCE((SELECT setting_value::regconfig FROM admin_settings WHERE setting_key = 'fts_language'), 'simple'::regconfig),
-  coalesce(chunk_text, ''));
+  coalesce(chunk_text, ''))
+ WHERE chunk_tsv IS NULL;
 ALTER TABLE page_embeddings ALTER COLUMN chunk_tsv SET NOT NULL;
 CREATE INDEX IF NOT EXISTS page_embeddings_chunk_tsv_idx ON page_embeddings USING gin (chunk_tsv);
 -- The derived-candidate half of the lexical union and the composition read.

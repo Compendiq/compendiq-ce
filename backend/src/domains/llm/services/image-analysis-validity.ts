@@ -10,9 +10,13 @@
  * The two constants are bound from the running code on every query, never
  * stored in settings: a deploy that bumps one makes every analyzed row fail
  * at once, and the next sweep re-pends them. With no retained identity the
- * predicate is unsatisfiable — `identity_hash IS NOT DISTINCT FROM NULL` is
- * false for every analyzed row (the CHECK makes the hash NOT NULL there), so
- * a never-assigned instance composes nothing (D9.2).
+ * predicate is unsatisfiable, so a never-assigned instance composes nothing
+ * (D9.2). The SQL form and the in-memory twin below agree on EVERY row on
+ * their own — neither leans on migration 115's CHECK that an `analyzed` row
+ * carries a hash and both versions: each SQL term is two-valued (`IS NOT
+ * DISTINCT FROM`, plus an explicit "something is retained"), so the predicate
+ * and its negation (the sweep's `NOT (…)`) are exact complements even for a
+ * hash-less or version-less row, exactly as the strict `===` chain is.
  */
 import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -37,7 +41,10 @@ export interface ValidityRow {
 /**
  * The SQL fragment, with the three values bound at `$<hashParam>`,
  * `$<promptParam>`, `$<schemaParam>`. Callers append the corresponding values
- * from {@link validityParamValues} at those positions.
+ * from {@link validityParamValues} at those positions. `$<hashParam>` may be
+ * NULL (nothing retained), and a row's columns may be NULL: no term here can
+ * evaluate to NULL, so `NOT (…)` selects exactly the rows
+ * {@link isValidAnalysisRow} rejects.
  */
 export function validitySql(
   alias: string,
@@ -47,9 +54,10 @@ export function validitySql(
 ): string {
   return (
     `${alias}.status = 'analyzed'` +
-    ` AND ${alias}.identity_hash IS NOT DISTINCT FROM $${hashParam}` +
-    ` AND ${alias}.prompt_version = $${promptParam}` +
-    ` AND ${alias}.schema_version = $${schemaParam}`
+    ` AND $${hashParam}::text IS NOT NULL` +
+    ` AND ${alias}.identity_hash IS NOT DISTINCT FROM $${hashParam}::text` +
+    ` AND ${alias}.prompt_version IS NOT DISTINCT FROM $${promptParam}::int` +
+    ` AND ${alias}.schema_version IS NOT DISTINCT FROM $${schemaParam}::int`
   );
 }
 

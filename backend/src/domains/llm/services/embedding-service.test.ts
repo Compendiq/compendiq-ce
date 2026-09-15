@@ -1241,9 +1241,10 @@ describe('embedding-service', () => {
     // Short pages are "processed" (embedPage returns 0 but doesn't throw)
     expect(result).toEqual({ processed: 2, errors: 0 });
 
-    // Verify the UPDATE queries were called to mark pages as not dirty
+    // Verify the settle UPDATE (revision-guarded clear, ADR-027 D6.3) ran
+    // for each page
     const updateCalls = mocks.query.mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET embedding_dirty = FALSE'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes("embedding_status = 'not_embedded'"),
     );
     expect(updateCalls).toHaveLength(2);
   });
@@ -1292,10 +1293,12 @@ describe('embedPage', () => {
     // Should have called UPDATE to clear embedding_dirty AND set the terminal
     // 'not_embedded' status (clearing any error) so short pages don't stay stuck
     // showing the transient 'embedding' status (using pages.id, not confluence_id).
+    // The clear is guarded on `image_analysis_revision` like the embed write
+    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [101],
+      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
+      [101, 0],
     );
   });
 
@@ -1309,8 +1312,8 @@ describe('embedPage', () => {
     // Same terminal-status write as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [102],
+      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded'/),
+      [102, 0],
     );
   });
 

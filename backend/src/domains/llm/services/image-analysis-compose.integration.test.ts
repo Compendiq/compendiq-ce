@@ -7,7 +7,23 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
  * transaction and both page averages run for real. No vision client exists in
  * this file at all: composition must never need one (D9.8).
  */
-const cap = vi.hoisted(() => ({ texts: [] as string[], counter: 0 }));
+const cap = vi.hoisted(() => ({
+  texts: [] as string[],
+  counter: 0,
+  /** Runs before one statement is sent — the seam for a race that has no other hook (the settle path). */
+  beforeQuery: undefined as ((text: string) => Promise<void>) | undefined,
+}));
+
+vi.mock('../../../core/db/postgres.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../core/db/postgres.js')>('../../../core/db/postgres.js');
+  return {
+    ...actual,
+    query: async (text: string, params?: unknown[]) => {
+      if (cap.beforeQuery) await cap.beforeQuery(text);
+      return actual.query(text, params);
+    },
+  };
+});
 
 vi.mock('./openai-compatible-client.js', async () => {
   const actual = await vi.importActual<typeof import('./openai-compatible-client.js')>('./openai-compatible-client.js');
@@ -45,7 +61,7 @@ vi.mock('./llm-provider-resolver.js', async () => {
 });
 
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from '../../../test-image-analysis-store.js';
+import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { embedPage } from './embedding-service.js';
 import { getEmbeddingCoverage } from './rag-service.js';
@@ -158,6 +174,7 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
     await truncateAllTables();
     cap.texts = [];
     cap.counter = 0;
+    cap.beforeQuery = undefined;
     await query(
       `INSERT INTO users (id, username, email, role, password_hash)
        VALUES ($1::uuid, 'u', 'u@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
@@ -345,6 +362,30 @@ describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1
 
     await embedPage(USER, pageId, 'Page', 'DEV', body);
     expect(await pageRow(pageId)).toMatchObject({ status: 'embedded', dirty: false });
+  });
+
+  it('settles a short page without clearing a raise that landed after the composition read (D6.3 on the settle path)', async () => {
+    await retainIdentity();
+    // Image-only, nothing analyzed yet: the page settles as `not_embedded`.
+    const body = '<img src="/api/attachments/1/a.png">';
+    const pageId = await seedPage(body);
+    let raced = false;
+    cap.beforeQuery = async (text) => {
+      if (raced || !text.includes("embedding_status = 'not_embedded'")) return;
+      raced = true;
+      // The first analysis commits between `planDerivedChunks` and the settle
+      // write: revision + 1, `embedding_dirty` re-raised.
+      await query(`UPDATE pages SET image_analysis_revision = image_analysis_revision + 1, embedding_dirty = TRUE WHERE id = $1`, [pageId]);
+    };
+
+    expect(await embedPage(USER, pageId, 'Page', 'DEV', body)).toBe(0);
+
+    expect(raced).toBe(true);
+    // The raise survives the settle: the page is picked up by the next pass.
+    expect(await pageRow(pageId)).toMatchObject({ status: 'not_embedded', dirty: true });
+    cap.beforeQuery = undefined;
+    expect(await embedPage(USER, pageId, 'Page', 'DEV', body)).toBe(0);
+    expect(await pageRow(pageId)).toMatchObject({ status: 'not_embedded', dirty: false });
   });
 
   it('a title or caption edit recomposes the context lines from the current page and touches no analysis row', async () => {

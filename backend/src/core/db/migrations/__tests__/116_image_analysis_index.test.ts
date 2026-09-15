@@ -131,6 +131,10 @@ describe.skipIf(!dbAvailable)('Migration 116 — image analysis index (#1616)', 
     const trashed = await seedPage({ bodyHtml: '<img src="/api/attachments/7/a.png">', deleted: true });
     const nullBody = await seedPage({ bodyHtml: null });
     await insertChunk(withConfluenceImage, 0, 'a chunk that survives the re-run');
+    // A rewritten row gets a new tuple version: `xmin` moves. The backfill is
+    // guarded on `chunk_tsv IS NULL`, so a replay over a filled table must
+    // leave every filled row's version alone (no second full rewrite).
+    const before = await query<{ xmin: string }>(`SELECT xmin::text AS xmin FROM page_embeddings WHERE page_id = $1`, [withConfluenceImage]);
 
     // Second application of the whole file against a populated database.
     await query(migrationSql());
@@ -142,8 +146,11 @@ describe.skipIf(!dbAvailable)('Migration 116 — image analysis index (#1616)', 
     for (const id of [textOnly, externalOnly, folder, trashed, nullBody]) {
       expect(dirty.rows.map((r) => r.id)).not.toContain(id);
     }
-    const chunks = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_embeddings WHERE chunk_tsv IS NOT NULL`);
+    const chunks = await query<{ n: number; xmin: string }>(
+      `SELECT COUNT(*)::int AS n, MIN(xmin::text) AS xmin FROM page_embeddings WHERE chunk_tsv IS NOT NULL`,
+    );
     expect(chunks.rows[0]!.n).toBe(1);
+    expect(chunks.rows[0]!.xmin).toBe(before.rows[0]!.xmin);
   });
 });
 

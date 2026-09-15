@@ -13,7 +13,6 @@ import { syncDrawioAttachments, syncImageAttachments, cleanPageAttachments, getM
 import { saveVersionSnapshot } from '../../../core/services/version-snapshot.js';
 import { processDirtyPages } from '../../llm/services/embedding-service.js';
 import { processDirtyPageImages } from '../../llm/services/image-embedding-service.js';
-import { runImageAnalysisBatch } from '../../llm/services/image-analysis-worker.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { discardPageIconForDeletedPage } from '../../../core/services/page-icon-store.js';
@@ -366,14 +365,10 @@ export async function syncUser(userId: string): Promise<void> {
     void processDirtyPageImages().catch((err) => {
       logger.error({ err, userId }, 'Post-sync image indexing failed');
     });
-
-    // ADR-027 D13 (#1616) — the analysis worker's post-sync kick, beside the
-    // legacy image scan and for the same reason it rides the sync cadence.
-    // One bounded batch: sweep, reconcile, and (when a vision model is
-    // assigned) analyze. Its own lease serializes it with the BullMQ repeat.
-    void runImageAnalysisBatch().catch((err) => {
-      logger.error({ err, userId }, 'Post-sync image analysis batch failed');
-    });
+    // The ADR-027 analysis worker (#1616) is NOT kicked here: its BullMQ
+    // repeat (`image-analysis`, queue-service.ts; the interval worker when
+    // BullMQ is off) is its one scheduled cadence. A per-user kick beside the
+    // repeat made N+1 lease contests per cycle, each a sweep + reconcile read.
 
     // Trigger embedding for dirty pages; update status when complete
     processDirtyPages(userId).then(async ({ processed, errors }) => {
