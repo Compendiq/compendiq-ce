@@ -1203,7 +1203,9 @@ confirms**, after which this list gains the date:
   that refuses it answers 400 on every image, the worker's uniform-rejection
   stop ends the batch after three identical answers and the card's last-run
   line names the status — fix the server and **Run Now**; **Retry failed**
-  only makes the three stopped rows due at once, nothing went terminal),
+  only makes the three stopped rows due at once, nothing went terminal:
+  the stop rewrites each of the three rows `failed` with a backoff due
+  time, even one whose rejection was its fifth attempt),
   corpus backfill ≤ 10 min and ≤ 6 h per
   10k images (each from the 0.5 img/s floor with slack), failure rate ≤ 2%,
   ≤ 3 `page_embeddings` rows per image, B query p95 ≤ 1.10 × C and ≤ A.

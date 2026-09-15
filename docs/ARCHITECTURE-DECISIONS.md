@@ -4346,10 +4346,17 @@ call, not five per image corpus-wide. The **uniform-rejection stop** is the
 same treatment for a server fact that arrives as a per-request `rejected`
 status: when the first `IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT` (**3**) calls of
 a batch all fail `rejected` with one HTTP status and nothing in the batch
-has succeeded, the batch ends before its next call, those three rows are
-rewritten `failed (unavailable:<status>)` — same backoff, attempts already
-counted, never terminal, because a fact about the server is not evidence
-about the images — the probe re-runs exactly as above, and the result
+has succeeded, the batch ends before its next call and those three rows are
+rewritten `status = 'failed', error = 'unavailable:<status>',
+next_attempt_at = NOW() + LEAST(15 min × 2^attempts, 24 h)` — one
+unconditional write per row, `attempts` unchanged (the per-row write above
+already counted it), and never terminal: a row whose rejection was its
+fifth attempt has just been written `failed_terminal` with
+`next_attempt_at = NULL` by the per-row rule, and for these three rows the
+stop's rewrite **takes precedence over the cap**, so the row is `failed`
+again with a due time and both of migration 115's CHECKs hold. The rewrite
+is unconditional because a fact about the server is not evidence about the
+images. The probe re-runs exactly as above, and the result
 carries `reason: 'uniform_rejection', httpStatus`. Three, because one
 rejection is any image, two can be two bad images in a row, and three
 identical statuses before any success is the shape of `max_model_len`
@@ -4551,7 +4558,7 @@ flowchart LR
   W[image reference or byte writer<br/>sync, import, edit, upload, restore, sweep, lazy re-fetch] -->|raise| F[pages.image_analysis_dirty]
   SW[invalidation sweep, first step of every batch, assigned or not:<br/>analyzed rows failing the validity predicate re-pend, payload kept;<br/>pending rows whose kept payload passes it flip back = reused;<br/>failed or failed_terminal rows under an old identity or version: failed, attempts 0, due now] -->|re-pend| P[status pending]
   SW --> B[pages.image_analysis_revision+1<br/>pages.embedding_dirty = TRUE]
-  SW -->|stale failed or terminal row| FL
+  SW -->|stale failed or terminal row| SR[status failed, attempts 0, due now]
   F --> R[reconcile, second step, runs assigned or not:<br/>claim flag, enumerate body_html refs, sha256 bytes, upsert rows]
   R -->|new or changed hash| P
   R -->|policy or format| S[status skipped + reason]
@@ -4599,12 +4606,14 @@ pause never composes a description of bytes that are gone.
 
 Readiness (#1616 computes it, #1618 renders it): per page, from the rows'
 `status`, the retained identity and the version constants (D5's predicate
-decides **valid**) — and from nothing else: readiness never reads the
+decides **valid**) — and from nothing else: readiness is a pure function
+of (row status, retained identity, current constants). It never reads the
 clock, so a `failed` row whose backoff has elapsed is still `failed` here
-until the worker selects it under D13's work predicate and rewrites it,
-and a page's readiness changes only when a row is written. An `analyzed`
-row that fails the predicate (stale between an identity change and the
-next sweep) counts as `pending` here, which the sweep then makes literal.
+until the worker selects it under D13's work predicate and rewrites it;
+it does change without a row write when the retained identity or a
+constant changes: an `analyzed` row that then fails the predicate (stale
+between an identity change and the next sweep) counts as `pending` here,
+which the sweep then makes literal.
 The states are disjoint by construction, evaluated in this order, first
 match wins: `none` (no rows); `complete` (≥1 valid row, every row valid or
 `skipped`); `partial` (≥1 valid row, and ≥1 row `pending`, `failed` or
@@ -4736,7 +4745,7 @@ Enumerated so #1616 and #1619 can exercise each:
 | Provider down / breaker open / 5xx / timeout / 408 / 429 | Rows → `failed (unavailable)`, backoff, never terminal, batch continues through the breaker; authored indexing continues; card shows failed count; text RAG unaffected. |
 | Any 4xx outside the `rejected` list — 401, 402, 403, 404 by name; 405, 409, 410, 414, 416–418, 421, 423–426, 428, 431, 451 and anything unlisted by D8's default arm | The row → `failed (unavailable:<status>)`; the batch stops before its next call (rows not yet attempted are not charged an attempt), returns `reason: 'provider_status', httpStatus`, and `refreshVisionCapability` re-runs for the pair; a verdict other than `true` shuts the D13 gate (`reason: 'capability'`) until the operator's re-check restores it. One bad key, or a status this ADR did not foresee, costs one call per batch, not five per image. |
 | Malformed / empty / refused / truncated / rejected (400, 413, 415, 422) reply | Rows → `failed (<class>)`, backoff; never composed. At `IMAGE_ANALYSIS_MAX_ATTEMPTS` (5) → `failed_terminal`, counted apart on the card and in the batch result, re-tried only by the sweep (identity or version changed), **Retry failed**, or new bytes — each of which writes a due `next_attempt_at` or `pending`, so the row is selectable at once. |
-| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` (backoff, never terminal — the fact is about the server), `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the remedy (fix the server, Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
+| The first 3 calls of a batch all `rejected` with one status (`max_model_len` refusing the ceiling → 400 everywhere; a text model behind the vision model's name → 415 everywhere) | Uniform-rejection stop (D13): the batch ends before its fourth call, the three rows are rewritten `failed (unavailable:<status>)` with `next_attempt_at = NOW() + backoff(attempts)` set unconditionally and `attempts` unchanged — never terminal: for a row the rejection had just taken to `failed_terminal`, the rewrite takes precedence over the cap (the fact is about the server) — `refreshVisionCapability` re-runs (415 is the probe's unconditional "not vision", so that one shuts the gate), and the result carries `reason: 'uniform_rejection', httpStatus`; the card's last-run line names the status and the remedy (fix the server, Run Now; Retry failed makes the three rows due at once). Three cheap calls per batch, never five per image corpus-wide. |
 | Unassigned, capability not `true`, or identity drift | The sweep and the reconcile still run (a replaced image is re-pended and its old text dropped, a removed reference loses its row, a stale row leaves composition, a valid kept payload is `reused`); only the analyze step is skipped, and the batch returns the skipped result shape with the reconcile's counts. Still-valid rows remain composed. |
 | Bulk conflict (re-analyze all vs shadow backfill vs re-embed all) | 409 under the one-active-run rule; the holder is named per the #1260 wording rule. |
 | Attachment orphan sweep deletes a file | Sweep prunes the `page_image_analyses` row (#1618 re-points the prune and the `RETENTION_PRUNED` `table`) and raises the page flag. |
