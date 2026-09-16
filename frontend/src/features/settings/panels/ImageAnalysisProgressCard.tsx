@@ -70,11 +70,14 @@ const LLM_PROVIDERS_CHAIN = 'Settings → AI Models → LLM providers';
  * How often the card re-reads while a batch holds the worker lease.
  *
  * 5s matches `ImageIndexCard`, `EmbeddingShadowMigrationCard` and
- * `ActiveEmbeddingLocksBanner`, and stays under the default 20/min per-route
- * admin rate limit — 3s sits exactly at it, before the mount fetch and before
- * the invalidate each press fires, and with `retry: false` a 429 leaves the
- * last payload cached with `running: true`, which freezes the card on stale
- * counters with every action held and nothing shown.
+ * `ActiveEmbeddingLocksBanner`. Twelve reads a minute clears the default
+ * 20/min admin bucket on its own, but not with the mount fetch, the
+ * invalidate every press fires and a window-focus refetch beside it — so the
+ * status GET carries its own multiple of the admin knob
+ * (`STATUS_POLL_RATE_LIMIT_FACTOR` in `llm-image-analysis.ts`). Without that
+ * allowance a 429 leaves the last payload cached with `running: true` and,
+ * with `retry: false`, the card sits on stale counters with every action held
+ * until the next interval.
  */
 const POLL_MS = 5_000;
 
@@ -237,10 +240,20 @@ export function ImageAnalysisProgressCard() {
   const num = (n: number | undefined): string => (isPending || isError ? '—' : String(n ?? 0));
 
   const coverage = data && !isError ? imageAnalysisCoverage(data) : null;
-  /** Rows Re-analyze all would re-pend: every analyzed, stale, failed and terminal row. */
-  const reanalyzeScope = data
-    ? data.rows.analyzed + data.rows.stale + data.rows.failed + data.rows.terminal
-    : 0;
+  /**
+   * Rows Re-analyze all would re-pend — every analyzed, stale, failed and
+   * terminal row — or `null` when the status could not be read.
+   *
+   * The same rule as every counter above, on the one number where breaking it
+   * costs the most: the disclosure a DESTRUCTIVE action shows must not quote a
+   * scope taken from a record the card has just said it cannot observe. A
+   * failed refetch keeps the last payload in the cache, so this read is
+   * exactly as unobservable as the `Analyzed —` beside it.
+   */
+  const reanalyzeScope =
+    data && !isError
+      ? data.rows.analyzed + data.rows.stale + data.rows.failed + data.rows.terminal
+      : null;
 
   /**
    * Analysed fraction of the work window, for the determinate bar. Rendered
@@ -256,9 +269,10 @@ export function ImageAnalysisProgressCard() {
       ? Math.max(0, Math.min(100, Math.round(((data?.rows.analyzed ?? 0) / workWindow) * 100)))
       : null;
 
-  const skipEntries = data
-    ? (Object.entries(data.skipReasons) as Array<[keyof typeof SKIP_LABEL, number]>).filter(([, n]) => n > 0)
-    : [];
+  const skipEntries =
+    data && !isError
+      ? (Object.entries(data.skipReasons) as Array<[keyof typeof SKIP_LABEL, number]>).filter(([, n]) => n > 0)
+      : [];
   const stop = data?.lastRun?.reason ? STOP_REASON[data.lastRun.reason] : null;
 
   return (
@@ -344,8 +358,13 @@ export function ImageAnalysisProgressCard() {
         D13's third gate, on screen. The worker refuses to analyze anything
         while the retained identity differs from the assignment, and without
         this strip the only symptom is a backlog that never drains.
+
+        Gated on `!isError` like every other reading off this payload: through
+        a failed refetch the strip would otherwise assert "no new image is
+        being analyzed" as fact, directly under the card's own "the status
+        could not be read" and beside six em-dashes.
       */}
-      {data?.identityMatchesAssignment === false && (
+      {!isError && data?.identityMatchesAssignment === false && (
         <p
           className="text-warning inline-flex items-start gap-1.5 text-xs"
           data-testid="image-analysis-identity-mismatch"

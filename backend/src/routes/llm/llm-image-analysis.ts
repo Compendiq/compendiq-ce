@@ -53,12 +53,38 @@ const ADMIN_RATE_LIMIT = {
   config: { rateLimit: { max: async () => (await getRateLimits()).admin.max, timeWindow: '1 minute' } },
 };
 
+/**
+ * The status GET is the one route in this file a PASSIVE surface calls on a
+ * timer, and the shared 20/min admin bucket is sized for the action POSTs
+ * beside it. The card polls at 5 s while a batch holds the lease and for a
+ * 20 s warm-up after every press (12/min), on top of the mount fetch, the
+ * invalidate each press fires and react-query's window-focus refetch — and
+ * the Embeddings tab is a surface an operator leaves open while watching a
+ * corpus drain. A 429 here does not delay the read, it DROPS the card into
+ * its "could not be read" state (`retry: false`), where the counters go to
+ * em-dashes until the next interval. The request is four indexed reads and a
+ * Redis `EXISTS`; it spends no LLM queue and moves no row.
+ *
+ * A MULTIPLE of the operator's knob, never a floor over it: lowering
+ * `rate_limit_admin_max` must still lower this, the `JUDGEMENT_RATE_LIMIT`
+ * rule in `llm-embedding-shadow.ts`.
+ */
+export const STATUS_POLL_RATE_LIMIT_FACTOR = 5;
+const STATUS_RATE_LIMIT = {
+  config: {
+    rateLimit: {
+      max: async () => (await getRateLimits()).admin.max * STATUS_POLL_RATE_LIMIT_FACTOR,
+      timeWindow: '1 minute',
+    },
+  },
+};
+
 export async function llmImageAnalysisRoutes(fastify: FastifyInstance) {
   fastify.addHook('onRequest', fastify.authenticate);
 
   fastify.get(
     '/admin/embedding/image-analysis',
-    { preHandler: fastify.requireAdmin, ...ADMIN_RATE_LIMIT },
+    { preHandler: fastify.requireAdmin, ...STATUS_RATE_LIMIT },
     async (): Promise<ImageAnalysisStatus> => {
       const [counts, retained, resolved, lastRun, running] = await Promise.all([
         readImageAnalysisCorpusCounts(),
@@ -138,13 +164,17 @@ export async function llmImageAnalysisRoutes(fastify: FastifyInstance) {
  * Start a batch without waiting for it, and without letting its failure become
  * the request's. Answers whether a batch was ALREADY running when called.
  *
- * The verdict is read from the lock rather than from the batch, because the
- * detached run's own `alreadyRunning` arrives long after the response has been
- * sent. The read and the kick are not atomic, so a lock released in between
- * would otherwise leave nothing running at all; a kick that finds the lock
- * still taken costs one Redis round trip and returns immediately from the
- * worker's own guard. Pessimistic by construction — never "started" for a
- * batch that did not, sometimes "already running" for one that then did.
+ * The verdict is a SAMPLE OF THE LOCK taken before the kick, not a report
+ * from the batch: the detached run's own `alreadyRunning` arrives long after
+ * the response has been sent. It is therefore inexact in BOTH directions, and
+ * the guarantee is not one-sided — a lease taken between the read and the
+ * kick (BullMQ's repeat, another replica) makes the detached batch a no-op
+ * under `started: true`, and a lease released in that window lets the batch
+ * run under `alreadyRunning: true`. Nothing is spent or lost either way: the
+ * kick costs one Redis round trip and returns from the worker's own guard,
+ * and both readings are corrected by the next poll — `running` is read from
+ * the same lock and `lastRun` from what the batch actually recorded. What
+ * the flag must never do is hold the request open to find out.
  */
 async function kickBatch(): Promise<boolean> {
   const alreadyRunning = await isWorkerLocked(IMAGE_ANALYSIS_WORKER_LOCK);

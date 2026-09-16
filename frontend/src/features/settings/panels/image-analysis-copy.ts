@@ -21,7 +21,20 @@ export function reanalysisDisclosure(rows: number): string {
  *
  * Three facts in the order an operator weighs them: what it will spend, what
  * it destroys, and what keeps working while it runs.
+ *
+ * `rows === null` is "the status could not be read" — a failed status GET
+ * leaves the card's last payload in the cache, and a destructive action's
+ * disclosure must not quote a scope off a record the card has declared
+ * unobservable. The spend is then stated as the SET it covers rather than as
+ * a number, and the operator is sent to the read that can give them the
+ * count. The other two facts are properties of the action and hold either
+ * way.
  */
-export function reanalyzeAllDisclosure(rows: number): string {
-  return `This re-analyzes ${rows} ${rows === 1 ? 'image' : 'images'} — one vision call each — and clears their stored descriptions first, so image evidence is missing from search until each page is analyzed and re-embedded. Authored page text stays searchable throughout. Use Retry failed instead if you only need the failures.`;
+export function reanalyzeAllDisclosure(rows: number | null): string {
+  const spend =
+    rows === null
+      ? 'The analysis status could not be read, so how many images this covers is unknown. It re-analyzes every stored, stale, failed and given-up image — one vision call each'
+      : `This re-analyzes ${rows} ${rows === 1 ? 'image' : 'images'} — one vision call each`;
+  const count = rows === null ? ' Retry the status read first if you need the count.' : '';
+  return `${spend} — and clears their stored descriptions first, so image evidence is missing from search until each page is analyzed and re-embedded. Authored page text stays searchable throughout. Use Retry failed instead if you only need the failures.${count}`;
 }

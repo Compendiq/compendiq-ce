@@ -472,9 +472,12 @@ export type ImageAnalysisStatus = z.infer<typeof ImageAnalysisStatusSchema>;
  *
  * `rows` is the number of rows the action itself moved — absent for Process
  * now, which moves none. `started` / `alreadyRunning` describe the batch kick
- * that follows, read from the worker lock BEFORE the kick and therefore
- * pessimistic by construction: never `started` for a batch that did not, and
- * sometimes `alreadyRunning` for one that then did.
+ * that follows, and they are a SAMPLE of the worker lock taken before the
+ * kick rather than a report from the batch: inexact in both directions (a
+ * lease taken in that window makes the kick a no-op under `started: true`; a
+ * lease released in it lets the batch run under `alreadyRunning: true`).
+ * Nothing is lost either way — `running` and `lastRun` on the status GET are
+ * what the batch actually did, and the card polls them.
  */
 export const ImageAnalysisActionResultSchema = z.object({
   rows: z.number().int().nonnegative().optional(),

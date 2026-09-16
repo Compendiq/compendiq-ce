@@ -5326,12 +5326,31 @@ There is no in-product rollback mode.
 `backend/src/core/db/migrations/`, because `postgres.ts` applies every `*.sql`
 in that directory on boot. Stage 1 exercised the whole cycle on a disposable
 database and recorded it there (§5); #1619 re-exercises it against a real
-upgraded deployment before authorisation. Two findings of that rehearsal amend
-the dump set above rather than merely restating it: `pages.image_embedding_dirty`
-is NOT in it (dumping `pages` means dumping the corpus), so a restore re-adds
-the column at its default and the corpus must be re-marked; and the dump needs
-`--clean --if-exists`, because three of its four tables survive the migration
-and a restore without it fails on its first `CREATE TABLE`.
+upgraded deployment before authorisation. Three findings of that rehearsal
+amend the dump set above rather than merely restating it:
+`pages.image_embedding_dirty` is NOT in it (dumping `pages` means dumping the
+corpus), so a restore re-adds the column at its default and the corpus must be
+re-marked; the dump needs `--clean --if-exists`, because three of its four
+tables survive the migration and a restore without it fails on its first
+`CREATE TABLE`; and — **erratum, #1618 stage 1 review round 1, 2026-09-16** —
+that third finding has a consequence for the REPLACEMENT which the first
+rehearsal could not see, because it restored an `admin_settings` table nothing
+had touched since the dump. `admin_settings` and `llm_usecase_assignments` are
+restored WHOLESALE, so a rollback of the legacy leg also rewinds
+`admin_settings.image_analysis_identity`, the `image_analysis` assignment row,
+the output-token ceiling, the batch size and (by deletion, if it was written
+after the dump) `image_analysis_last_run`. Re-rehearsed with the
+replacement re-assigned between the dump and the rollback: without a targeted
+capture the retained identity and the assignment both returned to their
+dump-time pair, leaving the gate OPEN against the superseded model and every
+description written under the newer one failing D5's validity predicate — a
+corpus-wide re-analysis, not merely the paused index of D13's
+`identity_drift`. The runbook's restore therefore has two extra steps that are
+part of the procedure, not a note: capture exactly those rows before the
+restore (§4 step 3) and replay them after it (§4 step 5), with §4.1 verifying
+them rather than asserting they were never at risk. `page_image_analyses`
+itself is genuinely outside the dump set, and so is the capability verdict in
+`llm_model_capabilities`.
 
 ### Supersession of ADR-025
 

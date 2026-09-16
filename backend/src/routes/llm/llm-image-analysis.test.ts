@@ -13,6 +13,7 @@ import { generateAccessToken } from '../../core/plugins/auth.js';
 import {
   acquireEmbeddingLock,
   acquireWorkerLock,
+  isWorkerLocked,
   releaseEmbeddingLock,
   releaseWorkerLock,
 } from '../../core/services/redis-cache.js';
@@ -23,6 +24,7 @@ import {
 import {
   IMAGE_ANALYSIS_LAST_RUN_KEY,
   IMAGE_ANALYSIS_WORKER_LOCK,
+  readImageAnalysisLastRun,
 } from '../../domains/llm/services/image-analysis-worker.js';
 import { REEMBED_ALL_LOCK_USER } from '../../domains/llm/services/embedding-service.js';
 
@@ -190,6 +192,34 @@ async function withHeldLock(body: () => Promise<void>): Promise<void> {
   }
 }
 
+/**
+ * The detached batch a lock-FREE kick starts, run to completion: it records
+ * its last-run line and then releases the lease, so both together are the
+ * only observable end of a run nothing awaited.
+ *
+ * A real poll on those two facts, not a fixed sleep and not fake timers: the
+ * batch is a detached promise doing real Postgres and Redis work, so there is
+ * no clock to advance and no signal the route exposes to await.
+ */
+async function tick(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+
+async function settleDetachedBatch(timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let run = await readImageAnalysisLastRun();
+  while (!run && Date.now() < deadline) {
+    await tick(25);
+    run = await readImageAnalysisLastRun();
+  }
+  while ((await isWorkerLocked(IMAGE_ANALYSIS_WORKER_LOCK)) && Date.now() < deadline) {
+    await tick(25);
+  }
+  return run;
+}
+
 describe.skipIf(!dbAvailable)('image-analysis admin routes — authorization', () => {
   const routes: Array<['GET' | 'POST', string]> = [
     ['GET', '/api/admin/embedding/image-analysis'],
@@ -315,6 +345,19 @@ describe.skipIf(!dbAvailable)('GET /api/admin/embedding/image-analysis', () => {
     const body = (await get()).json() as ImageAnalysisStatus;
     expect(body.lastRun).toMatchObject({ processed: 2, unreadableRefs: 0, reconciledPages: 0 });
   });
+
+  it('answers a polling card for a whole open tab without refusing a read', async () => {
+    // The card polls at 5s while a batch holds the lease and through a 20s
+    // warm-up after every press, on top of the mount fetch, the invalidate
+    // each press fires and a window-focus refetch. Against the shared 20/min
+    // admin bucket the 21st read of an open Embeddings tab answered 429 —
+    // which does not delay this card, it drops it into "the status could not
+    // be read" with every counter at an em-dash until the next interval.
+    // `rate_limit_admin_max` is at its default 20 here: no row is seeded.
+    const codes: number[] = [];
+    for (let i = 0; i < 25; i++) codes.push((await get()).statusCode);
+    expect(codes.filter((code) => code !== 200)).toEqual([]);
+  });
 });
 
 describe.skipIf(!dbAvailable || !redisAvailable)('POST …/process', () => {
@@ -324,6 +367,35 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST …/process', () => {
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ started: false, alreadyRunning: true });
     });
+  });
+
+  it('starts a batch when no lease is held, and the detached run really happens', async () => {
+    // The other branch of `kickBatch`, with nothing holding the lease. The
+    // response is a SAMPLE of the lock, so what proves a batch followed is
+    // work only a batch does: a dirty page whose body references no image at
+    // all, carrying an analysis of an image that is gone. The reconcile drops
+    // that row and clears the flag; no vision model is assigned (ADR-027 O8),
+    // so the analyze step is skipped with D13's pause reason and nothing here
+    // spends a call.
+    const page = await seedPage({ dirty: true });
+    await seedAnalyzed(page, 'vanished.png');
+
+    const res = await post('process');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ started: true, alreadyRunning: false });
+
+    const run = await settleDetachedBatch();
+    expect(run).toMatchObject({ reason: 'unassigned', processed: 0, reconciledPages: 1, removed: 1 });
+    const rows = await query<{ n: string }>(`SELECT count(*)::text AS n FROM page_image_analyses`);
+    expect(rows.rows[0]?.n).toBe('0');
+    const flag = await query<{ dirty: boolean }>(
+      `SELECT image_analysis_dirty AS dirty FROM pages WHERE id = $1`,
+      [page],
+    );
+    expect(flag.rows[0]?.dirty).toBe(false);
+    // The lease is released by the run that took it, so the next press is not
+    // answered `alreadyRunning` by a batch that has finished.
+    expect(await isWorkerLocked(IMAGE_ANALYSIS_WORKER_LOCK)).toBe(false);
   });
 });
 
@@ -354,21 +426,31 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST …/retry-failed', () => 
     ]);
   });
 
-  it('is idempotent: a second press moves nothing further', async () => {
+  it('re-arms the same row on a second press rather than compounding it', async () => {
     const page = await seedPage();
     await seedFailed(page, 'refused.png');
 
     await withHeldLock(async () => {
       expect((await post('retry-failed')).json()).toMatchObject({ rows: 1 });
-      // Still `failed` and still due, so the same row is re-armed — the press
-      // is repeatable and leaves the row in one state, not a growing one.
-      expect((await post('retry-failed')).json()).toMatchObject({ rows: 1 });
-    });
+      const armed = await query<{ updated_at: string }>(
+        `SELECT updated_at FROM page_image_analyses`,
+      );
 
-    const after = await query<{ status: string; attempts: number }>(
-      `SELECT status, attempts FROM page_image_analyses`,
-    );
-    expect(after.rows).toEqual([{ status: 'failed', attempts: 0 }]);
+      // `rows` is what the statement MATCHED, and the second press matches
+      // the same still-failed row — so the count the toast quotes is only
+      // honest if that row was genuinely rewritten. It is: the press re-arms
+      // it, moving `updated_at` and `next_attempt_at` without compounding
+      // `attempts` or adding a row.
+      expect((await post('retry-failed')).json()).toMatchObject({ rows: 1 });
+      const after = await query<{ status: string; attempts: number; updated_at: string; due: boolean }>(
+        `SELECT status, attempts, updated_at, next_attempt_at <= NOW() AS due FROM page_image_analyses`,
+      );
+      expect(after.rows).toHaveLength(1);
+      expect(after.rows[0]).toMatchObject({ status: 'failed', attempts: 0, due: true });
+      expect(new Date(after.rows[0]!.updated_at).getTime()).toBeGreaterThan(
+        new Date(armed.rows[0]!.updated_at).getTime(),
+      );
+    });
   });
 });
 

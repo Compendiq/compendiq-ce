@@ -258,6 +258,67 @@ describe('the three fetch states', () => {
   });
 });
 
+describe('a failed refetch over a cached payload', () => {
+  /**
+   * The state the card is most likely to lie in: TanStack keeps the last
+   * payload through a failed REFETCH, so every reading taken off `data`
+   * without `isError` beside it renders as fact under the card's own "the
+   * status could not be read" and beside six em-dashes.
+   */
+  async function staleAfterFailedRefetch(loaded: ImageAnalysisStatus) {
+    const fetchSpy = mockApi({ statusResponse: loaded });
+    renderCard();
+    await waitFor(() =>
+      expect(screen.getByTestId('image-analysis-status')).not.toHaveTextContent(/Reading analysis status/),
+    );
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/admin/embedding/image-analysis') && (init?.method ?? 'GET') === 'GET') {
+        return new Response('boom', { status: 500 });
+      }
+      return new Response(JSON.stringify({ rows: 12, started: true, alreadyRunning: false }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    await queryClient.refetchQueries({ queryKey: ['admin', 'image-analysis'] });
+    await waitFor(() =>
+      expect(screen.getByTestId('image-analysis-status')).toHaveTextContent(/could not be read/i),
+    );
+  }
+
+  it('withdraws the identity-mismatch warning it can no longer observe', async () => {
+    await staleAfterFailedRefetch(status({ identityMatchesAssignment: false }));
+    // "no new image is being analyzed" is an assertion about the worker, made
+    // from a record the card has just declared unreadable.
+    expect(screen.queryByTestId('image-analysis-identity-mismatch')).toBeNull();
+  });
+
+  it('withdraws the skip-reason breakdown of a count that reads em-dash', async () => {
+    await staleAfterFailedRefetch(
+      status({
+        rows: { ...NO_ROWS, analyzed: 4, skipped: 3 },
+        skipReasons: { ...NO_SKIPS, missing: 2, external: 1 },
+      }),
+    );
+    expect(screen.getByTestId('image-analysis-counters').textContent).toContain('—');
+    expect(screen.queryByTestId('image-analysis-skip-reasons')).toBeNull();
+  });
+
+  it('never quotes a destructive scope off the unreadable payload', async () => {
+    await staleAfterFailedRefetch(
+      status({ rows: { ...NO_ROWS, analyzed: 30, stale: 5, failed: 2, terminal: 1 } }),
+    );
+
+    fireEvent.click(screen.getByTestId('image-analysis-reanalyze-all'));
+    const dialog = await screen.findByTestId('confirm-dialog');
+    expect(dialog).not.toHaveTextContent(/re-analyzes \d+ image/i);
+    expect(dialog).toHaveTextContent(/how many images this covers is unknown/i);
+    // What the action destroys, and the way back to a count, still stated.
+    expect(dialog).toHaveTextContent(/clears their stored descriptions first/i);
+    expect(dialog).toHaveTextContent(/Retry the status read first/i);
+  });
+});
+
 describe('what the card reports', () => {
   it('reports an unassigned instance as a pause and names the panel chain to fix it', async () => {
     mockApi({

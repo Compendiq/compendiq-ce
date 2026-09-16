@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backlog that will not drain is no longer the only symptom), and the last
   batch's three steps including a stop's reason and HTTP status. Three
   actions — **Process now**, **Retry failed** and **Re-analyze all**, the last
-  behind a confirm dialog that states the exact image count and the cost
+  behind a confirm dialog that states the scope — the exact image count, or
+  the set it covers when the status could not be read — and the cost
   before it runs and refused with a 409 while a corpus re-embed or a shadow
   backfill holds the one-active-run slot. Unassigned renders as the pause it
   is, not an outage: valid descriptions stay searchable, changed images stay
@@ -34,10 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forward migration, the module and settings deletions) is written, reviewed
   and **held** in `docs/held-migrations/`, gated on #1619's passing verdict and
   an explicit owner go. Its recovery procedure —
-  `docs/runbooks/image-embedding-retirement.md` — ships with it, exercised end
-  to end on a disposable database, and records two amendments to ADR-027's
-  dump set: `pages.image_embedding_dirty` is not in it, and the dump needs
-  `--clean --if-exists`. ADR-027 errata move the MRL-width, probe-chip and
+  `docs/runbooks/image-embedding-retirement.md` — ships with it, rehearsed end
+  to end on disposable databases, and records three amendments to ADR-027's
+  dump set: `pages.image_embedding_dirty` is not in it, the dump needs
+  `--clean --if-exists`, and — because that makes `admin_settings` and
+  `llm_usecase_assignments` restore *wholesale* — the rollback has to capture
+  the replacement's own `image_analysis_*` rows and vision assignment before
+  the restore and replay them after it, or a rollback of the legacy leg
+  silently rewinds the retained analysis identity with it.
+  ADR-027 errata move the MRL-width, probe-chip and
   Image-leg-toggle removals to the destructive half (they still gate live
   serving code) and add `image_index_last_run` to the rows it deletes.
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
