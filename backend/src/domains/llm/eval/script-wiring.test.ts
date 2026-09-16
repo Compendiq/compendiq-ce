@@ -361,18 +361,40 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(flat).toContain('const imageEnv = arm ? armImageEnv : imageAxis ? readImageAxisEnv() : null');
   });
 
-  it('seeds the image index on A only, removes the leg assignment on B and C, and asserts the empty index', () => {
+  it('reads B\u2019s precondition before the seed, seeds the index on A only, and asserts each arm state before the queries', () => {
     expect(flat).toContain("imageIndex: arm === 'A'");
     expect(flat).toContain("DELETE FROM llm_usecase_assignments WHERE usecase = 'image_embedding'");
     expect(flat).toContain('SELECT COUNT(*)::int AS n FROM page_image_embeddings');
-    // B waits for the product's backfill AFTER the seed and BEFORE the queries.
+    // "--arm B refuses at once" is only true where the probe runs: the
+    // candidate table, the image_analysis assignment and its ceiling are
+    // read right after the migrations and BEFORE the 65-page seed (review
+    // r1 finding 8 — it used to sit inside `awaitArmBBackfill`).
+    const migrate = raw.indexOf('await runMigrations()');
+    const precondition = raw.indexOf('await readArmBState()');
     const seed = raw.lastIndexOf('await seedImageCorpus(');
+    expect(migrate).toBeGreaterThan(-1);
+    expect(precondition).toBeGreaterThan(migrate);
+    expect(seed).toBeGreaterThan(precondition);
+    // B then waits for the product's backfill, and C asserts the ablation's
+    // state on the database — both after the seed, both before the queries.
     const backfill = raw.indexOf('await awaitArmBBackfill(');
+    const cState = raw.indexOf('await assertArmCState()');
     const run = raw.indexOf('await runArmEval(');
     expect(backfill).toBeGreaterThan(seed);
+    expect(cState).toBeGreaterThan(seed);
     expect(run).toBeGreaterThan(backfill);
-    // …and refuses at once on a revision without the candidate's table.
-    expect(flat).toContain("SELECT to_regclass('public.page_image_analyses') AS exists");
+    expect(run).toBeGreaterThan(cState);
+  });
+
+  it('counts B\u2019s backfill by D5\u2019s validity predicate, not by status alone', () => {
+    // `status = 'analyzed'` alone counts a sweep-invalidated row as "backfill
+    // complete" while the product would not compose it (review r1 finding
+    // 18): the identity the assignment was read under is part of the count,
+    // and the ONE (prompt, schema) pair the valid rows carry is recorded.
+    expect(flat).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
+    expect(flat).toContain('COUNT(DISTINCT (prompt_version, schema_version))::int AS versions');
+    expect(flat).toContain('[state.identityHash]');
+    expect(flat).toContain('imageAnalysisVersions,');
   });
 
   it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
@@ -384,6 +406,8 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(flat).toContain('imageEvidenceRecallAt5: imageEvidenceRecallAtK(arm, run.runs, 5)');
     expect(flat).toContain('imageNegativeLeakAt1: imageNegativeLeakAt1(run.runs)');
     expect(flat).toContain("const hardware = process.env.EVAL_HARDWARE?.trim() || null");
+    // ADR-027 "Report provenance": the command line, on the file itself.
+    expect(flat).toContain('command: commandLine()');
     expect(code('run-retrieval-eval.ts')).not.toMatch(/imageEvidenceRecallAt5:\s*(0|null)\b/);
   });
 
@@ -460,10 +484,16 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     expect([...JUDGE_VALUELESS_FLAGS].every((f) => (JUDGE_KNOWN_FLAGS as readonly string[]).includes(f))).toBe(true);
   });
 
-  it('un-blinds only through buildArmVerdict, which refuses an incomplete sheet, and never joins the mapping itself', () => {
+  it('un-blinds only through buildArmVerdict, which refuses an incomplete sheet, and joins the mapping nowhere but the pilot', () => {
     expect(flat).toContain('buildArmVerdict({');
     expect(body).not.toMatch(/\bunblind\(/);
-    expect(body).not.toMatch(/readMapping\(/);
+    // `--check --mapping` is the ONE place this script reads a mapping, and
+    // it hands it straight to `pilotCheck`, which returns one aggregate ψ
+    // and nothing per item (review r1 finding 3). The un-blind branch still
+    // joins nothing itself: `buildArmVerdict` reads the mapping from the
+    // artifacts directory.
+    expect([...body.matchAll(/readMapping\(/g)]).toHaveLength(1);
+    expect(flat).toContain('pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture())');
     // The verdict is written before it is printed, and anything but a pass
     // sets the exit code — the gate's answer is the process's answer.
     const write = raw.indexOf('writeFileSync(out,');
@@ -471,6 +501,8 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     expect(write).toBeGreaterThan(-1);
     expect(print).toBeGreaterThan(write);
     expect(flat).toContain("if (report.decision.verdict !== 'pass') process.exitCode = 1");
+    // …and a pilot stop is its own exit code, never the gate's 1.
+    expect(flat).toContain('process.exitCode = PILOT_STOP_EXIT_CODE');
   });
 
   it('touches no database', () => {

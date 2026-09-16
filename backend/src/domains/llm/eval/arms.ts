@@ -12,16 +12,25 @@
  * for the retrieval endpoints here, `judge-arms.ts --unblind` for the
  * answer endpoints. Everything that must be held fixed across arms (the
  * ADR's "Held fixed" list) is a field of `ArmRunReportSchema` and a refusal
- * in `assertComparableArms`.
+ * in `assertComparableArms` — the corpus and query-set hashes, the embedder,
+ * the FTS configuration, the rerank and answer-model assignments, and every
+ * retrieval knob the report records, key by key. What one arm carries and
+ * another must not (A's VL endpoint and index identity, B's vision model and
+ * output-token ceiling) is a per-arm rule of the schema itself
+ * (`armProvenanceProblems`), so a B report without the ceiling or a C report
+ * with one is not a report.
  *
  * The owner decisions O1–O7 are constants here (`ARM_MARGINS`,
  * `ARM_SAMPLE`), imported by the scorer and quoted by the runbook, so the
  * number the gate is decided against and the number the document states are
  * one definition.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { relative } from 'node:path';
 import { z } from 'zod';
+import { query } from '../../../core/db/postgres.js';
 import {
   getRagAnswerMaxImages,
   getRagConfidenceThreshold,
@@ -192,18 +201,22 @@ export type ProviderIdentity = z.infer<typeof ProviderIdentitySchema>;
  * whose arm reports do not parse against this — "refused if absent", not
  * annotated.
  */
-export const ArmRunReportSchema = z.object({
+const ArmRunReportObject = z.object({
   axis: z.literal('arm'),
   arm: z.enum(EVAL_ARMS),
   /**
    * A legacy-revision C (ADR-027: "a regression control for #1617's
    * authored-hit change, labelled as such, never substituted for C"). Set by
    * `--control legacy-revision-C`; a report carrying it is refused as the C
-   * of any B−C or C−A pair.
+   * of any B−C or C−A pair. The ONE pairing it is read in is against the
+   * candidate C through `--baseline` (`isRegressionControlPair`), descriptive
+   * only — no verdict reads it.
    */
   control: z.literal('legacy-revision-C').optional(),
-  /** `git rev-parse HEAD` of the checkout that ran; prompts are pinned by it. */
+  /** `git rev-parse HEAD` of the checkout that ran (clean tree); prompts are pinned by it. */
   revisionSha: z.string().regex(/^[0-9a-f]{7,40}$/),
+  /** The exact command line that produced this file (ADR-027 "Report provenance": commands). */
+  command: z.string().min(1),
   capturedAt: z.string().datetime(),
   /** Free text from `EVAL_HARDWARE` (O9): host, GPU, server software. */
   hardware: z.string().min(1).nullable(),
@@ -217,12 +230,14 @@ export const ArmRunReportSchema = z.object({
   rerank: z.string().min(1),
   /** The `chat` assignment on the run's database, or null when none is assigned. */
   answerModel: ProviderIdentitySchema.nullable(),
-  /** Arm A: the VL embedding endpoint. Arm B: the vision model the backfill ran under. C: null. */
+  /** Arm A: the VL embedding endpoint. Arm B: the `image_analysis` assignment the backfill ran under. C: null. */
   visionModel: ProviderIdentitySchema.nullable(),
   /** Arm A only: `imageIndexIdentityFor`'s `provider:model@baseUrl#dims`. */
   imageIndexIdentity: z.string().min(1).nullable(),
-  /** Arm B only: `image_analysis_max_output_tokens` in force for the backfill. */
+  /** Arm B only: `image_analysis_max_output_tokens` in force for the backfill (D8; recorded, not prescribed). */
   imageAnalysisMaxOutputTokens: z.number().int().positive().nullable(),
+  /** Arm B only: the ONE (prompt, schema) version pair every analysed corpus row carries (D5). */
+  imageAnalysisVersions: z.object({ prompt: z.number().int(), schema: z.number().int() }).nullable(),
   /** Every retrieval knob the run was made under, recorded rather than assumed. */
   retrieval: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
   queries: z.number().int().nonnegative(),
@@ -241,7 +256,50 @@ export const ArmRunReportSchema = z.object({
   queryCostMs: z.object({ p50: z.number(), p95: z.number() }),
   runs: z.array(ArmQueryRunSchema),
 });
-export type ArmRunReport = z.infer<typeof ArmRunReportSchema>;
+export type ArmRunReport = z.infer<typeof ArmRunReportObject>;
+
+/**
+ * The per-arm half of "Report provenance (refused if absent)": what A must
+ * carry (its VL endpoint and index identity), what B must carry (the vision
+ * model and the ceiling its backfill ran under, plus the version pair), and
+ * what C must NOT carry (any of them — C has no image leg and no derived
+ * rows, so a vision model or a ceiling on a C report says the database was
+ * not in C's state).
+ */
+export function armProvenanceProblems(report: ArmRunReport): Array<{ field: keyof ArmRunReport; message: string }> {
+  const problems: Array<{ field: keyof ArmRunReport; message: string }> = [];
+  const want = (field: keyof ArmRunReport, present: boolean, why: string) => {
+    const has = report[field] !== null;
+    if (has !== present) problems.push({ field, message: `arm ${report.arm} ${present ? 'must record' : 'must not carry'} ${field}: ${why}` });
+  };
+  switch (report.arm) {
+    case 'A':
+      want('visionModel', true, 'the legacy leg embeds through a VL endpoint (ADR-027 O8/"Report provenance")');
+      want('imageIndexIdentity', true, 'the index the leg searched is provenance');
+      want('imageAnalysisMaxOutputTokens', false, 'no vision analysis runs on the legacy revision');
+      want('imageAnalysisVersions', false, 'no vision analysis runs on the legacy revision');
+      break;
+    case 'B':
+      want('visionModel', true, 'the image_analysis assignment the backfill ran under — refused if absent (O8)');
+      want('imageAnalysisMaxOutputTokens', true, 'image_analysis_max_output_tokens in force for the backfill — refused if absent (D8)');
+      want('imageAnalysisVersions', true, 'the prompt and schema versions the analysed rows carry (D5)');
+      want('imageIndexIdentity', false, 'the candidate has no image leg');
+      break;
+    case 'C':
+      want('visionModel', false, 'the ablation has image_analysis unassigned and no image leg');
+      want('imageIndexIdentity', false, 'the ablation has no image leg');
+      want('imageAnalysisMaxOutputTokens', false, 'the ablation ran no backfill');
+      want('imageAnalysisVersions', false, 'the ablation ran no backfill');
+      break;
+  }
+  return problems;
+}
+
+export const ArmRunReportSchema = ArmRunReportObject.superRefine((report, ctx) => {
+  for (const problem of armProvenanceProblems(report)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [problem.field], message: problem.message });
+  }
+});
 
 /** Parse a report file's JSON, naming the file in the refusal. */
 export function parseArmRunReport(json: unknown, source: string): ArmRunReport {
@@ -257,6 +315,70 @@ export function parseArmRunReport(json: unknown, source: string): ArmRunReport {
 /** sha256 of the fixture file's bytes — the ADR's "query-set sha". */
 export function querySetSha(path: string = IMAGE_FIXTURE_PATH): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+const SHA_RE = /^[0-9a-f]{7,40}$/;
+
+/**
+ * The revision a report records — `git rev-parse HEAD` of a CLEAN checkout.
+ * Prompts, chunking and every stage are pinned by the sha, so a tree with
+ * uncommitted changes to tracked files is refused: the sha would name code
+ * the run did not execute. `EVAL_REVISION_SHA` is the escape hatch for a
+ * tree without git history (an export or an image built at a commit) and
+ * ONLY that: where git answers, the variable must agree with HEAD or is
+ * refused, so it can never relabel a checkout.
+ */
+export function readRevisionSha(opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): string {
+  const env = opts.env ?? process.env;
+  const git = (args: string[]): string | null => {
+    try {
+      return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(opts.cwd ? { cwd: opts.cwd } : {}) }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const override = env.EVAL_REVISION_SHA?.trim() || null;
+  if (override !== null && !SHA_RE.test(override)) {
+    throw new Error(`EVAL_REVISION_SHA="${override}" is not a commit sha`);
+  }
+  const head = git(['rev-parse', 'HEAD']);
+  if (head === null) {
+    if (override === null) {
+      throw new Error(
+        'Cannot record the revision: git cannot answer `rev-parse HEAD` here. Run from a git checkout, or set ' +
+          'EVAL_REVISION_SHA to the commit the tree was exported at — the one escape hatch, for a tree without .git.',
+      );
+    }
+    return override;
+  }
+  if (!SHA_RE.test(head)) throw new Error(`Cannot record the revision: "${head}" is not a commit sha`);
+  const dirty = git(['status', '--porcelain', '--untracked-files=no']);
+  if (dirty === null) throw new Error('Cannot record the revision: `git status` failed');
+  if (dirty.length > 0) {
+    throw new Error(
+      `Refusing to record revision ${head}: the working tree has uncommitted changes to tracked files ` +
+        `(${dirty.split('\n').slice(0, 3).join('; ')}${dirty.split('\n').length > 3 ? '; …' : ''}). The sha pins the prompts ` +
+        'and every stage the run executed — commit or stash, then measure.',
+    );
+  }
+  if (override !== null && override !== head && !head.startsWith(override)) {
+    throw new Error(
+      `EVAL_REVISION_SHA=${override} does not name this checkout's HEAD (${head}). The variable is only for a tree ` +
+        'without git history; unset it here.',
+    );
+  }
+  return head;
+}
+
+/**
+ * The command line a report records, verbatim: the script relative to the
+ * working directory and every argument (quoted where it carries whitespace).
+ * Environment is recorded by the fields that read it, never here.
+ */
+export function commandLine(argv: readonly string[] = process.argv, cwd: string = process.cwd()): string {
+  const [, script, ...args] = argv;
+  const parts = [...(script ? [relative(cwd, script) || script] : []), ...args];
+  return parts.map((p) => (/[\s"']/.test(p) ? JSON.stringify(p) : p)).join(' ');
 }
 
 /** `provider:model@endpoint` for a resolved use case. */
@@ -306,6 +428,96 @@ export async function readHeldFixedProvenance(): Promise<HeldFixedProvenance> {
       rag_answer_max_images: await getRagAnswerMaxImages(),
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Arm B's and arm C's index state, asserted on the database itself.
+// ---------------------------------------------------------------------------
+
+/** D5's retained identity: `sha256(providerId + '\n' + model + '\n' + baseUrl)`. */
+export function imageAnalysisIdentityHash(providerId: string, model: string, baseUrl: string): string {
+  return createHash('sha256').update(`${providerId}\n${model}\n${baseUrl}`).digest('hex');
+}
+
+export interface ArmBState {
+  visionModel: ProviderIdentity;
+  imageAnalysisMaxOutputTokens: number;
+  /** The hash every valid analysed row must carry (D5) — computed from the assignment read here. */
+  identityHash: string;
+}
+
+/**
+ * Arm B's preconditions, read BEFORE the database is seeded: the candidate
+ * revision (its `page_image_analyses` table, #1616), the `image_analysis`
+ * assignment (O8: the vision model on the instance under test, refused if
+ * absent) and the output-token ceiling in force (D8, recorded not
+ * prescribed). The assignment is read off `llm_usecase_assignments` directly:
+ * this revision has no `resolveImageAnalysisUsecase`, and the row's shape is
+ * the same as every non-inheriting use case's.
+ */
+export async function readArmBState(): Promise<ArmBState> {
+  const table = await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`);
+  if (!table.rows[0]?.exists) {
+    throw new Error(
+      '--arm B needs the candidate revision: this checkout has no page_image_analyses table (#1616), so nothing ' +
+        'here can be arm B. Run it on the post-#1617 revision with image_analysis assigned. (D11\'s derived ' +
+        'provenance is checked by the runner: an arm B whose top-K never carries a derived row is refused.)',
+    );
+  }
+  const assignment = await query<{ provider_id: string; name: string; base_url: string; model: string | null; default_model: string | null }>(
+    `SELECT p.id AS provider_id, p.name, p.base_url, a.model, p.default_model
+       FROM llm_usecase_assignments a JOIN llm_providers p ON p.id = a.provider_id
+      WHERE a.usecase = 'image_analysis'`,
+  );
+  const row = assignment.rows[0];
+  const model = row?.model || row?.default_model || '';
+  if (!row || !model) {
+    throw new Error(
+      '--arm B needs image_analysis assigned to a vision model on this database (ADR-027 O8: the model assigned ' +
+        'in Settings → AI Models on the instance under test, recorded as provider:model@endpoint — refused if absent).',
+    );
+  }
+  const setting = await query<{ v: string }>(`SELECT setting_value AS v FROM admin_settings WHERE setting_key = 'image_analysis_max_output_tokens'`);
+  const ceiling = Number(setting.rows[0]?.v);
+  if (!Number.isInteger(ceiling) || ceiling <= 0) {
+    throw new Error(
+      `--arm B: admin_settings.image_analysis_max_output_tokens reads ${JSON.stringify(setting.rows[0]?.v ?? null)} — the ` +
+        'report records the ceiling the backfill ran under (ADR-027 D8, "Report provenance") and is refused without it.',
+    );
+  }
+  return {
+    visionModel: providerIdentity({ config: { name: row.name, baseUrl: row.base_url }, model }),
+    imageAnalysisMaxOutputTokens: ceiling,
+    identityHash: imageAnalysisIdentityHash(row.provider_id, model, row.base_url),
+  };
+}
+
+/**
+ * Arm C's index state, on the database rather than on the returned top-K:
+ * `image_analysis` unassigned, no derived `page_embeddings` row
+ * (`metadata.source = 'image_analysis'`, the one provenance D11 allows), and
+ * `page_image_analyses` absent or empty. A derived row that exists but ranks
+ * outside every query's window is invisible to the runner's per-query check;
+ * it is not invisible here.
+ */
+export async function assertArmCState(): Promise<void> {
+  const problems: string[] = [];
+  const assigned = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`);
+  if ((assigned.rows[0]?.n ?? 0) > 0) problems.push('image_analysis is assigned');
+  const derived = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_embeddings WHERE metadata->>'source' = 'image_analysis'`);
+  if ((derived.rows[0]?.n ?? 0) > 0) problems.push(`page_embeddings carries ${derived.rows[0]!.n} derived row(s) (metadata.source = 'image_analysis')`);
+  const table = await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`);
+  if (table.rows[0]?.exists) {
+    const analyses = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_image_analyses`);
+    if ((analyses.rows[0]?.n ?? 0) > 0) problems.push(`page_image_analyses carries ${analyses.rows[0]!.n} row(s)`);
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `arm C: this database is not in the ablation's state (ADR-027 "Arms and revisions": image_analysis unassigned, ` +
+        `no derived chunks, page_image_embeddings empty) — ${problems.join('; ')}. Unassign it and re-seed; the run ` +
+        'refuses rather than deleting what it did not write.',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,17 +600,32 @@ export function imageNegativeLeakAt1(runs: readonly ArmQueryRun[]): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * The one pairing a `legacy-revision-C` report is read in: against the
+ * candidate C, on a different revision by construction. It is the regression
+ * control for #1617's authored-hit change (ADR-027 "Arms and revisions"),
+ * DESCRIPTIVE only — `--baseline` prints its retrieval endpoints under that
+ * label and no verdict condition reads it; `--unblind` never accepts it.
+ */
+export function isRegressionControlPair(baseline: ArmRunReport, candidate: ArmRunReport): boolean {
+  return baseline.arm === 'C' && candidate.arm === 'C' && (baseline.control !== undefined) !== (candidate.control !== undefined);
+}
+
+/**
  * Refuse a pair of arm reports the ADR says is not a comparison.
  *
  * "The report refuses a pair whose arm, revision, corpus hash, query-set
  * hash, embedder, FTS language, rerank assignment or answer model differ."
  * Read as the design intends it: the two files must be two DIFFERENT arms
  * (two runs of one arm are a before/after on that arm, which the text gate
- * already does), each must be the arm the operator says it is, B and C must
+ * already does), each must be the arm the operator says it is, each must
+ * carry its own arm's provenance (`armProvenanceProblems`), B and C must
  * share the candidate revision (that is what makes B − C the enrichment
- * alone), and everything in the "Held fixed" list must match. A
- * legacy-revision C control is refused as C of any pair: it is a regression
- * control, labelled, never substituted.
+ * alone), and everything in the "Held fixed" list must match — including
+ * every retrieval knob the reports record, key by key, so a `rag_fetch_width`
+ * that drifted between arms is a refusal and not a footnote. A
+ * legacy-revision C control is refused as C of any pair; the one pairing it
+ * is admitted in is `isRegressionControlPair`, and never under `expected`
+ * (the un-blind step's pairs).
  */
 export function assertComparableArms(
   baseline: ArmRunReport,
@@ -415,17 +642,27 @@ export function assertComparableArms(
       }
     }
   }
-  if (baseline.arm === candidate.arm) {
-    throw new Error(
-      `Both reports are arm ${baseline.arm} — two runs of one arm are a before/after on that arm, not an ` +
-        'arm comparison. Pair A, B and C against each other.',
-    );
-  }
   for (const report of [baseline, candidate]) {
-    if (report.control !== undefined) {
+    const problems = armProvenanceProblems(report);
+    if (problems.length > 0) {
+      throw new Error(`Arm ${report.arm}'s report does not carry its arm's provenance: ${problems.map((p) => p.message).join('; ')}`);
+    }
+  }
+  const regressionControl = expected === undefined && isRegressionControlPair(baseline, candidate);
+  if (!regressionControl) {
+    for (const report of [baseline, candidate]) {
+      if (report.control !== undefined) {
+        throw new Error(
+          `A ${report.control} report is a regression control for #1617's authored-hit change and is never ` +
+            'substituted for arm C (ADR-027 "Arms and revisions"). Read it beside the pair, not inside it — the one ' +
+            'comparison it is read in is --baseline against the candidate C, descriptive only.',
+        );
+      }
+    }
+    if (baseline.arm === candidate.arm) {
       throw new Error(
-        `A ${report.control} report is a regression control for #1617's authored-hit change and is never ` +
-          'substituted for arm C (ADR-027 "Arms and revisions"). Read it beside the pair, not inside it.',
+        `Both reports are arm ${baseline.arm} — two runs of one arm are a before/after on that arm, not an ` +
+          'arm comparison. Pair A, B and C against each other.',
       );
     }
   }
@@ -447,6 +684,9 @@ export function assertComparableArms(
   check('ftsLanguage', baseline.ftsLanguage, candidate.ftsLanguage);
   check('rerank', baseline.rerank, candidate.rerank);
   check('answerModel', baseline.answerModel, candidate.answerModel);
+  for (const knob of [...new Set([...Object.keys(baseline.retrieval), ...Object.keys(candidate.retrieval)])].sort()) {
+    check(`retrieval.${knob}`, baseline.retrieval[knob], candidate.retrieval[knob]);
+  }
   if (mismatches.length > 0) {
     throw new Error(
       `Arm ${baseline.arm} and arm ${candidate.arm} were not measured under the same held-fixed ` +
@@ -541,6 +781,11 @@ export function pairArmRuns(baseline: ArmRunReport, candidate: ArmRunReport): Ar
 export interface ArmRetrievalComparison {
   baseline: EvalArm;
   candidate: EvalArm;
+  /**
+   * True for the legacy-C vs candidate-C pairing (`isRegressionControlPair`):
+   * the regression control for #1617's authored-hit change, descriptive only.
+   */
+  regressionControl: boolean;
   recallAt: Record<string, PairedBinaryEndpoint>;
   mrr: PairedGradedEndpoint;
   /** Null when either side is arm C (no image evidence by construction). */
@@ -587,6 +832,7 @@ export function compareArmRetrieval(
   return {
     baseline: baseline.arm,
     candidate: candidate.arm,
+    regressionControl: isRegressionControlPair(baseline, candidate),
     recallAt,
     mrr,
     imageEvidenceRecallAt5: evidenceApplies ? binary((r) => (evidenceHitAtK(r, 5) ? 1 : 0), positives) : null,

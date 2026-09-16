@@ -5063,6 +5063,21 @@ with the report. **Erratum (PR2, 2026-09-15):** the artifacts' home is
 provenance rule); the tooling is `run-retrieval-eval.ts --images --arm`,
 `run-arm-answers.ts` and `judge-arms.ts` (`--merge` / `--check` /
 `--unblind`), recipe in `docs/runbooks/retrieval-eval.md` "Arm protocol".
+**Erratum (PR2, 2026-09-16), three points of this protocol as implemented:**
+(a) `sources[].attachmentUrl` above is present only where an arm surfaced an
+image source (A's leg hit, B's D11 citation) and never on C, so the row
+shape this ADR fixes carries one per-row **arm tell** by design — the judge
+is told in the runbook to read it as a citation and never as evidence or as
+a reason to guess the arm; every other arm-revealing key is refused outright
+by the blinding walk. (b) The route's `refusalReason` is counted in the
+run's provenance file and never written to the judge's file, and an
+INFRASTRUCTURE refusal (`semantic_index_unavailable` — the embedder or the
+semantic index failed) **aborts the arm** instead of being scored: an outage
+scored as refusals would enter the primary and refusal endpoints as that
+arm's quality. (c) The pilot stop of "Sample size" is a STEP, not a label:
+`judge-arms.ts --check --mapping` prints one aggregate ψ over the first 30
+image-dependent A/B pairs **in `judgedAt` order** and exits non-zero below
+the floor, so the judge can stop there rather than after all ≈ 714 rows.
 
 **Cost and operational qualification — measured and reported, never a
 gate** (owner decision 2026-09-15; on the hardware that serves the assigned
@@ -5081,7 +5096,14 @@ manifest sha; query-set sha; per-arm provider/model/endpoint for embedder,
 reranker, answer model, vision model; `image_analysis_max_output_tokens`
 in force for arm B's backfill; embedder width; `fts_language`; every
 retrieval knob; prompts and their versions; hardware; the judge's identity
-and the single-judge statement; mapping-file sha; per-query paired outcomes.
+and the single-judge statement; mapping-file sha; per-query paired outcomes;
+and **the command line that produced each file** (`command`, carried by the
+arm report, the answer provenance, the sheet and the verdict — added PR2,
+2026-09-16, so "commands" is a field and not only a sentence). Everything
+the "Held fixed" list names is refused when it DIFFERS between two arms,
+key by key over the recorded retrieval knobs, and everything one arm must
+carry and another must not (A's VL endpoint, B's vision model and ceiling)
+is refused per arm.
 
 ### Owner decisions — confirmed by the owner on 2026-09-15
 
@@ -5102,11 +5124,11 @@ constant in D8 is an admin setting by the same decision.
 | O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses | Confirmed by owner 2026-09-15 |
 | O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87 | Confirmed by owner 2026-09-15 |
 | O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set — **explicitly an underpowered guardrail**: the report states power ≈ 0.44 at δ = 0 and prints the one-sided CI beside the verdict; a pass reads "no collapse", never parity | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); the primary endpoint is where the answer quality is decided | Confirmed by owner 2026-09-15 |
-| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, one-sided 95% upper bound of the difference ≤ 0.05 | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 |
+| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, applied as the one-sided 95% upper bound of the difference ≤ **3 absolute points**. **Erratum (PR2, 2026-09-16):** the confirmation wrote this margin twice — once as "3 absolute points" and once as "upper bound ≤ 0.05" — and they are not the same condition. The confirmed margin is **3 pp**, and the gate applies it to the one-sided bound: `ARM_MARGINS.unsupportedClaimPoints = 0.03` is the only constant the verdict reads, there is no 5 pp anywhere in the code, and the runbook says the same | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 (erratum 2026-09-16) |
 | O7 | Image-negative leakage margin | leakage@1 may exceed A's by at most **2 queries of 48** (≈ 4 points) | ADR-025 measured 2/22 losses on this class for the legacy leg; the candidate must not do worse than that shape | Confirmed by owner 2026-09-15 |
 | O8 | Vision candidate | **The vision model assigned to `image_analysis` in Settings → AI Models on the instance under test** — no mandated checkpoint, no fallback list; the report records `provider:model@endpoint` and the ceiling in force. **On the local instance at ADR time (read 2026-09-15): UNASSIGNED** — the one configured provider is `RTX3090` (`openai-compatible`, no auth, `http://192.168.178.47:1234/v1` — an LM Studio-style host), no vision-capable use case is assigned (`image_embedding` has no row) and the only two probed pairs (`google/gemma-4-26b-a4b-qat`, `qwen/qwen3.8-27b`) carry a `null` vision verdict (`fetch failed` / model failed to load). **The owner must assign a vision-capable model before the #1615 smoke test and before #1619.** | The candidate is the operator's choice, and the ADR's contract (D3's probe, D8's ceiling setting, D13's stops) is what makes any assigned model safe to run; a model-card claim is not a measurement | Confirmed by owner 2026-09-15 |
 | O9 | Hardware | the host that serves the assigned vision model (O8), recorded in the report by name, GPU and server software; text embedder, Postgres and Redis wherever production runs them, recorded the same way. The ADR-025 96 GB card is no longer mandated | Cost is reported, not gated (O11), so the hardware is provenance, not a pass condition; "representative" means "the one the report names" | Confirmed by owner 2026-09-15 (follows from O8/O11) |
-| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; temperature: **provider default, recorded in provenance** (erratum, PR2 2026-09-15 — the ask path exposes no temperature option, so `temperature 0` is unimplementable through the route; the owner may pin it server-side on the provider before the run, and the answer artifacts record `temperature: provider default`); `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
+| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; temperature: **provider default, recorded in provenance** (erratum, PR2 2026-09-15 — the ask path exposes no temperature option, so `temperature 0` is unimplementable through the route; the owner may pin it server-side on the provider before the run, and the run's provenance file records `temperature: provider default` — **erratum, PR2 2026-09-16:** that literal lives in `provenance-<runId>.json` (`AnswerRunProvenanceSchema`), NOT in the answers file, which is `.strict()` with no configuration key by design so nothing in it can tell the judge which arm produced a row); `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
 | O11 | Ingestion cost — **measured and reported, no gate** | Measured under the "Cost and operational qualification" protocol on O9: cold and cached throughput (img/s), tokens per image (prompt + completion from `usage`, corpus mean beside the ceiling in force — the per-request ceiling is ≈ 1.3k visual + prompt + `image_analysis_max_output_tokens`, default 8,192, so the served context must admit ≈ 10k at the default — D8), corpus backfill wall-clock (187 images) and the per-10k extrapolation, failure and skip rates, `page_embeddings` rows per image, query p50/p95 for B and C against A. **None of these can fail the gate**; the retirement decision is on quality alone (decision rule) and the figures go to the owner beside the verdict | The owner's call: a slow but better candidate is a scheduling problem, not a quality verdict; the measurement protocol is kept exactly so runs stay comparable | Confirmed by owner 2026-09-15 |
 | O12 | Judges | **one judge: the repository owner (Simon)**, blind to arm; no second rater, no adjudicator; the report is labelled single-judge and states that no inter-rater statistic exists. An LLM may pre-screen and flag only | Blind human judging is the epic's rule; the owner is the one person who will act on the verdict, and a single named judge with the limitation stated is more honest than a second rater recruited for the statistic | Confirmed by owner 2026-09-15 |
 | O13 | Judging burden | all three arms single-judged: ≈ 3 × 238 items ≈ **714 judgments** at ~2 min each ≈ **24 judge-hours**; C may be judged last, since its correctness is secondary | The primary endpoint is B vs A; C's correctness is secondary | Confirmed by owner 2026-09-15 |

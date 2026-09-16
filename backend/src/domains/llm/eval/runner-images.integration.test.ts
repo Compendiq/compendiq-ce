@@ -62,7 +62,7 @@ type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
-const { imageEvidenceRecallAtK } = await import('./arms.js');
+const { imageEvidenceRecallAtK, assertArmCState } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -433,8 +433,13 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect(result.runs.map((r) => r.queryId)).toEqual(['q1', 'n1']);
     expect(result.runs[0]!.cluster).toBe(target.file);
     expect(result.runs[0]!.expectedImageKeys).toEqual([imageAttachmentKey(targetImage.file)]);
-    expect(result.runs[0]!.evidence.map((e) => e.key)).toContain(imageAttachmentKey(targetImage.file));
-    expect(result.runs[0]!.evidence.every((e) => e.rank >= 1)).toBe(true);
+    // `rank` is the 1-based rank of the PAGE that carried the evidence —
+    // the invariant image-evidence R@5 and leakage@1 both read. Pinned
+    // against the run's own ranked page list, not against `>= 1` (which
+    // `rankedEvidence` cannot violate; review r1 finding 17).
+    const targetPageRank = result.runs[0]!.retrieved.indexOf(pageIdByFile.get(target.file)!) + 1;
+    expect(targetPageRank).toBeGreaterThan(0);
+    expect(result.runs[0]!.evidence.filter((e) => e.key === imageAttachmentKey(targetImage.file)).map((e) => e.rank)).toEqual([targetPageRank]);
     expect(result.imageEvidenceParticipatingQueries).toBeGreaterThanOrEqual(1);
     // One VL query embed per label — one arm, one search.
     expect(vl.textRequests()).toHaveLength(2);
@@ -491,21 +496,35 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     await expect(boom).rejects.toThrow(/backfill/);
   }, 120_000);
 
-  it('arm C REFUSES a database whose image index is filled — the ablation is not an ablation', async () => {
+  it('arm C on a filled image index: the runner does no VL work, surfaces no evidence, and refuses a row that carries any', async () => {
     await prepareImageIndex({ baseUrl: vl.baseUrl, model: 'stub-vl', targetDimensions: null });
     const { pageIdByFile } = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES });
     expect(await imageRows()).toBeGreaterThan(0);
     vl.clearRequests();
     const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
     // The runner forces the leg OFF on C, so the filled index yields no leg
-    // hits and no evidence — the entrypoint's row-count assertion is what
-    // catches this state. What the runner itself guarantees is that C does
-    // no VL work at all.
+    // hits and no evidence. Catching the STATE is the entrypoint's job
+    // (`assertArmCState`, below) — this title used to claim the refusal the
+    // body never exercised (review r1 finding 17).
     const result = await runArmEval(fixture, { arm: 'C', userId: USER, pageIdByFile, topK: 10 });
     expect(result.runs[0]!.evidence).toEqual([]);
     expect(vl.textRequests()).toHaveLength(0);
     // …and a C row that somehow carried evidence is refused on that query.
     const leaking: typeof hybridSearch = async (...args) => (await hybridSearch(...args)).map((r): SearchResult => ({ ...r, derived: { attachmentKey: 'x.png' } } as SearchResult));
     await expect(runArmEval(fixture, { arm: 'C', userId: USER, pageIdByFile, topK: 10, _search: leaking })).rejects.toThrow(/arm C carrying image evidence/);
+  }, 120_000);
+
+  it('assertArmCState passes the ablation and refuses a derived chunk that never reaches a top-K', async () => {
+    await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });
+    await expect(assertArmCState()).resolves.toBeUndefined();
+    // One derived row, ranked nowhere: the runner's per-query check reads
+    // the returned window and cannot see it, so the state assertion is the
+    // only thing that can (review r1 finding 5).
+    const updated = await query(
+      `UPDATE page_embeddings SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"source":"image_analysis"}'::jsonb
+        WHERE id = (SELECT id FROM page_embeddings ORDER BY id LIMIT 1)`,
+    );
+    expect(updated.rowCount).toBe(1);
+    await expect(assertArmCState()).rejects.toThrow(/derived row\(s\)/);
   }, 120_000);
 });

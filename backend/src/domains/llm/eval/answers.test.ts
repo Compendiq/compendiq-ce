@@ -6,15 +6,20 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   AnswerItemSchema,
   BLINDING_FORBIDDEN_KEYS,
+  INFRASTRUCTURE_REFUSAL_REASONS,
   askRequestBody,
   askThroughRoute,
   assertBlinded,
   generateArmAnswers,
   parseAskSse,
+  readAnswerProvenance,
   readAnswers,
   readMapping,
+  runIdOfAnswersFile,
   sha256File,
   writeAnswerArtifacts,
+  writeAnswerProvenance,
+  type AnswerRunProvenance,
   type AskFn,
 } from './answers.js';
 import type { ImageFixture, ImageFixtureLabel } from './fixture.js';
@@ -54,14 +59,18 @@ describe('parseAskSse', () => {
     expect(answered).toEqual({
       answer: 'Das Bild zeigt einen Turm.',
       refused: false,
+      refusalReason: null,
       sources: [{ pageTitle: 'Turm' }, { pageTitle: 'Turm', attachmentUrl: '/api/x.png' }],
     });
     const refused = parseAskSse(sse([
       { content: 'I do not have enough information.', done: true },
-      { refused: true, refusalReason: 'low_confidence', confidence: 0.1, done: true, final: true, sources: [] },
+      { refused: true, refusalReason: 'weak_match', confidence: 0.1, done: true, final: true, sources: [] },
     ]));
     expect(refused.refused).toBe(true);
+    expect(refused.refusalReason).toBe('weak_match');
     expect(refused.answer).toContain('not have enough');
+    // A reason on an answered frame is not a refusal reason.
+    expect(parseAskSse(sse([{ content: 'x', done: true }, { done: true, final: true, refusalReason: 'weak_match', sources: [] }])).refusalReason).toBeNull();
   });
 
   it('refuses a stream that ended without a final frame rather than scoring an empty answer', () => {
@@ -81,7 +90,7 @@ describe('askThroughRoute', () => {
     await app.ready();
     try {
       const ask = askThroughRoute(app, 'tok');
-      await expect(ask('Frage?')).resolves.toEqual({ answer: 'ok', refused: false, sources: [] });
+      await expect(ask('Frage?')).resolves.toEqual({ answer: 'ok', refused: false, refusalReason: null, sources: [] });
       expect(seen).toEqual([{ body: { question: 'Frage?', deepSearch: false }, auth: 'Bearer tok' }]);
       expect(askRequestBody('x')).not.toHaveProperty('conversationId');
     } finally {
@@ -105,13 +114,17 @@ describe('generateArmAnswers — the blinding invariant', () => {
   const ask: AskFn = async (question) => ({
     answer: `Antwort auf: ${question}`,
     refused: question.includes('ohne'),
+    refusalReason: question.includes('ohne') ? 'no_context' : null,
     sources: [{ pageTitle: 'Seite 1' }, { pageTitle: 'Seite 1', attachmentUrl: '/api/attachments/1/x.png' }],
   });
 
   it('writes rows with exactly the ADR fields, and the arm and query id ONLY in the mapping', async () => {
-    const { answers, mapping, refused } = await generateArmAnswers(ask, fixture, { arm: 'A' });
+    const { answers, mapping, refused, refusalReasons } = await generateArmAnswers(ask, fixture, { arm: 'A' });
     expect(answers).toHaveLength(3);
     expect(refused).toBe(1);
+    // The reason is counted for the provenance file and appears on no row.
+    expect(refusalReasons).toEqual({ no_context: 1 });
+    expect(JSON.stringify(answers)).not.toContain('refusalReason');
     for (const row of answers) {
       expect(Object.keys(row).sort()).toEqual(['answer', 'evidenceImages', 'itemId', 'question', 'refused', 'sources']);
       expect(AnswerItemSchema.safeParse(row).success).toBe(true);
@@ -142,6 +155,23 @@ describe('generateArmAnswers — the blinding invariant', () => {
     const { answers } = await generateArmAnswers(ask, fixture, { arm: 'C', _itemId: () => ids[n++]! });
     expect(answers.map((a) => a.itemId)).toEqual([ids[1], ids[2], ids[0]]);
   });
+
+  it('ABORTS on an infrastructure refusal instead of scoring the outage as the arm\'s refusal rate (review r1 finding 9)', async () => {
+    expect(INFRASTRUCTURE_REFUSAL_REASONS).toContain('semantic_index_unavailable');
+    let asked = 0;
+    const outage: AskFn = async () => {
+      asked++;
+      return asked < 2
+        ? { answer: 'ok', refused: false, refusalReason: null, sources: [] }
+        : { answer: 'I could not search the knowledge base properly', refused: true, refusalReason: 'semantic_index_unavailable', sources: [] };
+    };
+    await expect(generateArmAnswers(outage, fixture, { arm: 'C' })).rejects.toThrow(/Aborting arm C after 1 of 3 questions.*semantic_index_unavailable.*infrastructure refusal/);
+    // The protocol's own refusals are scored, and counted by reason.
+    const protocol: AskFn = async (q) => ({ answer: '', refused: true, refusalReason: q.includes('ohne') ? 'no_context' : 'weak_match', sources: [] });
+    const { refused, refusalReasons } = await generateArmAnswers(protocol, fixture, { arm: 'C' });
+    expect(refused).toBe(3);
+    expect(refusalReasons).toEqual({ weak_match: 2, no_context: 1 });
+  });
 });
 
 describe('assertBlinded', () => {
@@ -158,12 +188,12 @@ describe('assertBlinded', () => {
   });
 });
 
-describe('writeAnswerArtifacts', () => {
+describe('writeAnswerArtifacts / writeAnswerProvenance', () => {
   const dir = mkdtempSync(join(tmpdir(), 'arm-answers-'));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   it('writes the two files and hashes the bytes on disk', async () => {
-    const generated = await generateArmAnswers(async (q) => ({ answer: q, refused: false, sources: [] }), fixture, { arm: 'C' });
+    const generated = await generateArmAnswers(async (q) => ({ answer: q, refused: false, refusalReason: null, sources: [] }), fixture, { arm: 'C' });
     const written = writeAnswerArtifacts(dir, 'run-1', generated);
     expect(written.answersPath).toBe(join(dir, 'answers-run-1.jsonl'));
     expect(written.mappingPath).toBe(join(dir, 'mapping-run-1.json'));
@@ -172,5 +202,22 @@ describe('writeAnswerArtifacts', () => {
     expect(readFileSync(written.answersPath, 'utf8').trim().split('\n')).toHaveLength(3);
     expect(readAnswers(written.answersPath)).toEqual(generated.answers);
     expect(readMapping(written.mappingPath)).toEqual(generated.mapping);
+    expect(runIdOfAnswersFile(written.answersPath)).toBe('run-1');
+    expect(() => runIdOfAnswersFile(join(dir, 'sheet.jsonl'))).toThrow(/not named answers-<runId>\.jsonl/);
+  });
+
+  it('writes provenance-<id>.json in the ADR shape and reads it back, refusing a missing or malformed one', async () => {
+    const provenance: AnswerRunProvenance = {
+      runId: 'run-1', arm: 'C', revisionSha: 'e398de4a', command: 'scripts/run-arm-answers.ts --arm C --run-id run-1',
+      capturedAt: '2026-09-15T10:00:00.000Z', hardware: 'host', corpusManifestSha: 'test', querySetSha: 'f'.repeat(64),
+      answerModel: { identity: 'p:m@http://x', model: 'm', endpoint: 'http://x' }, temperature: 'provider default',
+      ragAnswerMaxImages: 0, deepSearch: false, retrieval: { rag_answer_max_images: 0 }, items: 3, refused: 1,
+      refusalReasons: { weak_match: 1 }, answersSha256: 'a'.repeat(64), mappingSha256: 'b'.repeat(64),
+    };
+    const file = writeAnswerProvenance(dir, 'run-1', provenance);
+    expect(file).toBe(join(dir, 'provenance-run-1.json'));
+    expect(readAnswerProvenance(file)).toEqual(provenance);
+    expect(() => readAnswerProvenance(join(dir, 'provenance-nope.json'))).toThrow(/missing — every answer run writes provenance-<runId>\.json/);
+    expect(() => writeAnswerProvenance(dir, 'run-2', { ...provenance, ragAnswerMaxImages: 1 as unknown as 0 })).toThrow();
   });
 });

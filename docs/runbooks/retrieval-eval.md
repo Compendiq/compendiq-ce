@@ -1149,9 +1149,21 @@ npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json
 npx tsx scripts/run-retrieval-eval.ts --images --arm B --fts-language german --backfill-timeout 7200 --out arm-B.json
 npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json --out-dir artifacts/
 
-# EN/DE controls: the ordinary text gate on each revision (B's and C's revision are the same)
-npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-C.json           # on C's revision
+# EN/DE controls: the ordinary text gate, ONE run per arm per language, each on that
+# arm's own revision and index state. The text corpora (`corpus/`, `corpus-de/`) are
+# markdown with no attachments, so nothing on them can be analysed and no derived chunk
+# can exist: B's and C's states differ only where images do. Capture B's anyway — the
+# report is the arm's configuration, never a copy of another arm's file.
+#   on the candidate revision, image_analysis UNASSIGNED:
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-C.json
 npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-C.json
+#   on the candidate revision, image_analysis ASSIGNED (the worker runs against this
+#   database and finds no attachment to analyse — that is the state's claim):
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-B.json
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-B.json
+#   on A's legacy revision (the text gate never touches the image leg):
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-A.json
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-A.json
 
 # One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts
 npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/ \
@@ -1159,23 +1171,52 @@ npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/
   --mappings artifacts/mapping-A-<date>.json,artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
 # … the judge fills artifacts/judgments-sheet-<date>.jsonl from answers-sheet-<date>.jsonl ALONE …
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl --judgments artifacts/judgments-sheet-<date>.jsonl
+# The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent A/B
+# pairs in judgedAt order, one aggregate number. Exit code 3 = STOP (ψ < 0.20).
+# --mapping is the operator's file and never reaches the judge.
+npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl \
+  --judgments artifacts/judgments-sheet-<date>.jsonl --mapping artifacts/mapping-sheet-<date>.json
 npx tsx scripts/judge-arms.ts --unblind --run-id sheet-<date> --out-dir artifacts/ \
   --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json \
   --control-b control-en-B.json,control-de-B.json --control-c control-en-C.json,control-de-C.json \
+  --control-a control-en-A.json,control-de-A.json \
   --out artifacts/verdict-sheet-<date>.json
 ```
 
 `--arm A|B|C` needs `--images`; `--arm A` requires the `EVAL_IMAGE_EMBEDDING_*`
-endpoint and `--arm B`/`--arm C` refuse it. `--arm C` asserts
-`page_image_embeddings` is empty after the seed; `--arm B` refuses at once on a
-revision without `page_image_analyses` (#1616) and D11's `derived` provenance
-(#1617), and otherwise waits for the backfill to analyse every corpus image.
+endpoint and `--arm B`/`--arm C` refuse it. **`--arm B` refuses before the
+corpus is seeded** — right after the migrations it reads the candidate's
+`page_image_analyses` table (#1616), the `image_analysis` assignment (O8) and
+the `image_analysis_max_output_tokens` in force (D8), and refuses any of the
+three missing, so a wrong revision costs a migration and not a 65-page seed.
+It then waits for the PRODUCT's backfill and counts only rows that satisfy
+D5's validity predicate (`status = 'analyzed'` **under the assignment's
+retained identity**, all carrying ONE (prompt, schema) version pair, which the
+report records) — a sweep-invalidated row is not "backfill complete". D11's
+`derived` provenance is checked by the runner, not by that probe: an arm B
+whose top-K never carries a derived row is refused rather than published as
+text retrieval. `--arm C` asserts the ablation's state on the DATABASE after
+the seed (`image_analysis` unassigned, no `page_embeddings` row with
+`metadata.source = 'image_analysis'`, `page_image_analyses` absent or empty)
+beside the empty `page_image_embeddings` — a derived row that exists but ranks
+outside every query's window is invisible to a per-query check and is not
+invisible to this one.
 `--baseline <other arm's report>` prints the retrieval endpoints of the pair
 (McNemar exact, page-cluster bootstrap) and no verdict; the verdict is
 `--unblind`'s. A `--control legacy-revision-C` run on the legacy revision is
-the regression control the ADR names and is refused as C of any pair. Cost
+the regression control the ADR names and is refused as C of any pair — the one
+pairing it is read in is `--baseline` against the candidate C, **descriptive
+only**: no verdict condition reads it and `--unblind` never accepts it. Cost
 figures come from `benchmark-query-latency.ts` and the backfill card, as
 before; none of them enters the rule.
+
+**The revision a report records** is `git rev-parse HEAD` of a CLEAN
+checkout: a tree with uncommitted changes to tracked files is REFUSED,
+because the sha pins the prompts and every stage the run executed.
+`EVAL_REVISION_SHA` is the one escape hatch, for a tree without git history
+(an export, or an image built at a commit) — where git can answer, the
+variable must agree with HEAD or the run is refused, so it can never
+relabel a checkout.
 
 **What is still a human deliverable.** O2's 190 image-dependent and 48
 image-negative labels come from O15's independent labelling pass: the
@@ -1210,7 +1251,17 @@ with `rag_answer_max_images = 0` in EVERY arm so the chat model is text-only
 by construction; corpus and query-set hashes; prompts; arm B's
 `image_analysis_max_output_tokens` recorded at its backfill value. The
 report refuses a pair whose arm, revision, corpus hash, query-set hash,
-embedder, FTS language, rerank assignment or answer model differ.
+embedder, FTS language, rerank assignment, answer model **or any recorded
+retrieval knob** differ — key by key over the `retrieval` record, so a
+`rag_fetch_width` that drifted between arms is a refusal and not a
+footnote. What one arm must carry and another must not (A's VL endpoint and
+index identity, B's vision model, output-token ceiling and version pair) is
+a per-arm rule of the schema: a B report without the ceiling, or a C report
+with one, is not a report. The answer side is held to the same standard —
+`--unblind` re-reads every `provenance-<runId>.json` behind the sheet and
+refuses an answer run whose revision, corpus or query-set sha, hardware,
+answer model, `rag_answer_max_images` or any shared retrieval knob differs
+from its arm's retrieval report.
 
 ### Endpoints and the decision rule
 
@@ -1221,8 +1272,15 @@ the same for B vs C and C vs A, citation faithfulness. Safety:
 unsupported-claim rate and image-negative leakage@1, B vs A, against
 pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
 (A from leg hits keyed on `page_image_embeddings.attachment_key`; B from a
-top-5 chunk whose `metadata.attachment_key` is an expected image; C reports
-none). Controls: the EN and DE text suites (197 each), non-inferiority.
+top-5 row carrying D11's `derived.attachmentKey` for an expected image — the
+same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
+reports **none**, never 0). Controls: the EN and DE text suites (197 each
+per arm, enforced), non-inferiority — **B vs C** and, when
+`--control-a` is passed, **C vs A**; a pair whose language, FTS
+configuration, corpus sha or text embedder differs is refused. O2's page
+constraints are conditions of the sample, not annotations: the image-
+dependent labels must sit on ≥ 45 pages with ≤ 5 per page, or the verdict
+refuses the sheet the same way it refuses the counts.
 
 Pass requires ALL of: primary point estimate ≥ margin AND its CI excludes 0;
 every non-inferiority lower bound above its margin (image-evidence R@5 is
@@ -1245,7 +1303,13 @@ design effect applied throughout, N = 190 has power ≈ 0.90 under the first
 pair and ≈ 0.80 under the second; the +5 pp point-estimate condition adds
 nothing because the test's rejection threshold is already above 0.05. A
 30-pair pilot checks ψ before the full run; a pilot ψ below 0.20 stops the
-run as inconclusive by design. The 1-point non-inferiority margin the epic
+run as inconclusive by design. **The pilot is a step, not a label**: run
+`judge-arms.ts --check --mapping <mapping-<sheet>.json>` as soon as 30
+image-dependent A/B pairs are judged and it prints ONE aggregate ψ over the
+first 30 pairs **in `judgedAt` order** (never per item, never an arm) and
+exits 3 when it is below the floor — so the judge stops there instead of
+after all ≈ 714 rows. `--unblind` re-reads the same ψ and states it beside
+the verdict. The 1-point non-inferiority margin the epic
 proposed is underpowered on 394 pooled control queries (≈ 0.40 at δ = 0;
 those suites average 1.22 labels per page, so clustering barely moves it)
 and on image-evidence R@5 (≈ 0.09 with the primary set's design effect),
@@ -1264,8 +1328,13 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
 - Non-inferiority: **2 pp** on ordinary-text R@5/MRR (EN + DE pooled), **5 pp**
   on image-evidence R@5 — the latter an explicitly underpowered guardrail
   (≈ 0.44), printed with its CI beside the verdict.
-- Safety: unsupported claims ≤ A + **3 pp** (one-sided 95% upper bound ≤ 5 pp);
-  image-negative leakage@1 ≤ A + **2 of 48**.
+- Safety: unsupported claims ≤ A + **3 pp**, applied as the one-sided 95%
+  **upper bound of the difference ≤ 3 pp** (erratum, PR2 2026-09-16: the
+  proposal wrote the same margin twice, once as a 3 pp point margin and once
+  as a "≤ 0.05" bound; the confirmed margin is 3 pp and the gate applies it
+  to the bound — `ARM_MARGINS.unsupportedClaimPoints`, the constant the
+  verdict is decided against, is the only 3 pp in the code and there is no
+  5 pp anywhere); image-negative leakage@1 ≤ A + **2 of 48**.
 - Vision candidate: **whatever vision model is assigned to `image_analysis`
   in Settings → AI Models on the instance under test** — no mandated
   checkpoint; record `provider:model@endpoint`, the serving host and the
@@ -1322,29 +1391,54 @@ alone (`{ itemId, judge, correctness: correct | partial | incorrect |
 refused, citationFaithful: yes | no | na, unsupportedClaim, notes,
 judgedAt }`) — one row per item, one judge, no adjudication field, no κ
 (there is one rater; the report says so in `singleJudgeStatement`).
-`--check` reports progress and refuses a malformed row. An LLM may
+`--check` reports progress and refuses a malformed row, and with `--mapping`
+prints the pilot ψ (above). An LLM may
 pre-screen and flag; it publishes no number and fills no row — no such
 pre-screen ships, and one would live outside `judge-arms.ts`. `--unblind`
-refuses until every item has exactly one judgment by one judge, then joins
+refuses until every item has exactly one judgment by one judge, re-reads
+every source run's `provenance-<runId>.json` and holds it to its arm's
+retrieval report, then joins
 the mapping, pairs the arms and runs the paired scoring: for the primary
 endpoint `correct` is 1 and everything else 0; `partial` is reported
-separately; the pilot ψ over the first 30 image-dependent pairs stops the
+separately; the pilot ψ over the first 30 image-dependent pairs by
+`judgedAt` stops the
 run below 0.20; the verdict document is labelled single-judge, prints every
 condition of the decision rule with its interval, and sets the exit code to
 non-zero for anything but a pass.
 
+**One sentence for the judge, about `attachmentUrl`.** A row's
+`sources[].attachmentUrl` is present only where the arm surfaced an image
+source (A's leg hit, B's D11 citation) and never on C. It is part of the
+ADR's row shape — the judge needs to see what the answer cited — so it
+stays, and it is therefore a per-row **tell**: read it as a citation, never
+as evidence of quality, and never as a reason to guess which arm wrote a
+row. Every other arm-revealing key is refused outright by the blinding
+walk.
+
+**Refusals are two different things.** The route's `refusalReason` is
+counted in `provenance-<runId>.json` and NEVER written to the judge's file.
+Only protocol refusals (`no_context`, `weak_match`, `image_only_context`)
+can appear there: `semantic_index_unavailable` says the embedder or the
+semantic index failed, so the run **aborts on the first one** and writes
+nothing. Scored as refusals, an outage would enter the primary and refusal
+endpoints as that arm's quality.
+
 ### Provenance the report must carry
 
-Commit SHAs per arm; corpus manifest sha; query-set sha (sha256 of the
+Commit SHAs per arm; the exact **command line** that produced each file
+(`command`, on the arm report, the answer provenance, the sheet and the
+verdict); corpus manifest sha; query-set sha (sha256 of the
 fixture file); embedder, reranker, answer-model and vision-model
 `provider:model@endpoint`; the `image_analysis_max_output_tokens` arm B was
-backfilled under; embedder width; `ftsLanguage` per block; every retrieval
+backfilled under and the one (prompt, schema) version pair its analysed rows
+carry; embedder width; `ftsLanguage` per block; every retrieval
 knob; prompts (pinned by the revision sha — they are in the tree);
 hardware (`EVAL_HARDWARE`, O9); the judge's identity and the single-judge
-statement; mapping sha; paired per-query outcomes and commands. A report
+statement; mapping sha; paired per-query outcomes. A report
 missing any of these is refused, not annotated: `ArmRunReportSchema`
 (`eval/arms.ts`) is the retrieval half, `AnswerRunProvenanceSchema`
-(`eval/answers.ts`) the answer half, and `--unblind` parses both before it
+(`eval/answers.ts`, written as `provenance-<runId>.json`) the answer half,
+and `--unblind` parses both before it
 reads a judgment.
 
 ## The `vocabulary-gap` slice (#1112)

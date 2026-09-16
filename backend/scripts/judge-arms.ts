@@ -2,37 +2,50 @@
  * #1614 PR2 — the arm-blinded judgment sheet and the un-blinded verdict
  * (ADR-027 "Judging protocol", "Decision rule").
  *
- *   --merge   --answers answers-A.jsonl,answers-B.jsonl,answers-C.jsonl
- *             --mappings mapping-A.json,mapping-B.json,mapping-C.json --run-id sheet-1 --out-dir ./artifacts
+ *   --merge   --answers artifacts/answers-A-1.jsonl,artifacts/answers-B-1.jsonl,artifacts/answers-C-1.jsonl
+ *             --mappings artifacts/mapping-A-1.json,artifacts/mapping-B-1.json,artifacts/mapping-C-1.json
+ *             --run-id sheet-1 --out-dir ./artifacts
+ *             (every answers-<runId>.jsonl must have its provenance-<runId>.json beside it)
  *   --check   --answers artifacts/answers-sheet-1.jsonl --judgments artifacts/judgments-sheet-1.jsonl
+ *             [--mapping artifacts/mapping-sheet-1.json]   ← the pilot ψ, aggregate only
  *   --unblind --run-id sheet-1 --out-dir ./artifacts --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json
- *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json] --out verdict-sheet-1.json
+ *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json [--control-a en-A.json,de-A.json]]
+ *             --out verdict-sheet-1.json
  *
  * The judge sees `answers-<id>.jsonl` and nothing else; `mapping-<id>.json`
  * and `sheet-<id>.json` (which recorded its sha256 before judging started)
- * stay with the operator. `--unblind` refuses until every item has exactly
- * one judgment by one judge, then joins the mapping, pairs the arms, runs
+ * stay with the operator. `--check --mapping` prints the ADR's pilot — ψ
+ * over the first 30 image-dependent A/B pairs in judgedAt order — so a run
+ * below 0.20 STOPS there (exit code 3) rather than after 714 rows; it
+ * prints one aggregate number and nothing per item. `--unblind` refuses
+ * until every item has exactly one judgment by one judge, re-reads every
+ * answer run's provenance-<runId>.json from --out-dir and holds it to its
+ * arm's retrieval report, then joins the mapping, pairs the arms, runs
  * McNemar exact and the page-cluster bootstrap, applies the three-part rule
  * and writes the verdict document — labelled single-judge throughout, and
- * labelled TOOLING VERIFICATION ONLY when the sample is below O2's counts.
- * No database is touched.
+ * labelled TOOLING VERIFICATION ONLY when the sample is below O2. No
+ * database is touched.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { assertKnownFlags, flagValue, wantsHelp, JUDGE_KNOWN_FLAGS, JUDGE_USAGE, JUDGE_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
-import { EVAL_ARMS, parseArmRunReport, querySetSha, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
-import { readAnswers } from '../src/domains/llm/eval/answers.js';
+import { ARM_MARGINS, EVAL_ARMS, commandLine, parseArmRunReport, querySetSha, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { readAnswers, readMapping, runIdOfAnswersFile } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
 import {
   buildArmVerdict,
   formatArmVerdict,
   judgmentProgress,
   mergeSheets,
+  pilotCheck,
   readJudgments,
   type TextGateControl,
 } from '../src/domains/llm/eval/judgments.js';
 
 const arg = (name: string): string | undefined => flagValue(process.argv, name);
 const list = (name: string): string[] => (arg(name) ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+/** `--check --mapping` stops the judge: the pilot ψ is below the floor. */
+const PILOT_STOP_EXIT_CODE = 3;
 
 function readControls(name: string): TextGateControl[] | null {
   const files = list(name);
@@ -70,12 +83,20 @@ function main(): void {
     if (!runId || answers.length === 0 || answers.length !== mappings.length) {
       throw new Error('--merge needs --run-id, and --answers and --mappings of the same length, in the same order');
     }
+    // Each run's provenance-<runId>.json sits beside its answers file under
+    // the run id the writer named it with (`run-arm-answers.ts`); the sheet
+    // records its hash and `--unblind` re-reads it.
     const provenance = mergeSheets(
       outDir,
       runId,
-      answers.map((answersPath, i) => ({ runId: answersPath, answersPath, mappingPath: mappings[i]! })),
+      answers.map((answersPath, i) => ({
+        answersPath,
+        mappingPath: mappings[i]!,
+        provenancePath: join(dirname(answersPath), `provenance-${runIdOfAnswersFile(answersPath)}.json`),
+      })),
+      commandLine(),
     );
-    console.log(`sheet ${runId}: ${provenance.items} items from ${provenance.sources.map((s) => `arm ${s.arm} (${s.items})`).join(', ')}`);
+    console.log(`sheet ${runId}: ${provenance.items} items from ${provenance.sources.map((s) => `arm ${s.arm} (${s.items}, run ${s.runId})`).join(', ')}`);
     console.log(`answers sha256 ${provenance.answersSha256}`);
     console.log(`mapping sha256 ${provenance.mappingSha256} — recorded in sheet-${runId}.json before judging starts; keep the mapping away from the judge`);
     return;
@@ -85,7 +106,9 @@ function main(): void {
     const answersFile = list('answers')[0];
     const judgmentsFile = arg('judgments');
     if (!answersFile || !judgmentsFile) throw new Error('--check needs --answers <sheet> and --judgments <file>');
-    const progress = judgmentProgress(readAnswers(answersFile), readJudgments(judgmentsFile));
+    const answers = readAnswers(answersFile);
+    const judgments = readJudgments(judgmentsFile);
+    const progress = judgmentProgress(answers, judgments);
     console.log(`${progress.judged}/${progress.total} items judged by ${progress.judges.join(', ') || 'nobody yet'}`);
     if (progress.duplicates.length > 0) console.log(`${progress.duplicates.length} items judged more than once: ${progress.duplicates.slice(0, 5).join(', ')}`);
     if (progress.unknown.length > 0) console.log(`${progress.unknown.length} judgments name items not on the sheet: ${progress.unknown.slice(0, 5).join(', ')}`);
@@ -93,6 +116,24 @@ function main(): void {
     console.log(progress.missing.length === 0 && progress.duplicates.length === 0 && progress.unknown.length === 0
       ? 'every item has exactly one judgment — --unblind may run'
       : `${progress.missing.length} items still unjudged`);
+    // The pilot (ADR-027 "Sample size"): with the operator's mapping, ψ over
+    // the first 30 image-dependent A/B pairs in judgedAt order — ONE
+    // aggregate number, nothing per item, so the judge can stop below 0.20
+    // before judging the rest.
+    const mappingFile = arg('mapping');
+    if (mappingFile) {
+      const pilot = pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture());
+      if (!pilot.evaluated) {
+        console.log(`pilot: ${pilot.pairs}/${ARM_MARGINS.pilotPairs} image-dependent pairs judged on both A and B so far (ψ so far ${pilot.psi.toFixed(2)}) — keep judging; the pilot reads at ${ARM_MARGINS.pilotPairs}`);
+      } else if (pilot.stop) {
+        console.log(`PILOT STOP: ψ = ${pilot.psi.toFixed(2)} (${pilot.discordant}/${pilot.pairs} discordant) over the first ${pilot.pairs} judged pairs is below ${ARM_MARGINS.pilotDiscordanceFloor} — the pre-registered power calculation does not hold. Stop judging and report the run as inconclusive by design (ADR-027 "Sample size").`);
+        process.exitCode = PILOT_STOP_EXIT_CODE;
+      } else {
+        console.log(`pilot: ψ = ${pilot.psi.toFixed(2)} (${pilot.discordant}/${pilot.pairs} discordant) over the first ${pilot.pairs} judged pairs ≥ ${ARM_MARGINS.pilotDiscordanceFloor} — continue`);
+      }
+    } else {
+      console.log('pilot: pass --mapping <mapping-<sheet>.json> (the operator\'s file, never the judge\'s) to read ψ over the first 30 judged pairs');
+    }
     return;
   }
 
@@ -107,9 +148,11 @@ function main(): void {
     }
     armReports[armRaw as EvalArm] = parseArmRunReport(JSON.parse(readFileSync(file, 'utf8')), file);
   }
+  const controlA = readControls('control-a');
   const controlB = readControls('control-b');
   const controlC = readControls('control-c');
   if ((controlB === null) !== (controlC === null)) throw new Error('--control-b and --control-c come together or not at all');
+  if (controlA !== null && controlC === null) throw new Error('--control-a pairs C vs A and needs --control-c (and --control-b) beside it');
 
   const report = buildArmVerdict({
     dir: outDir,
@@ -117,8 +160,9 @@ function main(): void {
     fixture: loadImageFixture(),
     querySetSha: querySetSha(),
     armReports,
-    controls: controlB && controlC ? { b: controlB, c: controlC } : null,
+    controls: controlB && controlC ? { a: controlA, b: controlB, c: controlC } : null,
     allowUnderpowered: process.argv.includes('--allow-underpowered'),
+    command: commandLine(),
     seed: 1614,
   });
   writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);

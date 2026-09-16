@@ -3,27 +3,41 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { armReport, armRun } from './arm-report-fixtures.js';
-import { generateArmAnswers, sha256File, writeAnswerArtifacts, type AnswerItem, type AskFn, type Mapping } from './answers.js';
+import {
+  generateArmAnswers,
+  sha256File,
+  writeAnswerArtifacts,
+  writeAnswerProvenance,
+  type AnswerItem,
+  type AnswerRunProvenance,
+  type AskFn,
+  type GeneratedAnswers,
+  type Mapping,
+  type WrittenAnswerArtifacts,
+} from './answers.js';
 import type { ImageFixture, ImageFixtureLabel } from './fixture.js';
 import {
   JudgmentRowSchema,
   SINGLE_JUDGE_STATEMENT,
   assertFullyJudged,
+  auditSample,
   buildArmVerdict,
   decideGate,
   formatArmVerdict,
   judgmentProgress,
   judgmentsPath,
   mergeSheets,
+  pilotCheck,
   readJudgments,
   scoreControls,
   scoreJudgedPair,
   sheetPath,
   unblind,
+  type ControlEndpoints,
   type JudgedPairEndpoints,
   type JudgmentRow,
 } from './judgments.js';
-import type { PairedBinaryEndpoint } from './arms.js';
+import type { ArmRunReport, PairedBinaryEndpoint } from './arms.js';
 import type { ClusterBootstrapCi } from './metrics.js';
 
 /**
@@ -126,6 +140,52 @@ describe('scoreJudgedPair', () => {
   });
 });
 
+describe('pilotCheck (ADR-027 "Sample size": ψ over the FIRST 30 JUDGED pairs)', () => {
+  // 40 image-dependent labels; A correct everywhere; B wrong on q31..q40.
+  const ids = Array.from({ length: 40 }, (_, i) => `q${String(i + 1).padStart(2, '0')}`);
+  const fixture: ImageFixture = { corpusManifestSha: 'c', labeledBy: 'l', notUsable: [], labels: ids.map((id, i) => label({ id, expectedFiles: [`p${i % 8}.md`] })) };
+  const answers: AnswerItem[] = [];
+  const mapping: Mapping = {};
+  ids.forEach((queryId, i) => {
+    for (const [arm, offset] of [['A', 1], ['B', 101]] as const) {
+      answers.push(item(uuid(i + offset)));
+      mapping[uuid(i + offset)] = { arm, queryId };
+    }
+  });
+  // judgedAt: B's discordant q31..q40 were judged FIRST (hour 0), everything else later (hour 1 + i).
+  const at = (hour: number) => `2026-09-15T${String(hour).padStart(2, '0')}:00:00.000Z`;
+  const judgmentsFor = (queries: readonly string[]): JudgmentRow[] => queries.flatMap((queryId) => {
+    const i = ids.indexOf(queryId);
+    const early = i >= 30;
+    return [
+      judgment({ itemId: uuid(i + 1), judgedAt: at(early ? 0 : 1 + (i % 20)) }),
+      judgment({ itemId: uuid(i + 101), correctness: early ? 'incorrect' : 'correct', judgedAt: at(early ? 0 : 1 + (i % 20)) }),
+    ];
+  });
+
+  it('orders pairs by the moment they were completed, not by item id: the pilot is what the judge saw first', () => {
+    const pilot = pilotCheck(answers, judgmentsFor(ids), mapping, fixture);
+    // First 30 by judgedAt = the 10 early discordant pairs + 20 later concordant ones → ψ = 10/30.
+    expect(pilot).toMatchObject({ pairs: 30, discordant: 10, evaluated: true, stop: false });
+    expect(pilot.psi).toBeCloseTo(1 / 3, 10);
+    // In item-id order (uuid(1..30) first) the same sheet would read ψ = 0 and STOP — the bug review r1 named.
+    expect(scoreJudgedPair(unblind(answers, judgmentsFor(ids), mapping), fixture, { baseline: 'A', candidate: 'B' }, { seed: 1, iterations: 10 }).pilot.psi).toBeCloseTo(1 / 3, 10);
+  });
+
+  it('runs on a partly judged sheet — before --unblind is possible — and says when the pilot is not yet reached', () => {
+    const partial = pilotCheck(answers, judgmentsFor(ids.slice(0, 20)), mapping, fixture);
+    expect(partial).toMatchObject({ pairs: 20, evaluated: false, stop: false });
+    // A pair needs BOTH sides judged: 30 A-side rows alone are 0 pairs.
+    const oneSided = judgmentsFor(ids.slice(0, 30)).filter((j) => mapping[j.itemId]!.arm === 'A');
+    expect(pilotCheck(answers, oneSided, mapping, fixture).pairs).toBe(0);
+  });
+
+  it('stops below the floor once 30 pairs are in', () => {
+    // Only the 30 concordant pairs judged → ψ = 0 < 0.20.
+    expect(pilotCheck(answers, judgmentsFor(ids.slice(0, 30)), mapping, fixture)).toMatchObject({ pairs: 30, discordant: 0, psi: 0, evaluated: true, stop: true });
+  });
+});
+
 function ci(over: Partial<ClusterBootstrapCi>): ClusterBootstrapCi {
   return { observedDelta: 0, lower: -0.1, upper: 0.1, excludesZero: false, iterations: 1, confidence: 0.95, clusters: 1, queries: 1, oneSidedLower: -0.05, oneSidedUpper: 0.05, ...over };
 }
@@ -145,47 +205,94 @@ function judgedPair(over: Partial<JudgedPairEndpoints>): JudgedPairEndpoints {
     ...over,
   };
 }
-const controls = {
+const controls: ControlEndpoints = {
+  baseline: 'C',
+  candidate: 'B',
   recallAt5: endpoint({ delta: -0.005, ci: { oneSidedLower: -0.015 } }),
   mrr: { baselineMean: 0.8, candidateMean: 0.8, delta: 0, ci: ci({ oneSidedLower: -0.01 }), n: 394 },
   languages: ['en', 'de'],
+  perLanguage: { en: 197, de: 197 },
   n: 394,
 };
+const controlsCvsA: ControlEndpoints = { ...controls, baseline: 'A', candidate: 'C' };
+const bothControls = { bVsC: controls, cVsA: controlsCvsA };
 const leakage = endpoint({ delta: 0.02, ci: { oneSidedUpper: 0.04 } });
 const imageEvidence = endpoint({ delta: 0.01, ci: { oneSidedLower: -0.03 } });
 
 describe('decideGate (ADR-027 "Decision rule")', () => {
-  it('passes only when all three parts hold', () => {
-    const decision = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls });
+  it('passes only when all three parts hold, over BOTH control pairs the endpoint table names', () => {
+    const decision = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: bothControls });
     expect(decision.verdict).toBe('pass');
-    expect(decision.conditions.map((c) => c.verdict)).toEqual(['pass', 'pass', 'pass', 'pass', 'pass', 'pass']);
+    expect(decision.conditions.map((c) => c.verdict)).toEqual(Array<string>(8).fill('pass'));
+    expect(decision.conditions.map((c) => c.name).filter((n) => n.includes('ordinary-text'))).toEqual([
+      'non-inferiority: ordinary-text R@5, en + de pooled, B vs C',
+      'non-inferiority: ordinary-text MRR, en + de pooled, B vs C',
+      'non-inferiority: ordinary-text R@5, en + de pooled, C vs A',
+      'non-inferiority: ordinary-text MRR, en + de pooled, C vs A',
+    ]);
   });
 
   it('is inconclusive — not a pass — when the primary CI straddles 0 or a margin interval straddles', () => {
-    const straddle = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.06, ci: { lower: -0.01, upper: 0.13 } }) }), imageEvidence, leakage, controls });
+    const straddle = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.06, ci: { lower: -0.01, upper: 0.13 } }) }), imageEvidence, leakage, controls: bothControls });
     expect(straddle.verdict).toBe('inconclusive');
-    const wideLeak = decideGate({ primary: judgedPair({}), imageEvidence, leakage: endpoint({ delta: 0.02, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.06 } }), controls });
+    const wideLeak = decideGate({ primary: judgedPair({}), imageEvidence, leakage: endpoint({ delta: 0.02, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.06 } }), controls: bothControls });
     expect(wideLeak.verdict).toBe('inconclusive');
     expect(wideLeak.conditions.find((c) => c.name.includes('leakage'))!.verdict).toBe('inconclusive');
   });
 
   it('fails on a primary that excludes 0 below the margin, and on a safety interval wholly beyond it', () => {
-    const below = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.03, ci: { lower: 0.01, upper: 0.05, excludesZero: true } }) }), imageEvidence, leakage, controls });
+    const below = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.03, ci: { lower: 0.01, upper: 0.05, excludesZero: true } }) }), imageEvidence, leakage, controls: bothControls });
     expect(below.verdict).toBe('fail');
-    const unsafe = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.08, ci: { oneSidedLower: 0.05, oneSidedUpper: 0.11 } }) }), imageEvidence, leakage, controls });
+    const unsafe = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.08, ci: { oneSidedLower: 0.05, oneSidedUpper: 0.11 } }) }), imageEvidence, leakage, controls: bothControls });
     expect(unsafe.verdict).toBe('fail');
   });
 
+  it('applies O6 as ≤ A + 3 pp on the one-sided upper bound — 3.1 pp is not a pass', () => {
+    const edge = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.031 } }) }), imageEvidence, leakage, controls: bothControls });
+    expect(edge.conditions.find((c) => c.name.includes('unsupported'))!.verdict).toBe('inconclusive');
+    const inside = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.03 } }) }), imageEvidence, leakage, controls: bothControls });
+    expect(inside.conditions.find((c) => c.name.includes('unsupported'))!.verdict).toBe('pass');
+  });
+
   it('stops as inconclusive by design when the pilot discordance is below the floor, before anything else is read', () => {
-    const decision = decideGate({ primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }), imageEvidence, leakage, controls });
+    const decision = decideGate({ primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }), imageEvidence, leakage, controls: bothControls });
     expect(decision.verdict).toBe('inconclusive-by-design');
     expect(decision.conditions).toHaveLength(1);
   });
 
-  it('treats missing controls as an unmeasured — therefore blocking — endpoint, and prints the O5 power', () => {
-    const decision = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: null });
-    expect(decision.verdict).toBe('inconclusive');
-    expect(decision.conditions.find((c) => c.name.includes('image-evidence'))!.detail).toMatch(/power ≈ \d\.\d\d/);
+  it('treats a missing control pair as an unmeasured — therefore blocking — endpoint, and prints the O5 power', () => {
+    const none = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: { bVsC: null, cVsA: null } });
+    expect(none.verdict).toBe('inconclusive');
+    expect(none.conditions.find((c) => c.name.includes('image-evidence'))!.detail).toMatch(/power ≈ \d\.\d\d/);
+    // B vs C alone is not the endpoint table: C vs A still blocks.
+    const half = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: { bVsC: controls, cVsA: null } });
+    expect(half.verdict).toBe('inconclusive');
+    expect(half.conditions.find((c) => c.name === 'non-inferiority: ordinary-text controls, C vs A')).toMatchObject({ verdict: 'inconclusive', detail: expect.stringContaining('--control-a') });
+  });
+});
+
+describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
+  const labels = (n: number, perPage: number, negatives: number): ImageFixture => ({
+    corpusManifestSha: 'c', labeledBy: 'l', notUsable: [],
+    labels: [
+      ...Array.from({ length: n }, (_, i) => label({ id: `d${i}`, expectedFiles: [`p${Math.floor(i / perPage)}.md`] })),
+      ...Array.from({ length: negatives }, (_, i) => label({ id: `n${i}`, style: 'image-negative', expectedImages: [], imageDependent: false })),
+    ],
+  });
+
+  it('accepts the pre-registered sample and names every shortfall otherwise', () => {
+    expect(auditSample(labels(190, 4, 48), [controls, controlsCvsA])).toMatchObject({ imageDependent: 190, imageNegative: 48, pages: 48, maxLabelsPerPage: 4, shortfalls: [] });
+    // 190 labels on 20 pages (m = 9.5) pass the two counts and fail the design the power was computed under.
+    expect(auditSample(labels(190, 10, 48), []).shortfalls).toEqual([
+      'image-dependent labels on 19 pages (O2: ≥ 45)',
+      '19 page(s) carry more than 5 image-dependent labels (O2/O3: ≤ 5, the m the design effect assumes)',
+    ]);
+    expect(auditSample(labels(3, 2, 1), []).shortfalls).toEqual([
+      '3 image-dependent labels (O2: 190, floor 144)',
+      '1 image-negative labels (O2: 48)',
+      'image-dependent labels on 2 pages (O2: ≥ 45)',
+    ]);
+    expect(auditSample(labels(190, 4, 48), [{ ...controls, perLanguage: { en: 197, de: 196 } }]).shortfalls).toEqual(['control de (B vs C) pairs 196 queries (O2: 197)']);
   });
 });
 
@@ -195,13 +302,14 @@ describe('scoreControls (O4, pooled EN + DE)', () => {
     runs: ['a', 'b', 'c'].map((id) => ({ queryId: id, retrieved: retrievedFor(id), expected: [1] })),
   });
 
-  it('pools both languages, pairs within a language and refuses a mismatched configuration', () => {
+  it('pools both languages, pairs within a language, labels the pair and refuses a mismatched configuration', () => {
     const c = [control('en', () => [1]), control('de', (id) => (id === 'a' ? [1] : [9]))];
     const b = [control('en', (id) => (id === 'c' ? [9] : [1])), control('de', () => [1])];
     const scored = scoreControls(c, b, { seed: 1, iterations: 100 });
     // en: c loses on B (1 loss); de: b and c win on B (2 wins) → pooled 2W/1L over 6.
-    expect(scored).toMatchObject({ n: 6, languages: ['en', 'de'] });
+    expect(scored).toMatchObject({ n: 6, languages: ['en', 'de'], baseline: 'C', candidate: 'B', perLanguage: { en: 3, de: 3 } });
     expect(scored.recallAt5).toMatchObject({ wins: 2, losses: 1, ties: 3, n: 6 });
+    expect(scoreControls(c, b, { seed: 1, iterations: 10 }, { baseline: 'A', candidate: 'C' })).toMatchObject({ baseline: 'A', candidate: 'C' });
     expect(() => scoreControls(c, [{ ...b[0]!, model: 'bge-m3' }, b[1]!], { seed: 1, iterations: 10 })).toThrow(/model differs/);
     expect(() => scoreControls(c, [b[0]!], { seed: 1, iterations: 10 })).toThrow(/same languages/);
   });
@@ -229,23 +337,55 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   const stubAsk = (arm: string): AskFn => async (question) => ({
     answer: `[stub ${arm}] ${question}`,
     refused: arm === 'C' && question.includes('q3'),
+    refusalReason: arm === 'C' && question.includes('q3') ? 'weak_match' : null,
     sources: [{ pageTitle: 'Seite' }],
   });
   const querySetSha = 'f'.repeat(64);
+  // The answer runs' provenance says what the arm reports say (`armReport`'s
+  // defaults): same revision, hardware, corpus, query set and answer model.
+  const provenanceFor = (arm: 'A' | 'B' | 'C', generated: GeneratedAnswers, written: WrittenAnswerArtifacts): AnswerRunProvenance => ({
+    runId: `run-${arm}`, arm, revisionSha: 'e398de4a1234', command: `scripts/run-arm-answers.ts --arm ${arm} --run-id run-${arm}`,
+    capturedAt: '2026-09-15T11:00:00.000Z', hardware: 'test host', corpusManifestSha: 'corpus-sha', querySetSha,
+    answerModel: { identity: 'rtx:gemma@http://chat/v1', model: 'gemma', endpoint: 'http://chat/v1' }, temperature: 'provider default',
+    ragAnswerMaxImages: 0, deepSearch: false, retrieval: { rag_answer_max_images: 0, rag_fetch_width: 10 },
+    items: generated.answers.length, refused: generated.refused, refusalReasons: generated.refusalReasons,
+    answersSha256: written.answersSha256, mappingSha256: written.mappingSha256,
+  });
+  const sources = (['A', 'B', 'C'] as const).map((arm) => ({
+    answersPath: join(dir, `answers-run-${arm}.jsonl`), mappingPath: join(dir, `mapping-run-${arm}.json`), provenancePath: join(dir, `provenance-run-${arm}.json`),
+  }));
+  const runs = (arm: 'A' | 'B' | 'C') => fixture.labels.map((l) => armRun({
+    queryId: l.id, cluster: l.expectedFiles[0]!, style: l.style, expectedImageKeys: l.expectedImages.map((p) => p.split('/').pop()!),
+    evidence: arm === 'A' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
+  }));
+  const armReports: Record<'A' | 'B' | 'C', ArmRunReport> = {
+    A: armReport('A', { querySetSha, runs: runs('A') }),
+    B: armReport('B', { querySetSha, runs: runs('B') }),
+    C: armReport('C', { querySetSha, runs: runs('C') }),
+  };
+  const input = { dir, runId: 'sheet', fixture, querySetSha, armReports, controls: null, command: 'scripts/judge-arms.ts --unblind --run-id sheet', seed: 1, iterations: 200 };
   let verdictLines: string[] = [];
 
   beforeAll(async () => {
     for (const arm of ['A', 'B', 'C'] as const) {
-      writeAnswerArtifacts(dir, `run-${arm}`, await generateArmAnswers(stubAsk(arm), fixture, { arm }));
+      const generated = await generateArmAnswers(stubAsk(arm), fixture, { arm });
+      writeAnswerProvenance(dir, `run-${arm}`, provenanceFor(arm, generated, writeAnswerArtifacts(dir, `run-${arm}`, generated)));
     }
   });
 
+  it('refuses to merge a run whose provenance does not hash the files beside it', () => {
+    const drifted = join(dir, 'provenance-run-A-drifted.json');
+    writeFileSync(drifted, readFileSync(join(dir, 'provenance-run-A.json'), 'utf8').replace(/"answersSha256": "[0-9a-f]{64}"/, `"answersSha256": "${'0'.repeat(64)}"`));
+    expect(() => mergeSheets(dir, 'bad', [{ ...sources[0]!, provenancePath: drifted }], 'cmd')).toThrow(/does not describe .*answers-run-A\.jsonl: answers file hashes to/);
+    expect(() => mergeSheets(dir, 'bad', [{ ...sources[0]!, provenancePath: join(dir, 'provenance-missing.json') }], 'cmd')).toThrow(/provenance-missing\.json: missing/);
+  });
+
   it('merges into one blinded sheet whose mapping sha is recorded before any judgment exists', () => {
-    const sheet = mergeSheets(dir, 'sheet', (['A', 'B', 'C'] as const).map((arm) => ({
-      runId: `run-${arm}`, answersPath: join(dir, `answers-run-${arm}.jsonl`), mappingPath: join(dir, `mapping-run-${arm}.json`),
-    })));
+    const sheet = mergeSheets(dir, 'sheet', sources, 'scripts/judge-arms.ts --merge --run-id sheet');
     expect(sheet.items).toBe(12);
-    expect(sheet.sources.map((s) => s.arm)).toEqual(['A', 'B', 'C']);
+    expect(sheet.command).toBe('scripts/judge-arms.ts --merge --run-id sheet');
+    expect(sheet.sources.map((s) => [s.arm, s.runId])).toEqual([['A', 'run-A'], ['B', 'run-B'], ['C', 'run-C']]);
+    expect(sheet.sources[0]!.provenanceSha256).toBe(sha256File(join(dir, 'provenance-run-A.json')));
     expect(sheet.mappingSha256).toBe(sha256File(join(dir, 'mapping-sheet.json')));
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
     // The judge's file: no arm anywhere, and the rows are not grouped by arm.
@@ -259,11 +399,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   it('refuses to un-blind an unjudged or partly judged sheet', () => {
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
     writeFileSync(judgmentsPath(dir, 'sheet'), rows.slice(0, 5).map((r) => JSON.stringify(judgment({ itemId: r.itemId }))).join('\n') + '\n');
-    expect(() => buildArmVerdict({
-      dir, runId: 'sheet', fixture, querySetSha,
-      armReports: { A: armReport('A', { querySetSha }), B: armReport('B', { querySetSha }) },
-      controls: null, allowUnderpowered: true, seed: 1, iterations: 100,
-    })).toThrow(/7 of 12 items have no judgment/);
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true })).toThrow(/7 of 12 items have no judgment/);
   });
 
   it('un-blinds a fully judged sheet, refuses below O2 without the flag, and labels the flagged run as tooling verification', () => {
@@ -280,27 +416,19 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     writeFileSync(judgmentsPath(dir, 'sheet'), rows.map((r) => JSON.stringify(judgment({ itemId: r.itemId, correctness: verdictFor(r) }))).join('\n') + '\n');
     expect(readJudgments(judgmentsPath(dir, 'sheet'))).toHaveLength(12);
 
-    const runs = (arm: 'A' | 'B' | 'C') => fixture.labels.map((l) => armRun({
-      queryId: l.id, cluster: l.expectedFiles[0]!, style: l.style, expectedImageKeys: l.expectedImages.map((p) => p.split('/').pop()!),
-      evidence: arm === 'A' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
-    }));
-    const armReports = {
-      A: armReport('A', { querySetSha, runs: runs('A') }),
-      B: armReport('B', { querySetSha, runs: runs('B') }),
-      C: armReport('C', { querySetSha, runs: runs('C') }),
-    };
-    const input = { dir, runId: 'sheet', fixture, querySetSha, armReports, controls: null, seed: 1, iterations: 200 };
-
-    // Below O2 (3 image-dependent of 190, 1 negative of 48): refused outright.
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: false })).toThrow(/O2 pre-registers 190 and 48/);
+    // Below O2 (3 image-dependent of 190 on 2 pages, 1 negative of 48): refused outright, naming each shortfall.
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: false })).toThrow(/not the one ADR-027 O2 pre-registers: 3 image-dependent labels \(O2: 190, floor 144\); 1 image-negative labels \(O2: 48\); image-dependent labels on 2 pages \(O2: ≥ 45\)/);
     // A report without hardware provenance is refused too (O9).
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { ...armReports, A: armReport('A', { querySetSha, runs: runs('A'), hardware: null }) } })).toThrow(/records no hardware/);
 
     const report = buildArmVerdict({ ...input, allowUnderpowered: true });
     expect(report.toolingVerificationOnly).toBe(true);
+    expect(report.command).toBe(input.command);
     expect(report.judge).toBe('simon');
     expect(report.singleJudgeStatement).toBe(SINGLE_JUDGE_STATEMENT);
-    expect(report.sample).toMatchObject({ imageDependent: 3, imageNegative: 1 });
+    expect(report.sample).toMatchObject({ imageDependent: 3, imageNegative: 1, pages: 2, maxLabelsPerPage: 2 });
+    expect(report.sample.shortfalls).toHaveLength(3);
+    expect(report.answerRuns.map((r) => r.runId)).toEqual(['run-A', 'run-B', 'run-C']);
     // Primary B vs A over q1..q3: A 1/3, B 3/3 → B wins q1, q2; q3 tie → +66.7 pp, 2W/0L.
     expect(report.judged.primary.correctness).toMatchObject({ n: 3, wins: 2, losses: 0, ties: 1 });
     expect(report.judged.primary.correctness.delta).toBeCloseTo(2 / 3, 10);
@@ -309,11 +437,35 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     expect(report.judged.secondary[1]!.refusal.candidateRate).toBe(0.25);
     // Controls were not given: the gate cannot pass, whatever the primary says.
     expect(report.decision.verdict).not.toBe('pass');
-    expect(report.decision.conditions.some((c) => c.name.includes('controls') && c.verdict === 'inconclusive')).toBe(true);
+    expect(report.decision.conditions.filter((c) => c.name.includes('controls') && c.verdict === 'inconclusive')).toHaveLength(2);
     expect(report.items).toHaveLength(12);
     verdictLines = formatArmVerdict(report);
     expect(verdictLines[0]).toMatch(/TOOLING VERIFICATION ONLY/);
+    expect(verdictLines.join('\n')).toContain('short of O2: image-dependent labels on 2 pages');
     expect(verdictLines.join('\n')).toContain('Single-judge protocol');
+  });
+
+  it('refuses an answer run that was not made under its arm report\'s configuration (review r1 finding 2)', () => {
+    // Every arm report names another chat model than the answer runs recorded — the pair is consistent, the sheet is not.
+    const other = { identity: 'rtx:llama@http://chat/v1', model: 'llama', endpoint: 'http://chat/v1' };
+    const drifted = { A: { ...armReports.A, answerModel: other }, B: { ...armReports.B, answerModel: other }, C: { ...armReports.C, answerModel: other } };
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: drifted })).toThrow(/Answer run run-A \(arm A\) was not made under arm A's held-fixed configuration.*answer model rtx:gemma@http:\/\/chat\/v1 vs the retrieval report's rtx:llama/);
+    // A knob the answer run read differently from the retrieval run is a drift too.
+    const knob = { ...armReports, A: { ...armReports.A, retrieval: { ...armReports.A.retrieval, rag_fetch_width: 12 } }, B: { ...armReports.B, retrieval: { ...armReports.B.retrieval, rag_fetch_width: 12 } }, C: { ...armReports.C, retrieval: { ...armReports.C.retrieval, rag_fetch_width: 12 } } };
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: knob })).toThrow(/retrieval\.rag_fetch_width: 10 vs the retrieval report's 12/);
+    // A sheet carrying arm C's answers needs arm C's report.
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { A: armReports.A, B: armReports.B } })).toThrow(/carries arm C's answers \(run run-C\) but no --arm-report C/);
+  });
+
+  it('refuses a provenance file that changed after the sheet recorded its sha', () => {
+    const file = join(dir, 'provenance-run-B.json');
+    const original = readFileSync(file, 'utf8');
+    writeFileSync(file, original.replace(/\n$/, ' \n'));
+    try {
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true })).toThrow(/provenance-run-B\.json hashes to .* the run's provenance changed/);
+    } finally {
+      writeFileSync(file, original);
+    }
   });
 
   it('refuses a mapping that changed after the sheet recorded its sha', () => {
@@ -321,11 +473,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     const original = readFileSync(mappingFile, 'utf8');
     writeFileSync(mappingFile, original.replace(/\n$/, ' \n'));
     try {
-      expect(() => buildArmVerdict({
-        dir, runId: 'sheet', fixture, querySetSha,
-        armReports: { A: armReport('A', { querySetSha }), B: armReport('B', { querySetSha }) },
-        controls: null, allowUnderpowered: true, seed: 1, iterations: 50,
-      })).toThrow(/mapping changed under the judge/);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/mapping changed under the judge/);
     } finally {
       writeFileSync(mappingFile, original);
     }

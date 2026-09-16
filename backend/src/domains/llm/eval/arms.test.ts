@@ -1,20 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import { armReport, armRun } from './arm-report-fixtures.js';
 import {
   ARM_MARGINS,
   ARM_SAMPLE,
   ArmRunReportSchema,
+  armProvenanceProblems,
   assertComparableArms,
+  commandLine,
   compareArmRetrieval,
   evidenceKeysOf,
+  imageAnalysisIdentityHash,
   imageEvidenceGuardrailPower,
   imageEvidenceRecallAtK,
   imageNegativeLeakAt1,
+  isRegressionControlPair,
   parseArmFlag,
   parseArmRunReport,
   primaryEndpointPower,
   rankedEvidence,
   readArmImageEnv,
+  readRevisionSha,
 } from './arms.js';
 
 /**
@@ -147,8 +156,106 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
     ['ftsLanguage', { ftsLanguage: 'simple' }],
     ['rerank', { rerank: 'jina:rerank@http://rr/v1' }],
     ['answerModel', { answerModel: null }],
+    // Review r1 finding 1: a RAG knob that drifted between arms reached a verdict.
+    ['retrieval.rag_fetch_width', { retrieval: { rag_ef_search: 100, rag_fetch_width: 99, rag_answer_max_images: 0 } }],
+    ['retrieval.rag_answer_max_images', { retrieval: { rag_ef_search: 100, rag_fetch_width: 10, rag_answer_max_images: 2 } }],
+    // A knob recorded on one side only is a drift too, never a default.
+    ['retrieval.topK', { retrieval: { rag_ef_search: 100, rag_fetch_width: 10, rag_answer_max_images: 0, topK: 10 } }],
   ] as const)('refuses a pair whose %s differs, naming the field', (field, over) => {
-    expect(() => assertComparableArms(armReport('A'), armReport('B', over))).toThrow(new RegExp(`held-fixed[\\s\\S]*${field}`));
+    expect(() => assertComparableArms(armReport('A'), armReport('B', over))).toThrow(new RegExp(`held-fixed[\\s\\S]*${field.replace('.', '\\.')}`));
+  });
+
+  it('refuses a report that does not carry its own arm\'s provenance, whichever side it is on', () => {
+    expect(() => assertComparableArms(armReport('A'), armReport('B', { imageAnalysisMaxOutputTokens: null }))).toThrow(/arm B must record imageAnalysisMaxOutputTokens/);
+    expect(() => assertComparableArms(armReport('A'), armReport('B', { visionModel: null }))).toThrow(/arm B must record visionModel/);
+    expect(() => assertComparableArms(armReport('C', { imageAnalysisMaxOutputTokens: 8192 }), armReport('B'))).toThrow(/arm C must not carry imageAnalysisMaxOutputTokens/);
+  });
+
+  it('admits the legacy-C control against the candidate C as a descriptive regression control, and nowhere else', () => {
+    const legacy = armReport('C', { control: 'legacy-revision-C', revisionSha: 'abcdef0' });
+    const candidate = armReport('C');
+    expect(isRegressionControlPair(legacy, candidate)).toBe(true);
+    expect(isRegressionControlPair(candidate, candidate)).toBe(false);
+    expect(() => assertComparableArms(legacy, candidate)).not.toThrow();
+    const cmp = compareArmRetrieval(legacy, candidate, { seed: 1, iterations: 10 });
+    expect(cmp.regressionControl).toBe(true);
+    expect(compareArmRetrieval(armReport('A'), armReport('B'), { seed: 1, iterations: 10 }).regressionControl).toBe(false);
+    // The un-blind step names its pairs; a control is refused there even as C vs C.
+    expect(() => assertComparableArms(legacy, candidate, { baseline: 'C', candidate: 'C' })).toThrow(/never substituted/);
+    // Two controls, or a control against A or B, are not that pairing.
+    expect(() => assertComparableArms(legacy, armReport('C', { control: 'legacy-revision-C' }))).toThrow(/never substituted/);
+    expect(() => assertComparableArms(legacy, armReport('B', { revisionSha: 'abcdef0' }))).toThrow(/never substituted/);
+  });
+});
+
+describe('armProvenanceProblems (ADR-027 "Report provenance", per arm)', () => {
+  it('accepts each arm\'s own shape and names what is missing or foreign', () => {
+    for (const arm of ['A', 'B', 'C'] as const) expect(armProvenanceProblems(armReport(arm))).toEqual([]);
+    expect(armProvenanceProblems(armReport('B', { visionModel: null, imageAnalysisMaxOutputTokens: null })).map((p) => p.field))
+      .toEqual(['visionModel', 'imageAnalysisMaxOutputTokens']);
+    expect(armProvenanceProblems(armReport('A', { imageIndexIdentity: null })).map((p) => p.field)).toEqual(['imageIndexIdentity']);
+    expect(armProvenanceProblems(armReport('C', { visionModel: armReport('B').visionModel })).map((p) => p.field)).toEqual(['visionModel']);
+  });
+
+  it('is the schema\'s rule too: a B report without the ceiling does not parse', () => {
+    expect(() => parseArmRunReport(armReport('B', { imageAnalysisMaxOutputTokens: null }), 'arm-B.json')).toThrow(/arm-B\.json is not an arm run report \(imageAnalysisMaxOutputTokens: arm B must record/);
+    expect(() => parseArmRunReport(armReport('C', { imageAnalysisVersions: { prompt: 1, schema: 1 } }), 'arm-C.json')).toThrow(/imageAnalysisVersions: arm C must not carry/);
+    expect(ArmRunReportSchema.safeParse(armReport('B')).success).toBe(true);
+  });
+
+  it('hashes D5\'s retained identity in canonical form', () => {
+    // `printf 'p\nm\nhttp://x' | shasum -a 256` — the three-tuple joined by newlines, nothing else.
+    expect(imageAnalysisIdentityHash('p', 'm', 'http://x')).toBe('37977b9082e0f733ca94d937453823516e332111cd20f4addc15b92975d07ede');
+    expect(imageAnalysisIdentityHash('p', 'm', 'http://y')).not.toBe(imageAnalysisIdentityHash('p', 'm', 'http://x'));
+  });
+});
+
+describe('readRevisionSha (the sha pins the prompts)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'arm-revision-'));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+  const repo = join(root, 'repo');
+  const bare = join(root, 'no-git');
+  execFileSync('mkdir', ['-p', repo, bare]);
+  git(repo, 'init', '-q');
+  git(repo, 'config', 'user.email', 't@t');
+  git(repo, 'config', 'user.name', 't');
+  writeFileSync(join(repo, 'prompt.txt'), 'v1\n');
+  git(repo, 'add', 'prompt.txt');
+  git(repo, 'commit', '-q', '-m', 'one');
+  const head = git(repo, 'rev-parse', 'HEAD');
+
+  it('records HEAD of a clean checkout and ignores untracked files', () => {
+    expect(readRevisionSha({ env: {}, cwd: repo })).toBe(head);
+    writeFileSync(join(repo, 'scratch.json'), '{}');
+    expect(readRevisionSha({ env: {}, cwd: repo })).toBe(head);
+  });
+
+  it('refuses a tree with uncommitted changes to tracked files', () => {
+    writeFileSync(join(repo, 'prompt.txt'), 'v2\n');
+    try {
+      expect(() => readRevisionSha({ env: {}, cwd: repo })).toThrow(/uncommitted changes to tracked files \(.*prompt\.txt/);
+      // The override cannot relabel a dirty checkout either.
+      expect(() => readRevisionSha({ env: { EVAL_REVISION_SHA: head }, cwd: repo })).toThrow(/uncommitted changes/);
+    } finally {
+      git(repo, 'checkout', '--', 'prompt.txt');
+    }
+  });
+
+  it('accepts EVAL_REVISION_SHA only where git cannot answer, and refuses one that disagrees with HEAD', () => {
+    expect(() => readRevisionSha({ env: {}, cwd: bare })).toThrow(/EVAL_REVISION_SHA/);
+    expect(readRevisionSha({ env: { EVAL_REVISION_SHA: 'abcdef0123' }, cwd: bare })).toBe('abcdef0123');
+    expect(() => readRevisionSha({ env: { EVAL_REVISION_SHA: 'not-a-sha' }, cwd: bare })).toThrow(/not a commit sha/);
+    expect(() => readRevisionSha({ env: { EVAL_REVISION_SHA: 'abcdef0123' }, cwd: repo })).toThrow(/does not name this checkout's HEAD/);
+    expect(readRevisionSha({ env: { EVAL_REVISION_SHA: head.slice(0, 12) }, cwd: repo })).toBe(head);
+  });
+});
+
+describe('commandLine (ADR-027 "Report provenance": commands)', () => {
+  it('records the script relative to the working directory and every argument, quoting whitespace', () => {
+    expect(commandLine(['/usr/bin/node', '/w/backend/scripts/run-retrieval-eval.ts', '--images', '--arm', 'C', '--out', 'arm C.json'], '/w/backend'))
+      .toBe('scripts/run-retrieval-eval.ts --images --arm C --out "arm C.json"');
   });
 });
 

@@ -15,19 +15,22 @@
  *
  * It writes answers-<id>.jsonl (arm-blinded — see eval/answers.ts),
  * mapping-<id>.json and provenance-<id>.json (both files' sha256, the
- * configuration, the revision). The chat model is REAL: a mocked one can
- * only verify this tooling and produces no number anyone may quote.
+ * configuration, the revision of a CLEAN checkout, the command line, and
+ * the route's refusal reasons as counts — never on a judged row). A
+ * `semantic_index_unavailable` refusal is an outage, not the protocol's
+ * refusal: the run aborts on the first one and writes nothing (exit ≠ 0).
+ * The chat model is REAL: a mocked one can only verify this tooling and
+ * produces no number anyone may quote.
  */
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { buildApp } from '../src/app.js';
 import { closePool, closeVectorPool, query, runMigrations } from '../src/core/db/postgres.js';
 import { generateAccessToken } from '../src/core/plugins/auth.js';
 import { invalidateRagAnswerMaxImagesCache } from '../src/core/services/admin-settings-service.js';
 import { assertKnownFlags, flagValue, wantsHelp, ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_USAGE, ARM_ANSWERS_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { assertDisposableDatabase } from '../src/domains/llm/eval/disposable-db.js';
-import { EVAL_ARMS, parseArmRunReport, querySetSha, readHeldFixedProvenance, type EvalArm } from '../src/domains/llm/eval/arms.js';
-import { askThroughRoute, generateArmAnswers, provenancePath, writeAnswerArtifacts, type AnswerRunProvenance } from '../src/domains/llm/eval/answers.js';
+import { EVAL_ARMS, commandLine, parseArmRunReport, querySetSha, readHeldFixedProvenance, readRevisionSha, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { askThroughRoute, generateArmAnswers, writeAnswerArtifacts, writeAnswerProvenance, type AnswerRunProvenance } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
 import { EVAL_USER_ID } from '../src/domains/llm/eval/seed.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
@@ -58,7 +61,7 @@ async function main(): Promise<void> {
     throw new Error('REDIS_URL and JWT_SECRET are required — the answers come out of the real app (buildApp), which needs both');
   }
 
-  const sha = process.env.EVAL_REVISION_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const sha = readRevisionSha();
   const fixture = loadImageFixture();
   const querySha = querySetSha();
 
@@ -115,6 +118,7 @@ async function main(): Promise<void> {
       runId,
       arm,
       revisionSha: sha,
+      command: commandLine(),
       capturedAt: new Date().toISOString(),
       hardware,
       corpusManifestSha: fixture.corpusManifestSha,
@@ -126,13 +130,14 @@ async function main(): Promise<void> {
       retrieval: held.retrieval,
       items: generated.answers.length,
       refused: generated.refused,
+      refusalReasons: generated.refusalReasons,
       answersSha256: written.answersSha256,
       mappingSha256: written.mappingSha256,
     };
-    writeFileSync(provenancePath(outDir, runId), `${JSON.stringify(provenance, null, 2)}\n`);
+    const provenanceFile = writeAnswerProvenance(outDir, runId, provenance);
     console.log(`wrote ${written.answersPath} (sha256 ${written.answersSha256})`);
     console.log(`wrote ${written.mappingPath} (sha256 ${written.mappingSha256}) — keep it away from the judge`);
-    console.log(`wrote ${provenancePath(outDir, runId)} · ${generated.refused}/${generated.answers.length} refused`);
+    console.log(`wrote ${provenanceFile} · ${generated.refused}/${generated.answers.length} refused${generated.refused > 0 ? ` (${Object.entries(generated.refusalReasons).map(([r, n]) => `${r}: ${n}`).join(', ')})` : ''}`);
   } finally {
     await app.close();
   }

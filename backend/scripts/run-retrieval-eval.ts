@@ -59,6 +59,12 @@
  *   POSTGRES_URL              a database this script may TRUNCATE and RETYPE
  *   EVAL_HARDWARE             --arm only: free text naming the host, GPU and
  *                             server software (ADR-027 O9), recorded as provenance
+ *   EVAL_REVISION_SHA         --arm only, and only for a tree WITHOUT git history
+ *                             (an export or image built at a commit): the sha to
+ *                             record. Where git answers, HEAD is recorded, the
+ *                             tree must be clean, and the variable must agree
+ *                             with HEAD or the run is refused (eval/arms.ts
+ *                             `readRevisionSha`).
  *
  * With --images, additionally (see eval/images-axis.ts for why these are their
  * OWN variables and never fall back to the text pair):
@@ -68,7 +74,6 @@
  *   EVAL_IMAGE_EMBEDDING_BACKEND    optional provenance label for the report
  * (required on --arm A, REFUSED on --arm B and --arm C.)
  */
-import { execFileSync } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -87,7 +92,7 @@ import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runArmEval, runImageEval } from '../src/domains/llm/eval/runner-images.js';
 import { armRuns } from '../src/domains/llm/eval/images-metrics.js';
 import { buildImageAxisReport, formatImageAxisVerdict, type ImageAxisReport } from '../src/domains/llm/eval/images-report.js';
-import { compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmImageEnv, readHeldFixedProvenance, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { assertArmCState, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readArmImageEnv, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
 import { percentile } from '../src/domains/llm/eval/latency-stats.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
@@ -246,6 +251,14 @@ async function main(): Promise<void> {
   assertDisposableDatabase(process.env.POSTGRES_URL ?? '');
 
   await runMigrations();
+  // #1614 PR2 review r1: `--arm B` refuses AT ONCE — here, one row-less probe
+  // after the migrations and before the FTS write, the corpus reset and the
+  // 65-page seed. The candidate revision's table (#1616), the image_analysis
+  // assignment (O8) and the output-token ceiling (D8) are what B needs
+  // before anything is embedded; the backfill it waits for later cannot run
+  // without them either.
+  const armBState: ArmBState | null = arm === 'B' ? await readArmBState() : null;
+  if (armBState) console.log(`arm B: image_analysis ${armBState.visionModel.identity} · image_analysis_max_output_tokens ${armBState.imageAnalysisMaxOutputTokens}`);
   // Before the seed, not after: migration 049 builds pages.tsv from a BEFORE
   // INSERT trigger that reads this row per row, so a value written later would
   // leave the corpus indexed under one configuration while keywordSearch
@@ -286,6 +299,7 @@ async function main(): Promise<void> {
     const report = await measureArmAxis(shared, {
       arm,
       imageEnv,
+      armBState,
       control: control === 'legacy-revision-C' ? 'legacy-revision-C' : undefined,
       backfillTimeoutMs: backfillTimeoutSec * 1000,
     });
@@ -708,46 +722,52 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
   };
 }
 
-/** The checkout that ran — prompts, chunking and every stage are pinned by it. */
-function revisionSha(): string {
-  const sha = process.env.EVAL_REVISION_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error(`Cannot record the revision: "${sha}" is not a commit sha`);
-  return sha;
-}
-
 /**
  * Arm B's index state is "backfill complete on the corpus", and the backfill
  * is the PRODUCT's vision-analysis worker (#1616) running against this
  * database on the candidate revision — never a copy inside the harness. So
- * the run seeds, then waits for `page_image_analyses` to carry an analysed
- * row per corpus image, up to the operator's timeout, and refuses otherwise.
- * On a revision without that table (this one) it refuses at once.
+ * the run seeds, then waits for `page_image_analyses` to carry a VALID row
+ * per corpus image — D5's validity predicate, not `status = 'analyzed'`
+ * alone: the row's `identity_hash` must be the retained identity of the
+ * assignment this run read (`readArmBState`, before the seed), and every
+ * valid row must carry ONE (prompt, schema) version pair, which the report
+ * records. A sweep-invalidated row (identity drift, a version bump) is a row
+ * the product would not compose, and it does not count here either. The
+ * version constants themselves live in the candidate revision's contracts
+ * package; this revision reads what the rows carry and refuses a mix.
  */
-async function awaitArmBBackfill(expectedImages: number, timeoutMs: number): Promise<void> {
-  const table = await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`);
-  if (!table.rows[0]?.exists) {
-    throw new Error(
-      '--arm B needs the candidate revision: this checkout has no page_image_analyses table (#1616) and no ' +
-        'derived provenance on SearchResult (#1617), so nothing here can be arm B. Run it on the post-#1617 ' +
-        'revision with image_analysis assigned.',
-    );
-  }
+async function awaitArmBBackfill(state: ArmBState, expectedImages: number, timeoutMs: number): Promise<{ prompt: number; schema: number }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const analysed = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_image_analyses WHERE status = 'analyzed'`);
-    const n = analysed.rows[0]?.n ?? 0;
+    const valid = await query<{ n: number; versions: number }>(
+      `SELECT COUNT(*)::int AS n, COUNT(DISTINCT (prompt_version, schema_version))::int AS versions
+         FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1`,
+      [state.identityHash],
+    );
+    const n = valid.rows[0]?.n ?? 0;
     if (n >= expectedImages) {
-      console.log(`arm B: ${n}/${expectedImages} corpus images analysed — backfill complete`);
-      return;
+      if ((valid.rows[0]?.versions ?? 0) !== 1) {
+        throw new Error(
+          `--arm B: the ${n} valid analyses carry ${valid.rows[0]?.versions} distinct (prompt_version, schema_version) pairs — ` +
+            'the backfill straddled a version bump. Let the sweep re-analyse under one pair, then re-run.',
+        );
+      }
+      const versions = await query<{ prompt: number; schema: number }>(
+        `SELECT DISTINCT prompt_version AS prompt, schema_version AS schema FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1`,
+        [state.identityHash],
+      );
+      console.log(`arm B: ${n}/${expectedImages} corpus images analysed under ${state.visionModel.identity} (prompt v${versions.rows[0]!.prompt}, schema v${versions.rows[0]!.schema}) — backfill complete`);
+      return versions.rows[0]!;
     }
     if (Date.now() >= deadline) {
       throw new Error(
-        `--arm B: ${n}/${expectedImages} corpus images are analysed. The backfill (the product's image-analysis ` +
-          'worker, run against THIS database with image_analysis assigned) must complete before the queries are ' +
-          'made — start it and pass --backfill-timeout <sec> to wait for it here.',
+        `--arm B: ${n}/${expectedImages} corpus images carry a valid analysis (status analyzed under the assignment's ` +
+          `identity ${state.identityHash.slice(0, 12)}…). The backfill (the product's image-analysis worker, run against ` +
+          'THIS database with image_analysis assigned) must complete before the queries are made — start it and pass ' +
+          '--backfill-timeout <sec> to wait for it here.',
       );
     }
-    console.log(`arm B: waiting for the backfill — ${n}/${expectedImages} analysed`);
+    console.log(`arm B: waiting for the backfill — ${n}/${expectedImages} valid`);
     await setTimeout(5000);
   }
 }
@@ -758,17 +778,19 @@ async function awaitArmBBackfill(expectedImages: number, timeoutMs: number): Pro
  * A seeds exactly as the paired axis does (real intake, VL endpoint,
  * `page_image_embeddings` filled). B and C seed the text and the attachment
  * bytes with `imageIndex: false` and never assign `image_embedding`; C then
- * asserts the image index is empty, B waits for the backfill. Every arm
- * records the same provenance, and the report is the arm's alone — pairing
- * is `--baseline` here (retrieval endpoints) and judge-arms.ts (judged ones).
+ * asserts its state on the database (`assertArmCState`: image_analysis
+ * unassigned, no derived rows, no analyses) beside the empty image index, B
+ * waits for the backfill. Every arm records the same provenance, and the
+ * report is the arm's alone — pairing is `--baseline` here (retrieval
+ * endpoints) and judge-arms.ts (judged ones).
  */
 async function measureArmAxis(
   ctx: AxisContext,
-  opts: { arm: EvalArm; imageEnv: ImageAxisEnv | null; control: 'legacy-revision-C' | undefined; backfillTimeoutMs: number },
+  opts: { arm: EvalArm; imageEnv: ImageAxisEnv | null; armBState: ArmBState | null; control: 'legacy-revision-C' | undefined; backfillTimeoutMs: number },
 ): Promise<ArmRunReport> {
   const { language, ftsLanguage, model, dims, evalProviderConfig } = ctx;
   const { arm } = opts;
-  const sha = revisionSha();
+  const sha = readRevisionSha();
   const hardware = process.env.EVAL_HARDWARE?.trim() || null;
   if (!hardware) console.log('NOTE: EVAL_HARDWARE is unset — the report records hardware: null and the un-blind step of judge-arms.ts will refuse it (O9).');
 
@@ -783,7 +805,7 @@ async function measureArmAxis(
   await ensureVectorDimensions(dims);
 
   let imageIndexIdentity: string | null = null;
-  let visionModel: ArmRunReport['visionModel'] = null;
+  let visionModel: ArmRunReport['visionModel'] = opts.armBState?.visionModel ?? null;
   if (arm === 'A') {
     const prepared = await prepareImageIndex(opts.imageEnv!);
     imageIndexIdentity = prepared.identity;
@@ -813,6 +835,7 @@ async function measureArmAxis(
   await recordCorpusLanguage(IMAGE_AXIS_CORPUS_CLAIM);
 
   const expectedImages = manifest.pages.reduce((n, page) => n + page.images.length, 0);
+  let imageAnalysisVersions: ArmRunReport['imageAnalysisVersions'] = null;
   if (arm === 'A') {
     console.log(`indexed ${seeded.imagesEmbedded} images in ${(seeded.imageEmbedWallClockMs / 1000).toFixed(1)}s`);
   } else {
@@ -820,7 +843,10 @@ async function measureArmAxis(
     if ((rows.rows[0]?.n ?? 0) !== 0) {
       throw new Error(`arm ${arm}: page_image_embeddings carries ${rows.rows[0]!.n} rows after a no-image-index seed — this database is not in arm ${arm}'s state`);
     }
-    if (arm === 'B') await awaitArmBBackfill(expectedImages, opts.backfillTimeoutMs);
+    if (arm === 'B') imageAnalysisVersions = await awaitArmBBackfill(opts.armBState!, expectedImages, opts.backfillTimeoutMs);
+    // C's state on the database itself, not only on the top-K each query
+    // returns: a derived row outside every window is invisible to the runner.
+    if (arm === 'C') await assertArmCState();
   }
 
   const held = await readHeldFixedProvenance();
@@ -849,6 +875,7 @@ async function measureArmAxis(
     arm,
     ...(opts.control ? { control: opts.control } : {}),
     revisionSha: sha,
+    command: commandLine(),
     capturedAt: new Date().toISOString(),
     hardware,
     corpusManifestSha: fixture.corpusManifestSha,
@@ -860,7 +887,8 @@ async function measureArmAxis(
     answerModel: held.answerModel,
     visionModel,
     imageIndexIdentity,
-    imageAnalysisMaxOutputTokens: null,
+    imageAnalysisMaxOutputTokens: opts.armBState?.imageAnalysisMaxOutputTokens ?? null,
+    imageAnalysisVersions,
     retrieval: {
       ...held.retrieval,
       topK: Math.max(...TOP_K),
@@ -889,11 +917,17 @@ async function measureArmAxis(
  * The retrieval rows of the ADR endpoint table for a pair of arm reports —
  * McNemar exact on the discordant pairs and the page-cluster bootstrap on
  * every interval. Printed, never gated here: the gate is judge-arms.ts's,
- * where the judged endpoints join these.
+ * where the judged endpoints join these. The legacy-C control paired with
+ * the candidate C is printed under its own label: the regression control
+ * for #1617's authored-hit change, descriptive only.
  */
 function compareArmReports(baseline: ArmRunReport, candidate: ArmRunReport): void {
   const cmp = compareArmRetrieval(baseline, candidate, { seed: 1614 });
-  console.log(`\n--- arm ${candidate.arm} vs arm ${baseline.arm} (retrieval endpoints, ADR-027) ---`);
+  const label = (r: ArmRunReport) => `arm ${r.arm}${r.control ? ` (${r.control})` : ''}`;
+  console.log(`\n--- ${label(candidate)} vs ${label(baseline)} (retrieval endpoints, ADR-027) ---`);
+  if (cmp.regressionControl) {
+    console.log('REGRESSION CONTROL for #1617\'s authored-hit change (ADR-027 "Arms and revisions"): descriptive only — no verdict condition reads this pair, and the control is never substituted for arm C.');
+  }
   for (const [k, endpoint] of Object.entries(cmp.recallAt)) {
     for (const line of formatPairedBinary(`Recall${k}`, endpoint)) console.log(line);
   }
