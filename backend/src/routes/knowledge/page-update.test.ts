@@ -286,6 +286,8 @@ describe('PUT /api/pages/:id', () => {
       // `body_html`, never `body_text`: the src attributes live in the HTML,
       // and a flattener-only difference cannot move an image.
       expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
+      // ADR-027 D4: the analysis flag rides the same gate.
+      expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
     });
 
     it('raises image_embedding_dirty on the app-side Confluence push', async () => {
@@ -301,6 +303,7 @@ describe('PUT /api/pages/:id', () => {
       expect(response.statusCode).toBe(200);
       const sql = findUpdatePagesCall('body_storage');
       expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
+      expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
     });
   });
 

@@ -415,6 +415,45 @@ function registerAllWorkers(): void {
     },
   });
 
+  // Image analysis worker (ADR-027 D13, #1616): one bounded batch per sync
+  // cadence — sweep, reconcile, then analyze when a vision model is assigned.
+  // This repeat is the worker's ONE scheduled trigger (sync does not kick it;
+  // the interval worker below stands in when BullMQ is off). The price of
+  // one cadence is latency: a page a sync writes waits up to one sync
+  // interval for its first reconcile — two when this repeat and the sync's
+  // fire together and the sync runs for minutes past it. Concurrency 1;
+  // the `worker:lock:image-analysis` lease serializes it with Run Now
+  // (#1618). Per-image failures fail the job with the batch's partial counts
+  // and never a provider body; a lost lease does too.
+  registerWorkerDef({
+    queueName: 'image-analysis',
+    concurrency: 1,
+    repeatPattern: { every: syncInterval * 60 * 1000 },
+    processor: async () => {
+      // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+      const { runImageAnalysisBatch } = await import('../../domains/llm/services/image-analysis-worker.js');
+      const r = await runImageAnalysisBatch();
+      // `pagesFailed` is named here because this string is the only
+      // operator-readable summary of a batch (`job_history.result_summary`),
+      // and a batch whose ONLY problem is a partially-unreadable page has
+      // `failed = 0` — it would otherwise read as an unqualified success
+      // (#1626 review r4).
+      const counts = `${r.processed} analyzed, ${r.reused} reused, ${r.skipped} skipped, `
+        + `${r.failed} failed (${r.terminal} terminal), ${r.reconciledPages} pages reconciled`
+        + `, ${r.pagesFailed} pages failed (${r.unreadableRefs} unreadable references)`;
+      if (r.reason === 'lease_lost') {
+        throw new Error(`Image analysis batch stopped: the worker lease was lost. Partial counts: ${counts}.`);
+      }
+      if (r.failed > 0) {
+        const stop = r.reason === 'provider_status' || r.reason === 'uniform_rejection'
+          ? ` Stopped early (${r.reason}${r.httpStatus !== undefined ? `, HTTP ${r.httpStatus}` : ''}).`
+          : '';
+        throw new Error(`Image analysis batch: ${counts}.${stop} Check the image analysis card and the assigned vision provider.`);
+      }
+      return `Image analysis batch: ${counts}${r.reason ? ` (${r.reason})` : ''}`;
+    },
+  });
+
   // Maintenance: token cleanup
   registerWorkerDef({
     queueName: 'maintenance',
@@ -496,6 +535,8 @@ async function startLegacyWorkers(): Promise<void> {
   const { startTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { startRetentionWorker } = await import('./data-retention-service.js');
   const { startBackupLegacyWorker } = await import('./backup-worker.js');
+  // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+  const { startImageAnalysisWorker } = await import('../../domains/llm/services/image-analysis-worker.js');
 
   const syncInterval = parseInt(process.env.SYNC_INTERVAL_MIN ?? '15', 10);
   const summaryInterval = parseInt(
@@ -509,6 +550,7 @@ async function startLegacyWorkers(): Promise<void> {
   startTokenCleanupWorker();
   startRetentionWorker();
   startBackupLegacyWorker();
+  startImageAnalysisWorker(syncInterval);
 
   // Initial batches after 30s delay. The .catch() prevents a batch failure
   // from becoming an unhandled rejection inside the timer callback (#741).
@@ -532,6 +574,8 @@ async function stopLegacyWorkers(): Promise<void> {
   const { stopTokenCleanupWorker } = await import('./token-cleanup-service.js');
   const { stopRetentionWorker } = await import('./data-retention-service.js');
   const { stopBackupLegacyWorker } = await import('./backup-worker.js');
+  // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
+  const { stopImageAnalysisWorker } = await import('../../domains/llm/services/image-analysis-worker.js');
 
   stopSyncWorker();
   stopQualityWorker();
@@ -539,4 +583,5 @@ async function stopLegacyWorkers(): Promise<void> {
   stopTokenCleanupWorker();
   stopRetentionWorker();
   stopBackupLegacyWorker();
+  stopImageAnalysisWorker();
 }

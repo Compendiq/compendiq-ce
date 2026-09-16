@@ -441,8 +441,8 @@ describe.skipIf(!dbAvailable)('embedPageImages (#1115 P2)', () => {
   });
 
   it('keeps the row of a still-referenced image whose file went missing', async () => {
-    // `resolveAttachmentBytes` answers the same null for "gone" and for "the
-    // read failed", so deleting on a miss lets one bad disk moment empty a
+    // The legacy leg counts "gone" and "the read failed" as the same miss,
+    // so deleting on a miss lets one bad disk moment empty a
     // page's entries. A stale row is recoverable; a deleted one is a re-embed.
     await assignImageEmbedding();
     const pageId = await seedPage({ bodyHtml: '<img src="/api/attachments/1/a.png">' });

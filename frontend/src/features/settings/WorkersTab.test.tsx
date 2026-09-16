@@ -86,7 +86,7 @@ function mockFetch(overrides?: {
   const quality = { ...qualityStatus, ...overrides?.quality };
   const summary = { ...summaryStatus, ...overrides?.summary };
   const embedding = { ...embeddingStatus, ...overrides?.embedding };
-  const settings = { qualityBatchSize: 12, summaryBatchSize: 7 };
+  const settings = { qualityBatchSize: 12, summaryBatchSize: 7, imageAnalysisBatchSize: 50 };
 
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request, options = {}) => {
     const path = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
@@ -306,6 +306,19 @@ describe('WorkersTab', () => {
       });
       expect(screen.queryByTestId('embedding-batch-size')).not.toBeInTheDocument();
       expect(screen.getByTestId('quality-batch-size-save')).toBeDisabled();
+    });
+
+    it('renders the image analysis row as images per batch, clamped to its own [1, 500] range (ADR-027 D13)', async () => {
+      render(<WorkersTab />, { wrapper: createWrapper() });
+      const card = screen.getByTestId('worker-card-image-analysis');
+      const input = within(card).getByRole('spinbutton', { name: 'Images per batch' });
+      await waitFor(() => expect(input).toHaveValue(50));
+
+      fireEvent.change(input, { target: { value: '9999' } });
+      expect(input).toHaveValue(500);
+      // A page-sized knob elsewhere is untouched by an image-sized edit.
+      expect(screen.getByTestId('quality-batch-size')).toHaveValue(12);
+      expect(screen.getByTestId('image-analysis-batch-size-save')).toBeEnabled();
     });
 
     it('saves only the edited worker field and clamps to the allowed range', async () => {

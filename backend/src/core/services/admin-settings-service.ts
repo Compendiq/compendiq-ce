@@ -1142,23 +1142,41 @@ export async function getPendingSyncVersionsRetentionDays(): Promise<number> {
 }
 
 /**
- * Pages the quality and summary workers take per batch — one bounded batch
- * per scheduled cycle and per Run Now; there is no backlog-draining loop.
- * Rows `quality_batch_size` / `summary_batch_size`, written by the Workers
- * tab through `PUT /api/admin/settings`. No env var behind them: the former
- * `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` are gone, not bootstrap-only.
+ * Items the quality, summary and image-analysis workers take per batch — one
+ * bounded batch per scheduled cycle and per Run Now; there is no
+ * backlog-draining loop. Rows `quality_batch_size` / `summary_batch_size`
+ * (pages, default 5, [1, 100]) and `image_analysis_batch_size` (images,
+ * default 50, [1, 500] — ADR-027 D13, seeded by migration 116), written by the
+ * Workers tab through `PUT /api/admin/settings`. No env var behind them: the
+ * former `QUALITY_BATCH_SIZE` / `SUMMARY_BATCH_SIZE` are gone, not
+ * bootstrap-only.
  *
- * Clamped to [1, 100]. No caching — read once per batch, and a batch runs at
- * most once per `*_CHECK_INTERVAL_MINUTES`. Never throws: an unreadable row
- * answers the default rather than aborting a batch.
+ * Clamped per key. No caching — read once per batch, and a batch runs at
+ * most once per worker cadence. Never throws: an unreadable row answers the
+ * default rather than aborting a batch.
  */
 export const WORKER_BATCH_SIZE_DEFAULT = 5;
 export const WORKER_BATCH_SIZE_MIN = 1;
 export const WORKER_BATCH_SIZE_MAX = 100;
 
-export type WorkerBatchSizeKey = 'quality_batch_size' | 'summary_batch_size';
+export const IMAGE_ANALYSIS_BATCH_SIZE_DEFAULT = 50;
+export const IMAGE_ANALYSIS_BATCH_SIZE_MIN = 1;
+export const IMAGE_ANALYSIS_BATCH_SIZE_MAX = 500;
+
+export type WorkerBatchSizeKey = 'quality_batch_size' | 'summary_batch_size' | 'image_analysis_batch_size';
+
+const WORKER_BATCH_SIZE_BOUNDS: Record<WorkerBatchSizeKey, { default: number; min: number; max: number }> = {
+  quality_batch_size: { default: WORKER_BATCH_SIZE_DEFAULT, min: WORKER_BATCH_SIZE_MIN, max: WORKER_BATCH_SIZE_MAX },
+  summary_batch_size: { default: WORKER_BATCH_SIZE_DEFAULT, min: WORKER_BATCH_SIZE_MIN, max: WORKER_BATCH_SIZE_MAX },
+  image_analysis_batch_size: {
+    default: IMAGE_ANALYSIS_BATCH_SIZE_DEFAULT,
+    min: IMAGE_ANALYSIS_BATCH_SIZE_MIN,
+    max: IMAGE_ANALYSIS_BATCH_SIZE_MAX,
+  },
+};
 
 export async function getWorkerBatchSize(settingKey: WorkerBatchSizeKey): Promise<number> {
+  const bounds = WORKER_BATCH_SIZE_BOUNDS[settingKey];
   try {
     const r = await query<{ setting_value: string }>(
       `SELECT setting_value FROM admin_settings WHERE setting_key = $1`,
@@ -1167,12 +1185,12 @@ export async function getWorkerBatchSize(settingKey: WorkerBatchSizeKey): Promis
     const raw = r.rows[0]?.setting_value;
     if (raw) {
       const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= WORKER_BATCH_SIZE_MIN && n <= WORKER_BATCH_SIZE_MAX) return n;
+      if (Number.isFinite(n) && n >= bounds.min && n <= bounds.max) return n;
     }
   } catch (err) {
     logger.warn({ err, settingKey }, 'Failed to read worker batch size — using default');
   }
-  return WORKER_BATCH_SIZE_DEFAULT;
+  return bounds.default;
 }
 
 // ─── LLM queue settings — cluster-wide cached getters (Compendiq/compendiq-ee#113 Phase B-3) ──

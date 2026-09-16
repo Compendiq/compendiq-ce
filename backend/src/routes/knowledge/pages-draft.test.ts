@@ -365,6 +365,10 @@ describe('Draft-while-published routes', () => {
       expect(update).toMatch(
         /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
       );
+      // ADR-027 D4: the analysis flag rides the same gate.
+      expect(update).toMatch(
+        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
+      );
     });
 
     it('returns 400 when no draft exists', async () => {

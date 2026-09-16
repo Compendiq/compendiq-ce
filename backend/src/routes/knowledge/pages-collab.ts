@@ -135,6 +135,10 @@ async function commitConfluencePage(args: {
            WHEN body_html IS DISTINCT FROM $3 THEN TRUE
            ELSE image_embedding_dirty
          END,
+         image_analysis_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+           ELSE image_analysis_dirty
+         END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          summary_status = 'pending', summary_retry_count = 0,
          quality_status = 'pending', quality_retry_count = 0
@@ -368,6 +372,10 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
            image_embedding_dirty = CASE
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_embedding_dirty
+           END,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_analysis_dirty
            END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            summary_status = 'pending', summary_retry_count = 0,

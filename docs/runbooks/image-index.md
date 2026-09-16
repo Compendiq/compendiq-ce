@@ -329,11 +329,13 @@ Reconcile deletes the rows of this page whose `(source, key)` the page's
 **stored body no longer references**. That is the only rule, and it has one
 consequence that surprises people: **a file that has gone missing keeps its
 row.** The reconcile set comes from `body_html`, not from what the scan managed
-to read, and `resolveAttachmentBytes` answers the same `null` for "the file is
-gone" and for "the read failed" — so deleting on a miss would let one bad disk
-moment empty a page's entries. A missing file is counted as a `missing` skip
-and its row is left alone; a stale row is recoverable (the next sync
-re-downloads the file), a deleted one costs a full re-embed.
+to read, and this leg counts "the file is gone" and "the read failed" as the
+same `missing` skip — so deleting on a miss would let one bad disk moment
+empty a page's entries. A missing file is counted as a `missing` skip and its
+row is left alone; a stale row is recoverable (the next sync re-downloads the
+file), a deleted one costs a full re-embed. (The analysis worker in §5b does
+tell the two apart — `resolveAttachmentBytes` answers `null` only for
+`ENOENT` — and retries a read failure instead of recording it.)
 
 So an unsync, or any other clearing of cached attachment files, does **not**
 shrink the index. Rows go away when the body stops pointing at the image,
@@ -442,6 +444,90 @@ one nothing would.
   that the assignment and the stored index are unaffected. It never renders as
   "not assigned" — that would send an operator whose leg is working to go and
   assign it — and both actions stay live, because they are the recovery.
+
+## 5b. Image analysis worker (ADR-027, #1616)
+
+The candidate's ingestion side ships beside this leg. It is driven by ONE
+queue, `image-analysis` (BullMQ concurrency 1, repeating on the sync
+cadence; the interval worker when BullMQ is off) — sync does **not** kick it,
+so a cycle is one lease contest, not one per synced user. The price is
+latency: a page a sync writes waits up to one sync interval for its first
+reconcile, two when the two repeats fire together and the sync runs on for
+minutes — so when comparing the two legs' freshness, expect the legacy
+image index (kicked per sync) to lead this one by that much. The batch runs
+under the lease `worker:lock:image-analysis` (600 s, renewed every 60 s,
+checked before every write, including the last-run line: a batch that lost
+its lease writes no `image_analysis_last_run`, its partial counts are the
+failed job's message). Every batch is three steps, and only the last needs
+a model:
+
+1. **Sweep.** `analyzed` rows that fail the validity predicate (retained
+   identity, prompt/schema version) become `pending` with their payload kept;
+   `pending` rows whose kept payload passes it flip back (`reused`, no call);
+   stale `failed` / `failed_terminal` rows return to `failed, attempts 0, due
+   now`; `truncated:<ceiling>` rows re-open when **Max output tokens** is
+   raised above the recorded ceiling.
+2. **Reconcile** every `pages.image_analysis_dirty` page: claim the flag
+   first, enumerate `body_html`, hash the bytes through the same intake this
+   runbook's §5 describes, upsert `page_image_analyses`. The page is bumped
+   (`image_analysis_revision`, `embedding_dirty`) only when its VALID derived
+   set changed — an `analyzed` row deleted, re-pended under new bytes or
+   skipped by policy — so `embedPage` drops stale derived chunks; new
+   `pending`/`skipped` rows bump nothing. In particular the first batch on an
+   upgraded instance drains 116's backlog seed (every image-referencing page)
+   into `pending` rows **without re-embedding a single page**; pages re-embed
+   as analyses complete.
+3. **Analyze** up to `image_analysis_batch_size` images (Settings → AI Models
+   → Workers, default 50, [1, 500]) — only when `image_analysis` is assigned,
+   its vision verdict is `true` and the resolved identity equals the retained
+   one. Unassigned, `capability` and `identity_drift` all skip this step and
+   the batch result says which (`reason`). A work row whose file is ABSENT
+   at call time (`ENOENT`: attachment cleaned while its reference stayed in
+   the body, cache evicted) becomes `skipped (missing)` — out of the work
+   window, no attempt charged, no call spent — and returns to `pending`
+   through the reconcile when a writer (lazy re-fetch, upload, sync) raises
+   the page flag with the bytes back; bytes that read but hash differently
+   re-raise the flag for the reconcile to re-pend. A file that is there but
+   cannot be read (`EACCES` after a restore, `EIO`, a network volume
+   blinking) is NOT missing: the row goes `failed (unavailable:bytes)` with
+   an attempt charged and backoff, never terminal, and is re-read when due.
+   At reconcile time the page's OTHER images are still written and analyzed;
+   only the unreadable reference is left, the page stays dirty for the next
+   cycle, and it counts in the last run's `pagesFailed` — a non-zero
+   `pagesFailed` beside a non-zero `processed` is exactly this condition. Fix
+   the permissions or the mount; nothing needs re-uploading.
+
+**Migration 116's cost.** It backfills `page_embeddings.chunk_tsv` in one
+transaction: a rewrite of every chunk row, the NOT NULL scan and a
+non-concurrent GIN build, under a lock that holds `embedPage` writes until
+COMMIT. Expect roughly migration 049's page rebuild × chunks-per-page; the
+old tuple versions stay on disk until autovacuum gets there, so on a large
+corpus run `VACUUM (ANALYZE) page_embeddings` afterwards. The same rewrite
+runs — same transaction, same lock — when **Keyword index language** is
+saved: the PUT is slower than it was by the chunk table, and the settings
+copy says so.
+
+Failures back off `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
+exponent is clamped so a class that never goes terminal cannot grow one past
+what an `interval` can hold; a deterministic class
+(malformed, empty, refused, truncated, rejected) at 5 attempts goes
+`failed_terminal`; `unavailable` never does. A 4xx outside 400/413/415/422
+ends the batch (`provider_status`) and re-probes the pair; three identical
+`rejected` statuses first end it too (`uniform_rejection`, the rows rewritten
+`unavailable:<status>`, never terminal) — serve the model with a larger
+context or lower Max output tokens, then Run Now. The last batch result is in
+`admin_settings.image_analysis_last_run`; the operator card, Run Now, Retry
+failed and Re-analyze all arrive with #1618. With `image_analysis` unassigned
+the worker still sweeps and reconciles every cadence and returns
+`reason: 'unassigned'` — a pause, not a purge.
+
+Derived chunks are ordinary `page_embeddings` rows after every authored index
+with `metadata.source = 'image_analysis'`; they are excluded from both page
+averages, indexed lexically through `page_embeddings.chunk_tsv` (rebuilt with
+`pages.tsv` on a language change), and never assembled as siblings of
+authored text. Unlike the leg below, an unassigned instance pays no probe
+here at all — the gate is a settings read, and the sweep and reconcile still
+run so a pause is a pause, not a purge.
 
 ## 6. Retrieval — the image leg (#1115 P3)
 

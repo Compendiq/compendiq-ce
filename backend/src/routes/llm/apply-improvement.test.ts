@@ -438,6 +438,10 @@ describe('POST /api/llm/improvements/apply', () => {
       expect(updatePagesSql('body_storage')).toMatch(
         /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
       );
+      // ADR-027 D4: the analysis flag rides the same gate.
+      expect(updatePagesSql('body_storage')).toMatch(
+        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
+      );
     });
 
     it('raises image_embedding_dirty on the standalone write, gated on body_html', async () => {
@@ -463,6 +467,9 @@ describe('POST /api/llm/improvements/apply', () => {
       expect(response.statusCode).toBe(200);
       expect(updatePagesSql('local_modified_by')).toMatch(
         /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
+      );
+      expect(updatePagesSql('local_modified_by')).toMatch(
+        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
       );
     });
   });

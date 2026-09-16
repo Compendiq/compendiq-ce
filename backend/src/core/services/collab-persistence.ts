@@ -193,6 +193,10 @@ export async function persistAndSnapshot(pageId: number, doc: Y.Doc): Promise<vo
          image_embedding_dirty = CASE
            WHEN body_html IS DISTINCT FROM $2 THEN TRUE
            ELSE image_embedding_dirty
+         END,
+         image_analysis_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $2 THEN TRUE
+           ELSE image_analysis_dirty
          END
        WHERE id = $1 AND deleted_at IS NULL`,
       [pageId, html, bodyText],
