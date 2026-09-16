@@ -2950,26 +2950,44 @@ Multi-replica deployments sit behind a load balancer. `trustProxy` MUST be set t
 
 ## ADR-025: Multimodal image retrieval — dual space
 
-> **Superseded in part by ADR-027 (#1611, 2026-09-15).** ADR-027 replaces the
-> image *embedding* space with ingestion-time image *analysis* whose text is
-> indexed by the ordinary text embedder. **D1 is superseded on scope** (its
-> MMTEB evidence concerned embedding *text* through a VL embedder, which the
-> new design never does) and **D6 is reversed** (derived chunks live in
-> `page_embeddings`, every hazard D6 listed answered in ADR-027 D2). Every
-> other decision below — D2–D5, D7–D12, the intake, the leg, the answer path
-> and the Settings surfaces — describes the **active** deployment and stays
-> live until #1618 retires it after the #1619 quality gate. The **Measured**
-> section is historical evidence about this design and is never re-labelled
-> as evidence for ADR-027's. Nothing here is rewritten; read it as "what the
-> current release does", and ADR-027 as "what the candidate does and how the
-> two are compared".
+> **SUPERSEDED IN FULL by ADR-027** (#1611). ADR-027 replaced the image
+> *embedding* space with ingestion-time image *analysis* whose text is indexed
+> by the ordinary text embedder, and **#1618 stage 2 (2026-09-17) retired the
+> design below**: migration `118` dropped `page_image_embeddings` and
+> `pages.image_embedding_dirty`, removed the `image_embedding` use case and its
+> six `admin_settings` rows, and the same release deleted the intake, the third
+> RRF leg, `vl-embedding-client.ts`, the MRL truncation width, the
+> `rag_image_leg_enabled` toggle, the `image_only_context` refusal, the
+> `image_leg_unavailable` degraded reason and the Settings surfaces. **Nothing
+> below describes a running deployment.**
+>
+> **Three things survive, and only these three.** (1) **D8/D8a/D8b's optional
+> chat attachment** — `rag_answer_max_images`, the vision gate in the caller,
+> the round-robin pick and the derived byte budget — re-sourced from ADR-027
+> D11's derived provenance and carried in ADR-027 D11/D12. (2)
+> `rag_images_per_page_max` and `rag_image_index_external`, which now bound the
+> **analysis** intake. (3) The **Measured** sections, which are historical
+> evidence about THIS design and are never re-labelled as evidence for
+> ADR-027's or for the retirement (ADR-027 A-5).
+>
+> **The retirement's basis, verbatim: "Remove it, nobody was using it in
+> production."** — the path was unused in production and carried maintenance
+> cost. That is an owner authorisation, **not a measurement**: no measured
+> comparison against this leg exists or can exist (ADR-027 A-5). Read on for
+> what the retired design was and why, never for what runs.
+>
+> D1 was already superseded on scope before the retirement (its MMTEB evidence
+> concerned embedding *text* through a VL embedder, which the replacement never
+> does) and D6 was reversed (derived chunks live in `page_embeddings`, every
+> hazard D6 listed answered in ADR-027 D2). Nothing here is rewritten; read it
+> as the historical record of a retired design.
 
 **Date:** 2026-08-17
-**Status:** Accepted (owner interview, 2026-08-17). **Shipped, P0 through
-P5b** — the feature is complete and measured on a local shim; the production
-run is what settles the checkpoint (see **Measured**, below, and D11).
-**Superseded in part by ADR-027** — D1 on scope, D6 reversed; the rest retired
-by #1618 after the #1619 gate (see the banner above).
+**Status:** **Superseded in full by ADR-027; retired by #1618 stage 2
+(2026-09-17, migration `118`).** Was: Accepted (owner interview, 2026-08-17),
+shipped P0 through P5b and measured on a local shim. D8/D8a/D8b and the two
+intake knobs survive under ADR-027 D11; the **Measured** sections stand as
+historical evidence and are never re-labelled (ADR-027 A-5).
 
 | PR | Landed | What |
 |---|---|---|
@@ -3691,9 +3709,9 @@ nobody reads the numbers above as if they were ours:
 | 022 | RAG retrieval honours per-user space permissions | Post-filter RRF merge by readable space set | Cheap, correct for space-level RBAC; pairs with ADR-023 for per-page |
 | 023 | Per-page ACL enforcement for RAG retrieval (Enterprise) | Mirror Confluence per-page view restrictions; resolve ancestor inheritance at sync time | Keeps query path O(topK); regulated-buyer RAG never leaks restricted-page chunks |
 | 024 | Multi-instance readiness | Generic Redis pub/sub cache-bus + BullMQ `upsertJobScheduler` + p-limit in-place hot-swap + bounded graceful shutdown + soft-fail per-pod fallbacks | Multi-replica `backend` without an extra coordinator service; advisory-only pub/sub keeps the operator footprint small |
-| 025 | Multimodal image retrieval (superseded in part by ADR-027; active until #1618) | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape |
+| 025 | Multimodal image retrieval (**superseded in full by ADR-027; retired by #1618 stage 2**) | Dual space: text keeps its embedder, images get their own `page_image_embeddings` index + a non-inheriting `image_embedding` use case + a third RRF leg | VL text retrieval is a measured regression vs. the text model, and a shared space would force every text embed through vLLM's chat-embeddings shape. Retired 2026-09-17 on the owner's authorisation — unused in production plus maintenance cost, NOT a measurement (A-5); D8/D8a/D8b's chat attachment survives under ADR-027 D11 |
 | 026 | Client-side WebGPU editor inference | Optional same-origin SLM + Hunspell EN/DE; fall through to #1417/#708; no new ADR-021 use case | Keystroke traffic should not consume the shared LLM queue; Hub CDN is forbidden by `connect-src 'self'` |
-| 027 | Image analysis in the text index | A generative vision model describes page images at ingestion; the text embedder indexes the description as provenance-marked `page_embeddings` rows beside the authored chunks; no second vector space, no third RRF leg; gated on a pre-registered paired A/B/C measurement | Supersedes ADR-025 D1 on scope and reverses D6; one index, one query embed, text-only chat models can answer from image facts — a hypothesis until #1619 measures it |
+| 027 | Image analysis in the text index | A generative vision model describes page images at ingestion; the text embedder indexes the description as provenance-marked `page_embeddings` rows beside the authored chunks; no second vector space, no third RRF leg | Supersedes ADR-025 D1 on scope, reverses D6, and since #1618 stage 2 (2026-09-17) is the ONLY image design: one index, one query embed, text-only chat models can answer from image facts. The pre-registered A/B/C gate was re-registered B vs C (A-1) and never judged (A-5) — the retirement rests on the owner's authorisation, not on it |
 
 ---
 
@@ -5345,42 +5363,69 @@ operator-visible history, which is why the recovery dump set is the whole
 `admin_settings` table
 (`docs/runbooks/image-embedding-retirement.md`).
 
-**Stage 2 — retire (after #1619's passing verdict):** one forward migration
-drops `page_image_embeddings`, `pages.image_embedding_dirty`, removes
-`'image_embedding'` from the use-case CHECK (drop/re-add with the full list),
-deletes the `image_embedding` assignment row and the
-`admin_settings.image_embedding_*` and `rag_image_leg_enabled` rows. Code:
-`vl-embedding-client.ts`, `image-embedding-probe.ts`, `image-embedding-index.ts`,
-`image-embedding-service.ts` (after its intake moved under #1616),
-`image-leg-search.ts`, `core/services/image-embedding-dirty.ts`,
-`image-embedding-target-dimensions.ts`, the `vl` exclusion in the text-side
-instruction matcher, `degraded_reason = 'image_leg_unavailable'`, the
-`imageTextSynthesized` and `image_only_context` paths once #1619 has
-exercised their replacement, the eval `--images` axis's `page_image_embeddings`
-coupling, `ImageEmbeddingCapability.tsx`, `ImageIndexCard.tsx`, the
-Retrieval-tab Image leg group, `tools/vl-embedding-shim/` with its `vl`
-change flag and pytest job in `pr-check.yml`, and `docs/runbooks/vl-embedding-dev.md`
-(deleted or marked historical). The attachment sweep prunes
-`page_image_analyses` instead, `RETENTION_PRUNED` carries
-`table: 'page_image_analyses'`, and `deleted.imageEmbeddingRows` becomes
-`deleted.imageAnalysisRows` in the contract and in `AttachmentStorageCard`.
-EE type/policy consumers migrate the same way. Historical migrations and
-labelled historical benchmark artifacts stay; arm A's baseline stays
-reproducible against its recorded SHA, not as a shipped runtime.
+**Stage 2 — retire. DONE, 2026-09-17 (#1618).** Migration `118`
+(`backend/src/core/db/migrations/118_retire_image_embedding_space.sql`, with
+its own migration test) drops `page_image_embeddings` and
+`pages.image_embedding_dirty`, removes `'image_embedding'` from the use-case
+CHECK (drop/re-add with the full list — the first NARROWING of that list),
+deletes the `image_embedding` assignment row and six `admin_settings` rows
+(`image_embedding_probe`, `image_embedding_dimensions`,
+`image_embedding_index_model`, `image_embedding_target_dimensions`,
+`rag_image_leg_enabled`, `image_index_last_run`). Code removed in the SAME
+release: `vl-embedding-client.ts`, `image-embedding-probe.ts`,
+`image-embedding-index.ts`, `image-embedding-service.ts`,
+`image-leg-search.ts`, `core/services/image-embedding-dirty.ts` (RENAMED to
+`image-analysis-dirty.ts`, the replacement's queue writer, D4),
+`image-embedding-target-dimensions.ts`, `eval/images-metrics.ts`,
+`eval/vl-stub-server.ts`, the `vl` exclusion in the text-side instruction
+matcher, `degraded_reason = 'image_leg_unavailable'` (removed from the TS union
+with a comment that historical `search_analytics` rows still carry the text —
+no DB CHECK on that column, so no migration), the `imageOnly` /
+`imageTextSynthesized` flags and the `image_only_context` refusal,
+`ImageEmbeddingCapability.tsx`, `ImageIndexCard.tsx`, the Retrieval-tab Image
+leg group, `tools/vl-embedding-shim/` with its `vl` change flag and pytest job
+in `pr-check.yml`, and `docs/runbooks/vl-embedding-dev.md`. The eval
+`--images` axis lost its paired leg-off/leg-on form and is now a corpus
+selector that REFUSES a run without `--arm B|C`; `parseArmFlag` refuses arm A.
+`docs/runbooks/image-index.md` became `docs/runbooks/image-analysis.md`. The
+attachment sweep prunes `page_image_analyses` instead, `RETENTION_PRUNED`
+carries `table: 'page_image_analyses'`, and `deleted.imageEmbeddingRows` became
+`deleted.imageAnalysisRows` in the contract and in `AttachmentStorageCard`. EE
+type/policy consumers migrated the same way. Historical migrations (093, 097,
+115, 116, 117) and labelled historical benchmark artifacts stay.
+
+**The basis for stage 2, recorded verbatim.** The owner's authorisation was:
+
+> Remove it, nobody was using it in production.
+
+That is **unused in production plus maintenance burden**, and it is
+**explicitly NOT a measurement.** The pre-registered primary endpoint (B vs A)
+was never measured, because arm A needs a VL *embedding* endpoint the owner
+declined to stand up (A-1); **no human answer-correctness judgement was taken**
+at all (A-5); arm B's retrieval run stands at **100/187** analyses and may be
+completed later; and arm C plus the `legacy-revision-C` control are captured
+and show #1617's lexical chunk-resolution change is a **measured no-op** on
+that corpus. AC-4's "a passing #1619 verdict" route is therefore superseded in
+writing by **A-5 plus the owner's explicit go** — #1619's value is regression
+evidence, not permission. Nothing in this ADR, the CHANGELOG, CLAUDE.md or the
+runbooks may imply the gate justified the retirement.
 
 **Recovery boundary.** Before stage 2: `pg_dump` of `page_image_embeddings`,
 `llm_usecase_assignments`, `admin_settings` and the schema-migrations table,
 plus the attachment directories (bytes are never removed by this migration).
-Rollback = restore that dump into a deployment of the pre-stage-2 release;
-the procedure is exercised on disposable data by #1619 before authorisation.
+Rollback = restore that dump into a deployment of the pre-stage-2 release; the
+procedure was exercised on disposable data by stage 1 and re-exercised, two
+arms, on the applied migration by stage 2.
 There is no in-product rollback mode.
 
-**The procedure is `docs/runbooks/image-embedding-retirement.md`** (#1618 stage
-1), with the held migration text in `docs/held-migrations/` — outside
-`backend/src/core/db/migrations/`, because `postgres.ts` applies every `*.sql`
-in that directory on boot. Stage 1 exercised the whole cycle on a disposable
-database and recorded it there (§5); #1619 re-exercises it against a real
-upgraded deployment before authorisation. Three findings of that rehearsal
+**The procedure is `docs/runbooks/image-embedding-retirement.md`.** The
+migration is now `backend/src/core/db/migrations/118_retire_image_embedding_space.sql`;
+it was held in `docs/held-migrations/` — outside the runner's directory,
+because `postgres.ts` applies every `*.sql` in it on boot — until stage 2 moved
+it in, and that directory is deleted. Stage 1 exercised the whole cycle on
+disposable databases and recorded it there (§5.1); stage 2 re-drove it against
+the APPLIED migration, two arms off one dump artifact, and recorded that as §5.
+Three findings of the stage-1 rehearsal
 amend the dump set above rather than merely restating it:
 `pages.image_embedding_dirty` is NOT in it (dumping `pages` means dumping the
 corpus), so a restore re-adds the column at its default and the corpus must be
@@ -5406,30 +5451,30 @@ them rather than asserting they were never at risk. `page_image_analyses`
 itself is genuinely outside the dump set, and so is the capability verdict in
 `llm_model_capabilities`.
 
-### Supersession of ADR-025
+### Supersession of ADR-025 — complete since #1618 stage 2 (2026-09-17)
 
 | ADR-025 | Status under ADR-027 |
 |---|---|
 | D1 dual space | **Superseded on scope** (D1 here). Its MMTEB evidence stands and is not contradicted. |
 | D2 Phase 1 / Phase 2 as increments | Unaffected; the text embedder still moves on its own schedule. |
-| D3 `image_embedding` use case | Live until #1618; `image_analysis` (D3 here) is the replacement, same non-inheriting rule. |
-| D4 chat-embeddings request shape | Live until #1618; no counterpart — the candidate uses plain chat completions. |
-| D5 VL-2B default, MRL | Live until #1618; retired with the space. |
+| D3 `image_embedding` use case | **Retired** (migration 118); `image_analysis` (D3 here) is the replacement, same non-inheriting rule. |
+| D4 chat-embeddings request shape | **Retired** with `vl-embedding-client.ts`; no counterpart — this design uses plain chat completions. |
+| D5 VL-2B default, MRL | **Retired** with the space, including `image_embedding_target_dimensions`. |
 | D6 separate table | **Reversed** (D2 here), every hazard answered. |
-| D7 truncate-and-rescan on model change | Live until #1618; the counterpart is D7 here (identity replacement re-pends rows; no DDL). |
-| D8 / D8a / D8b answer-path gate, refusal, byte budget | Live; D8's vision gate and D8b's byte budget survive the cutover for the optional chat attachment (D11 here); D8a's refusal retires with the synthesised rows. |
+| D7 truncate-and-rescan on model change | **Retired**; the counterpart is D7 here (identity replacement re-pends rows, payloads kept, no DDL). |
+| D8 / D8a / D8b answer-path gate, refusal, byte budget | **D8's vision gate and D8b's byte budget SURVIVE** for the optional chat attachment (D11/D12 here), re-sourced from derived provenance. **D8a's `image_only_context` refusal is retired** with the synthesised rows it keyed on. |
 | D9 bytes from disk, no ACL in the reader | Unchanged and reused. |
 | D10 no server-side pixel processing | Unchanged and reused as the intake bound. |
-| D11 local shim | Live until #1618; retired. |
-| D12 vLLM pin as a re-index event | Live until #1618; the counterpart is `IMAGE_ANALYSIS_PROMPT_VERSION` plus the operator's explicit Re-analyze all for an in-place server upgrade. |
+| D11 local shim | **Retired** with `tools/vl-embedding-shim/` and `docs/runbooks/vl-embedding-dev.md`. |
+| D12 vLLM pin as a re-index event | **Retired**; the counterpart is `IMAGE_ANALYSIS_PROMPT_VERSION` plus the operator's explicit **Re-analyze all** for an in-place server upgrade. |
 | **Measured** | Historical evidence about the legacy design; quoted verbatim, never re-labelled. |
 
 ### Consequences
 
-- **One index, one query embed, one pipeline.** Every hybrid search loses the
-  image leg's second embedding call, its kNN and its second vector-pool
-  connection once #1618 lands; until then both paths exist and the shut
-  legacy gate still costs what ADR-025 says it costs.
+- **One index, one query embed, one pipeline.** Since #1618 stage 2 every
+  hybrid search has lost the image leg's second embedding call, its kNN and its
+  second vector-pool connection — including the shut gate's standing cost,
+  which ADR-025's Consequences priced and which no longer exists.
 - **Text-only chat models can answer image questions — if the gate says so.**
   That is the hypothesis, and it is only ever claimed with the #1619 report
   beside it.
