@@ -62,7 +62,7 @@ type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
-const { imageEvidenceRecallAtK, assertArmCState, readArmBState } = await import('./arms.js');
+const { imageEvidenceRecallAtK, assertArmCState, readArmBState, imageAnalysisIdentityHash } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -499,13 +499,40 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect(vl.requests).toHaveLength(0);
   }, 120_000);
 
-  it('readArmBState refuses this checkout: no page_image_analyses table, so nothing here can be arm B (#1616)', async () => {
-    // The first of `readArmBState`'s three refusals is the one reachable on
-    // this revision — the assignment and ceiling branches need #1616's table
-    // to exist — and until now only its CALL POSITION was pinned (review r2
-    // finding 5).
-    expect((await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`)).rows[0]!.exists).toBeNull();
-    await expect(readArmBState()).rejects.toThrow(/--arm B needs the candidate revision: this checkout has no page_image_analyses table \(#1616\)/);
+  it('readArmBState reads the image_analysis assignment and the D8 ceiling off the database, and refuses either missing', async () => {
+    // Which of `readArmBState`'s three refusals is reachable depends on the
+    // revision. Since #1615 (migration 115) `page_image_analyses` EXISTS
+    // here, so the table branch is unreachable and the assignment and
+    // ceiling branches are the live ones — and until now only the call
+    // POSITION was pinned (review r2 finding 5).
+    expect((await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`)).rows[0]!.exists).not.toBeNull();
+    await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model on this database/);
+
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default, default_model)
+       VALUES ('eval-vision', 'http://vision.invalid/v1', 'none', true, false, 'qwen-vl') RETURNING id`,
+    );
+    const providerId = provider.rows[0]!.id;
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
+       VALUES ('image_analysis', $1, 'qwen-vl', NOW())
+       ON CONFLICT (usecase) DO UPDATE SET provider_id = $1, model = 'qwen-vl', updated_at = NOW()`,
+      [providerId],
+    );
+
+    // No ceiling row: the report records the ceiling the backfill ran under (D8).
+    await query(`DELETE FROM admin_settings WHERE setting_key = 'image_analysis_max_output_tokens'`);
+    await expect(readArmBState()).rejects.toThrow(/image_analysis_max_output_tokens reads null/);
+    await query(`INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('image_analysis_max_output_tokens', 'lots', NOW())`);
+    await expect(readArmBState()).rejects.toThrow(/image_analysis_max_output_tokens reads "lots"/);
+
+    await query(`UPDATE admin_settings SET setting_value = '8192' WHERE setting_key = 'image_analysis_max_output_tokens'`);
+    const state = await readArmBState();
+    expect(state).toEqual({
+      visionModel: { identity: 'eval-vision:qwen-vl@http://vision.invalid/v1', model: 'qwen-vl', endpoint: 'http://vision.invalid/v1' },
+      imageAnalysisMaxOutputTokens: 8192,
+      identityHash: imageAnalysisIdentityHash(providerId, 'qwen-vl', 'http://vision.invalid/v1'),
+    });
   }, 60_000);
 
   it('arm B REFUSES a run in which no derived evidence ever surfaced, instead of publishing text retrieval as the candidate', async () => {
