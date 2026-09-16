@@ -5,7 +5,6 @@ import type { LlmProvider, LlmUsecase, UsecaseAssignments, UsecaseDefault } from
 import { LlmUsecaseSchema } from '@compendiq/contracts';
 import { apiFetch } from '../../../shared/lib/api';
 import { ChatVisionCapability } from './ChatVisionCapability';
-import { ImageEmbeddingCapability } from './ImageEmbeddingCapability';
 import { ImageAnalysisCard } from './ImageAnalysisCard';
 import { SearchableSelect } from '../../../shared/components/SearchableSelect';
 import { filterModelsForKind, type ModelKindFilter } from './model-kind';
@@ -18,20 +17,18 @@ const USECASE_LABELS: Record<LlmUsecase, string> = {
   auto_tag: 'Auto-tag',
   embedding: 'Embedding',
   rerank: 'Rerank',
-  image_embedding: 'Image embedding',
   inline_completion: 'Inline completion',
   image_analysis: 'Image analysis (vision)',
 };
 const USECASES_ORDERED: LlmUsecase[] = [...LlmUsecaseSchema.options];
 
 /**
- * The use cases that never inherit the default provider (#1104, #1115, #1417). Their
+ * The use cases that never inherit the default provider (#1104, #1417, #1615). Their
  * "unset" option says **Disabled**, because there is no fallback behind it —
  * offering "Inherit default" would name a resolution that does not happen.
  */
 const NON_INHERITING: Record<string, string> = {
   rerank: 'Disabled (no reranking)',
-  image_embedding: 'Disabled (no image search)',
   inline_completion: 'Disabled (no inline suggestions)',
   image_analysis: 'Disabled (no image analysis)',
 };
@@ -111,19 +108,11 @@ interface Props {
   providers: LlmProvider[];
   onChange: (next: UsecaseAssignments) => void;
   /**
-   * #1115 — the image leg's MRL truncation width
-   * (`admin_settings.image_embedding_target_dimensions`). It is not a use-case
-   * assignment, so it rides through this section rather than living in it: the
-   * control belongs beside the row it changes, and the value belongs with the
-   * panel's Save, which writes it before re-probing the assignment.
-   */
-  imageTargetDimensions: number | null;
-  onImageTargetDimensionsChange: (next: number | null) => void;
-  /**
    * #1615 — the image-analysis output-token ceiling
-   * (`admin_settings.image_analysis_max_output_tokens`). Rides through this
-   * section for the same reason the width above does: the control belongs
-   * beside the row it bounds, the value belongs with the panel's Save.
+   * (`admin_settings.image_analysis_max_output_tokens`). It is not a use-case
+   * assignment, so it rides through this section rather than living in it: the
+   * control belongs beside the row it bounds, the value belongs with the
+   * panel's Save.
    */
   imageAnalysisMaxOutputTokens: number;
   onImageAnalysisMaxOutputTokensChange: (next: number) => void;
@@ -140,8 +129,6 @@ export function UsecaseAssignmentsSection({
   savedAssignments,
   providers,
   onChange,
-  imageTargetDimensions,
-  onImageTargetDimensionsChange,
   imageAnalysisMaxOutputTokens,
   onImageAnalysisMaxOutputTokensChange,
   embeddingAction,
@@ -284,28 +271,11 @@ export function UsecaseAssignmentsSection({
             )}
             {u === 'chat' && chatDefault && <ChatVisionCapability vision={chatDefault.vision} />}
             {/*
-              #1115: the image leg's strip is always rendered, not only when
-              assigned — its two sentences are what tell an operator whether
-              this row is even usable on their stack, and the probe status
-              inside it is gated on the assignment instead.
-
-              On the SAVED assignment, never `row` (the draft): the probe route
-              and Re-check both resolve what the server has, so a dropdown
-              change that has not been saved must not fire either.
-            */}
-            {u === 'image_embedding' && (
-              <ImageEmbeddingCapability
-                assigned={savedAssignments[u]?.providerId != null}
-                targetDimensions={imageTargetDimensions}
-                onTargetDimensionsChange={onImageTargetDimensionsChange}
-              />
-            )}
-            {/*
-              #1615: the image-analysis strip is always rendered too — its copy
-              is what tells an operator which provider receives page images
-              and that unassigning is a pause — and, like the strip above, it
-              reads the SAVED assignment for everything that describes the
-              live leg (the egress sentence, the capability query, Re-check).
+              #1615: the image-analysis strip is always rendered, not only when
+              assigned — its copy is what tells an operator which provider
+              receives page images and that unassigning is a pause — and it
+              reads the SAVED assignment for everything that describes the live
+              pipeline (the egress sentence, the capability query, Re-check).
             */}
             {u === 'image_analysis' && (
               <ImageAnalysisCard

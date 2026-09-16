@@ -85,14 +85,14 @@ vi.mock('../../../core/services/local-attachment-service.js', () => ({
   removeLocalAttachmentFileForSweep: vi.fn(async () => true),
 }));
 
-vi.mock('../../../core/services/image-embedding-dirty.js', () => ({
+vi.mock('../../../core/services/image-analysis-dirty.js', () => ({
   markPageImagesDirty: vi.fn(async () => true),
 }));
 
 vi.mock('./attachment-handler.js', () => ({ getExpectedAttachmentFilenames: vi.fn(() => []) }));
 
 import { attachmentsRootNow } from '../../../core/services/attachment-store.js';
-import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
+import { markPageImagesDirty } from '../../../core/services/image-analysis-dirty.js';
 import { removeCachedAttachmentFile } from '../../../core/services/attachment-store.js';
 import {
   ATTACHMENT_SWEEP_GRACE_MS,

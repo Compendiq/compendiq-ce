@@ -22,62 +22,18 @@ export async function isDbAvailable(): Promise<boolean> {
 }
 
 /**
- * Probe-time DDL (`ensureImageEmbeddingColumn`) retypes
- * `page_image_embeddings.embedding` and may build an HNSW index. Sequential
- * files on one worker share that database, and `truncateAllTables` does not
- * undo DDL — so restore migration 093's placeholder at the start of every
- * file (via `setupTestDb`), or 093's own test sees whichever file ran first.
- *
- * The index name is the one `image-embedding-index.ts` creates
- * (`page_image_embeddings_embedding_hnsw_idx`); kept as a literal here so
- * this helper does not import `domains/llm`.
- */
-export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
-  const pool = getPool();
-  const present = await pool.query<{ exists: string | null }>(
-    `SELECT to_regclass('public.page_image_embeddings') AS exists`,
-  );
-  if (!present.rows[0]?.exists) return;
-
-  const col = await pool.query<{ type: string }>(
-    `SELECT format_type(a.atttypid, a.atttypmod) AS type
-       FROM pg_attribute a
-      WHERE a.attrelid = 'page_image_embeddings'::regclass
-        AND a.attname = 'embedding'
-        AND a.attnum > 0
-        AND NOT a.attisdropped`,
-  );
-  const type = col.rows[0]?.type;
-  const idx = await pool.query<{ indexname: string }>(
-    `SELECT indexname FROM pg_indexes
-      WHERE tablename = 'page_image_embeddings'
-        AND indexname = 'page_image_embeddings_embedding_hnsw_idx'`,
-  );
-
-  if (type === 'vector(2048)' && idx.rows.length === 0) return;
-
-  await pool.query('DROP INDEX IF EXISTS page_image_embeddings_embedding_hnsw_idx');
-  if (type !== 'vector(2048)') {
-    // A retype cannot cast 64-dim (or halfvec) rows into vector(2048).
-    await pool.query('TRUNCATE page_image_embeddings');
-    await pool.query(
-      'ALTER TABLE page_image_embeddings ALTER COLUMN embedding TYPE vector(2048)',
-    );
-  }
-}
-
-/**
  * Every migration that (re)writes `llm_usecase_assignments_usecase_check`,
  * oldest first. DISCOVERED, never listed: the CHECK is 054's inline column
- * constraint, so widening it for a new use case means dropping and re-adding
- * the WHOLE list (090 `rerank`, 093 `image_embedding`, 097
- * `inline_completion`, 115 `image_analysis`, and whatever comes next).
+ * constraint, so changing the admitted set means dropping and re-adding the
+ * WHOLE list (090 `rerank`, 093 `image_embedding`, 097 `inline_completion`,
+ * 115 `image_analysis`, 118 which NARROWS it back by retiring
+ * `image_embedding`, and whatever comes next).
  *
- * Exported because `054_llm_providers.test.ts` replays every widener in order
+ * Exported because `054_llm_providers.test.ts` replays every writer in order
  * to repair the schema its pre-054 simulation destroys: replaying only the one
  * that happened to be current when that file was written would leave the
- * constraint NARROWER than the schema. One definition of "which migrations
- * write it" is enough.
+ * constraint out of step with the schema in either direction. One definition
+ * of "which migrations write it" is enough.
  */
 export function usecaseCheckMigrations(): string[] {
   return fs
@@ -88,24 +44,25 @@ export function usecaseCheckMigrations(): string[] {
 }
 
 /**
- * Restore `llm_usecase_assignments`' use-case CHECK to the newest widener's
- * list, the same class of repair as {@link restoreImageEmbeddingPlaceholder}.
+ * Restore `llm_usecase_assignments`' use-case CHECK to the NEWEST writer's
+ * list.
  *
- * The CHECK is 054's inline column constraint, so every migration that adds a
- * use case drops and re-adds the WHOLE list (090 `rerank`, 093
- * `image_embedding`, 097 `inline_completion`, 115 `image_analysis`). Files on
- * one worker database share it, `truncateAllTables` cannot undo DDL, and
- * `runMigrations` will not repair it because `_migrations` still lists every
- * widener as applied. So a file that recreates the table from an older DDL, or
- * replays a subset of the wideners, or is interrupted between its own
- * narrowing and its own repair, leaves the constraint NARROWER than the
- * schema — and the next file to assign a newer use case fails for a reason
- * that has nothing to do with it (#1104 was the first victim, `image_analysis`
- * the latest). The list is read from the migration rather than duplicated
- * here, so the next widener is covered without editing this file.
+ * The CHECK is 054's inline column constraint, so every migration that changes
+ * the admitted set drops and re-adds the WHOLE list (090 `rerank`, 093
+ * `image_embedding`, 097 `inline_completion`, 115 `image_analysis`, 118 which
+ * narrows `image_embedding` back out). Files on one worker database share it,
+ * `truncateAllTables` cannot undo DDL, and `runMigrations` will not repair it
+ * because `_migrations` still lists every writer as applied. So a file that
+ * recreates the table from an older DDL, or replays a subset of the writers,
+ * or is interrupted between its own narrowing and its own repair, leaves the
+ * constraint out of step with the schema — and the next file to assign a use
+ * case the stale list refuses fails for a reason that has nothing to do with
+ * it (#1104 was the first victim). The list is read from the migration rather
+ * than duplicated here, so the next writer is covered without editing this
+ * file.
  *
- * Exported as well as called from `setupTestDb`, so the file that inflicts the
- * narrowing can also repair it before handing the database on
+ * Exported as well as called from `setupTestDb`, so the file that inflicts a
+ * stale list can also repair it before handing the database on
  * (`097_inline_completion.test.ts` replays 097's DDL in its `beforeEach`).
  */
 export async function restoreUsecaseCheck(): Promise<void> {
@@ -143,7 +100,6 @@ export async function setupTestDb(): Promise<void> {
     await runMigrations();
     initialized = true;
   }
-  await restoreImageEmbeddingPlaceholder();
   await restoreUsecaseCheck();
 }
 

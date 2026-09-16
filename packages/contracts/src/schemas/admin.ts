@@ -162,10 +162,10 @@ const RagMmrLambdaSchema = z.number().min(0).max(1);
 const RagRankingPriorWeightSchema = z.number().min(0).max(0.05);
 /**
  * `rag_images_per_page_max` (#1115 P2) — how many of a page's images the
- * image-embedding worker takes. Default 20, [1, 200].
+ * image-analysis worker takes. Default 20, [1, 200].
  *
- * **0 is not a value.** The image leg is switched off by unassigning the
- * `image_embedding` use case (ADR-021's rule for the non-inheriting use
+ * **0 is not a value.** Image analysis is switched off by unassigning the
+ * `image_analysis` use case (ADR-021's rule for the non-inheriting use
  * cases); a cap of zero would be a second, quieter off switch whose effect —
  * a corpus that reconciles every row away on the next scan — reads as an
  * indexing bug rather than a setting.
@@ -178,18 +178,6 @@ const RagImagesPerPageMaxSchema = z.number().int().min(1).max(200);
  * deployments that would rather not embed third-party imagery at all.
  */
 const RagImageIndexExternalSchema = z.boolean();
-/**
- * `rag_image_leg_enabled` (#1115 P3) — whether retrieval fuses a third,
- * image-based RRF leg. Default ON.
- *
- * It is not a second off switch for the feature: with the `image_embedding`
- * use case unassigned or the index empty the leg does not run at all, whatever
- * this says. What it buys is the ability to stop paying the leg's one extra
- * embedding call per question WITHOUT unassigning the use case and thereby
- * stopping the index being filled — the two halves have different costs and an
- * operator has to be able to turn off the query-time one on its own.
- */
-const RagImageLegEnabledSchema = z.boolean();
 /**
  * `rag_answer_max_images` (#1115 P4) — how many of the images the leg matched
  * on the pages that ground an answer are attached to the question as image
@@ -227,25 +215,6 @@ const RagAnswerMaxImagesSchema = z.number().int().min(0).max(8);
  * inviting an operator to raise it.
  */
 const RagEfSearchSchema = z.number().int().min(1).max(1000);
-
-/**
- * #1115 — `image_embedding_target_dimensions`, the MRL truncation width the
- * image leg REQUESTS. Declared once and used nullable on read, nullish on
- * update (null clears the row, i.e. "use the model's native width").
- *
- * The bounds are pgvector's column limit at the top and a sanity floor at the
- * bottom. Deliberately NOT capped at 4000: that is the largest indexable
- * width, and the settings row already reports the unindexed tier — refusing
- * the number here would make an operator who *wants* a sequential-scan index
- * unable to say so.
- */
-export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN = 64;
-export const IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX = 16_000;
-export const ImageEmbeddingTargetDimensionsSchema = z
-  .number()
-  .int()
-  .min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)
-  .max(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
 
 /**
  * #1615 (ADR-027 D8) — `image_analysis_max_output_tokens`, the `max_tokens`
@@ -419,23 +388,6 @@ export const AdminSettingsSchema = z.object({
    * so the read schema must accept `null` rather than `undefined`.
    */
   drawioEmbedUrl: z.string().url().nullable(),
-  /**
-   * #1115 — MRL truncation width for the `image_embedding` leg, or `null` to
-   * take whatever width the served checkpoint answers with.
-   *
-   * It is a REQUEST parameter, not a serving flag: vLLM's `dimensions` is
-   * per-request and `--hf-overrides '{"is_matryoshka": true}'` only makes the
-   * server accept it. So the number has to live somewhere the client can read
-   * it — here — and the probe, P2's image embedder and P3's query embed all
-   * send the same value, or the column is typed to one width and filled from
-   * another.
-   *
-   * The floor is 64 because MRL truncation below that is not a width any of
-   * these checkpoints is trained to be useful at; the ceiling is pgvector's
-   * own column limit. 4000 is the largest *indexable* width — that is a tier
-   * boundary the settings row states, not a validation error.
-   */
-  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullable(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -538,8 +490,6 @@ export const AdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema,
   ragImageIndexExternal: RagImageIndexExternalSchema,
-  /** #1115 P3 — the retrieval half of the image index. Default ON. */
-  ragImageLegEnabled: RagImageLegEnabledSchema,
   /** #1115 P4 — how many retrieved images the answer path shows the model. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema,
   /**
@@ -598,12 +548,6 @@ export const UpdateAdminSettingsSchema = z.object({
    *  - URL string    → set / replace value
    */
   drawioEmbedUrl: z.string().url().nullish(),
-  /**
-   * #1115 — same three-state update semantics as `drawioEmbedUrl`: omitted
-   * leaves the row alone, `null` deletes it (back to the model's native
-   * width), a number sets the truncation width every image-side call sends.
-   */
-  imageEmbeddingTargetDimensions: ImageEmbeddingTargetDimensionsSchema.nullish(),
   // AI Safety settings
   aiGuardrailNoFabrication: z.string().max(5000).optional(),
   aiGuardrailNoFabricationEnabled: z.boolean().optional(),
@@ -665,8 +609,6 @@ export const UpdateAdminSettingsSchema = z.object({
    */
   ragImagesPerPageMax: RagImagesPerPageMaxSchema.optional(),
   ragImageIndexExternal: RagImageIndexExternalSchema.optional(),
-  /** #1115 P3 — the Retrieval tab's `Image leg` toggle. */
-  ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
   /** #1115 P4 — the Retrieval tab's `Images shown to the model` cap. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
   /** #1615 — the image-analysis card's `Max output tokens` row. Omit to leave unchanged. */
@@ -863,9 +805,9 @@ export const AttachmentSweepDeletedSchema = z.object({
   directories: z.number().int().nonnegative(),
   files: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
-  /** `page_image_embeddings` rows removed for files the sweep deleted (safety net). */
-  imageEmbeddingRows: z.number().int().nonnegative(),
-  /** Pages marked `image_embedding_dirty` because their files were removed. */
+  /** `page_image_analyses` rows removed for files the sweep deleted (safety net). */
+  imageAnalysisRows: z.number().int().nonnegative(),
+  /** Pages marked `image_analysis_dirty` because their files were removed. */
   pagesMarkedDirty: z.number().int().nonnegative(),
 });
 export type AttachmentSweepDeleted = z.infer<typeof AttachmentSweepDeletedSchema>;

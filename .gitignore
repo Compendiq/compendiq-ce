@@ -75,10 +75,10 @@ firebase-debug.log
 perf/*.json
 perf/*.html
 
-# #1115: the VL embedding shim is a Python tool, so its virtualenv, bytecode
-# and pytest cache land inside the checkout rather than in node_modules. The
-# venv holds mlx/torch wheels measured in gigabytes.
-tools/vl-embedding-shim/.venv
+# #1115: `tools/eval-corpus-images/` is a Python tool, so its virtualenv,
+# bytecode and pytest cache land inside the checkout rather than in
+# node_modules. The venv holds Pillow and friends.
+tools/**/.venv/
 tools/**/__pycache__/
 tools/**/.pytest_cache/
 tools/**/*.egg-info/

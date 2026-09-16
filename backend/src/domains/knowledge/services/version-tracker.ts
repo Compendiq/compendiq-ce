@@ -224,10 +224,6 @@ export async function restoreVersion(
          -- and never reaches the conflict-policy update. Gated on body_html
          -- alone, exactly like its four siblings in pages-crud.ts — that is
          -- where the src attributes are.
-         image_embedding_dirty = CASE
-           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-           ELSE image_embedding_dirty
-         END,
          image_analysis_dirty = CASE
            WHEN body_html IS DISTINCT FROM $3 THEN TRUE
            ELSE image_analysis_dirty

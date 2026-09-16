@@ -77,7 +77,7 @@ vi.mock('../../../core/services/local-attachment-service.js', () => ({
   removeLocalAttachmentFileForSweep: vi.fn(),
 }));
 
-vi.mock('../../../core/services/image-embedding-dirty.js', () => ({
+vi.mock('../../../core/services/image-analysis-dirty.js', () => ({
   markPageImagesDirty: vi.fn(),
 }));
 

@@ -5,7 +5,7 @@ import os from 'os';
 import {
   markPageImagesDirty,
   markPageImagesDirtyByAttachmentKey,
-} from './image-embedding-dirty.js';
+} from './image-analysis-dirty.js';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../test-db-helper.js';
 import { query } from '../db/postgres.js';
 

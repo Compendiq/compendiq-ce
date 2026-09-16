@@ -6,7 +6,7 @@
  * `local_attachments`' CASCADE removes rows, never files. This service walks
  * the two stores, measures them, and — only on an explicit live run — deletes
  * what the conservative orphan rules below admit, pruning the matching
- * `page_image_embeddings` rows and re-queueing the affected pages.
+ * `page_image_analyses` rows and re-queueing the affected pages.
  *
  * ── The orphan rules (design of record, PR #1349) ─────────────────────────
  *
@@ -132,7 +132,7 @@ import {
   removeLocalAttachmentDirectory,
   removeLocalAttachmentFileForSweep,
 } from '../../../core/services/local-attachment-service.js';
-import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
+import { markPageImagesDirty } from '../../../core/services/image-analysis-dirty.js';
 import { withLocalAttachmentMutationLock } from '../../../core/services/attachment-snapshot-lock.js';
 import { logAuditEvent } from '../../../core/services/audit-service.js';
 import { SUPPORTED_IMAGE_EXTENSIONS, isExternalImageKey } from '../../../core/services/image-references.js';
@@ -1087,12 +1087,12 @@ export interface DeletedTotals {
   directories: number;
   files: number;
   bytes: number;
-  imageEmbeddingRows: number;
+  imageAnalysisRows: number;
   pagesMarkedDirty: number;
 }
 
 export function emptyDeletedTotals(): DeletedTotals {
-  return { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 };
+  return { directories: 0, files: 0, bytes: 0, imageAnalysisRows: 0, pagesMarkedDirty: 0 };
 }
 
 /**
@@ -1191,11 +1191,11 @@ async function confluenceKeyOwners(key: string, client?: PoolClient): Promise<nu
  * listing that named them. ENOENT anywhere is a skip,
  * never an error — nothing is deleted on the strength of a stale listing.
  *
- * For every FILE removed, the matching `page_image_embeddings` rows
+ * For every FILE removed, the matching `page_image_analyses` rows
  * `(page_id, source, attachment_key)` are pruned (a safety net — a `missing`
  * row kept by the reconcile belongs to a file the body still references,
  * which by definition sits in the keep-set and never becomes a candidate)
- * and the owning pages are re-queued via `image_embedding_dirty`.
+ * and the owning pages are re-queued via `image_analysis_dirty`.
  *
  * `totals` is the CALLER's object and is mutated per deletion, so a throw
  * mid-loop (a lost worker lock, an EACCES) leaves the partial counts in the
@@ -1326,11 +1326,11 @@ export async function deleteCandidates(
       }
       if (owners.length > 0) {
         const pruned = await client.query(
-          `DELETE FROM page_image_embeddings
+          `DELETE FROM page_image_analyses
             WHERE page_id = ANY($1::int[]) AND source = $2 AND attachment_key = $3`,
           [owners, candidate.store, filename],
         );
-        totals.imageEmbeddingRows += pruned.rowCount ?? 0;
+        totals.imageAnalysisRows += pruned.rowCount ?? 0;
         for (const owner of owners) dirtyPages.add(owner);
       }
       await yieldToLoop();
@@ -1600,14 +1600,14 @@ export async function runAttachmentSweep(opts: {
   // both columns blank (review r2).
   //
   // The pair is the DATABASE fact and nothing else: the only table this sweep
-  // prunes rows from is `page_image_embeddings`, so `rows_pruned` is that
+  // prunes rows from is `page_image_analyses`, so `rows_pruned` is that
   // count and never `files_pruned` — files are not rows, and pairing the file
   // count with a table name would put a number in the attestation that is
   // false about the table beside it. The file/byte totals keep their own
   // richer keys below.
   await logAuditEvent(opts.triggeredBy ?? null, 'RETENTION_PRUNED', 'table', 'attachments_orphan_sweep', {
-    table: 'page_image_embeddings',
-    rows_pruned: run.deleted?.imageEmbeddingRows ?? 0,
+    table: 'page_image_analyses',
+    rows_pruned: run.deleted?.imageAnalysisRows ?? 0,
     dry_run: run.dryRun,
     status: run.status,
     note: run.note,
@@ -1618,7 +1618,7 @@ export async function runAttachmentSweep(opts: {
     files_pruned: run.deleted?.files ?? 0,
     directories_pruned: run.deleted?.directories ?? 0,
     bytes_pruned: run.deleted?.bytes ?? 0,
-    image_embedding_rows_pruned: run.deleted?.imageEmbeddingRows ?? 0,
+    image_analysis_rows_pruned: run.deleted?.imageAnalysisRows ?? 0,
     missing_local_files: run.missingLocalFiles,
   });
 

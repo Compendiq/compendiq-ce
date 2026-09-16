@@ -24,7 +24,7 @@ import {
   safeAttachmentPath,
   validateFilename,
 } from '../../../core/services/attachment-store.js';
-import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-embedding-dirty.js';
+import { markPageImagesDirtyByAttachmentKey } from '../../../core/services/image-analysis-dirty.js';
 
 /**
  * The path-resolution and READ half of this module lives in

@@ -357,10 +357,6 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
            -- the img set intact across the markdown round trip — an invariant
            -- of a different module that nothing on either side pins. One
            -- reconcile pass per Apply, every row reused by content hash.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
            image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_analysis_dirty
@@ -402,10 +398,6 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
            version = $6, last_synced = NOW(), embedding_dirty = TRUE,
            -- #1115 P2 (review r2) — see the standalone branch above. Gated on
            -- body_html alone: that is where the src attributes are.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
            image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE image_analysis_dirty

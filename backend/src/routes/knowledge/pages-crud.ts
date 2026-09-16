@@ -1210,9 +1210,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
+            page_type, embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, $9, $9, 'not_embedded', NOW(), $10)
+                 $8, $9, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
@@ -1312,12 +1312,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // trigger, so it raises the flag as well.
       `INSERT INTO pages
          (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, TRUE, 'not_embedded')
+          version, parent_id, source, embedding_dirty, image_analysis_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
-         image_embedding_dirty = TRUE, image_analysis_dirty = TRUE`,
+         image_analysis_dirty = TRUE`,
       // #1123: bind the RESOLVED `confluenceParentId`, not the raw
       // `body.parentId`. A Confluence-sourced child must store its parent's
       // `confluence_id` — binding the frontend's internal numeric id wrote the
@@ -1446,10 +1446,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
            -- picture the page no longer shows. Gated on body_html alone —
            -- that is where the src attributes are, and a title-only save
            -- cannot move an image.
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
            image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_analysis_dirty
@@ -1555,10 +1551,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          -- #1115 P2 (review r1) — and this path especially: the comment below
          -- notes the follow-up sync short-circuits on an already-current
          -- version, so syncPage's own image flag never runs for it.
-         image_embedding_dirty = CASE
-           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-           ELSE image_embedding_dirty
-         END,
          image_analysis_dirty = CASE
            WHEN body_html IS DISTINCT FROM $4 THEN TRUE
            ELSE image_analysis_dirty
@@ -1983,10 +1975,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           -- becomes the live one, so this is the first point at which an
           -- <img> the draft added or dropped is real. Both sides of the
           -- comparison read the OLD row, which is what makes the gate work.
-          image_embedding_dirty = CASE
-            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
-            ELSE image_embedding_dirty
-          END,
           image_analysis_dirty = CASE
             WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
             ELSE image_analysis_dirty
@@ -2395,10 +2383,6 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                version = $6, last_synced = NOW(), embedding_dirty = TRUE,
                -- #1115 P2 (review r1) — a bulk refresh rewrites body_html
                -- from upstream, which is exactly what can move an image.
-               image_embedding_dirty = CASE
-                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-                 ELSE image_embedding_dirty
-               END,
                image_analysis_dirty = CASE
                  WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                  ELSE image_analysis_dirty

@@ -13,7 +13,6 @@ import { apiFetch, ApiError } from '../../../shared/lib/api';
 import { reanalysisDisclosure } from './image-analysis-copy';
 import { ProviderListSection } from './ProviderListSection';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
-import { clampImageEmbeddingTargetDimensions } from './image-embedding-target-dimensions';
 import { EmbeddingReembedBanner } from './EmbeddingReembedBanner';
 import { EmbeddingShadowMigrationCard } from './EmbeddingShadowMigrationCard';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
@@ -86,12 +85,9 @@ export function LlmTab() {
   const [assignmentsInitialized, setAssignmentsInitialized] = useState(false);
   const [shadowMigrationActive, setShadowMigrationActive] = useState(false);
   const [capInitialized, setCapInitialized] = useState(false);
-  // #1115 — the image leg's MRL truncation width. Same one-shot hydration
+  // #1615 — the image-analysis output-token ceiling. Same one-shot hydration
   // guard as the two above, and dropped by the same post-save reset so the
   // field re-seeds from the value the server actually stored.
-  const [imageTargetDims, setImageTargetDims] = useState<number | null>(null);
-  const [imageTargetInitialized, setImageTargetInitialized] = useState(false);
-  // #1615 — the image-analysis output-token ceiling, same guard, same reset.
   const [imageAnalysisMaxTokens, setImageAnalysisMaxTokens] = useState<number>(
     IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
   );
@@ -117,16 +113,6 @@ export function LlmTab() {
     }
   }, [adminSettings, capInitialized]);
 
-  // #1115 — mirror the stored truncation width once. `?? null` covers both an
-  // instance that never set one and a backend older than the field.
-  useEffect(() => {
-    if (adminSettings && !imageTargetInitialized) {
-      setImageTargetDims(adminSettings.imageEmbeddingTargetDimensions ?? null);
-      setImageTargetInitialized(true);
-    }
-  }, [adminSettings, imageTargetInitialized]);
-
-  const savedImageTargetDims = adminSettings?.imageEmbeddingTargetDimensions ?? null;
   // #1615 — the image-analysis output-token ceiling. `?? default` covers a
   // backend older than the field; the contract requires it on read otherwise.
   useEffect(() => {
@@ -167,73 +153,55 @@ export function LlmTab() {
     if (!rawAssignments || !assignments) return false;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
     delete diff.embedding;
-    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
-    const imageTargetChanged =
-      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
     const imageAnalysisMaxTokensChanged =
       imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
-    return Object.keys(diff).length > 0 || imageTargetChanged || imageAnalysisMaxTokensChanged;
+    return Object.keys(diff).length > 0 || imageAnalysisMaxTokensChanged;
   }, [
     rawAssignments,
     assignments,
-    imageTargetDims,
-    imageTargetInitialized,
-    savedImageTargetDims,
     imageAnalysisMaxTokens,
     imageAnalysisMaxTokensInitialized,
     savedImageAnalysisMaxTokens,
   ]);
 
   const save = useMutation<
-    { ok: boolean; imageIndexWarning?: string; reanalyzeRows?: number },
+    { ok: boolean; reanalyzeRows?: number },
     Error,
     {
       diff: UpdateUsecaseAssignmentsInput;
-      imageTargetDimensions?: number | null;
       imageAnalysisMaxOutputTokens?: number;
       keepEmbeddingDraft?: boolean;
     }
   >({
-    // #1115 — two requests, in this order and never the other. The truncation
-    // width is what the probe SENDS, so it has to be stored before the
-    // assignment PUT re-probes; a probe run against the old width would type
-    // the column for a request the leg no longer makes.
-    mutationFn: async ({ diff, imageTargetDimensions, imageAnalysisMaxOutputTokens }) => {
-      if (imageTargetDimensions !== undefined || imageAnalysisMaxOutputTokens !== undefined) {
+    // Two requests, in this order and never the other: one Save writes the
+    // settings row before the assignment PUT, so an admin who changes both in
+    // one gesture cannot end up with half of it.
+    mutationFn: async ({ diff, imageAnalysisMaxOutputTokens }) => {
+      if (imageAnalysisMaxOutputTokens !== undefined) {
         await apiFetch('/admin/settings', {
           method: 'PUT',
-          body: JSON.stringify({
-            ...(imageTargetDimensions !== undefined
-              ? { imageEmbeddingTargetDimensions: imageTargetDimensions }
-              : {}),
-            ...(imageAnalysisMaxOutputTokens !== undefined ? { imageAnalysisMaxOutputTokens } : {}),
-          }),
+          body: JSON.stringify({ imageAnalysisMaxOutputTokens }),
         });
       }
       if (Object.keys(diff).length === 0) return { ok: true };
       return apiFetch('/admin/llm-usecases', { method: 'PUT', body: JSON.stringify(diff) });
     },
-    // #1115 review round 3 — the settings document is re-read on EVERY
-    // outcome, not only success, because the two requests above are not
-    // atomic: a 422 from the assignment PUT (the designed answer when the
-    // probe refuses the pair) leaves the width already persisted by the
-    // request before it. Invalidating only on success left
-    // `savedImageTargetDims` naming the pre-save value while the server held
-    // the new one, so the runbook's own remedy — "clear the field, and save
-    // again" — compared the cleared field against a stale baseline, read as
-    // unchanged, and reported "No changes" over a width the server still had.
+    // The settings document is re-read on EVERY outcome, not only success,
+    // because the two requests above are not atomic: a 422 from the assignment
+    // PUT (the designed answer when the vision probe refuses the pair) leaves
+    // the ceiling already persisted by the request before it. Invalidating
+    // only on success left the saved baseline naming the pre-save value while
+    // the server held the new one, so a corrected re-save compared against a
+    // stale baseline, read as unchanged, and reported "No changes".
     //
-    // Both halves live here rather than in `onSuccess` because React Query
-    // runs `onSettled` LAST: dropping the hydration guard before the refetch
-    // lands re-seeds the field from the stale cache entry and then locks it
-    // there. And the guard is dropped on success ONLY — after a refusal the
-    // admin's typed value must survive so they can correct it in place.
+    // It lives here rather than in `onSuccess` because React Query runs
+    // `onSettled` LAST: dropping the hydration guard before the refetch lands
+    // re-seeds the field from the stale cache entry and then locks it there.
+    // And the guard is dropped on success ONLY — after a refusal the admin's
+    // typed value must survive so they can correct it in place.
     onSettled: async (_result, error) => {
       await qc.invalidateQueries({ queryKey: ['admin-settings'] });
-      if (!error) {
-        setImageTargetInitialized(false);
-        setImageAnalysisMaxTokensInitialized(false);
-      }
+      if (!error) setImageAnalysisMaxTokensInitialized(false);
     },
     onSuccess: async (result, variables) => {
       // Refetch the canonical assignments, then drop the one-shot hydration
@@ -259,13 +227,6 @@ export function LlmTab() {
       // use-case-keyed entry so dropdowns refresh without a hard reload.
       qc.invalidateQueries({ queryKey: ['llm', 'usecase-default'] });
       qc.invalidateQueries({ queryKey: ['llm', 'models'] });
-      // #1115: the row saved but the image column's DDL did not. Amber, not
-      // green — the assignment landed and the leg is misconfigured behind it,
-      // and the server's sentence names the remedy (Re-check on that row).
-      if (result?.imageIndexWarning) {
-        toast.warning(result.imageIndexWarning);
-        return;
-      }
       // #1615 — ADR-027 D7: the assignment adopted a new model identity and
       // the count is what that invalidated. Amber, because the next run will
       // re-analyze those images (their stored descriptions are kept until
@@ -347,33 +308,19 @@ export function LlmTab() {
     // the raw value would re-send the assignment and re-probe for a width the
     // server already holds. The field clamps on blur too — this is the backstop
     // for a save reached without one, and the clamp is idempotent.
-    const nextImageTargetDims = clampImageEmbeddingTargetDimensions(imageTargetDims);
-    const imageTargetChanged =
-      imageTargetInitialized && nextImageTargetDims !== savedImageTargetDims;
-    // #1615 — the ceiling is a settings row like the width, saved first for
-    // the same one-Save reason, but it is NOT a change to the assignment: it
-    // re-sends nothing and re-probes nothing (ADR-027 D8 — it is outside the
-    // retained identity, and saving it must fire no probe).
+    // #1615 — the ceiling is a settings row, saved first for the one-Save
+    // reason, but it is NOT a change to the assignment: it re-sends nothing
+    // and re-probes nothing (ADR-027 D8 — it is outside the retained
+    // identity, and saving it must fire no probe).
     const imageAnalysisMaxTokensChanged =
       imageAnalysisMaxTokensInitialized && imageAnalysisMaxTokens !== savedImageAnalysisMaxTokens;
-    if (Object.keys(diff).length === 0 && !imageTargetChanged && !imageAnalysisMaxTokensChanged) {
+    if (Object.keys(diff).length === 0 && !imageAnalysisMaxTokensChanged) {
       toast.message('No changes');
       return;
-    }
-    // #1115 — a changed truncation width IS a change to the image leg, so it
-    // re-sends the saved assignment when the admin did not touch the
-    // dropdowns. Without this the width lands in `admin_settings` and nothing
-    // re-probes: the column keeps its old type while every later call asks for
-    // the new one, and the operator has to discover that Re-check is the
-    // second half of a save they thought they had finished.
-    const savedImageProvider = rawAssignments.image_embedding?.providerId ?? null;
-    if (imageTargetChanged && !diff.image_embedding && savedImageProvider) {
-      diff.image_embedding = { providerId: savedImageProvider };
     }
     save.mutate({
       diff,
       keepEmbeddingDraft: embeddingPending !== null,
-      ...(imageTargetChanged ? { imageTargetDimensions: nextImageTargetDims } : {}),
       ...(imageAnalysisMaxTokensChanged ? { imageAnalysisMaxOutputTokens: imageAnalysisMaxTokens } : {}),
     });
   }
@@ -401,8 +348,6 @@ export function LlmTab() {
         savedAssignments={rawAssignments}
         providers={providers}
         onChange={setAssignments}
-        imageTargetDimensions={imageTargetDims}
-        onImageTargetDimensionsChange={setImageTargetDims}
         imageAnalysisMaxOutputTokens={imageAnalysisMaxTokens}
         onImageAnalysisMaxOutputTokensChange={setImageAnalysisMaxTokens}
         embeddingAction={

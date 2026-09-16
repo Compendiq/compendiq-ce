@@ -5,8 +5,6 @@ import {
   UsecaseAssignmentsSchema,
   UsecaseDefaultSchema,
   VisionCapabilityDetailSchema,
-  ImageEmbeddingProbeSchema,
-  ImageIndexStatusSchema,
 } from './llm.js';
 import {
   AskRequestSchema,
@@ -26,10 +24,12 @@ describe('LlmUsecaseSchema', () => {
   it('rejects unknown use cases', () => {
     expect(() => LlmUsecaseSchema.parse('bogus')).toThrow();
   });
-  // #1115 P1 — the seventh use case. Migration 093 widened the DB CHECK in P0;
-  // the enum is what makes the assignment row reachable from the API.
-  it('accepts image_embedding (#1115)', () => {
-    expect(() => LlmUsecaseSchema.parse('image_embedding')).not.toThrow();
+  // #1618 stage 2 — the legacy image-embedding use case is retired: migration
+  // 118 narrowed the DB CHECK, so an assignment row naming it is unreachable
+  // from the API as well as from the table.
+  it('rejects image_embedding — retired with the legacy image space (#1618)', () => {
+    expect(LlmUsecaseSchema.options).not.toContain('image_embedding');
+    expect(() => LlmUsecaseSchema.parse('image_embedding')).toThrow();
   });
   it('accepts inline_completion (#1417)', () => {
     expect(() => LlmUsecaseSchema.parse('inline_completion')).not.toThrow();
@@ -122,12 +122,10 @@ describe('UsecaseAssignmentsSchema', () => {
       auto_tag: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       rerank: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
-      image_embedding: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       inline_completion: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
       image_analysis: { providerId: null, model: null, resolved: { providerId: p1, providerName: 'X', model: 'm' } },
     });
     expect(parsed.embedding).toBeDefined();
-    expect(parsed.image_embedding).toBeDefined();
     expect(parsed.inline_completion).toBeDefined();
     expect(parsed.image_analysis).toBeDefined();
   });
@@ -167,74 +165,6 @@ describe('inline completion contracts (#1417)', () => {
       usage: { promptTokens: 32, completionTokens: 5 },
     });
     expect(parsed.usage?.completionTokens).toBe(5);
-  });
-});
-
-/**
- * #1115 — the image-embedding probe result, an ADMIN-ONLY shape.
- *
- * `error` is the provider's own error body (see `llm-http-error.ts`), so it
- * lives here rather than on `UsecaseDefaultSchema`, exactly as #1184 kept
- * `probeError` off the non-admin read.
- */
-describe('ImageEmbeddingProbeSchema (#1115)', () => {
-  const base = {
-    providerId: '00000000-0000-4000-8000-000000000001',
-    model: 'Qwen/Qwen3-VL-Embedding-2B',
-    dimensions: 2048,
-    tier: 'halfvec' as const,
-    probedAt: '2026-08-17T12:00:00.000Z',
-    error: null,
-  };
-
-  it.each(['vector', 'halfvec', 'unindexed'])('accepts tier %s', (tier) => {
-    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, tier })).not.toThrow();
-  });
-
-  it('rejects an unknown tier', () => {
-    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, tier: 'ivfflat' })).toThrow();
-  });
-
-  // A failed probe has no width. Nullable rather than optional, so a caller
-  // cannot read "absent" as "zero-dimensional".
-  it('accepts a failed probe (null dimensions, an error string)', () => {
-    const parsed = ImageEmbeddingProbeSchema.parse({
-      ...base,
-      dimensions: null,
-      tier: null,
-      error: 'generateEmbedding HTTP 400: messages field not recognised',
-    });
-    expect(parsed.dimensions).toBeNull();
-    expect(parsed.error).toContain('400');
-  });
-
-  it('rejects error being absent', () => {
-    const { error: _omitted, ...withoutError } = base;
-    expect(() => ImageEmbeddingProbeSchema.parse(withoutError)).toThrow();
-  });
-
-  it('refuses an implausible width', () => {
-    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 0 })).toThrow();
-    expect(() => ImageEmbeddingProbeSchema.parse({ ...base, dimensions: 16_001 })).toThrow();
-  });
-
-  /**
-   * Review round 1: a re-probe can EMPTY the index and re-dirty the corpus, and
-   * the control that triggers it says only "Re-check". `rebuilt` is what lets
-   * the toast name the consequence — optional, not nullable, because the GET
-   * performs no DDL and "was never asked" must stay distinguishable from "did
-   * not rebuild".
-   */
-  it('carries the rebuild verdict when the re-probe reports one', () => {
-    const parsed = ImageEmbeddingProbeSchema.parse({ ...base, rebuilt: true, dirtiedPages: 42 });
-    expect(parsed.rebuilt).toBe(true);
-    expect(parsed.dirtiedPages).toBe(42);
-  });
-
-  it('leaves rebuilt absent for the read-only GET', () => {
-    const parsed = ImageEmbeddingProbeSchema.parse(base);
-    expect(parsed.rebuilt).toBeUndefined();
-    expect(parsed.dirtiedPages).toBeUndefined();
   });
 });
 
@@ -320,123 +250,3 @@ describe('VisionCapabilityDetailSchema (#1184)', () => {
   });
 });
 
-/**
- * #1115 P2 — what `GET /api/admin/embedding/image-index` answers.
- *
- * The shape carries three separate facts that read alike and are not: whether
- * the leg is ASSIGNED, what the column's identity IS, and what the last run
- * DID. An instance can be assigned with an empty index (nothing scanned yet),
- * unassigned with a full one (the leg was turned off and the rows survive —
- * unassigning destroys nothing, ADR-025 D7), or assigned with a last run that
- * failed. Each is nullable in its own right so the card cannot infer one from
- * another.
- */
-describe('ImageIndexStatusSchema (#1115 P2)', () => {
-  const base = {
-    assigned: true,
-    identity: {
-      providerId: '00000000-0000-4000-8000-000000000001',
-      model: 'Qwen/Qwen3-VL-Embedding-2B',
-      dimensions: 2048,
-      tier: 'halfvec' as const,
-    },
-    identityMatchesAssignment: true,
-    rows: 42,
-    pagesDirty: 3,
-    pagesTotal: 120,
-    running: false,
-    lastRun: {
-      at: '2026-08-17T12:00:00.000Z',
-      pages: 12,
-      embedded: 20,
-      reused: 5,
-      removed: 1,
-      failed: 0,
-      pagesFailed: 0,
-      skipped: { missing: 1, unsupported: 2, oversized: 0, tooLarge: 0, capped: 3, external: 0 },
-    },
-  };
-
-  it('accepts the fully-populated shape', () => {
-    expect(() => ImageIndexStatusSchema.parse(base)).not.toThrow();
-  });
-
-  it('accepts an unassigned instance whose index still holds rows', () => {
-    // Unassigning is not destructive: the leg goes off and the index survives.
-    const parsed = ImageIndexStatusSchema.parse({
-      ...base,
-      assigned: false,
-      identity: null,
-      lastRun: null,
-    });
-    expect(parsed.identity).toBeNull();
-    expect(parsed.rows).toBe(42);
-  });
-
-  it('rejects a missing lastRun key — null and absent must not read alike', () => {
-    const { lastRun: _dropped, ...without } = base;
-    expect(() => ImageIndexStatusSchema.parse(without)).toThrow();
-  });
-
-  it('requires every skip reason on a run, so a dropped counter cannot read as zero', () => {
-    for (const reason of ['missing', 'unsupported', 'oversized', 'tooLarge', 'capped', 'external'] as const) {
-      const { [reason]: _dropped, ...skipped } = base.lastRun.skipped;
-      expect(
-        () => ImageIndexStatusSchema.parse({ ...base, lastRun: { ...base.lastRun, skipped } }),
-        `${reason} must be required`,
-      ).toThrow();
-    }
-  });
-
-  it('rejects negative counters and an unknown tier', () => {
-    expect(() => ImageIndexStatusSchema.parse({ ...base, rows: -1 })).toThrow();
-    expect(() =>
-      ImageIndexStatusSchema.parse({ ...base, identity: { ...base.identity, tier: 'ivfflat' } }),
-    ).toThrow();
-  });
-
-  it('carries no provider base URL or key — this is the index document, not the provider one', () => {
-    const parsed = ImageIndexStatusSchema.parse({
-      ...base,
-      identity: { ...base.identity, baseUrl: 'http://vllm:8000/v1', apiKey: 'sk-secret' },
-    });
-    expect(parsed.identity).not.toHaveProperty('baseUrl');
-    expect(parsed.identity).not.toHaveProperty('apiKey');
-  });
-
-  /**
-   * Review r1 — `identity` deliberately merges the LIVE assignment's pair with
-   * the RECORDED index's width, so the payload has to carry whether they
-   * agree. The three states are not interchangeable: `false` is a real
-   * mismatch (the guarded-DDL branch), `null` is "nothing to compare", and a
-   * missing key would read as either.
-   */
-  it('requires identityMatchesAssignment, and takes all three states', () => {
-    const { identityMatchesAssignment: _dropped, ...without } = base;
-    expect(() => ImageIndexStatusSchema.parse(without)).toThrow();
-    for (const value of [true, false, null]) {
-      expect(() =>
-        ImageIndexStatusSchema.parse({ ...base, identityMatchesAssignment: value }),
-      ).not.toThrow();
-    }
-  });
-
-  /**
-   * `pagesFailed` counts pages whose WRITE threw, which is a different outage
-   * from an image the provider refused — and it defaults, so a run recorded
-   * before the field existed still parses instead of being dropped whole on
-   * upgrade (`readImageIndexLastRun` answers null on a parse failure).
-   */
-  it('defaults pagesFailed to 0 for a run recorded before the field existed', () => {
-    const { pagesFailed: _dropped, ...older } = base.lastRun;
-    const parsed = ImageIndexStatusSchema.parse({ ...base, lastRun: older });
-    expect(parsed.lastRun?.pagesFailed).toBe(0);
-    expect(parsed.lastRun?.embedded).toBe(20);
-  });
-
-  it('rejects a negative pagesFailed', () => {
-    expect(() =>
-      ImageIndexStatusSchema.parse({ ...base, lastRun: { ...base.lastRun, pagesFailed: -1 } }),
-    ).toThrow();
-  });
-});

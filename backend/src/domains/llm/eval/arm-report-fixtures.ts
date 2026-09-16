@@ -56,12 +56,9 @@ export function armReport(arm: EvalArm, over: Partial<ArmRunReport> = {}): ArmRu
     embedder: { identity: 'eval:qwen3@http://embed/v1', model: 'qwen3', endpoint: 'http://embed/v1', dims: 2560 },
     rerank: 'off',
     answerModel: { identity: 'rtx:gemma@http://chat/v1', model: 'gemma', endpoint: 'http://chat/v1' },
-    visionModel: arm === 'A'
-      ? { identity: 'eval-image-embedding:vl@http://vl/v1', model: 'vl', endpoint: 'http://vl/v1' }
-      : arm === 'B'
-        ? { identity: 'rtx:qwen-vl@http://vision/v1', model: 'qwen-vl', endpoint: 'http://vision/v1' }
-        : null,
-    imageIndexIdentity: arm === 'A' ? 'eval-image-embedding:vl@http://vl/v1#2048' : null,
+    visionModel: arm === 'B'
+      ? { identity: 'rtx:qwen-vl@http://vision/v1', model: 'qwen-vl', endpoint: 'http://vision/v1' }
+      : null,
     imageAnalysisMaxOutputTokens: arm === 'B' ? 8192 : null,
     imageAnalysisVersions: arm === 'B' ? { prompt: 1, schema: 1 } : null,
     retrieval: heldFixedKnobs(),

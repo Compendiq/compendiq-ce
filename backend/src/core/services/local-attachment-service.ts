@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { logger } from '../utils/logger.js';
-import { markPageImagesDirty } from './image-embedding-dirty.js';
+import { markPageImagesDirty } from './image-analysis-dirty.js';
 import { withLocalAttachmentMutationLock } from './attachment-snapshot-lock.js';
 
 /** Sub-directory under ATTACHMENTS_DIR reserved for local-page files. */

@@ -145,25 +145,6 @@ export async function resolveRerankUsecase(): Promise<Resolved | null> {
 }
 
 /**
- * The same non-inheriting resolution for `image_embedding` (#1115, ADR-025 D3)
- * — the rerank rule, one rung stronger.
- *
- * Rerank's argument for refusing inheritance was that the default provider
- * handed `/v1/rerank` traffic ERRORS, which is loud and immediate. Here the
- * failure would be silent: the default text embedder answers the plain
- * `{model, input}` shape with a perfectly well-formed vector — bypassing the
- * chat template, pooling a different position — and an index built from those
- * is indistinguishable from bad retrieval. So an unassigned row means the image
- * leg is OFF, and there is no fallback anywhere in this function.
- *
- * The Enterprise usecase override does not apply, for the same reason it does
- * not apply to rerank: the org-policy override routes chat-shaped calls.
- */
-export async function resolveImageEmbeddingUsecase(): Promise<Resolved | null> {
-  return resolveExplicitOnlyUsecase('image_embedding');
-}
-
-/**
  * #1615 (ADR-027 D3): image analysis is the third rung of the same rule, and
  * the assignment IS the egress control. Unassigned means NO new inference,
  * ever — never the default provider, never the chat provider, never a cloud
@@ -191,16 +172,16 @@ export async function resolveInlineCompletionUsecase(): Promise<Resolved | null>
 }
 
 /**
- * Shared body of the four ADR-021 use cases that NEVER inherit. One function
- * rather than four, so a future fifth cannot quietly gain a fallback that the
- * others refuse — the `usecase` is the only difference between them.
+ * Shared body of the three ADR-021 use cases that NEVER inherit. One function
+ * rather than three, so a future fourth cannot quietly gain a fallback that
+ * the others refuse — the `usecase` is the only difference between them.
  *
  * A model must resolve too: an assignment without a model falls back to the
  * provider's `default_model`, and if neither exists the stage stays disabled
  * rather than posting an empty model name at a non-OpenAI-shaped endpoint.
  */
 async function resolveExplicitOnlyUsecase(
-  usecase: 'rerank' | 'image_embedding' | 'inline_completion' | 'image_analysis',
+  usecase: 'rerank' | 'inline_completion' | 'image_analysis',
 ): Promise<Resolved | null> {
   const rows = await query<ResolveRow>(
     `SELECT
@@ -236,14 +217,6 @@ export async function resolveUsecase(usecase: LlmUsecase): Promise<Resolved> {
   if (usecase === 'rerank') {
     throw new Error(
       "resolveUsecase must not resolve 'rerank' — use resolveRerankUsecase (unassigned = stage disabled)",
-    );
-  }
-  // #1115: the same invariant for the image leg, and the failure it prevents is
-  // quieter — the default provider would ANSWER an image-embedding request, in
-  // the wrong shape, with a plausible vector.
-  if (usecase === 'image_embedding') {
-    throw new Error(
-      "resolveUsecase must not resolve 'image_embedding' — use resolveImageEmbeddingUsecase (unassigned = image leg disabled)",
     );
   }
   if (usecase === 'inline_completion') {
