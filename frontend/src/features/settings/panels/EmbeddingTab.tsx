@@ -7,6 +7,7 @@ import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton
 import { ActiveEmbeddingLocksBanner } from './ActiveEmbeddingLocksBanner';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
 import { ImageIndexCard } from './ImageIndexCard';
+import { ImageAnalysisProgressCard } from './ImageAnalysisProgressCard';
 
 export function EmbeddingTab() {
   const queryClient = useQueryClient();
@@ -94,6 +95,16 @@ export function EmbeddingTab() {
         and the re-embed controls that describe the same kind of work.
       */}
       <ImageIndexCard />
+
+      {/*
+        #1618 (ADR-027 Stage 1) — the image ANALYSIS card. It sits beside the
+        legacy index card above, not in place of it: while both designs are on
+        `dev` the legacy leg is still the only image retrieval that serves, and
+        an operator upgrading into the candidate has to be able to read both.
+        The destructive half removes the card above and this one takes its
+        slot (ADR-027 "Retirement plan", stage 2).
+      */}
+      <ImageAnalysisProgressCard />
 
       <div className="nm-card p-3 text-sm text-muted-foreground">
         These settings are shared across all users. Changing chunk settings will trigger re-embedding of all pages, which may take several minutes.

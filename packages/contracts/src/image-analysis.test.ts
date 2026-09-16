@@ -7,6 +7,10 @@ import {
   IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN,
   IMAGE_ANALYSIS_OUTPUT_TOKENS_REFERENCE,
   IMAGE_ANALYSIS_SCHEMA_VERSION,
+  ImageAnalysisActionResultSchema,
+  ImageAnalysisBatchReasonSchema,
+  ImageAnalysisLastRunSchema,
+  ImageAnalysisStatusSchema,
   ImageAnalysisIdentitySchema,
   ImageAnalysisReanalysisScopeQuerySchema,
   ImageAnalysisReanalysisScopeSchema,
@@ -212,5 +216,58 @@ describe('scope preview and identity contracts', () => {
       identityHash: 'not-hex',
       assignedAt: '2026-09-15T00:00:00.000Z',
     }).success).toBe(false);
+  });
+});
+
+describe('the operator processing surface (#1618)', () => {
+  const rows = { analyzed: 1, stale: 0, pending: 0, failed: 0, terminal: 0, skipped: 0 };
+  const skipReasons = { missing: 0, unsupported: 0, oversized: 0, tooLarge: 0, external: 0, capped: 0 };
+
+  it('serves a last run recorded before a counter existed, at zero rather than not at all', () => {
+    // The row is JSON written by a previous release. A required counter would
+    // drop the whole last run on upgrade — `ImageIndexRunSchema.pagesFailed`'s
+    // recorded lesson.
+    const parsed = ImageAnalysisLastRunSchema.safeParse({ at: '2026-09-16T08:00:00.000Z', processed: 2 });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.unreadableRefs).toBe(0);
+    expect(parsed.success && parsed.data.reconciledPages).toBe(0);
+    // `reason` stays absent: a run that did not stop must not read as one that did.
+    expect(parsed.success && 'reason' in parsed.data).toBe(false);
+  });
+
+  it('refuses a stop reason the card has no label for', () => {
+    expect(ImageAnalysisBatchReasonSchema.safeParse('identity_drift').success).toBe(true);
+    expect(ImageAnalysisBatchReasonSchema.safeParse('quota_exhausted').success).toBe(false);
+  });
+
+  it('lets the status withhold an identity verdict, but never the counts', () => {
+    const base = {
+      assigned: false,
+      retainedIdentity: null,
+      identityMatchesAssignment: null,
+      rows,
+      skipReasons,
+      dirtyPages: 0,
+      pagesAwaitingEmbed: 0,
+      running: false,
+      lastRun: null,
+    };
+    expect(ImageAnalysisStatusSchema.safeParse(base).success).toBe(true);
+    // Six row buckets and six skip reasons, all required: a missing bucket
+    // would render as a claimed zero on the card.
+    const { skipped: _skipped, ...incomplete } = rows;
+    expect(ImageAnalysisStatusSchema.safeParse({ ...base, rows: incomplete }).success).toBe(false);
+    // The reconcile's own key is snake_case (`too_large`); the route camelCases
+    // it in one place, and sending the raw key through drops the count.
+    const { tooLarge: _tooLarge, ...rawSkips } = skipReasons;
+    expect(
+      ImageAnalysisStatusSchema.safeParse({ ...base, skipReasons: { ...rawSkips, too_large: 1 } }).success,
+    ).toBe(false);
+  });
+
+  it('lets an action omit a row count it did not compute', () => {
+    expect(ImageAnalysisActionResultSchema.safeParse({ started: true, alreadyRunning: false }).success).toBe(true);
+    expect(ImageAnalysisActionResultSchema.safeParse({ rows: 3, started: false, alreadyRunning: true }).success).toBe(true);
+    expect(ImageAnalysisActionResultSchema.safeParse({ rows: -1, started: true, alreadyRunning: false }).success).toBe(false);
   });
 });

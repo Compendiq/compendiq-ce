@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image analysis processing card and retirement preparation (ADR-027, #1618
+  stage 1).** Settings → AI Models → Embeddings gains an **Image analysis**
+  card beside the legacy Image index card — *is it running?*, where #1615's
+  row on LLM providers answers *can it run?*. It reports rows by status with
+  `analyzed` and **`stale`** kept apart, skip reasons by name, the two
+  distinct backlogs ("analysis complete, text embedding still pending" costs
+  no vision call; a partially analyzed corpus still owes calls), the retained
+  model identity and whether it matches the assignment (D13's third gate, so a
+  backlog that will not drain is no longer the only symptom), and the last
+  batch's three steps including a stop's reason and HTTP status. Three
+  actions — **Process now**, **Retry failed** and **Re-analyze all**, the last
+  behind a confirm dialog that states the exact image count and the cost
+  before it runs and refused with a 409 while a corpus re-embed or a shadow
+  backfill holds the one-active-run slot. Unassigned renders as the pause it
+  is, not an outage: valid descriptions stay searchable, changed images stay
+  pending and authored text search is unaffected. A failed status read says the
+  status could not be *read*, states that nothing was touched, and keeps all
+  three actions available. Four new admin routes behind Zod contracts
+  (`GET /api/admin/embedding/image-analysis` plus the three POSTs) over reads
+  #1616 already shipped — no DDL, no new SQL. `useNoticeRetry` is now one
+  shared module instead of two hand-copies.
+  **Preparation only:** nothing legacy is removed. The destructive half (the
+  forward migration, the module and settings deletions) is written, reviewed
+  and **held** in `docs/held-migrations/`, gated on #1619's passing verdict and
+  an explicit owner go. Its recovery procedure —
+  `docs/runbooks/image-embedding-retirement.md` — ships with it, exercised end
+  to end on a disposable database, and records two amendments to ADR-027's
+  dump set: `pages.image_embedding_dirty` is not in it, and the dump needs
+  `--clean --if-exists`. ADR-027 errata move the MRL-width, probe-chip and
+  Image-leg-toggle removals to the destructive half (they still gate live
+  serving code) and add `image_index_last_run` to the rows it deletes.
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
   Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
   and a trigger-maintained, GIN-indexed `page_embeddings.chunk_tsv` (rebuilt in

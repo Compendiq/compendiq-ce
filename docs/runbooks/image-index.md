@@ -515,10 +515,10 @@ what an `interval` can hold; a deterministic class
 ends the batch (`provider_status`) and re-probes the pair; three identical
 `rejected` statuses first end it too (`uniform_rejection`, the rows rewritten
 `unavailable:<status>`, never terminal) — serve the model with a larger
-context or lower Max output tokens, then Run Now. The last batch result is in
-`admin_settings.image_analysis_last_run`; the operator card, Run Now, Retry
-failed and Re-analyze all arrive with #1618. With `image_analysis` unassigned
-the worker still sweeps and reconciles every cadence and returns
+context or lower Max output tokens, then Process now. The last batch result is in
+`admin_settings.image_analysis_last_run`; the operator card and its three
+actions shipped with #1618 and are described in §5c. With `image_analysis`
+unassigned the worker still sweeps and reconciles every cadence and returns
 `reason: 'unassigned'` — a pause, not a purge.
 
 Derived chunks are ordinary `page_embeddings` rows after every authored index
@@ -528,6 +528,49 @@ averages, indexed lexically through `page_embeddings.chunk_tsv` (rebuilt with
 authored text. Unlike the leg below, an unassigned instance pays no probe
 here at all — the gate is a settings read, and the sweep and reconcile still
 run so a pause is a pause, not a purge.
+
+## 5c. The Image analysis card and its routes (ADR-027, #1618 stage 1)
+
+Settings → AI Models → **Embeddings** carries an **Image analysis** card beside
+the **Image index** card this runbook otherwise describes. Two cards while both
+designs ship: the legacy leg is still the only image retrieval that serves, so
+an operator upgrading into the candidate has to be able to read both. Stage 2
+deletes the legacy card.
+
+Everything on it comes from one route, `GET /api/admin/embedding/image-analysis`
+(admin only), which adds no SQL: it composes #1616's corpus counts, the
+retained identity, the live assignment, the last batch and the worker lock.
+
+- `rows` keeps **`analyzed`** (valid under the retained identity and the
+  running constants) apart from **`stale`** (analyzed on disk, rejected by
+  every reader until the next sweep re-pends it). One number would claim
+  coverage the index does not have.
+- `identityMatchesAssignment` is D13's third gate, reported: `false` means the
+  worker will analyze nothing until the assignment PUT or **Re-check** adopts
+  the assigned pair. `null` means nothing is assigned — a pause, not a
+  mismatch.
+- `pagesAwaitingEmbed` is "analysis complete, text embedding still pending",
+  which costs no vision call; `dirtyPages` is "queued for an image re-read".
+  Neither is partial analysis.
+- `lastRun` carries the three steps' counters plus a stop's `reason` and
+  `httpStatus`, so "0 analyzed" on a settled corpus is distinguishable from an
+  endpoint that refused every call.
+
+Three actions, all admin-only POSTs, all kicking one bounded batch **detached**
+and reporting `started` / `alreadyRunning` from the lock:
+
+| Route | Does |
+|---|---|
+| `…/image-analysis/process` | Kicks a batch. Answers `alreadyRunning` when the lease is held — it never claims a second batch started. |
+| `…/image-analysis/retry-failed` | Every `failed` and `failed_terminal` row → `failed, attempts 0, due now`. The only thing that moves a terminal row. Idempotent. |
+| `…/image-analysis/reanalyze-all` | Every `analyzed`, `failed` and `failed_terminal` row → `pending, payload NULL`, pages bumped. One vision call per row on the next runs. Refused **409** while a corpus text re-embed or a #1116 shadow migration holds the one-active-run slot. The card discloses the row count in a confirm dialog before it fires. |
+
+A status read that FAILS says so in the destructive treatment, states that the
+assignment and the stored analyses are untouched, and **leaves all three
+actions available** — they are the remedy, so a failed GET must not withhold
+them.
+
+Retiring the leg this runbook describes: `image-embedding-retirement.md`.
 
 ## 6. Retrieval — the image leg (#1115 P3)
 
