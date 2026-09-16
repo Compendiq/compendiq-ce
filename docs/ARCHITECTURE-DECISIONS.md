@@ -5594,8 +5594,9 @@ deployment, not of the ADR.** Measured 2026-09-16 on `gemma-4-26b-a4b-it`
 model reasons before every reply (**82.0–93.3 %** of its output tokens at
 8,192, **82.0–99.96 %** over all ten rows of the pre-check — the reasoning
 share of the raw `usage` of each request, 401/489 … 3,494/3,746 at 8,192 and
-7,578/7,581 at 16,384; the ten rows are below), five of five
-images produced a valid payload at 8,192 and four of five at 16,384, and the
+7,578/7,581 at 16,384, that last one a generation cut at the context wall; the
+ten rows and the cut are below), five of five images produced a valid payload
+through the client at 8,192 and four of five at 16,384, and the
 worst image took 114.4 s of the 120 s per-image budget
 (`ANALYSIS_TIMEOUT_MS`). The binding constraint is neither the ceiling nor the
 budget but the provider's **loaded context window of 8,192 tokens**
@@ -5607,26 +5608,56 @@ at the shipped default **8,192**, and the remedy for an image that overruns is
 a larger loaded context on the inference host, not a higher ADR ceiling and
 not a longer timeout.
 
-The ten rows the two ranges above are computed over — the pre-check's raw
-`usage`, one request per image per ceiling, recorded here because a shipped
-percentage must be checkable against the measurement it came from:
+The ten rows the two ranges above are computed over. **The pre-check made two
+requests per image per ceiling, not one**, and each column below says which of
+the two it came from: **(a)** the real `analyzeImage` call through the
+product's own client — the source of `wall`, `result` and `completion` — and
+**(b)** one raw `POST /v1/chat/completions` of the same body at the same
+ceiling, which is the only way to see the reasoning split because the client
+drops it — the source of `completion (raw)`, `reasoning` and `share`. (a) and
+(b) are two separate generations of the same prompt, so no row may be read as
+one request: the validated payload is (a)'s and the share is (b)'s. Recorded
+here because a shipped percentage must be checkable against the measurement it
+came from:
 
-| ceiling | image | result | completion (raw) | reasoning | share |
-|---|---|---|---:|---:|---:|
-| 8,192 | periodensystem__1.png | valid | 6,314 | 5,588 | 88.5 % |
-| 8,192 | osi-modell__2.png | valid | 4,543 | 4,061 | 89.4 % |
-| 8,192 | balanced-scorecard__2.png | valid | 3,746 | 3,494 | **93.3 %** |
-| 8,192 | programmablaufplan__1.png | valid | 2,303 | 1,922 | 83.5 % |
-| 8,192 | brandenburger-tor__1.jpg | valid | 489 | 401 | **82.0 %** |
-| 16,384 | periodensystem__1.png | `malformed` | 4,138 | 3,817 | 92.2 % |
-| 16,384 | osi-modell__2.png | valid | 7,581 | 7,578 | **99.96 %** |
-| 16,384 | balanced-scorecard__2.png | valid | 3,746 | 3,494 | 93.3 % |
-| 16,384 | programmablaufplan__1.png | valid | 2,303 | 1,922 | 83.5 % |
-| 16,384 | brandenburger-tor__1.jpg | valid | 489 | 401 | 82.0 % |
+| ceiling | image | wall (a) | result (a) | completion (a) | completion raw (b) | reasoning (b) | share (b) |
+|---|---|---:|---|---:|---:|---:|---:|
+| 8,192 | periodensystem__1.png | 63.0 s | valid | 4,397 | 6,314 | 5,588 | 88.5 % |
+| 8,192 | osi-modell__2.png | 114.4 s | valid | 7,554 | 4,543 | 4,061 | 89.4 % |
+| 8,192 | balanced-scorecard__2.png | 83.8 s | valid | 5,675 | 3,746 | 3,494 | **93.3 %** |
+| 8,192 | programmablaufplan__1.png | 43.1 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 8,192 | brandenburger-tor__1.jpg | 7.2 s | valid | 483 | 489 | 401 | **82.0 %** |
+| 16,384 | periodensystem__1.png | 95.1 s | `malformed` | — | 4,138 | 3,817 | 92.2 % |
+| 16,384 | osi-modell__2.png | 51.7 s | valid | 3,553 | 7,581 † | 7,578 † | **99.96 %** † |
+| 16,384 | balanced-scorecard__2.png | 84.6 s | valid | 5,675 | 3,746 | 3,494 | 93.3 % |
+| 16,384 | programmablaufplan__1.png | 43.7 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 16,384 | brandenburger-tor__1.jpg | 6.8 s | valid | 489 | 489 | 401 | 82.0 % |
 
-So **82.0–93.3 %** is the range over the five rows at the shipped ceiling and
-**82.0–99.96 %** the range over all ten. No figure in this ADR, the runbook or
-the code comments may quote a wider one.
+† **That (b) generation was cut at the context wall, and it is the sole source
+of the 99.96 % upper bound.** Its prompt is 611 tokens and 611 + 7,581 = 8,192
+exactly — the host's `loaded_context_length` at pre-check time — and it emitted
+**three** non-reasoning tokens, so it was still reasoning when the context ran
+out. That is the case classed `malformed` above, not a completed reply. The
+`valid` beside it is (a), the client call on the same image and ceiling, which
+returned a payload in 51.7 s.
+
+So **82.0–93.3 % is the range at the shipped 8,192 ceiling, where no (b)
+generation reached either bound** — the largest is 618 + 6,314 = 6,932 against
+an 8,192-token ceiling and an 8,192-token loaded context — and that is the
+figure to quote about this model's behaviour; **82.0–99.96 % is the range over
+all ten (b) generations, with its upper bound produced by the cut above** and
+quotable only with that said. The highest share on an uncut generation is
+93.3 %. No figure in this ADR, the runbook or the code comments may quote a
+range wider than these two.
+
+Three of the five images — `balanced-scorecard__2.png`,
+`programmablaufplan__1.png`, `brandenburger-tor__1.jpg` — report identical (b)
+figures at both ceilings: those replies never approached either ceiling, and
+the body is sent at `temperature: 0`, so raising the ceiling changed
+nothing about them. The (b) column is therefore ten requests but **seven
+distinct generations**, and the repetition is the measurement rather than a
+transcription (the two ceilings were separate runs: `brandenburger-tor__1.jpg`
+differs by six tokens in (a), 483 against 489).
 
 ### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
 
@@ -5639,9 +5670,11 @@ answer call, so no arm's answer behaviour changes.
 needs, and they contribute nothing to it. Measured 2026-09-16 on
 `gemma-4-26b-a4b-it` (RTX 3090, LM Studio): the reasoning share of the reply
 is **82.0–93.3 %** of its output tokens at the shipped 8,192 ceiling and
-**82.0–99.96 %** across both candidate ceilings — computed from the raw
-`usage` of the ten-row vision pre-check recorded above, whose rows are the
-source of every figure in this paragraph — and on the 187-image corpus
+**82.0–99.96 %** across both candidate ceilings (that upper bound off a
+generation cut at the context wall) — both computed from the raw `usage` of
+the ten-row vision pre-check recorded above, which is the source of those two
+ranges and of the decode rate below, and of nothing else in this paragraph —
+and on the 187-image corpus
 **14 images failed deterministically at the shipped 8,192 ceiling** — eight
 `truncated:8192` (the reply hit `max_tokens`), five `malformed` and one
 `rejected:400` — every one of which D8 classes deterministic, so five
@@ -5653,10 +5686,12 @@ completion tokens) with the hints in place. The other thirteen — including
 all eight `truncated:8192` — were **not** re-probed: #1618's Retry-failed
 path re-opened all 14 rows for real, but the provider host stopped answering
 before the backfill completed, so no post-erratum result exists for them.
-Raising the
-ceiling is not the remedy: at a measured 68–100 tok/s a 16,384-token reply is
-160–240 s against `ANALYSIS_TIMEOUT_MS` = 120 s, so a higher ceiling trades a
-deterministic refusal for a transient one that never terminates.
+Raising the ceiling is not the remedy: the nine pre-check rows whose client
+call returned a completion decode at **66.0–71.9 tok/s** — column (a)'s
+completion over its wall in the table above, slowest 7,554 ÷ 114.4 s, fastest
+489 ÷ 6.8 s — so a 16,384-token reply is **228–248 s** against
+`ANALYSIS_TIMEOUT_MS` = 120 s, and a higher ceiling trades a deterministic
+refusal for a transient one that never terminates.
 
 *What was deliberately NOT changed:* `image_analysis_max_output_tokens` stays
 at the shipped default 8,192, `ANALYSIS_TIMEOUT_MS` stays at 120 s, and the

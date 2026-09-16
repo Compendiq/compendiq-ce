@@ -350,7 +350,8 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
       // ADR-027 D8 erratum (#1619): suppress provider-side reasoning. A
       // reasoning VL model spends 82.0–93.3 % of its output tokens thinking at
       // this ceiling — the ten-row #1619 vision pre-check, one row of which
-      // reads 99.96 % at 16,384 (ADR-027, the table beside the amendment) —
+      // reads 99.96 % at 16,384, off a generation cut at the host's context
+      // wall (ADR-027, the table beside the amendment) —
       // and those tokens come out of the SAME `max_tokens` budget the payload
       // needs: 14 of 187 corpus images failed deterministically at the 8,192
       // ceiling with reasoning on (8 `truncated:8192`, 5 `malformed`,

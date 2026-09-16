@@ -50,7 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   #1619).** A reasoning vision model spends **82.0–93.3 %** of its output
   tokens on a thinking pass at the shipped 8,192 ceiling (measured over the
   ten rows of #1619's vision pre-check, tabulated in ADR-027; one row reads
-  99.96 % at a 16,384 ceiling), and those tokens come out of the same
+  99.96 % at a 16,384 ceiling, off a generation cut at the host's 8,192-token
+  context wall), and those tokens come out of the same
   `max_tokens` budget the analysis payload needs: on the 187-image eval
   corpus, 14 images failed deterministically at the shipped 8,192 ceiling
   (8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`) and each would have
