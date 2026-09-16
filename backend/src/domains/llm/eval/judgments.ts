@@ -861,18 +861,26 @@ export function decideGate(input: {
       `(O6: ${primary.candidate} may exceed ${primary.baseline} by at most 3 pp)`,
   });
   const { leakage } = input;
+  // A count that is not a number is not a SMALL number: `NaN < 48` and
+  // `NaN <= 2` are both false, so an unreadable pair used to fall through to
+  // `fail` — the one ordering in this rule that decided against the arm on
+  // missing information rather than refusing to decide (review r2, R2-10).
+  const leakageCounted = Number.isFinite(leakage.queries) && Number.isFinite(leakage.denominator);
+  const leakageDecidable = leakageCounted && leakage.denominator >= ARM_MARGINS.leakageDenominator;
   conditions.push({
     name: `safety: image-negative leakage@1, ABSOLUTE cap on arm ${primary.candidate} (O7 as amended)`,
-    verdict: leakage.denominator < ARM_MARGINS.leakageDenominator
+    verdict: !leakageDecidable
       ? 'inconclusive'
       : leakage.queries <= ARM_MARGINS.leakageQueries ? 'pass' : 'fail',
     detail: `${leakage.queries} of ${leakage.denominator} image-negative labels led with image evidence ` +
       `(${pp(leakage.rate)}), cap ${ARM_MARGINS.leakageQueries} of ${ARM_MARGINS.leakageDenominator}. ` +
       'Absolute, not paired: arm C leaks 0 on every negative by construction, so "no worse than the baseline" would ' +
       'be a comparison against a constant (A-4)' +
-      (leakage.denominator < ARM_MARGINS.leakageDenominator
-        ? ` — and ${leakage.denominator} negatives is not the sample O2 pre-registered, so the cap is not decidable here.`
-        : '.'),
+      (leakageDecidable
+        ? '.'
+        : leakageCounted
+          ? ` — and ${leakage.denominator} negatives is not the sample O2 pre-registered, so the cap is not decidable here.`
+          : ' — and the leakage counts did not read as numbers, so the cap is not decidable here.'),
   });
   const verdicts = conditions.map((x) => x.verdict).filter((v) => v !== 'retired');
   // The pilot stop pre-empts all three parts of the rule as pre-registered, so

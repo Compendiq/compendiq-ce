@@ -283,6 +283,21 @@ describe('decideGate (ADR-027 "Decision rule", re-registered B vs C by #1619)', 
     expect(short.verdict).toBe('inconclusive');
   });
 
+  it('refuses to decide O7 on counts that are not numbers, rather than reading them as a fail', () => {
+    // Review r2 R2-10: `NaN < 48` and `NaN <= 2` are both false, so an
+    // unreadable pair used to reach the last arm of the ternary and print
+    // `fail` — deciding against the arm on missing information.
+    const unread = decideGate({
+      primary: judgedPair({}),
+      leakage: { queries: Number.NaN, denominator: Number.NaN, rate: Number.NaN },
+      controls: bothControls,
+    });
+    const row = unread.conditions.find((c) => c.name.includes('leakage'))!;
+    expect(row.verdict).toBe('inconclusive');
+    expect(row.detail).toMatch(/did not read as numbers/);
+    expect(unread.verdict).toBe('inconclusive');
+  });
+
   it('fails on a primary that excludes 0 below the margin, and on a safety interval wholly beyond it', () => {
     const below = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.03, ci: { lower: 0.01, upper: 0.05, excludesZero: true } }) }), leakage, controls: bothControls });
     expect(below.verdict).toBe('fail');
