@@ -2092,6 +2092,18 @@ query-side prefix paragraph above.
 
 ### #1115 (2026-08-17) — a third retrieval leg, over a separate image index
 
+> **RETIRED by #1618 stage 2 (2026-09-17), migration 118.** The fusion is back
+> to TWO legs. `page_image_embeddings`, `image-leg-search.ts`, the
+> `rag_image_leg_enabled` toggle, `SearchResult.imageOnly` /
+> `imageTextSynthesized`, `degraded_reason = 'image_leg_unavailable'` and the
+> `image_only_context` refusal are all gone; historical `search_analytics`
+> rows still carry the old reason text. A picture now reaches retrieval as
+> ADR-027's derived `image_analysis` chunk inside the ordinary vector and
+> keyword legs, so none of the cross-modal rules below apply to anything
+> shipped. The basis was **"Remove it, nobody was using it in production."** —
+> unused in production plus maintenance burden, explicitly not a measurement
+> (ADR-027 A-5). The paragraphs below are kept as the record of what P3 ran.
+
 ADR-025 adds a **third leg** to the fusion described above (**shipped in P3**):
 alongside the vector leg over `page_embeddings` and the keyword leg over
 `pages.tsv`, an image leg does kNN over `page_image_embeddings` — a separate
@@ -2517,8 +2529,9 @@ Until this ADR the app supported exactly two LLM backends selected by the `LLM_P
 **Per-use-case assignments**: The new `llm_usecase_assignments` table maps each of `chat | summary | quality | auto_tag | embedding` to a `(provider_id, model)` pair. Either field can be `NULL` to inherit from the provider's default or the globally-default provider. The resolver (`llm-provider-resolver.ts`) combines both inheritance paths in a single cached lookup.
 
 That five-item list records the original migration. Later amendments add
-`rerank`, `image_embedding`, and `inline_completion`; all three are explicitly
-assigned and never inherit the globally-default provider.
+`rerank`, `image_embedding` (retired by #1618 stage 2, migration 118),
+`inline_completion` and `image_analysis`; all of them are explicitly assigned
+and never inherit the globally-default provider.
 
 **Unified client**: `openai-compatible-client.ts` replaces both `ollama-service.ts` and `openai-service.ts`. It queues requests (`LLM_CONCURRENCY`) and wraps calls in per-provider circuit breakers. Rate-limit and retry behavior is per-provider, not per-call-site.
 
@@ -2627,6 +2640,13 @@ ids — the two legitimately cache as separate entries. `search_analytics.rerank
 writer; `max_score` keeps the fusion unit.
 
 ### #1115 — the `image_embedding` use case (Phase 2)
+
+> **RETIRED by #1618 stage 2 (2026-09-17), migration 118.** `image_embedding`
+> is no longer a use case: migration 118 deletes its assignment row and drops
+> it from the `llm_usecase_assignments` CHECK, leaving the eight of
+> `LlmUsecaseSchema`. The non-inheriting rule it established lives on in
+> `image_analysis` (ADR-027 D3), where the assignment is additionally the
+> egress control. The paragraph below is kept as the record of what P1–P3 ran.
 
 ADR-021 gains a **seventh** use case, `image_embedding` (ADR-025). Migration
 `093` widened the `llm_usecase_assignments` CHECK in **P0**; the resolver, the

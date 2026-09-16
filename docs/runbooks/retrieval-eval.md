@@ -26,21 +26,20 @@ rather than measured.
   vendored OSS docs; a model that wins on it has not been shown to win on your
   pages. **Answers are the one exception**: ADR-027's quality gate needs
   per-arm *answer* generation and blind human judgment, and that tooling —
-  the `--arm A|B|C` axis on this script, `scripts/run-arm-answers.ts` (the
+  the `--arm B|C` axis on this script, `scripts/run-arm-answers.ts` (the
   arm-blinded answer artifacts) and `scripts/judge-arms.ts` (the judgment
   sheet, `--unblind`, the paired statistics) — shipped as **PR2 on #1614**.
-  The protocol and the recipe are under "Arm protocol (ADR-027)" below. No
-  arm has been measured yet: the baselines are #1619's, and the artifacts
-  directory says why none is committed.
+  The protocol and the recipe are under "Arm protocol (ADR-027)" below. #1619
+  captured arm C and the legacy-revision-C control; arm B stands at 100/187
+  and the pre-registered B-vs-A primary was never measured, because arm A
+  needs a VL embedding endpoint that no longer has a runtime (#1618 stage 2).
 - **Does not** claim your knowledge base scores this well. The corpus is
   vendored MIT documentation (Fastify, Vitest, Vite), not your pages.
 - **Has a second axis.** Everything above describes the text gate. `--images`
-  (#1115 P5b) measures a different thing on a different corpus with a different
-  fixture — what the image retrieval leg adds, paired leg-off against leg-on —
-  and the two are never compared with each other. The model rule above holds
-  there in the axis's own terms: `--baseline` refuses a pair whose **VL** model,
-  width or index endpoint differs, because `model` is the text embedder and
-  reads the same on two runs made with different checkpoints. See "Image axis"
+  (#1115 P5b) selects a different corpus with a different fixture, and since
+  #1618 stage 2 it REQUIRES `--arm B|C`: one arm's run, paired later across
+  report files rather than in-process. The two axes are never compared with
+  each other (`--baseline` refuses a cross-axis pair). See "Image corpus axis"
   below.
 
 ## Running a comparison on production data
@@ -146,7 +145,8 @@ value and refuse one, because they are read as bare flags: `--rerank=true`
 would otherwise have measured plain retrieval under a report saying reranked. A
 value flag given without a value is refused too, rather than falling back to a
 default nobody typed. `--images` (#1115 P5b) is one of those switches and
-selects a **different axis** entirely — see "Image axis" below.
+selects a **different corpus** entirely, and is refused without `--arm B|C` —
+see "Image corpus axis" below.
 
 ## Which FTS configuration a run measured (#1114)
 
@@ -631,7 +631,7 @@ simply stops claiming to have reproduced the corpus.
 from `corpusDirsForLanguage`.** That is the point rather than an oversight:
 `computeCorpusManifestSha` covers every directory in that list, so joining it
 would invalidate every recorded baseline above at once. The `--images` axis
-(P5b, "Image axis" below) loads the directory through
+(P5b, "Image corpus axis" below) loads the directory through
 `loadImageCorpusManifest` instead, so no run described above this section
 touches it and the English gate's sha is unmoved. The labels are P5c's, by
 independent vision-capable agents on a different model from the implementer.
@@ -643,7 +643,7 @@ and died a step later on a missing fixture, which is luck rather than a guard.
 is also what keeps the corpus honest:
 page bodies carry `![](images/…)` with an **empty alt and no caption**, because
 a page that captions its own figures is answerable from text alone and would
-score the image leg a win it did not earn. The captions live in the manifest,
+score an image arm a win it did not earn. The captions live in the manifest,
 for the labeller.
 
 Licences are not the text corpus's. Page text is CC BY-SA 4.0 (adapted);
@@ -766,294 +766,49 @@ returning the defensible answer.
 `loadFixture` — the two are separate loaders over separate schemas, and the
 axis below is where its labels turn into numbers.
 
-## Image axis (`--images`, #1115 P5b)
+## Image corpus axis (`--images`, #1115 P5b; ADR-027 arms)
 
-A different question from everything above. The gate asks "did this checkout
-retrieve better"; this axis asks **"what does the image leg add"** — so it is
-not a flag on the gate, it is its own corpus, its own fixture, its own seeder
-and its own runner, with its own report family. `--baseline` refuses a pair
-that crosses the two.
+A different question from the text gate, and since **#1618 stage 2** a
+different shape from the one #1115 shipped.
 
-**It is not in CI**, and cannot be: the `retrieval-eval` job's model is
-`nomic-embed-text`, which is text-only, and no vision-language model is
-runnable there. CI keeps testing this axis's *plumbing* against a stub
-endpoint (`eval/vl-stub-server.ts`); the numbers come from a run you start.
+**What it was.** P5b's `--images` seeded the German image corpus and ran every
+fixture query TWICE in one process — `imageLeg: false` against
+`imageLeg: true`, interleaved per query — to answer "what does the image leg
+add". That paired form is **gone with the leg** (migration 118): there is no
+`page_image_embeddings` to fill, no `HybridSearchOptions.imageLeg` to force
+and no `EVAL_IMAGE_EMBEDDING_*` environment to read. The VL shim
+(`tools/vl-embedding-shim/`), the stub server and `docs/runbooks/vl-embedding-dev.md`
+went with it.
 
-### What it does
+**What it is.** `--images` is a CORPUS SELECTOR. On its own it is **refused**,
+before the database is opened — it must name `--arm B|C` (see "Arm protocol"
+below), and a run measures ONE arm into one report. Everything else about the
+corpus half is unchanged and still true:
 
-1. **Seeds `eval/corpus-de-images/` through the REAL intake.** Each page's
+1. **It seeds `eval/corpus-de-images/` through the REAL intake.** Each page's
    markdown goes through `markdownToHtml` and `embedPage` exactly as the text
    corpus does; its images are written into a per-run temp `ATTACHMENTS_DIR`
-   under the layout `attachment-store.ts` resolves, its stored `body_html` is
-   rewritten to point at them with `buildPageImageUrl` (the exact inverse of
-   the enumerator), and then `embedPageImages` fills
-   `page_image_embeddings` — the same sha-reuse, the same reconcile, the same
-   write transaction the worker runs. Nothing inserts a vector directly, so a
-   wrong directory key or a mis-encoded filename fails the run instead of
-   quietly measuring an empty index. The count is checked twice: per page
-   against the body that was stored, and once at the end against the
-   **manifest** — a picture lost between the two shrinks the per-page
-   expectation in step with the result, so only the manifest can catch it.
-2. **Runs every fixture query TWICE, in one process, on that one database** —
-   `imageLeg: false` and `imageLeg: true`, interleaved per query, with the arm
-   that goes first alternating on the label index. Both arms are the same rows,
-   the same vectors, the same fused text legs, which is the precondition the
-   paired test needs. Interleaved rather than one arm then the other, because
-   the rig warms up (TTL caches, the vector pool, Postgres's buffer cache) and
-   a block design hands that entire cost to whichever arm goes first and then
-   publishes it as the leg's latency; alternating is the rest of the same
-   argument, since each query's own first touch would otherwise always be paid
-   by the off arm and `queryCostMs` would understate the leg.
-3. **Scores the pair**: page Recall@{1,3,5,10} and MRR for both arms, the
-   paired delta with a bootstrap interval and **McNemar exact** — the harness's
-   own gate — overall, per `style` and per label language, plus `imageHit@K`,
-   `imageNegativeLeak@K`, embed throughput and each arm's query cost.
+   under the layout `attachment-store.ts` resolves, and its stored `body_html`
+   is rewritten to point at them with `buildPageImageUrl` (the exact inverse
+   of the enumerator). Nothing inserts a row directly, so a wrong directory
+   key or a mis-encoded filename fails the run instead of quietly measuring an
+   empty corpus. The count is checked twice: per page against the body that
+   was stored, and once at the end against the **manifest**. The seeder then
+   raises `image_analysis_dirty` per page, which is arm B's backfill queue
+   (`scripts/…`/`arm-b-backfill.ts`, ADR-027 D6.2); arm C leaves
+   `image_analysis` unassigned and analyzes nothing.
+2. **It refuses `--lang en`** (the corpus is 65 German articles; the fixture
+   carries its own 58 English labels), **`--deep-search`** (expansion
+   reformulates per request, so two arms would be paraphrased separately) and
+   a `--baseline` that crosses axes.
+3. **Its own report family** — `axis: 'images'`, default `--out
+   retrieval-eval-images.json` — and its own fixture loader
+   (`loadImageFixture`, never a widened `FixtureSchema`).
 
-The image leg is forced per REQUEST, never through
-`admin_settings.rag_image_leg_enabled`: flipping the global setting would
-change what every other request on the instance retrieves for the duration of
-the run.
+**It is not in CI**, and cannot be: the `retrieval-eval` job's model is
+`nomic-embed-text` and no vision model is runnable there. An arm run is
+started by an operator on a real stack.
 
-### Prerequisites
-
-* A **vision-language endpoint** speaking vLLM's chat-embeddings shape. Locally
-  that is `tools/vl-embedding-shim/` on port 8011 — see
-  `docs/runbooks/vl-embedding-dev.md` for both backends. In production it is
-  vLLM ≥ 0.14 `--runner pooling`; see `docs/runbooks/image-index.md` §2.
-* A **text** embedding endpoint as usual: the axis measures what the image leg
-  adds *to* hybrid retrieval, so the text half runs exactly as it always does.
-* A disposable `POSTGRES_URL` — this axis truncates and retypes
-  `page_image_embeddings` as well.
-
-Its environment variables are its own, and are **refused when missing** before
-anything connects to the database:
-
-| variable | |
-|---|---|
-| `EVAL_IMAGE_EMBEDDING_BASE_URL` | required; spell the `/v1`, exactly as a provider row does |
-| `EVAL_IMAGE_EMBEDDING_MODEL` | required; read it from `/v1/models` |
-| `EVAL_IMAGE_EMBEDDING_DIMENSIONS` | optional MRL truncation width; unset = the model's native width |
-| `EVAL_IMAGE_EMBEDDING_BACKEND` | optional free-text provenance label recorded in the report (`llama` \| `mlx` \| `vllm`) |
-
-They are deliberately **not** `EVAL_EMBEDDING_*`. That endpoint would answer an
-image-embedding request — through the plain `{model, input}` shape, pooling a
-different position — with a perfectly well-formed vector from a different
-space, and an index built from those is indistinguishable from bad retrieval.
-That is ADR-021's non-inheriting rule, and the axis enforces it by refusing to
-fall back rather than by documentation.
-
-`--lang` is implied `de` and any other value is refused: the corpus is 65
-German Wikipedia articles, and the cross-lingual English slice lives in the
-fixture's own per-label `lang`. `--fts-language` still applies to the lexical
-leg and still defaults to `simple`; the German runs recorded above used both,
-and whichever you pick is recorded in the report as `ftsLanguage`.
-
-### Running it, locally, through the shim
-
-Start the shim first (`vl-embedding-dev.md`), then:
-
-```bash
-cd backend
-export POSTGRES_URL=postgresql://kb_user:pw@localhost:5433/kb_eval
-export EVAL_EMBEDDING_BASE_URL=http://localhost:11434/v1
-export EVAL_EMBEDDING_MODEL=nomic-embed-text
-export EVAL_IMAGE_EMBEDDING_BASE_URL=http://127.0.0.1:8011/v1
-```
-
-**Re-read `EVAL_IMAGE_EMBEDDING_MODEL` from `/v1/models` every time you restart
-the shim on a different backend** — which is why the export below sits *inside*
-each block rather than once above them. The shim does not validate the `model`
-field: it type-checks the string and answers from whatever checkpoint is
-loaded, and the eval records the value it **requested** as `imageModel` and in
-`imageIndexIdentity`. A stale id therefore produces a report labelled with the
-checkpoint that did not produce its vectors — and with both runs at 2048
-dimensions, nothing else in the file contradicts it. Same failure class as
-`vl-embedding-dev.md`'s "`EVAL_EMBEDDING_MODEL` is not a label".
-
-**2B, MLX backend, native 2048 dimensions** (the recommended default — no
-truncation, and 2048 is indexable: it is on pgvector's `halfvec` HNSW tier,
-since plain `vector` caps at 2000 — ADR-025 D5):
-
-```bash
-# shim, in another terminal, from tools/vl-embedding-shim (it blocks):
-#   ./.venv/bin/python -m vl_embedding_shim --backend mlx    # :8011
-export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
-EVAL_IMAGE_EMBEDDING_BACKEND=mlx \
-npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-2b.json
-```
-
-**8B, llama-server backend, MRL-truncated to 2048** — the 8B answers 4096
-natively, which is *above* pgvector's HNSW ceiling for `halfvec` (4000), so
-`ensureImageEmbeddingColumn` builds no index and the leg runs a sequential
-scan. Ask for less:
-
-```bash
-# shim, in TWO other terminals, from tools/vl-embedding-shim (both block):
-#   ./scripts/run-llama-server.sh                            # :8090
-#   ./.venv/bin/python -m vl_embedding_shim --backend llama  # :8011
-export EVAL_IMAGE_EMBEDDING_MODEL=$(curl -s localhost:8011/v1/models | jq -r '.data[0].id')
-EVAL_IMAGE_EMBEDDING_BACKEND=llama \
-EVAL_IMAGE_EMBEDDING_DIMENSIONS=2048 \
-npx tsx scripts/run-retrieval-eval.ts --images --out /tmp/images-8b.json
-```
-
-The truncation width is a **request** parameter, so it is also part of the
-index identity: changing it truncates and re-fills the index, and the report
-records the width the endpoint actually answered with (`imageDims`), never the
-one that was asked for. A run whose column ends up unindexed says so on the
-console (`SEQUENTIAL SCAN (no index at this width)`) rather than leaving it to
-be inferred from the latency.
-
-**Read those two reports side by side. Never through `--baseline`.** They were
-measured with different VL checkpoints, which is the model comparison this
-harness does not make — and the guard says so: `--baseline` refuses a pair whose
-`imageModel`, `imageDims` or index endpoint differs, exactly as it refuses a
-pair whose text model differs. It also refuses two **declared** and disagreeing
-`imageEndpointBackend` labels (`mlx` against `llama`), because the same
-checkpoint quantised and computed by two serving stacks is not the same vector
-space (ADR-025 D11) — and that one is deliberately **asymmetric**: an absent
-`EVAL_IMAGE_EMBEDDING_BACKEND` on either side is not compared at all, since it
-is a label the operator typed and not something the harness probed, so a missing
-one is silence rather than a claim to check. (It has to be its own check. The text-model
-guard reads `model`, which is `EVAL_EMBEDDING_MODEL` and identical on both of
-these runs, and both would otherwise pass every other guard: same axis, same
-language, same FTS configuration, same committed corpus sha.) The two are
-comparable on their own terms — each one's *paired* delta is a statement about
-the leg under that checkpoint, and those deltas are what a 2B-vs-8B decision
-reads.
-
-The stage flags apply to **both arms**: `--rerank`, `--mmr`, `--no-assemble`,
-`--no-pin`. That is the point — they are held constant so the only difference
-between the arms is the leg.
-
-**`--deep-search` is refused on this axis**, and it is the one flag that cannot
-be held constant. Expansion asks the chat model for two paraphrases *per
-request* (`reformulateQuery`, uncached and unseeded), so each arm would be
-paraphrased separately: two of every arm's three fused legs would be different
-questions, the fused order would move for reasons that have nothing to do with
-the image leg, and McNemar would count those moves as the leg's. The refusal
-lands before anything connects to the database. Making the pair honest needs a
-seam that reformulates once per query and hands both arms the same list; the
-axis does not have one.
-
-### Reading the report
-
-`--out` writes the usual report plus `axis: "images"` and an `images` block:
-
-| field | |
-|---|---|
-| `imageModel` / `imageDims` / `imageEndpointBackend` | what answered, at what width, on which serving stack |
-| `imageIndexIdentity` / `imageIndexed` | `provider:model@baseUrl#<requested truncation or native>`, and whether an HNSW index exists at that width. The last segment is the width this run **asked** for, so it reads `#native` with no `EVAL_IMAGE_EMBEDDING_DIMENSIONS` set — the width that came back is `imageDims`, and the two are separate fields on purpose |
-| `imagesEmbedded` / `imagesReused` / `throughputImagesPerSec` | the intake, timed over the sequential image phase alone — one page at a time and with **no inter-page pause**, so this rate describes the *endpoint* |
-| `backfillThroughputImagesPerSec` / `interPageDelayMs` | …and the same intake once the worker's valve is added. `processDirtyPageImages` sleeps `interPageDelayMs` (200 ms) after **every** page and the seeder deliberately does not, so a backfill of the 65-page corpus pays 13 s the raw rate never sees. This is the figure to plan a backfill against; the raw one is the figure to judge the endpoint by |
-| `imageEmbedWallClockMs` | that phase's wall clock — the denominator `throughputImagesPerSec` was computed from |
-| `imageLegParticipatingQueries` | queries whose leg-on arm came back with at least one image hit. The run is **refused** below 50% of the fixture, and the console prints the count — read the caveat below this table before quoting a delta |
-| `legOff` / `legOn` | Recall@{1,3,5,10} and MRR per arm |
-| `delta.recallAtK` | the paired verdict per K: `observedDelta`, the bootstrap interval, `wins`/`losses`, `pValue`, `significant`, `direction` |
-| `delta.perStyle` / `delta.perLang` | the same verdict at Recall@5 over each slice, each carrying its own `n` |
-| `imageHitAtK` | did the leg return the *right picture* |
-| `imageNegativeLeakAtK` | did it drag a wrong page in |
-| `queryCostMs.off` / `.on` | p50/p95 **per arm** — unpaired marginals, i.e. what a request is budgeted against. Their difference is *not* the leg's cost: `p95(on) - p95(off)` is the gap between the slowest query with the leg and a possibly different slowest query without it |
-| `queryCostMs.deltaPaired` | p50/p95 of `on.ms - off.ms` over the **same query** — this is the leg's cost. The two arms of a query run back to back and which one goes **first alternates** on the label index, so each query's first-touch cost lands on both arms rather than all on the off one; a single pair can still come back negative, which is that noise and not a saving |
-| `runsOff` / `runsOn` | both arms' per-query results, so a same-axis `--baseline` compares each |
-
-The top-level `recallAtK` / `mrr` / `runs` carry the **leg-on** arm, because
-that is the shipped configuration (`rag_image_leg_enabled` defaults true). So
-do the top-level participation counters — `vectorParticipatingQueries`,
-`rerankParticipatingQueries`, `assemblyParticipatingQueries`,
-`pinParticipatingQueries`, `expansionParticipatingQueries`,
-`expansionSkippedQueries`. Every one of them is **measured on this axis too**
-(both stages really run on both arms) and every one is denominated by
-`queries`, which is the label count: one label, one query, the leg-on arm's
-count. The two expansion counters are the exception in one direction only: they
-read 0 on every image-axis run, because `--deep-search` is refused here. The
-leg-off arm's own counters are not published — a run in which either arm's
-vector leg, rerank stage or assembly stage went quiet is refused rather than
-reported, per arm.
-
-**`imageLegParticipatingQueries` cannot tell you WHY the other queries have no
-image hit, and the report has no field that can.** Two states produce the same
-number: the leg ran and its pages lost the fusion (ordinary, and the reason the
-floor is 50% rather than "> 0"), or the leg bypassed itself — a VL timeout, an
-open breaker, a `lock_timeout` on the index. `searchImageLeg` records that as
-`degraded_reason = 'image_leg_unavailable'` in `search_analytics`, and this
-runner deliberately writes no analytics rows, so the only trace a run leaves is
-its **warn lines**. Before quoting a delta, grep the run's log for **both**
-`Image leg bypassed` and `image_leg_unavailable` — neither string alone is
-exhaustive, and the gap is not academic. `searchImageLeg` has three bypass
-warns: two of them carry the `degraded_reason` token, but the one for an
-**unresolvable `image_embedding` assignment** does not, so a run bypassed
-entirely by that path greps clean on the token. And `rag-service`'s image-only
-lede fetch is the mirror image — it carries the token but not the `Image leg
-bypassed` prefix. A run with a substantial bypass rate clears the participation
-floor, publishes two arms that were partly the same arm, and understates the
-leg.
-
-**`imageHit@K` and the paired page delta answer different questions, and the
-interesting runs are the ones where they disagree.** The page delta is what
-the feature is *for* — did the picture make the page retrievable — and it is
-what the McNemar verdict is computed on. `imageHit@K` asks whether the leg
-picked the right *picture* on that page, which is what the answer path puts in
-front of a reader — as a `kind: 'image'` source always, and as model input when
-the chat model is vision-capable. A high `imageHit@K` with a flat page delta means the
-leg is finding the right image on pages the text legs already had: correct, and
-worth nothing to ranking. A page delta with a low `imageHit@K` means pages are
-moving for image evidence that is not the evidence the labeller named — read
-the win/loss table before believing it.
-
-**Read a low `imageHit@K` against `legOn.recallAtK["@10"]` first, though**, and
-know its denominator: it is scored over the **285 labels that name an image**
-(the 24 `image-negative`s are excluded — their correct image answer is "none",
-and they are measured by `imageNegativeLeak@K` instead), and only over the image
-hits riding on the **top-10 pages the on arm returned**. An expected image
-always belongs to one of its own label's expected pages (`loadImageFixture`
-enforces that), so the metric is bounded above by page recall@10 by
-construction: if the page never came back, its picture could not be seen
-whatever the leg did. The commonest cause of a low value is therefore a page the
-run never retrieved, not a picture the leg got wrong. And read both against
-`imageNegativeLeak@K`: the `image-negative` labels are pages whose *text* is
-about the subject while none of their pictures show it, so a leg that improves
-the headline and leaks there is buying recall with precision.
-
-`delta.perStyle` is where that shows up as one table: `image` is the class the
-leg exists for, `image-negative` the class it must not help. A headline
-improvement that is really a leak shows up as those two rows disagreeing. Every
-slice prints its own `n` — the English slice is 60 labels and the negatives 24,
-so a p value there is not the same evidence as one over all 309.
-
-**Correct for multiplicity before quoting a slice.** The console prints four Ks
-plus four slice rows, which is eight chances to find a p below 0.05 in one run,
-and the report's per-K and per-slice p values are each uncorrected. The whole-
-fixture Recall@5 row is the one pre-registered comparison — that is the K the
-text gate decides on and the K the slices are computed at — so treat it as the
-verdict and everything else as description, or apply a Bonferroni factor and
-say which one you used. This is the same discipline #1114's German re-run
-applied when its one nominally significant cell died under a ×4 correction.
-
-A run leaves its per-run `ATTACHMENTS_DIR` behind on purpose (the path is
-printed at the top). It is ~6 MB and holds the exact bytes the intake read,
-which is the first thing to look at if a run reports a missing or skipped
-image. Delete it yourself.
-
-**It also leaves the database holding the image corpus, and
-`benchmark-query-latency.ts` will refuse to run against it.** The seed records
-`eval_corpus_language = de-images` — deliberately not `de`, which is what the
-German *text* corpus writes — so `--lang de` there throws rather than timing
-`fixture-de.json`'s questions against 65 pages they were never written for.
-`de-images` is not a `--lang` value; re-seed the text corpus
-(`run-retrieval-eval.ts --lang de`) before timing anything.
-
-### What a local number is worth
-
-**Plumbing and ranked-list eyeballing. Nothing that decides anything** (design
-D11). Quantisation, MLX/llama.cpp-vs-CUDA numerics and vLLM's own ~0.92-cosine
-preprocessing divergence from the reference implementation each move the
-vector space, so a recall figure measured through the shim is a figure about
-the shim. Use a local run to confirm the rig works end to end, to compare
-ranked lists by eye, and to catch a wiring mistake before it costs GPU time.
-**The numbers that decide 2B-vs-8B, the MRL width and the default are measured
-on the production stack**, and belong on #1115 as a comment by the operator who
-ran them.
 
 ### Measured 2026-08-18
 
@@ -1115,7 +870,7 @@ The pre-registered comparison that decides whether the ADR-027 candidate
 contract is ADR-027's "Measurement plan" and "Owner decisions"** (confirmed
 by the owner on 2026-09-15); this section is the operator-facing copy and
 must say the same thing. The tooling is in this checkout (**PR2 on #1614**):
-`run-retrieval-eval.ts --images --arm A|B|C` (one arm's retrieval run and
+`run-retrieval-eval.ts --images --arm B|C` (one arm's retrieval run and
 its provenance), `run-arm-answers.ts` (one arm's answers through the real
 ask route, arm-blinded) and `judge-arms.ts` (`--merge` the arms into one
 blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
@@ -1142,12 +897,12 @@ or `--unblind` refuses the report).
 export EVAL_HARDWARE="rtx3090-host · RTX 3090 24 GB · vLLM 0.x"   # O9, recorded verbatim
 export EVAL_EMBEDDING_BASE_URL=… EVAL_EMBEDDING_MODEL=…           # Qwen3-Embedding-4B, held fixed
 
-# Arm A — legacy revision, image_embedding on the REAL VL endpoint (never the shim)
-EVAL_IMAGE_EMBEDDING_BASE_URL=… EVAL_IMAGE_EMBEDDING_MODEL=… \
-  npx tsx scripts/run-retrieval-eval.ts --images --arm A --fts-language german --out arm-A.json
-npx tsx scripts/run-arm-answers.ts --arm A --run-id A-<date> --report arm-A.json --out-dir artifacts/
+# Arm A is NOT RUNNABLE on this revision. Its index and its use case were retired by
+# #1618 stage 2, `parseArmFlag` refuses `--arm A` like any unknown arm, and the ADR's
+# primary was re-registered B vs C for that reason (A-1/A-5). A's archived baseline stays
+# reproducible only by checking out the `revisionSha` its artifact records.
 
-# Arm C — candidate revision, image_analysis UNASSIGNED (refuses EVAL_IMAGE_EMBEDDING_*)
+# Arm C — candidate revision, image_analysis UNASSIGNED
 npx tsx scripts/run-retrieval-eval.ts --images --arm C --fts-language german --out arm-C.json
 npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json --out-dir artifacts/
 
@@ -1220,8 +975,8 @@ npx tsx scripts/judge-arms.ts --unblind --run-id sheet-<date> --out-dir artifact
   --out artifacts/verdict-sheet-<date>.json
 ```
 
-`--arm A|B|C` needs `--images`; `--arm A` requires the `EVAL_IMAGE_EMBEDDING_*`
-endpoint and `--arm B`/`--arm C` refuse it. **`--arm B` refuses before the
+`--arm B|C` needs `--images`, and a bare `--images` is refused for want of an
+arm. **`--arm B` refuses before the
 corpus is seeded** — right after the migrations it reads the candidate's
 `page_image_analyses` table (#1616), the `image_analysis` assignment (O8) and
 the `image_analysis_max_output_tokens` in force (D8), and refuses any of the
@@ -1235,9 +990,8 @@ whose top-K never carries a derived row is refused rather than published as
 text retrieval. `--arm C` asserts the ablation's state on the DATABASE after
 the seed (`image_analysis` unassigned, no `page_embeddings` row with
 `metadata.source = 'image_analysis'`, `page_image_analyses` absent or empty)
-beside the empty `page_image_embeddings` — a derived row that exists but ranks
-outside every query's window is invisible to a per-query check and is not
-invisible to this one.
+— a derived row that exists but ranks outside every query's window is
+invisible to a per-query check and is not invisible to this one.
 `--baseline <other arm's report>` prints the retrieval endpoints of the pair
 (McNemar exact, page-cluster bootstrap) and no verdict; the verdict is
 `--unblind`'s. A `--control legacy-revision-C` run on the legacy revision is
@@ -1343,7 +1097,7 @@ carries every existing field untouched and adds only `imageDependent` and
 |---|---|---|---|
 | A | legacy text + `page_image_embeddings` leg | the last `dev` commit before #1618 stage 2 (SHA recorded in the baseline artifact) | `image_embedding` assigned to the REAL VL endpoint (production vLLM, not the shim); legacy index filled |
 | B | candidate: vision-analysis chunks, no image leg | candidate revision (post-#1617) | `image_analysis` assigned; backfill complete |
-| C | ablation: authored text only | the SAME candidate revision as B | `image_analysis` unassigned; no derived chunks; `page_image_embeddings` empty |
+| C | ablation: authored text only | the SAME candidate revision as B | `image_analysis` unassigned; no derived chunks (and, post-#1618, no legacy index to be empty) |
 
 **"`image_analysis` unassigned" means no resolvable provider + model**, not
 "no row": migration 115 seeds `('image_analysis', NULL, NULL)` on every

@@ -7,8 +7,8 @@ who has to undo it.
 `backend/src/core/db/migrations/118_retire_image_embedding_space.sql`, shipped
 in the same release as the stage-2 code removals (#1618), and it is migration
 **118** — a fresh database ends `_migrations` at 118. Stage 1 (#1618's
-preparation half) shipped this procedure and exercised it on disposable data;
-stage 2 re-exercised it before the cutover (§5.1). It was held outside the
+preparation half) shipped this procedure and exercised it on disposable data
+(§5.1); stage 2 re-exercised it, two arms, against the APPLIED migration (§5). It was held outside the
 runner's directory in `docs/held-migrations/` until stage 2; that directory is
 deleted.
 
@@ -488,6 +488,32 @@ template holds — which is what §1.3 and §4.1's SQL verify. A real upgraded
 deployment is the only place those two are provable, and the Docker smoke on
 this release covers the forward direction (a fresh database migrating clean to
 118) rather than the rollback.
+
+**Re-driven independently before the PR was opened (2026-09-17, second
+operator, same revision).** A fresh template at migrations **001–117**
+(118 withheld, so the template is the pre-stage-2 schema), a different fixture
+— two pages, one `image_embedding_dirty`, one `page_image_embeddings` row at
+the migration's declared `vector(2048)`, two `analyzed` `page_image_analyses`
+rows — and its own dump artifact (**427 lines**,
+`sha256 0f6013597a86c123e91d6af2c9ad774b6fd5dbc25415f32922c714c9fb43f56d`),
+one artifact feeding both arms. Every result above reproduced: **arm A rewound**
+the retained identity, the vision assignment (`provider-B-vision` →
+`provider-A-vision`), the ceiling (`16384` → `8192`) and the batch size
+(`120` → `50`), and **deleted** `image_analysis_last_run`, leaving
+**`chart.png`** — the newer work — stale under D5, while **arm B preserved all
+five** and leaves `diagram.png` stale. The legacy leg came back identical in
+both arms (row md5 `435bb9af…` on both sides, both indexes, six settings rows,
+the nine-member CHECK, the `image_embedding` assignment), `_migrations` went
+**118 → 117** with **0** `118%` rows, step 6 reported `DELETE 0` in both arms,
+and `dirty_pages` was **0** after the restore against **1** before the dump.
+The capture ran verbatim under `PGOPTIONS='-c default_transaction_read_only=on'`
+(5 lines, 5 statements), was byte-identical on a second read, and was
+re-proved injection-proof on this revision: three hostile values — a
+`'); DROP TABLE pages; --`, one carrying a real newline and a doubled quote,
+and one carrying a backslash — round-trip **byte-identical** (md5
+`9049c8da…` before and after) with `pages` and `page_image_analyses` intact
+and `format(…%L…)` switching to `E'…'`; a NULL model replays as SQL `NULL`.
+The driver and its databases were deleted with the container.
 
 ---
 
