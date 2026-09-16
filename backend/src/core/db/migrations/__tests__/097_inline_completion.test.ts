@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   isDbAvailable,
+  restoreUsecaseCheck,
   setupTestDb,
   teardownTestDb,
   truncateAllTables,
@@ -13,7 +14,15 @@ const migrationSql = await readFile(new URL('../097_inline_completion.sql', impo
 
 describe.skipIf(!dbAvailable)('Migration 097 — inline completion (#1417)', () => {
   beforeAll(async () => setupTestDb());
-  afterAll(async () => teardownTestDb());
+  afterAll(async () => {
+    // The `beforeEach` below re-imposes 097's own use-case CHECK, which is
+    // narrower than the schema this worker database actually has. That is
+    // DDL — `truncateAllTables` cannot undo it and `runMigrations` will not,
+    // because every later widener is still recorded as applied — so put the
+    // current list back before the next file inherits this database.
+    await restoreUsecaseCheck();
+    await teardownTestDb();
+  });
   beforeEach(async () => {
     await truncateAllTables();
     // Re-run after truncation so this file tests the seed as well as the DDL.
@@ -29,6 +38,24 @@ describe.skipIf(!dbAvailable)('Migration 097 — inline completion (#1417)', () 
     await expect(
       query(`INSERT INTO llm_usecase_assignments (usecase) VALUES ('completion_but_wrong')`),
     ).rejects.toThrow();
+  });
+
+  it('the historical CHECK this file re-imposes does not outlive a setupTestDb', async () => {
+    // `beforeEach` has just replayed 097's DDL, so the shared worker database
+    // is carrying a use-case list that predates every later widener — the
+    // state that made `image-analysis-identity.integration.test.ts` fail on
+    // migration 115's use case in whichever full-suite worker happened to run
+    // this file first. `truncateAllTables` cannot undo DDL and `runMigrations`
+    // sees 115 as applied, so the file-start restore is what has to hold.
+    await expect(
+      query(`INSERT INTO llm_usecase_assignments (usecase) VALUES ('image_analysis')`),
+    ).rejects.toThrow(/llm_usecase_assignments_usecase_check/);
+
+    await setupTestDb();
+
+    await expect(
+      query(`INSERT INTO llm_usecase_assignments (usecase) VALUES ('image_analysis')`),
+    ).resolves.toBeDefined();
   });
 
   it('seeds an explicitly unassigned use-case row', async () => {
