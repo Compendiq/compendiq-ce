@@ -911,7 +911,11 @@ async function measureArmAxis(
     mrr: meanReciprocalRank(queryRuns),
     imageEvidenceRecallAt5: imageEvidenceRecallAtK(arm, run.runs, 5),
     imageNegativeLeakAt1: imageNegativeLeakAt1(run.runs),
-    queryCostMs: { p50: percentile(costs, 50), p95: percentile(costs, 95) },
+    // `percentile` takes a FRACTION, not a percent (every other caller passes
+    // 0.5 / 0.95): `Math.ceil(n * 50) - 1` clamps to the last index, so BOTH
+    // fields carried the MAXIMUM query cost and the arm reports captured
+    // before this fix record the max twice (#1619).
+    queryCostMs: { p50: percentile(costs, 0.5), p95: percentile(costs, 0.95) },
     runs: run.runs,
   };
 }
