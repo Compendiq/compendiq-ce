@@ -1,4 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
+
+const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'core', 'db', 'migrations');
+
+/** The name Postgres gave 054's inline column CHECK, which every widener rewrites. */
+const USECASE_CHECK = 'llm_usecase_assignments_usecase_check';
 
 let initialized = false;
 let _dbAvailable: boolean | null = null;
@@ -58,12 +66,81 @@ export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
   }
 }
 
+/**
+ * Every migration that rewrites `llm_usecase_assignments_usecase_check`,
+ * oldest first. DISCOVERED, never listed: the CHECK is 054's inline column
+ * constraint, so widening it for a new use case means dropping and re-adding
+ * the WHOLE list (090 rerank, 093 image_embedding, 097 inline_completion,
+ * 115 image_analysis, and whatever comes next).
+ */
+export function usecaseCheckMigrations(): string[] {
+  return fs
+    .readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes(USECASE_CHECK))
+    .sort();
+}
+
+/** The use-case names the NEWEST widener admits, read from that migration. */
+function currentUsecaseNames(): string[] {
+  const wideners = usecaseCheckMigrations();
+  const newest = wideners[wideners.length - 1];
+  if (!newest) throw new Error(`No migration writes ${USECASE_CHECK}`);
+  const sql = fs.readFileSync(path.join(migrationsDir, newest), 'utf8');
+  const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(sql);
+  if (!listed) throw new Error(`${newest} rewrites ${USECASE_CHECK} but no CHECK (usecase IN (…)) was found`);
+  return [...listed[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+}
+
+/**
+ * Restore the use-case CHECK to the newest widener's list — the same class of
+ * shared-schema damage as `restoreImageEmbeddingPlaceholder` above, and the
+ * same remedy (run it at the start of every file, via `setupTestDb`).
+ *
+ * A migration test that re-executes its own historical SQL against the shared
+ * worker database re-imposes that migration's SHORTER list
+ * (`097_inline_completion.test.ts` does exactly this in its `beforeEach`).
+ * That is DDL: `truncateAllTables` cannot undo it, and `_migrations` still
+ * lists every later widener as applied, so `runMigrations` never widens it
+ * back. The next file on that worker to insert a newer use case then fails on
+ * a constraint that has nothing to do with it — `image_analysis` (migration
+ * 115) was the case that surfaced it.
+ *
+ * The list is read from the migration, never spelled out here, so the next
+ * use case is covered without touching this helper.
+ */
+export async function restoreUsecaseCheck(): Promise<void> {
+  const pool = getPool();
+  const live = await pool.query<{ def: string }>(
+    `SELECT pg_get_constraintdef(c.oid) AS def
+       FROM pg_constraint c
+      WHERE c.conname = $1
+        AND c.conrelid = to_regclass('public.llm_usecase_assignments')`,
+    [USECASE_CHECK],
+  );
+  const def = live.rows[0]?.def;
+  if (def === undefined) return; // no table / no constraint: a migration's own business
+
+  const expected = currentUsecaseNames();
+  const admitted = [...def.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  if (expected.length === admitted.length && expected.every((n) => admitted.includes(n))) return;
+
+  // Widening only: every row admitted by the narrower list is admitted here,
+  // so the ADD's validation of existing rows cannot fail.
+  await pool.query(`ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS ${USECASE_CHECK}`);
+  await pool.query(
+    `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT ${USECASE_CHECK}
+       CHECK (usecase IN (${expected.map((n) => `'${n}'`).join(', ')}))`,
+  );
+}
+
 export async function setupTestDb(): Promise<void> {
   if (!initialized) {
     await runMigrations();
     initialized = true;
   }
   await restoreImageEmbeddingPlaceholder();
+  await restoreUsecaseCheck();
 }
 
 const DEADLOCK = '40P01';

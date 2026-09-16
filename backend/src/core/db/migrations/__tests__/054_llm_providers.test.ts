@@ -2,33 +2,18 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../../test-db-helper.js';
+import {
+  setupTestDb,
+  truncateAllTables,
+  teardownTestDb,
+  isDbAvailable,
+  usecaseCheckMigrations,
+} from '../../../../test-db-helper.js';
 import { query, runMigrations } from '../../postgres.js';
 
 const dbAvailable = await isDbAvailable();
 
 const migrationsDir = path.dirname(fileURLToPath(import.meta.url)) + path.sep + '..';
-
-/**
- * Every migration that (re)writes `llm_usecase_assignments_usecase_check`.
- *
- * DISCOVERED, never listed. The CHECK is 054's inline column constraint, which
- * Postgres auto-names `<table>_<column>_check`, so widening it means dropping
- * and re-adding the WHOLE list — 090 added `rerank`, 093 added
- * `image_embedding`, and the next use case will do the same. The repair below
- * has to re-run all of them in order; re-running only the one that happened to
- * be current when this file was written leaves the constraint NARROWER than
- * the schema, which is the exact bug this comment used to describe for 090.
- */
-function usecaseCheckMigrations(): string[] {
-  return fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
-    .filter((f) =>
-      fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes('llm_usecase_assignments_usecase_check'),
-    )
-    .sort();
-}
 
 /**
  * Undo the schema damage the pre-054 simulation cases below inflict on the
@@ -48,6 +33,12 @@ async function repairSharedSchema(): Promise<void> {
   // silently reverting its usecase CHECK to the five original names (#1104 was
   // the first victim). Same fix, over every widener rather than a hardcoded
   // one — all of them are idempotent (`DROP CONSTRAINT IF EXISTS` + `ADD`).
+  // Replaying only the widener that happened to be current when this file was
+  // written would leave the constraint NARROWER than the schema, which is the
+  // exact bug this comment used to describe for 090 — so the list is
+  // `usecaseCheckMigrations()`, which lives in `test-db-helper.ts` because the
+  // helper repairs the same constraint for every file (`restoreUsecaseCheck`)
+  // and one definition of "which migrations write it" is enough.
   //
   // The rows go first: replaying the wideners in order means an OLDER one
   // briefly re-imposes its shorter list, and `ADD CONSTRAINT` validates
