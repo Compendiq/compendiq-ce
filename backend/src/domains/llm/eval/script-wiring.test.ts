@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS,
   JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS,
+  LABEL_PACKET_KNOWN_FLAGS,
+  VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS,
 } from './cli-flags.js';
 
 /**
@@ -537,6 +539,97 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
 
   it('touches no database', () => {
     expect(body).not.toMatch(/postgres\.js|runMigrations|closePool/);
+  });
+});
+
+/**
+ * #1619 — the O15 packet's two entrypoints. Same argument as every block
+ * above (`main()` runs at import, so the seams are pinned on the source), and
+ * one more that is specific to these two: the packet must never arrive with a
+ * decision in it, and the validator must never write one the file did not
+ * contain. Both are properties of these scripts' control flow.
+ */
+describe('build-label-packet.ts wiring (#1619)', () => {
+  const raw = source('build-label-packet.ts');
+  const flat = collapsed('build-label-packet.ts');
+  const body = code('build-label-packet.ts');
+
+  it('refuses an unknown flag and knows every flag it reads', () => {
+    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), LABEL_PACKET_KNOWN_FLAGS, LABEL_PACKET_USAGE, LABEL_PACKET_VALUELESS_FLAGS)');
+    // Read sites only, not every `--x` in the source: this script's last line
+    // prints the validator's command, and those are that script's flags.
+    const read = [...body.matchAll(/\bflagValue\(process\.argv, '([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!);
+    expect(read.filter((f) => !(LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    expect(read).toContain('out-dir');
+  });
+
+  it('hands off with a command line the validator would actually accept', () => {
+    // The packet's last word to the owner is the next command. A renamed
+    // validator flag must not leave that sentence quietly wrong.
+    const handoff = raw.slice(raw.indexOf('validate-label-packet.ts --file'));
+    const named = [...handoff.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!);
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((f) => !(VALIDATE_LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+  });
+
+  it('refuses to write a packet that carries a decision, before any file exists', () => {
+    const guard = raw.indexOf('packet row(s) carry a decision');
+    const write = raw.indexOf('writeFileSync(files.csv');
+    expect(guard).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(guard);
+    // The three files the runbook names, all from the one packet.
+    expect(flat).toContain('writeFileSync(files.csv, packetCsv(rows))');
+    expect(flat).toContain('writeFileSync(files.jsonl, packetJsonl(rows))');
+    expect(flat).toContain('writeFileSync(files.readme, packetReadme(rows, fixture, files))');
+  });
+
+  it('touches no database and no model', () => {
+    expect(body).not.toMatch(/postgres\.js|runMigrations|closePool|buildApp/);
+    expect(body).not.toMatch(/fetch\(|openai|ollama/i);
+  });
+});
+
+describe('validate-label-packet.ts wiring (#1619)', () => {
+  const raw = source('validate-label-packet.ts');
+  const flat = collapsed('validate-label-packet.ts');
+  const body = code('validate-label-packet.ts');
+
+  it('refuses an unknown flag, and --write is a switch', () => {
+    expect(flat).toContain('assertKnownFlags( process.argv.slice(2), VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_USAGE, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS, )');
+    const inSource = new Set([
+      ...[...body.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!),
+      ...[...body.matchAll(/\bflagValue\(process\.argv, '([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!),
+    ]);
+    expect([...inSource].filter((f) => !(VALIDATE_LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    const switches = [...body.matchAll(/process\.argv\.includes\('--([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!);
+    expect(switches.filter((f) => !(VALIDATE_LABEL_PACKET_VALUELESS_FLAGS as readonly string[]).includes(f))).toEqual([]);
+  });
+
+  it('returns before writing when the file is refused, and writes only the decisions it parsed', () => {
+    const refuse = raw.indexOf('if (problems.length > 0) {');
+    const apply = raw.indexOf('applyDecisions(raw, parsed.decisions)');
+    const write = raw.indexOf('writeFileSync(fixturePath, serializeFixture(updated))');
+    expect(refuse).toBeGreaterThan(-1);
+    expect(apply).toBeGreaterThan(refuse);
+    expect(write).toBeGreaterThan(apply);
+    // The refusal branch leaves before anything is written, and says so.
+    expect(flat).toContain('console.error(\'\\nNothing was written. Fix these and run it again.\'); process.exitCode = 1; return;');
+    // The write goes through the RAW json, never a schema round trip that
+    // would drop a field the schema does not name.
+    expect(flat).toContain('const raw = JSON.parse(readFileSync(fixturePath, \'utf8\')) as unknown;');
+    // …and only under --write: a bare run reports and changes nothing.
+    expect(flat).toContain('if (write) { writeFileSync(fixturePath, serializeFixture(updated));');
+  });
+
+  it('decides nothing itself: the verdict printed is auditSample\u2019s, and it sets the exit code', () => {
+    expect(flat).toContain('const audit = auditSample(parseWrittenFixture(updated), []);');
+    expect(flat).toContain('console.log(`\\nauditSample: ${audit.powerMode}`)');
+    expect(flat).toContain("if (audit.powerMode === 'undecidable' || validation.shortfalls.length > 0) process.exitCode = 1;");
+  });
+
+  it('touches no database and no model', () => {
+    expect(body).not.toMatch(/postgres\.js|runMigrations|closePool|buildApp/);
+    expect(body).not.toMatch(/fetch\(|openai|ollama/i);
   });
 });
 

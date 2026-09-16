@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **O15 labelling packet and validator (ADR-027, #1619).** The gate's primary
+  endpoint runs on the image-dependent labels, and that classification is an
+  independent human pass — so the two scripts that carry it decide nothing.
+  `backend/scripts/build-label-packet.ts` re-presents all 309 shipped image
+  fixture labels as a worksheet (CSV for the spreadsheet pass, JSONL with the
+  per-image detail structured, and a header quoting ADR-027's definitions of
+  image-dependent and image-negative verbatim with a worked example of each):
+  the query, the page, every picture on it with the attachment key it is
+  scored under and the file on disk, what `expectedImages` already says, and
+  two EMPTY decision columns. It refuses to write a packet in which one is
+  filled. `backend/scripts/validate-label-packet.ts` reads the returned file
+  (either shape) and refuses an unknown, duplicated or missing label id, a
+  value outside `true|false` or the class list, a class without a `true`, a
+  `true` without a class, a `true` on a label with no expected image, and more
+  than 5 image-dependent labels on one page — then reports every O2 count it
+  cannot fix (190 image-dependent with the 144 floor, 48 image-negative, ≥ 45
+  pages, 197 control queries per language) **with the distance still to go**,
+  and prints what `auditSample` — the function `--unblind` decides under —
+  would make of the labels. `--write` records them in `fixture-de-images.json`
+  through the raw JSON, so every existing field survives and a second run is
+  byte-identical. The packet itself is generated, not committed; the fixture
+  diff is. Runbook: `docs/runbooks/retrieval-eval.md` "The O15 labelling
+  packet".
 - **Image analysis processing card and retirement preparation (ADR-027, #1618
   stage 1).** Settings → AI Models → Embeddings gains an **Image analysis**
   card beside the legacy Image index card — *is it running?*, where #1615's

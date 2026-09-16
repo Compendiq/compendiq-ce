@@ -1243,6 +1243,67 @@ image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
 its exit-3 stop is therefore unreachable from the CLI until O15's pass
 lands; the rule itself is unit-tested (`pilotCheck`, `pilotDiscordance`).
 
+### The O15 labelling packet, and what the owner does with it (#1619)
+
+Two scripts carry that human pass and neither of them decides anything.
+`build-label-packet.ts` re-presents the shipped fixture as a worksheet;
+`validate-label-packet.ts` checks what comes back and is the only thing that
+may put a value into `fixture-de-images.json`.
+
+```bash
+cd backend
+npm run label-packet -- --out-dir artifacts/1619
+#   == npx tsx scripts/build-label-packet.ts --out-dir artifacts/1619
+#   writes label-packet.csv, label-packet.jsonl and label-packet.md
+
+# … the owner fills image_dependent and class, in a spreadsheet or by hand …
+
+npm run label-packet:validate -- --file artifacts/1619/label-packet.csv
+npm run label-packet:validate -- --file artifacts/1619/label-packet.csv --write
+#   == npx tsx scripts/validate-label-packet.ts --file … [--write]
+```
+
+**What the packet contains.** One row per label — all 309 — with the query,
+the page (file, title, category and the markdown on disk), every picture on
+that page with the **attachment key** it is scored under and the file it is
+on disk, what `expectedImages` already says, the original labeller's
+rationale, and two EMPTY columns. `label-packet.md` beside them quotes
+ADR-027's definitions of image-dependent and image-negative verbatim and
+works one example of each; the examples are invented for that page, so
+reading them cannot pre-decide a real row. **No value in the packet is a
+label**, and the builder refuses to write a file in which one is.
+
+**What the owner does.** Fill `image_dependent` (`true`/`false`) on every
+row, and `class` (one of `screenshot`, `chart`, `table`, `diagram`,
+`unreadable-text`, `decorative`) on the `true` ones. Keep `label_id`;
+everything else travels back unread, and either file shape is accepted.
+Blank means "not decided yet" — the validator says how many are open and
+refuses to write a partial pass.
+
+**What the validator refuses**, each with the distance still to go rather
+than a bare failure: an unknown, duplicated or missing label id; a value
+outside `true|false` or the class list; a class without a `true`; a `true`
+without a class; a `true` on a label with no expected image (a question whose
+correct image answer is "none of them" cannot be answered from an image); and
+more than 5 image-dependent labels on one page. It then reports every O2
+count it cannot fix by itself — 190 image-dependent (hard floor 144), 48
+image-negative, ≥ 45 pages, 197 control queries per language read off
+`fixture.json` and `fixture-de.json` — and prints what `auditSample`, the
+same function `--unblind` decides under, would make of the labels: full
+power, REDUCED POWER, or a document that decides nothing. Exit code 1 for a
+refused file or an undecidable sample.
+
+The 24 image-negative labels the fixture ships are **not** a column in this
+packet: closing O2's 48 needs 24 new questions written against the corpus,
+which is the other half of O15 and a separate change to the fixture.
+
+**The packet is not committed.** It is regenerated from the fixture in about
+a second, the filled copy is an input, and `.gitignore` names both defaults
+for the same reason it names `backend/retrieval-eval.json` — a result is not
+source. What gets committed is the fixture diff `--write` produces, which
+carries every existing field untouched and adds only `imageDependent` and
+`class`.
+
 ### The three arms and the revision each runs on
 
 | Arm | What | Revision | Index state |

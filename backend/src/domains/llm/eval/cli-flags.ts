@@ -280,3 +280,50 @@ export const JUDGE_USAGE = [
   '{ itemId, judge, correctness: correct|partial|incorrect|refused, citationFaithful: yes|no|na,',
   'unsupportedClaim, notes, judgedAt }. No second rater, no adjudication, no κ — the report says so.',
 ].join('\n');
+
+/**
+ * #1619 — `scripts/build-label-packet.ts`: the O15 labelling packet. It reads
+ * the shipped fixture and the image corpus and writes three files; there is
+ * no input to point it at, because the packet is by definition over the
+ * labels the gate will run on.
+ */
+export const LABEL_PACKET_KNOWN_FLAGS = ['out-dir', 'help'] as const;
+export const LABEL_PACKET_VALUELESS_FLAGS = ['help'] as const;
+export const LABEL_PACKET_USAGE = [
+  'scripts/build-label-packet.ts — the O15 labelling packet: every shipped image-fixture label with the',
+  'page, the pictures and two EMPTY decision columns (#1619, ADR-027 O15)',
+  '',
+  '  --out-dir <dir>       where to write label-packet.csv, label-packet.jsonl and label-packet.md',
+  '                        (default: the current directory)',
+  '  --help                this text',
+  '',
+  'No value in the packet is a label. `imageDependent` and `class` are empty on every row and the',
+  'harness never fills one: O15 is an independent human pass, and the gate refuses to decide below',
+  'O2\'s counts rather than invent them. Fill the two columns and hand the file to',
+  'scripts/validate-label-packet.ts. Touches no database and no model.',
+].join('\n');
+
+/**
+ * #1619 — `scripts/validate-label-packet.ts`: the returned file, held to O2,
+ * O3 and O15, and written into the fixture on `--write`.
+ */
+export const VALIDATE_LABEL_PACKET_KNOWN_FLAGS = ['file', 'fixture', 'write', 'help'] as const;
+export const VALIDATE_LABEL_PACKET_VALUELESS_FLAGS = ['write', 'help'] as const;
+export const VALIDATE_LABEL_PACKET_USAGE = [
+  'scripts/validate-label-packet.ts — check the returned O15 labelling packet and, with --write, record',
+  'it in fixture-de-images.json (#1619, ADR-027 O2/O3/O15)',
+  '',
+  '  --file <path>         the returned packet, CSV or JSONL (the shape is detected from the content)',
+  '  --fixture <path>      the fixture to check it against and write into',
+  '                        (default: src/domains/llm/eval/fixture-de-images.json)',
+  '  --write               record the decisions in the fixture. Without it nothing is written.',
+  '  --help                this text',
+  '',
+  'Refused: an unknown, duplicated or missing label id, a value outside true|false or the class list, a',
+  'class without image_dependent=true, a true without a class, a true on a label with no expected image,',
+  'and more than 5 image-dependent labels on one page (O2/O3\'s cap). Every O2 count is then reported',
+  'with the distance still to go — 190 image-dependent (hard floor 144), 48 image-negative, >= 45 pages,',
+  '197 control queries per language — and the run prints what auditSample would decide with these labels',
+  '(full / REDUCED POWER / decides nothing). Exit code 1 when the file is refused or the sample decides',
+  'nothing. Touches no database and no model.',
+].join('\n');

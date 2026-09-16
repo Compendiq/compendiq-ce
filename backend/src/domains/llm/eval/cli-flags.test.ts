@@ -12,6 +12,12 @@ import {
   JUDGE_KNOWN_FLAGS,
   JUDGE_USAGE,
   JUDGE_VALUELESS_FLAGS,
+  LABEL_PACKET_KNOWN_FLAGS,
+  LABEL_PACKET_USAGE,
+  LABEL_PACKET_VALUELESS_FLAGS,
+  VALIDATE_LABEL_PACKET_KNOWN_FLAGS,
+  VALIDATE_LABEL_PACKET_USAGE,
+  VALIDATE_LABEL_PACKET_VALUELESS_FLAGS,
 } from './cli-flags.js';
 
 /**
@@ -154,10 +160,12 @@ describe('the retrieval eval CLI surface (#1114)', () => {
   });
 });
 
-describe('the #1614 PR2 surfaces are held to the same discipline', () => {
+describe('the #1614 PR2 and #1619 surfaces are held to the same discipline', () => {
   it.each([
     ['run-arm-answers.ts', ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, ARM_ANSWERS_USAGE],
     ['judge-arms.ts', JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS, JUDGE_USAGE],
+    ['build-label-packet.ts', LABEL_PACKET_KNOWN_FLAGS, LABEL_PACKET_VALUELESS_FLAGS, LABEL_PACKET_USAGE],
+    ['validate-label-packet.ts', VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS, VALIDATE_LABEL_PACKET_USAGE],
   ] as const)('%s: every switch is a flag, every flag is documented, and the = spelling is refused on switches', (_script, known, valueless, usage) => {
     for (const flag of valueless) expect(known).toContain(flag);
     for (const flag of known) expect(usage).toContain(`--${flag}`);
