@@ -3,7 +3,7 @@
   "arm": "C",
   "control": "legacy-revision-C",
   "revisionSha": "7feb4af28a22bffc589171e005721a129d12d7be",
-  "command": "scripts/run-retrieval-eval.ts --images --arm C --control legacy-revision-C --fts-language german --out /Users/simon/localGIT/compendiq/compendiq-ce-1619/backend/src/domains/llm/eval/artifacts/1611/arm-C-legacy-7feb4af2.json",
+  "command": "scripts/run-retrieval-eval.ts --images --arm C --control legacy-revision-C --fts-language german --out src/domains/llm/eval/artifacts/1611/arm-C-legacy-7feb4af2.json",
   "capturedAt": "2026-09-16T15:54:48.141Z",
   "hardware": "rtx3090-host · NVIDIA RTX 3090 24 GB · LM Studio openai-compatible /v1",
   "corpusManifestSha": "1d305046bdd084e59e2bb0cbb3e7206d5e91ec74ac82658ee85e3d403b6323a2",

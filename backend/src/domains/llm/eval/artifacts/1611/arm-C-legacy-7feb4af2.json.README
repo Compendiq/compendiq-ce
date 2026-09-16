@@ -1,0 +1,25 @@
+ERRATUM for arm-C-legacy-7feb4af2.json (#1619, 2026-09-16)
+
+`queryCostMs.p50` and `queryCostMs.p95` in that file are BOTH THE MAXIMUM, not
+percentiles. The capture predates commit a34eec38, which fixed the call into
+`percentile` (it takes a FRACTION; the arm axis passed 50 and 95, so
+`Math.ceil(309 * 50) - 1` clamped to the last index of the sorted samples).
+
+  as recorded   p50 = p95 = 424.21 ms   -- the slowest of the 309 queries
+  true values   p50 = 43.41 ms, p95 = 58.40 ms
+
+The true values are re-derived from the 309 per-query `ms` values inside the
+file itself (nearest rank, `eval/latency-stats.ts`). The measured rows are left
+exactly as captured, so the file still parses through `parseArmRunReport` and
+every other figure it carries -- recallAtK, mrr, imageNegativeLeakAt1 -- is
+correct and re-derives exactly under the shipped definitions.
+
+This file is the legacy-revision C control (ADR-027 amendment A-3), captured at
+7feb4af2. It is identical to arm-C-7e01cf2e.json on every METRIC, query for
+query; the rows are not byte-equal, and the README in this directory says why.
+
+`pinParticipatingQueries: 0` beside `rag_pin_identifiers: true` is
+configuration on, zero in effect: no query in the DE image fixture is an exact
+identifier, so #1107's pin never fired.
+
+Full context: README.md in this directory, "Errata on these two files".
