@@ -1122,7 +1122,10 @@ blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
 executes it and does not build a second one. **What is on record so far is
 retrieval only**: arm C and legacy-revision C were captured on real models
 (2026-09-16, #1619), arm A is permanently unobtainable, arm B is NOT captured
-(100 of 187 images analysed when the provider host stopped answering) and no
+(100 of 187 images analysed when the driver refused the run — the interleaved
+re-embed pass could not load the text embedder, because this host serves one
+model at a time; the provider host went silent later, during the 43-second
+re-run, which is why the run has not been resumed since) and no
 human judging was taken — so no verdict document exists.
 `backend/src/domains/llm/eval/artifacts/1611/README.md` records what the two
 captures are, and what still is not.
@@ -1161,9 +1164,12 @@ npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json
 #      capability unprobed and the driver refuses with `capability`;
 #   3. D7's retained identity, written by (1) — a missing or unparseable row reads as none
 #      and the driver refuses with `identity_drift`, never analysing anything;
-#   4. the output ceiling the run records (D8), if it is not the shipped default:
+#   4. the output ceiling the run records (D8). Migration 115 seeds the row itself
+#      (`('image_analysis_max_output_tokens', '8192')`, ON CONFLICT DO NOTHING), so it
+#      always exists after the migrations and the statement below is only needed TO CHANGE
+#      the value away from the shipped default:
 #      INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-#        VALUES ('image_analysis_max_output_tokens', '8192', NOW())
+#        VALUES ('image_analysis_max_output_tokens', '<ceiling>', NOW())
 #        ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;
 # The seed is then followed by the product's own analysis backfill, which this run DRIVES
 # in-process (`eval/arm-b-backfill.ts` calls `runImageAnalysisBatch()` then
@@ -1419,8 +1425,9 @@ differs from its arm's retrieval report.
 
 > **Loaded context, not the ceiling, is what a reasoning VL model needs
 > (measured 2026-09-16, #1619).** `gemma-4-26b-a4b-it` spends **82.0–93.3 %
-> of its output tokens on reasoning at the shipped 8,192 ceiling**, and up to
-> **99.96 %** at 16,384 — the reasoning share of the ten rows of #1619's
+> of its output tokens on reasoning at the shipped 8,192 ceiling**, and one
+> row reads **99.96 %** at 16,384 off a generation cut at the host's context
+> wall — the reasoning share of the ten rows of #1619's
 > vision pre-check (five corpus images × both ceilings, each row's own raw
 > `usage`: 401/489 … 3,494/3,746 at 8,192, and 7,578/7,581 at 16,384; all ten
 > are tabulated in ADR-027 beside the #1619 amendment) — and emits 0.5k–7.6k
@@ -1432,9 +1439,17 @@ differs from its arm's retrieval report.
 > deterministic, five attempts, `failed_terminal`, and re-opened by nothing
 > (only a `truncated` row re-opens on a ceiling raise). **An operator hitting
 > this sees only `failed` rows on the card, never the cause**, so check the
-> server's loaded context before touching **Max output tokens**: this model
-> family needs **≥ 32k loaded context** for ADR-027's payload bounds at the
-> shipped 8,192 ceiling. **And it needs reasoning suppressed:** with the
+> server's loaded context before touching **Max output tokens**. Exactly two
+> loaded-context values were ever measured, both on this one host
+> (`gemma-4-26b-a4b-it` on an RTX 3090 under LM Studio): **8,192 is not enough
+> for the verbose images** — the prompt alone is 611–622 tokens, so an 8,192
+> ceiling cannot fit beside it, and those images came back `malformed` or
+> `rejected:400` as above — and **36,096 works**, the value the owner set for
+> #1619's arm B. The
+> minimum sufficient context was **not determined** (nothing between those two
+> was tried), and no second checkpoint was measured, so treat 36,096 as the
+> known-good setting on this host rather than as a threshold or a property of
+> the model family. **And it needs reasoning suppressed:** with the
 > context raised to 36,096 the ceiling became the binding constraint and 14
 > of 187 images failed — 8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`
 > — the reply spending the whole output budget on thinking. ADR-027's D8
@@ -1488,8 +1503,10 @@ dependent labels must sit on ≥ 45 pages with ≤ 5 per page, or the verdict
 refuses the sheet the same way it refuses a count below the hard floor.
 
 Pass requires ALL of: primary point estimate ≥ margin AND its CI excludes 0;
-every non-inferiority lower bound above its margin (image-evidence R@5 is
-an underpowered guardrail — print its CI beside the verdict); neither
+every non-inferiority lower bound above its margin (the image-evidence R@5
+guardrail is **RETIRED** by amendment A-2 — the harness prints it as a
+`retired` row and excludes it from the aggregation, so it is not one of these
+bounds and no CI is printed beside the verdict for it); neither
 safety endpoint worse than its margin. **Cost is not a gate**: throughput,
 tokens per image, backfill wall-clock and query p50/p95 are measured and
 reported in the same document and can never fail the run — the decision is
