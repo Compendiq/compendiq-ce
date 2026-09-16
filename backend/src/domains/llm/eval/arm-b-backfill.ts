@@ -185,13 +185,21 @@ export async function driveArmBBackfill(
       }
     }
 
-    // The analyses that just landed raised `embedding_dirty`; `embedPage` is
-    // the only writer of the derived chunks the top-K must carry, so the
-    // re-embed runs in the same loop rather than once at the end — a page
-    // whose analysis committed early is then already indexed when the poll
-    // above next reads `pagesAwaitingEmbed`.
+    // The analyses that just landed raised `embedding_dirty`, and `embedPage`
+    // is the only writer of the derived chunks the top-K must carry — so the
+    // re-embed runs in this loop, but only ONCE THE ANALYSES ARE DONE.
+    //
+    // Not after every batch, which is what it used to do: a single-GPU host
+    // serves one model at a time, so every embed pass interleaved between two
+    // analysis batches forces the vision model out and the text embedder in.
+    // Measured on the RTX 3090, that load is cancelled under the analysis
+    // load — `Failed to load model "…embedding…". Error: Operation canceled.`
+    // → HTTP 400 → the embed pass reports errors and this driver (correctly)
+    // refuses the arm. One pass at the end is one swap, at the quietest
+    // moment of the run, and the completion bar is unchanged: the run is not
+    // arm B until `pagesAwaitingEmbed` reaches 0.
     const awaiting = await readImageAnalysisCorpusCounts();
-    if (awaiting.pagesAwaitingEmbed > 0) {
+    if (analysesComplete && awaiting.pagesAwaitingEmbed > 0) {
       const embed = await processDirtyPages(opts.userId);
       embedPasses++;
       pagesReEmbedded += embed.processed;
