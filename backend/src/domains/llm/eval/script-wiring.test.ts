@@ -386,15 +386,25 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(run).toBeGreaterThan(cState);
   });
 
-  it('counts B\u2019s backfill by D5\u2019s validity predicate, not by status alone', () => {
+  it('counts B\u2019s backfill by D5\u2019s validity predicate and decides it through the tested refusal', () => {
     // `status = 'analyzed'` alone counts a sweep-invalidated row as "backfill
     // complete" while the product would not compose it (review r1 finding
-    // 18): the identity the assignment was read under is part of the count,
-    // and the ONE (prompt, schema) pair the valid rows carry is recorded.
+    // 18): the identity the assignment was read under is part of the count.
     expect(flat).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
-    expect(flat).toContain('COUNT(DISTINCT (prompt_version, schema_version))::int AS versions');
     expect(flat).toContain('[state.identityHash]');
-    expect(flat).toContain('imageAnalysisVersions,');
+    // The version-straddle refusal is no longer pinned as source text — a
+    // query whose result is ignored passes such a pin, and `toContain(
+    // 'imageAnalysisVersions,')` pinned a trailing comma (review r2 finding
+    // 6). It is `assertSingleAnalysisVersionPair`, unit-tested in
+    // `arms.test.ts`, called EXACTLY ONCE here, and its return IS the
+    // report's version pair — which is the property the pin exists for.
+    expect(raw.split('assertSingleAnalysisVersionPair(').length - 1).toBe(1);
+    expect(flat).toContain('const versions = assertSingleAnalysisVersionPair({ analyzed: n,');
+    expect(flat).toContain('return versions;');
+    // The report's version pair has exactly ONE writer, and it is that call.
+    expect([...raw.matchAll(/imageAnalysisVersions\s*=\s*/g)]).toHaveLength(1);
+    expect(flat).toContain('if (arm === \'B\') imageAnalysisVersions = await awaitArmBBackfill(');
+    expect(raw.indexOf('imageAnalysisVersions = await awaitArmBBackfill(')).toBeLessThan(raw.lastIndexOf('imageAnalysisVersions'));
   });
 
   it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
@@ -503,6 +513,22 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     expect(flat).toContain("if (report.decision.verdict !== 'pass') process.exitCode = 1");
     // …and a pilot stop is its own exit code, never the gate's 1.
     expect(flat).toContain('process.exitCode = PILOT_STOP_EXIT_CODE');
+  });
+
+  it('holds the judge\u2019s file to the merge in BOTH branches, and says in --check what --unblind will do', () => {
+    // Review r2 finding 1: the sheet recorded the judge's file's sha256 and
+    // nothing read it back. `--unblind` checks it inside `buildArmVerdict`
+    // (`judgments.test.ts` proves the refusal); `--check` checks it too when
+    // the operator's sheet is in --out-dir, so a rewritten row surfaces while
+    // judging is still under way.
+    expect(flat).toContain('assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId))');
+    expect(raw.indexOf('assertSheetIntegrity(')).toBeLessThan(raw.indexOf('const mappingFile = arg(\'mapping\')'));
+    // Review r2 finding 10: the summary line reported only the missing count,
+    // so a sheet with a duplicate and an unknown judgment said "0 items still
+    // unjudged" two lines under the problems that refuse it.
+    expect(body).not.toMatch(/items still unjudged`\)/);
+    expect(flat).toContain('`--unblind will REFUSE this sheet: ${blockers.join(\'; \')}`');
+    expect(flat).toContain('...(progress.duplicates.length > 0 ? [`${progress.duplicates.length} items judged more than once`] : [])');
   });
 
   it('touches no database', () => {

@@ -196,6 +196,46 @@ const ProviderIdentitySchema = z.object({
 export type ProviderIdentity = z.infer<typeof ProviderIdentitySchema>;
 
 /**
+ * The retrieval knobs ADR-027 "Held fixed across arms" names, read off the
+ * run's own database by `readHeldFixedProvenance` and recorded by BOTH the
+ * arm report and the answer run's provenance. They are REQUIRED here, not
+ * merely admitted: a keyless `z.record` made the key-by-key comparison
+ * exactly as strong as what two files happened to record, so two reports
+ * that both omitted a knob compared nothing (review r2 finding 4).
+ *
+ * Extra keys are still accepted (`catchall`), because a report legitimately
+ * carries knobs this list does not: the retrieval run records its own flags
+ * (`topK`, `rerankRequested`, `mmr`, …), which the ask path has no
+ * counterpart for, and a revision can define a knob another revision does
+ * not. Two arms on ONE revision must still record the SAME key set — a
+ * one-sided knob there is a drift (`assertComparableArms`). Across
+ * revisions — every pair containing arm A, which runs on the legacy
+ * revision by design — a knob that exists on one revision only cannot be
+ * held fixed and no re-run could make it agree, so it is RECORDED as
+ * revision-specific (`revisionSpecificKnobs`) instead of refused.
+ */
+export const HELD_FIXED_KNOBS = [
+  'rag_ef_search',
+  'rag_fetch_width',
+  'rag_rerank_candidates',
+  'rag_context_chars_per_page',
+  'rag_pin_identifiers',
+  'rag_confidence_threshold',
+  'rag_confidence_threshold_rerank',
+  'rag_ranking_prior_weight',
+  'rag_mmr_enabled',
+  'rag_mmr_lambda',
+  'rag_answer_max_images',
+] as const;
+
+export const KnobValueSchema = z.union([z.number(), z.string(), z.boolean(), z.null()]);
+
+export const RetrievalKnobsSchema = z
+  .object(Object.fromEntries(HELD_FIXED_KNOBS.map((knob) => [knob, KnobValueSchema])) as Record<(typeof HELD_FIXED_KNOBS)[number], typeof KnobValueSchema>)
+  .catchall(KnobValueSchema);
+export type RetrievalKnobs = z.infer<typeof RetrievalKnobsSchema>;
+
+/**
  * Everything the ADR's "Report provenance" and "Held fixed" lists name for a
  * retrieval run, plus the per-query rows. `judge-arms.ts` refuses a verdict
  * whose arm reports do not parse against this — "refused if absent", not
@@ -238,8 +278,12 @@ const ArmRunReportObject = z.object({
   imageAnalysisMaxOutputTokens: z.number().int().positive().nullable(),
   /** Arm B only: the ONE (prompt, schema) version pair every analysed corpus row carries (D5). */
   imageAnalysisVersions: z.object({ prompt: z.number().int(), schema: z.number().int() }).nullable(),
-  /** Every retrieval knob the run was made under, recorded rather than assumed. */
-  retrieval: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
+  /**
+   * Every retrieval knob the run was made under, recorded rather than
+   * assumed: the ADR's held-fixed knobs are required, the run's own flags
+   * ride along (`HELD_FIXED_KNOBS`).
+   */
+  retrieval: RetrievalKnobsSchema,
   queries: z.number().int().nonnegative(),
   vectorParticipatingQueries: z.number().int().nonnegative(),
   rerankParticipatingQueries: z.number().int().nonnegative(),
@@ -393,7 +437,8 @@ export function providerIdentity(resolved: { config: { name: string; baseUrl: st
 export interface HeldFixedProvenance {
   rerank: string;
   answerModel: ProviderIdentity | null;
-  retrieval: Record<string, number | string | boolean | null>;
+  /** Exactly `HELD_FIXED_KNOBS`, so the schema's required set is checked at compile time too. */
+  retrieval: RetrievalKnobs;
 }
 
 /**
@@ -437,6 +482,43 @@ export async function readHeldFixedProvenance(): Promise<HeldFixedProvenance> {
 /** D5's retained identity: `sha256(providerId + '\n' + model + '\n' + baseUrl)`. */
 export function imageAnalysisIdentityHash(providerId: string, model: string, baseUrl: string): string {
   return createHash('sha256').update(`${providerId}\n${model}\n${baseUrl}`).digest('hex');
+}
+
+/** What one poll of arm B's backfill counted (`awaitArmBBackfill`'s D5 query). */
+export interface AnalysisVersionCount {
+  /** Rows that are `status = 'analyzed'` UNDER the assignment's retained identity. */
+  analyzed: number;
+  /** `COUNT(DISTINCT (prompt_version, schema_version))` over those rows. */
+  versions: number;
+  prompt: number | null;
+  schema: number | null;
+}
+
+/**
+ * D5's other half, once the count is complete: the valid rows must carry ONE
+ * (prompt, schema) version pair. A backfill that straddled a version bump is
+ * a corpus the product would not compose from, so the run refuses rather
+ * than recording one of the two pairs as "the" version.
+ *
+ * This is the script's decision, extracted so it is testable: the entrypoint
+ * calls `main()` at import, so `awaitArmBBackfill` can only be pinned as
+ * source text, and a query whose result is ignored passes such a pin (review
+ * r2 finding 6).
+ */
+export function assertSingleAnalysisVersionPair(count: AnalysisVersionCount): { prompt: number; schema: number } {
+  if (count.versions !== 1) {
+    throw new Error(
+      `--arm B: the ${count.analyzed} valid analyses carry ${count.versions} distinct (prompt_version, schema_version) pairs — ` +
+        'the backfill straddled a version bump. Let the sweep re-analyse under one pair, then re-run.',
+    );
+  }
+  if (count.prompt === null || count.schema === null) {
+    throw new Error(
+      '--arm B: the backfill reports one (prompt_version, schema_version) pair but no row carries it — the report ' +
+        'records the pair the analysed rows were written under (ADR-027 D5) and is refused without it.',
+    );
+  }
+  return { prompt: count.prompt, schema: count.schema };
 }
 
 export interface ArmBState {
@@ -611,6 +693,32 @@ export function isRegressionControlPair(baseline: ArmRunReport, candidate: ArmRu
 }
 
 /**
+ * The knobs only ONE of two reports records, when the two ran on different
+ * revisions. Every pair containing arm A is such a pair by design (A is the
+ * legacy revision), and a knob a revision does not define cannot be held
+ * fixed: there is no re-run that could make it agree, so the comparison
+ * RECORDS it (`ArmRetrievalComparison.revisionSpecificKnobs`) instead of
+ * refusing the pair (review r2 finding 4).
+ *
+ * Two arms on the SAME revision (B vs C) record the same knob set or one of
+ * them drifted, so this is empty there and `assertComparableArms` refuses a
+ * one-sided knob — round-1 finding 1's rule, unchanged. The ADR's named
+ * knobs are required of every report by `RetrievalKnobsSchema`, so they can
+ * never be revision-specific.
+ */
+export function revisionSpecificKnobs(baseline: ArmRunReport, candidate: ArmRunReport): string[] {
+  if (baseline.revisionSha === candidate.revisionSha) return [];
+  const named = HELD_FIXED_KNOBS as readonly string[];
+  const oneSided: string[] = [];
+  for (const [a, b] of [[baseline, candidate], [candidate, baseline]] as const) {
+    for (const knob of Object.keys(a.retrieval)) {
+      if (!named.includes(knob) && !(knob in b.retrieval)) oneSided.push(knob);
+    }
+  }
+  return [...new Set(oneSided)].sort();
+}
+
+/**
  * Refuse a pair of arm reports the ADR says is not a comparison.
  *
  * "The report refuses a pair whose arm, revision, corpus hash, query-set
@@ -622,7 +730,11 @@ export function isRegressionControlPair(baseline: ArmRunReport, candidate: ArmRu
  * share the candidate revision (that is what makes B − C the enrichment
  * alone), and everything in the "Held fixed" list must match — including
  * every retrieval knob the reports record, key by key, so a `rag_fetch_width`
- * that drifted between arms is a refusal and not a footnote. A
+ * that drifted between arms is a refusal and not a footnote. The ADR's named
+ * knobs are required of every report, so "neither side recorded it" is not a
+ * way past that; the one exception is a knob that exists on one REVISION
+ * only, which is recorded rather than refused (`revisionSpecificKnobs` — it
+ * is empty for a same-revision pair, so B vs C is unchanged). A
  * legacy-revision C control is refused as C of any pair; the one pairing it
  * is admitted in is `isRegressionControlPair`, and never under `expected`
  * (the un-blind step's pairs).
@@ -684,7 +796,9 @@ export function assertComparableArms(
   check('ftsLanguage', baseline.ftsLanguage, candidate.ftsLanguage);
   check('rerank', baseline.rerank, candidate.rerank);
   check('answerModel', baseline.answerModel, candidate.answerModel);
+  const revisionOnly = revisionSpecificKnobs(baseline, candidate);
   for (const knob of [...new Set([...Object.keys(baseline.retrieval), ...Object.keys(candidate.retrieval)])].sort()) {
+    if (revisionOnly.includes(knob)) continue;
     check(`retrieval.${knob}`, baseline.retrieval[knob], candidate.retrieval[knob]);
   }
   if (mismatches.length > 0) {
@@ -786,6 +900,13 @@ export interface ArmRetrievalComparison {
    * the regression control for #1617's authored-hit change, descriptive only.
    */
   regressionControl: boolean;
+  /**
+   * Knobs only one side's revision defines (`revisionSpecificKnobs`): empty
+   * for a same-revision pair, and the reason a cross-revision pair is not
+   * refused for them. Recorded so the verdict document says which knobs
+   * were NOT compared.
+   */
+  revisionSpecificKnobs: string[];
   recallAt: Record<string, PairedBinaryEndpoint>;
   mrr: PairedGradedEndpoint;
   /** Null when either side is arm C (no image evidence by construction). */
@@ -833,6 +954,7 @@ export function compareArmRetrieval(
     baseline: baseline.arm,
     candidate: candidate.arm,
     regressionControl: isRegressionControlPair(baseline, candidate),
+    revisionSpecificKnobs: revisionSpecificKnobs(baseline, candidate),
     recallAt,
     mrr,
     imageEvidenceRecallAt5: evidenceApplies ? binary((r) => (evidenceHitAtK(r, 5) ? 1 : 0), positives) : null,

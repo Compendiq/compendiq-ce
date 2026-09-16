@@ -92,7 +92,7 @@ import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runArmEval, runImageEval } from '../src/domains/llm/eval/runner-images.js';
 import { armRuns } from '../src/domains/llm/eval/images-metrics.js';
 import { buildImageAxisReport, formatImageAxisVerdict, type ImageAxisReport } from '../src/domains/llm/eval/images-report.js';
-import { assertArmCState, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readArmImageEnv, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { assertArmCState, assertSingleAnalysisVersionPair, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readArmImageEnv, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
 import { percentile } from '../src/domains/llm/eval/latency-stats.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
@@ -739,25 +739,27 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
 async function awaitArmBBackfill(state: ArmBState, expectedImages: number, timeoutMs: number): Promise<{ prompt: number; schema: number }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const valid = await query<{ n: number; versions: number }>(
-      `SELECT COUNT(*)::int AS n, COUNT(DISTINCT (prompt_version, schema_version))::int AS versions
+    const valid = await query<{ n: number; versions: number; prompt: number | null; schema: number | null }>(
+      `SELECT COUNT(*)::int AS n,
+              COUNT(DISTINCT (prompt_version, schema_version))::int AS versions,
+              MIN(prompt_version)::int AS prompt,
+              MIN(schema_version)::int AS schema
          FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1`,
       [state.identityHash],
     );
     const n = valid.rows[0]?.n ?? 0;
     if (n >= expectedImages) {
-      if ((valid.rows[0]?.versions ?? 0) !== 1) {
-        throw new Error(
-          `--arm B: the ${n} valid analyses carry ${valid.rows[0]?.versions} distinct (prompt_version, schema_version) pairs — ` +
-            'the backfill straddled a version bump. Let the sweep re-analyse under one pair, then re-run.',
-        );
-      }
-      const versions = await query<{ prompt: number; schema: number }>(
-        `SELECT DISTINCT prompt_version AS prompt, schema_version AS schema FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1`,
-        [state.identityHash],
-      );
-      console.log(`arm B: ${n}/${expectedImages} corpus images analysed under ${state.visionModel.identity} (prompt v${versions.rows[0]!.prompt}, schema v${versions.rows[0]!.schema}) — backfill complete`);
-      return versions.rows[0]!;
+      // D5's validity is "one (prompt, schema) pair over the valid rows"; the
+      // refusal itself lives in `arms.ts` so it is unit-testable rather than
+      // only pinned as this script's source text (review r2 finding 6).
+      const versions = assertSingleAnalysisVersionPair({
+        analyzed: n,
+        versions: valid.rows[0]?.versions ?? 0,
+        prompt: valid.rows[0]?.prompt ?? null,
+        schema: valid.rows[0]?.schema ?? null,
+      });
+      console.log(`arm B: ${n}/${expectedImages} corpus images analysed under ${state.visionModel.identity} (prompt v${versions.prompt}, schema v${versions.schema}) — backfill complete`);
+      return versions;
     }
     if (Date.now() >= deadline) {
       throw new Error(

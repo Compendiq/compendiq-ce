@@ -3,13 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { armReport, armRun } from './arm-report-fixtures.js';
+import { armReport, armRun, heldFixedKnobs } from './arm-report-fixtures.js';
 import {
   ARM_MARGINS,
   ARM_SAMPLE,
   ArmRunReportSchema,
+  HELD_FIXED_KNOBS,
   armProvenanceProblems,
   assertComparableArms,
+  assertSingleAnalysisVersionPair,
   commandLine,
   compareArmRetrieval,
   evidenceKeysOf,
@@ -22,8 +24,10 @@ import {
   parseArmRunReport,
   primaryEndpointPower,
   rankedEvidence,
+  revisionSpecificKnobs,
   readArmImageEnv,
   readRevisionSha,
+  type RetrievalKnobs,
 } from './arms.js';
 
 /**
@@ -157,12 +161,46 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
     ['rerank', { rerank: 'jina:rerank@http://rr/v1' }],
     ['answerModel', { answerModel: null }],
     // Review r1 finding 1: a RAG knob that drifted between arms reached a verdict.
-    ['retrieval.rag_fetch_width', { retrieval: { rag_ef_search: 100, rag_fetch_width: 99, rag_answer_max_images: 0 } }],
-    ['retrieval.rag_answer_max_images', { retrieval: { rag_ef_search: 100, rag_fetch_width: 10, rag_answer_max_images: 2 } }],
-    // A knob recorded on one side only is a drift too, never a default.
-    ['retrieval.topK', { retrieval: { rag_ef_search: 100, rag_fetch_width: 10, rag_answer_max_images: 0, topK: 10 } }],
+    ['retrieval.rag_fetch_width', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }],
+    ['retrieval.rag_answer_max_images', { retrieval: heldFixedKnobs({ rag_answer_max_images: 2 }) }],
+    // A knob recorded on one side only is a drift too, never a default —
+    // on the SAME revision, which A and B share in these fixtures.
+    ['retrieval.topK', { retrieval: heldFixedKnobs({ topK: 10 }) }],
   ] as const)('refuses a pair whose %s differs, naming the field', (field, over) => {
     expect(() => assertComparableArms(armReport('A'), armReport('B', over))).toThrow(new RegExp(`held-fixed[\\s\\S]*${field.replace('.', '\\.')}`));
+  });
+
+  it('requires the ADR\'s named knobs of every report, so "neither side recorded it" cannot pass the comparison', () => {
+    // Review r2 finding 4: `retrieval` was a keyless record, so two reports
+    // that both omitted a knob compared nothing at all.
+    const partial: Record<string, number | string | boolean | null> = { ...heldFixedKnobs() };
+    delete partial.rag_mmr_lambda;
+    expect(() => parseArmRunReport({ ...armReport('B'), retrieval: partial }, 'arm-B.json'))
+      .toThrow(/arm-B\.json is not an arm run report \(retrieval\.rag_mmr_lambda/);
+    expect(ArmRunReportSchema.safeParse({ ...armReport('B'), retrieval: partial }).success).toBe(false);
+    // Two reports that BOTH omit it compare nothing — which is why the schema,
+    // not the comparison, is where the named set is enforced.
+    const knobs = partial as RetrievalKnobs;
+    expect(() => assertComparableArms({ ...armReport('A'), retrieval: knobs }, { ...armReport('B'), retrieval: knobs })).not.toThrow();
+    expect(HELD_FIXED_KNOBS).toContain('rag_mmr_lambda');
+  });
+
+  it('records — never refuses — a knob only one REVISION defines, and still refuses one-sided knobs within a revision', () => {
+    // Arm A runs on the legacy revision by design, so a knob that exists only
+    // on the candidate revision can never be made to agree: refusing it would
+    // block the gate with no re-run that fixes it (review r2 finding 4).
+    const legacyA = armReport('A', { revisionSha: 'abcdef0' });
+    const candidateB = armReport('B', { retrieval: heldFixedKnobs({ rag_derived_chunk_boost: 0.25 }) });
+    expect(revisionSpecificKnobs(legacyA, candidateB)).toEqual(['rag_derived_chunk_boost']);
+    expect(() => assertComparableArms(legacyA, candidateB, { baseline: 'A', candidate: 'B' })).not.toThrow();
+    expect(compareArmRetrieval(legacyA, candidateB, { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual(['rag_derived_chunk_boost']);
+    // A named knob is never revision-specific, whatever the revisions are.
+    expect(revisionSpecificKnobs(legacyA, armReport('B', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toEqual([]);
+    expect(() => assertComparableArms(legacyA, armReport('B', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toThrow(/retrieval\.rag_fetch_width/);
+    // B and C share the candidate revision, so a one-sided knob there is a drift.
+    expect(revisionSpecificKnobs(armReport('C'), candidateB)).toEqual([]);
+    expect(() => assertComparableArms(armReport('C'), candidateB, { baseline: 'C', candidate: 'B' })).toThrow(/retrieval\.rag_derived_chunk_boost/);
+    expect(compareArmRetrieval(armReport('A'), armReport('B'), { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual([]);
   });
 
   it('refuses a report that does not carry its own arm\'s provenance, whichever side it is on', () => {
@@ -207,6 +245,18 @@ describe('armProvenanceProblems (ADR-027 "Report provenance", per arm)', () => {
     // `printf 'p\nm\nhttp://x' | shasum -a 256` — the three-tuple joined by newlines, nothing else.
     expect(imageAnalysisIdentityHash('p', 'm', 'http://x')).toBe('37977b9082e0f733ca94d937453823516e332111cd20f4addc15b92975d07ede');
     expect(imageAnalysisIdentityHash('p', 'm', 'http://y')).not.toBe(imageAnalysisIdentityHash('p', 'm', 'http://x'));
+  });
+
+  it('refuses a backfill that straddled a version bump, and a complete count with no pair (D5)', () => {
+    // The version-straddle refusal used to live inside `awaitArmBBackfill`, a
+    // script-private function no test can call, so it was pinned only as
+    // source text — which a query whose result is ignored also passes (review
+    // r2 finding 6).
+    expect(assertSingleAnalysisVersionPair({ analyzed: 187, versions: 1, prompt: 3, schema: 2 })).toEqual({ prompt: 3, schema: 2 });
+    expect(() => assertSingleAnalysisVersionPair({ analyzed: 187, versions: 2, prompt: 3, schema: 2 }))
+      .toThrow(/the 187 valid analyses carry 2 distinct \(prompt_version, schema_version\) pairs/);
+    expect(() => assertSingleAnalysisVersionPair({ analyzed: 0, versions: 0, prompt: null, schema: null })).toThrow(/straddled a version bump/);
+    expect(() => assertSingleAnalysisVersionPair({ analyzed: 187, versions: 1, prompt: null, schema: 1 })).toThrow(/no row carries it/);
   });
 });
 

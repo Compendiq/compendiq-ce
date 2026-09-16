@@ -28,6 +28,15 @@
  * (docs/runbooks/retrieval-eval.md "Blinding and judging") tells the judge to
  * read it as a citation and never as a reason to guess the arm.
  *
+ * The asymmetry that matters, stated rather than implied: for the PRIMARY
+ * B-vs-A pair the blinding holds — both arms carry the field wherever an
+ * image source surfaced — but the field is absent from EVERY arm C row by
+ * construction (C has no image leg and no derived chunks), so **C is the
+ * separable arm**. C's correctness is a secondary endpoint judged by the
+ * same person, so a judge who reads the field as an arm tell can separate
+ * C's rows from A's and B's. That is a known, accepted limitation of the
+ * secondary endpoints, not of the primary one (ADR-027 O10 erratum).
+ *
  * `generateArmAnswers` takes the ask as a FUNCTION. The script wires it to
  * `buildApp().inject(...)` (`askThroughRoute`); the tests wire it to a stub
  * that answers in the route's SSE shape, because a mocked chat model can only
@@ -38,7 +47,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { z } from 'zod';
-import { EVAL_ARMS, type EvalArm } from './arms.js';
+import { EVAL_ARMS, RetrievalKnobsSchema, type EvalArm } from './arms.js';
 import type { ImageFixture } from './fixture.js';
 
 export const AnswerSourceSchema = z.object({
@@ -95,8 +104,13 @@ export const AnswerRunProvenanceSchema = z.object({
   temperature: z.literal('provider default'),
   ragAnswerMaxImages: z.literal(0),
   deepSearch: z.literal(false),
-  /** Every RAG knob the route read, recorded rather than assumed. */
-  retrieval: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
+  /**
+   * Every RAG knob the route read, recorded rather than assumed — the SAME
+   * required set as the arm report's (`HELD_FIXED_KNOBS`), so `--unblind`
+   * compares the two sides over a named set and not over whichever keys the
+   * two files happen to share (review r2 findings 3–4).
+   */
+  retrieval: RetrievalKnobsSchema,
   items: z.number().int().nonnegative(),
   refused: z.number().int().nonnegative(),
   /**

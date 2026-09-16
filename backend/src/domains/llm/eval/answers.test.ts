@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -23,6 +23,7 @@ import {
   type AskFn,
 } from './answers.js';
 import type { ImageFixture, ImageFixtureLabel } from './fixture.js';
+import { heldFixedKnobs } from './arm-report-fixtures.js';
 
 /**
  * #1614 PR2 — the answer harness against a STUBBED ask boundary. The stub
@@ -211,7 +212,7 @@ describe('writeAnswerArtifacts / writeAnswerProvenance', () => {
       runId: 'run-1', arm: 'C', revisionSha: 'e398de4a', command: 'scripts/run-arm-answers.ts --arm C --run-id run-1',
       capturedAt: '2026-09-15T10:00:00.000Z', hardware: 'host', corpusManifestSha: 'test', querySetSha: 'f'.repeat(64),
       answerModel: { identity: 'p:m@http://x', model: 'm', endpoint: 'http://x' }, temperature: 'provider default',
-      ragAnswerMaxImages: 0, deepSearch: false, retrieval: { rag_answer_max_images: 0 }, items: 3, refused: 1,
+      ragAnswerMaxImages: 0, deepSearch: false, retrieval: heldFixedKnobs(), items: 3, refused: 1,
       refusalReasons: { weak_match: 1 }, answersSha256: 'a'.repeat(64), mappingSha256: 'b'.repeat(64),
     };
     const file = writeAnswerProvenance(dir, 'run-1', provenance);
@@ -219,5 +220,13 @@ describe('writeAnswerArtifacts / writeAnswerProvenance', () => {
     expect(readAnswerProvenance(file)).toEqual(provenance);
     expect(() => readAnswerProvenance(join(dir, 'provenance-nope.json'))).toThrow(/missing — every answer run writes provenance-<runId>\.json/);
     expect(() => writeAnswerProvenance(dir, 'run-2', { ...provenance, ragAnswerMaxImages: 1 as unknown as 0 })).toThrow();
+    // The ADR's held-fixed knobs are required here as they are on the arm
+    // report, so `--unblind` compares a NAMED set and not whichever keys the
+    // two files happen to share (review r2 findings 3–4).
+    const partial: Record<string, number | string | boolean | null> = { ...heldFixedKnobs() };
+    delete partial.rag_fetch_width;
+    expect(() => writeAnswerProvenance(dir, 'run-3', { ...provenance, retrieval: partial as typeof provenance.retrieval })).toThrow();
+    writeFileSync(join(dir, 'provenance-run-4.json'), JSON.stringify({ ...provenance, runId: 'run-4', retrieval: partial }));
+    expect(() => readAnswerProvenance(join(dir, 'provenance-run-4.json'))).toThrow(/is not an answer-run provenance file \(retrieval\.rag_fetch_width/);
   });
 });

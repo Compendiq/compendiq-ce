@@ -55,8 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provenance matches its arm's retrieval report, and scores the paired
   endpoints with McNemar exact, a
   page-cluster bootstrap and the owner's margins into a single-judge
-  verdict that decides nothing below the pre-registered sample — including
-  O2's page constraints and the EN/DE control counts. No arm has
+  verdict. Both of O2's pre-registered sizes decide: 190 image-dependent
+  labels at full power, 144–189 at reduced power with the achieved power
+  printed and the document labelled `REDUCED POWER`, and below the hard
+  floor of 144 the sheet is refused (`--allow-underpowered` then scores it
+  as tooling verification, deciding nothing) — as are O2's page constraints
+  and the EN/DE control counts at any N. The judge's file is verified, not
+  just hashed at merge time: `--unblind` (and `--check`, when the
+  operator's sheet is at hand) re-hashes `answers-<sheet>.jsonl` against the
+  merge's record AND re-derives every row from the per-arm answers files, so
+  a sheet rewritten after judging started — even with its own recorded hash
+  updated to match — is refused. No arm has
   been measured yet — the baselines and the image-dependent labelling pass
   are #1619's and the labeller's; the ADR records that the answer model
   runs at the provider's default temperature.

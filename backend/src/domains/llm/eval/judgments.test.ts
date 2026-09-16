@@ -2,10 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { armReport, armRun } from './arm-report-fixtures.js';
+import { armReport, armRun, heldFixedKnobs } from './arm-report-fixtures.js';
 import {
   generateArmAnswers,
   sha256File,
+  sha256Of,
   writeAnswerArtifacts,
   writeAnswerProvenance,
   type AnswerItem,
@@ -281,18 +282,55 @@ describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
   });
 
   it('accepts the pre-registered sample and names every shortfall otherwise', () => {
-    expect(auditSample(labels(190, 4, 48), [controls, controlsCvsA])).toMatchObject({ imageDependent: 190, imageNegative: 48, pages: 48, maxLabelsPerPage: 4, shortfalls: [] });
+    expect(auditSample(labels(190, 4, 48), [controls, controlsCvsA])).toMatchObject({ imageDependent: 190, imageNegative: 48, pages: 48, maxLabelsPerPage: 4, shortfalls: [], powerMode: 'full', powerNote: null });
     // 190 labels on 20 pages (m = 9.5) pass the two counts and fail the design the power was computed under.
     expect(auditSample(labels(190, 10, 48), []).shortfalls).toEqual([
       'image-dependent labels on 19 pages (O2: ≥ 45)',
       '19 page(s) carry more than 5 image-dependent labels (O2/O3: ≤ 5, the m the design effect assumes)',
     ]);
     expect(auditSample(labels(3, 2, 1), []).shortfalls).toEqual([
-      '3 image-dependent labels (O2: 190, floor 144)',
+      '3 image-dependent labels (O2: 190, below the hard floor 144)',
       '1 image-negative labels (O2: 48)',
       'image-dependent labels on 2 pages (O2: ≥ 45)',
     ]);
     expect(auditSample(labels(190, 4, 48), [{ ...controls, perLanguage: { en: 197, de: 196 } }]).shortfalls).toEqual(['control de (B vs C) pairs 196 queries (O2: 197)']);
+  });
+
+  // Review r2 finding 2: `auditSample` thresholded on 190 and only PRINTED
+  // the floor, so a floor-sized labelling pass — which ADR-027 "Sample size"
+  // pre-registers at power ≈ 0.80 — could only produce a document that
+  // "decides nothing". O2's two sizes are two modes now.
+  it.each([
+    [143, 'shortfall'],
+    [144, 'reduced-power'],
+    [189, 'reduced-power'],
+    [190, 'full'],
+  ] as const)('reads %i image-dependent labels as %s', (n, expected) => {
+    const audit = auditSample(labels(n, 3, 48), []);
+    expect(audit.imageDependent).toBe(n);
+    if (expected === 'shortfall') {
+      expect(audit.shortfalls).toEqual(['143 image-dependent labels (O2: 190, below the hard floor 144)']);
+      // Below the floor there is no mode: nothing decides.
+      expect(audit.powerMode).toBe('full');
+      expect(audit.powerNote).toBeNull();
+      return;
+    }
+    expect(audit.shortfalls).toEqual([]);
+    expect(audit.powerMode).toBe(expected);
+    if (expected === 'full') {
+      expect(audit.powerNote).toBeNull();
+      expect(audit.primaryPower).toBe(audit.targetPower);
+    } else {
+      expect(audit.powerNote).toMatch(/DECIDES, at power ≈ 0\.\d{3} instead of ≈ 0\.900/);
+      expect(audit.primaryPower).toBeLessThan(audit.targetPower);
+      expect(audit.primaryPower).toBeGreaterThanOrEqual(0.8);
+    }
+  });
+
+  it('states the floor\'s power as the ADR does: 0.80 at 144, 0.90 at 190', () => {
+    expect(auditSample(labels(144, 3, 48), []).primaryPower).toBeCloseTo(0.8023, 4);
+    expect(auditSample(labels(190, 4, 48), []).primaryPower).toBeCloseTo(0.8996, 4);
+    expect(auditSample(labels(144, 3, 48), []).targetPower).toBeCloseTo(0.8996, 4);
   });
 });
 
@@ -347,7 +385,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     runId: `run-${arm}`, arm, revisionSha: 'e398de4a1234', command: `scripts/run-arm-answers.ts --arm ${arm} --run-id run-${arm}`,
     capturedAt: '2026-09-15T11:00:00.000Z', hardware: 'test host', corpusManifestSha: 'corpus-sha', querySetSha,
     answerModel: { identity: 'rtx:gemma@http://chat/v1', model: 'gemma', endpoint: 'http://chat/v1' }, temperature: 'provider default',
-    ragAnswerMaxImages: 0, deepSearch: false, retrieval: { rag_answer_max_images: 0, rag_fetch_width: 10 },
+    ragAnswerMaxImages: 0, deepSearch: false, retrieval: heldFixedKnobs(),
     items: generated.answers.length, refused: generated.refused, refusalReasons: generated.refusalReasons,
     answersSha256: written.answersSha256, mappingSha256: written.mappingSha256,
   });
@@ -416,8 +454,8 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     writeFileSync(judgmentsPath(dir, 'sheet'), rows.map((r) => JSON.stringify(judgment({ itemId: r.itemId, correctness: verdictFor(r) }))).join('\n') + '\n');
     expect(readJudgments(judgmentsPath(dir, 'sheet'))).toHaveLength(12);
 
-    // Below O2 (3 image-dependent of 190 on 2 pages, 1 negative of 48): refused outright, naming each shortfall.
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: false })).toThrow(/not the one ADR-027 O2 pre-registers: 3 image-dependent labels \(O2: 190, floor 144\); 1 image-negative labels \(O2: 48\); image-dependent labels on 2 pages \(O2: ≥ 45\)/);
+    // Below O2's hard floor (3 image-dependent on 2 pages, 1 negative of 48): refused outright, naming each shortfall.
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: false })).toThrow(/below what ADR-027 O2 makes decidable: 3 image-dependent labels \(O2: 190, below the hard floor 144\); 1 image-negative labels \(O2: 48\); image-dependent labels on 2 pages \(O2: ≥ 45\)/);
     // A report without hardware provenance is refused too (O9).
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { ...armReports, A: armReport('A', { querySetSha, runs: runs('A'), hardware: null }) } })).toThrow(/records no hardware/);
 
@@ -478,4 +516,139 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
       writeFileSync(mappingFile, original);
     }
   });
+
+  // Review r2 finding 1: the sheet recorded the judge's file's sha256 and
+  // nothing ever read it back, so 200 rows could be rewritten after --merge
+  // and the verdict came out with no complaint (the refusal endpoint moved by
+  // 24 points). Both halves of the anchor are exercised here: the recorded
+  // hash, and the re-derivation that makes the sheet not its own witness.
+  it('refuses a judge\'s file whose rows were rewritten after --merge — even with the sheet\'s own hash updated to match', () => {
+    const answersFile = join(dir, 'answers-sheet.jsonl');
+    const sheetFile = sheetPath(dir, 'sheet');
+    const originalAnswers = readFileSync(answersFile, 'utf8');
+    const originalSheet = readFileSync(sheetFile, 'utf8');
+    const rewritten = originalAnswers.trim().split('\n')
+      .map((line) => JSON.stringify({ ...(JSON.parse(line) as AnswerItem), answer: 'rewritten after the merge', refused: true }))
+      .join('\n') + '\n';
+    try {
+      writeFileSync(answersFile, rewritten);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 }))
+        .toThrow(/answers-sheet\.jsonl hashes to [0-9a-f]{64} but sheet-sheet\.json recorded [0-9a-f]{64} at --merge/);
+      // The same hand can update the sheet's record; the rows still have to
+      // re-derive from each arm's own answers file, which was not touched.
+      writeFileSync(sheetFile, originalSheet.replace(/"answersSha256": "[0-9a-f]{64}",\n {2}"mappingSha256"/, `"answersSha256": "${sha256File(answersFile)}",\n  "mappingSha256"`));
+      expect(JSON.parse(readFileSync(sheetFile, 'utf8')).answersSha256).toBe(sha256File(answersFile));
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 }))
+        .toThrow(/12 of 12 rows of answers-sheet\.jsonl differ from the answer runs they were merged from \(first: item [0-9a-f-]+\)/);
+    } finally {
+      writeFileSync(answersFile, originalAnswers);
+      writeFileSync(sheetFile, originalSheet);
+    }
+  });
+
+  it('refuses one rewritten row, a removed row, and an arm\'s answers file that is no longer beside the sheet', () => {
+    const answersFile = join(dir, 'answers-sheet.jsonl');
+    const sheetFile = sheetPath(dir, 'sheet');
+    const originalAnswers = readFileSync(answersFile, 'utf8');
+    const originalSheet = readFileSync(sheetFile, 'utf8');
+    const lines = originalAnswers.trim().split('\n');
+    const retag = (text: string) => writeFileSync(sheetFile, originalSheet.replace(/"answersSha256": "[0-9a-f]{64}",\n {2}"mappingSha256"/, `"answersSha256": "${sha256Of(text)}",\n  "mappingSha256"`));
+    try {
+      // ONE row, with the sheet's hash kept consistent: the re-derivation is what catches it.
+      const oneEdited = [JSON.stringify({ ...(JSON.parse(lines[4]!) as AnswerItem), answer: 'edited' }), ...lines.slice(0, 4), ...lines.slice(5)]
+        .sort((a, b) => ((JSON.parse(a) as AnswerItem).itemId < (JSON.parse(b) as AnswerItem).itemId ? -1 : 1)).join('\n') + '\n';
+      writeFileSync(answersFile, oneEdited);
+      retag(oneEdited);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/1 of 12 rows of answers-sheet\.jsonl differ/);
+      // A removed row is caught by the count.
+      const shorter = lines.slice(1).join('\n') + '\n';
+      writeFileSync(answersFile, shorter);
+      retag(shorter);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/carries 11 rows, the 3 answer runs it was merged from carry 12/);
+    } finally {
+      writeFileSync(answersFile, originalAnswers);
+      writeFileSync(sheetFile, originalSheet);
+    }
+    // The re-derivation needs each run's own answers file in --out-dir.
+    const armFile = join(dir, 'answers-run-B.jsonl');
+    const armOriginal = readFileSync(armFile, 'utf8');
+    try {
+      rmSync(armFile);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/answers-run-B\.jsonl is missing — the sheet's rows are re-derived/);
+      writeFileSync(armFile, `${armOriginal}`.replace(/\n$/, '\n'));
+      // A source file edited to match the tampered sheet fails its own recorded hash.
+      writeFileSync(armFile, armOriginal.trim().split('\n').map((l) => JSON.stringify({ ...(JSON.parse(l) as AnswerItem), answer: 'x' })).join('\n') + '\n');
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/answers-run-B\.jsonl hashes to [0-9a-f]{64} but sheet-sheet\.json recorded [0-9a-f]{64} at --merge — arm B's answers changed/);
+    } finally {
+      writeFileSync(armFile, armOriginal);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// O2's floor as a DECIDING mode (review r2 finding 2), end to end.
+// ---------------------------------------------------------------------------
+
+describe('a floor-sized sample decides, labelled REDUCED POWER (ADR-027 O2)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'arm-floor-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const querySetSha = 'e'.repeat(64);
+  // 144 image-dependent labels — O2's hard floor — spread 3 to a page over 48
+  // pages (≥ 45, ≤ 5), plus the 48 image-negative labels O7's margin needs.
+  const fixture: ImageFixture = {
+    corpusManifestSha: 'corpus-sha', labeledBy: 'o15', notUsable: [],
+    labels: [
+      ...Array.from({ length: 144 }, (_, i) => label({ id: `d${i}`, expectedFiles: [`p${Math.floor(i / 3)}.md`] })),
+      ...Array.from({ length: 48 }, (_, i) => label({ id: `n${i}`, expectedFiles: [`n${i}.md`], expectedImages: [], style: 'image-negative', imageDependent: false })),
+    ],
+  };
+  const runsFor = (arm: 'A' | 'B') => fixture.labels.map((l) => armRun({
+    queryId: l.id, cluster: l.expectedFiles[0]!, style: l.style, expectedImageKeys: l.expectedImages.map((p) => p.split('/').pop()!),
+    evidence: arm === 'A' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
+  }));
+  const armReports = { A: armReport('A', { querySetSha, runs: runsFor('A') }), B: armReport('B', { querySetSha, runs: runsFor('B') }) };
+
+  it('runs the whole rule at 144 labels without a flag, and says so on the document', async () => {
+    for (const arm of ['A', 'B'] as const) {
+      const generated = await generateArmAnswers(async (question) => ({ answer: `[stub ${arm}] ${question}`, refused: false, refusalReason: null, sources: [{ pageTitle: 'Seite' }] }), fixture, { arm });
+      const written = writeAnswerArtifacts(dir, `run-${arm}`, generated);
+      writeAnswerProvenance(dir, `run-${arm}`, {
+        runId: `run-${arm}`, arm, revisionSha: 'e398de4a1234', command: `scripts/run-arm-answers.ts --arm ${arm}`,
+        capturedAt: '2026-09-15T11:00:00.000Z', hardware: 'test host', corpusManifestSha: 'corpus-sha', querySetSha,
+        answerModel: { identity: 'rtx:gemma@http://chat/v1', model: 'gemma', endpoint: 'http://chat/v1' }, temperature: 'provider default',
+        ragAnswerMaxImages: 0, deepSearch: false, retrieval: heldFixedKnobs(),
+        items: generated.answers.length, refused: generated.refused, refusalReasons: generated.refusalReasons,
+        answersSha256: written.answersSha256, mappingSha256: written.mappingSha256,
+      });
+    }
+    const sheet = mergeSheets(dir, 'floor', (['A', 'B'] as const).map((arm) => ({
+      answersPath: join(dir, `answers-run-${arm}.jsonl`), mappingPath: join(dir, `mapping-run-${arm}.json`), provenancePath: join(dir, `provenance-run-${arm}.json`),
+    })), 'scripts/judge-arms.ts --merge --run-id floor');
+    expect(sheet.items).toBe(384);
+
+    const rows = readFileSync(join(dir, 'answers-floor.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
+    const mapping = JSON.parse(readFileSync(join(dir, 'mapping-floor.json'), 'utf8')) as Mapping;
+    writeFileSync(judgmentsPath(dir, 'floor'), rows.map((r) => JSON.stringify(judgment({
+      itemId: r.itemId,
+      correctness: mapping[r.itemId]!.arm === 'B' || mapping[r.itemId]!.queryId.endsWith('0') ? 'correct' : 'incorrect',
+    }))).join('\n') + '\n', 'utf8');
+
+    // No `--allow-underpowered`: the floor decides.
+    const report = buildArmVerdict({
+      dir, runId: 'floor', fixture, querySetSha, armReports, controls: null,
+      allowUnderpowered: false, command: 'scripts/judge-arms.ts --unblind --run-id floor', seed: 1, iterations: 60,
+    });
+    expect(report.toolingVerificationOnly).toBe(false);
+    expect(report.reducedPower).toBe(true);
+    expect(report.sample).toMatchObject({ imageDependent: 144, imageNegative: 48, pages: 48, powerMode: 'reduced-power' });
+    expect(report.sample.primaryPower).toBeCloseTo(0.8023, 4);
+    expect(report.judged.primary.correctness.n).toBe(144);
+    // The rule ran: the primary endpoint has a verdict of its own.
+    expect(report.decision.conditions[0]!.name).toContain('primary');
+    expect(report.decision.conditions[0]!.verdict).toBe('pass');
+    const lines = formatArmVerdict(report);
+    expect(lines.join('\n')).not.toMatch(/TOOLING VERIFICATION ONLY/);
+    expect(lines[0]).toMatch(/REDUCED POWER — this document DECIDES/);
+    expect(lines.join('\n')).toMatch(/hard floor 144.*primary power ≈ 0\.802 vs ≈ 0\.900 at 190/);
+  }, 60_000);
 });

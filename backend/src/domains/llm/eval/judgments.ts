@@ -13,10 +13,13 @@
  *      the first 30 image-dependent A/B pairs in `judgedAt` order — the
  *      ADR's pilot, runnable while judging is under way so a ψ below 0.20
  *      stops the judge rather than being discovered after 714 rows.
- *   3. `assertFullyJudged` refuses un-blinding until every item has EXACTLY
- *      ONE judgment by ONE judge. Only then does `unblind` join the mapping,
- *      and only then is every answer run's `provenance-<runId>.json` held to
- *      its arm's retrieval report.
+ *   3. `assertSheetIntegrity` holds the judge's own file to the merge: the
+ *      sheet's answers file must hash to what `sheet-<id>.json` recorded AND
+ *      re-derive, row by row, from the arms' own answers files, so the sheet
+ *      is not its own witness. `assertFullyJudged` then refuses un-blinding
+ *      until every item has EXACTLY ONE judgment by ONE judge. Only then does
+ *      `unblind` join the mapping, and only then is every answer run's
+ *      `provenance-<runId>.json` held to its arm's retrieval report.
  *   4. `scoreJudgedPair` runs the paired endpoints — McNemar exact on the
  *      discordant pairs, the page-cluster bootstrap for every interval, the
  *      one-sided margins — and `decideGate` applies the three-part rule.
@@ -32,6 +35,7 @@ import {
   ARM_MARGINS,
   ARM_SAMPLE,
   EVAL_ARMS,
+  HELD_FIXED_KNOBS,
   assertComparableArms,
   compareArmRetrieval,
   imageEvidenceGuardrailPower,
@@ -214,6 +218,85 @@ export function mergeSheets(dir: string, runId: string, sources: readonly MergeS
   };
   writeFileSync(sheetPath(dir, runId), `${JSON.stringify(provenance, null, 2)}\n`);
   return provenance;
+}
+
+/** Parse `sheet-<runId>.json`, naming the file in the refusal. */
+export function readSheet(dir: string, runId: string): SheetProvenance {
+  const file = sheetPath(dir, runId);
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new Error(`${file}: ${err instanceof Error && 'code' in err && err.code === 'ENOENT' ? 'missing' : 'not JSON'} — it is written by --merge and records what the judge was given`);
+  }
+  const parsed = SheetProvenanceSchema.safeParse(json);
+  if (parsed.success) return parsed.data;
+  const first = parsed.error.issues[0];
+  throw new Error(`${file} is not a sheet provenance file (${first ? `${first.path.join('.') || '<root>'}: ${first.message}` : 'invalid'})`);
+}
+
+/**
+ * The judge's own file, held to what `--merge` recorded — the one link in the
+ * chain that was written and never read back (review r2 finding 1: 200 rows
+ * of a merged sheet were rewritten after judging started and the verdict came
+ * out with no complaint, moving the refusal endpoint by 24 points).
+ *
+ * Two checks, because the first one alone anchors the sheet against a file
+ * the same hand can edit:
+ *
+ *   1. `answers-<sheetId>.jsonl` must hash to `sheet.answersSha256`.
+ *   2. The sheet's rows are RE-DERIVED from the per-arm answer runs the sheet
+ *      names — each of which must still hash to the `answersSha256` the sheet
+ *      recorded for it — and every row must match, text for text, in the
+ *      merge's own order. So the sheet file is not its own witness: rewriting
+ *      the judge's rows requires rewriting each arm's answers file (whose
+ *      hash `provenance-<runId>.json` independently records, and whose own
+ *      hash the sheet records) to match.
+ *
+ * Each run's three files therefore have to stay in the artifacts directory
+ * under the run id they were written with; that is where `--unblind` already
+ * re-reads `provenance-<runId>.json` from.
+ */
+export function assertSheetIntegrity(dir: string, runId: string, sheet: SheetProvenance): void {
+  const answersFile = answersPath(dir, runId);
+  const answersSha = sha256File(answersFile);
+  if (answersSha !== sheet.answersSha256) {
+    throw new Error(
+      `answers-${runId}.jsonl hashes to ${answersSha} but sheet-${runId}.json recorded ${sheet.answersSha256} at ` +
+        '--merge — the judge\'s own file changed after the sheet was made. Refused: the judgments describe rows that ' +
+        'are no longer the rows the arms produced.',
+    );
+  }
+  const rederived: AnswerItem[] = [];
+  for (const source of sheet.sources) {
+    const file = answersPath(dir, source.runId);
+    let sha: string;
+    try {
+      sha = sha256File(file);
+    } catch {
+      throw new Error(
+        `${file} is missing — the sheet's rows are re-derived from the answer runs it merged, so every run's ` +
+          'answers-<runId>.jsonl stays in --out-dir beside its mapping and provenance.',
+      );
+    }
+    if (sha !== source.answersSha256) {
+      throw new Error(`${file} hashes to ${sha} but sheet-${runId}.json recorded ${source.answersSha256} at --merge — arm ${source.arm}'s answers changed. Refused.`);
+    }
+    rederived.push(...readAnswers(file));
+  }
+  rederived.sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
+  const onSheet = readAnswers(answersFile);
+  if (rederived.length !== onSheet.length) {
+    throw new Error(`answers-${runId}.jsonl carries ${onSheet.length} rows, the ${sheet.sources.length} answer runs it was merged from carry ${rederived.length}. Refused.`);
+  }
+  const differing = onSheet.filter((row, i) => JSON.stringify(row) !== JSON.stringify(rederived[i]));
+  if (differing.length > 0) {
+    throw new Error(
+      `${differing.length} of ${onSheet.length} rows of answers-${runId}.jsonl differ from the answer runs they were ` +
+        `merged from (first: item ${differing[0]!.itemId}) — the judge's sheet was rewritten after --merge. Refused: ` +
+        'the sheet is re-derived from each arm\'s own answers file, so editing it and its recorded hash together is not enough.',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -639,6 +722,16 @@ export function decideGate(input: {
 // O2's sample, checked rather than serialised.
 // ---------------------------------------------------------------------------
 
+/**
+ * Which of O2's two sample sizes the labels reached. `full` is the
+ * pre-registered N = 190 (power ≈ 0.90 under ψ = 0.30 / δ = 0.15, and ≈ 0.80
+ * under the pessimistic pair); `reduced-power` is the hard floor 144–189,
+ * which ADR-027 "Sample size" pre-registers as decidable at power ≈ 0.80–0.90
+ * and which the document therefore DECIDES under, labelled. Below the floor
+ * there is no mode: the sample is a shortfall.
+ */
+export type SamplePowerMode = 'full' | 'reduced-power';
+
 export interface SampleAudit {
   imageDependent: number;
   imageNegative: number;
@@ -646,17 +739,39 @@ export interface SampleAudit {
   pages: number;
   /** The most image-dependent labels any one page carries. */
   maxLabelsPerPage: number;
-  /** Every way the sample falls short of O2/O3; empty when it is the pre-registered one. */
+  /**
+   * Every way the sample falls below what O2 makes decidable at all; empty
+   * when the verdict may decide (whether at full or at reduced power).
+   */
   shortfalls: string[];
+  powerMode: SamplePowerMode;
+  /** The sentence the document carries whenever `powerMode` is `reduced-power`. */
+  powerNote: string | null;
   required: typeof ARM_SAMPLE;
+  /** Achieved power at the labels in hand. */
   primaryPower: number;
+  /** Power at the pre-registered target, which the label compares against. */
+  targetPower: number;
 }
 
 /**
- * O2 as a check: N image-dependent (190), N image-negative (48), ≥ 45 pages
- * and ≤ 5 image-dependent labels per page (the m = 5 the design effect is
- * computed under, O3), and 197 queries per language on every control given.
- * Below any of them the verdict decides nothing.
+ * O2 as a check, with O2's two sizes kept apart (review r2 finding 2 — the
+ * floor used to be printed and never applied, so a floor-sized labelling pass
+ * could only produce a "decides nothing" document and #1619 had no mode in
+ * which it decided):
+ *
+ *   ≥ 190 image-dependent labels  → `full`, the pre-registered sample.
+ *   144–189                       → `reduced-power`: the verdict decides and
+ *                                   states the achieved power beside the
+ *                                   target's. ADR-027 pre-registers 144 as
+ *                                   the hard floor at power 0.80.
+ *   < 144                         → a shortfall; nothing decides.
+ *
+ * The other four checks are not power-continuous and stay hard: 48
+ * image-negative labels (O7's margin is literally 2 of 48), ≥ 45 pages and
+ * ≤ 5 image-dependent labels per page (the m = 5 and ρ = 0.10 the design
+ * effect is computed under, O3), and 197 queries per language on every
+ * control given (O4's pooled n = 394).
  */
 export function auditSample(fixture: ImageFixture, controls: readonly ControlEndpoints[]): SampleAudit {
   const dependent = fixture.labels.filter((l) => l.imageDependent === true);
@@ -666,7 +781,21 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
   const maxLabelsPerPage = Object.values(perPage).reduce((a, b) => Math.max(a, b), 0);
   const imageNegative = fixture.labels.filter((l) => l.style === 'image-negative').length;
   const shortfalls: string[] = [];
-  if (dependent.length < ARM_SAMPLE.imageDependent) shortfalls.push(`${dependent.length} image-dependent labels (O2: ${ARM_SAMPLE.imageDependent}, floor ${ARM_SAMPLE.imageDependentFloor})`);
+  const primaryPower = primaryEndpointPower(dependent.length);
+  const targetPower = primaryEndpointPower(ARM_SAMPLE.imageDependent);
+  let powerMode: SamplePowerMode = 'full';
+  let powerNote: string | null = null;
+  if (dependent.length < ARM_SAMPLE.imageDependentFloor) {
+    shortfalls.push(`${dependent.length} image-dependent labels (O2: ${ARM_SAMPLE.imageDependent}, below the hard floor ${ARM_SAMPLE.imageDependentFloor})`);
+  } else if (dependent.length < ARM_SAMPLE.imageDependent) {
+    powerMode = 'reduced-power';
+    powerNote =
+      `${dependent.length} image-dependent labels is at or above O2's hard floor of ${ARM_SAMPLE.imageDependentFloor} and below its ` +
+      `pre-registered ${ARM_SAMPLE.imageDependent}: the gate DECIDES, at power ≈ ${primaryPower.toFixed(3)} instead of ` +
+      `≈ ${targetPower.toFixed(3)} (ψ = ${ARM_SAMPLE.primaryPsi}, δ = ${ARM_SAMPLE.primaryDelta}, design effect ${ARM_SAMPLE.primaryDesignEffect}). ` +
+      'An inconclusive endpoint at this N is likelier than it was at the pre-registered one, and every figure is ' +
+      'labelled REDUCED POWER.';
+  }
   if (imageNegative < ARM_SAMPLE.imageNegative) shortfalls.push(`${imageNegative} image-negative labels (O2: ${ARM_SAMPLE.imageNegative})`);
   if (pages < ARM_SAMPLE.minPages) shortfalls.push(`image-dependent labels on ${pages} pages (O2: ≥ ${ARM_SAMPLE.minPages})`);
   if (maxLabelsPerPage > ARM_SAMPLE.maxLabelsPerPage) {
@@ -683,8 +812,11 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
     pages,
     maxLabelsPerPage,
     shortfalls,
+    powerMode,
+    powerNote,
     required: ARM_SAMPLE,
-    primaryPower: primaryEndpointPower(dependent.length),
+    primaryPower,
+    targetPower,
   };
 }
 
@@ -693,6 +825,14 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
  * the SAME held-fixed configuration as that arm's retrieval report — same
  * revision, corpus, query set, hardware, answer model and every knob both
  * recorded — and hashing to what the sheet recorded before judging.
+ *
+ * The knob comparison is over a NAMED set, not over whichever keys the two
+ * files happen to share (review r2 finding 3, which was one-directional):
+ * `HELD_FIXED_KNOBS` is required of both files by schema, so each of them is
+ * compared whichever side recorded it, plus any further knob BOTH files
+ * record. The retrieval report additionally carries its own run's flags
+ * (`topK`, `rerankRequested`, `mmr`, …) — the ask path has no counterpart to
+ * drift from, so those are report provenance and not a held-fixed knob.
  */
 export function assertAnswerRunMatches(
   provenance: AnswerRunProvenance,
@@ -714,8 +854,10 @@ export function assertAnswerRunMatches(
   if (!report.answerModel) problems.push('the retrieval report records no answer model, so the answers cannot be that arm\'s');
   else if (provenance.answerModel.identity !== report.answerModel.identity) problems.push(`answer model ${provenance.answerModel.identity} vs the retrieval report's ${report.answerModel.identity}`);
   if (provenance.retrieval.rag_answer_max_images !== 0) problems.push(`rag_answer_max_images ${JSON.stringify(provenance.retrieval.rag_answer_max_images)} (O10: 0 in every arm)`);
-  for (const knob of Object.keys(provenance.retrieval).sort()) {
-    if (knob in report.retrieval && JSON.stringify(report.retrieval[knob]) !== JSON.stringify(provenance.retrieval[knob])) {
+  const knobs = new Set<string>(HELD_FIXED_KNOBS);
+  for (const knob of Object.keys(provenance.retrieval)) if (knob in report.retrieval) knobs.add(knob);
+  for (const knob of [...knobs].sort()) {
+    if (JSON.stringify(report.retrieval[knob]) !== JSON.stringify(provenance.retrieval[knob])) {
       problems.push(`retrieval.${knob}: ${JSON.stringify(provenance.retrieval[knob])} vs the retrieval report's ${JSON.stringify(report.retrieval[knob])}`);
     }
   }
@@ -752,8 +894,16 @@ export interface ArmVerdictReport {
   runId: string;
   producedAt: string;
   command: string;
-  /** Set when the sample is below O2 in any respect (`sample.shortfalls`): the document decides nothing. */
+  /**
+   * Set when the sample falls below what O2 makes decidable (`sample.shortfalls`,
+   * reachable only under `--allow-underpowered`): the document decides nothing.
+   */
   toolingVerificationOnly: boolean;
+  /**
+   * Set when the labels reached O2's hard floor but not its pre-registered
+   * target: the document DECIDES, at the power `sample.primaryPower` states.
+   */
+  reducedPower: boolean;
   singleJudgeStatement: string;
   judge: string;
   sheet: SheetProvenance;
@@ -770,17 +920,21 @@ export interface ArmVerdictReport {
 }
 
 /**
- * `--unblind`, end to end. Refuses (in this order) a sheet whose mapping no
- * longer hashes to what was recorded before judging, a sheet that is not
- * fully judged, arm reports that do not parse or do not pair, a fixture
- * whose sha is not the reports' query set, an answer run whose
- * `provenance-<runId>.json` is missing, changed, or not made under its arm
- * report's configuration, and a sample below O2 unless `allowUnderpowered`
- * labels the output as tooling verification.
+ * `--unblind`, end to end. Refuses (in this order) a sheet whose answers file
+ * or mapping no longer hashes to what `--merge` recorded before judging — the
+ * sheet's rows are re-derived from the arms' own answers files, so the sheet
+ * is not its own witness (`assertSheetIntegrity`) — a sheet that is not fully
+ * judged, arm reports that do not parse or do not pair, a fixture whose sha is
+ * not the reports' query set, an answer run whose `provenance-<runId>.json` is
+ * missing, changed, or not made under its arm report's configuration, and a
+ * sample below O2's HARD FLOOR unless `allowUnderpowered` labels the output as
+ * tooling verification. A sample between the floor and the pre-registered
+ * target decides, at reduced power, and says so.
  */
 export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   const { dir, runId, fixture } = input;
-  const sheet = SheetProvenanceSchema.parse(JSON.parse(readFileSync(sheetPath(dir, runId), 'utf8')));
+  const sheet = readSheet(dir, runId);
+  assertSheetIntegrity(dir, runId, sheet);
   const mappingFile = mappingPath(dir, runId);
   const mappingSha = sha256File(mappingFile);
   if (mappingSha !== sheet.mappingSha256) {
@@ -842,9 +996,10 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   const sample = auditSample(fixture, [controls.bVsC, controls.cVsA].filter((x): x is ControlEndpoints => x !== null));
   if (sample.shortfalls.length > 0 && !input.allowUnderpowered) {
     throw new Error(
-      `The sample is not the one ADR-027 O2 pre-registers: ${sample.shortfalls.join('; ')} (O15's independent labelling ` +
+      `The sample is below what ADR-027 O2 makes decidable: ${sample.shortfalls.join('; ')} (O15's independent labelling ` +
         'pass supplies the labels — the harness never invents one). Refused. --allow-underpowered scores the sheet as ' +
-        'tooling verification only.',
+        'tooling verification only. A sample at or above the hard floor of 144 image-dependent labels needs no flag: ' +
+        'it decides, labelled REDUCED POWER.',
     );
   }
 
@@ -870,6 +1025,7 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     producedAt: (input.now ?? new Date()).toISOString(),
     command: input.command,
     toolingVerificationOnly: sample.shortfalls.length > 0,
+    reducedPower: sample.powerMode === 'reduced-power',
     singleJudgeStatement: SINGLE_JUDGE_STATEMENT,
     judge: progress.judges[0]!,
     sheet,
@@ -891,12 +1047,16 @@ export function formatArmVerdict(report: ArmVerdictReport): string[] {
     lines.push('*** TOOLING VERIFICATION ONLY — the sample is below ADR-027 O2; this document decides nothing. ***');
     for (const shortfall of report.sample.shortfalls) lines.push(`    short of O2: ${shortfall}`);
   }
-  lines.push(`ADR-027 arm verdict ${report.runId} — judge ${report.judge} — ${report.decision.verdict.toUpperCase()}`);
+  if (report.reducedPower) {
+    lines.push('*** REDUCED POWER — this document DECIDES; the sample is between ADR-027 O2\'s hard floor and its pre-registered N. ***');
+    lines.push(`    ${report.sample.powerNote}`);
+  }
+  lines.push(`ADR-027 arm verdict ${report.runId} — judge ${report.judge} — ${report.decision.verdict.toUpperCase()}${report.reducedPower ? ' (REDUCED POWER)' : ''}`);
   lines.push(report.singleJudgeStatement);
   lines.push(
     `sample: ${report.sample.imageDependent} image-dependent on ${report.sample.pages} pages, ≤ ${report.sample.maxLabelsPerPage} per page ` +
-      `(O2: ${report.sample.required.imageDependent}, floor ${report.sample.required.imageDependentFloor}, ≥ ${report.sample.required.minPages} pages, ` +
-      `≤ ${report.sample.required.maxLabelsPerPage} per page; primary power ≈ ${report.sample.primaryPower.toFixed(2)}), ` +
+      `(O2: ${report.sample.required.imageDependent} pre-registered, hard floor ${report.sample.required.imageDependentFloor}, ≥ ${report.sample.required.minPages} pages, ` +
+      `≤ ${report.sample.required.maxLabelsPerPage} per page; primary power ≈ ${report.sample.primaryPower.toFixed(3)} vs ≈ ${report.sample.targetPower.toFixed(3)} at ${report.sample.required.imageDependent}), ` +
       `${report.sample.imageNegative} image-negative (O2: ${report.sample.required.imageNegative})`,
   );
   for (const condition of report.decision.conditions) {

@@ -13,32 +13,41 @@
  *             --out verdict-sheet-1.json
  *
  * The judge sees `answers-<id>.jsonl` and nothing else; `mapping-<id>.json`
- * and `sheet-<id>.json` (which recorded its sha256 before judging started)
- * stay with the operator. `--check --mapping` prints the ADR's pilot — ψ
- * over the first 30 image-dependent A/B pairs in judgedAt order — so a run
- * below 0.20 STOPS there (exit code 3) rather than after 714 rows; it
- * prints one aggregate number and nothing per item. `--unblind` refuses
- * until every item has exactly one judgment by one judge, re-reads every
- * answer run's provenance-<runId>.json from --out-dir and holds it to its
- * arm's retrieval report, then joins the mapping, pairs the arms, runs
- * McNemar exact and the page-cluster bootstrap, applies the three-part rule
- * and writes the verdict document — labelled single-judge throughout, and
- * labelled TOOLING VERIFICATION ONLY when the sample is below O2. No
- * database is touched.
+ * and `sheet-<id>.json` (which recorded both files' sha256 before judging
+ * started) stay with the operator. `--check` reports progress, says in one
+ * line whether `--unblind` will refuse the sheet, and — where the operator's
+ * `sheet-<id>.json` is in `--out-dir` — holds the judge's file to it; with
+ * `--mapping` it also prints the ADR's pilot, ψ over the first 30
+ * image-dependent A/B pairs in judgedAt order, so a run below 0.20 STOPS
+ * there (exit code 3) rather than after 714 rows; it prints one aggregate
+ * number and nothing per item. `--unblind` refuses a sheet whose answers file
+ * no longer hashes to the merge's record or no longer re-derives from the
+ * arms' own answers files, refuses until every item has exactly one judgment
+ * by one judge, re-reads every answer run's provenance-<runId>.json from
+ * --out-dir and holds it to its arm's retrieval report, then joins the
+ * mapping, pairs the arms, runs McNemar exact and the page-cluster bootstrap,
+ * applies the three-part rule and writes the verdict document — labelled
+ * single-judge throughout, labelled REDUCED POWER when the sample is between
+ * O2's hard floor and its pre-registered N (it still decides), and labelled
+ * TOOLING VERIFICATION ONLY when the sample is below what O2 makes decidable
+ * at all. No database is touched.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { assertKnownFlags, flagValue, wantsHelp, JUDGE_KNOWN_FLAGS, JUDGE_USAGE, JUDGE_VALUELESS_FLAGS } from '../src/domains/llm/eval/cli-flags.js';
 import { ARM_MARGINS, EVAL_ARMS, commandLine, parseArmRunReport, querySetSha, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
 import { readAnswers, readMapping, runIdOfAnswersFile } from '../src/domains/llm/eval/answers.js';
 import { loadImageFixture } from '../src/domains/llm/eval/fixture.js';
 import {
+  assertSheetIntegrity,
   buildArmVerdict,
   formatArmVerdict,
   judgmentProgress,
   mergeSheets,
   pilotCheck,
   readJudgments,
+  readSheet,
+  sheetPath,
   type TextGateControl,
 } from '../src/domains/llm/eval/judgments.js';
 
@@ -113,13 +122,38 @@ function main(): void {
     if (progress.duplicates.length > 0) console.log(`${progress.duplicates.length} items judged more than once: ${progress.duplicates.slice(0, 5).join(', ')}`);
     if (progress.unknown.length > 0) console.log(`${progress.unknown.length} judgments name items not on the sheet: ${progress.unknown.slice(0, 5).join(', ')}`);
     if (progress.judges.length > 1) console.log('WARNING: more than one judge signed rows — the protocol is one judge (O12); --unblind will refuse');
-    console.log(progress.missing.length === 0 && progress.duplicates.length === 0 && progress.unknown.length === 0
-      ? 'every item has exactly one judgment — --unblind may run'
-      : `${progress.missing.length} items still unjudged`);
+    // One line, and it says what `--unblind` will do. It used to report only
+    // the missing count, so a sheet with a duplicate and an unknown judgment
+    // printed "0 items still unjudged" two lines under the problems that
+    // will refuse it (review r2 finding 10).
+    const blockers = [
+      ...(progress.missing.length > 0 ? [`${progress.missing.length} items still unjudged`] : []),
+      ...(progress.duplicates.length > 0 ? [`${progress.duplicates.length} items judged more than once`] : []),
+      ...(progress.unknown.length > 0 ? [`${progress.unknown.length} judgments name items not on the sheet`] : []),
+      ...(progress.judges.length > 1 ? [`${progress.judges.length} judges signed rows (O12: one)`] : []),
+    ];
+    console.log(blockers.length === 0
+      ? 'every item has exactly one judgment by one judge — --unblind may run'
+      : `--unblind will REFUSE this sheet: ${blockers.join('; ')}`);
+    // The judge's file is the one link nothing used to read back (review r2
+    // finding 1). Where the operator's `sheet-<id>.json` is at hand, hold the
+    // sheet to it here too, so a rewritten row is caught while judging is
+    // still under way instead of at `--unblind`.
+    const sheetDir = arg('out-dir') ?? dirname(answersFile);
+    const sheetRunId = runIdOfAnswersFile(answersFile);
+    if (existsSync(sheetPath(sheetDir, sheetRunId))) {
+      assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId));
+      console.log(`sheet integrity: answers-${sheetRunId}.jsonl still hashes to sheet-${sheetRunId}.json and re-derives from every arm's own answers file`);
+    } else {
+      console.log(`sheet integrity: not checked — sheet-${sheetRunId}.json is not in ${sheetDir} (pass --out-dir <artifacts>); --unblind checks it before it decides anything`);
+    }
     // The pilot (ADR-027 "Sample size"): with the operator's mapping, ψ over
     // the first 30 image-dependent A/B pairs in judgedAt order — ONE
     // aggregate number, nothing per item, so the judge can stop below 0.20
-    // before judging the rest.
+    // before judging the rest. It needs O15's `imageDependent` labels: the
+    // shipped fixture carries none, so until that pass lands this branch can
+    // only report 0/30 and the exit-3 stop is unreachable from the CLI
+    // (review r2 finding 9; `pilotCheck` itself is unit-tested).
     const mappingFile = arg('mapping');
     if (mappingFile) {
       const pilot = pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture());

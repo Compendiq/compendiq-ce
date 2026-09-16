@@ -62,7 +62,7 @@ type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
-const { imageEvidenceRecallAtK, assertArmCState } = await import('./arms.js');
+const { imageEvidenceRecallAtK, assertArmCState, readArmBState } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -469,17 +469,28 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
 
   it('arm B: attributes evidence to a row\'s derived.attachmentKey (D11), and to nothing when the key mismatches', async () => {
     const seeded = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });
-    const targetPageId = seeded.pageIdByFile.get(target.file)!;
     const fixture = fixtureOf([label({ id: 'q1', query: STEERED_QUERY, expectedImages: [targetImage.file] })]);
     // No row on this revision carries `derived` (#1617), so the seam
-    // decorates the REAL search's rows with the D11 shape.
+    // decorates the REAL search's rows with the D11 shape. It decorates
+    // WHATEVER the search returned first, not the target page's row: keying
+    // the decoration on the target page made the assertion depend on that
+    // page reaching the top-10 through the one-hot text legs, so any DB-state
+    // shift that moved ranking turned this test into an ImageLegSilentError
+    // (it failed in 2 of 3 full-suite runs; review r2 finding 11).
+    let decoratedPageId = -1;
     const decorated = (key: string): typeof hybridSearch => async (...args) => {
       const rows = await hybridSearch(...args);
-      return rows.map((r): SearchResult => (r.pageId === targetPageId ? { ...r, derived: { attachmentKey: key } } as SearchResult : r));
+      expect(rows.length, 'the text legs returned something to attribute evidence to').toBeGreaterThan(0);
+      decoratedPageId = rows[0]!.pageId;
+      return rows.map((r, i): SearchResult => (i === 0 ? { ...r, derived: { attachmentKey: key } } as SearchResult : r));
     };
 
     const hit = await runArmEval(fixture, { arm: 'B', userId: USER, pageIdByFile: seeded.pageIdByFile, topK: 10, _search: decorated(imageAttachmentKey(targetImage.file)) });
     expect(hit.runs[0]!.evidence.map((e) => e.key)).toEqual([imageAttachmentKey(targetImage.file)]);
+    // The rank is the rank of the PAGE that carried it — rank 1 here, because
+    // the decorated row is the one the search ranked first.
+    expect(hit.runs[0]!.evidence.map((e) => e.rank)).toEqual([1]);
+    expect(hit.runs[0]!.retrieved[0]).toBe(decoratedPageId);
     expect(hit.imageEvidenceParticipatingQueries).toBe(1);
     expect(imageEvidenceRecallAtK('B', hit.runs, 10)).toBe(1);
 
@@ -487,6 +498,15 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect(imageEvidenceRecallAtK('B', miss.runs, 10)).toBe(0);
     expect(vl.requests).toHaveLength(0);
   }, 120_000);
+
+  it('readArmBState refuses this checkout: no page_image_analyses table, so nothing here can be arm B (#1616)', async () => {
+    // The first of `readArmBState`'s three refusals is the one reachable on
+    // this revision — the assignment and ceiling branches need #1616's table
+    // to exist — and until now only its CALL POSITION was pinned (review r2
+    // finding 5).
+    expect((await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`)).rows[0]!.exists).toBeNull();
+    await expect(readArmBState()).rejects.toThrow(/--arm B needs the candidate revision: this checkout has no page_image_analyses table \(#1616\)/);
+  }, 60_000);
 
   it('arm B REFUSES a run in which no derived evidence ever surfaced, instead of publishing text retrieval as the candidate', async () => {
     const seeded = await seedImageCorpus(USER, { maxPages: SEEDED_PAGES, imageIndex: false });

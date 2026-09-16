@@ -1152,8 +1152,12 @@ npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json
 # EN/DE controls: the ordinary text gate, ONE run per arm per language, each on that
 # arm's own revision and index state. The text corpora (`corpus/`, `corpus-de/`) are
 # markdown with no attachments, so nothing on them can be analysed and no derived chunk
-# can exist: B's and C's states differ only where images do. Capture B's anyway — the
-# report is the arm's configuration, never a copy of another arm's file.
+# can exist: B's and C's states differ only where images do. So the B-vs-C text
+# control is δ ≡ 0 BY CONSTRUCTION and that gate condition cannot fail; the pair that
+# can detect a text regression is C vs A, which is where #1617's lexical chunk
+# resolution differs (ADR-027 endpoint table, Control row erratum). Capture B's anyway
+# — the report is the arm's configuration, never a copy of another arm's file, and a
+# non-zero δ there would mean the two states differ where this recipe says they cannot.
 #   on the candidate revision, image_analysis UNASSIGNED:
 npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-C.json
 npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-C.json
@@ -1220,10 +1224,24 @@ relabel a checkout.
 
 **What is still a human deliverable.** O2's 190 image-dependent and 48
 image-negative labels come from O15's independent labelling pass: the
-fixture schema now carries `imageDependent` and `class` per label, the
-shipped fixture carries neither, and `--unblind` refuses to decide below
-O2's counts (`--allow-underpowered` scores a sheet as **tooling verification
-only**). The harness never invents a label.
+fixture schema now carries `imageDependent` and `class` per label, and the
+shipped fixture carries neither. The harness never invents a label. What the
+labelling pass reaches decides which of O2's two modes `--unblind` runs in:
+
+| image-dependent labels | `--unblind` | document |
+|---|---|---|
+| ≥ 190 | decides | full power ≈ 0.90 |
+| 144–189 (O2's hard floor) | **decides** — no flag needed | labelled **REDUCED POWER**, achieved power printed beside ≈ 0.90 |
+| < 144 | refuses | `--allow-underpowered` scores it as **TOOLING VERIFICATION ONLY**, which decides nothing |
+
+The other counts are not power-continuous and are refused at any N: 48
+image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
+197 control queries per language on every control given.
+
+**The pilot readout needs those labels too.** `judge-arms.ts --check
+--mapping` can only report `pilot: 0/30` against the shipped fixture, and
+its exit-3 stop is therefore unreachable from the CLI until O15's pass
+lands; the rule itself is unit-tested (`pilotCheck`, `pilotDiscordance`).
 
 ### The three arms and the revision each runs on
 
@@ -1254,14 +1272,23 @@ report refuses a pair whose arm, revision, corpus hash, query-set hash,
 embedder, FTS language, rerank assignment, answer model **or any recorded
 retrieval knob** differ — key by key over the `retrieval` record, so a
 `rag_fetch_width` that drifted between arms is a refusal and not a
-footnote. What one arm must carry and another must not (A's VL endpoint and
+footnote. The eleven knobs the list above names are **required** of every
+report and of every answer provenance, so "neither file recorded it" is not
+a way past that comparison. Two kinds of key are not held fixed: the
+retrieval run's own flags (`topK`, `rerankRequested`, `mmr`, …), which the
+ask path has no counterpart for, and a knob that exists on ONE REVISION
+only — arm A's case, since A runs on the legacy revision by design. Such a
+knob is recorded on the comparison (`revisionSpecificKnobs`, in the verdict
+document) rather than refused: no re-run could make it agree. Within one
+revision — B vs C — a one-sided knob is still a drift and still refused.
+What one arm must carry and another must not (A's VL endpoint and
 index identity, B's vision model, output-token ceiling and version pair) is
 a per-arm rule of the schema: a B report without the ceiling, or a C report
 with one, is not a report. The answer side is held to the same standard —
 `--unblind` re-reads every `provenance-<runId>.json` behind the sheet and
 refuses an answer run whose revision, corpus or query-set sha, hardware,
-answer model, `rag_answer_max_images` or any shared retrieval knob differs
-from its arm's retrieval report.
+answer model, `rag_answer_max_images` or any held-fixed retrieval knob
+differs from its arm's retrieval report.
 
 ### Endpoints and the decision rule
 
@@ -1277,10 +1304,13 @@ same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
 reports **none**, never 0). Controls: the EN and DE text suites (197 each
 per arm, enforced), non-inferiority — **B vs C** and, when
 `--control-a` is passed, **C vs A**; a pair whose language, FTS
-configuration, corpus sha or text embedder differs is refused. O2's page
+configuration, corpus sha or text embedder differs is refused. Of the two,
+only **C vs A** can fail: B's and C's text states are identical by
+construction (no attachments in the text corpora), so B vs C is δ ≡ 0 —
+captured, scored, and unfailable. O2's page
 constraints are conditions of the sample, not annotations: the image-
 dependent labels must sit on ≥ 45 pages with ≤ 5 per page, or the verdict
-refuses the sheet the same way it refuses the counts.
+refuses the sheet the same way it refuses a count below the hard floor.
 
 Pass requires ALL of: primary point estimate ≥ margin AND its CI excludes 0;
 every non-inferiority lower bound above its margin (image-evidence R@5 is
@@ -1301,14 +1331,19 @@ share), δ = 0.15, ρ = 0.10 give 103 × 1.4 = **144** (power 0.80 by
 construction); the pessimistic ψ = 0.25, δ = 0.12 gives **188**. With the
 design effect applied throughout, N = 190 has power ≈ 0.90 under the first
 pair and ≈ 0.80 under the second; the +5 pp point-estimate condition adds
-nothing because the test's rejection threshold is already above 0.05. A
+nothing because the test's rejection threshold is already above 0.05.
+**Both sizes decide** (erratum, PR2 2026-09-16): `--unblind` decides at
+full power from 190, decides at reduced power from the hard floor of 144
+(printing the achieved power and labelling every figure REDUCED POWER), and
+refuses below 144 — see "What is still a human deliverable" above. A
 30-pair pilot checks ψ before the full run; a pilot ψ below 0.20 stops the
 run as inconclusive by design. **The pilot is a step, not a label**: run
 `judge-arms.ts --check --mapping <mapping-<sheet>.json>` as soon as 30
 image-dependent A/B pairs are judged and it prints ONE aggregate ψ over the
 first 30 pairs **in `judgedAt` order** (never per item, never an arm) and
 exits 3 when it is below the floor — so the judge stops there instead of
-after all ≈ 714 rows. `--unblind` re-reads the same ψ and states it beside
+after all ≈ 714 rows (unreachable until O15's labels exist, as above).
+`--unblind` re-reads the same ψ and states it beside
 the verdict. The 1-point non-inferiority margin the epic
 proposed is underpowered on 394 pooled control queries (≈ 0.40 at δ = 0;
 those suites average 1.22 labels per page, so clustering barely moves it)
@@ -1323,8 +1358,9 @@ Copied from ADR-027 "Owner decisions", every item confirmed by the owner on
 2026-09-15; the ADR is the contract and this list must match it:
 
 - Primary margin **+5 pp**, CI excluding 0. N = **190** image-dependent
-  queries (floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48**
-  image-negative; controls at 197 × 2.
+  queries, hard floor **144** — 144–189 decides at reduced power and says
+  so, below 144 is refused (erratum, PR2 2026-09-16) — ≤ 5 per page, ≥ 45
+  pages, EN:DE ≈ 1:2; **48** image-negative; controls at 197 × 2.
 - Non-inferiority: **2 pp** on ordinary-text R@5/MRR (EN + DE pooled), **5 pp**
   on image-evidence R@5 — the latter an explicitly underpowered guardrail
   (≈ 0.44), printed with its CI beside the verdict.
@@ -1385,13 +1421,24 @@ writer walks every key and refuses one that would leak), a separate
 sha256). `judge-arms.ts --merge` shuffles the arms' answers into ONE sheet
 (`answers-<sheet>.jsonl`, rows in item-id order, so neither file nor
 position tells arms apart) and records every hash in `sheet-<sheet>.json`
-**before judging starts**; `--unblind` refuses a mapping that no longer
-hashes to it. The judge fills `judgments-<sheet>.jsonl` from the sheet
+**before judging starts**. Those hashes are read back: `--unblind` refuses a
+mapping or a sheet answers file that no longer hashes to the record, and
+because the operator could edit the sheet file beside the judge's file it
+also **re-derives every sheet row from the per-arm `answers-<runId>.jsonl`**
+it merged (each held to the hash the sheet and that run's own provenance
+recorded) and refuses on any differing row. `--check` runs the same
+verification whenever `sheet-<sheet>.json` is in `--out-dir`, so a rewritten
+row surfaces while judging is still under way. **Keep each run's three files
+in the artifacts directory under the run id they were written with** — that
+is where both checks read them from. The judge fills `judgments-<sheet>.jsonl` from the sheet
 alone (`{ itemId, judge, correctness: correct | partial | incorrect |
 refused, citationFaithful: yes | no | na, unsupportedClaim, notes,
 judgedAt }`) — one row per item, one judge, no adjudication field, no κ
 (there is one rater; the report says so in `singleJudgeStatement`).
-`--check` reports progress and refuses a malformed row, and with `--mapping`
+`--check` reports progress, refuses a malformed row, and closes with one
+line that says what `--unblind` will do — a duplicate or an unknown
+judgment makes it print "`--unblind` will REFUSE this sheet: …", never "0
+items still unjudged" — and with `--mapping`
 prints the pilot ψ (above). An LLM may
 pre-screen and flag; it publishes no number and fills no row — no such
 pre-screen ships, and one would live outside `judge-arms.ts`. `--unblind`
@@ -1413,7 +1460,12 @@ ADR's row shape — the judge needs to see what the answer cited — so it
 stays, and it is therefore a per-row **tell**: read it as a citation, never
 as evidence of quality, and never as a reason to guess which arm wrote a
 row. Every other arm-revealing key is refused outright by the blinding
-walk.
+walk. **What that tell can and cannot separate:** for the primary B-vs-A
+pair it separates nothing, because both arms carry the field wherever an
+image source surfaced; it is absent from EVERY arm C row by construction, so
+**C is the separable arm** — and C's correctness is a secondary endpoint
+judged by the same person. Judge C's rows as citations like any other; do
+not treat the field's absence as information about the answer.
 
 **Refusals are two different things.** The route's `refusalReason` is
 counted in `provenance-<runId>.json` and NEVER written to the judge's file.

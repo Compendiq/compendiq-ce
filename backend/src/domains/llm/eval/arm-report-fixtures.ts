@@ -3,7 +3,27 @@
  * (`arms.test.ts`, `judgments.test.ts`, `script-wiring.test.ts`). Test data
  * only; nothing in the harness imports this.
  */
-import type { ArmQueryRun, ArmRunReport, EvalArm } from './arms.js';
+import type { ArmQueryRun, ArmRunReport, EvalArm, RetrievalKnobs } from './arms.js';
+
+/**
+ * Every knob `HELD_FIXED_KNOBS` requires, at plausible values — the report
+ * schema requires them all, so a fixture that records three of them is not a
+ * report (review r2 finding 4).
+ */
+export const heldFixedKnobs = (over: Partial<RetrievalKnobs> = {}): RetrievalKnobs => ({
+  rag_ef_search: 100,
+  rag_fetch_width: 10,
+  rag_rerank_candidates: 40,
+  rag_context_chars_per_page: 6000,
+  rag_pin_identifiers: true,
+  rag_confidence_threshold: 0.35,
+  rag_confidence_threshold_rerank: 0.2,
+  rag_ranking_prior_weight: 0.1,
+  rag_mmr_enabled: false,
+  rag_mmr_lambda: 0.7,
+  rag_answer_max_images: 0,
+  ...over,
+});
 
 export function armRun(over: Partial<ArmQueryRun> & { queryId: string }): ArmQueryRun {
   return {
@@ -44,7 +64,7 @@ export function armReport(arm: EvalArm, over: Partial<ArmRunReport> = {}): ArmRu
     imageIndexIdentity: arm === 'A' ? 'eval-image-embedding:vl@http://vl/v1#2048' : null,
     imageAnalysisMaxOutputTokens: arm === 'B' ? 8192 : null,
     imageAnalysisVersions: arm === 'B' ? { prompt: 1, schema: 1 } : null,
-    retrieval: { rag_ef_search: 100, rag_fetch_width: 10, rag_answer_max_images: 0 },
+    retrieval: heldFixedKnobs(),
     queries: runs.length,
     vectorParticipatingQueries: runs.length,
     rerankParticipatingQueries: 0,
