@@ -418,7 +418,10 @@ function registerAllWorkers(): void {
   // Image analysis worker (ADR-027 D13, #1616): one bounded batch per sync
   // cadence — sweep, reconcile, then analyze when a vision model is assigned.
   // This repeat is the worker's ONE scheduled trigger (sync does not kick it;
-  // the interval worker below stands in when BullMQ is off). Concurrency 1;
+  // the interval worker below stands in when BullMQ is off). The price of
+  // one cadence is latency: a page a sync writes waits up to one sync
+  // interval for its first reconcile — two when this repeat and the sync's
+  // fire together and the sync runs for minutes past it. Concurrency 1;
   // the `worker:lock:image-analysis` lease serializes it with Run Now
   // (#1618). Per-image failures fail the job with the batch's partial counts
   // and never a provider body; a lost lease does too.

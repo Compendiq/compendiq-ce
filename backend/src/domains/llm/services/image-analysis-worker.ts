@@ -120,9 +120,9 @@ export interface ImageAnalysisBatchResult {
   processed: number;
   /** Rows the sweep's inverse flipped back to `analyzed` without a call. */
   reused: number;
-  /** Rows skipped: reconcile skips (policy, format, missing) plus rows whose bytes moved or became unreadable before their call. */
+  /** Rows skipped: reconcile skips (policy, format, missing) plus rows whose bytes moved or were absent before their call. */
   skipped: number;
-  /** Rows that failed in this batch (every class; `terminal` counts apart). */
+  /** Rows that failed in this batch (every class, including `unavailable:bytes`; `terminal` counts apart). */
   failed: number;
   /** Rows the attempt cap moved to `failed_terminal` in this batch. */
   terminal: number;
@@ -198,8 +198,8 @@ let running = false;
 let storeAbsentLogged = false;
 
 /**
- * Protected entrypoint shared by BullMQ, the post-sync kick, the legacy
- * interval worker and (#1618) Run Now. One bounded batch.
+ * Protected entrypoint shared by BullMQ's repeat, the legacy interval worker
+ * and (#1618) Run Now. One bounded batch.
  */
 export async function runImageAnalysisBatch(
   opts: RunImageAnalysisBatchOptions = {},
@@ -469,8 +469,36 @@ async function analyzeWorkRows(
     );
     // Fresh check after the file I/O: the lease may have gone while reading.
     await assertLockHeld();
-    if (intake.kind !== 'ok') {
-      // Unreadable now (attachment cleaned while its reference stayed in the
+    if (intake.kind === 'unavailable') {
+      // The file is there but could not be read right now (EACCES after a
+      // restore, EIO, a network volume blinking): a fact about the disk, not
+      // the image, so it is charged like any other `unavailable` — one
+      // attempt, backoff, never terminal (D8) — and re-read when due. Not
+      // `skipped (missing)`: that state is left for a confirmed absence,
+      // because nothing short of a page writer revisits it. The row records
+      // the identity it failed under, as every failed row does, or the next
+      // sweep would return it "stale" and due at once, every batch.
+      const failed = await query<{ n: number }>(
+        `WITH w AS (
+           UPDATE page_image_analyses a
+              SET status = 'failed', attempts = a.attempts + 1, next_attempt_at = ${BACKOFF_SQL},
+                  error = 'unavailable:bytes', payload = NULL, updated_at = NOW(),
+                  provider_id = $6, model = $7, base_url = $8,
+                  identity_hash = $3, prompt_version = $4, schema_version = $5
+            WHERE a.id = $1 AND a.content_hash = $2
+              AND NOT (${validitySql('a', 3, 4, 5)})
+            RETURNING a.id
+         )
+         SELECT COUNT(*)::int AS n FROM w`,
+        [row.id, row.content_hash, ...validity, ...identityColumns],
+      );
+      if ((failed.rows[0]?.n ?? 0) > 0) result.failed++;
+      else result.skipped++;
+      logger.warn({ err: intake.error, rowId: row.id, pageId: row.page_id }, 'Image analysis: attachment could not be read — row failed (unavailable:bytes)');
+      continue;
+    }
+    if (intake.kind === 'skipped') {
+      // Absent now (attachment cleaned while its reference stayed in the
       // body, a cache evicted) or no longer a raster: the row leaves the work
       // window as `skipped` with the intake's reason, hash and format by the
       // reconcile's convention, attempt budget untouched and no call spent.

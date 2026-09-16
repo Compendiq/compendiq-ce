@@ -169,7 +169,7 @@ erDiagram
         int analysis_version "+1 per successful payload write"
         int attempts "failures since the last reset: success, Retry failed, new bytes, the sweep returning a failed/terminal row whose identity or versions changed, or the sweep re-opening a truncated row under a raised ceiling; deterministic classes go terminal at 5"
         timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
-        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling); admin-only"
+        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling; unavailable:bytes = the file was there but unreadable); admin-only"
     }
 
     page_relationships {

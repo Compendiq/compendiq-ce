@@ -4437,7 +4437,13 @@ not evidence that a sixth will differ, and the alternative was one vision
 call per such image per day, forever. `unavailable` never goes terminal (it
 is a fact about the provider, not the image), but it does count in
 `attempts`, so an outage shortens a row's deterministic budget — the
-direction that stops spending, and **Retry failed** restores it. Every 4xx
+direction that stops spending, and **Retry failed** restores it. The same
+class carries the one failure that is not about the provider at all: a work
+row whose file is there but cannot be READ (`EACCES`, `EIO`, `ESTALE`) is
+written `error = 'unavailable:bytes'` — the only non-numeric suffix — with
+no call spent, an attempt charged, backoff and no terminal state, because
+the disk being unreadable now is no evidence about the image either (D13's
+failure table). Every 4xx
 **outside** D8's `rejected` list — 401, 402, 403, 404 by name and every
 other 4xx by D8's default arm — is **provider-level**: `unavailable` for the
 row it hit, `error = 'unavailable:<status>'`, and additionally **ends the
@@ -4586,7 +4592,8 @@ CREATE TABLE IF NOT EXISTS page_image_analyses (
   next_attempt_at  TIMESTAMPTZ,
   -- Failure class (D8), with the number the class needs read back: the HTTP status when one was
   -- received ('rejected:413', 'unavailable:404'), the overrun ceiling for 'truncated:8192', bare
-  -- otherwise ('malformed'). Admin-only; never the provider body.
+  -- otherwise ('malformed'). One non-numeric suffix: 'unavailable:bytes' for a work row whose file
+  -- was there but could not be read (EACCES, EIO). Admin-only; never the provider body.
   error            TEXT,
   analyzed_at      TIMESTAMPTZ,
   created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -4741,11 +4748,14 @@ constant changes: an `analyzed` row that then fails the predicate (stale
 between an identity change and the next sweep) counts as `pending` here,
 which the sweep then makes literal.
 The states are disjoint by construction, evaluated in this order, first
-match wins: `none` (no rows); `complete` (≥1 valid row, every row valid or
-`skipped`); `partial` (≥1 valid row, and ≥1 row `pending`, `failed` or
-`failed_terminal`); `pending` (no valid row, ≥1 `pending` row); `failed`
+match wins: `none` (no rows); `complete` (≥1 valid row, every other row a
+policy or format skip); `partial` (≥1 valid row, and ≥1 row `pending`,
+`failed`, `failed_terminal` or `skipped (missing)` — a missing file is a
+gap in the page's evidence, not a verdict on it, so the issue's "report
+partial" holds for it); `pending` (no valid row, ≥1 `pending` row); `failed`
 (no valid row, no `pending` row, ≥1 `failed` or `failed_terminal` row);
-`skipped` (only `skipped` rows). Orthogonally, **embedding readiness** =
+`skipped` (only `skipped` rows, `missing` included — nothing is in the work
+window for them). Orthogonally, **embedding readiness** =
 `NOT pages.embedding_dirty`; "analysis complete, text embedding pending" is
 `complete AND embedding_dirty` *(epic)*. The card counts rows by status
 (terminal apart from failed) and skip reason, the last run, the retained
@@ -4901,7 +4911,8 @@ Enumerated so #1616 and #1619 can exercise each:
 |---|---|
 | Page body edited mid-analysis | Writer raises `image_analysis_dirty` (and `embedding_dirty`) after the claim; the in-flight row commit still passes (bytes unchanged) or fails the `content_hash` predicate (bytes replaced) — the next reconcile settles the rows. A title, caption or heading edit changes no row: the recompose rebuilds the context lines from the current page (D9.9). |
 | Attachment bytes replaced mid-analysis | Reconcile rewrote `content_hash` and nulled the payload; the worker's commit updates 0 rows and is discarded. |
-| Work row's bytes unreadable at call time (attachment cleaned while its reference stayed in `body_html`, cache evicted) | The analyze step writes the row `skipped (missing)` — or the intake's other reason when the bytes read but are no longer a raster — under the `content_hash` commit predicate: out of the work window, no attempt charged, no call spent, no page bump (a `pending`/`failed` row composes nothing). The reconcile keeps such a row (an unreadable file is not a deletion) and, when a writer raises the page flag with the bytes back, re-pends it as it does any `skipped` row whose bytes read. Bytes that read but hash differently from the row re-raise the page flag instead, and the reconcile re-pends under the new hash. Without this, ≥ `image_analysis_batch_size` such rows filled every batch's window forever (#1626 review r1). |
+| Work row's bytes ABSENT at call time (`ENOENT`: attachment cleaned while its reference stayed in `body_html`, cache evicted) | The analyze step writes the row `skipped (missing)` — or the intake's other reason when the bytes read but are no longer a raster — under the `content_hash` commit predicate: out of the work window, no attempt charged, no call spent, no page bump (a `pending`/`failed` row composes nothing). The reconcile keeps such a row (an absent file is not a deletion) and, when a writer raises the page flag with the bytes back, re-pends it as it does any `skipped` row whose bytes read. Bytes that read but hash differently from the row re-raise the page flag instead, and the reconcile re-pends under the new hash. Without this, ≥ `image_analysis_batch_size` such rows filled every batch's window forever (#1626 review r1). |
+| Work row's bytes UNREADABLE at call time for any other reason (`EACCES` after a restore, `EIO`, `ESTALE`, a network volume blinking) | A fact about the disk, not the image, so it is D8's `unavailable` class: the row → `failed (unavailable:bytes)`, `attempts + 1`, backoff, never terminal, no call spent; the worker re-reads it when due and the sweep, **Retry failed** and new bytes reach it like any failed row. Never `skipped (missing)` — that state has no re-read short of a page writer, and a batch's worth of recoverable rows per cycle would park behind it. At reconcile time the same read failure throws (D6.2): the page stays dirty and the next cycle re-enumerates, so a transient never writes a `missing` row for a file that is there. The store's reader answers `null` for `ENOENT` alone and throws for the rest; the answer path (`retrieved-images.ts`) catches and fails open (#1626 review r2). |
 | Assignment changed mid-batch | The retained identity and the resolved pair are read once per batch (D13); rows committed in that batch carry the identity read at its start, fail D5's validity predicate under the new retained one, and the next batch's sweep re-pends them (payloads kept) and drops their chunks; the worker re-analyzes them under the new identity. One extra pass bounded by the batch size; nothing stale is composed. |
 | Provider `base_url` edited (no assignment PUT) | The resolved identity no longer equals the retained one: the sweep and reconcile run, the analyze step is skipped with `reason: 'identity_drift'`, no row is written, and every valid row stays composed — a pause, not a purge. The card names the drift; the operator's **Re-check** (or a re-save of the assignment) re-probes the moved endpoint and, on `true`, adopts the new identity through D7 with the scope disclosed by the preview route first. Reverting the URL resumes without a call. There is no batch on which a row is written under a hash the next sweep disagrees with (D13). |
 | Prompt/schema version bumped by a deploy, or the identity replaced | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. In the same step every `failed` and `failed_terminal` row recorded under the old identity or versions becomes `failed, attempts = 0, next_attempt_at = NOW()`: a fresh budget, due at once, terminal or not. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |

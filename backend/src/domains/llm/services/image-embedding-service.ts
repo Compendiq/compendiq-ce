@@ -268,6 +268,13 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
     // Intake (bytes, sniff, bounds, hash) is the shared module under #1616's
     // ownership (ADR-027); the skip taxonomy is unchanged.
     const intake = await intakePageImage(page, ref);
+    if (intake.kind === 'unavailable') {
+      // The legacy leg never distinguished a read failure from an absent
+      // file; it keeps the row (see the skip rules above) and counts a miss.
+      logger.warn({ err: intake.error, pageId, key: ref.key }, 'Image embedding: attachment could not be read — skipped');
+      skipped.missing++;
+      continue;
+    }
     if (intake.kind === 'skipped') {
       if (intake.reason === 'missing') skipped.missing++;
       else if (intake.reason === 'too_large') skipped.tooLarge++;
@@ -333,8 +340,8 @@ export async function embedPageImages(pageId: number): Promise<ImageEmbedOutcome
   // Reconcile against what the body REFERENCES, not against what this pass
   // managed to embed. The two differ in three ways, and each is deliberate:
   //
-  //  - a **skipped** image keeps its row. `resolveAttachmentBytes` answers the
-  //    same `null` for "the file is gone" and for "the read failed", so
+  //  - a **skipped** image keeps its row. This leg counts "the file is gone"
+  //    and "the read failed" as the same `missing` skip (the loop above), so
   //    deleting on a miss would let one bad disk moment empty a page's index
   //    entries — and a stale row is recoverable (the next sync re-downloads the
   //    file, or the answer path degrades on a load it cannot make) where a

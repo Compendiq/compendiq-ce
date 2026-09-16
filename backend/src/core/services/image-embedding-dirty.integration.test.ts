@@ -384,8 +384,8 @@ describe.skipIf(!dbAvailable)('image_embedding_dirty writers (#1115 P2)', () => 
       // Not "so reconcile deletes the rows" (review r3): reconcile keeps its
       // keep-set from the page's BODY, and dropping the cached files does not
       // touch `body_html`. So the images come back as `missing` skips and
-      // their rows are KEPT — deliberately, because `resolveAttachmentBytes`
-      // answers the same null for "gone" and for "the read failed". What the
+      // their rows are KEPT — deliberately, because the legacy leg counts
+      // "gone" and "the read failed" as the same miss. What the
       // raise buys is the re-read: on the sync path the bytes are about to be
       // re-downloaded, possibly changed, and a page nobody re-visits would
       // keep describing the old ones.

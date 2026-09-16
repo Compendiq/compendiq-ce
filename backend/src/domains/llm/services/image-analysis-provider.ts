@@ -133,7 +133,9 @@ export function computeIdentityHash(triple: ImageAnalysisIdentityTriple): string
 /**
  * The `page_image_analyses.error` encoding (D13): the class with the number
  * it needs read back — `truncated:8192`, `rejected:413`, `unavailable:405` —
- * bare otherwise (`malformed`). Never the provider body.
+ * bare otherwise (`malformed`). Never the provider body. The worker writes
+ * one value this encoder never produces, `unavailable:bytes`, for a work row
+ * whose file was there but could not be read (no call was made).
  */
 export function encodeImageAnalysisError(failure: Extract<AnalyzeImageResult, { ok: false }>): string {
   if (failure.class === 'truncated' && failure.ceiling !== undefined) {

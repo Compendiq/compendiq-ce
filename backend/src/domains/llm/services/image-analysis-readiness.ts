@@ -10,7 +10,13 @@
  * literal.
  *
  * States are disjoint by construction, evaluated in this order, first match
- * wins: `none`, `complete`, `partial`, `pending`, `failed`, `skipped`.
+ * wins: `none`, `complete`, `partial`, `pending`, `failed`, `skipped`. A
+ * `skipped (missing)` row is a GAP, not a skip, for the first two: the page
+ * references evidence the index does not hold, so beside a valid row it
+ * reads `partial` ("keep failed/missing analyses pending and report partial",
+ * #1616) — where a policy or format skip (`external`, `capped`,
+ * `unsupported`, …) is a verdict and leaves `complete` alone. Alone it is
+ * still `skipped`: nothing is in the work window for it.
  * Orthogonally, embedding readiness is `NOT pages.embedding_dirty`: "analysis
  * complete, text embedding pending" is `complete AND embedding_dirty`.
  */
@@ -35,24 +41,31 @@ export const IMAGE_ANALYSIS_READINESS_STATES: readonly ImageAnalysisReadiness[] 
   'skipped',
 ];
 
+/** What readiness needs from a row: the validity predicate's columns plus the skip reason. */
+export interface ReadinessRow extends ValidityRow {
+  skip_reason: string | null;
+}
+
 /** The pure function. `rows` are the page's `page_image_analyses` rows. */
 export function computeImageAnalysisReadiness(
-  rows: readonly ValidityRow[],
+  rows: readonly ReadinessRow[],
   params: ValidityParams,
 ): ImageAnalysisReadiness {
   if (rows.length === 0) return 'none';
   let valid = 0;
   let pending = 0;
   let failed = 0;
+  let missing = 0;
   for (const row of rows) {
     if (isValidAnalysisRow(row, params)) valid++;
-    else if (row.status === 'skipped') continue;
-    else if (row.status === 'failed' || row.status === 'failed_terminal') failed++;
+    else if (row.status === 'skipped') {
+      if (row.skip_reason === 'missing') missing++;
+    } else if (row.status === 'failed' || row.status === 'failed_terminal') failed++;
     // `pending`, and an `analyzed` row that fails the predicate (stale until
     // the sweep re-pends it), both read as pending.
     else pending++;
   }
-  if (valid > 0 && pending + failed === 0) return 'complete';
+  if (valid > 0 && pending + failed + missing === 0) return 'complete';
   if (valid > 0) return 'partial';
   if (pending > 0) return 'pending';
   if (failed > 0) return 'failed';
@@ -71,8 +84,8 @@ export async function readPageImageAnalysisReadiness(pageId: number): Promise<Pa
   const [retained, page, rows] = await Promise.all([
     getRetainedImageAnalysisIdentity(),
     query<{ embedding_dirty: boolean }>(`SELECT embedding_dirty FROM pages WHERE id = $1`, [pageId]),
-    query<ValidityRow>(
-      `SELECT status, identity_hash, prompt_version, schema_version
+    query<ReadinessRow>(
+      `SELECT status, skip_reason, identity_hash, prompt_version, schema_version
          FROM page_image_analyses WHERE page_id = $1`,
       [pageId],
     ),

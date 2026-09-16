@@ -28,6 +28,33 @@ import {
   type ImageAnalysisIdentity,
   type ImageAnalysisPayload,
 } from './image-analysis-provider.js';
+import type * as AttachmentStore from '../../../core/services/attachment-store.js';
+import type { ResolveAttachmentBytesInput } from '../../../core/services/attachment-store.js';
+
+/**
+ * One seam BELOW the intake: `resolveAttachmentBytes` raising for a key, as
+ * the store does for `EACCES`/`EIO`/`ESTALE`. A `chmod 000` would be the real
+ * thing but reads fine as root (Docker CI), so the fault is injected where
+ * the store's contract hands it over; the store's own suite pins that
+ * contract against a real mode-bit refusal.
+ */
+const storeFaults = vi.hoisted(() => new Map<string, NodeJS.ErrnoException>());
+vi.mock('../../../core/services/attachment-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AttachmentStore>();
+  return {
+    ...actual,
+    resolveAttachmentBytes: async (input: ResolveAttachmentBytesInput) => {
+      const fault = storeFaults.get(input.key);
+      if (fault) throw fault;
+      return actual.resolveAttachmentBytes(input);
+    },
+  };
+});
+function eacces(key: string): NodeJS.ErrnoException {
+  const err = new Error(`EACCES: permission denied, open '${key}'`) as NodeJS.ErrnoException;
+  err.code = 'EACCES';
+  return err;
+}
 
 /**
  * ADR-027 D13 — the worker against real Postgres (and real Redis where one is
@@ -210,6 +237,7 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
   beforeEach(async () => {
     await truncateAllTables();
     invalidateRagImageIntakeCache();
+    storeFaults.clear();
     if (redis) await redis.flushDb();
     const prov = await query<{ id: string }>(
       `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, default_model)
@@ -612,6 +640,76 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     const rows = await rowsFor(pageId);
     expect(rows[0]).toMatchObject({ status: 'skipped', skip_reason: 'unsupported', attempts: 0, next_attempt_at: null });
     expect(rows[0]!.content_hash).toHaveLength(64);
+  });
+
+  it('a file that is there but unreadable at call time fails the row (unavailable:bytes) with backoff — never skipped (missing) — and is re-read when due', async () => {
+    const retained = identityFor('http://vision/v1');
+    await retain(retained);
+    const { pageId } = await seedPending(['locked.png']);
+    const [seeded] = await rowsFor(pageId);
+    await query(`UPDATE pages SET image_analysis_revision = 0, embedding_dirty = FALSE WHERE id = $1`, [pageId]);
+    storeFaults.set('locked.png', eacces('locked.png'));
+    const c = client();
+    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+
+    const first = await run();
+
+    // Charged like any `unavailable`: one attempt, backoff, no call, no bump,
+    // no flag — and the row keeps the hash and stays out of `skipped`.
+    expect(first).toMatchObject({ processed: 0, skipped: 0, failed: 1, terminal: 0 });
+    expect(c.calls).toHaveLength(0);
+    let [row] = await rowsFor(pageId);
+    expect(row).toMatchObject({ status: 'failed', error: 'unavailable:bytes', attempts: 1, skip_reason: null, content_hash: seeded!.content_hash });
+    expect(row!.next_attempt_at!.getTime()).toBeGreaterThan(Date.now());
+    expect(await pageState(pageId)).toEqual({ revision: 0, embeddingDirty: false, analysisDirty: false });
+
+    // Not due: the next batch leaves it alone.
+    expect(await run()).toMatchObject({ failed: 0, skipped: 0 });
+    expect((await rowsFor(pageId))[0]!.attempts).toBe(1);
+
+    // Never terminal (D8): at the cap it is still `failed` and still due later.
+    await query(`UPDATE page_image_analyses SET attempts = $2, next_attempt_at = NOW() WHERE id = $1`, [row!.id, IMAGE_ANALYSIS_MAX_ATTEMPTS - 1]);
+    expect(await run()).toMatchObject({ failed: 1, terminal: 0 });
+    [row] = await rowsFor(pageId);
+    expect(row).toMatchObject({ status: 'failed', attempts: IMAGE_ANALYSIS_MAX_ATTEMPTS, error: 'unavailable:bytes' });
+    expect(c.calls).toHaveLength(0);
+
+    // The fault clears (permissions fixed, mount back): the due row is read
+    // again and analyzed with no writer having touched the page.
+    storeFaults.clear();
+    await query(`UPDATE page_image_analyses SET next_attempt_at = NOW() WHERE id = $1`, [row!.id]);
+    expect(await run()).toMatchObject({ processed: 1, failed: 0 });
+    expect(c.calls).toHaveLength(1);
+    [row] = await rowsFor(pageId);
+    expect(row).toMatchObject({ status: 'analyzed', attempts: 0, error: null });
+    expect(await pageState(pageId)).toMatchObject({ revision: 1, embeddingDirty: true });
+  });
+
+  it('a file that is there but unreadable at reconcile time leaves the page dirty for the next cycle and writes no missing row', async () => {
+    const retained = identityFor('http://vision/v1');
+    await retain(retained);
+    const pageId = await seedPage('<img src="/api/attachments/1/locked.png"><img src="/api/attachments/1/ok.png">');
+    await writeAttachment(pageId, 'locked.png', png(4, 4));
+    await writeAttachment(pageId, 'ok.png', png(5, 4));
+    storeFaults.set('locked.png', eacces('locked.png'));
+    const c = client();
+    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+
+    const first = await run();
+
+    // D6.2: the pass threw, the flag is back, and nothing durable describes
+    // a file that is merely unreadable right now.
+    expect(first).toMatchObject({ reconciledPages: 1, processed: 0, skipped: 0, failed: 0 });
+    expect(await rowsFor(pageId)).toEqual([]);
+    expect((await pageState(pageId)).analysisDirty).toBe(true);
+    expect(c.calls).toHaveLength(0);
+
+    storeFaults.clear();
+    const second = await run();
+
+    expect(second).toMatchObject({ reconciledPages: 1, processed: 2, skipped: 0 });
+    expect((await rowsFor(pageId)).map((r) => [r.attachment_key, r.status])).toEqual([['locked.png', 'analyzed'], ['ok.png', 'analyzed']]);
+    expect((await pageState(pageId)).analysisDirty).toBe(false);
   });
 
   it.skipIf(!redis)('lease loss: the batch stops before its next write, committed rows stand, the result says so', async () => {

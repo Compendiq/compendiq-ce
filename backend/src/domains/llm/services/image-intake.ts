@@ -54,6 +54,16 @@ export type ImageIntakeResult =
       reason: ImageIntakeSkipReason;
       /** Present when bytes were read (everything but `missing`). */
       sha256?: string;
+    }
+  | {
+      /**
+       * The file could not be read for a reason other than its absence
+       * (`EACCES`, `EIO`, `ESTALE`, …): a fact about the disk right now, not
+       * about the corpus, so no skip reason fits and nothing durable should
+       * be recorded from it — the caller retries or leaves the page dirty.
+       */
+      kind: 'unavailable';
+      error: unknown;
     };
 
 const MIME_BY_FORMAT: Record<ImageFormat, string> = {
@@ -69,22 +79,28 @@ export function mimeTypeForImageFormat(format: ImageFormat): string {
 }
 
 /**
- * Read, sniff and bound one referenced image. Never throws for anything the
- * corpus can contain — a missing file, a format nothing can read, a header
- * over a ceiling are all outcomes; a filesystem error other than "absent"
- * surfaces from `resolveAttachmentBytes` as it always has.
+ * Read, sniff and bound one referenced image. Never throws: a missing file,
+ * a format nothing can read, a header over a ceiling are all `skipped`
+ * outcomes, and a read failure that is not an absence is `unavailable` —
+ * distinguished because the first three are verdicts about the corpus and
+ * the last is a transient of the disk (#1626 review r2).
  */
 export async function intakePageImage(
   page: ImageIntakePage,
   ref: PageImageReference,
 ): Promise<ImageIntakeResult> {
-  const bytes = await resolveAttachmentBytes({
-    pageId: page.id,
-    confluenceId: page.confluence_id,
-    pageSource: page.source,
-    source: ref.source,
-    key: ref.key,
-  });
+  let bytes;
+  try {
+    bytes = await resolveAttachmentBytes({
+      pageId: page.id,
+      confluenceId: page.confluence_id,
+      pageSource: page.source,
+      source: ref.source,
+      key: ref.key,
+    });
+  } catch (error) {
+    return { kind: 'unavailable', error };
+  }
   if (!bytes) return { kind: 'skipped', reason: 'missing' };
 
   const sha256 = createHash('sha256').update(bytes.bytes).digest('hex');

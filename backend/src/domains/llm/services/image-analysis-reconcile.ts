@@ -15,9 +15,12 @@
  *    attempts = 0, next_attempt_at = NULL, error = NULL` — new bytes are a new
  *    image with a fresh attempt budget, whatever the old bytes did (a
  *    `failed_terminal` row leaves the terminal state here);
- *  - an UNREADABLE file is not a deletion: an existing row is left untouched,
- *    and a `missing` skip is recorded only for a reference that has never had
- *    a row (the lazy re-fetch writer re-raises the flag when the bytes arrive);
+ *  - an ABSENT file (`ENOENT`) is not a deletion: an existing row is left
+ *    untouched, and a `missing` skip is recorded only for a reference that
+ *    has never had a row (the lazy re-fetch writer re-raises the flag when
+ *    the bytes arrive). A file that is there but cannot be read (`EACCES`,
+ *    `EIO`, …) is neither: the pass throws and the page stays dirty for the
+ *    next cycle, because no row state describes "ask the disk again";
  *  - external keys are `skipped (external)` while `rag_image_index_external`
  *    is off, the first `rag_images_per_page_max` survivors are kept and the
  *    rest are `skipped (capped)`; a policy change flips rows in place.
@@ -182,6 +185,13 @@ async function reconcileClaimedPage(
     }
     kept++;
     const intake = await intakePageImage(page, ref);
+    if (intake.kind === 'unavailable') {
+      // Not absent, not readable: no desired state can be written for this
+      // reference, and writing `skipped (missing)` would park it behind a
+      // state no re-read revisits. D6.2's path is the right one — the pass
+      // throws, the flag is re-raised and the next cycle re-enumerates.
+      throw new Error(`Image bytes unavailable for ${ref.source}:${ref.key} on page ${page.id}`, { cause: intake.error });
+    }
     if (intake.kind === 'ok') {
       desired.set(key, {
         ref,

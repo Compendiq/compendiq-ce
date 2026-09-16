@@ -1,18 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { computeImageAnalysisReadiness } from './image-analysis-readiness.js';
+import { computeImageAnalysisReadiness, type ReadinessRow } from './image-analysis-readiness.js';
 import { IMAGE_ANALYSIS_PROMPT_VERSION, IMAGE_ANALYSIS_SCHEMA_VERSION } from './image-analysis-provider.js';
-import type { ValidityRow } from './image-analysis-validity.js';
 
 const RETAINED = 'hash-a';
-function row(status: string, opts: { hash?: string; prompt?: number; schema?: number } = {}): ValidityRow {
+function row(status: string, opts: { hash?: string; prompt?: number; schema?: number; reason?: string } = {}): ReadinessRow {
   return {
     status,
+    skip_reason: opts.reason ?? (status === 'skipped' ? 'unsupported' : null),
     identity_hash: opts.hash ?? RETAINED,
     prompt_version: opts.prompt ?? IMAGE_ANALYSIS_PROMPT_VERSION,
     schema_version: opts.schema ?? IMAGE_ANALYSIS_SCHEMA_VERSION,
   };
 }
-const under = (rows: ValidityRow[], hash: string | null = RETAINED) =>
+const under = (rows: ReadinessRow[], hash: string | null = RETAINED) =>
   computeImageAnalysisReadiness(rows, { identityHash: hash });
 
 describe('computeImageAnalysisReadiness (ADR-027, pure)', () => {
@@ -20,13 +20,22 @@ describe('computeImageAnalysisReadiness (ADR-027, pure)', () => {
     expect(under([])).toBe('none');
   });
 
-  it('is complete when every row is valid or skipped, with at least one valid', () => {
+  it('is complete when every row is valid or skipped by policy or format, with at least one valid', () => {
     expect(under([row('analyzed'), row('skipped')])).toBe('complete');
+    expect(under([row('analyzed'), row('skipped', { reason: 'capped' }), row('skipped', { reason: 'external' })])).toBe('complete');
   });
 
   it('is partial when a valid row sits beside pending or failed work', () => {
     expect(under([row('analyzed'), row('pending')])).toBe('partial');
     expect(under([row('analyzed'), row('failed_terminal')])).toBe('partial');
+  });
+
+  it('is partial, not complete, when a valid row sits beside an image whose bytes are missing', () => {
+    // "keep failed/missing analyses pending and report partial" (#1616): the
+    // page references evidence the index does not hold. A page that is
+    // ONLY missing rows still reads skipped — nothing is in the window.
+    expect(under([row('analyzed'), row('skipped', { reason: 'missing' })])).toBe('partial');
+    expect(under([row('skipped', { reason: 'missing' })])).toBe('skipped');
   });
 
   it('is pending before failed: any pending row wins over failures when nothing is valid', () => {

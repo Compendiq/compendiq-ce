@@ -408,12 +408,16 @@ it consumes are #1615's and reach it through one seam:
   to "no derived rows" while migration 115 is absent.
 - **`image-intake.ts`** — the raster intake both image pipelines share
   (resolve bytes, sniff, `MAX_IMAGE_BYTES` / `MAX_IMAGE_DIMENSION`, sha256),
-  moved out of `image-embedding-service.ts` under #1616's ownership.
+  moved out of `image-embedding-service.ts` under #1616's ownership. Its
+  outcomes separate the corpus from the disk: `skipped` (absent, unsupported,
+  oversized, …) is a verdict, `unavailable` is a read failure that is NOT an
+  absence (`EACCES`, `EIO`, …) and carries no skip reason.
 - **`image-analysis-reconcile.ts`** — D4/D6.2: claim `image_analysis_dirty`
   BEFORE enumerating, upsert `page_image_analyses` rows from the body's
   current references (new → `pending`; changed hash → `pending`, fresh
-  budget; gone → deleted; unreadable → row kept, `missing` only when never
-  rowed; policy → `skipped`), and bump `image_analysis_revision` +
+  budget; gone → deleted; absent file → row kept, `missing` only when never
+  rowed; unreadable file → the pass throws and the page stays dirty for the
+  next cycle; policy → `skipped`), and bump `image_analysis_revision` +
   `embedding_dirty` in one statement only when the VALID derived set changed
   (an `analyzed` row deleted, re-pended or skipped — D6.3); a new
   `pending`/`skipped` row bumps nothing.
@@ -421,9 +425,10 @@ it consumes are #1615's and reach it through one seam:
   #1612 pattern (`worker:lock:image-analysis`, 600 s / 60 s, `assertLockHeld`
   before every write, the last-run line included). Step 1 sweep (+ inverse
   `reused`, stale-failed return, `truncated:<ceiling>` re-open), step 2
-  reconcile, step 3 analyze behind the three-term gate; a work row whose
-  bytes are unreadable at call time → `skipped (missing)`, out of the work
-  window; backoff `LEAST(15 min × 2^attempts, 24 h)`,
+  reconcile, step 3 analyze behind the three-term gate; a work row whose file
+  is ABSENT at call time → `skipped (missing)`, out of the work window, one
+  that is there but unreadable → `failed (unavailable:bytes)` with an attempt
+  charged and never terminal; backoff `LEAST(15 min × 2^attempts, 24 h)`,
   `IMAGE_ANALYSIS_MAX_ATTEMPTS` = 5, provider-status and uniform-rejection
   stops with re-probe; `retryFailedImageAnalyses`, `reanalyzeAllImages` (409
   under the one-active-run rule) and `readImageAnalysisLastRun` for #1618's

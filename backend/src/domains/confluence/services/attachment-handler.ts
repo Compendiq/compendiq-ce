@@ -691,8 +691,8 @@ export async function cleanPageAttachments(pageId: string): Promise<void> {
   // `embedPageImages` reconciles against the page's BODY, which this function
   // never touches, so every image comes back as a `missing` skip whose row is
   // deliberately kept — a stale row is recoverable, a deleted one costs a
-  // re-embed, and `resolveAttachmentBytes` cannot tell "gone" from "the read
-  // failed". The re-read is the point: on the sync path these bytes are about
+  // re-embed, and the legacy leg counts "gone" and "the read failed" as the
+  // same miss. The re-read is the point: on the sync path these bytes are about
   // to be downloaded again and may differ, and on a delete path the page row
   // (and its rows, by CASCADE) is going anyway.
   await markPageImagesDirtyByAttachmentKey(pageId);
