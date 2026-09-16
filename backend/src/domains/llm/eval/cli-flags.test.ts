@@ -6,6 +6,12 @@ import {
   EVAL_KNOWN_FLAGS,
   EVAL_USAGE,
   EVAL_VALUELESS_FLAGS,
+  ARM_ANSWERS_KNOWN_FLAGS,
+  ARM_ANSWERS_USAGE,
+  ARM_ANSWERS_VALUELESS_FLAGS,
+  JUDGE_KNOWN_FLAGS,
+  JUDGE_USAGE,
+  JUDGE_VALUELESS_FLAGS,
 } from './cli-flags.js';
 
 /**
@@ -145,5 +151,25 @@ describe('the retrieval eval CLI surface (#1114)', () => {
     // The one default a reader must not have to infer — deriving it from
     // --lang would silently re-measure every recorded baseline.
     expect(EVAL_USAGE).toMatch(/default: simple/);
+  });
+});
+
+describe('the #1614 PR2 surfaces are held to the same discipline', () => {
+  it.each([
+    ['run-arm-answers.ts', ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, ARM_ANSWERS_USAGE],
+    ['judge-arms.ts', JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS, JUDGE_USAGE],
+  ] as const)('%s: every switch is a flag, every flag is documented, and the = spelling is refused on switches', (_script, known, valueless, usage) => {
+    for (const flag of valueless) expect(known).toContain(flag);
+    for (const flag of known) expect(usage).toContain(`--${flag}`);
+    for (const flag of valueless) {
+      expect(() => assertKnownFlags([`--${flag}=true`], known, usage, valueless)).toThrow(/takes no value/i);
+    }
+    expect(() => assertKnownFlags(['--no-such-flag'], known, usage, valueless)).toThrow(/--no-such-flag/);
+  });
+
+  it('the eval surface documents the arm axis and its B/C refusal of the VL variables', () => {
+    expect(EVAL_USAGE).toMatch(/--arm A\|B\|C/);
+    expect(EVAL_USAGE).toMatch(/refuses EVAL_IMAGE_EMBEDDING_\*/);
+    expect(EVAL_USAGE).toContain('retrieval-eval-arm-<A|B|C>.json');
   });
 });

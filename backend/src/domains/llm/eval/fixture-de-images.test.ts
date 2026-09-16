@@ -380,3 +380,24 @@ describe('the shipped image fixture (#1115 P5c)', () => {
     expect(fixture.labels.filter((l) => !l.rationale.trim()).map((l) => l.id)).toEqual([]);
   });
 });
+
+/**
+ * #1614 PR2 — ADR-027's primary endpoint runs on the IMAGE-DEPENDENT labels,
+ * a classification O15's independent labelling pass supplies. The schema
+ * admits the two fields so that pass can land; the shipped fixture carries
+ * none of them, and the harness never invents one.
+ */
+describe('the O15 labelling fields (#1614 PR2)', () => {
+  it('admits imageDependent and a class from the epic\'s list, and refuses a class outside it', () => {
+    const fixture = fixtureOf([label({ imageDependent: true, class: 'chart' }), label({ id: 'img-00-002', query: 'zweite Frage', imageDependent: false })]);
+    const loaded = loadPlanted(fixture) as { labels: ImageFixtureLabel[] };
+    expect(loaded.labels.map((l) => [l.imageDependent, l.class])).toEqual([[true, 'chart'], [false, undefined]]);
+    expect(() => loadPlanted(fixtureOf([label({ class: 'meme' as never })]))).toThrow();
+  });
+
+  it('ships with NO image-dependent classification — the labelling pass is a separate human deliverable, so the gate refuses to run', () => {
+    const fixture = shipped();
+    expect(fixture.labels.filter((l) => l.imageDependent !== undefined)).toEqual([]);
+    expect(fixture.labels.filter((l) => l.class !== undefined)).toEqual([]);
+  });
+});

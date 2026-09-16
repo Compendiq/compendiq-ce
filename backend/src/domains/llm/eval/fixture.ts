@@ -252,6 +252,22 @@ export function assertFixturePower(fixture: { labels: readonly unknown[] }): voi
 // ---------------------------------------------------------------------------
 
 /**
+ * The classes the epic names for the image-dependent set (ADR-027 "Corpus
+ * and labels"): screenshots and error codes, charts and units, tables,
+ * directional or nearly identical diagrams, unreadable text, decorative
+ * images. A labeller extending the list does so here, in the PR that adds
+ * the labels, so the per-class slice is always over a closed set.
+ */
+export const IMAGE_DEPENDENT_CLASSES = [
+  'screenshot',
+  'chart',
+  'table',
+  'diagram',
+  'unreadable-text',
+  'decorative',
+] as const;
+
+/**
  * A separate schema and a separate loader, never a widened `FixtureLabelSchema`.
  *
  * The two fixtures answer different questions and are scored on different
@@ -290,6 +306,22 @@ export const ImageFixtureLabelSchema = z.object({
   expectedImages: z.array(z.string().min(1)),
   style: z.enum(['image', 'image-negative']),
   rationale: z.string().default(''),
+  /**
+   * #1614 PR2 — ADR-027's primary endpoint runs on the IMAGE-DEPENDENT
+   * labels: the fact asked for is absent from the surrounding prose, so a
+   * text-only arm can only answer it from image evidence. OPTIONAL and
+   * UNSET on every shipped label: the classification is O15's independent
+   * labelling pass (a labeller who has seen neither the candidate's
+   * descriptions nor the retrieval code), which is a separate human
+   * deliverable. The gate refuses to run below O2's counts, so an unset
+   * field is a refusal, never a label the harness invented.
+   */
+  imageDependent: z.boolean().optional(),
+  /**
+   * The epic's content class of an image-dependent label, for the per-class
+   * slice O15 requires ≥ 10 items in. Set by the same pass.
+   */
+  class: z.enum(IMAGE_DEPENDENT_CLASSES).optional(),
 });
 
 /**

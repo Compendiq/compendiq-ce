@@ -50,7 +50,14 @@ export const IMAGE_AXIS = 'images';
  * unknown — the same provenance rule `ftsLanguage` and `rerank` already use.
  */
 export const TEXT_AXIS = 'text';
-export type EvalAxis = typeof IMAGE_AXIS | typeof TEXT_AXIS;
+/**
+ * #1614 PR2 — the ADR-027 arm axis: ONE arm per run on the image corpus,
+ * paired across runs by `assertComparableArms` (eval/arms.ts). Its report is
+ * `ArmRunReportSchema`, not the paired `images` block, so a `--baseline`
+ * from either other axis is refused here before anything else is compared.
+ */
+export const ARM_AXIS = 'arm';
+export type EvalAxis = typeof IMAGE_AXIS | typeof TEXT_AXIS | typeof ARM_AXIS;
 
 /** The image corpus's language. Not a choice: the pages are German Wikipedia. */
 export const IMAGE_AXIS_LANGUAGE = 'de';
@@ -219,7 +226,8 @@ export function assertComparableAxis(baselineAxis: string | undefined, runAxis: 
     `Baseline measured the "${baseline}" axis, this run measured "${runAxis}" — these are separate ` +
       'measurements over different corpora with different fixtures and different metrics, not a ' +
       `before/after. Compare an ${IMAGE_AXIS} run against another ${IMAGE_AXIS} run (which compares ` +
-      'leg-on against leg-on and leg-off against leg-off), and a text run against a text run.',
+      `leg-on against leg-on and leg-off against leg-off), a text run against a text run, and an ${ARM_AXIS} ` +
+      'run against another arm\'s run of the same corpus, query set, embedder and answer model.',
   );
 }
 

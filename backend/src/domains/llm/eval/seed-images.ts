@@ -302,6 +302,17 @@ export interface SeedImageCorpusOptions {
    * own fixture would also reference pages that were never seeded.
    */
   maxPages?: number;
+  /**
+   * #1614 PR2 — `false` seeds the TEXT and the attachment bytes only and
+   * skips the image phase entirely: no `embedPageImages` call, no
+   * `page_image_embeddings` row, every image counter 0. This is ADR-027's
+   * arm B and arm C index state ("no image leg" / "`page_image_embeddings`
+   * empty"): the pages and their pictures are on disk exactly as arm A has
+   * them, so the only thing that differs between the arms is what the
+   * revision under test does with those bytes. Default `true` — the paired
+   * `--images` axis is unchanged.
+   */
+  imageIndex?: boolean;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -477,17 +488,19 @@ export async function seedImageCorpus(
   let imagesEmbedded = 0;
   let imagesReused = 0;
   const started = performance.now();
-  for (const page of pages) {
-    const pageId = pageIdByFile.get(page.file)!;
-    const outcome = await embedPageImages(pageId);
-    assertCleanIntake(page, outcome, referencedByFile.get(page.file)!);
-    imagesEmbedded += outcome.embedded;
-    imagesReused += outcome.reused;
-    for (const reason of Object.keys(skipped) as Array<keyof ImageSkipCounts>) {
-      skipped[reason] += outcome.skipped[reason];
+  if (opts.imageIndex !== false) {
+    for (const page of pages) {
+      const pageId = pageIdByFile.get(page.file)!;
+      const outcome = await embedPageImages(pageId);
+      assertCleanIntake(page, outcome, referencedByFile.get(page.file)!);
+      imagesEmbedded += outcome.embedded;
+      imagesReused += outcome.reused;
+      for (const reason of Object.keys(skipped) as Array<keyof ImageSkipCounts>) {
+        skipped[reason] += outcome.skipped[reason];
+      }
     }
   }
-  const imageEmbedWallClockMs = performance.now() - started;
+  const imageEmbedWallClockMs = opts.imageIndex === false ? 0 : performance.now() - started;
 
   // The per-page expectation is read off the STORED BODY, because that is the
   // only number `embedPageImages` can fairly be judged against — but it is a
@@ -499,7 +512,7 @@ export async function seedImageCorpus(
   // this is the assertion the module header has always claimed — 170 of 187
   // indexed is a leg measured against a corpus whose pictures are partly
   // absent, and it must be a refusal rather than a smaller measurement.
-  const expectedTotal = pages.reduce((n, page) => n + page.images.length, 0);
+  const expectedTotal = opts.imageIndex === false ? 0 : pages.reduce((n, page) => n + page.images.length, 0);
   if (imagesEmbedded + imagesReused !== expectedTotal) {
     throw new ImageIntakeError(
       `Indexed ${imagesEmbedded + imagesReused} of the ${expectedTotal} images the manifest lists for ` +

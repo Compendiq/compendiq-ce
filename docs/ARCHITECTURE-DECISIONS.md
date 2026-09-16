@@ -5007,7 +5007,7 @@ and never appear in any prompt.
 | Safety | **unsupported-claim rate** (any claim not supported by the source page or image) and refusal rate | paired | B vs A | McNemar exact, one-sided against the margin |
 | Safety | image-negative **leakage@1** (a negative question answered from an image chunk) | paired | B vs A | McNemar exact against the margin |
 | Retrieval | page Recall@1/5/10, MRR; image-evidence Recall@5 (A: leg hit keyed on `page_image_embeddings.attachment_key`; B: any top-5 chunk whose `metadata.attachment_key` is an expected image; C: reported as none) | paired | all pairs | McNemar exact (recall), paired bootstrap (MRR) |
-| Control | standard EN and DE text suites (197 queries each): R@1/5/10, MRR | paired | B vs C, C vs A | non-inferiority per the margin |
+| Control | standard EN and DE text suites (197 queries each): R@1/5/10, MRR | paired | B vs C, C vs A | non-inferiority per the margin. **Erratum (PR2, 2026-09-16):** of the two pairs, only **C vs A** can detect a text regression. The text corpora carry no attachments, so on them nothing can be analysed and no derived chunk can exist: B's and C's index states differ only where images do, which makes the **B vs C** control δ ≡ 0 by construction and that condition unfailable. It is still captured and still scored — a report is the arm's configuration, and an unexpected non-zero δ there would mean the states differ where the recipe says they cannot — but the pair that carries #1617's lexical chunk resolution, and therefore the pair the gate's text guarantee rests on, is C vs A |
 
 Non-significance is not non-inferiority; an endpoint whose CI does not
 exclude the margin is **inconclusive**, and any inconclusive gate endpoint
@@ -5058,6 +5058,28 @@ threshold ≈ 0.092, SE(δ̂) ≈ 0.045). A more pessimistic pilot (ψ = 0.25,
 powered; if the pilot's discordant rate is below 0.20, stop and report the
 run as inconclusive by design rather than judge more.
 
+**The floor is a DECIDING mode, not a label (erratum, PR2 2026-09-16).** The
+two sizes above are two modes of the same rule, and the harness applies them
+as such (`auditSample`, `judgments.ts`):
+
+- **≥ 190** image-dependent labels — the pre-registered sample; the verdict
+  decides at power ≈ 0.90.
+- **144–189** — at or above the hard floor and below the target: the verdict
+  **decides**, the document prints the achieved power beside ≈ 0.90 and every
+  figure is labelled **REDUCED POWER**. No flag is needed and nothing about
+  the decision rule changes; what changes is that an inconclusive endpoint is
+  likelier than it was at N = 190, which the label says.
+- **< 144** — refused. `--allow-underpowered` still scores such a sheet, and
+  that document is labelled TOOLING VERIFICATION ONLY and decides nothing.
+
+The first version of the harness thresholded on 190 alone and only PRINTED
+the floor, so a floor-sized labelling pass could produce no deciding
+document at all and the hard floor pre-registered here had no effect. The
+other O2/O3 counts are NOT power-continuous and stay hard at any N: 48
+image-negative labels (O7's margin is literally 2 of 48), ≥ 45 pages and ≤ 5
+image-dependent labels per page (the m and ρ the design effect is computed
+under), and 197 control queries per language (O4's pooled n = 394).
+
 **Non-inferiority arithmetic, stated so the margin is chosen with eyes open.**
 The controls are clustered by page too (O3, cluster bootstrap for every
 CI), but their design effect is negligible: the EN and DE suites put 197
@@ -5100,7 +5122,35 @@ never fills a judgment row, because the candidate's own descriptions sit
 in the context it would be judging *(epic)*. Un-blinding (`--unblind`)
 refuses until every item has exactly one judgment; paired scoring runs only
 after un-blinding. Raw anonymised judgments and the mapping are preserved
-with the report.
+with the report. **Erratum (PR2, 2026-09-15):** the artifacts' home is
+`backend/src/domains/llm/eval/artifacts/1611/` (its README states the
+provenance rule); the tooling is `run-retrieval-eval.ts --images --arm`,
+`run-arm-answers.ts` and `judge-arms.ts` (`--merge` / `--check` /
+`--unblind`), recipe in `docs/runbooks/retrieval-eval.md` "Arm protocol".
+**Erratum (PR2, 2026-09-16), three points of this protocol as implemented:**
+(a) `sources[].attachmentUrl` above is present only where an arm surfaced an
+image source (A's leg hit, B's D11 citation) and never on C, so the row
+shape this ADR fixes carries one per-row **arm tell** by design — the judge
+is told in the runbook to read it as a citation and never as evidence or as
+a reason to guess the arm; every other arm-revealing key is refused outright
+by the blinding walk. The asymmetry that follows, stated rather than left
+implicit: for the PRIMARY B-vs-A pair the blinding holds (both arms carry
+the field wherever an image source surfaced), but the field is absent from
+EVERY arm C row by construction, so **C is the separable arm** and its
+correctness — a secondary endpoint — is the one a judge reading the field as
+a tell could separate out. (b) The route's `refusalReason` is counted in the
+run's provenance file and never written to the judge's file, and an
+INFRASTRUCTURE refusal (`semantic_index_unavailable` — the embedder or the
+semantic index failed) **aborts the arm** instead of being scored: an outage
+scored as refusals would enter the primary and refusal endpoints as that
+arm's quality. (c) The pilot stop of "Sample size" is a STEP, not a label:
+`judge-arms.ts --check --mapping` prints one aggregate ψ over the first 30
+image-dependent A/B pairs **in `judgedAt` order** and exits non-zero below
+the floor, so the judge can stop there rather than after all ≈ 714 rows.
+That readout needs O15's `imageDependent` labels: the shipped fixture
+carries none, so until that pass lands the CLI can only report `pilot: 0/30`
+and the exit-3 stop is **unreachable from the command line** — the rule
+itself (`pilotCheck`, `pilotDiscordance`) is unit-tested directly.
 
 **Cost and operational qualification — measured and reported, never a
 gate** (owner decision 2026-09-15; on the hardware that serves the assigned
@@ -5119,7 +5169,55 @@ manifest sha; query-set sha; per-arm provider/model/endpoint for embedder,
 reranker, answer model, vision model; `image_analysis_max_output_tokens`
 in force for arm B's backfill; embedder width; `fts_language`; every
 retrieval knob; prompts and their versions; hardware; the judge's identity
-and the single-judge statement; mapping-file sha; per-query paired outcomes.
+and the single-judge statement; mapping-file sha; per-query paired outcomes;
+and **the command line that produced each file** (`command`, carried by the
+arm report, the answer provenance, the sheet and the verdict — added PR2,
+2026-09-16, so "commands" is a field and not only a sentence). Everything
+the "Held fixed" list names is refused when it DIFFERS between two arms,
+key by key over the recorded retrieval knobs, and everything one arm must
+carry and another must not (A's VL endpoint, B's vision model and ceiling)
+is refused per arm.
+
+**Two errata on that sentence, both PR2 2026-09-16.**
+
+*The knob comparison is over a NAMED set.* `retrieval` used to be an
+unkeyed record, so "key by key over the recorded retrieval knobs" was only
+as strong as what two files happened to record: two reports that both
+omitted a knob compared nothing. The knobs the "Held fixed" list names
+(`HELD_FIXED_KNOBS`, the eleven `readHeldFixedProvenance` reads) are now
+REQUIRED of the arm report and of the answer-run provenance alike, and the
+answer side's check is symmetric over that set rather than one-directional.
+Two further kinds of key ride along and are not held fixed: the retrieval
+run's own flags (`topK`, `rerankRequested`, `mmr`, …), which the ask path has
+no counterpart for, and a knob that exists on ONE REVISION only. The second
+is the arm-A case: A runs on the legacy revision by design, so a
+candidate-only knob can never be made to agree and no re-run would fix it —
+it is RECORDED on the comparison (`revisionSpecificKnobs`) instead of
+refusing the pair. Within one revision (B vs C) a one-sided knob is still a
+drift and still refused. **That escape hatch is keyed on ABSENCE, so the
+RECORD is what covers it, not a refusal**: a non-named knob present on one
+side only is accepted whenever the two arms sit on different revisions, so
+deleting such a key from one report file in an A-containing pair hides a
+value drift instead of raising one. What bounds it is that the eleven named
+knobs are schema-required of both files and can never be skipped, and that
+every key taken this way is listed as `revisionSpecificKnobs` on the
+comparison in the verdict document — the audit trail a reader checks when an
+A-containing pair is questioned (review r3 finding 5).
+
+*The judge's file is verified, not merely recorded.* `sheet-<id>.json`
+records the sha256 of `answers-<id>.jsonl` and `mapping-<id>.json` before
+judging starts, and `--unblind` re-reads BOTH — plus every answer run's
+`provenance-<runId>.json`. The sheet is not its own witness: `--unblind`
+also RE-DERIVES the sheet's rows from the per-arm answers files it names
+(each held to the hash the sheet and that run's own provenance recorded) and
+refuses on any differing row, so rewriting the judge's file and its recorded
+hash together is not enough. `--check` performs the same verification
+whenever the operator's sheet file is at hand — over the file it was handed
+as `--answers`, which is the file whose judgments it just read, never the
+out-dir copy of that name — so a rewritten row surfaces
+while judging is still under way. Consequence for the operator: every run's
+three files stay in the artifacts directory under the run id they were
+written with.
 
 ### Owner decisions — confirmed by the owner on 2026-09-15
 
@@ -5136,15 +5234,15 @@ constant in D8 is an admin setting by the same decision.
 | # | Decision | Confirmed value | Why this number | Status |
 |---|---|---|---|---|
 | O1 | Primary-endpoint margin | **+5 absolute points**, B vs A, paired image-dependent answer correctness, point estimate ≥ 0.05 and cluster-bootstrap 95% CI excluding 0 | The epic's proposal; the power calculation shows it is decidable at N = 190 under the stated assumptions | Confirmed by owner 2026-09-15 |
-| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
+| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ. **Erratum (PR2, 2026-09-16):** the hard floor is a **deciding mode**, and the harness implements it as one — ≥ 190 decides at full power, **144–189 decides at reduced power** with the achieved power printed and the document labelled REDUCED POWER, and only **< 144** is refused (`--allow-underpowered` then labels the output TOOLING VERIFICATION ONLY, and such a document reports NO achieved power: a power figure describes a decision, and a document that decides nothing has none to describe). The first harness thresholded on 190 alone and merely printed the floor, which left this floor with no effect. The other counts here (48 negatives, ≥ 45 pages, ≤ 5 per page, 197 × 2 controls) are not power-continuous and stay hard at any N — see "Sample size" | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
 | O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses | Confirmed by owner 2026-09-15 |
 | O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87 | Confirmed by owner 2026-09-15 |
 | O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set — **explicitly an underpowered guardrail**: the report states power ≈ 0.44 at δ = 0 and prints the one-sided CI beside the verdict; a pass reads "no collapse", never parity | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); the primary endpoint is where the answer quality is decided | Confirmed by owner 2026-09-15 |
-| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, one-sided 95% upper bound of the difference ≤ 0.05 | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 |
+| O6 | Unsupported-claim margin | B's rate may exceed A's by at most **3 absolute points**, applied as the one-sided 95% upper bound of the difference ≤ **3 absolute points**. **Erratum (PR2, 2026-09-16):** the confirmation wrote this margin twice — once as "3 absolute points" and once as "upper bound ≤ 0.05" — and they are not the same condition. The confirmed margin is **3 pp**, and the gate applies it to the one-sided bound: `ARM_MARGINS.unsupportedClaimPoints = 0.03` is the only constant the verdict reads, there is no 5 pp anywhere in the code, and the runbook says the same | Descriptions are fallible evidence; a small increase is the expected price of answering questions A refuses, a large one is the failure mode the endpoint exists to catch | Confirmed by owner 2026-09-15 (erratum 2026-09-16) |
 | O7 | Image-negative leakage margin | leakage@1 may exceed A's by at most **2 queries of 48** (≈ 4 points) | ADR-025 measured 2/22 losses on this class for the legacy leg; the candidate must not do worse than that shape | Confirmed by owner 2026-09-15 |
 | O8 | Vision candidate | **The vision model assigned to `image_analysis` in Settings → AI Models on the instance under test** — no mandated checkpoint, no fallback list; the report records `provider:model@endpoint` and the ceiling in force. **On the local instance at ADR time (read 2026-09-15): UNASSIGNED** — the one configured provider is `RTX3090` (`openai-compatible`, no auth, `http://192.168.178.47:1234/v1` — an LM Studio-style host), no vision-capable use case is assigned (`image_embedding` has no row) and the only two probed pairs (`google/gemma-4-26b-a4b-qat`, `qwen/qwen3.8-27b`) carry a `null` vision verdict (`fetch failed` / model failed to load). **The owner must assign a vision-capable model before the #1615 smoke test and before #1619.** | The candidate is the operator's choice, and the ADR's contract (D3's probe, D8's ceiling setting, D13's stops) is what makes any assigned model safe to run; a model-card claim is not a measurement | Confirmed by owner 2026-09-15 |
 | O9 | Hardware | the host that serves the assigned vision model (O8), recorded in the report by name, GPU and server software; text embedder, Postgres and Redis wherever production runs them, recorded the same way. The ADR-025 96 GB card is no longer mandated | Cost is reported, not gated (O11), so the hardware is provenance, not a pass condition; "representative" means "the one the report names" | Confirmed by owner 2026-09-15 (follows from O8/O11) |
-| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; `temperature 0`; `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
+| O10 | Answer model and budgets | the production `chat` assignment at freeze time, text-only by construction via `rag_answer_max_images = 0`; temperature: **provider default, recorded in provenance** (erratum, PR2 2026-09-15 — the ask path exposes no temperature option, so `temperature 0` is unimplementable through the route; the owner may pin it server-side on the provider before the run, and the run's provenance file records `temperature: provider default` — **erratum, PR2 2026-09-16:** that literal lives in `provenance-<runId>.json` (`AnswerRunProvenanceSchema`), NOT in the answers file, which is `.strict()` with no configuration key by design so nothing in it can tell the judge which arm produced a row); `rag_context_chars_per_page` 6000, fetch width 10, rerank candidates 30, top-K 5 — production defaults, recorded. On the local instance at ADR time `chat` is `google/gemma-4-26b-a4b-qat` on `RTX3090` | The hypothesis is that a text-only model can answer from the description; fixing the model removes it as a variable | Confirmed by owner 2026-09-15 |
 | O11 | Ingestion cost — **measured and reported, no gate** | Measured under the "Cost and operational qualification" protocol on O9: cold and cached throughput (img/s), tokens per image (prompt + completion from `usage`, corpus mean beside the ceiling in force — the per-request ceiling is ≈ 1.3k visual + prompt + `image_analysis_max_output_tokens`, default 8,192, so the served context must admit ≈ 10k at the default — D8), corpus backfill wall-clock (187 images) and the per-10k extrapolation, failure and skip rates, `page_embeddings` rows per image, query p50/p95 for B and C against A. **None of these can fail the gate**; the retirement decision is on quality alone (decision rule) and the figures go to the owner beside the verdict | The owner's call: a slow but better candidate is a scheduling problem, not a quality verdict; the measurement protocol is kept exactly so runs stay comparable | Confirmed by owner 2026-09-15 |
 | O12 | Judges | **one judge: the repository owner (Simon)**, blind to arm; no second rater, no adjudicator; the report is labelled single-judge and states that no inter-rater statistic exists. An LLM may pre-screen and flag only | Blind human judging is the epic's rule; the owner is the one person who will act on the verdict, and a single named judge with the limitation stated is more honest than a second rater recruited for the statistic | Confirmed by owner 2026-09-15 |
 | O13 | Judging burden | all three arms single-judged: ≈ 3 × 238 items ≈ **714 judgments** at ~2 min each ≈ **24 judge-hours**; C may be judged last, since its correctness is secondary | The primary endpoint is B vs A; C's correctness is secondary | Confirmed by owner 2026-09-15 |

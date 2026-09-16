@@ -92,7 +92,8 @@ export function assertKnownFlags(
  */
 export const EVAL_KNOWN_FLAGS = [
   'out', 'baseline', 'lang', 'fts-language', 'rerank', 'deep-search',
-  'no-assemble', 'no-pin', 'mmr', 'mmr-lambda', 'images', 'help',
+  'no-assemble', 'no-pin', 'mmr', 'mmr-lambda', 'images', 'arm', 'control',
+  'backfill-timeout', 'help',
 ] as const;
 
 /**
@@ -143,6 +144,27 @@ export const EVAL_USAGE = [
   '                        endpoint (see Environment). A --baseline from the other axis is refused.',
   '                        Refuses --deep-search: it reformulates per request, so the two arms would',
   '                        be paraphrased separately and the difference would be read as the leg\'s.',
+  '  --arm A|B|C           #1614 PR2 / ADR-027: run ONE arm of the pre-registered comparison on the',
+  '                        image corpus (needs --images). A = legacy text + image leg (needs the',
+  '                        EVAL_IMAGE_EMBEDDING_* endpoint); B = candidate with derived chunks (needs',
+  '                        the post-#1617 revision, image_analysis assigned, image_analysis_max_output_tokens',
+  '                        set and the backfill run on this database — see --backfill-timeout; refused',
+  '                        right after the migrations, before any seed, when any of these is absent);',
+  '                        C = ablation, authored text only (refuses EVAL_IMAGE_EMBEDDING_*, asserts',
+  '                        page_image_embeddings empty, image_analysis unassigned and no derived rows).',
+  '                        Writes retrieval-eval-arm-<A|B|C>.json unless --out says otherwise. A',
+  '                        --baseline must be another arm\'s report of the same corpus, query set,',
+  '                        embedder, FTS configuration, rerank, answer model and every retrieval knob;',
+  '                        it is compared with the page-cluster bootstrap and McNemar exact per ADR-027.',
+  '                        The report records `git rev-parse HEAD` of a CLEAN tree and the command line.',
+  '  --control legacy-revision-C',
+  '                        label an --arm C run made on the LEGACY revision as the regression control',
+  '                        ADR-027 names; such a report is never accepted as arm C of a pair — the one',
+  '                        comparison it is read in is --baseline against the candidate C, descriptive only.',
+  '  --backfill-timeout <sec>',
+  '                        --arm B only: how long to wait for the vision-analysis backfill (the product',
+  '                        worker, run against this database) to analyse every corpus image before',
+  '                        querying (default 0: refuse unless already complete).',
   '  --help                this text',
   '',
   'A value flag takes either spelling — "--out report.json" or "--out=report.json" — and is refused',
@@ -151,11 +173,110 @@ export const EVAL_USAGE = [
   'ignored.',
   '',
   'Environment: EVAL_EMBEDDING_BASE_URL and EVAL_EMBEDDING_MODEL (the eval never mocks the',
-  'embedder), and POSTGRES_URL — a database this script may TRUNCATE and RETYPE.',
+  'embedder), and POSTGRES_URL — a database this script may TRUNCATE and RETYPE. With --arm:',
+  'EVAL_HARDWARE (O9 provenance; --unblind refuses a report without it) and, ONLY for a tree without',
+  'git history, EVAL_REVISION_SHA — where git answers, HEAD is recorded, the tree must be clean and the',
+  'variable must agree with HEAD.',
   '',
   'With --images, additionally: EVAL_IMAGE_EMBEDDING_BASE_URL and EVAL_IMAGE_EMBEDDING_MODEL (the',
   'vision-language endpoint — required, and deliberately NOT the text pair, which speaks a different',
   'request shape into a different vector space), optional EVAL_IMAGE_EMBEDDING_DIMENSIONS (MRL',
   'truncation width; unset = the model\'s native width) and optional EVAL_IMAGE_EMBEDDING_BACKEND (a',
   'free-text provenance label recorded in the report, e.g. llama | mlx | vllm).',
+].join('\n');
+
+/**
+ * #1614 PR2 — `scripts/run-arm-answers.ts`: one arm's answers through the real
+ * ask route, arm-blinded. `script-wiring.test.ts` holds it to this list the
+ * way it holds the eval script to `EVAL_KNOWN_FLAGS`.
+ */
+export const ARM_ANSWERS_KNOWN_FLAGS = ['arm', 'run-id', 'out-dir', 'report', 'help'] as const;
+export const ARM_ANSWERS_VALUELESS_FLAGS = ['help'] as const;
+export const ARM_ANSWERS_USAGE = [
+  'scripts/run-arm-answers.ts — ask every image-fixture question through POST /api/llm/ask on ONE arm',
+  'and write the arm-blinded judging artifacts (#1614 PR2, ADR-027 "Judging protocol")',
+  '',
+  '  --arm A|B|C           which arm this database is in. Recorded in the MAPPING only — the answers',
+  '                        file never carries it.',
+  '  --run-id <id>         names the artifacts: answers-<id>.jsonl (itemId, question, answer, refused,',
+  '                        sources, evidenceImages — NO arm, query id, config or chunk provenance),',
+  '                        mapping-<id>.json (itemId → { arm, queryId }) and provenance-<id>.json (the',
+  '                        run\'s configuration and both files\' sha256). Default: <arm>-<timestamp>.',
+  '  --out-dir <dir>       where to write them (default: the current directory)',
+  '  --report <file>       the retrieval report the same arm wrote on this database',
+  '                        (run-retrieval-eval.ts --images --arm X --out <file>); its revision, corpus',
+  '                        and query-set hashes must match this run or the answers are refused as',
+  '                        belonging to a different arm state.',
+  '  --help                this text',
+  '',
+  'The route runs with rag_answer_max_images = 0 (written to admin_settings for the run), deepSearch',
+  'false and no conversation, so the answer model is text-only by construction in every arm and the',
+  'temperature is the provider default (ADR-027 O10 erratum; recorded in provenance).',
+  '',
+  'Environment: POSTGRES_URL — the SAME disposable database the arm\'s retrieval run seeded (the guard',
+  'from eval/disposable-db.ts applies); REDIS_URL and JWT_SECRET (buildApp needs both); EVAL_HARDWARE',
+  '(free text naming the host, GPU and server software, recorded per O9; refused absent at --unblind);',
+  'EVAL_REVISION_SHA only for a tree without git history (otherwise HEAD of a clean tree is recorded).',
+  'A `semantic_index_unavailable` refusal from the route is an outage, not the protocol\'s refusal: the',
+  'run aborts on the first one and writes nothing. Refusal reasons are counted in provenance-<id>.json,',
+  'never on a row the judge sees.',
+].join('\n');
+
+/**
+ * #1614 PR2 — `scripts/judge-arms.ts`: the blinded sheet, the judging
+ * progress check, and `--unblind` (which refuses until every item has exactly
+ * one judgment and then runs the paired scoring).
+ */
+export const JUDGE_KNOWN_FLAGS = [
+  'merge', 'check', 'unblind', 'answers', 'mappings', 'mapping', 'judgments', 'run-id', 'out-dir',
+  'arm-report', 'control-a', 'control-b', 'control-c', 'out', 'allow-underpowered', 'help',
+] as const;
+export const JUDGE_VALUELESS_FLAGS = ['merge', 'check', 'unblind', 'allow-underpowered', 'help'] as const;
+export const JUDGE_USAGE = [
+  'scripts/judge-arms.ts — the arm-blinded judgment sheet and the un-blinded paired verdict (#1614 PR2,',
+  'ADR-027 "Judging protocol" and "Decision rule")',
+  '',
+  'Modes (exactly one):',
+  '  --merge               shuffle several arms\' answers-*.jsonl into ONE blinded sheet, so the judge',
+  '                        cannot tell arms apart by file. --answers a,b,c --mappings ma,mb,mc',
+  '                        --run-id <sheet id> [--out-dir]. Each answers-<runId>.jsonl must have its',
+  '                        provenance-<runId>.json beside it (run-arm-answers.ts writes all three);',
+  '                        the merge refuses a run whose provenance does not hash its files. Writes',
+  '                        answers-<id>.jsonl, mapping-<id>.json and sheet-<id>.json (every source\'s',
+  '                        and the sheet\'s sha256, recorded BEFORE judging starts).',
+  '  --check               report judging progress and refuse malformed rows. --answers <sheet>',
+  '                        --judgments <file> [--mapping <mapping-<sheet>.json>]. With --mapping',
+  '                        (the operator\'s file) it prints the ADR-027 pilot: ψ over the first 30',
+  '                        image-dependent A/B pairs in judgedAt order, ONE aggregate number; below',
+  '                        0.20 it says STOP and exits 3 — stop judging, the run is inconclusive by',
+  '                        design.',
+  '  --unblind             refuse until every item has exactly one judgment by one judge, re-read every',
+  '                        answer run\'s provenance-<runId>.json from --out-dir and hold it to its arm',
+  '                        report (answer model, hardware, revision, hashes, knobs), then join the',
+  '                        mapping, pair the arms and score every endpoint. --run-id <sheet id>',
+  '                        [--out-dir] --arm-report A=<file>,B=<file>[,C=<file>]',
+  '                        [--control-b en.json,de.json --control-c en.json,de.json',
+  '                        [--control-a en.json,de.json]] --out <verdict.json>.',
+  '',
+  '  --answers <files>     comma-separated answers-*.jsonl (merge) or one sheet (check)',
+  '  --mappings <files>    comma-separated mapping-*.json, in the same order as --answers (merge)',
+  '  --mapping <file>      the sheet\'s mapping-<id>.json, for the pilot readout (check; optional)',
+  '  --judgments <file>    judgments-<id>.jsonl (check; --unblind reads it from --out-dir by run id)',
+  '  --run-id <id>         the sheet id (merge writes it; unblind reads it)',
+  '  --out-dir <dir>       where the artifacts live (default: the current directory)',
+  '  --arm-report <list>   the arm retrieval reports, as A=<file>,B=<file>,C=<file> (unblind)',
+  '  --control-a <files>   arm A\'s EN and DE text-gate reports, comma-separated (unblind, optional;',
+  '                        the C vs A control — unmeasured, and therefore blocking, without it)',
+  '  --control-b <files>   arm B\'s EN and DE text-gate reports, comma-separated (unblind, optional)',
+  '  --control-c <files>   arm C\'s EN and DE text-gate reports, comma-separated (unblind, optional)',
+  '  --out <file>          where the verdict report is written (unblind)',
+  '  --allow-underpowered  score a sample below ADR-027 O2 (190 image-dependent on ≥ 45 pages, ≤ 5',
+  '                        per page / 48 image-negative / 197 control queries per language). The',
+  '                        verdict is then labelled TOOLING VERIFICATION and decides nothing; without',
+  '                        this the run is refused.',
+  '  --help                this text',
+  '',
+  'One judge (the repository owner), blind to arm, one row per item in judgments-<id>.jsonl:',
+  '{ itemId, judge, correctness: correct|partial|incorrect|refused, citationFaithful: yes|no|na,',
+  'unsupportedClaim, notes, judgedAt }. No second rater, no adjudication, no κ — the report says so.',
 ].join('\n');
