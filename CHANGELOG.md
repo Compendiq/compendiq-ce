@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Lexical chunk resolution (ADR-027 D10, #1617).** The keyword leg's
+  candidate set is now `pages.tsv` ∪ the DERIVED per-chunk documents
+  (`page_embeddings.chunk_tsv` where `metadata.source = 'image_analysis'`), a
+  page's lexical rank is the greater of the two, and every lexical and
+  exact-identifier page hit resolves to the CHUNK that matched — ordered
+  `(chunk_tsv @@ q) DESC, ts_rank DESC, chunk_index ASC`. A fact that exists
+  only inside a screenshot is therefore findable lexically. **This is a
+  measured retrieval change that reaches AUTHORED hits too:** `chunkText` was
+  `substring(body_text, 1, 500)` for every keyword row, so the reranker's
+  input and the `/api/search?mode=hybrid` snippet now carry the matching
+  passage instead of a page prefix. The prefix survives only for a page with
+  no `page_embeddings` row at all. `pages.tsv` is unchanged, so authored page
+  ranking is bit-identical; a page with five matching images is still one
+  candidate at one rank, and there is no third RRF leg. The exact-identifier
+  pin keeps its `rag_context_chars_per_page`-sized lede unless a chunk really
+  matches the identifier (erratum #1617/Q1). `/api/search?mode=keyword` keeps
+  its own authored-text SQL (erratum #1617/Q2) — a recorded asymmetry, see
+  `docs/runbooks/retrieval-eval.md`.
+- **Image evidence in answers and citations (ADR-027 D11/D12, #1617).**
+  `SearchResult` gains `derived` provenance read from the chunk's `metadata`,
+  so a derived chunk is an ordinary result: same MMR, the same
+  `RERANK_DOC_MAX_CHARS` window with no exception, and a measured row for
+  `computeRetrievalConfidence`. A text-only chat model answers from the
+  description. `/llm/ask` appends one `kind: 'image'` source per distinct
+  `(pageId, attachmentStore, attachmentKey)` among the answer's top-K derived
+  rows (best fused rank first, capped at 4) carrying `attachmentUrl`,
+  `similarity: null` and four new optional `SourceSchema` fields —
+  `attachmentStore`, `attachmentKey`, `contentHash`, `analysisVersion` —
+  which `toPersistedSources` copies together with `kind`/`attachmentUrl` or
+  not at all, so a reopened conversation round-trips them. Replay still
+  re-applies page visibility: a revoked page's entry is `unavailable` hash or
+  no hash. The optional answer-time image bytes for a confirmed
+  vision-capable chat model are rewired from the legacy image leg to derived
+  provenance, under the same count, byte, format and ACL limits.
+
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
   Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
   and a trigger-maintained, GIN-indexed `page_embeddings.chunk_tsv` (rebuilt in
@@ -56,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cutover; the shipped image leg is unchanged until that gate passes.
 
 ### Changed
+
+- **`image_only_context` now refuses unconditionally for the set it still
+  reaches (#1617).** The answer-time byte pick no longer consumes
+  `image-leg-search.ts`'s hits, and a title-synthesised row by construction
+  has no derived provenance, so such a set can never attach a picture. The
+  rule, the flag and the legacy leg are removed together in #1618.
 
 - The page inspector's Details tab groups the Confluence link with provenance,
   places Notes before secondary page actions, and exposes the quality breakdown,

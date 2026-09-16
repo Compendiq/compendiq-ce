@@ -4280,6 +4280,27 @@ neither alternative can do without a second per-chunk structure anyway. So:
 - Page-level best-hit fusion, `/api/search` pagination and `#1107` exact-identifier
   behaviour are unchanged; a page with five matching images is still one
   vote. **No third RRF leg** *(epic)*.
+- *Erratum, #1617 (owner decision, 2026-09-16 — open question Q1):* the
+  exact-identifier pin adopts the resolved chunk **only when a chunk really
+  matches** (`chunk_tsv @@ q`); with no match it keeps its
+  `rag_context_chars_per_page`-sized lede and reports no `chunkIndex`. Applied
+  literally, the chunk-0 rule above would replace that lede with one ~1–2 k
+  chunk on every "find the page called X" pin — and the pin is the one row
+  sibling assembly cannot reach (it runs after that stage, #1273 F9), so the
+  row can never grow the window back. The narrowing is what fixes the OCR-only
+  `issueKey` case #1617's acceptance names, and nothing else.
+- *Erratum, #1617 (owner decision, 2026-09-16 — open question Q2):*
+  `/api/search?mode=keyword` keeps its own authored-text SQL and is **out of
+  scope**. That path never calls `keywordSearch`: it has its own `ts_rank`,
+  `ts_headline` snippet, facets, `COUNT(*) OVER()` pagination and a pg_trgm
+  title arm, so unioning derived chunks there means a second union plus a
+  `ts_headline` over `chunk_text` and it MOVES `total_count` — a
+  pagination-visible change the "existing search pagination" clause above did
+  not price. The consequence is a recorded asymmetry, not an oversight: an
+  image-only page is findable by `mode=hybrid` and by `/llm/ask` and is
+  invisible in the default keyword search box. It is stated in
+  `docs/runbooks/retrieval-eval.md` beside what #1619 measures, and no
+  follow-up issue is opened.
 
 **D11 — Retrieval and answer rules for derived chunks (#1617).** A derived
 chunk is an ordinary `SearchResult` with `chunkIndex` set and a `derived`
@@ -4303,7 +4324,19 @@ the anchor is never dropped for budget. `computeRetrievalConfidence` treats
 the row as measured text (it carries a real `vectorScore`/`rerankScore`); the
 `imageTextSynthesized` exclusion and the `image_only_context` refusal apply
 only to ADR-025's title-synthesised rows and are retired with them in #1618
-once the replacement is exercised. No operator threshold moves. The optional
+once the replacement is exercised. No operator threshold moves.
+*Erratum, #1617:* rewiring the byte pick off `image-leg-search.ts` makes the
+`image_only_context` refusal UNCONDITIONAL for the set it still reaches. A row
+is `imageTextSynthesized` exactly when its page has no `page_embeddings` row
+at all, and a derived chunk IS such a row (for an image-only page, chunk 0) —
+so a page with a valid analysis is embedded (D9.5), reached by the text legs
+and never synthesised, while a page without one has no provenance and
+therefore no attachable picture. The rule's `retrievedImages.parts.length ===
+0` conjunct is consequently always true where the rule fires. The code is left
+intact (this ADR puts its removal in #1618, after #1619 exercises the
+replacement); the two #1615-era tests that discriminated between the vision
+gate, the cap and a missing file were deleted rather than re-pinned, because
+they asserted a path the rewire removed. The optional
 retrieved-image attachment for a separately confirmed vision-capable **chat**
 model is kept *(epic)*, rewired from `image-leg-search.ts` to the derived
 provenance of the answer's top-K rows, under the existing count, byte,

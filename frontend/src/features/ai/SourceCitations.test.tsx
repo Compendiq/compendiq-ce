@@ -269,6 +269,35 @@ describe('SourceCitations', () => {
       expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
     });
 
+    it('renders a persisted source carrying the four D12 provenance fields (#1617)', async () => {
+      // The shape a REOPENED conversation delivers after ADR-027 D12: the
+      // same chip, plus provenance the type must accept and the renderer must
+      // ignore. `contentHash` in particular is provenance and not an access
+      // signal — the server re-applies visibility on replay — so nothing here
+      // may key rendering, fetching or navigation on it.
+      const fetchMock = mockAttachmentFetch();
+      const persisted: Source = {
+        ...imageSource,
+        attachmentStore: 'confluence',
+        attachmentKey: 'turbine.png',
+        contentHash: 'sha256:d34db33f',
+        analysisVersion: 1,
+      };
+      render(<SourceCitations sources={[persisted]} />, { wrapper: Wrapper });
+      fireEvent.click(screen.getByText('Sources (1)'));
+      await scrollIntoView();
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      // The URL still comes from `attachmentUrl`, not rebuilt from the key.
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/attachments/77/turbine.png');
+      expect(await screen.findByTestId('source-thumbnail')).toBeInTheDocument();
+      expect(screen.getByTestId('source-image-label')).toHaveTextContent('Image');
+      // None of the provenance leaks into the rendered citation.
+      expect(screen.queryByText(/sha256/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('source-card-1'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/77');
+    });
+
     it('leaves an ordinary page source alone — no thumbnail, no label', () => {
       render(<SourceCitations sources={[mockSources[0]]} />, { wrapper: Wrapper });
       fireEvent.click(screen.getByText('Sources (1)'));

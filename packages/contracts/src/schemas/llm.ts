@@ -238,6 +238,16 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  * (#1125 keys those on `url`) — so an absent `kind` has to keep meaning "a
  * knowledge-base page".
  *
+ * **ADR-027 D12 (#1617)** adds four optional provenance fields —
+ * `attachmentStore`, `attachmentKey`, `contentHash`, `analysisVersion` — that
+ * name the image a derived description came from. They are copied together
+ * with `kind`/`attachmentUrl` or not at all, which the `superRefine` below
+ * enforces in both directions: never on a page/web source, and never a subset
+ * of the four. `similarity` stays `null` on an image source for one more
+ * reason under ADR-027 than it had under ADR-025: the derived chunk was found
+ * by the TEXT legs, so there is no cross-modal score in existence to put here
+ * and the page's own text cosine is already on the page entry beside it.
+ *
  * `attachmentUrl` is restricted to the two authenticated attachment route
  * prefixes (`ATTACHMENT_URL_PATTERN`), not merely a non-empty string:
  * `SourceThumbnail` hands it straight to `useAuthenticatedSrc`, which sets
@@ -257,6 +267,24 @@ export type TitleSource = z.infer<typeof TitleSourceSchema>;
  */
 export const ATTACHMENT_URL_PATTERN = /^\/api\/(local-)?attachments\//;
 
+/**
+ * ADR-027 D12's provenance fields, named once so the co-presence rule below
+ * and any later reader iterate the same list.
+ *
+ * They are OPTIONAL on an image source rather than required, because #1115's
+ * image sources were persisted without them: a conversation stored before
+ * #1617 must still parse. What is enforced is that they arrive TOGETHER and
+ * only on an image source — a lone `contentHash` would be provenance with
+ * nothing to attribute it to, and D12 is explicit that a shared hash is
+ * provenance, never an authorization shortcut.
+ */
+export const IMAGE_PROVENANCE_FIELDS = [
+  'attachmentStore',
+  'attachmentKey',
+  'contentHash',
+  'analysisVersion',
+] as const;
+
 export const SourceSchema = z.object({
   pageTitle: z.string(),
   spaceKey: z.string().nullable().optional(),
@@ -268,12 +296,35 @@ export const SourceSchema = z.object({
   unavailable: z.literal(true).optional(),
   kind: z.literal('image').optional(),
   attachmentUrl: z.string().regex(ATTACHMENT_URL_PATTERN).optional(),
+  /** Which attachment store holds the bytes (ADR-027 D12). */
+  attachmentStore: z.enum(['confluence', 'local']).optional(),
+  /** The on-disk filename the description was derived from. */
+  attachmentKey: z.string().optional(),
+  /** ADR-027 D6's revision token: the hash of those bytes. */
+  contentHash: z.string().optional(),
+  /** ADR-027 D8's payload schema version behind the description. */
+  analysisVersion: z.number().int().optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'image' && value.attachmentUrl === undefined) {
     ctx.addIssue({ code: 'custom', path: ['attachmentUrl'], message: 'attachmentUrl is required when kind is "image"' });
   }
   if (value.attachmentUrl !== undefined && value.kind === undefined) {
     ctx.addIssue({ code: 'custom', path: ['kind'], message: 'kind must be "image" when attachmentUrl is present' });
+  }
+  const present = IMAGE_PROVENANCE_FIELDS.filter((field) => value[field] !== undefined);
+  if (present.length === 0) return;
+  if (value.kind !== 'image') {
+    for (const field of present) {
+      ctx.addIssue({ code: 'custom', path: [field], message: `${field} is only valid on a source with kind "image"` });
+    }
+    return;
+  }
+  if (present.length !== IMAGE_PROVENANCE_FIELDS.length) {
+    for (const field of IMAGE_PROVENANCE_FIELDS) {
+      if (value[field] === undefined) {
+        ctx.addIssue({ code: 'custom', path: [field], message: `${field} must be present with the other image provenance fields` });
+      }
+    }
   }
 });
 export type PersistedSource = z.infer<typeof SourceSchema>;

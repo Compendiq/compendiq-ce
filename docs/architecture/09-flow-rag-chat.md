@@ -272,6 +272,78 @@ routes (`knowledge-gaps`, `content-gaps`) still apply one `max_score < 0.3`
 threshold across all rows regardless of unit — a pre-existing defect this
 table documents but #1117 did not change.
 
+## Derived image-analysis chunks in retrieval (#1617, ADR-027 D10–D12)
+
+**Shipped.** #1616 writes one `page_embeddings` row per analyzed image
+(`metadata.source = 'image_analysis'`) and migration 116 gives every chunk a
+`chunk_tsv`. #1617 is the query half: derived rows are retrieved by the
+ordinary legs, and a lexical or exact-identifier page hit now resolves to the
+CHUNK that matched.
+
+```mermaid
+flowchart LR
+  Q[question] --> VEC["vector leg<br/>kNN over page_embeddings<br/>authored and derived alike"]
+  Q --> LEX["lexical leg"]
+  Q --> PIN["exact-identifier pin (#1107)"]
+  LEX --> U{"candidate union"}
+  U --> TSV["pages.tsv matches<br/>authored rank only"]
+  U --> CTSV["derived chunk_tsv matches<br/>MAX per page"]
+  TSV --> G["page rank = GREATEST<br/>one page, one vote"]
+  CTSV --> G
+  G --> RES["LATERAL best chunk<br/>match DESC, ts_rank DESC, chunk_index ASC"]
+  PIN --> RES
+  RES --> ROW["SearchResult: chunkText, chunkIndex, derived"]
+  VEC --> RRF["RRF, page-denominated, two text legs"]
+  ROW --> RRF
+  RRF --> RR["rerank and MMR score chunkText as-is"]
+  RR --> SIB["sibling assembly<br/>never crosses the authored/derived boundary"]
+  SIB --> ANS["answer + page source + kind:image source"]
+```
+
+- **`pages.tsv` is untouched** (ADR-027 `:4265`). An authored-only page's
+  lexical rank is the same `ts_rank` value it was before, which is what lets
+  the eval's historical lexical numbers stand beside the candidate's. The
+  derived arm can only ADD pages and only RAISE a rank.
+- **Authored chunks do not contribute to a page's rank** — that would
+  double-count `pages.tsv`. They take part in chunk RESOLUTION only, which is
+  why a term that exists in a chunk but not in `body_text` is still not a
+  lexical candidate.
+- **One page, one vote.** The derived arm is `MAX(ts_rank(chunk_tsv, q))
+  GROUP BY page_id`, so five matching screenshots are one candidate at one
+  rank. No third RRF leg; no image-space query embed; no kNN over
+  `page_image_embeddings` on this path.
+- **`substring(body_text, 1, 500)` survives in exactly one place**: a page
+  matched lexically that has no `page_embeddings` row at all. Everywhere else
+  a keyword hit now carries the matching passage — which moves the reranker's
+  input and the `/api/search?mode=hybrid` snippet for **authored** hits too,
+  the measured change #1619 attributes.
+- **The pin keeps its lede unless a chunk really matches** (ADR-027 erratum
+  #1617/Q1): `lookupIdentifier` adopts the resolved chunk only on a real
+  `chunk_tsv @@ q` hit, so "find the page called X" keeps the
+  `rag_context_chars_per_page`-sized excerpt #1273 F9 gave it, while an
+  OCR-only `INC-2203` now cites the description that contains the key.
+- **`/api/search?mode=keyword` is a separate SQL path and is unchanged**
+  (erratum #1617/Q2): an image-only page is findable by `mode=hybrid` and by
+  `/llm/ask` and is invisible in the default keyword box. Recorded asymmetry —
+  see `docs/runbooks/retrieval-eval.md`.
+- **Provenance is `metadata`, never position or text shape.**
+  `derived-provenance.ts` is the only reader; `SearchResult.derived` carries
+  `{ attachmentSource, attachmentKey, contentHash, analysisId, analysisVersion,
+  part, parts }` and is present only on a derived chunk. Retrieval never joins
+  `page_image_analyses`, which is what keeps the query path independent of the
+  analysis store.
+- **Security.** The derived arm is the one NEW place a lexical candidate can
+  enter, so it joins `pages` and carries the same `visiblePagesPredicate` the
+  authored arm does — inside the query, because it reads derived TEXT
+  (ADR-027 D14).
+- **The rerank window does not move.** A derived document goes through the
+  same `RERANK_DOC_MAX_CHARS` (2,000) as every chunk; ADR-027 D11 explains why
+  the D8 serialization order is chosen for it.
+
+Key files: `domains/llm/services/lexical-chunk-resolution.ts` (the shared SQL
+fragments), `domains/llm/services/derived-provenance.ts` (the `metadata`
+reader, the `(pageId, store, key)` dedup and the D12 citations).
+
 ## The image leg (#1115 P3)
 
 A page whose only answer to "what does the turbine assembly look like" is a
@@ -304,9 +376,13 @@ as a third RRF leg, in `domains/llm/services/image-leg-search.ts`.
 > `kind: 'image'` entry and add `attachmentStore`, `attachmentKey`,
 > `contentHash`, `analysisVersion` (ADR-027 D12); the optional retrieved-image
 > attachment for a vision-capable chat model survives, re-sourced from
-> derived-chunk provenance, with its gate still in `llm-ask.ts`. Until #1618
-> merges, the leg below is what runs, and the shut gate still costs what this
-> section says it costs. Do not read the candidate as measured: better RAG is
+> derived-chunk provenance, with its gate still in `llm-ask.ts`. **#1615,
+> #1616 and #1617 have merged**, so the retrieval and citation halves are
+> live and are described in "Derived image-analysis chunks in retrieval"
+> above; the answer-time byte pick no longer consumes this leg's hits at all.
+> Until #1618 merges, the leg below still RUNS — it still contributes a page
+> rank, its `imageOnly` rows and its `degraded_reason` — and the shut gate
+> still costs what this section says it costs. Do not read the candidate as measured: better RAG is
 > the hypothesis the pre-registered A/B/C gate in ADR-027 tests.
 
 **Dual space, fused by RANK.** The images are embedded by a vision-language
@@ -1812,6 +1888,15 @@ test pins that.
 
 ## Retrieval details
 
+- **Lexical chunk resolution (#1617, ADR-027 D10).** Every lexical and
+  exact-identifier hit carries the matching CHUNK, not `substring(body_text,
+  1, 500)`; the prefix survives only for a page with no `page_embeddings` row.
+  The candidate set is `pages.tsv` ∪ derived `chunk_tsv`, the page rank is the
+  greater of the two, and the per-page `LATERAL` orders
+  `(chunk_tsv @@ q) DESC, ts_rank(chunk_tsv, q) DESC, chunk_index ASC` — so a
+  title-only match yields chunk 0 and the choice is deterministic between two
+  identical requests. See "Derived image-analysis chunks in retrieval" above
+  for the rank, vote, pin and visibility rules.
 - **Query-instruction prefix (#1114).** Qwen3's embedding models are trained
   asymmetrically: a QUERY carries an instruction preamble, a DOCUMENT is
   embedded bare. `query-instruction.ts` applies
@@ -2098,6 +2183,22 @@ the same shape:
 | `confluenceId` | Confluence id, **`null` for locally-created pages** | the URL (legacy field, predates `url`) |
 | `spaceKey` | space key, **`null` for locally-created pages** | the `Web` / `External` display label |
 | `url` | absent | absolute http(s) URL |
+
+An **image source** (`kind: 'image'`, ADR-025 D8 / ADR-027 D12) is appended
+after the page and web entries, one per distinct `(pageId, attachmentSource,
+attachmentKey)` among the answer's top-K derived rows, best fused rank first
+and capped at `MAX_IMAGE_SOURCES` (4). It carries `attachmentUrl` (from
+`buildPageImageUrl`, so `SourceThumbnail`, the `ATTACHMENT_URL_PATTERN` guard
+and the attachment sweep's persisted-URL walk keep working), `similarity:
+null` — there is no cross-modal score to fabricate, and the page's own cosine
+is already on the page entry beside it — and since #1617 four provenance
+fields: `attachmentStore` (`'confluence' | 'local'`), `attachmentKey`,
+`contentHash`, `analysisVersion`. `SourceSchema` and `toPersistedSources` copy
+the four TOGETHER with `kind`/`attachmentUrl` and never singly, and a
+pre-#1617 image source carrying none of them still parses. Replay re-applies
+page visibility, so a revoked page's entry is annotated `unavailable`
+regardless of its hash: a shared `contentHash` is provenance, never an
+authorization shortcut.
 
 `frontend/src/features/ai/source-target.ts` is the single resolver: a `url`
 (or a URL found in `confluenceId`) opens in a new tab, otherwise navigation

@@ -1134,6 +1134,31 @@ is a regression control for that change and is labelled so; it is never
 substituted for C. The 2026-08-18 numbers above and every 307/22 shim result
 are historical and unpairable.
 
+### What #1617 changed, and the one path it deliberately did not
+
+#1617 landed the query half of D10–D12, so arm B (and arm C) run against a
+retrieval path where **every** lexical and exact-identifier hit carries the
+matching CHUNK instead of `substring(body_text, 1, 500)`. That reaches
+AUTHORED keyword hits too — it moves the reranker's input and the
+`/api/search?mode=hybrid` snippet for all of them — which is exactly why B − A
+is the whole product change and why a legacy-revision C is worth capturing as
+its regression control. `pages.tsv` itself is untouched, so an authored-only
+page's lexical `ts_rank` is bit-identical to the historical runs'.
+
+**Recorded asymmetry (ADR-027 erratum #1617/Q2).**
+`/api/search?mode=keyword` is a separate SQL path — its own `ts_rank`,
+`ts_headline` snippet, facets, `COUNT(*) OVER()` pagination and pg_trgm title
+arm — and it never calls `keywordSearch`. It was left on authored text only,
+because unioning derived chunks there means a second union plus a
+`ts_headline` over `chunk_text` and it MOVES `total_count`, a
+pagination-visible change the ADR's "existing search pagination" clause did
+not price. So a page whose only substantive text is an image description is
+retrievable by `mode=hybrid`, by `mode=semantic` and by `/llm/ask`, and is
+**invisible in the product's default keyword search box**. No follow-up issue
+is open: it is an owner decision, recorded here and in ADR-027 D10, and the
+eval never exercises `mode=keyword` — the harness drives `hybridSearch`, so
+none of the arm numbers are affected by it in either direction.
+
 ### Held fixed across arms
 
 Text embedder (Qwen3-Embedding-4B @ 2560 `halfvec`) and its prefix;

@@ -26,6 +26,7 @@ import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagConte
 // from so much as naming. The read is safe only because retrieval has
 // already applied the visibility predicate to the pages it returned.
 import { pickRetrievedImages, retrievedImagesCacheComponent } from '../../domains/llm/services/retrieved-images.js';
+import { buildDerivedImageSources } from '../../domains/llm/services/derived-provenance.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -585,44 +586,38 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         score: 1,
         similarity: null,
       })),
-      // #1115 P3 — the images the image leg matched on the pages that came
-      // back. Four decisions, all deliberate:
+      // ADR-027 D12 (#1617) — one `kind: 'image'` entry per distinct
+      // `(pageId, attachment_source, attachment_key)` among the answer's
+      // top-K DERIVED rows. The page whose best hit is a derived chunk is
+      // still cited as a page source above (its `chunkText` is the evidence
+      // the model saw); this is the picture that evidence came from.
+      //
+      // Five decisions, all deliberate:
       //
       //  - `kind: 'image'` is a NEW discriminator and the page/web entries
       //    above deliberately do NOT gain one. The frontend reads an absent
       //    `kind` as a page source and keys web-vs-page on `url` (#1125's
       //    fix); adding a field to the two existing shapes would churn that
       //    for no gain.
-      //  - `similarity: null`, always. The hit's own cosine is CROSS-MODAL
-      //    and sits in a different band from the text cosines beside it in
-      //    this array (ADR-025 §8), so putting it here would feed
-      //    `averageSourceSimilarity` two incomparable scales and rate the
-      //    answer on the mixture. `score` is the PAGE's fused ordering value,
-      //    which is what every other entry's `score` already is.
+      //  - `similarity: null`, always. There is no cross-modal score to
+      //    fabricate (ADR-027 `:4323`): a derived chunk was found by the TEXT
+      //    legs, and putting the page's text cosine on an image entry would
+      //    feed `averageSourceSimilarity` the same number twice. `score` is
+      //    the PAGE's fused ordering value, which is what every other entry's
+      //    `score` already is.
       //  - APPENDED, after the web sources rather than beside their page.
       //    The model cites `[Source N]` from `buildRagContext`, whose
       //    numbering covers the retrieved pages; inserting entries in the
       //    middle would renumber everything below them against an answer that
       //    was written before this array existed.
-      //  - Best-first across pages, by the hit's own similarity — the only
-      //    per-IMAGE measure there is; the page order is a fused rank that
-      //    says nothing about which picture matched better.
-      ...searchResults
-        .flatMap((r) =>
-          (r.imageHits ?? []).map((hit) => ({
-            kind: 'image' as const,
-            pageId: r.pageId,
-            pageTitle: r.pageTitle,
-            spaceKey: r.spaceKey,
-            attachmentUrl: hit.attachmentUrl,
-            similarity: null,
-            score: r.score,
-            _rank: hit.similarity,
-          })),
-        )
-        .sort((a, b) => b._rank - a._rank)
-        .slice(0, MAX_IMAGE_SOURCES)
-        .map(({ _rank, ...source }) => source),
+      //  - Best fused rank first, deduped on the identity triple: a
+      //    multi-part serialization puts several chunks of one picture in the
+      //    index, and two of them in one top-K must not spend two of the four
+      //    citation slots.
+      //  - The four provenance fields travel WITH `kind`/`attachmentUrl` and
+      //    never singly (D12) — `SourceSchema` and `toPersistedSources` both
+      //    enforce that, and `buildDerivedImageSources` is the one producer.
+      ...(await buildDerivedImageSources(searchResults, MAX_IMAGE_SOURCES)),
     ];
 
     // Helper to save/create conversation from a streamed, cached, or refused
@@ -908,9 +903,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // a single cached settings read:
     //
     //  1. the cap is above 0 (`rag_answer_max_images`, default 2);
-    //  2. some returned page actually carries image hits — false on every
-    //     deployment with no image leg, and on most questions where there is
-    //     one;
+    //  2. some returned row actually carries derived provenance — false on
+    //     every deployment with no analyzed images, and on most questions
+    //     where there are some;
     //  3. the resolved chat pair has PROBED vision-capable. The tri-state is
     //     read, never collapsed: `false` (probed and refused) and `null`
     //     (never established) both mean text-only here, and only `true`
@@ -928,9 +923,12 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // no image bytes at all, and retrieved images never count towards
     // `otherGrounding` — see the note there.
     const answerMaxImages = await getRagAnswerMaxImages();
-    const someImageHits = searchResults.some((r) => (r.imageHits?.length ?? 0) > 0);
+    // ADR-027 D11: "some returned row carries derived provenance", i.e. the
+    // answer is grounded in an image's description. False on every deployment
+    // with no analyzed images, and on most questions where there are some.
+    const someDerived = searchResults.some((r) => r.derived !== undefined);
     const chatVision =
-      answerMaxImages > 0 && someImageHits
+      answerMaxImages > 0 && someDerived
         ? (imagePart ? true : await getVisionCapability(chatConfig.providerId, resolvedModel))
         : false;
     const retrievedImages =

@@ -87,6 +87,24 @@ export interface Source {
    * the PAGE, not a bare file.
    */
   attachmentUrl?: string;
+  /**
+   * ADR-027 D12 (#1617) — where the description that grounded this answer
+   * came from: the attachment store, the on-disk key, the content hash of
+   * those bytes and the analysis payload version.
+   *
+   * Present only together, and only with `kind: 'image'` — the contract's
+   * `SourceSchema` enforces both directions. They exist so a REPLAYED
+   * conversation round-trips the provenance the live answer carried; nothing
+   * renders them today, and `contentHash` in particular is provenance and
+   * never an authorization signal (replay re-applies page visibility, so a
+   * revoked page's entry is annotated `unavailable` hash or no hash).
+   *
+   * Absent on a pre-#1617 image source, which is why all four are optional.
+   */
+  attachmentStore?: 'confluence' | 'local';
+  attachmentKey?: string;
+  contentHash?: string;
+  analysisVersion?: number;
 }
 
 interface SourceCitationsProps {

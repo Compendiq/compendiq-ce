@@ -765,9 +765,14 @@ together, which matters most for #1114's query-side prefix.
   loses the other's update) and `page_embeddings.chunk_tsv` — a per-chunk
   tsvector maintained by a trigger that reads `admin_settings.fts_language`
   like migration 049's, rebuilt in the SAME transaction as `pages.tsv` on a
-  language change, and combined with `pages.tsv` at query time so a lexical
-  page hit resolves to the matching chunk (ADR-027 D10). No runtime DDL, no
-  second vector width, no third RRF leg. The worker's batch is sweep →
+  language change. The QUERY side of that column is #1617's: the keyword leg
+  and the #1107 pin union `pages.tsv` with derived `chunk_tsv` matches, rank a
+  page by the greater of the two, and resolve every hit to the matching chunk
+  (ADR-027 D10, and see `09-flow-rag-chat.md`). #1617 adds **no DDL** — the
+  column, trigger and GIN index are all 116's, and its citations read
+  provenance from `page_embeddings.metadata` only, so the query path never
+  joins `page_image_analyses`. No runtime DDL, no second vector width, no
+  third RRF leg. The worker's batch is sweep →
   reconcile → analyze, and only the analyze step needs the assignment — and
   it needs the assignment to resolve to the SAME identity the settings row
   retains, or it skips with `identity_drift` and writes nothing (a provider

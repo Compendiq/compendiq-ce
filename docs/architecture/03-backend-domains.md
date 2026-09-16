@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service<br/>notion-client<br/>notion-token-service<br/>notion-tree<br/>notion-block-converter<br/>notion-import-service (#1459)<br/>notion-import-job"]
     end
 
@@ -449,6 +449,25 @@ it consumes are #1615's and reach it through one import point:
 - **`image-analysis-readiness.ts`** — the pure readiness function
   (`none | complete | partial | pending | failed | skipped`) and the corpus
   counts #1618 renders.
+- **`lexical-chunk-resolution.ts`** (#1617) — D10's query-time SQL, as
+  fragments rather than a second copy: the derived candidate arm
+  (`MAX(ts_rank(chunk_tsv, q)) GROUP BY page_id`, carrying the caller's
+  `visiblePagesPredicate`), the per-page `LATERAL` best-chunk resolution, and
+  the mapper that turns its columns into `chunkText`/`chunkIndex`/
+  `sectionTitle`/`derived`. `keywordSearch` and `lookupIdentifier` are its two
+  callers and differ in ONE argument — the pin adopts the resolved chunk only
+  on a real `chunk_tsv @@ q` hit (erratum #1617/Q1). One definition, the
+  `image-analysis-validity.ts` precedent.
+- **`derived-provenance.ts`** (#1617) — D9.4's `metadata` → `SearchResult.
+  derived` reader (TOTAL and STRICT: a partial shape yields `undefined`, never
+  a half-populated object, because D12 requires the four citation fields to
+  travel together), the `(pageId, attachment_source, attachment_key)` dedup
+  and fused-rank ordering, and `buildDerivedImageSources` — the D12
+  `kind: 'image'` citations, whose one batched `pages` read supplies the three
+  columns `buildPageImageUrl` needs and which soft-fails to no citations
+  rather than 500 an answerable turn. It is the only reader of that metadata:
+  neither the route nor the byte pick touches raw `metadata`, and nothing on
+  the query path joins `page_image_analyses`.
 
 `core/services/image-embedding-dirty.ts` and every inline `image_embedding_dirty`
 writer raise `image_analysis_dirty` in the same statement; `rag-service.ts`'s
@@ -476,10 +495,14 @@ two legs' ranking rules. Its visibility predicate is
 `core/services/page-visibility.ts`'s shared fragment, the same one the vector
 leg uses; an image row carries no ACL of its own.
 
-**`retrieved-images.ts` (P4)** turns the hits the leg attached to the returned
-pages into `image_url` parts on the user turn: `pickRetrievedImages` selects
-round-robin across pages with a byte-identity dedupe, re-runs `validateImage`
-unforked and stops at a derived base64 budget. **The vision gate is the
+**`retrieved-images.ts` (P4, rewired by #1617)** turns the pictures the
+answer's rows came from into `image_url` parts on the user turn:
+`pickRetrievedImages` selects round-robin across pages with a byte-identity
+dedupe, re-runs `validateImage` unforked and stops at a derived base64 budget.
+Since #1617 its candidates come from `SearchResult.derived` through
+`derived-provenance.ts` — **not** from `image-leg-search.ts`'s cross-modal
+hits (ADR-027 D11) — so it imports no `ImageHit` and there is no per-image
+score to order by: the carrying row's fused rank decides, then `part`. **The vision gate is the
 CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
 verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
 first"). So the pick loads bytes unconditionally, and nothing that has not
