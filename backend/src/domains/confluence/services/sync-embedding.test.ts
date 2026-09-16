@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
-  processDirtyPageImages: vi.fn().mockResolvedValue({ pages: 0 }),
   runImageAnalysisBatch: vi.fn().mockResolvedValue({ processed: 0, reason: 'unassigned' }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
@@ -18,19 +17,12 @@ vi.mock('../../llm/services/embedding-service.js', () => ({
   processDirtyPages: mocks.processDirtyPages,
 }));
 
-// #1115 P2 (review r1) — the image index's ONLY scheduled trigger. It rides
-// this cadence rather than getting a repeatable job of its own, so deleting
-// the one line in `syncUser` ships an index that fills only from the two admin
-// buttons. Mocked at the module boundary and asserted below, mirroring
-// `processDirtyPages` beside it.
-vi.mock('../../llm/services/image-embedding-service.js', () => ({
-  processDirtyPageImages: mocks.processDirtyPageImages,
-}));
-
 // ADR-027 D13 (#1616) — the analysis worker has its OWN repeatable job
 // (`image-analysis`), so sync must not kick it: a per-user kick beside the
 // repeat is N+1 lease contests per cycle (#1626 review r1). Mocked so the
-// assertion below fails if the kick is ever re-added.
+// assertion below fails if the kick is ever re-added. #1618 retired the
+// legacy image index whose only scheduled trigger WAS this cadence, so there
+// is no post-sync image call left to assert for.
 vi.mock('../../llm/services/image-analysis-worker.js', () => ({
   runImageAnalysisBatch: mocks.runImageAnalysisBatch,
 }));
@@ -109,7 +101,6 @@ describe('syncUser auto-embedding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.processDirtyPages.mockResolvedValue({ processed: 3, errors: 0 });
-    mocks.processDirtyPageImages.mockResolvedValue({ pages: 0 });
   });
 
   function setupSuccessfulSync() {
@@ -144,52 +135,19 @@ describe('syncUser auto-embedding', () => {
     });
   });
 
-  it('should kick the image index worker after a successful sync (#1115 P2), and not the analysis worker', async () => {
-    // The image index has no repeatable job: this fire-and-forget call is its
-    // whole automatic cadence, so nothing else notices if it goes away. The
-    // analysis worker is the opposite: it has one, so a kick here would be
-    // a second trigger per cadence.
+  it('never kicks the image-analysis worker after a sync — it has its own repeatable job', async () => {
+    // ADR-027 D13. The retired image index had no repeatable job, so `syncUser`
+    // carried its whole automatic cadence in one fire-and-forget line; #1618
+    // removed both. The analysis worker is the opposite: it has a repeat, so a
+    // kick here would be a second trigger per cadence and N+1 lease contests.
     setupSuccessfulSync();
 
     await syncUser('user-img-1');
 
     await vi.waitFor(() => {
-      expect(mocks.processDirtyPageImages).toHaveBeenCalled();
-    });
-    await vi.waitFor(() => {
       expect(mocks.processDirtyPages).toHaveBeenCalled();
     });
     expect(mocks.runImageAnalysisBatch).not.toHaveBeenCalled();
-  });
-
-  it('should not kick the image index worker when no credentials are configured', async () => {
-    mocks.query.mockResolvedValueOnce({
-      rows: [{ confluence_url: null, confluence_pat: null }],
-    });
-
-    await syncUser('user-img-2');
-
-    expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
-  });
-
-  it('should not kick the image index worker when no spaces are selected', async () => {
-    mockGetUserAccessibleSpaces.mockResolvedValueOnce([]);
-    mocks.query.mockResolvedValueOnce({
-      rows: [{ confluence_url: 'https://confluence.example.com', confluence_pat: 'encrypted-pat' }],
-    });
-
-    await syncUser('user-img-3');
-
-    expect(mocks.processDirtyPageImages).not.toHaveBeenCalled();
-  });
-
-  it('should not block sync completion if the image index scan rejects', async () => {
-    // Fire-and-forget, and the `.catch` beside it is what keeps a provider
-    // being briefly unreachable from taking the process down.
-    mocks.processDirtyPageImages.mockRejectedValueOnce(new Error('VL box offline'));
-    setupSuccessfulSync();
-
-    await expect(syncUser('user-img-4')).resolves.toBeUndefined();
   });
 
   it('should set status to embedding after sync completes', async () => {

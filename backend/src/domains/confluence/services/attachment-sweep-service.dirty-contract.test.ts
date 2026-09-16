@@ -5,11 +5,11 @@
  * That function swallows its own query error by design (a whole sync must not
  * die on the way to raising a flag) and reports whether the statement RAN.
  * This PR changed its signature for exactly one consumer — the delete loop's
- * `pagesMarkedDirty` counter — and `image-embedding-dirty.integration.test.ts`
+ * `pagesMarkedDirty` counter — and `image-analysis-dirty.integration.test.ts`
  * pins the producer side while nothing pinned the consumer: forcing the
  * counter to increment regardless left the whole sweep suite green.
  *
- * The flag IS the queue (ADR-025), so a counter that over-reports it hides
+ * The flag IS the queue (ADR-027 D4), so a counter that over-reports it hides
  * exactly the backlog an operator would go looking for — which is why the
  * `false` branch has to be a cell rather than a comment.
  *
@@ -31,7 +31,7 @@ const barrier = vi.hoisted(() => ({
   dirtyInside: false,
   dbQuery: vi.fn(async (sql: string) => {
     if (sql.includes('SELECT id FROM pages WHERE confluence_id')) return { rows: [{ id: 7 }] };
-    if (sql.includes('DELETE FROM page_image_embeddings')) {
+    if (sql.includes('DELETE FROM page_image_analyses')) {
       barrier.deleteSqlInside = barrier.active;
     }
     return { rows: [], rowCount: 0 };
@@ -163,7 +163,7 @@ describe('#1349 deleteCandidates — pagesMarkedDirty reports the flag it really
     expect(totals.pagesMarkedDirty).toBe(0);
   });
 
-  it('keeps filesystem deletion, embedding-row prune and dirty SQL in one barrier callback', async () => {
+  it('keeps filesystem deletion, analysis-row prune and dirty SQL in one barrier callback', async () => {
     await seedAgedFile('90001', 'orphan.png');
     vi.mocked(removeCachedAttachmentFile).mockImplementationOnce(async () => {
       expect(barrier.active).toBe(true);

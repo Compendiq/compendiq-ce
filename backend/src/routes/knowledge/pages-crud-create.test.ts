@@ -497,7 +497,7 @@ describe('POST /api/pages - parentId validation', () => {
       return call[0] as string;
     }
 
-    it('marks a standalone create image_embedding_dirty, excluding folders', async () => {
+    it('marks a standalone create image_analysis_dirty, excluding folders', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, title: 'T', version: 1 }] });
       mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -509,19 +509,20 @@ describe('POST /api/pages - parentId validation', () => {
 
       expect(response.statusCode).toBe(200);
       const sql = insertPagesSql();
-      expect(sql).toContain('image_embedding_dirty');
+      expect(sql).toContain('image_analysis_dirty');
+      expect(sql).not.toContain('image_embedding_dirty');
       // Bound to the SAME parameter as `embedding_dirty` (`!isFolder`), so a
       // folder cannot be queued for a scan whose own WHERE excludes it — a
       // flag no worker can ever clear reads as a backlog that never drains.
-      // ADR-027 D4: the analysis flag rides the same parameter.
-      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*image_analysis_dirty/);
-      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
+      // ADR-027 D4: the analysis flag rides that parameter now that #1618 has
+      // retired the legacy one that used to sit between them.
+      expect(sql).toMatch(/embedding_dirty,\s*image_analysis_dirty/);
+      const embeddingDirtyParam = /\$(\d+),\s*\$(\d+),\s*'not_embedded'/.exec(sql);
       expect(embeddingDirtyParam).not.toBeNull();
       expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![2]);
-      expect(embeddingDirtyParam![1]).toBe(embeddingDirtyParam![3]);
     });
 
-    it('marks a Confluence create image_embedding_dirty, on the insert and the conflict arm', async () => {
+    it('marks a Confluence create image_analysis_dirty, on the insert and the conflict arm', async () => {
       mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
       mockQueryFn.mockResolvedValue({ rows: [] });
 
@@ -543,8 +544,9 @@ describe('POST /api/pages - parentId validation', () => {
 
       expect(response.statusCode).toBe(200);
       const sql = insertPagesSql();
-      expect(sql).toMatch(/embedding_dirty,\s*image_embedding_dirty,\s*image_analysis_dirty,\s*embedding_status/);
-      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_embedding_dirty = TRUE,\s*image_analysis_dirty = TRUE/);
+      expect(sql).toMatch(/embedding_dirty,\s*image_analysis_dirty,\s*embedding_status/);
+      expect(sql).toMatch(/DO UPDATE SET[\s\S]*image_analysis_dirty = TRUE/);
+      expect(sql).not.toContain('image_embedding_dirty');
     });
   });
 

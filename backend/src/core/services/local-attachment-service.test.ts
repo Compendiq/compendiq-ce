@@ -404,7 +404,7 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       `);
       await query(`
         CREATE TRIGGER test_page_snapshot_shared_lock
-        BEFORE UPDATE OF image_embedding_dirty ON pages
+        BEFORE UPDATE OF image_analysis_dirty ON pages
         FOR EACH ROW EXECUTE FUNCTION test_require_attachment_snapshot_shared_lock()
       `);
 
@@ -418,11 +418,11 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
             userId,
           }),
         ).resolves.toMatchObject({ pageId, filename: 'same-client.txt' });
-        const page = await query<{ image_embedding_dirty: boolean }>(
-          'SELECT image_embedding_dirty FROM pages WHERE id = $1',
+        const page = await query<{ image_analysis_dirty: boolean }>(
+          'SELECT image_analysis_dirty FROM pages WHERE id = $1',
           [pageId],
         );
-        expect(page.rows[0]?.image_embedding_dirty).toBe(true);
+        expect(page.rows[0]?.image_analysis_dirty).toBe(true);
       } finally {
         await query('DROP TRIGGER IF EXISTS test_page_snapshot_shared_lock ON pages');
         await query('DROP TRIGGER IF EXISTS test_attachment_snapshot_shared_lock ON local_attachments');

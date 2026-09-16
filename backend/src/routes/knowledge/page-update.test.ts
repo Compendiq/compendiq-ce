@@ -257,7 +257,7 @@ describe('PUT /api/pages/:id', () => {
       return call[0] as string;
     }
 
-    it('raises image_embedding_dirty on a standalone edit, gated on body_html', async () => {
+    it('raises image_analysis_dirty on a standalone edit, gated on body_html', async () => {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('SELECT id, version, space_key')) {
           return Promise.resolve({
@@ -282,15 +282,17 @@ describe('PUT /api/pages/:id', () => {
 
       expect(response.statusCode).toBe(200);
       const sql = findUpdatePagesCall('local_modified_by');
-      expect(sql).toContain('image_embedding_dirty');
+      expect(sql).toContain('image_analysis_dirty');
       // `body_html`, never `body_text`: the src attributes live in the HTML,
       // and a flattener-only difference cannot move an image.
-      expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
-      // ADR-027 D4: the analysis flag rides the same gate.
       expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
+      // #1618 retired the legacy flag this gate was written for; writing a
+      // dropped column would fail against a migrated database, and this suite
+      // mocks the query, so the absence is asserted rather than discovered.
+      expect(sql).not.toContain('image_embedding_dirty');
     });
 
-    it('raises image_embedding_dirty on the app-side Confluence push', async () => {
+    it('raises image_analysis_dirty on the app-side Confluence push', async () => {
       // This path especially: its own comment notes the follow-up sync
       // short-circuits on an already-current version, so `syncPage`'s image
       // flag never runs for it.
@@ -302,8 +304,8 @@ describe('PUT /api/pages/:id', () => {
 
       expect(response.statusCode).toBe(200);
       const sql = findUpdatePagesCall('body_storage');
-      expect(sql).toMatch(/image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
       expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
+      expect(sql).not.toContain('image_embedding_dirty');
     });
   });
 

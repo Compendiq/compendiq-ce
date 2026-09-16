@@ -194,24 +194,29 @@ describe.skipIf(!dbAvailable)('Migration 054 — multi LLM providers', () => {
     ]);
   });
 
-  it('repairs the usecase CHECK to the NEWEST widener, not to a hardcoded one', async () => {
+  it('repairs the usecase CHECK to the NEWEST writer, not to a hardcoded one', async () => {
     // The cases above leave the shared database carrying 054's original
     // five-name CHECK. The repair in `afterAll` has to put every later
-    // widening migration back — if it re-runs only the one that was current
+    // rewriter back — if it re-runs only the one that was current
     // when it was written, the constraint ends up narrower than the schema
     // and the *next* test file to assert on a newer use case fails for a
     // reason that has nothing to do with it (093 hit exactly this).
-    const wideners = usecaseCheckMigrations();
-    expect(wideners.length).toBeGreaterThan(1); // 090 and 093 today
+    //
+    // The newest writer is no longer a widener: #1618's 118 drops and re-adds
+    // the constraint WITHOUT `image_embedding`, so the repair must follow a
+    // narrowing too.
+    const rewriters = usecaseCheckMigrations();
+    expect(rewriters.length).toBeGreaterThan(1); // 090, 093, 108, 115, 118 today
 
-    // Names the newest widener admits — read from the migration rather than
-    // listed here, so a future widener is covered without editing this test.
-    const newest = fs.readFileSync(path.join(migrationsDir, wideners[wideners.length - 1]!), 'utf8');
+    // Names the newest writer admits — read from the migration rather than
+    // listed here, so a future rewriter is covered without editing this test.
+    const newest = fs.readFileSync(path.join(migrationsDir, rewriters[rewriters.length - 1]!), 'utf8');
     const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(newest);
     expect(listed).not.toBeNull();
     const expected = [...listed![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
-    expect(expected).toContain('image_embedding');
+    expect(expected).not.toContain('image_embedding');
     expect(expected).toContain('inline_completion');
+    expect(expected).toContain('image_analysis');
 
     // Revert to 054's inline five — exactly the end state the pre-054 cases
     // above produce by recreating the table from 054's own DDL.

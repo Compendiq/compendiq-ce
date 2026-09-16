@@ -427,7 +427,7 @@ describe('POST /api/llm/improvements/apply', () => {
       return call[0] as string;
     }
 
-    it('raises image_embedding_dirty on the Confluence push, gated on body_html', async () => {
+    it('raises image_analysis_dirty on the Confluence push, gated on body_html', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/llm/improvements/apply',
@@ -435,16 +435,15 @@ describe('POST /api/llm/improvements/apply', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(updatePagesSql('body_storage')).toMatch(
-        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
-      );
-      // ADR-027 D4: the analysis flag rides the same gate.
+      // ADR-027 D4: the analysis flag carries the gate #1618 retired the
+      // legacy `image_embedding_dirty` half of.
       expect(updatePagesSql('body_storage')).toMatch(
         /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
       );
+      expect(updatePagesSql('body_storage')).not.toContain('image_embedding_dirty');
     });
 
-    it('raises image_embedding_dirty on the standalone write, gated on body_html', async () => {
+    it('raises image_analysis_dirty on the standalone write, gated on body_html', async () => {
       mockQuery.mockImplementation((sql: string) => {
         if (sql.includes('SELECT id, version, title, space_key, source, confluence_id')) {
           return Promise.resolve({
@@ -466,11 +465,9 @@ describe('POST /api/llm/improvements/apply', () => {
 
       expect(response.statusCode).toBe(200);
       expect(updatePagesSql('local_modified_by')).toMatch(
-        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
-      );
-      expect(updatePagesSql('local_modified_by')).toMatch(
         /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/,
       );
+      expect(updatePagesSql('local_modified_by')).not.toContain('image_embedding_dirty');
     });
   });
 

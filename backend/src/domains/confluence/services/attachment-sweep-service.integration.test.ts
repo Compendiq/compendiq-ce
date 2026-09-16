@@ -1012,41 +1012,29 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
   });
 
   describe('live run', () => {
-    async function liveImageEmbeddingWidth(): Promise<number> {
-      const r = await query<{ type: string }>(
-        `SELECT format_type(atttypid, atttypmod) AS type
-           FROM pg_attribute
-          WHERE attrelid = 'page_image_embeddings'::regclass AND attname = 'embedding'`,
-      );
-      const m = /^(?:halfvec|vector)\((\d+)\)$/.exec(r.rows[0]?.type ?? '');
-      if (!m) {
-        throw new Error(`unexpected page_image_embeddings.embedding type ${r.rows[0]?.type}`);
-      }
-      return Number(m[1]);
-    }
-
-    async function seedEmbeddingRow(pageId: number, source: string, key: string): Promise<void> {
-      // Sibling files on this worker may have retyped the column (4, 1024, …).
-      // The sweep only needs a row to prune; match the live width.
-      const dims = await liveImageEmbeddingWidth();
-      const vec = '[' + new Array(dims).fill(0).join(',') + ']';
+    /**
+     * One `page_image_analyses` row for the sweep to prune. #1618 retired
+     * `page_image_embeddings`, so the analyses table is what the sweep keeps
+     * in step with the bytes on disk (ADR-027 "Retirement plan").
+     */
+    async function seedAnalysisRow(pageId: number, source: string, key: string): Promise<void> {
       await query(
-        `INSERT INTO page_image_embeddings (page_id, source, attachment_key, sha256, format, model, embedding)
-         VALUES ($1, $2, $3, 'sha', 'png', 'test-model', $4::vector)`,
-        [pageId, source, key, vec],
+        `INSERT INTO page_image_analyses (page_id, source, attachment_key, content_hash, format, status)
+         VALUES ($1, $2, $3, 'sha', 'png', 'pending')`,
+        [pageId, source, key],
       );
     }
 
-    it('deletes exactly the orphans, prunes their index rows and marks owners dirty', async () => {
+    it('deletes exactly the orphans, prunes their analysis rows and marks owners dirty', async () => {
       const { confPageId, localPageId } = await seedCorpus();
-      await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = ANY($1::int[])`, [
+      await query(`UPDATE pages SET image_analysis_dirty = FALSE WHERE id = ANY($1::int[])`, [
         [confPageId, localPageId],
       ]);
       // A row for the orphan (the safety net under test) and one for a kept
       // file (which must survive the prune).
-      await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
-      await seedEmbeddingRow(confPageId, 'confluence', 'keep.png');
-      await seedEmbeddingRow(localPageId, 'local', 'untracked.png');
+      await seedAnalysisRow(confPageId, 'confluence', 'orphan.png');
+      await seedAnalysisRow(confPageId, 'confluence', 'keep.png');
+      await seedAnalysisRow(localPageId, 'local', 'untracked.png');
 
       const run = await runAttachmentSweep({ dryRun: false });
 
@@ -1094,19 +1082,19 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       expect(run!.deleted).toMatchObject({ directories: 2, files: 5 });
       expect(run!.deleted!.bytes).toBeGreaterThan(0);
 
-      // Index rows for deleted files are pruned; rows for kept files stay.
+      // Analysis rows for deleted files are pruned; rows for kept files stay.
       const rows = await query<{ attachment_key: string }>(
-        `SELECT attachment_key FROM page_image_embeddings ORDER BY attachment_key`,
+        `SELECT attachment_key FROM page_image_analyses ORDER BY attachment_key`,
       );
       expect(rows.rows.map((r) => r.attachment_key)).toEqual(['keep.png']);
-      expect(run!.deleted!.imageEmbeddingRows).toBe(2);
+      expect(run!.deleted!.imageAnalysisRows).toBe(2);
 
-      // Owners of deleted files are re-queued for the image index.
-      const dirty = await query<{ id: number; image_embedding_dirty: boolean }>(
-        `SELECT id, image_embedding_dirty FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
+      // Owners of deleted files are re-queued for image analysis.
+      const dirty = await query<{ id: number; image_analysis_dirty: boolean }>(
+        `SELECT id, image_analysis_dirty FROM pages WHERE id = ANY($1::int[]) ORDER BY id`,
         [[confPageId, localPageId]],
       );
-      expect(dirty.rows.every((r) => r.image_embedding_dirty)).toBe(true);
+      expect(dirty.rows.every((r) => r.image_analysis_dirty)).toBe(true);
       expect(run!.deleted!.pagesMarkedDirty).toBeGreaterThanOrEqual(2);
 
       // The missing-file row is still counted, never deleted.
@@ -1177,8 +1165,8 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
      * widened `asPageId('042')` puts `'42'` — never the key `'042'` — into
      * the known set, and `042/` is judged exactly as it is with the guard in
      * place. The reachable call site is `confluenceKeyOwners`, which answers
-     * a page-id LIST for one key and feeds both the `page_image_embeddings`
-     * prune and the image-reindex re-queue. With the guard gone, key `042`
+     * a page-id LIST for one key and feeds both the `page_image_analyses`
+     * prune and the image-analysis re-queue. With the guard gone, key `042`
      * (a key a page really owns via `confluence_id`) ALSO resolves to the
      * unrelated live page whose id is 42, so deleting an orphan file under
      * `042/` prunes THAT page's index row for a file it still holds and
@@ -1203,14 +1191,14 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       );
       const ownerId = owner.rows[0]!.id;
 
-      await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = ANY($1::int[])`, [
+      await query(`UPDATE pages SET image_analysis_dirty = FALSE WHERE id = ANY($1::int[])`, [
         [collateralId, ownerId],
       ]);
       // The SAME attachment_key on both pages: the prune is keyed by
       // (page_id, source, attachment_key), so the owner LIST is the only
       // thing deciding which of the two rows goes.
-      await seedEmbeddingRow(ownerId, 'confluence', 'orphan.png');
-      await seedEmbeddingRow(collateralId, 'confluence', 'orphan.png');
+      await seedAnalysisRow(ownerId, 'confluence', 'orphan.png');
+      await seedAnalysisRow(collateralId, 'confluence', 'orphan.png');
 
       const orphan = await writeAged(key, 'orphan.png');
       await ageDirs(key);
@@ -1221,22 +1209,22 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       // The file is an unreferenced orphan under a key its own page owns, so
       // it goes — this cell is about the collateral, not about the delete.
       expect(await exists(orphan)).toBe(false);
-      expect(run!.deleted!.imageEmbeddingRows).toBe(1);
+      expect(run!.deleted!.imageAnalysisRows).toBe(1);
       const survivors = await query<{ page_id: number }>(
-        `SELECT page_id FROM page_image_embeddings ORDER BY page_id`,
+        `SELECT page_id FROM page_image_analyses ORDER BY page_id`,
       );
       expect(
         survivors.rows.map((r) => r.page_id),
         'the collapsed-onto page keeps its own index row',
       ).toEqual([collateralId]);
-      const dirty = await query<{ id: number; image_embedding_dirty: boolean }>(
-        `SELECT id, image_embedding_dirty FROM pages WHERE id = ANY($1::int[])`,
+      const dirty = await query<{ id: number; image_analysis_dirty: boolean }>(
+        `SELECT id, image_analysis_dirty FROM pages WHERE id = ANY($1::int[])`,
         [[collateralId, ownerId]],
       );
-      expect(dirty.rows.find((r) => r.id === ownerId)!.image_embedding_dirty).toBe(true);
+      expect(dirty.rows.find((r) => r.id === ownerId)!.image_analysis_dirty).toBe(true);
       expect(
-        dirty.rows.find((r) => r.id === collateralId)!.image_embedding_dirty,
-        'the collapsed-onto page is never re-queued for an image re-index',
+        dirty.rows.find((r) => r.id === collateralId)!.image_analysis_dirty,
+        'the collapsed-onto page is never re-queued for image analysis',
       ).toBe(false);
       expect(run!.deleted!.pagesMarkedDirty).toBe(1);
     });
@@ -1372,7 +1360,7 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       const { confPageId } = await seedCorpus();
       // One index row for a file the sweep really removes, so `rows_pruned`
       // below is asserted against a non-zero value rather than a default.
-      await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
+      await seedAnalysisRow(confPageId, 'confluence', 'orphan.png');
       const run = await runAttachmentSweep({ dryRun: false });
       expect(run!.status).toBe('completed');
 
@@ -1398,10 +1386,10 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       // the EE Data Retention Attestation renders as "the table touched" and
       // "rows pruned" (review r2 — omitting them put this run in the report
       // with both columns blank). The pair describes the DATABASE fact: the
-      // only table this sweep prunes rows from is `page_image_embeddings`, so
+      // only table this sweep prunes rows from is `page_image_analyses`, so
       // `rows_pruned` is that count and never the file count beside it.
-      expect(audit.rows[0]!.metadata.table).toBe('page_image_embeddings');
-      expect(audit.rows[0]!.metadata.rows_pruned).toBe(run!.deleted!.imageEmbeddingRows);
+      expect(audit.rows[0]!.metadata.table).toBe('page_image_analyses');
+      expect(audit.rows[0]!.metadata.rows_pruned).toBe(run!.deleted!.imageAnalysisRows);
       expect(audit.rows[0]!.metadata.rows_pruned).toBeGreaterThan(0);
       // The audit states what was FOUND beside what was destroyed, so it
       // reads the WALK, never the run record's post-delete residue —
@@ -1473,8 +1461,8 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
       'a live run that fails mid-delete records the partial totals, audits them and still dirty-marks',
       async () => {
         const { confPageId, localPageId } = await seedCorpus();
-        await query(`UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1`, [confPageId]);
-        await seedEmbeddingRow(confPageId, 'confluence', 'orphan.png');
+        await query(`UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1`, [confPageId]);
+        await seedAnalysisRow(confPageId, 'confluence', 'orphan.png');
 
         // Read-only parent directory: the rm of local/<id>/untracked.png
         // fails with EACCES after every Confluence-tree candidate (which the
@@ -1503,13 +1491,13 @@ describe.skipIf(!dbAvailable)('#1349 attachment sweep (integration)', () => {
           expect(audit.rows[0]!.metadata.files_pruned).toBe(run!.deleted!.files);
 
           // Owners of files that WERE deleted are re-queued despite the throw.
-          expect(run!.deleted!.imageEmbeddingRows).toBe(1);
+          expect(run!.deleted!.imageAnalysisRows).toBe(1);
           expect(run!.deleted!.pagesMarkedDirty).toBeGreaterThanOrEqual(1);
-          const dirty = await query<{ image_embedding_dirty: boolean }>(
-            `SELECT image_embedding_dirty FROM pages WHERE id = $1`,
+          const dirty = await query<{ image_analysis_dirty: boolean }>(
+            `SELECT image_analysis_dirty FROM pages WHERE id = $1`,
             [confPageId],
           );
-          expect(dirty.rows[0]!.image_embedding_dirty).toBe(true);
+          expect(dirty.rows[0]!.image_analysis_dirty).toBe(true);
         } finally {
           await fs.chmod(lockedDir, 0o755);
         }
