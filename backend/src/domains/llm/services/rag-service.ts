@@ -47,6 +47,7 @@ import { readDerivedProvenance, type DerivedProvenance } from './derived-provena
 import {
   bestChunkLateralSql,
   derivedRankArmSql,
+  lexicalChunkUnusableSql,
   lexicalTsQuery,
   resolveLexicalChunk,
   type BestChunkColumns,
@@ -709,10 +710,10 @@ export async function keywordSearch(
                 -- Only for a row the chunk resolution cannot answer (review
                 -- r1 finding 6). The prefix was selected for EVERY keyword
                 -- row while the mapper discards it on the common path, at up
-                -- to 500 bytes per row per query. The CASE mirrors
-                -- resolveLexicalChunk's own usable test on the 'always'
-                -- path: no chunk row at all, or an empty one.
-                CASE WHEN best.chunk_index IS NULL OR coalesce(best.chunk_text, '') = ''
+                -- to 500 bytes per row per query. The condition is not
+                -- restated here: lexicalChunkUnusableSql is the SQL half of
+                -- the same 'usable' rule resolveLexicalChunk applies below.
+                CASE WHEN ${lexicalChunkUnusableSql()}
                      THEN substring(coalesce(cp.body_text, ''), 1, 500)
                      ELSE '' END AS body_text,
                 ranked.rank AS rank,

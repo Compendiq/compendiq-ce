@@ -143,7 +143,11 @@ const MAX_IMAGE_SOURCES = 4;
  * It is reached only when {@link buildDerivedImageSources} produced NOTHING,
  * so the two arms never interleave and one attachment can never be cited
  * twice. No identity read: an `ImageHit` already carries the
- * `buildPageImageUrl` result, computed where the kNN had the page row.
+ * `buildPageImageUrl` result, computed where the kNN had the page row. It also
+ * carries no dedup key of its own, unlike its derived counterpart (review r2
+ * finding 5): uniqueness comes from three upstream invariants — the
+ * `page_image_embeddings` UNIQUE `(page_id, source, attachment_key)`,
+ * `groupByPage`'s one entry per page, and one fused row per page.
  *
  * Ordering is the hit's own cross-modal cosine — the only per-IMAGE measure
  * the legacy leg has; the page order is a fused rank that says nothing about

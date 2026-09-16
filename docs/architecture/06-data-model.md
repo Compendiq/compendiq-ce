@@ -775,9 +775,13 @@ together, which matters most for #1114's query-side prefix.
   the derived arm through a `BitmapAnd` only while both were idle; after a
   corpus-wide analysis batch the full GIN's pending list re-priced that plan
   and the planner scanned every derived chunk behind a `chunk_tsv` filter
-  (review r1: 8.9–10.4 ms against 0.021 ms, and a partial GIN WITHOUT
-  `fastupdate = off` measured no better, because a derived write burst pends
-  it identically). Both 116 indexes stay — the full GIN serves authored chunk
+  (review r1: 8.9–10.4 ms against 0.021 ms; review r2 re-measured the full
+  statement at 7.8–9.0 ms STEADY plus an 18–74 ms tail). A partial GIN
+  WITHOUT `fastupdate = off` is already a 5–10× win, but a derived write
+  burst pends it exactly like the full one, so its cost tracks the pending
+  list and it keeps a bad window — the reloption is what makes the arm's cost
+  independent of the burst, at ~38 µs per derived chunk on `embedPage`'s
+  inserts. Both 116 indexes stay — the full GIN serves authored chunk
   resolution, the btree partial the `page_id`-keyed composition read.
   Citations read provenance from `page_embeddings.metadata` only, so the query
   path never joins `page_image_analyses`.

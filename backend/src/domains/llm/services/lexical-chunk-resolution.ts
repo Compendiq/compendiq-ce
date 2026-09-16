@@ -146,6 +146,46 @@ export interface ResolvedLexicalChunk {
 }
 
 /**
+ * Whether a resolved chunk row can answer for the page at all — the ONE rule,
+ * in its TypeScript half.
+ *
+ * `''` is the THIRD state, and it is unusable (review r1 finding 5): a row
+ * whose `chunk_text` is empty would hand the caller an empty `chunkText`
+ * where the body prefix is genuinely the better context. `embedPage` should
+ * never write such a row, so this is belt-and-braces — but the guard reads as
+ * "absent means absent" and must therefore treat empty as absent too.
+ */
+export function lexicalChunkUsable(row: BestChunkColumns, adopt: 'always' | 'on-match'): boolean {
+  return row.chunk_text != null
+    && row.chunk_text.length > 0
+    && row.chunk_index != null
+    && (adopt === 'always' || row.chunk_matched === true);
+}
+
+/**
+ * The SAME rule's SQL half, negated: the condition under which a query must
+ * still select the page's body prefix, because the resolution cannot answer.
+ *
+ * It exists because the caller that needs it is a `SELECT` list, not a row
+ * mapper: selecting `substring(body_text, 1, 500)` for EVERY lexical row
+ * costs up to 500 bytes per row per query that the mapper then discards
+ * (review r1 finding 6). Scoped to the `'always'` path — the `'on-match'`
+ * caller (#1107's pin) selects its own `rag_context_chars_per_page` lede
+ * unconditionally, so it has no SQL half to keep in step.
+ *
+ * Parenthesised, so it composes wherever a boolean expression goes rather
+ * than only after a `CASE WHEN`.
+ *
+ * Two languages, one rule: `rag-service-derived-retrieval.integration.test.ts`
+ * evaluates this expression in real Postgres over every row shape and asserts
+ * it is exactly `!lexicalChunkUsable(row, 'always')`, so the two halves cannot
+ * drift apart silently.
+ */
+export function lexicalChunkUnusableSql(alias = 'best'): string {
+  return `(${alias}.chunk_index IS NULL OR coalesce(${alias}.chunk_text, '') = '')`;
+}
+
+/**
  * The resolved chunk, or the caller's fallback text.
  *
  * `adopt` is the Q1 gate: `'always'` for the keyword leg (D10's rule as
@@ -165,17 +205,7 @@ export function resolveLexicalChunk(
   fallback: { text: string; sectionTitle: string },
   adopt: 'always' | 'on-match' = 'always',
 ): ResolvedLexicalChunk {
-  // `''` is the THIRD state, and it is unusable (review r1 finding 5): a row
-  // whose `chunk_text` is empty would hand the caller an empty `chunkText`
-  // where the body prefix is genuinely the better context. `embedPage` should
-  // never write such a row, so this is belt-and-braces — but the guard reads
-  // as "absent means absent" and must therefore treat empty as absent too.
-  const usable =
-    row.chunk_text != null
-    && row.chunk_text.length > 0
-    && row.chunk_index != null
-    && (adopt === 'always' || row.chunk_matched === true);
-  if (!usable) {
+  if (!lexicalChunkUsable(row, adopt)) {
     return { chunkText: fallback.text, sectionTitle: fallback.sectionTitle };
   }
   const metadata = (typeof row.metadata === 'object' && row.metadata !== null

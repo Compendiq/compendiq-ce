@@ -56,9 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending list re-priced the plan and the arm scanned every derived chunk
   behind a `chunk_tsv` filter — measured 8.9–10.4 ms for a one-row match
   against 0.021 ms with this index, at 429 pending pages on a 4,001-page
-  corpus. `fastupdate = off` is what keeps the new index out of that state
-  (a plain partial GIN pends identically and measured no better); only the
-  analysis worker's own inserts pay it, at ~45 µs per derived chunk.
+  corpus (review r2 re-measured the full statement at 7.8–9.0 ms steady plus
+  an 18–74 ms tail). `fastupdate = off` is what keeps the new index out of
+  that state: a plain partial GIN is already a 5–10× win, but it pends
+  identically, so its cost tracks the pending list and a bad window remains.
+  Only the embedding worker's own derived inserts pay the reloption, at
+  ~38 µs per derived chunk.
 
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
   Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`

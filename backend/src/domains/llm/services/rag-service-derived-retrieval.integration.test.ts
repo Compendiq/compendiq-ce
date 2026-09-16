@@ -19,6 +19,11 @@ import {
   isDbAvailable,
 } from '../../../test-db-helper.js';
 import { query } from '../../../core/db/postgres.js';
+import {
+  lexicalChunkUnusableSql,
+  lexicalChunkUsable,
+  type BestChunkColumns,
+} from './lexical-chunk-resolution.js';
 import pgvector from 'pgvector';
 
 function fakeVec(seed: number): number[] {
@@ -305,6 +310,49 @@ describe.skipIf(!dbAvailable)('ADR-027 D10–D12 — derived chunks in retrieval
     expect(hits).toHaveLength(1);
     expect(hits[0]!.chunkText).toBe(body.slice(0, 500));
     expect(hits[0]!.chunkIndex).toBeUndefined();
+  });
+
+  it('selects the body prefix for a row whose chunk_text is EMPTY, through the real SQL', async () => {
+    // The same rule as above, but reached by the OTHER arm of
+    // `lexicalChunkUnusableSql`: the lateral does answer, with a row that
+    // cannot stand in for the page. `rag-service.test.ts` pins the TS half
+    // over a mocked pool; this runs the CASE that decides whether the prefix
+    // was fetched at all, so dropping the empty test in SQL fails here with
+    // an empty `chunkText` instead of the lede.
+    const body = `Redis eviction notes. ${'y'.repeat(900)}`;
+    const { pageId, confluenceId } = await seedPage({ title: 'Redis eviction', bodyText: body });
+    await seedChunk(pageId, 0, '', authoredMetadata('Redis eviction', 'Redis eviction', confluenceId));
+
+    const hits = await keywordSearch(USER, 'Redis eviction notes', 10);
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.chunkText).toBe(body.slice(0, 500));
+    expect(hits[0]!.chunkIndex).toBeUndefined();
+  });
+
+  it('agrees with resolveLexicalChunk\'s usable test on every row shape — one rule, two languages', async () => {
+    // Review r2 finding 6: the rule lives in a SELECT list (SQL) and in a row
+    // mapper (TS), and nothing tied the two halves together. Postgres
+    // evaluates the shipped expression here, so a drift on either side fails.
+    const shapes: { row: BestChunkColumns; usable: boolean }[] = [
+      { row: { chunk_text: 'a resolved chunk', chunk_index: 0 }, usable: true },
+      { row: { chunk_text: 'a resolved chunk', chunk_index: 7, chunk_matched: false }, usable: true },
+      { row: { chunk_text: ' ', chunk_index: 3 }, usable: true },
+      { row: { chunk_text: '', chunk_index: 0 }, usable: false },
+      { row: { chunk_text: null, chunk_index: 0 }, usable: false },
+      { row: { chunk_text: 'a resolved chunk', chunk_index: null }, usable: false },
+      { row: { chunk_text: null, chunk_index: null }, usable: false },
+    ];
+
+    for (const { row, usable } of shapes) {
+      const sql = await query<{ unusable: boolean }>(
+        `SELECT ${lexicalChunkUnusableSql('best')} AS unusable
+           FROM (SELECT $1::text AS chunk_text, $2::int AS chunk_index) best`,
+        [row.chunk_text ?? null, row.chunk_index ?? null],
+      );
+      expect(lexicalChunkUsable(row, 'always'), JSON.stringify(row)).toBe(usable);
+      expect(sql.rows[0]!.unusable, JSON.stringify(row)).toBe(!usable);
+    }
   });
 
   it('gives a page with five matching derived chunks ONE candidate at ONE rank', async () => {

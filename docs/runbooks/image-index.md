@@ -518,12 +518,19 @@ that re-prices the plan: measured on a 4,001-page corpus at 429 pending
 pages, the arm dropped the GIN for `page_embeddings_derived_idx` plus a
 `chunk_tsv` filter over every derived chunk — 8.9–10.4 ms for a one-row match
 against 0.021 ms, on every keyword query and every `/llm/ask` for as long as
-the batch keeps the list full. `fastupdate = off` is what keeps 117 out of
-that state (a plain partial GIN pends exactly like the full one and measured
-no better); the cost is ~45 µs per derived chunk on the worker's own inserts,
-and nothing else writes that index. If you are reading an old plan or a
-pre-117 deployment: `VACUUM (ANALYZE) page_embeddings` drains the pending
-list and restores the fast plan immediately.
+the batch keeps the list full. Re-measured in review r2 at ~360k derived
+chunks it is worse than that: 7.8–9.0 ms on the full `keywordSearch` as a
+STEADY state, plus an 18–74 ms tail whenever the pending list crosses the
+planner's flip point. `fastupdate = off` is what keeps 117 out of that state.
+A plain partial GIN is already a 5–10× win (0.90–2.00 ms on the full
+statement), but it pends like the full one, so its cost tracks the pending
+list (0.47/0.89/1.08 ms at 233/465/415 pending pages) and it still flipped to
+the filter plan once in twelve write steps; only the reloption makes the cost
+independent of the burst. It is paid at ~38 µs per derived chunk by the
+EMBEDDING worker's inserts (`embedPage`, which the analysis worker triggers by
+raising `embedding_dirty`), and nothing else writes that index. If you are
+reading an old plan or a pre-117 deployment: `VACUUM (ANALYZE) page_embeddings`
+drains the pending list and restores the fast plan immediately.
 
 Failures back off `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
 exponent is clamped so a class that never goes terminal cannot grow one past
