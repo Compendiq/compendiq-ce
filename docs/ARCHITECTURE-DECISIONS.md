@@ -5514,6 +5514,19 @@ verdict `retired`, names what was retired and the power it had, and is
 excluded from the aggregation. Arm B's own `imageEvidenceRecallAt5` stays on
 its run report as a descriptive number that no condition reads.
 
+*Erratum to A-2 (2026-09-16, #1619 review r1).* "Never a missing row" did not
+hold on one path: the pilot stop (ψ < 0.20) returned its own condition and
+nothing else, so a stopped run printed neither the retired row nor a MEASURED
+O7 safety failure — and O7's cap is absolute, in queries, read off the
+candidate arm's own retrieval report, which no judging-power argument makes
+conditional. The pilot pre-emption is therefore scoped to the DECISION: the
+aggregate verdict remains `inconclusive-by-design` (the pre-registration says
+the pilot pre-empts all three parts, and letting a condition fail the gate
+under it would be a post-hoc change to the rule), while every condition is
+printed with the verdict its own measurement earns — the primary row
+`inconclusive` and labelled reported-not-decided, since its interval was
+sized under the design the pilot says does not hold.
+
 **A-3 — the text non-inferiority control.** `B vs C` is δ ≡ 0 by construction
 (the two arms differ only in `image_analysis`, which the text gate never
 consults) and cannot fail; it is kept because O4 pre-registers it and a
@@ -5578,7 +5591,10 @@ falsified by A-1 and has been corrected.
 **Recorded beside the amendment: the output-token ceiling is a property of the
 deployment, not of the ADR.** Measured 2026-09-16 on `gemma-4-26b-a4b-it`
 (RTX 3090, LM Studio) over five corpus images at both candidate ceilings: the
-model reasons before every reply (64–96 % of its output tokens), five of five
+model reasons before every reply (**82.0–93.3 %** of its output tokens at
+8,192, **82.0–99.96 %** over all ten rows of the pre-check — the reasoning
+share of the raw `usage` of each request, 401/489 … 3,494/3,746 at 8,192 and
+7,578/7,581 at 16,384; the ten rows are below), five of five
 images produced a valid payload at 8,192 and four of five at 16,384, and the
 worst image took 114.4 s of the 120 s per-image budget
 (`ANALYSIS_TIMEOUT_MS`). The binding constraint is neither the ceiling nor the
@@ -5591,6 +5607,27 @@ at the shipped default **8,192**, and the remedy for an image that overruns is
 a larger loaded context on the inference host, not a higher ADR ceiling and
 not a longer timeout.
 
+The ten rows the two ranges above are computed over — the pre-check's raw
+`usage`, one request per image per ceiling, recorded here because a shipped
+percentage must be checkable against the measurement it came from:
+
+| ceiling | image | result | completion (raw) | reasoning | share |
+|---|---|---|---:|---:|---:|
+| 8,192 | periodensystem__1.png | valid | 6,314 | 5,588 | 88.5 % |
+| 8,192 | osi-modell__2.png | valid | 4,543 | 4,061 | 89.4 % |
+| 8,192 | balanced-scorecard__2.png | valid | 3,746 | 3,494 | **93.3 %** |
+| 8,192 | programmablaufplan__1.png | valid | 2,303 | 1,922 | 83.5 % |
+| 8,192 | brandenburger-tor__1.jpg | valid | 489 | 401 | **82.0 %** |
+| 16,384 | periodensystem__1.png | `malformed` | 4,138 | 3,817 | 92.2 % |
+| 16,384 | osi-modell__2.png | valid | 7,581 | 7,578 | **99.96 %** |
+| 16,384 | balanced-scorecard__2.png | valid | 3,746 | 3,494 | 93.3 % |
+| 16,384 | programmablaufplan__1.png | valid | 2,303 | 1,922 | 83.5 % |
+| 16,384 | brandenburger-tor__1.jpg | valid | 489 | 401 | 82.0 % |
+
+So **82.0–93.3 %** is the range over the five rows at the shipped ceiling and
+**82.0–99.96 %** the range over all ten. No figure in this ADR, the runbook or
+the code comments may quote a wider one.
+
 ### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
 
 **The analysis call sends the non-thinking hints** (`think: false`,
@@ -5601,12 +5638,22 @@ answer call, so no arm's answer behaviour changes.
 *Why.* Reasoning tokens come out of the same `max_tokens` budget the payload
 needs, and they contribute nothing to it. Measured 2026-09-16 on
 `gemma-4-26b-a4b-it` (RTX 3090, LM Studio): the reasoning share of the reply
-is **64–96 %** of its output tokens, and on the 187-image corpus **14 images
-failed deterministically at the shipped 8,192 ceiling** — eight
+is **82.0–93.3 %** of its output tokens at the shipped 8,192 ceiling and
+**82.0–99.96 %** across both candidate ceilings — computed from the raw
+`usage` of the ten-row vision pre-check recorded above, whose rows are the
+source of every figure in this paragraph — and on the 187-image corpus
+**14 images failed deterministically at the shipped 8,192 ceiling** — eight
 `truncated:8192` (the reply hit `max_tokens`), five `malformed` and one
 `rejected:400` — every one of which D8 classes deterministic, so five
-attempts take the row to `failed_terminal` and the arm cannot complete. The
-same images answer a **valid payload** with the hints in place. Raising the
+attempts take the row to `failed_terminal` and the arm cannot complete.
+**What was re-probed with the hints is ONE of those fourteen images:**
+`waermepumpe__3.png`, which answers HTTP 400 after 73.2 s of generation as
+the product sent it and **200 with a valid payload in 62.8 s** (3,068
+completion tokens) with the hints in place. The other thirteen — including
+all eight `truncated:8192` — were **not** re-probed: #1618's Retry-failed
+path re-opened all 14 rows for real, but the provider host stopped answering
+before the backfill completed, so no post-erratum result exists for them.
+Raising the
 ceiling is not the remedy: at a measured 68–100 tok/s a 16,384-token reply is
 160–240 s against `ANALYSIS_TIMEOUT_MS` = 120 s, so a higher ceiling trades a
 deterministic refusal for a transient one that never terminates.

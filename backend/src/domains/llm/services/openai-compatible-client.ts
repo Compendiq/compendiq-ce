@@ -470,8 +470,9 @@ export interface ChatCompletionOptions extends StreamChatOptions {
    * Ask a reasoning model NOT to think (`nonThinkingExtras`). Set by the
    * image-analysis call alone (ADR-027 D8 erratum, #1619): a reasoning pass
    * spends the output budget without contributing to the payload — measured
-   * at 64–96 % of the reply's tokens, and 14 of 187 corpus images failed
-   * deterministically at the 8,192 ceiling because of it. The hints are
+   * at 82.0–93.3 % of the reply's tokens at the 8,192 ceiling (#1619's
+   * ten-row vision pre-check, recorded in ADR-027), and 14 of 187 corpus
+   * images failed deterministically at that ceiling because of it. The hints are
    * ADVISORY: strict OpenAI hosts are sent none, and a provider that ignores
    * them is not broken. Never set on a chat or answer call, so no arm's
    * answer behaviour changes.
