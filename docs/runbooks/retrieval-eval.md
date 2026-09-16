@@ -1149,9 +1149,10 @@ npx tsx scripts/run-retrieval-eval.ts --images --arm C --fts-language german --o
 npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json --out-dir artifacts/
 
 # Arm B — same candidate revision, image_analysis assigned. FOUR things must be on this
-# database BEFORE the run: it reads them right after the migrations and refuses before the
-# corpus is seeded if any is missing. On a disposable eval database they are provisioned
-# once and die with the container, so a resumed run re-provisions them:
+# database BEFORE the run. (1) and (4) are read right after the migrations, so a missing one
+# costs a migration and not a 65-page seed; (2) and (3) are refused at the first analysis
+# batch, by name. On a disposable eval database all four are provisioned once and die with
+# the container, so a resumed run re-provisions them:
 #   1. a provider row for the vision host and the `image_analysis` assignment — made
 #      through the PRODUCT's own surface (Settings → AI Models, i.e. POST /api/llm/usecases
 #      against THIS database), because that call is also what retains D7's identity;
