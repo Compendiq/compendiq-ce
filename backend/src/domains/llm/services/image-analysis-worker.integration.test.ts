@@ -10,6 +10,7 @@ import { query } from '../../../core/db/postgres.js';
 import { invalidateRagImageIntakeCache } from '../../../core/services/admin-settings-service.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
 import {
+  IMAGE_ANALYSIS_LAST_RUN_KEY,
   IMAGE_ANALYSIS_MAX_ATTEMPTS,
   IMAGE_ANALYSIS_WORKER_LOCK,
   readImageAnalysisLastRun,
@@ -214,7 +215,7 @@ async function pageState(pageId: number): Promise<{ revision: number; embeddingD
   };
 }
 
-const SHAPE_KEYS = ['processed', 'reused', 'skipped', 'failed', 'terminal', 'repended', 'returned', 'reopened', 'reconciledPages', 'removed'];
+const SHAPE_KEYS = ['processed', 'reused', 'skipped', 'failed', 'terminal', 'repended', 'returned', 'reopened', 'reconciledPages', 'removed', 'pagesFailed'];
 
 describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () => {
   beforeAll(async () => {
@@ -685,7 +686,40 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     expect(await pageState(pageId)).toMatchObject({ revision: 1, embeddingDirty: true });
   });
 
-  it('a file that is there but unreadable at reconcile time leaves the page dirty for the next cycle and writes no missing row', async () => {
+  it('attempts that outran the backoff exponent still finish the batch, write the last run and leave the row due at the 24 h cap', async () => {
+    const retained = identityFor('http://vision/v1');
+    await retain(retained);
+    const { pageId } = await seedPending(['locked.png']);
+    storeFaults.set('locked.png', eacces('locked.png'));
+    const c = client();
+    const run = () => runImageAnalysisBatch({ deps: deps({ analyzeImage: c.analyzeImage }, retained) });
+
+    // One real failure first, so the row carries the identity it failed
+    // under and step 1's stale-failed return does not reset its budget.
+    expect(await run()).toMatchObject({ failed: 1 });
+    const [charged] = await rowsFor(pageId);
+    // About 28 days of a persistent EACCES. `unavailable` never goes
+    // terminal, so nothing capped `attempts` — and the backoff multiplied
+    // before it clamped, so from 34 up the UPDATE raised `interval out of
+    // range`: the throw escaped the batch, no last-run line was written and
+    // the row headed the due-ordered work window on every later batch, with
+    // the analyze step permanently dead (#1626 review r3).
+    await query(`UPDATE page_image_analyses SET attempts = 40, next_attempt_at = NOW() WHERE id = $1`, [charged!.id]);
+    await query(`DELETE FROM admin_settings WHERE setting_key = $1`, [IMAGE_ANALYSIS_LAST_RUN_KEY]);
+
+    const result = await run();
+
+    expect(result).toMatchObject({ failed: 1, terminal: 0 });
+    const [row] = await rowsFor(pageId);
+    expect(row).toMatchObject({ status: 'failed', error: 'unavailable:bytes', attempts: 41 });
+    const dueInMs = row!.next_attempt_at!.getTime() - Date.now();
+    expect(dueInMs).toBeGreaterThan(23 * 60 * 60 * 1000);
+    expect(dueInMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    // The batch reached its end, so the operator's card moved on with it.
+    expect(await readImageAnalysisLastRun()).toMatchObject({ failed: 1 });
+  });
+
+  it('a file that is there but unreadable at reconcile time still indexes the page\'s readable images, counts the page failed and leaves it dirty', async () => {
     const retained = identityFor('http://vision/v1');
     await retain(retained);
     const pageId = await seedPage('<img src="/api/attachments/1/locked.png"><img src="/api/attachments/1/ok.png">');
@@ -697,19 +731,39 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
 
     const first = await run();
 
-    // D6.2: the pass threw, the flag is back, and nothing durable describes
-    // a file that is merely unreadable right now.
-    expect(first).toMatchObject({ reconciledPages: 1, processed: 0, skipped: 0, failed: 0 });
-    expect(await rowsFor(pageId)).toEqual([]);
+    // AC-3: the readable image is indexed in the same batch — one locked file
+    // no longer discards the page's whole desired set. Nothing durable
+    // describes the unreadable one, the page stays dirty (D6.2), and the
+    // operator's counters say a page did not complete.
+    expect(first).toMatchObject({ reconciledPages: 1, pagesFailed: 1, processed: 1, failed: 0, skipped: 0 });
+    expect((await rowsFor(pageId)).map((r) => [r.attachment_key, r.status])).toEqual([['ok.png', 'analyzed']]);
     expect((await pageState(pageId)).analysisDirty).toBe(true);
-    expect(c.calls).toHaveLength(0);
+    expect(c.calls).toHaveLength(1);
+    // Visible where #1618's card reads it, not only in the return value.
+    expect(await readImageAnalysisLastRun()).toMatchObject({ pagesFailed: 1, processed: 1 });
 
     storeFaults.clear();
     const second = await run();
 
-    expect(second).toMatchObject({ reconciledPages: 1, processed: 2, skipped: 0 });
+    // Recovery: the still-dirty page is re-enumerated, the freed reference is
+    // pended and analyzed, and the already-analyzed sibling is not re-sent.
+    expect(second).toMatchObject({ reconciledPages: 1, pagesFailed: 0, processed: 1, skipped: 0 });
+    expect(c.calls).toHaveLength(2);
     expect((await rowsFor(pageId)).map((r) => [r.attachment_key, r.status])).toEqual([['locked.png', 'analyzed'], ['ok.png', 'analyzed']]);
     expect((await pageState(pageId)).analysisDirty).toBe(false);
+
+    // And an unreadable reference is not a deletion: the fault returns, the
+    // page is re-dirtied, and its already-analyzed row stands rather than
+    // being swept out with the references that left the body.
+    storeFaults.set('locked.png', eacces('locked.png'));
+    await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
+
+    const third = await run();
+
+    expect(third).toMatchObject({ reconciledPages: 1, pagesFailed: 1, processed: 0, removed: 0 });
+    expect(c.calls).toHaveLength(2);
+    expect((await rowsFor(pageId)).map((r) => [r.attachment_key, r.status])).toEqual([['locked.png', 'analyzed'], ['ok.png', 'analyzed']]);
+    expect((await pageState(pageId)).analysisDirty).toBe(true);
   });
 
   it.skipIf(!redis)('lease loss: the batch stops before its next write, committed rows stand, the result says so', async () => {

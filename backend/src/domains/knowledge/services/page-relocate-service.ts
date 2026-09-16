@@ -350,7 +350,37 @@ export async function collectAttachmentFilenames(page: {
   return [...names];
 }
 
-/** Read an attachment's bytes from whichever store currently holds it. */
+/**
+ * The refusal a relocate owes an attachment it cannot read.
+ *
+ * The stores distinguish an ABSENT file (`null` — a warning on the response,
+ * the rest of the move proceeds) from one that is there and cannot be read
+ * (`EACCES`, `EIO`, …: a throw). The second is actionable — fix the
+ * permissions and retry — but as a bare `Error` it reached the route as an
+ * opaque 500 with its message masked by the error handler, so it told the
+ * mover nothing at all (#1626 review r3). The route already speaks
+ * `RelocateError`, and this is the same refusal as the unstorable-filename
+ * one above it: the move is declined, nothing has changed.
+ */
+function unreadableAttachmentError(filename: string, cause: unknown): RelocateError {
+  logger.error({ err: cause, filename }, 'Relocate refused: an attachment could not be read');
+  return new RelocateError(
+    400,
+    `Attachment "${filename}" cannot be moved: its bytes could not be read from the attachment ` +
+      `store. Check the file's permissions on the server, then try again.`,
+  );
+}
+
+/**
+ * Read an attachment's bytes from whichever store currently holds it.
+ *
+ * Symmetric across the two stores: an ABSENT file answers `null` (reported as
+ * a warning, the rest of the move proceeds), while a file that is there and
+ * cannot be read THROWS and aborts the move. The cached reader draws that
+ * line in the store itself; the local fallback used to swallow everything, so
+ * a standalone page's `EACCES`-locked file was silently left behind under
+ * "missing on disk; it was not published" (#1626 review r3).
+ */
 async function readAttachmentBytes(
   page: { id: number; source: string; confluence_id: string | null },
   filename: string,
@@ -367,8 +397,9 @@ async function readAttachmentBytes(
   if (!row || row.path === null) return null;
   try {
     return await fs.readFile(row.path);
-  } catch {
-    return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 }
 
@@ -471,7 +502,12 @@ async function relocateToConfluence(opts: {
         `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
       );
     }
-    const data = await readAttachmentBytes(page, local);
+    let data: Buffer | null;
+    try {
+      data = await readAttachmentBytes(page, local);
+    } catch (err) {
+      throw unreadableAttachmentError(local, err);
+    }
     if (data === null) {
       warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
       continue;
@@ -670,7 +706,12 @@ async function relocateToLocal(opts: {
     removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename), txClient);
   try {
     for (const filename of await listCachedAttachments(oldConfluenceId)) {
-      const data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      let data: Buffer | null;
+      try {
+        data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      } catch (err) {
+        throw unreadableAttachmentError(filename, err);
+      }
       if (data === null) continue;
       await writeLocalAttachmentFileForRelocate(page.id, filename, data, txClient);
       // Recorded only after the write succeeds, so `staged` never names a file

@@ -3923,8 +3923,13 @@ version-unchanged branch, ADR-025 P2). Four rules:
    enumerating (`UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1 AND image_analysis_dirty RETURNING id`),
    so a writer that raises it during the reconcile raises it *after* the
    claim and the next pass re-enumerates. A reconcile that throws re-raises
-   the flag. This inverts ADR-025 P2's clear-at-the-end, which lost a raise
-   that landed mid-scan.
+   the flag — and so does one that completed only in PART: a reference whose
+   bytes are there but unreadable leaves the desired set incomplete, so its
+   readable siblings are written (D8's unreadable row in D13's table), the
+   page is re-dirtied and it counts in the batch's `pagesFailed`. Discarding
+   the whole desired set instead left a page's readable images with no rows
+   at all for as long as one locked file lasted. This inverts ADR-025 P2's
+   clear-at-the-end, which lost a raise that landed mid-scan.
 3. **`pages.image_analysis_revision`** is bumped (`+1`) in the same statement
    that raises `embedding_dirty` whenever a page's **valid** derived set
    changes (row added, deleted, hash replaced, status moved to or from
@@ -4422,8 +4427,13 @@ sweep changes neither. Because step 1 already flipped every pending row
 with a valid kept payload, every work row step 3 selects goes to the model.
 
 **Backoff and the terminal state.** A failure sets `attempts = attempts + 1`,
-`next_attempt_at = NOW() + LEAST(15 min × 2^attempts, 24 h)` and the class
-in `error` — with the number that class needs read back later beside it:
+`next_attempt_at = NOW() + LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
+EXPONENT is clamped, not only the result, because the multiplication is
+evaluated before the `LEAST` and `15 min × 2^34` raises `interval out of
+range`, while nothing caps `attempts` for a class that never goes terminal
+(one attempt per due batch, about 28 days of a persistent `unavailable`); 2^7
+already exceeds the ceiling, so no schedule a row can reach changes — and the
+class in `error` — with the number that class needs read back later beside it:
 the HTTP status for `rejected` and `unavailable` (`rejected:413`), and the
 ceiling the reply overran for `truncated` (`truncated:8192`, the batch's
 `image_analysis_max_output_tokens`), which is what the sweep's re-open
@@ -4457,7 +4467,7 @@ status: when the first `IMAGE_ANALYSIS_UNIFORM_REJECT_LIMIT` (**3**) calls of
 a batch all fail `rejected` with one HTTP status and nothing in the batch
 has succeeded, the batch ends before its next call and those three rows are
 rewritten `status = 'failed', error = 'unavailable:<status>',
-next_attempt_at = NOW() + LEAST(15 min × 2^attempts, 24 h)` — one
+next_attempt_at = NOW() + LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — one
 unconditional write per row, `attempts` unchanged (the per-row write above
 already counted it), and never terminal: a row whose rejection was its
 fifth attempt has just been written `failed_terminal` with
@@ -4912,7 +4922,7 @@ Enumerated so #1616 and #1619 can exercise each:
 | Page body edited mid-analysis | Writer raises `image_analysis_dirty` (and `embedding_dirty`) after the claim; the in-flight row commit still passes (bytes unchanged) or fails the `content_hash` predicate (bytes replaced) — the next reconcile settles the rows. A title, caption or heading edit changes no row: the recompose rebuilds the context lines from the current page (D9.9). |
 | Attachment bytes replaced mid-analysis | Reconcile rewrote `content_hash` and nulled the payload; the worker's commit updates 0 rows and is discarded. |
 | Work row's bytes ABSENT at call time (`ENOENT`: attachment cleaned while its reference stayed in `body_html`, cache evicted) | The analyze step writes the row `skipped (missing)` — or the intake's other reason when the bytes read but are no longer a raster — under the `content_hash` commit predicate: out of the work window, no attempt charged, no call spent, no page bump (a `pending`/`failed` row composes nothing). The reconcile keeps such a row (an absent file is not a deletion) and, when a writer raises the page flag with the bytes back, re-pends it as it does any `skipped` row whose bytes read. Bytes that read but hash differently from the row re-raise the page flag instead, and the reconcile re-pends under the new hash. Without this, ≥ `image_analysis_batch_size` such rows filled every batch's window forever (#1626 review r1). |
-| Work row's bytes UNREADABLE at call time for any other reason (`EACCES` after a restore, `EIO`, `ESTALE`, a network volume blinking) | A fact about the disk, not the image, so it is D8's `unavailable` class: the row → `failed (unavailable:bytes)`, `attempts + 1`, backoff, never terminal, no call spent; the worker re-reads it when due and the sweep, **Retry failed** and new bytes reach it like any failed row. Never `skipped (missing)` — that state has no re-read short of a page writer, and a batch's worth of recoverable rows per cycle would park behind it. At reconcile time the same read failure throws (D6.2): the page stays dirty and the next cycle re-enumerates, so a transient never writes a `missing` row for a file that is there. The store's reader answers `null` for `ENOENT` alone and throws for the rest; the answer path (`retrieved-images.ts`) catches and fails open (#1626 review r2). |
+| Work row's bytes UNREADABLE at call time for any other reason (`EACCES` after a restore, `EIO`, `ESTALE`, a network volume blinking) | A fact about the disk, not the image, so it is D8's `unavailable` class: the row → `failed (unavailable:bytes)`, `attempts + 1`, backoff, never terminal, no call spent; the worker re-reads it when due and the sweep, **Retry failed** and new bytes reach it like any failed row. Never `skipped (missing)` — that state has no re-read short of a page writer, and a batch's worth of recoverable rows per cycle would park behind it. At reconcile time the same read failure writes no row for THAT reference — there is no hash to pend under — while the page's other references are reconciled as usual, so a partial failure still indexes the evidence that is available: the reference is counted `unreadable`, an existing row for it is kept, the page is left dirty (D6.2) for the next cycle and counts in the batch's `pagesFailed`, which is what puts the condition on the card. A transient never writes a `missing` row for a file that is there. The store's reader answers `null` for `ENOENT` alone and throws for the rest; the answer path (`retrieved-images.ts`) catches and fails open (#1626 review r2). |
 | Assignment changed mid-batch | The retained identity and the resolved pair are read once per batch (D13); rows committed in that batch carry the identity read at its start, fail D5's validity predicate under the new retained one, and the next batch's sweep re-pends them (payloads kept) and drops their chunks; the worker re-analyzes them under the new identity. One extra pass bounded by the batch size; nothing stale is composed. |
 | Provider `base_url` edited (no assignment PUT) | The resolved identity no longer equals the retained one: the sweep and reconcile run, the analyze step is skipped with `reason: 'identity_drift'`, no row is written, and every valid row stays composed — a pause, not a purge. The card names the drift; the operator's **Re-check** (or a re-save of the assignment) re-probes the moved endpoint and, on `true`, adopts the new identity through D7 with the scope disclosed by the preview route first. Reverting the URL resumes without a call. There is no batch on which a row is written under a hash the next sweep disagrees with (D13). |
 | Prompt/schema version bumped by a deploy, or the identity replaced | The constants are bound on every query, so every analyzed row fails the validity predicate at the first batch after the deploy: the sweep re-pends them corpus-wide (one `UPDATE`, payloads kept), raises `embedding_dirty` on their pages, and the worker re-analyzes them under the new constants — rows that pass the predicate and are never selected again. In the same step every `failed` and `failed_terminal` row recorded under the old identity or versions becomes `failed, attempts = 0, next_attempt_at = NOW()`: a fresh budget, due at once, terminal or not. No settings row is rewritten and nothing loops; the operator sees the backlog on the card. |

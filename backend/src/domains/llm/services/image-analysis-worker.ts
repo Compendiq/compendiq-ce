@@ -102,8 +102,21 @@ const DETERMINISTIC_CLASSES: ReadonlySet<ImageAnalysisFailureClass> = new Set([
   'rejected',
 ]);
 
-/** `NOW() + LEAST(15 min × 2^attempts, 24 h)` — one definition for every backoff write. */
-const BACKOFF_SQL = `NOW() + LEAST(interval '15 minutes' * power(2, attempts), interval '24 hours')`;
+/**
+ * `NOW() + LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — one definition for
+ * every backoff write.
+ *
+ * The EXPONENT is clamped, not just the result. `interval '15 minutes' *
+ * power(2, attempts)` is evaluated before `LEAST` ever sees it, so it raises
+ * `interval out of range` at `attempts >= 34` — and nothing caps `attempts`
+ * for a class that never goes terminal (`unavailable`), which charges one
+ * attempt per due batch for as long as the fault lasts. That overflow threw
+ * out of the whole batch, so no last-run line was written and the poisoned
+ * row headed the due-ordered work window on every later batch: the analyze
+ * step was permanently dead (#1626 review r3). `2^7 × 15 min = 32 h` already
+ * exceeds the ceiling, so the clamp changes no schedule a row can reach.
+ */
+const BACKOFF_SQL = `NOW() + LEAST(interval '15 minutes' * power(2, LEAST(attempts, 7)), interval '24 hours')`;
 
 // ─── Result shape ────────────────────────────────────────────────────────────
 
@@ -139,6 +152,14 @@ export interface ImageAnalysisBatchResult {
   reconciledPages: number;
   /** Reconcile: rows deleted because their reference left the body. */
   removed: number;
+  /**
+   * Reconcile: pages whose pass did not complete — it threw, or some of the
+   * page's referenced bytes were there but unreadable, so its desired set
+   * was written only in part. Such a page is still dirty and is re-read next
+   * cadence; the counter is what makes the condition visible on the card,
+   * as the legacy image leg's own `pagesFailed` does.
+   */
+  pagesFailed: number;
   /** Another process holds the worker lock; this call did nothing. */
   alreadyRunning?: boolean;
 }
@@ -155,6 +176,7 @@ function emptyResult(): ImageAnalysisBatchResult {
     reopened: 0,
     reconciledPages: 0,
     removed: 0,
+    pagesFailed: 0,
   };
 }
 
@@ -302,6 +324,7 @@ async function runBatchSteps(
   const reconciled = await reconcileDirtyPages(assertLockHeld);
   result.reconciledPages = reconciled.pages;
   result.removed = reconciled.removed;
+  result.pagesFailed = reconciled.pagesFailed;
   result.skipped += sumSkips(reconciled);
 
   // ── Step 3: analyze, gated ──────────────────────────────────────────────
@@ -671,7 +694,8 @@ export interface ImageAnalysisLastRun extends ImageAnalysisBatchResult {
 async function recordLastRun(result: ImageAnalysisBatchResult): Promise<void> {
   const didSomething =
     result.processed + result.reused + result.skipped + result.failed + result.repended +
-      result.returned + result.reopened + result.reconciledPages + result.removed > 0;
+      result.returned + result.reopened + result.reconciledPages + result.removed +
+      result.pagesFailed > 0;
   const stopped = result.reason === 'provider_status' || result.reason === 'uniform_rejection';
   if (!didSomething && !stopped) return;
   const run: ImageAnalysisLastRun = { ...result, at: new Date().toISOString() };

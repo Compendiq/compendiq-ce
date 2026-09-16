@@ -486,8 +486,11 @@ a model:
    re-raise the flag for the reconcile to re-pend. A file that is there but
    cannot be read (`EACCES` after a restore, `EIO`, a network volume
    blinking) is NOT missing: the row goes `failed (unavailable:bytes)` with
-   an attempt charged and backoff, never terminal, and is re-read when due —
-   and at reconcile time the page simply stays dirty for the next cycle. Fix
+   an attempt charged and backoff, never terminal, and is re-read when due.
+   At reconcile time the page's OTHER images are still written and analyzed;
+   only the unreadable reference is left, the page stays dirty for the next
+   cycle, and it counts in the last run's `pagesFailed` — a non-zero
+   `pagesFailed` beside a non-zero `processed` is exactly this condition. Fix
    the permissions or the mount; nothing needs re-uploading.
 
 **Migration 116's cost.** It backfills `page_embeddings.chunk_tsv` in one
@@ -500,7 +503,9 @@ runs — same transaction, same lock — when **Keyword index language** is
 saved: the PUT is slower than it was by the chunk table, and the settings
 copy says so.
 
-Failures back off `LEAST(15 min × 2^attempts, 24 h)`; a deterministic class
+Failures back off `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
+exponent is clamped so a class that never goes terminal cannot grow one past
+what an `interval` can hold; a deterministic class
 (malformed, empty, refused, truncated, rejected) at 5 attempts goes
 `failed_terminal`; `unavailable` never does. A 4xx outside 400/413/415/422
 ends the batch (`provider_status`) and re-probes the pair; three identical

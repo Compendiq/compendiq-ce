@@ -416,8 +416,9 @@ it consumes are #1615's and reach it through one seam:
   BEFORE enumerating, upsert `page_image_analyses` rows from the body's
   current references (new → `pending`; changed hash → `pending`, fresh
   budget; gone → deleted; absent file → row kept, `missing` only when never
-  rowed; unreadable file → the pass throws and the page stays dirty for the
-  next cycle; policy → `skipped`), and bump `image_analysis_revision` +
+  rowed; unreadable file → no row for that reference, an existing one kept,
+  the page's other references still written, the page left dirty and counted
+  in the batch's `pagesFailed`; policy → `skipped`), and bump `image_analysis_revision` +
   `embedding_dirty` in one statement only when the VALID derived set changed
   (an `analyzed` row deleted, re-pended or skipped — D6.3); a new
   `pending`/`skipped` row bumps nothing.
@@ -428,7 +429,8 @@ it consumes are #1615's and reach it through one seam:
   reconcile, step 3 analyze behind the three-term gate; a work row whose file
   is ABSENT at call time → `skipped (missing)`, out of the work window, one
   that is there but unreadable → `failed (unavailable:bytes)` with an attempt
-  charged and never terminal; backoff `LEAST(15 min × 2^attempts, 24 h)`,
+  charged and never terminal; backoff
+  `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` (clamped exponent),
   `IMAGE_ANALYSIS_MAX_ATTEMPTS` = 5, provider-status and uniform-rejection
   stops with re-probe; `retryFailedImageAnalyses`, `reanalyzeAllImages` (409
   under the one-active-run rule) and `readImageAnalysisLastRun` for #1618's

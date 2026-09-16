@@ -19,8 +19,12 @@
  *    untouched, and a `missing` skip is recorded only for a reference that
  *    has never had a row (the lazy re-fetch writer re-raises the flag when
  *    the bytes arrive). A file that is there but cannot be read (`EACCES`,
- *    `EIO`, …) is neither: the pass throws and the page stays dirty for the
- *    next cycle, because no row state describes "ask the disk again";
+ *    `EIO`, …) is neither: no row is written for THAT reference (no row state
+ *    describes "ask the disk again"), an existing row is kept, the page's
+ *    OTHER references are reconciled as usual — AC-3's "a partial failure
+ *    still indexes the evidence that is available" — and the page is left
+ *    dirty so the next cycle re-reads it, counted as `unreadable` here and
+ *    as a failed page in the batch's `pagesFailed`;
  *  - external keys are `skipped (external)` while `rag_image_index_external`
  *    is off, the first `rag_images_per_page_max` survivors are kept and the
  *    rest are `skipped (capped)`; a policy change flips rows in place.
@@ -81,6 +85,12 @@ export interface ReconcileCounts {
   removed: number;
   /** References whose row already described the same bytes and policy. */
   unchanged: number;
+  /**
+   * References whose bytes are there but could not be read this pass
+   * (`EACCES`, `EIO`, …). Each one leaves the page dirty and counts as a
+   * failed page in `pagesFailed`.
+   */
+  unreadable: number;
 }
 
 export function emptyReconcileCounts(): ReconcileCounts {
@@ -89,6 +99,7 @@ export function emptyReconcileCounts(): ReconcileCounts {
     skipped: { missing: 0, unsupported: 0, oversized: 0, too_large: 0, external: 0, capped: 0 },
     removed: 0,
     unchanged: 0,
+    unreadable: 0,
   };
 }
 
@@ -143,6 +154,18 @@ export async function reconcilePageImageAnalyses(
 
   try {
     const counts = await reconcileClaimedPage(page, assertLockHeld);
+    if (counts.unreadable > 0) {
+      // The pass wrote what it could read; the desired set is nonetheless
+      // incomplete, so the flag goes back up exactly as the throw path does
+      // (D6.2) and the next cycle re-reads the references that could not be
+      // read now. Inside the `try`, so a failed re-raise lands in the catch
+      // below rather than silently leaving the page clean and half-indexed.
+      await query(`UPDATE pages SET image_analysis_dirty = TRUE WHERE id = $1`, [pageId]);
+      logger.warn(
+        { pageId, unreadable: counts.unreadable },
+        'Image analysis reconcile could not read some of a page\'s images — the readable ones are indexed, the page stays dirty',
+      );
+    }
     return { claimed: true, ...counts };
   } catch (err) {
     // D6.2: a reconcile that throws re-raises the flag, so the next pass
@@ -186,11 +209,22 @@ async function reconcileClaimedPage(
     kept++;
     const intake = await intakePageImage(page, ref);
     if (intake.kind === 'unavailable') {
-      // Not absent, not readable: no desired state can be written for this
-      // reference, and writing `skipped (missing)` would park it behind a
-      // state no re-read revisits. D6.2's path is the right one — the pass
-      // throws, the flag is re-raised and the next cycle re-enumerates.
-      throw new Error(`Image bytes unavailable for ${ref.source}:${ref.key} on page ${page.id}`, { cause: intake.error });
+      // Not absent, not readable: no desired state can be written for THIS
+      // reference — there is no hash to pend under, and `skipped (missing)`
+      // would park it behind a state no re-read revisits. Throwing was
+      // worse: it discarded the whole desired set, so one locked file left
+      // the page's other, perfectly readable images with no rows at all for
+      // as long as the fault lasted (#1626 review r3). So this reference is
+      // counted and stepped past, its existing row (if any) is kept — an
+      // unreadable file is not a deletion — and the caller leaves the page
+      // dirty for the next pass.
+      counts.unreadable++;
+      logger.warn(
+        { err: intake.error, pageId: page.id, source: ref.source, key: ref.key },
+        'Image analysis reconcile: attachment bytes unavailable — the reference is left for the next cycle',
+      );
+      if (existing.has(key)) desired.set(key, { ref, want: { kind: 'keep' } });
+      continue;
     }
     if (intake.kind === 'ok') {
       desired.set(key, {
@@ -301,7 +335,8 @@ async function reconcileClaimedPage(
 /**
  * Run the reconcile over every dirty page, oldest-modified last (newest
  * first, like the legacy image scan). `maxPages` bounds a pass; a page that
- * throws is logged, left dirty (D6.2) and stepped past.
+ * throws is logged, left dirty (D6.2) and stepped past, and so is a page
+ * whose references were only partly readable — both count in `pagesFailed`.
  */
 export async function reconcileDirtyPages(
   assertLockHeld: () => Promise<void>,
@@ -333,6 +368,13 @@ export async function reconcileDirtyPages(
         totals.pended += outcome.pended;
         totals.removed += outcome.removed;
         totals.unchanged += outcome.unchanged;
+        totals.unreadable += outcome.unreadable;
+        // A page whose desired set could not be read in full is a failed
+        // page even though its readable images were written: it is still
+        // dirty, it will be re-read next cadence, and this counter is what
+        // makes the condition visible to an operator — the legacy image leg
+        // surfaces `pagesFailed` on its own card the same way.
+        if (outcome.unreadable > 0) totals.pagesFailed++;
         for (const k of Object.keys(totals.skipped) as ImageAnalysisSkipReason[]) {
           totals.skipped[k] += outcome.skipped[k];
         }

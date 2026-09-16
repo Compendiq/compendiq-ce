@@ -21,8 +21,6 @@ import {
 import {
   attachmentCacheDir,
   attachmentDir,
-  listCachedAttachments,
-  readCachedAttachmentFile,
   safeAttachmentPath,
   validateFilename,
 } from '../../../core/services/attachment-store.js';
@@ -696,39 +694,6 @@ export async function cleanPageAttachments(pageId: string): Promise<void> {
   // to be downloaded again and may differ, and on a delete path the page row
   // (and its rows, by CASCADE) is going anyway.
   await markPageImagesDirtyByAttachmentKey(pageId);
-}
-
-/**
- * Copy a page's cached attachments from one key to another (#1123 relocate).
- *
- * A COPY, never a move: relocate runs this *before* its database transaction
- * commits, so an abort must leave the original directory intact. The old key
- * is removed only after the commit, via {@link cleanPageAttachments}.
- * Idempotent — re-running overwrites the destination files.
- *
- * Returns the filenames copied.
- */
-export async function copyAttachmentDirectory(
-  fromPageId: string,
-  toPageId: string,
-): Promise<string[]> {
-  if (fromPageId === toPageId) return [];
-  const filenames = await listCachedAttachments(fromPageId);
-  if (filenames.length === 0) return [];
-
-  const destDir = attachmentCacheDir(toPageId);
-  await fs.mkdir(destDir, { recursive: true });
-
-  const copied: string[] = [];
-  for (const filename of filenames) {
-    const data = await readCachedAttachmentFile(fromPageId, filename);
-    if (data === null) continue;
-    const safeFilename = validateFilename(filename);
-    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- destDir is containment-checked by attachmentCacheDir; safeFilename is basename-sanitised by validateFilename
-    await fs.writeFile(path.resolve(destDir, safeFilename), data);
-    copied.push(filename);
-  }
-  return copied;
 }
 
 /**
