@@ -554,6 +554,25 @@ same `hybridSearch` and `embedPageImages` the product runs, which is the point:
 a harness with its own copy measures its own copy. Recipe and report fields:
 `docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
 
+The ADR-027 arm axis (#1614 PR2) adds three modules beside them and two
+entrypoints, still nothing the server loads: `arms.ts` (the `--arm A|B|C`
+flag and its B/C refusal of the VL environment, `ArmRunReportSchema` — the
+provenance the ADR refuses a report without — `assertComparableArms` over
+the "Held fixed" list, the per-arm evidence rule reading `imageHits` on A
+and D11's `derived.attachmentKey` on B, and the owner decisions O1–O7 as
+constants), `answers.ts` (one arm's answers through the real
+`POST /api/llm/ask` — `buildApp()` + `inject`, `rag_answer_max_images = 0`,
+SSE parsed — written arm-blinded with a structural key walk that refuses a
+leak) and `judgments.ts` (`JudgmentRowSchema`, the blinded sheet merge with
+its pre-judging hashes, the `--unblind` refusal until every item carries
+exactly one judgment by one judge, and the paired verdict: McNemar exact,
+the page-cluster bootstrap from `metrics.ts`, the one-sided margins and the
+three-part decision rule, labelled single-judge). `runner-images.ts` gains
+the single-arm `runArmEval`; `seed-images.ts` gains `imageIndex: false` for
+the arms without an image leg. `scripts/run-arm-answers.ts` and
+`scripts/judge-arms.ts` are the entrypoints; `eval/artifacts/1611/` is where
+captured runs live (none yet — its README says why).
+
 ## Image analysis: assignment, identity and the inference client (#1615, ADR-027)
 
 The candidate that replaces the leg above (ADR-027; epic #1611). #1615 lands the

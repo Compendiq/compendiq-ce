@@ -58,7 +58,7 @@
  *    participation on the on arm has a fractional floor and is checked after
  *    the loop, because a bypass is legitimately intermittent.
  */
-import { hybridSearch, getEmbeddingCoverage } from '../services/rag-service.js';
+import { hybridSearch, getEmbeddingCoverage, type SearchResult } from '../services/rag-service.js';
 import {
   multiQuerySearch,
   type ExpansionOutcome,
@@ -66,6 +66,7 @@ import {
 } from '../services/multi-query-search.js';
 import { VectorLegSilentError } from './runner.js';
 import { imageAttachmentKey } from './seed-images.js';
+import { rankedEvidence, type ArmQueryRun, type EvalArm } from './arms.js';
 import type { ImageArmRun, ImageHitRecord, ImageQueryPair } from './images-metrics.js';
 import type { ImageFixture } from './fixture.js';
 
@@ -201,14 +202,14 @@ function expectedPageIds(files: readonly string[], pageIdByFile: Map<string, num
   });
 }
 
-/** One arm of one query, wall-clocked. */
-async function runArm(
+/** One search, wall-clocked, its stage participation counted. */
+async function searchOnce(
   question: string,
   imageLeg: boolean,
   opts: ImageEvalOptions,
   counters: ArmCounters,
-): Promise<ImageArmRun> {
-  const search = opts.deepSearch === true ? multiQuerySearch : hybridSearch;
+  search: typeof hybridSearch | typeof multiQuerySearch,
+): Promise<{ results: SearchResult[]; ms: number; started: number }> {
   const searchOpts: MultiQuerySearchOptions = {
     rerank: opts.rerank === true,
     assembleContext: opts.assembleContext !== false,
@@ -242,6 +243,19 @@ async function runArm(
   // state the harness refuses to publish.
   if (results.some((r) => r.contextText !== undefined)) counters.assembly++;
   if (results.some((r) => r.pinned === true)) counters.pin++;
+
+  return { results, ms, started };
+}
+
+/** One arm of one query, wall-clocked. */
+async function runArm(
+  question: string,
+  imageLeg: boolean,
+  opts: ImageEvalOptions,
+  counters: ArmCounters,
+): Promise<ImageArmRun> {
+  const search = opts.deepSearch === true ? multiQuerySearch : hybridSearch;
+  const { results, ms, started } = await searchOnce(question, imageLeg, opts, counters, search);
 
   const imageHits: ImageHitRecord[] = results.flatMap((result) =>
     (result.imageHits ?? []).map((hit) => ({
@@ -406,5 +420,197 @@ export async function runImageEval(
     pinParticipatingQueries: { off: off.pin, on: on.pin },
     expansionParticipatingQueries: { off: off.expanded, on: on.expanded },
     expansionSkippedQueries: { off: off.expansionSkipped, on: on.expansionSkipped },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// #1614 PR2 — the single-arm runner for the ADR-027 arm axis.
+// ---------------------------------------------------------------------------
+
+export interface ArmEvalOptions {
+  arm: EvalArm;
+  userId: string;
+  pageIdByFile: Map<string, number>;
+  topK: number;
+  rerank?: boolean;
+  assembleContext?: boolean;
+  pinIdentifiers?: boolean;
+  mmr?: { enabled: boolean; lambda?: number };
+  /**
+   * Fraction of image-labelled queries whose top-K must carry image evidence
+   * on an arm that HAS an evidence source (A: the leg; B: derived rows). The
+   * paired runner's `minImageLegParticipation`, one arm at a time and for the
+   * same reason: the leg bypasses itself silently and a backfill that never
+   * ran leaves ordinary text retrieval wearing the candidate's name. Not
+   * applied to arm C, which must carry NONE.
+   */
+  minEvidenceParticipation?: number;
+  minVectorParticipation?: number;
+  onProgress?: (done: number, total: number) => void;
+  /**
+   * TEST SEAM. The search this arm runs, defaulting to the product's
+   * `hybridSearch`. `runner-images.integration.test.ts` wraps the real one to
+   * decorate rows with D11's `derived` provenance, which no row on this
+   * revision carries (#1617), so arm B's attribution rule has something to be
+   * right about. Nothing outside that file may set it.
+   */
+  _search?: typeof hybridSearch;
+}
+
+export interface ArmEvalResult {
+  runs: ArmQueryRun[];
+  totalQueries: number;
+  /** Queries whose top-K carried at least one piece of image evidence. Always 0 on C. */
+  imageEvidenceParticipatingQueries: number;
+  vectorParticipatingQueries: number;
+  rerankParticipatingQueries: number;
+  assemblyParticipatingQueries: number;
+  pinParticipatingQueries: number;
+}
+
+/**
+ * Every fixture label once, on ONE arm, with the image leg forced by the arm
+ * (`A` on, `B`/`C` off) and the evidence attributed by the arm's rule
+ * (`rankedEvidence`). Deep search is not an option here: the entrypoint
+ * refuses it on every image-corpus run (`assertImageAxisStagesPairable`),
+ * because the pairing happens across runs and each run would paraphrase
+ * separately.
+ *
+ * The refusals are the paired runner's, applied per arm: partial coverage,
+ * a dead vector leg, a rerank or assembly stage that never ran — and two of
+ * this axis's own: an arm without an image leg that came back with image
+ * hits (the forcing flag did not force), and an arm C that carried any
+ * evidence at all (the ablation is not an ablation).
+ */
+export async function runArmEval(fixture: ImageFixture, opts: ArmEvalOptions): Promise<ArmEvalResult> {
+  const minEvidenceParticipation = opts.minEvidenceParticipation ?? 0.5;
+  const minVectorParticipation = opts.minVectorParticipation ?? 0.5;
+  const imageLeg = opts.arm === 'A';
+  const search = opts._search ?? hybridSearch;
+
+  const coverage = await getEmbeddingCoverage(opts.userId);
+  if (coverage.coverage < 1) {
+    throw new VectorLegSilentError(
+      `Corpus is only ${(coverage.coverage * 100).toFixed(1)}% embedded ` +
+        `(${coverage.embeddedPages}/${coverage.totalPages}). Metrics measured on a partial corpus are ` +
+        'not comparable to anything — embed it fully first.',
+    );
+  }
+
+  const counters = emptyCounters();
+  const searchOpts: ImageEvalOptions = {
+    userId: opts.userId,
+    pageIdByFile: opts.pageIdByFile,
+    topK: opts.topK,
+    ...(opts.rerank !== undefined ? { rerank: opts.rerank } : {}),
+    ...(opts.assembleContext !== undefined ? { assembleContext: opts.assembleContext } : {}),
+    ...(opts.pinIdentifiers !== undefined ? { pinIdentifiers: opts.pinIdentifiers } : {}),
+    ...(opts.mmr ? { mmr: opts.mmr } : {}),
+  };
+  const runs: ArmQueryRun[] = [];
+  let imageEvidenceParticipatingQueries = 0;
+  let imageLabelled = 0;
+
+  for (const label of fixture.labels) {
+    const expected = expectedPageIds(label.expectedFiles, opts.pageIdByFile);
+    const { results, ms } = await searchOnce(label.query, imageLeg, searchOpts, counters, search);
+
+    const legHits = results.reduce((n, r) => n + (r.imageHits?.length ?? 0), 0);
+    if (!imageLeg && legHits > 0) {
+      throw new ImageLegSilentError(
+        `Query "${label.id}" came back on arm ${opts.arm} carrying ${legHits} image-leg hit(s) — ` +
+          '`imageLeg: false` did not force the leg off, so this arm is measuring the legacy leg under ' +
+          `arm ${opts.arm}'s name. Refused on the first query: this is a fact about the forcing flag.`,
+      );
+    }
+    // Arm C reports no evidence BY RULE (`evidenceKeysOf` returns none), so
+    // the ablation state is checked on the rows themselves: a derived chunk
+    // (D11's `derived` provenance) surfacing on C means `image_analysis` was
+    // assigned and the backfill wrote rows, which is arm B's state.
+    if (opts.arm === 'C') {
+      const derived = rankedEvidence('B', results);
+      if (derived.length > 0) {
+        throw new ImageLegSilentError(
+          `Query "${label.id}" came back on arm C carrying image evidence (${derived.map((e) => e.key).join(', ')}) — ` +
+            'the ablation has no image leg and no derived chunks by definition (ADR-027 "Arms and revisions"), ' +
+            'so this database is not in arm C\'s index state. Check page_image_embeddings is empty and ' +
+            'image_analysis is unassigned.',
+        );
+      }
+    }
+    const evidence = rankedEvidence(opts.arm, results);
+    if (evidence.length > 0) imageEvidenceParticipatingQueries++;
+    if (label.expectedImages.length > 0) imageLabelled++;
+
+    runs.push({
+      queryId: label.id,
+      retrieved: results.map((r) => r.pageId),
+      expected,
+      style: label.style,
+      lang: label.lang,
+      cluster: label.expectedFiles[0]!,
+      ...(label.imageDependent !== undefined ? { imageDependent: label.imageDependent } : {}),
+      ...(label.class !== undefined ? { class: label.class } : {}),
+      expectedImageKeys: label.expectedImages.map(imageAttachmentKey),
+      evidence,
+      ms,
+    });
+    opts.onProgress?.(runs.length, fixture.labels.length);
+  }
+
+  const total = fixture.labels.length;
+
+  // The paired runner's participation floor, per arm. On A it is the leg's
+  // silent bypass; on B it is a backfill that never produced a derived row —
+  // both leave ordinary text retrieval wearing the arm's name.
+  if (opts.arm !== 'C' && imageLabelled > 0) {
+    const participation = imageEvidenceParticipatingQueries / total;
+    if (participation < minEvidenceParticipation) {
+      throw new ImageLegSilentError(
+        `Arm ${opts.arm} carried image evidence in only ${imageEvidenceParticipatingQueries}/${total} queries ` +
+          `(${(participation * 100).toFixed(1)}%, floor ${(minEvidenceParticipation * 100).toFixed(0)}%). ` +
+          (opts.arm === 'A'
+            ? 'The leg bypasses itself on ANY failure and the search still returns results — check the ' +
+              'image_embedding assignment, that page_image_embeddings is non-empty, and that the VL endpoint ' +
+              'answers inside IMAGE_LEG_TIMEOUT_MS.'
+            : 'Derived chunks reach the top-K only when the backfill wrote them — check that image_analysis ' +
+              'is assigned, the backfill completed on this corpus, and the revision carries #1617\'s ' +
+              'derived provenance.'),
+      );
+    }
+  }
+
+  const vectorParticipation = total === 0 ? 0 : counters.vector / total;
+  if (total > 0 && vectorParticipation < minVectorParticipation) {
+    throw new VectorLegSilentError(
+      `Vector leg participated in ${counters.vector}/${total} queries on arm ${opts.arm} ` +
+        `(${(vectorParticipation * 100).toFixed(1)}%, floor ${(minVectorParticipation * 100).toFixed(0)}%). ` +
+        'hybridSearch falls back to keyword-only on ANY embedding failure and still returns results, ' +
+        'so this run would otherwise have reported a confident score computed from Postgres FTS alone.',
+    );
+  }
+  if (opts.rerank === true && total > 0 && counters.rerank / total < 0.9) {
+    throw new VectorLegSilentError(
+      `A rerank run was requested but the stage participated in only ${counters.rerank}/${total} ` +
+        `queries on arm ${opts.arm} — the stage bypasses itself on any failure and still returns the ` +
+        'fused order, so this run would report a confident score for a pipeline it does not name.',
+    );
+  }
+  if (opts.assembleContext !== false && total > 0 && counters.assembly === 0) {
+    throw new VectorLegSilentError(
+      `An assembly-on run was requested but the sibling-assembly stage participated in 0 queries on ` +
+        `arm ${opts.arm} — check rag_context_chars_per_page and the page_embeddings sibling fetch ` +
+        'before trusting this measurement.',
+    );
+  }
+
+  return {
+    runs,
+    totalQueries: total,
+    imageEvidenceParticipatingQueries,
+    vectorParticipatingQueries: counters.vector,
+    rerankParticipatingQueries: counters.rerank,
+    assemblyParticipatingQueries: counters.assembly,
+    pinParticipatingQueries: counters.pin,
   };
 }

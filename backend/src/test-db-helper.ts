@@ -3,6 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
 
+const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'core', 'db', 'migrations');
+
+/** The name Postgres gave 054's inline column CHECK, which every widener rewrites. */
+const USECASE_CHECK = 'llm_usecase_assignments_usecase_check';
+
 let initialized = false;
 let _dbAvailable: boolean | null = null;
 
@@ -62,6 +67,27 @@ export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
 }
 
 /**
+ * Every migration that (re)writes `llm_usecase_assignments_usecase_check`,
+ * oldest first. DISCOVERED, never listed: the CHECK is 054's inline column
+ * constraint, so widening it for a new use case means dropping and re-adding
+ * the WHOLE list (090 `rerank`, 093 `image_embedding`, 097
+ * `inline_completion`, 115 `image_analysis`, and whatever comes next).
+ *
+ * Exported because `054_llm_providers.test.ts` replays every widener in order
+ * to repair the schema its pre-054 simulation destroys: replaying only the one
+ * that happened to be current when that file was written would leave the
+ * constraint NARROWER than the schema. One definition of "which migrations
+ * write it" is enough.
+ */
+export function usecaseCheckMigrations(): string[] {
+  return fs
+    .readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes(USECASE_CHECK))
+    .sort();
+}
+
+/**
  * Restore `llm_usecase_assignments`' use-case CHECK to the newest widener's
  * list, the same class of repair as {@link restoreImageEmbeddingPlaceholder}.
  *
@@ -77,15 +103,13 @@ export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
  * that has nothing to do with it (#1104 was the first victim, `image_analysis`
  * the latest). The list is read from the migration rather than duplicated
  * here, so the next widener is covered without editing this file.
+ *
+ * Exported as well as called from `setupTestDb`, so the file that inflicts the
+ * narrowing can also repair it before handing the database on
+ * (`097_inline_completion.test.ts` replays 097's DDL in its `beforeEach`).
  */
-async function restoreUsecaseCheck(): Promise<void> {
-  const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'core', 'db', 'migrations');
-  const newest = fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
-    .filter((f) => fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes('llm_usecase_assignments_usecase_check'))
-    .sort()
-    .pop();
+export async function restoreUsecaseCheck(): Promise<void> {
+  const newest = usecaseCheckMigrations().pop();
   if (!newest) return;
   const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(
     fs.readFileSync(path.join(migrationsDir, newest), 'utf8'),
@@ -99,17 +123,17 @@ async function restoreUsecaseCheck(): Promise<void> {
   if (!present.rows[0]?.exists) return;
   const { rows } = await pool.query<{ def: string }>(
     `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
-      WHERE conname = 'llm_usecase_assignments_usecase_check'`,
+      WHERE conname = '${USECASE_CHECK}'`,
   );
   if (rows[0] && names.every((n) => rows[0]!.def.includes(`'${n}'`))) return;
   // A row naming a use case the narrow list refuses would abort the ADD, and
   // content is not what this repairs — every file seeds its own.
   await pool.query('TRUNCATE TABLE llm_usecase_assignments');
   await pool.query(
-    `ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS llm_usecase_assignments_usecase_check`,
+    `ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS ${USECASE_CHECK}`,
   );
   await pool.query(
-    `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT llm_usecase_assignments_usecase_check
+    `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT ${USECASE_CHECK}
        CHECK (usecase IN (${names.map((n) => `'${n}'`).join(', ')}))`,
   );
 }

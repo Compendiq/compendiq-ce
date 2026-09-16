@@ -105,6 +105,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A/B/C quality gate — margins, sample size, single-judge protocol and a
   quality-only decision rule, all confirmed by the owner — that decides the
   cutover; the shipped image leg is unchanged until that gate passes.
+- The retrieval eval can run ADR-027's pre-registered A/B/C comparison
+  (#1614 PR2): `run-retrieval-eval.ts --images --arm A|B|C` measures one
+  arm of the image corpus with the provenance the ADR requires (revision,
+  corpus and query-set hashes, embedder, FTS, rerank and answer-model
+  assignments, hardware, every retrieval knob and the command line) and
+  refuses a pair that drifted in any of them — knob by knob — or an arm
+  report missing what only that arm may carry (A's VL endpoint, B's vision
+  model, output-token ceiling and analysis version pair); `--arm B` refuses
+  a wrong revision right after the migrations, before the corpus is seeded,
+  and `--arm C` asserts the ablation's state on the database rather than on
+  a top-K window, reading `image_analysis` through the product's own resolver, the very predicate arm B
+  requires — a resolvable provider and model, so migration 115's seeded
+  `('image_analysis', NULL, NULL)` row is the unassigned state both arms
+  agree on and not an assignment that refuses the arm. A report is refused
+  on a dirty tree, since the recorded revision pins the prompts.
+  `run-arm-answers.ts` asks every fixture question through the real ask
+  route with `rag_answer_max_images = 0` and writes arm-blinded answer
+  artifacts, counting each refusal's reason in the run's provenance and
+  aborting the arm outright on an infrastructure refusal
+  (`semantic_index_unavailable`) so an outage can never be scored as the
+  arm's quality; `judge-arms.ts` merges the arms into one blinded judgment
+  sheet, reads the ADR's pilot ψ over the first 30 judged pairs
+  (`--check --mapping`, exit code 3 below the floor) so a run can stop
+  before the remaining ~680 judgments, refuses to un-blind until every item
+  has exactly one judgment by one judge and until every answer run's
+  provenance matches its arm's retrieval report, and scores the paired
+  endpoints with McNemar exact, a
+  page-cluster bootstrap and the owner's margins into a single-judge
+  verdict. Both of O2's pre-registered sizes decide: 190 image-dependent
+  labels at full power, 144–189 at reduced power with the achieved power
+  printed and the document labelled `REDUCED POWER`, and below the hard
+  floor of 144 the sheet is refused (`--allow-underpowered` then scores it
+  as tooling verification, deciding nothing — and reporting no achieved
+  power, because a power figure describes a decision) — as are O2's page
+  constraints
+  and the EN/DE control counts at any N. The judge's file is verified, not
+  just hashed at merge time: `--unblind` (and `--check`, over the file it
+  was handed as `--answers`, when the operator's sheet is at hand)
+  re-hashes `answers-<sheet>.jsonl` against the
+  merge's record AND re-derives every row from the per-arm answers files, so
+  a sheet rewritten after judging started — even with its own recorded hash
+  updated to match — is refused; a sheet whose recorded `runId` is not the
+  run being read is refused too. No arm has
+  been measured yet — the baselines and the image-dependent labelling pass
+  are #1619's and the labeller's; the ADR records that the answer model
+  runs at the provider's default temperature.
 
 ### Changed
 
