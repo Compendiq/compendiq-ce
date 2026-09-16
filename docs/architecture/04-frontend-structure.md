@@ -465,6 +465,40 @@ headline chosen from `ApiError.reason` (`no_provider` / `no_model` / `text_only`
 new identity toasts the `reanalyzeRows` disclosure in amber, a resume the
 ordinary success.
 
+**A fifth arrived with #1618 stage 1: the Image analysis card** on
+**Embeddings** (`ImageAnalysisProgressCard`), which answers *is it running?*
+for the candidate exactly as `ImageIndexCard` does for the legacy leg — and
+sits BESIDE it, not in its place, because while both designs are on `dev` the
+legacy leg is still the only image retrieval that serves and an upgrading
+operator has to read both. Stage 2 deletes the legacy card and this one takes
+its slot. The Max output tokens row stays on LLM providers (ADR-027
+`:4856-4860`): *can it run?* and *is it running?* are two surfaces, one job
+each.
+
+It copies the incumbent's argument rather than its markup. **Three fetch
+states, never one** — pending renders em-dashes, and a failed READ says the
+status could not be read, states that the assignment and the stored analyses
+are untouched, offers a `useNoticeRetry` retry (`aria-disabled` + label swap,
+focus rehomed to the state line) and **leaves the three actions live**, because
+they are the remedy. `running` is read off the server's worker lock and
+deliberately not off a payload a failed refetch left in cache. The counters
+keep `analyzed` and **`stale`** apart (analyzed on disk, invalid to every
+reader) and report the epic's two look-alike facts on separate lines: a
+PARTIALLY analyzed corpus still owes vision calls, while pages
+`embedding_dirty` behind valid analyses owe only a text re-embed and cost no
+call. `imageAnalysisCoverage()` restates `image-analysis-readiness.ts`'s
+vocabulary and first-match order over the corpus, `missing` counted as a gap
+rather than a verdict, so the card and the D14 diagnostic never describe one
+instance in two languages. Unassigned is rendered as the D7 PAUSE, neutral and
+at rest. ADR-010 colour: every count is a measurement and renders neutral; the
+four amber exceptions are failed images, unreconciled pages, an identity that
+does not match the assignment, and a provider-side stop (one sentence per D13
+reason, with its HTTP status). **Re-analyze all** goes through a `ConfirmDialog`
+seeded by `reanalyzeAllDisclosure()` — its own sentence, not
+`reanalysisDisclosure()`, because an identity change keeps the stored
+descriptions and this action destroys them. Polling is the incumbent's 5 s plus
+a 20 s post-kick warm-up, since the lease is taken after the POST has answered.
+
 **A text-only chat model is invisible here, on purpose** (ADR-025 D8). Nothing
 on an answer, in the sources or in the announcement says a picture was withheld;
 the fact is stated exactly once, under **Images shown to the model**, and that

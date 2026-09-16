@@ -316,3 +316,172 @@ export const ImageAnalysisInspectionSchema = z.object({
   rows: z.array(ImageAnalysisRowSchema),
 });
 export type ImageAnalysisInspection = z.infer<typeof ImageAnalysisInspectionSchema>;
+
+// ─── #1618 — the operator's processing surface ────────────────────────────
+
+/**
+ * Why a batch stopped before analyzing (D13). One definition: the worker's
+ * own `ImageAnalysisBatchReason` is this type, so a seventh reason added
+ * server-side cannot reach the wire without a schema member and a label on
+ * the card.
+ *
+ * `unassigned` is a PAUSE, not a failure (D7) — the sweep and the reconcile
+ * still ran, and stored descriptions that are still valid stay searchable.
+ * `lease_lost` never reaches a recorded run (the new lock holder owns the
+ * last-run row), but it is a member because the batch result type is shared.
+ */
+export const IMAGE_ANALYSIS_BATCH_REASONS = [
+  'unassigned',
+  'capability',
+  'identity_drift',
+  'provider_status',
+  'uniform_rejection',
+  'lease_lost',
+] as const;
+export const ImageAnalysisBatchReasonSchema = z.enum(IMAGE_ANALYSIS_BATCH_REASONS);
+export type ImageAnalysisBatchReason = z.infer<typeof ImageAnalysisBatchReasonSchema>;
+
+/**
+ * Rows by status, as `readImageAnalysisCorpusCounts` computes them (#1616).
+ *
+ * `analyzed` counts only rows that pass D5's validity predicate under the
+ * retained identity; `stale` is the rest of them — analyzed on disk, invalid
+ * to every reader, and awaiting the sweep that will re-pend them. Keeping the
+ * two apart is the whole point: one number would read as coverage the index
+ * does not have.
+ */
+export const ImageAnalysisRowCountsSchema = z.object({
+  analyzed: z.number().int().nonnegative(),
+  stale: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** `failed_terminal` — the attempt cap was reached; only Retry failed moves these. */
+  terminal: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+});
+export type ImageAnalysisRowCounts = z.infer<typeof ImageAnalysisRowCountsSchema>;
+
+/**
+ * Skip reasons by name. Same six the reconcile writes, camelCased for the
+ * wire exactly as the legacy leg's `ImageSkipCountsSchema` does, so the two
+ * cards spell one vocabulary while both exist.
+ */
+export const ImageAnalysisSkipCountsSchema = z.object({
+  /** Referenced by the body, absent from the store — a GAP, not a verdict. */
+  missing: z.number().int().nonnegative(),
+  unsupported: z.number().int().nonnegative(),
+  oversized: z.number().int().nonnegative(),
+  tooLarge: z.number().int().nonnegative(),
+  external: z.number().int().nonnegative(),
+  capped: z.number().int().nonnegative(),
+});
+export type ImageAnalysisSkipCounts = z.infer<typeof ImageAnalysisSkipCountsSchema>;
+
+/**
+ * The last recorded batch (`admin_settings.image_analysis_last_run`), as
+ * ADR-027 Stage 1 requires it: the three steps' counters, and — the part a
+ * bare progress number cannot carry — the stop's `reason` and `httpStatus`.
+ *
+ * Every counter is defaulted rather than required. The row is JSON written by
+ * a previous release, so a run recorded before a counter existed must still
+ * parse; the alternative is a silently dropped last run on upgrade, which is
+ * the legacy leg's recorded lesson (`ImageIndexRunSchema.pagesFailed`).
+ */
+export const ImageAnalysisLastRunSchema = z.object({
+  /** ISO-8601 — when the batch finished. */
+  at: z.string(),
+  /** Step 3: rows analyzed and committed. */
+  processed: z.number().int().nonnegative().default(0),
+  /** Step 1: rows the sweep's inverse returned to `analyzed` with no call. */
+  reused: z.number().int().nonnegative().default(0),
+  skipped: z.number().int().nonnegative().default(0),
+  failed: z.number().int().nonnegative().default(0),
+  terminal: z.number().int().nonnegative().default(0),
+  /** Step 1: analyzed rows re-pended because they failed the predicate. */
+  repended: z.number().int().nonnegative().default(0),
+  /** Step 1: stale failures returned to a fresh attempt budget. */
+  returned: z.number().int().nonnegative().default(0),
+  /** Step 1: `truncated:<ceiling>` rows re-opened by a raised ceiling. */
+  reopened: z.number().int().nonnegative().default(0),
+  /** Step 2: pages claimed. */
+  reconciledPages: z.number().int().nonnegative().default(0),
+  /** Step 2: rows deleted because their reference left the body. */
+  removed: z.number().int().nonnegative().default(0),
+  /** Step 2: pages whose pass did not complete — they stay dirty. */
+  pagesFailed: z.number().int().nonnegative().default(0),
+  /** Step 2: individual references present but unreadable — the finer count. */
+  unreadableRefs: z.number().int().nonnegative().default(0),
+  reason: ImageAnalysisBatchReasonSchema.optional(),
+  /** The status behind `provider_status` / `uniform_rejection`. */
+  httpStatus: z.number().int().optional(),
+});
+export type ImageAnalysisLastRun = z.infer<typeof ImageAnalysisLastRunSchema>;
+
+/**
+ * `GET /api/admin/embedding/image-analysis` (#1618) — the whole data source
+ * of the Image analysis card on Settings → AI Models → Embeddings.
+ *
+ * Four facts that read alike and are not, so none may be inferred from
+ * another: whether a vision model is ASSIGNED right now, which identity the
+ * stored rows were written UNDER, whether those two AGREE, and what the last
+ * batch DID. Unassigned-with-analyzed-rows is a pause, not a purge (D7);
+ * assigned-with-a-stopped-run is an endpoint problem; and assigned against a
+ * retained identity that does not match is D13's third gate — the worker
+ * analyzes nothing until Re-check adopts the new pair, and a backlog that
+ * will not drain is otherwise the only symptom.
+ *
+ * `retainedIdentity` is `ImageAnalysisIdentitySchema` unchanged, the same
+ * admin-gated document `GET /admin/pages/:id/image-analyses` and the
+ * capability detail already serve. No provider key, no filesystem path, and
+ * nothing model-derived: a payload's prose never reaches this route.
+ */
+export const ImageAnalysisStatusSchema = z.object({
+  /** Whether `image_analysis` resolves to a provider+model right now. */
+  assigned: z.boolean(),
+  retainedIdentity: ImageAnalysisIdentitySchema.nullable(),
+  /**
+   * Whether the rows on disk were written for the identity assigned NOW.
+   *
+   * `null` when nothing is assigned: there is no live pair to compare, and an
+   * unassigned instance is paused rather than mismatched. `false` ALSO when a
+   * pair is assigned and no identity has ever been retained — unlike the
+   * legacy leg, where that is a fresh install and not a mismatch, here it is
+   * literally D13's `identity_drift` stop: the worker refuses to analyze
+   * until the assignment PUT or Re-check adopts an identity.
+   */
+  identityMatchesAssignment: z.boolean().nullable(),
+  rows: ImageAnalysisRowCountsSchema,
+  skipReasons: ImageAnalysisSkipCountsSchema,
+  /** Live, non-folder pages still carrying `image_analysis_dirty`. */
+  dirtyPages: z.number().int().nonnegative(),
+  /**
+   * Pages with at least one valid analysis that are still `embedding_dirty` —
+   * "analysis complete, text embedding still pending". The distinction the
+   * epic asks for: it is not partial analysis, and it resolves itself without
+   * a single vision call.
+   */
+  pagesAwaitingEmbed: z.number().int().nonnegative(),
+  /** Whether the analysis worker lock is held right now; the card polls on it. */
+  running: z.boolean(),
+  lastRun: ImageAnalysisLastRunSchema.nullable(),
+});
+export type ImageAnalysisStatus = z.infer<typeof ImageAnalysisStatusSchema>;
+
+/**
+ * What the three action POSTs answer (#1618).
+ *
+ * `rows` is the number of rows the action itself moved — absent for Process
+ * now, which moves none. `started` / `alreadyRunning` describe the batch kick
+ * that follows, and they are a SAMPLE of the worker lock taken before the
+ * kick rather than a report from the batch: inexact in both directions (a
+ * lease taken in that window makes the kick a no-op under `started: true`; a
+ * lease released in it lets the batch run under `alreadyRunning: true`).
+ * Nothing is lost either way — `running` and `lastRun` on the status GET are
+ * what the batch actually did, and the card polls them.
+ */
+export const ImageAnalysisActionResultSchema = z.object({
+  rows: z.number().int().nonnegative().optional(),
+  started: z.boolean(),
+  alreadyRunning: z.boolean(),
+});
+export type ImageAnalysisActionResult = z.infer<typeof ImageAnalysisActionResultSchema>;

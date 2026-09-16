@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { BackupStatusResponseSchema, type BackupStatusResponse, type UpdateBackupSettingsInput } from '@compendiq/contracts';
@@ -8,6 +8,7 @@ import { PanelHeader } from '../PanelHeader';
 import { useEnterprise } from '../../../shared/enterprise/use-enterprise';
 import { BackupKmsCard } from './BackupKmsCard';
 import { BackupObjectLockCard } from './BackupObjectLockCard';
+import { useNoticeRetry } from './use-notice-retry';
 
 const S3_FORM_KEYS = [
   's3Enabled',
@@ -19,37 +20,6 @@ const S3_FORM_KEYS = [
   's3Prefix',
   's3ForcePathStyle',
 ] as const;
-
-function useNoticeRetry(
-  refetch: () => Promise<{ isError: boolean }>,
-  stillFailing: boolean,
-  focusTarget: React.RefObject<HTMLElement | null>,
-) {
-  const [retryInFlight, setRetryInFlight] = useState(false);
-  const [restoreFocusAfterRetry, setRestoreFocusAfterRetry] = useState(false);
-
-  useEffect(() => {
-    if (!restoreFocusAfterRetry || stillFailing || retryInFlight) return;
-    setRestoreFocusAfterRetry(false);
-    const active = document.activeElement;
-    if (active && active !== document.body) return;
-    focusTarget.current?.focus();
-  }, [focusTarget, restoreFocusAfterRetry, retryInFlight, stillFailing]);
-
-  const onRetry = useCallback(() => {
-    if (retryInFlight) return;
-    setRetryInFlight(true);
-    setRestoreFocusAfterRetry(true);
-    void refetch()
-      .then(
-        (result) => setRestoreFocusAfterRetry(!result.isError),
-        () => setRestoreFocusAfterRetry(false),
-      )
-      .finally(() => setRetryInFlight(false));
-  }, [refetch, retryInFlight]);
-
-  return { onRetry, retryInFlight };
-}
 
 function navigateToBackupDownload(url: string) {
   window.location.assign(url);

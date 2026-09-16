@@ -655,6 +655,26 @@ with the PUT's two resolution reasons, never the probe's). The new
 the D8 class, and `valid` as D5's predicate evaluated against the retained
 identity and the running constants.
 
+**`routes/llm/llm-image-analysis.ts`** (#1618 stage 1) is the operator's
+processing surface, `requireAdmin` + the admin rate limit, mounted beside
+`llm-image-index.ts` and adding no SQL of its own — it is four HTTP routes over
+reads and actions #1616 shipped without one. `GET /admin/embedding/image-analysis`
+(`ImageAnalysisStatusSchema`) composes `readImageAnalysisCorpusCounts()`, the
+retained identity, `resolveImageAnalysisIdentity()`, `readImageAnalysisLastRun()`
+and the worker lock into four facts none of which may be inferred from another:
+assignment, retained identity, whether those agree
+(`identityMatchesAssignment`, D13's third gate — `null` only when nothing is
+assigned, because an unassigned instance is PAUSED, not mismatched), and the
+last batch. `POST …/process`, `…/retry-failed` and `…/reanalyze-all` each kick
+`runImageAnalysisBatch()` **detached** and report `started` / `alreadyRunning`
+read from the lock BEFORE the kick: a batch is bounded by
+`image_analysis_batch_size` (seeded 50) at up to 120 s per image, so awaiting it
+would hold the request past every proxy timeout in the path. The two bulk
+actions' row counts ARE awaited — one bounded statement each, and the count is
+what the toast quotes. `reanalyzeAllImages()` owns the one-active-run rule it
+shares with text Re-embed all and the #1116 shadow backfill and throws the 409;
+the route does not restate it.
+
 Migration `115_page_image_analyses.sql` (the ADR's SQL verbatim): the table,
 the two indexes, the use-case CHECK re-added with `image_analysis`, the NULL
 assignment row and the `image_analysis_max_output_tokens = '8192'` seed. The

@@ -33,6 +33,7 @@ a diagram points when "what do I DO about it" is the question.
 | [`vl-embedding-dev.md`](../runbooks/vl-embedding-dev.md) | Running the local VL embedding shim (`mlx` / `llama` backends) so the image index and the eval have an endpoint on a laptop (#1115) |
 | [`retrieval-eval.md`](../runbooks/retrieval-eval.md) | The #1102 retrieval harness: corpora, fixtures, the FTS-language axis, the `--images` axis, the ADR-027 A/B/C arm protocol, and how to read a verdict |
 | [`shadow-reembed.md`](../runbooks/shadow-reembed.md) | Zero-downtime TEXT embedding model change — lifecycle, go/no-go, revert (#1116) |
+| [`image-embedding-retirement.md`](../runbooks/image-embedding-retirement.md) | Retiring the legacy `image_embedding` space: the destructive boundary, the `pg_dump` set, the restore procedure and its exercise record (#1618) |
 
 ## Maintenance
 
@@ -60,6 +61,8 @@ Quick reference for what to update when:
 | `retrieved-images.ts`, the vision gate on the answer path, or `rag_answer_max_images` | `03-backend-domains.md`, `04-frontend-structure.md`, `09-flow-rag-chat.md` |
 | The image-axis eval (`domains/llm/eval/images-*.ts`, `seed-images.ts`, `runner-images.ts`, `corpus-de-images/`) or the ADR-027 arm axis (`eval/arms.ts`, `answers.ts`, `judgments.ts`, `scripts/run-arm-answers.ts`, `scripts/judge-arms.ts`, `eval/artifacts/1611/`) | `03-backend-domains.md` + `docs/runbooks/retrieval-eval.md` |
 | The ADR-027 candidate — shipped by #1616: migration 116 (`pages.image_analysis_dirty/_revision`, `page_embeddings.chunk_tsv`), `domains/llm/services/image-analysis-{provider,validity,reconcile,worker,serialize,compose,readiness}.ts`, `image-intake.ts`, derived `page_embeddings` rows, the `image-analysis` queue; PLANNED #1615/#1617: `page_image_analyses`, the `image_analysis` assignment/capability routes, lexical chunk resolution | `03-backend-domains.md`, `06-data-model.md`, `08-flow-sync.md`, `09-flow-rag-chat.md`, `11-content-pipeline.md`, `docs/runbooks/image-index.md` §5b + ADR-027 |
+| `routes/llm/llm-image-analysis.ts` (the image-analysis status and the three operator actions) or `features/settings/panels/ImageAnalysisProgressCard.tsx` | `03-backend-domains.md`, `04-frontend-structure.md`, `docs/runbooks/image-index.md` §5c |
+| The legacy image space's retirement — `docs/held-migrations/118_retire_image_embedding_space.sql`, the dump set, or the restore procedure | `docs/runbooks/image-embedding-retirement.md` + ADR-027 "Retirement plan" |
 | `core/db/vector-column-tier.ts` (the pgvector index tiers) or `core/db/with-lock-retry.ts` | `03-backend-domains.md`, `06-data-model.md` |
 | Enterprise loader, license route, license persistence | `10-flow-enterprise-license.md` |
 | `content-converter.ts`, `document-extractor.ts`, `pages-import.ts`, `notion-block-converter.ts`, `notion-import-service.ts`, XHTML/HTML/Markdown/Notion conversion, uploaded-file extraction, import size limits | `11-content-pipeline.md` |

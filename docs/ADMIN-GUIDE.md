@@ -2215,3 +2215,47 @@ LLM providers → **Image analysis (vision)**.
 - **Inspection:** `GET /api/admin/pages/:id/image-analyses[?payload=1]`
   (admin, page-visibility checked) lists a page's analysis rows with their
   failure class and validity.
+
+#### Is it running? — the Image analysis card (#1618)
+
+Settings → AI Models → **Embeddings** carries the processing half. The row
+above is *can it run?*; this card is *is it running?* — it sits beside the
+legacy **Image index** card for as long as both designs ship.
+
+- **Counters.** *Analyzed* is the images with a description the index can
+  actually use. **Stale** is separate on purpose: analyzed on disk, but written
+  under a model identity or a prompt/schema version that is no longer current,
+  so no reader accepts it until the next run re-analyzes it. *Pending*,
+  *Failed*, *Given up* (the attempt cap — only **Retry failed** moves those)
+  and *Skipped* complete the work window.
+- **Two backlogs that are not the same thing.** "*N* pages analyzed, text
+  embedding still pending" costs no vision call — the descriptions exist and
+  the page is waiting for the ordinary text embedder. A *partially analyzed*
+  corpus still owes vision calls. "*N* pages queued for an image re-read" is
+  the third: those pages changed and their images have not been looked at yet.
+- **Skip reasons are named.** `missing from the store` is the one that is a
+  gap rather than a decision — the page references an image the store does not
+  hold, which is a broken sync, and it is what keeps an otherwise complete
+  corpus reading *partial*. The rest (unsupported format, above the pixel
+  bound, too large, external URL, past the per-page cap) are policy working as
+  configured.
+- **Last run** reports the three steps and, when a batch stopped early, the
+  reason and the endpoint's HTTP status. "Paused: no vision model is assigned"
+  is not an error — the sweep and the reconcile still ran.
+- **The three actions.** **Process now** kicks one bounded batch (it reports
+  *already running* rather than claiming a second one started). **Retry
+  failed** gives every failed and given-up image a fresh attempt budget, due at
+  once. **Re-analyze all** discards every stored description first and spends
+  one vision call per image; it shows the exact count before it runs, and it is
+  refused with a 409 while a corpus text re-embed or a #1116 shadow backfill
+  holds the one-active-run slot.
+- **A failed status read is not an unassigned leg.** If the card says the
+  status could not be read, the assignment and the stored analyses are
+  untouched and all three actions stay available — retry the read, or check
+  the backend logs.
+- **Routes:** `GET /api/admin/embedding/image-analysis`, and
+  `POST /api/admin/embedding/image-analysis/{process,retry-failed,reanalyze-all}`
+  (admin only).
+- **Retiring the old leg:** `docs/runbooks/image-embedding-retirement.md` has
+  the destructive boundary, the backup set and the restore procedure. Nothing
+  in it removes page content or attachment bytes.

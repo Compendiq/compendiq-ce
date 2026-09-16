@@ -5322,6 +5322,29 @@ the forward migration (below) written but not merged; the backup/restore
 procedure written and exercised on disposable data; coverage/health counts
 updated (D9.5).
 
+**Erratum (#1618 stage 1, 2026-09-16) — the three UI removals move to stage 2.**
+Stage 1 above and stage 2 below cannot both be true on a merged `dev`:
+`rag_image_leg_enabled` still gates live code (`image-leg-search.ts:308`,
+`admin-settings-service.ts:641`, default `true`) and
+`image_embedding_target_dimensions` still shapes live vectors
+(`image-leg-search.ts:77`, `image-embedding-service.ts:66`), so merging the
+MRL-width row, the image-embedding probe chip and the **Image leg** toggle out
+of the UI in stage 1 leaves an upgrading operator with a serving image leg, no
+off switch and no width control — which #1611's "keep the current release
+serving during candidate evaluation" forbids. All three removals, and the
+selector relabel that names the retired use case, belong to stage 2 with the
+code and the settings keys they control. **Stage 1 is purely additive.**
+
+**Erratum (#1618 stage 1, 2026-09-16) — `image_index_last_run`.** Stage 2's
+enumeration below names `admin_settings.image_embedding_*` and
+`rag_image_leg_enabled`; `image_index_last_run`
+(`image-embedding-service.ts:138`) is neither prefix and was therefore unnamed.
+It is deleted with them: it is the last legacy scan's audit trail and it
+describes a worker stage 2 removes. It is also the one row whose deletion loses
+operator-visible history, which is why the recovery dump set is the whole
+`admin_settings` table
+(`docs/runbooks/image-embedding-retirement.md`).
+
 **Stage 2 — retire (after #1619's passing verdict):** one forward migration
 drops `page_image_embeddings`, `pages.image_embedding_dirty`, removes
 `'image_embedding'` from the use-case CHECK (drop/re-add with the full list),
@@ -5351,6 +5374,37 @@ plus the attachment directories (bytes are never removed by this migration).
 Rollback = restore that dump into a deployment of the pre-stage-2 release;
 the procedure is exercised on disposable data by #1619 before authorisation.
 There is no in-product rollback mode.
+
+**The procedure is `docs/runbooks/image-embedding-retirement.md`** (#1618 stage
+1), with the held migration text in `docs/held-migrations/` — outside
+`backend/src/core/db/migrations/`, because `postgres.ts` applies every `*.sql`
+in that directory on boot. Stage 1 exercised the whole cycle on a disposable
+database and recorded it there (§5); #1619 re-exercises it against a real
+upgraded deployment before authorisation. Three findings of that rehearsal
+amend the dump set above rather than merely restating it:
+`pages.image_embedding_dirty` is NOT in it (dumping `pages` means dumping the
+corpus), so a restore re-adds the column at its default and the corpus must be
+re-marked; the dump needs `--clean --if-exists`, because three of its four
+tables survive the migration and a restore without it fails on its first
+`CREATE TABLE`; and — **erratum, #1618 stage 1 review round 1, 2026-09-16** —
+that third finding has a consequence for the REPLACEMENT which the first
+rehearsal could not see, because it restored an `admin_settings` table nothing
+had touched since the dump. `admin_settings` and `llm_usecase_assignments` are
+restored WHOLESALE, so a rollback of the legacy leg also rewinds
+`admin_settings.image_analysis_identity`, the `image_analysis` assignment row,
+the output-token ceiling, the batch size and (by deletion, if it was written
+after the dump) `image_analysis_last_run`. Re-rehearsed with the
+replacement re-assigned between the dump and the rollback: without a targeted
+capture the retained identity and the assignment both returned to their
+dump-time pair, leaving the gate OPEN against the superseded model and every
+description written under the newer one failing D5's validity predicate — a
+corpus-wide re-analysis, not merely the paused index of D13's
+`identity_drift`. The runbook's restore therefore has two extra steps that are
+part of the procedure, not a note: capture exactly those rows before the
+restore (§4 step 3) and replay them after it (§4 step 5), with §4.1 verifying
+them rather than asserting they were never at risk. `page_image_analyses`
+itself is genuinely outside the dump set, and so is the capability verdict in
+`llm_model_capabilities`.
 
 ### Supersession of ADR-025
 

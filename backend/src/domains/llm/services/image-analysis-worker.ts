@@ -76,6 +76,7 @@ import {
 import { intakePageImage, mimeTypeForImageFormat } from './image-intake.js';
 import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { assertNoShadowMigration, REEMBED_ALL_LOCK_USER } from './embedding-service.js';
+import type { ImageAnalysisBatchReason } from '@compendiq/contracts';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -120,13 +121,12 @@ const BACKOFF_SQL = `NOW() + LEAST(interval '15 minutes' * power(2, LEAST(attemp
 
 // ─── Result shape ────────────────────────────────────────────────────────────
 
-export type ImageAnalysisBatchReason =
-  | 'unassigned'
-  | 'capability'
-  | 'identity_drift'
-  | 'provider_status'
-  | 'uniform_rejection'
-  | 'lease_lost';
+/**
+ * Why a batch stopped before analyzing. Defined in `@compendiq/contracts`
+ * (#1618) because the operator card renders one label per member: a reason
+ * added here without a label on that surface is a stop nothing explains.
+ */
+export type { ImageAnalysisBatchReason };
 
 export interface ImageAnalysisBatchResult {
   /** Rows analyzed (committed) in this batch. */
