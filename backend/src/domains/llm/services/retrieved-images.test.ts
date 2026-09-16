@@ -696,3 +696,80 @@ describe('pickRetrievedImages — one lookup, whatever the page count', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('pickRetrievedImages — ADR-025’s leg as the pre-#1618 fallback', () => {
+  /** One legacy image-leg row: hits on the page, no derived provenance. */
+  function legacyPage(
+    pageId: number,
+    hits: Array<{ key: string; similarity: number; source?: 'confluence' | 'local' }>,
+  ): RetrievedImagePage {
+    return {
+      pageId,
+      score: 0.0164,
+      imageHits: hits.map((h) => ({ source: h.source ?? 'confluence', key: h.key, similarity: h.similarity })),
+    };
+  }
+
+  it('attaches the leg’s picture when NO row carries derived provenance', async () => {
+    // Review r1 finding 1. An instance with `image_embedding` assigned and
+    // nothing analyzed yet is exactly this set, and it had answer-time
+    // pictures before #1617. Consuming derived provenance only took them
+    // away — which is also what made the `image_only_context` refusal's
+    // "they are attached below" false for the one set that reaches it.
+    pageRows([{ id: 5, confluence_id: 'c5', source: 'confluence' }]);
+    await writeConfluenceFile('c5', 'legacy.png', distinctPng('legacy'));
+
+    const picked = await pickRetrievedImages([legacyPage(5, [{ key: 'legacy.png', similarity: 0.71 }])], { max: 2 });
+
+    expect(picked.parts).toHaveLength(1);
+    expect(picked.used).toEqual([
+      { pageId: 5, source: 'confluence', attachmentKey: 'legacy.png', bytes: distinctPng('legacy').length },
+    ]);
+  });
+
+  it('orders the legacy candidates by the leg’s own cross-modal similarity', async () => {
+    // The legacy arm's ordering quantity is per-IMAGE, unlike D11's per-ROW
+    // fused rank — so the best picture of the pair must win the single slot
+    // even though both pages carry the same fused score.
+    pageRows([
+      { id: 6, confluence_id: 'c6', source: 'confluence' },
+      { id: 7, confluence_id: 'c7', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c6', 'weak.png', distinctPng('weak'));
+    await writeConfluenceFile('c7', 'strong.png', distinctPng('strong'));
+
+    const picked = await pickRetrievedImages(
+      [legacyPage(6, [{ key: 'weak.png', similarity: 0.41 }]), legacyPage(7, [{ key: 'strong.png', similarity: 0.83 }])],
+      { max: 1 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['strong.png']);
+  });
+
+  it('IGNORES the leg entirely as soon as one row carries provenance — whole-set, never per-page', async () => {
+    // The fallback must not let a legacy hit ride along beside a derived one:
+    // the two ordering quantities are incomparable (a fused rank against a
+    // cross-modal cosine), and a page whose picture is BOTH a hit and an
+    // analysed attachment would otherwise spend two of the slots on one file.
+    pageRows([
+      { id: 8, confluence_id: 'c8', source: 'confluence' },
+      { id: 9, confluence_id: 'c9', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c8', 'derived.png', distinctPng('derived'));
+    await writeConfluenceFile('c9', 'legacy.png', distinctPng('legacy2'));
+
+    const picked = await pickRetrievedImages(
+      [...page(8, [hit('derived.png', 0.9)]), legacyPage(9, [{ key: 'legacy.png', similarity: 0.99 }])],
+      { max: 4 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['derived.png']);
+  });
+
+  it('reads no page row when the set has neither provenance nor hits', async () => {
+    const picked = await pickRetrievedImages([{ pageId: 10, score: 0.2, imageHits: [] }], { max: 4 });
+
+    expect(picked.parts).toEqual([]);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+});

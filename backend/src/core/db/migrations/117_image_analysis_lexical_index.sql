@@ -1,0 +1,55 @@
+-- Migration 117: the derived lexical arm's own index — #1617 review r1, W2.
+--
+-- 116 gave `page_embeddings` a full `chunk_tsv` GIN
+-- (`page_embeddings_chunk_tsv_idx`) and a btree partial over the derived
+-- predicate (`page_embeddings_derived_idx`, keyed on `page_id` for the
+-- composition read). Neither is the index the D10 union's derived arm wants:
+--
+--   WHERE pe.chunk_tsv @@ q AND (pe.metadata->>'source') = 'image_analysis'
+--
+-- On idle indexes the planner combines them and the arm costs 0.12–0.34 ms.
+-- After a corpus-wide analysis batch (#1616's first run) it does not: the
+-- GIN's PENDING LIST is what changes the plan. Measured on a seeded 4,001-page
+-- corpus, `pgstatginindex(...).pending_pages = 429 / 12,000 tuples` right
+-- after inserting 12,000 derived rows, one-row match:
+--
+--   shipped (116 only)                   Bitmap Index Scan on
+--                                        page_embeddings_derived_idx
+--                                        + Filter: (chunk_tsv @@ q),
+--                                        Rows Removed by Filter: 43,600
+--                                        8.9–10.4 ms
+--   + a plain partial GIN                the SAME plan, 9.1–9.9 ms
+--   + this index (fastupdate = off)      Bitmap Index Scan on
+--                                        page_embeddings_derived_chunk_tsv_idx
+--                                        0.021–0.035 ms
+--
+-- So the partial index is necessary and NOT sufficient, which is the one place
+-- this migration departs from the review's prescription. `gincostestimate`
+-- prices the pending-list scan into every GIN that has one, and a derived
+-- write burst pends the partial index exactly as it pends the full one — the
+-- planner then still prefers the btree partial plus a filter over all 43,601
+-- derived rows. `fastupdate = off` is what removes the pending list from the
+-- decision: this index takes its inserts directly, so a batch can never make
+-- it look expensive, and the arm's plan is the same before, during and after
+-- a corpus-wide run.
+--
+-- The write side is the trade, and it is small and in the right place. Direct
+-- GIN insertion costs ~45 us per derived chunk (4,000 rows: 387 ms vs 208 ms
+-- with fastupdate on) and is paid ONLY by the analysis worker's bounded batch
+-- (`image_analysis_batch_size`, default 50 images per cycle) — the index is
+-- partial, so no authored chunk write touches it at all. Turning
+-- `fastupdate` off on 116's FULL GIN would have fixed the same plan by taxing
+-- every authored chunk of every embed and 116's own corpus-wide backfill;
+-- this keeps that path exactly as it was.
+--
+-- `page_embeddings_chunk_tsv_idx` and `page_embeddings_derived_idx` both STAY:
+-- the first serves `bestChunkLateralSql`'s `chunk_tsv @@ q` over a page's
+-- AUTHORED chunks (D10 chunk resolution), the second the `page_id`-keyed
+-- derived composition read (D9). This index is additive.
+--
+-- Non-concurrent, like 116's: `runMigrations` wraps the file in one
+-- transaction and `CREATE INDEX CONCURRENTLY` cannot run inside one. The
+-- build scans the derived rows only.
+CREATE INDEX IF NOT EXISTS page_embeddings_derived_chunk_tsv_idx
+  ON page_embeddings USING gin (chunk_tsv) WITH (fastupdate = off)
+  WHERE (metadata->>'source') = 'image_analysis';

@@ -67,6 +67,18 @@ describe('SourceCitations', () => {
     expect(screen.queryByText('Getting Started Guide')).not.toBeInTheDocument();
   });
 
+  it('announces the disclosure state, not just the chevron glyph', () => {
+    // Review r1 finding 9. The list behind this toggle has two row TYPES
+    // since #1617 (a page and a picture), so a screen-reader user needs to
+    // know it is there and whether it is open — the glyph is not that.
+    render(<SourceCitations sources={mockSources} />, { wrapper: Wrapper });
+    const toggle = screen.getByRole('button', { name: /Sources \(3\)/ });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('expands when clicked to show source cards', () => {
     render(<SourceCitations sources={mockSources} />, { wrapper: Wrapper });
 

@@ -672,7 +672,9 @@ export async function keywordSearch(
       //    `substring(body_text,1,500)` for EVERY keyword hit — the measured
       //    change the issue's scope note names (rerank input and the
       //    `/api/search` hybrid snippet move with it). The prefix survives
-      //    only for a page with no chunk rows at all.
+      //    only for a page with no usable chunk row — and since review r1 it
+      //    is only SELECTED for those rows, instead of costing 500 bytes on
+      //    every row for a value the mapper discards.
       //
       // `pages.tsv` itself is untouched (ADR `:4265-4267`): an authored-only
       // page's rank is the same `ts_rank` value it was before this change, so
@@ -704,7 +706,15 @@ export async function keywordSearch(
             LIMIT $3
          )
          SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
+                -- Only for a row the chunk resolution cannot answer (review
+                -- r1 finding 6). The prefix was selected for EVERY keyword
+                -- row while the mapper discards it on the common path, at up
+                -- to 500 bytes per row per query. The CASE mirrors
+                -- resolveLexicalChunk's own usable test on the 'always'
+                -- path: no chunk row at all, or an empty one.
+                CASE WHEN best.chunk_index IS NULL OR coalesce(best.chunk_text, '') = ''
+                     THEN substring(coalesce(cp.body_text, ''), 1, 500)
+                     ELSE '' END AS body_text,
                 ranked.rank AS rank,
                 best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
            FROM ranked

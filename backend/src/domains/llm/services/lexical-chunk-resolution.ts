@@ -65,6 +65,14 @@ export function lexicalTsQuery(parser: LexicalParser, language: FtsLanguage, tex
  * and `extraPageFilter` its optional space narrowing — the same fragments the
  * authored arm binds, at the same parameter indexes, so the two arms cannot
  * drift apart (D14).
+ *
+ * Indexed by migration 117's `page_embeddings_derived_chunk_tsv_idx` — a GIN
+ * over `chunk_tsv` carrying this exact `metadata->>'source'` predicate. 116's
+ * full GIN plus its btree partial served this arm through a `BitmapAnd` until
+ * a corpus-wide analysis batch left the full GIN a pending list, at which
+ * point the planner preferred the btree partial plus a `chunk_tsv` filter and
+ * scanned every derived chunk in the corpus (review r1 finding 2: 49.3 ms vs
+ * 0.118 ms post-`VACUUM`). The partial index removes the choice.
  */
 export function derivedRankArmSql(
   tsQuery: string,
@@ -157,8 +165,14 @@ export function resolveLexicalChunk(
   fallback: { text: string; sectionTitle: string },
   adopt: 'always' | 'on-match' = 'always',
 ): ResolvedLexicalChunk {
+  // `''` is the THIRD state, and it is unusable (review r1 finding 5): a row
+  // whose `chunk_text` is empty would hand the caller an empty `chunkText`
+  // where the body prefix is genuinely the better context. `embedPage` should
+  // never write such a row, so this is belt-and-braces — but the guard reads
+  // as "absent means absent" and must therefore treat empty as absent too.
   const usable =
     row.chunk_text != null
+    && row.chunk_text.length > 0
     && row.chunk_index != null
     && (adopt === 'always' || row.chunk_matched === true);
   if (!usable) {

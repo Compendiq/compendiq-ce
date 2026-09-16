@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance<br/>page-identity"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service<br/>notion-client<br/>notion-token-service<br/>notion-tree<br/>notion-block-converter<br/>notion-import-service (#1459)<br/>notion-import-job"]
     end
 
@@ -468,6 +468,15 @@ it consumes are #1615's and reach it through one import point:
   rather than 500 an answerable turn. It is the only reader of that metadata:
   neither the route nor the byte pick touches raw `metadata`, and nothing on
   the query path joins `page_image_analyses`.
+- **`page-identity.ts`** (#1617 review r1) — the memoized
+  `(id, confluence_id, source)` reader both of the above need
+  (`buildPageImageUrl` and `resolveAttachmentBytes` each require all three and
+  refuse to infer `source`). `/llm/ask` builds ONE per request and hands it to
+  the citation append and the byte pick, so a turn that cites a picture and
+  shows it to the model takes one `pages` read, not two identical ones.
+  No visibility predicate, deliberately: the ids come from retrieval, which
+  already applied it (D14), so a reader must never be given a page id from a
+  request.
 
 `core/services/image-embedding-dirty.ts` and every inline `image_embedding_dirty`
 writer raise `image_analysis_dirty` in the same statement; `rag-service.ts`'s
@@ -500,9 +509,14 @@ answer's rows came from into `image_url` parts on the user turn:
 `pickRetrievedImages` selects round-robin across pages with a byte-identity
 dedupe, re-runs `validateImage` unforked and stops at a derived base64 budget.
 Since #1617 its candidates come from `SearchResult.derived` through
-`derived-provenance.ts` — **not** from `image-leg-search.ts`'s cross-modal
-hits (ADR-027 D11) — so it imports no `ImageHit` and there is no per-image
-score to order by: the carrying row's fused rank decides, then `part`. **The vision gate is the
+`derived-provenance.ts` (ADR-027 D11) — so it imports no `ImageHit` and there
+is no per-image score to order by: the carrying row's fused rank decides, then
+`part`. When NO row in the set carries provenance it falls back WHOLE-SET to
+ADR-025's `imageHits` (review r1; a structural `LegacyImageHit`, still no
+import of `image-leg-search.ts`), because the leg is live until #1618 and an
+instance with `image_embedding` assigned and nothing analyzed yet is exactly
+that set — the arm that keeps `image_only_context`'s "attached below"
+sentence true, and the one #1618 deletes with the leg. **The vision gate is the
 CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
 verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
 first"). So the pick loads bytes unconditionally, and nothing that has not

@@ -2211,6 +2211,37 @@ describe('RAG Service', () => {
       });
     });
 
+    it('falls back to the body prefix when the resolved chunk is an EMPTY string', async () => {
+      // Review r1 finding 5. `''` is the third state beside "a chunk" and
+      // "no chunk row at all", and it is unusable: handing the caller an
+      // empty `chunkText` loses the one context this row can offer, on
+      // exactly the path where the prefix is genuinely better. `embedPage`
+      // should never write such a row — this is the guard reading "absent
+      // means absent" for all three states rather than two.
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 42,
+            confluence_id: 'PAGE-42',
+            title: 'Redis Overview',
+            space_key: 'DEV',
+            body_text: 'First 500 chars of body text here.',
+            rank: 0.75,
+            chunk_text: '',
+            chunk_index: 3,
+            chunk_matched: true,
+            metadata: { section_title: 'Ignored' },
+          },
+        ],
+      });
+
+      const results = await keywordSearch('user-1', 'redis', 10);
+      expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+      expect(results[0].sectionTitle).toBe('Redis Overview');
+      expect(results[0].chunkIndex).toBeUndefined();
+    });
+
     it('unions the DERIVED chunk documents into the candidate set, under the same visibility predicate', async () => {
       // The three D10 rules that live in the SQL and nowhere else: the derived
       // arm exists, it is restricted to derived rows (authored chunks must not

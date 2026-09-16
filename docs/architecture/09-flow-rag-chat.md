@@ -110,7 +110,7 @@ sequenceDiagram
         note right of BE: THREE reasons decided HERE, only ONE of them a threshold<br/>verdict (a fourth, image_only_context, is decided after the pick — see below):<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all four stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
     end
     opt retrieved images -> answer parts (#35;1115 P4)
-        note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned page carries imageHits#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
+        note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned row carries derived provenance or (pre-#35;1618) imageHits#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
         BE->>PG: ONE batched SELECT id, confluence_id, source<br/>for the candidate pages (pageSource is REQUIRED, never inferred)
         PG-->>BE: page identities
         BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid / duplicate bytes / over the base64 budget
@@ -1759,7 +1759,9 @@ Eight things are load-bearing.
 
 P3 made a picture retrievable and put it on the wire as a `kind: 'image'`
 source. P4 puts it in the request. `domains/llm/services/retrieved-images.ts`
-turns the `imageHits` riding on the returned `SearchResult`s into `image_url`
+turns the pictures the returned `SearchResult`s came from — their derived
+provenance since #1617, their `imageHits` where there is none — into
+`image_url`
 content parts, and `llm-ask.ts` appends them to the user turn.
 
 **The service exists because of the P0 guard, not despite it.**
@@ -1775,8 +1777,10 @@ caller that wants these bytes should reach `pickRetrievedImages`, not the
 store.
 
 **Four gates, cheapest first.** `rag_answer_max_images > 0` (a cached
-`admin_settings` read, default **2**, range 0–8); some returned page carries
-`imageHits`; `getVisionCapability(chatProvider, chatModel) === true`; and then
+`admin_settings` read, default **2**, range 0–8); some returned row carries
+image evidence — derived provenance (ADR-027 D11), or an ADR-025 `imageHits`
+entry while that leg is live; `getVisionCapability(chatProvider, chatModel)
+=== true`; and then
 the bytes themselves. The ordering is what keeps the standing cost on a
 text-only deployment to one cached settings read — the capability table is not
 touched until a picture is actually in play.
@@ -1793,7 +1797,8 @@ row (#1184), not here.
 
 **Selection is round-robin, not best-first.** Every page contributes its best
 image before any page contributes a second, ordered within a round by the
-image's own cross-modal similarity. A flat sort over the flattened hits would
+carrying row's fused rank (or, on the legacy fallback, by the image's own
+cross-modal similarity). A flat sort over the flattened candidates would
 let one gallery page take both slots at the default cap and hide the second
 page entirely — image COUNT beating image BREADTH, which is the head dilution
 `MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and #1106's best-chunk-only
@@ -2199,6 +2204,19 @@ pre-#1617 image source carrying none of them still parses. Replay re-applies
 page visibility, so a revoked page's entry is annotated `unavailable`
 regardless of its hash: a shared `contentHash` is provenance, never an
 authorization shortcut.
+
+**The legacy arm is the fallback, not gone (#1617 review r1).** When NO row in
+the answer's set carries derived provenance, both the citation append and the
+byte pick fall back WHOLE-SET to ADR-025's `imageHits` — the pre-#1617 append,
+ordered by the leg's own cross-modal cosine, carrying `attachmentUrl` and none
+of the four provenance fields. That is the state of an instance with
+`image_embedding` assigned and nothing analyzed yet, which the ADR keeps live
+until #1618; consuming only the new shape would have taken its chips and its
+answer-time pictures away, and would have made `image_only_context`'s "They
+are attached below as the closest matches" false for the only set that
+reaches it. Whole-set rather than per-page, so the two ordering quantities
+never interleave and one attachment is never cited twice. #1618 deletes the
+fallback with the leg, the flag and the rule.
 
 `frontend/src/features/ai/source-target.ts` is the single resolver: a `url`
 (or a URL found in `confluenceId`) opens in a new tab, otherwise navigation

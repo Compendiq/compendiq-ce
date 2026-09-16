@@ -106,6 +106,19 @@ describe('distinctDerivedImages', () => {
     expect(images.map((i) => i.derived.attachmentKey)).toEqual(['a0.png', 'a.png', 'b.png', 'c.png']);
   });
 
+  it('breaks the last tie on attachmentKey, so the order is TOTAL as documented', () => {
+    // Review r1 finding 4. Two DIFFERENT images of the SAME page at the same
+    // fused score and the same part tie on every earlier key, and without
+    // this fallback they resolve by `Array#sort` stability — i.e. by the
+    // order retrieval happened to return the rows in, which is not a
+    // property either caller controls. The docstring claims the order is
+    // total; this is what makes that true.
+    const forward = distinctDerivedImages([row(1, 'zulu.png', 0.05), row(1, 'alpha.png', 0.05)]);
+    const reversed = distinctDerivedImages([row(1, 'alpha.png', 0.05), row(1, 'zulu.png', 0.05)]);
+    expect(forward.map((i) => i.derived.attachmentKey)).toEqual(['alpha.png', 'zulu.png']);
+    expect(reversed.map((i) => i.derived.attachmentKey)).toEqual(['alpha.png', 'zulu.png']);
+  });
+
   it('collapses several rows of ONE picture to one image', () => {
     // A multi-part serialization puts several chunks of the same file in the
     // index; two of them in one top-K must not spend two citation slots.

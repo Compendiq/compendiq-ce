@@ -41,8 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not at all, so a reopened conversation round-trips them. Replay still
   re-applies page visibility: a revoked page's entry is `unavailable` hash or
   no hash. The optional answer-time image bytes for a confirmed
-  vision-capable chat model are rewired from the legacy image leg to derived
-  provenance, under the same count, byte, format and ACL limits.
+  vision-capable chat model are re-sourced from derived provenance, under the
+  same count, byte, format and ACL limits — falling back WHOLE-SET to the
+  legacy image leg's hits when no row in the answer's set carries provenance,
+  so an instance with `image_embedding` assigned and nothing analyzed yet
+  keeps the chips and pictures it had (and `image_only_context` keeps its
+  three discriminating arms instead of promising attachments it cannot
+  produce). #1618 retires the fallback with the leg.
+- **Migration 117 — the derived lexical arm's own index (#1617).**
+  `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the arm only while idle: after a corpus-wide analysis batch the full GIN's
+  pending list re-priced the plan and the arm scanned every derived chunk
+  behind a `chunk_tsv` filter — measured 8.9–10.4 ms for a one-row match
+  against 0.021 ms with this index, at 429 pending pages on a 4,001-page
+  corpus. `fastupdate = off` is what keeps the new index out of that state
+  (a plain partial GIN pends identically and measured no better); only the
+  analysis worker's own inserts pay it, at ~45 µs per derived chunk.
 
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
   Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
@@ -92,11 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`image_only_context` now refuses unconditionally for the set it still
-  reaches (#1617).** The answer-time byte pick no longer consumes
-  `image-leg-search.ts`'s hits, and a title-synthesised row by construction
-  has no derived provenance, so such a set can never attach a picture. The
-  rule, the flag and the legacy leg are removed together in #1618.
+- **`image_only_context` keeps its three discriminating arms (#1617).** The
+  answer-time byte pick prefers derived provenance, and a title-synthesised
+  row by construction has none — so the pick falls back to the legacy image
+  leg's hits for such a set, and the refusal still depends on the vision
+  verdict, the cap and whether the bytes are readable, exactly as before. The
+  rule, the flag, the fallback and the legacy leg are removed together in
+  #1618.
+- The `Sources (N)` disclosure on an answer now reports its state through
+  `aria-expanded`, so a screen reader announces whether the citation list is
+  open (it has two row types since #1617: pages and pictures).
 
 - The page inspector's Details tab groups the Confluence link with provenance,
   places Notes before secondary page actions, and exposes the quality breakdown,

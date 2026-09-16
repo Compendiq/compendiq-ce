@@ -9,7 +9,7 @@ import {
   initialTitleFromQuestion,
 } from '../../domains/llm/services/conversation-title.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
-import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
+import { hybridSearch, buildRagContext, type RetrievalMeta, type SearchResult } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
 // rag-service export, because expansion is a REQUEST-level stage: /api/search
 // paginates and must never reach it.
@@ -27,6 +27,7 @@ import { getRagConfidenceThreshold, getRagConfidenceThresholdRerank, getRagConte
 // already applied the visibility predicate to the pages it returned.
 import { pickRetrievedImages, retrievedImagesCacheComponent } from '../../domains/llm/services/retrieved-images.js';
 import { buildDerivedImageSources } from '../../domains/llm/services/derived-provenance.js';
+import { createPageIdentityReader } from '../../domains/llm/services/page-identity.js';
 import { getVisionCapability } from '../../domains/llm/services/model-capabilities.js';
 import { LlmCache, buildRagCacheKey } from '../../domains/llm/services/llm-cache.js';
 import { CircuitBreakerOpenError } from '../../core/services/circuit-breaker.js';
@@ -132,6 +133,41 @@ const RETRIEVED_IMAGES_PROMPT_SENTENCE =
  * a vision model — and the two must not be collapsed.
  */
 const MAX_IMAGE_SOURCES = 4;
+
+/**
+ * ADR-025's `kind: 'image'` citations, kept as the fallback for the window in
+ * which its leg is still live and nothing has been analyzed yet (review r1
+ * finding 1). Verbatim the pre-#1617 append, and deleted with the leg in
+ * #1618.
+ *
+ * It is reached only when {@link buildDerivedImageSources} produced NOTHING,
+ * so the two arms never interleave and one attachment can never be cited
+ * twice. No identity read: an `ImageHit` already carries the
+ * `buildPageImageUrl` result, computed where the kNN had the page row.
+ *
+ * Ordering is the hit's own cross-modal cosine — the only per-IMAGE measure
+ * the legacy leg has; the page order is a fused rank that says nothing about
+ * which picture matched better. The cosine itself stays off the wire
+ * (`similarity: null`, ADR-025 §8).
+ */
+function legacyImageSources(results: SearchResult[]) {
+  return results
+    .flatMap((r) =>
+      (r.imageHits ?? []).map((hit) => ({
+        kind: 'image' as const,
+        pageId: r.pageId,
+        pageTitle: r.pageTitle,
+        spaceKey: r.spaceKey,
+        attachmentUrl: hit.attachmentUrl,
+        similarity: null,
+        score: r.score,
+        _rank: hit.similarity,
+      })),
+    )
+    .sort((a, b) => b._rank - a._rank)
+    .slice(0, MAX_IMAGE_SOURCES)
+    .map(({ _rank, ...source }) => source);
+}
 
 /**
  * The refusal sentence per reason. `semantic_index_unavailable` must NOT read
@@ -536,6 +572,28 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // through `toPersistedSources`, which keeps what a chip renders and drops
     // `score`/`rerankScore` — so a reopened conversation renders its chips and
     // confidence badge (computed client-side from `similarity`).
+    // ONE `pages` identity read for the two steps that need one (review r1
+    // finding 7): the D12 citation append just below, and the answer-time
+    // byte pick further down. Both take `(id, confluence_id, source)` over
+    // overlapping page sets; the reader memoizes per request and neither
+    // re-applies a visibility predicate (D14 — retrieval already did).
+    const pageIdentities = createPageIdentityReader();
+    // ADR-027 D12's image citations, with ADR-025's leg as the pre-#1618
+    // fallback (review r1 finding 1; D11's third erratum). Derived provenance
+    // is PREFERRED and the fallback is whole-set, so one attachment can never
+    // be cited twice and the two orderings never interleave. On an instance
+    // with `image_embedding` assigned and no analyses yet, the legacy arm is
+    // the only one with anything to say — and it is the arm that keeps
+    // `image_only_context`'s "attached below" sentence true, because every
+    // row that rule fires on carries `imageHits` by construction
+    // (`buildImageLegResults`). #1618 deletes this branch with the leg.
+    const derivedImageSources = await buildDerivedImageSources(
+      searchResults,
+      MAX_IMAGE_SOURCES,
+      pageIdentities,
+    );
+    const imageSources =
+      derivedImageSources.length > 0 ? derivedImageSources : legacyImageSources(searchResults);
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -588,9 +646,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       })),
       // ADR-027 D12 (#1617) — one `kind: 'image'` entry per distinct
       // `(pageId, attachment_source, attachment_key)` among the answer's
-      // top-K DERIVED rows. The page whose best hit is a derived chunk is
-      // still cited as a page source above (its `chunkText` is the evidence
-      // the model saw); this is the picture that evidence came from.
+      // top-K DERIVED rows, or ADR-025's leg hits while it is still the only
+      // arm with images (built above). The page whose best hit is a derived
+      // chunk is still cited as a page source above (its `chunkText` is the
+      // evidence the model saw); this is the picture that evidence came from.
       //
       // Five decisions, all deliberate:
       //
@@ -604,7 +663,8 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       //    legs, and putting the page's text cosine on an image entry would
       //    feed `averageSourceSimilarity` the same number twice. `score` is
       //    the PAGE's fused ordering value, which is what every other entry's
-      //    `score` already is.
+      //    `score` already is. The legacy arm withheld its own cross-modal
+      //    cosine for the same reason, one band over (ADR-025 §8).
       //  - APPENDED, after the web sources rather than beside their page.
       //    The model cites `[Source N]` from `buildRagContext`, whose
       //    numbering covers the retrieved pages; inserting entries in the
@@ -616,8 +676,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       //    citation slots.
       //  - The four provenance fields travel WITH `kind`/`attachmentUrl` and
       //    never singly (D12) — `SourceSchema` and `toPersistedSources` both
-      //    enforce that, and `buildDerivedImageSources` is the one producer.
-      ...(await buildDerivedImageSources(searchResults, MAX_IMAGE_SOURCES)),
+      //    enforce that, `buildDerivedImageSources` is the one producer, and
+      //    a legacy entry carries none of the four (it has no analysis to
+      //    describe), which is exactly why they are optional on the schema.
+      ...imageSources,
     ];
 
     // Helper to save/create conversation from a streamed, cached, or refused
@@ -903,9 +965,10 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // a single cached settings read:
     //
     //  1. the cap is above 0 (`rag_answer_max_images`, default 2);
-    //  2. some returned row actually carries derived provenance — false on
-    //     every deployment with no analyzed images, and on most questions
-    //     where there are some;
+    //  2. some returned row carries image evidence — derived provenance, or
+    //     an ADR-025 leg hit while that leg is live. False on every
+    //     deployment with no analyzed images and no image leg, and on most
+    //     questions where there are some;
     //  3. the resolved chat pair has PROBED vision-capable. The tri-state is
     //     read, never collapsed: `false` (probed and refused) and `null`
     //     (never established) both mean text-only here, and only `true`
@@ -924,16 +987,20 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // `otherGrounding` — see the note there.
     const answerMaxImages = await getRagAnswerMaxImages();
     // ADR-027 D11: "some returned row carries derived provenance", i.e. the
-    // answer is grounded in an image's description. False on every deployment
-    // with no analyzed images, and on most questions where there are some.
-    const someDerived = searchResults.some((r) => r.derived !== undefined);
+    // answer is grounded in an image's description — plus ADR-025's leg hits
+    // while that leg is still live (review r1 finding 1; the pick prefers
+    // provenance and falls back whole-set). False on every deployment with
+    // neither, and on most questions where there are some.
+    const someImageEvidence = searchResults.some(
+      (r) => r.derived !== undefined || (r.imageHits?.length ?? 0) > 0,
+    );
     const chatVision =
-      answerMaxImages > 0 && someDerived
+      answerMaxImages > 0 && someImageEvidence
         ? (imagePart ? true : await getVisionCapability(chatConfig.providerId, resolvedModel))
         : false;
     const retrievedImages =
       chatVision === true
-        ? await pickRetrievedImages(searchResults, { max: answerMaxImages })
+        ? await pickRetrievedImages(searchResults, { max: answerMaxImages, identities: pageIdentities })
         : { parts: [], used: [], skipped: { missing: 0, invalid: 0, overBudget: 0, duplicate: 0 } };
     // Log whenever the pick DID something — attached a picture, or refused
     // one. Review r1: gating on `parts.length > 0 || overBudget > 0` left the
@@ -989,6 +1056,17 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // tell a user who has just attached a PDF that there is nothing to go on.
     // And the rule is EVERY row, never any row — widened to "any", it would
     // refuse ordinary answers whose fifth source happens to be a picture.
+    //
+    // #1617 review r1: the rule keeps its three DISCRIMINATING arms — no
+    // vision, cap 0, every candidate skipped — because the byte pick still
+    // falls back to `imageHits` for a set with no derived provenance, and
+    // every row this predicate can fire on carries them (a synthesised row
+    // is exactly a page with no `page_embeddings` row, so it has no
+    // provenance, and `buildImageLegResults` gives every such row its hits).
+    // Without that fallback the conjunct above would be vacuously true and
+    // `REFUSAL_SOURCES_NOTE`'s "they are attached below" would promise
+    // attachments this turn never produced. #1618 removes the flag, the leg
+    // and this rule together.
     if (
       searchResults.length > 0
       && retrievedImages.parts.length === 0

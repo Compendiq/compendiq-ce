@@ -706,16 +706,18 @@ describe('POST /api/llm/ask', () => {
       // `imageOnly` row is excluded from the sample, so the rerank-0.08 row
       // cannot produce `weak_match`.
       //
-      // The turn does refuse now, and for a different reason — since #1617
-      // the byte pick reads DERIVED provenance (ADR-027 D11) and this legacy
-      // leg row has none, so an all-synthesised set can no longer attach a
-      // picture and `image_only_context` fires. #1618 retires the flag, the
-      // refusal and the leg together; until then the assertion is on the
-      // reason this test is about.
+      // The turn also answers, because the byte pick falls back to the
+      // legacy leg's hits for a set with no derived provenance (review r1
+      // finding 1) — so this row's picture reaches the model exactly as it
+      // did before #1617 and `image_only_context` does not fire. #1618
+      // retires the flag, the refusal, the fallback and the leg together.
+      expect(final.refused).toBeFalsy();
       expect(final.refusalReason).not.toBe('weak_match');
-      // Nor does the legacy leg buy a `kind: 'image'` citation any more: a
-      // citation comes from a derived chunk's provenance (D12).
-      expect((final.sources as Array<Record<string, unknown>>).every((s) => s.kind === undefined)).toBe(true);
+      // And the leg's picture still rides along as a citation, without any of
+      // D12's provenance fields — there is no analysis behind it.
+      const image = (final.sources as Array<Record<string, unknown>>).find((s) => s.kind === 'image')!;
+      expect(image).toMatchObject({ pageId: 91, attachmentUrl: '/api/attachments/91/sheet.png', similarity: null });
+      expect(image.contentHash).toBeUndefined();
     });
 
     it('#1115 P3/P4 — an image-only result set stands `no_context` down; P4 decides whether it answers', async () => {
@@ -2516,9 +2518,14 @@ describe('POST /api/llm/ask', () => {
      * (`rag-service.ts`'s `!fromChunk` branch), while a derived chunk IS a
      * `page_embeddings` row — for an image-only page, chunk 0. So a page with
      * a valid analysis is embedded (D9.5), reached by the TEXT legs and never
-     * synthesised, and this fixture is the page with no analysis: nothing to
-     * cite, nothing to attach. The bytes on disk are deliberately still
-     * written by some callers, to pin that they are not read.
+     * synthesised, and this fixture is the page with no analysis.
+     *
+     * It DOES carry `imageHits`, because the production row does:
+     * `buildImageLegResults` gives every row it emits the leg's hits, and
+     * this flag can only be set on a row that function built. That is what
+     * the pre-#1618 fallback reads (review r1 finding 1) — so this set still
+     * has a picture to attach and to cite, and the refusal's "attached
+     * below" sentence is about something real.
      */
     function synthesizedPage(pageId: number, key: string, withBytes: boolean) {
       pageIdentityRows.push({ id: pageId, confluence_id: `c${pageId}`, source: 'confluence' });
@@ -2535,6 +2542,12 @@ describe('POST /api/llm/ask', () => {
         keywordRank: null,
         imageOnly: true as const,
         imageTextSynthesized: true as const,
+        imageHits: [{
+          source: 'confluence' as const,
+          key,
+          similarity: 0.68,
+          attachmentUrl: `/api/attachments/c${pageId}/${key}`,
+        }],
       };
     }
 
@@ -2634,22 +2647,23 @@ describe('POST /api/llm/ask', () => {
       expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
     });
 
-    it('REFUSES with image_only_context for an UNANALYZED image-only set, whatever the vision gate says', async () => {
+    it('REFUSES with image_only_context when the model cannot see pixels — and the picture it promises IS cited', async () => {
       // The model would receive a list of titles and be asked to answer from
       // them. P3 accepted that as "thin evidence, not absent evidence"
-      // because P4 was going to show it the picture.
+      // because P4 was going to show it the picture; where P4 cannot, that
+      // justification is gone with it.
       //
-      // With #1617 the picture cannot arrive for THIS set at all: the byte
-      // pick reads derived provenance (ADR-027 D11) and a synthesised row has
-      // none — so the three arms the old suite arranged separately (vision
-      // `false`, cap 0, bytes missing on disk) are one outcome now, and the
-      // gate is no longer what decides it. The two tests that discriminated
-      // between those arms are deleted rather than re-pinned: they asserted a
-      // path the rewire removed (`parts` non-empty over a synthesised set),
-      // and the rule itself goes with the flag and the leg in #1618.
+      // Review r1 finding 1 is the second half of this case. The refusal's
+      // live sentence says the images are "attached below as the closest
+      // matches", so the turn MUST actually produce an image source — which
+      // it does through ADR-025's leg, the only arm with anything to say
+      // about an unanalyzed page. It carries `attachmentUrl` and none of
+      // D12's four provenance fields, because there is no analysis to
+      // describe.
       //
       // The bytes ARE on disk, and nothing reads them — which is the half of
       // D14 this case still proves: a refused turn reads no image byte.
+      mockGetVisionCapability.mockResolvedValue(false);
       mockHybridSearch.mockResolvedValue([synthesizedPage(72, 'sheet.png', true)]);
       mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
 
@@ -2670,16 +2684,79 @@ describe('POST /api/llm/ask', () => {
         'They are attached below as the closest matches.',
       );
       expect(readAnyImageBytes()).toBe(false);
-      // No `kind: 'image'` entry: there is no analysis, so there is no
-      // provenance to cite. The page still rides as its own source.
       const sources = final.sources as Array<Record<string, unknown>>;
-      expect(sources.some((s) => s.kind === 'image')).toBe(false);
-      expect(sources.some((s) => s.pageId === 72)).toBe(true);
+      const image = sources.find((s) => s.kind === 'image')!;
+      expect(image).toMatchObject({
+        pageId: 72,
+        attachmentUrl: '/api/attachments/c72/sheet.png',
+        similarity: null,
+      });
+      expect(image.attachmentStore).toBeUndefined();
+      expect(image.contentHash).toBeUndefined();
+      expect(sources.some((s) => s.pageId === 72 && s.kind === undefined)).toBe(true);
+    });
+
+    it('ANSWERS the same UNANALYZED set when the legacy leg’s picture can be shown', async () => {
+      // The arm review r1 finding 1 restored: vision `true` and the bytes on
+      // disk, so the pick attaches ADR-025's picture and the turn answers
+      // exactly as P3 said it should. Without the fallback this set refused
+      // whatever the gate said, which is what made the rule unconditional and
+      // its sentence false. Deleted in #1618 with the leg.
+      mockHybridSearch.mockResolvedValue([synthesizedPage(77, 'sheet.png', true)]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('It is the intake manifold.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const events = parseSseBody(response.body) as Array<Record<string, unknown>>;
+      const final = events.find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      const content = sentUserContent() as Array<Record<string, unknown>>;
+      expect(content.filter((p) => p.type === 'image_url')).toHaveLength(1);
+    });
+
+    it('REFUSES the same set when the cap is 0 — the gate is never even consulted', async () => {
+      // The second discriminating arm: the operator turned the answer-path
+      // attachment off, so no picture can reach the model however capable it
+      // is, and the turn is back to titles only.
+      mockAnswerMaxImages.mockResolvedValue(0);
+      mockHybridSearch.mockResolvedValue([synthesizedPage(81, 'sheet.png', true)]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect(final.refusalReason).toBe('image_only_context');
+      expect(mockGetVisionCapability).not.toHaveBeenCalled();
+      expect(readAnyImageBytes()).toBe(false);
+    });
+
+    it('REFUSES the same set when the picture is gone from disk', async () => {
+      // The third arm: vision is `true` and the cap is open, but the bytes
+      // the index names are not there — so `parts` is empty for a reason the
+      // reader cannot be told about (D8), and the rule fires on the titles.
+      mockHybridSearch.mockResolvedValue([synthesizedPage(82, 'sheet.png', false)]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect(final.refusalReason).toBe('image_only_context');
+      expect(mockStreamChatClient).not.toHaveBeenCalled();
     });
 
     it('leaks no image bytes into the audit — a refusal writes no audit row at all', async () => {
       mockGetVisionCapability.mockResolvedValue(false);
-      mockHybridSearch.mockResolvedValue([synthesizedPage(73, 'sheet.png', true)].flat());
+      mockHybridSearch.mockResolvedValue([synthesizedPage(73, 'sheet.png', true)]);
 
       await app.inject({
         method: 'POST', url: '/api/llm/ask',
@@ -2702,7 +2779,7 @@ describe('POST /api/llm/ask', () => {
           score: 0.0328, vectorScore: 0.7, keywordRank: null,
         },
         synthesizedPage(75, 'sheet.png', true),
-      ].flat());
+      ]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
 
       const response = await app.inject({
@@ -2775,7 +2852,7 @@ describe('POST /api/llm/ask', () => {
       // knows nothing about. Refusing here would tell a user who just
       // attached a PDF that the only matches are pictures.
       mockGetVisionCapability.mockResolvedValue(false);
-      mockHybridSearch.mockResolvedValue([synthesizedPage(76, 'sheet.png', true)].flat());
+      mockHybridSearch.mockResolvedValue([synthesizedPage(76, 'sheet.png', true)]);
       mockStreamChatClient.mockReturnValue(singleChunkGenerator('Answer.'));
 
       const response = await app.inject({
@@ -2790,6 +2867,34 @@ describe('POST /api/llm/ask', () => {
       const final = events.find((f) => f.final === true)!;
       expect(final.refused).toBeFalsy();
       expect(mockStreamChatClient).toHaveBeenCalled();
+    });
+
+    it('takes ONE pages identity read for the citation append and the byte pick together', async () => {
+      // Review r1 finding 7. Both steps need `(id, confluence_id, source)`
+      // over overlapping page sets — D12 to build `attachmentUrl`, the pick
+      // to find the bytes — and each used to take its own identical
+      // `WHERE id = ANY($1)` read. One shared reader per request answers
+      // both; the second call is served from what the first fetched.
+      pageIdentityRows.push({ id: 83, confluence_id: 'c83', source: 'confluence' });
+      writeCachedAttachment('c83', 'sheet.png', PNG);
+      mockHybridSearch.mockResolvedValue([analyzedImageOnlyPage(84, 'other.png')]);
+      mockBuildRagContext.mockReturnValue('[Source 1: Untranscribed schematic]');
+      mockStreamChatClient.mockReturnValue(singleChunkGenerator('It is the intake manifold.'));
+
+      const response = await app.inject({
+        method: 'POST', url: '/api/llm/ask',
+        payload: { question: 'what does the schematic show' },
+      });
+
+      const final = (parseSseBody(response.body) as Array<Record<string, unknown>>).find((f) => f.final === true)!;
+      expect(final.refused).toBeFalsy();
+      // Both steps really ran: a picture was attached AND a provenance-
+      // carrying citation was emitted. Without that the count below would
+      // pass for the wrong reason.
+      expect((sentUserContent() as Array<Record<string, unknown>>).filter((p) => p.type === 'image_url')).toHaveLength(1);
+      expect((final.sources as Array<Record<string, unknown>>).some((s) => s.kind === 'image')).toBe(true);
+      const identityReads = mockQuery.mock.calls.filter((c) => PAGE_IDENTITY_SQL.test(String(c[0])));
+      expect(identityReads).toHaveLength(1);
     });
   });
 

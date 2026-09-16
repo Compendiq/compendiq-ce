@@ -507,6 +507,24 @@ runs — same transaction, same lock — when **Keyword index language** is
 saved: the PUT is slower than it was by the chunk table, and the settings
 copy says so.
 
+**Migration 117's index, and why the first corpus-wide batch used to be slow
+(#1617 review r1).** 117 adds
+`page_embeddings_derived_chunk_tsv_idx` — `gin (chunk_tsv) WITH (fastupdate =
+off) WHERE metadata->>'source' = 'image_analysis'` — which is the index the
+keyword leg's derived arm uses. Before it, the arm shared 116's FULL GIN, and
+a batch of derived writes puts that index into a PENDING LIST state
+(`SELECT pending_pages FROM pgstatginindex('page_embeddings_chunk_tsv_idx')`)
+that re-prices the plan: measured on a 4,001-page corpus at 429 pending
+pages, the arm dropped the GIN for `page_embeddings_derived_idx` plus a
+`chunk_tsv` filter over every derived chunk — 8.9–10.4 ms for a one-row match
+against 0.021 ms, on every keyword query and every `/llm/ask` for as long as
+the batch keeps the list full. `fastupdate = off` is what keeps 117 out of
+that state (a plain partial GIN pends exactly like the full one and measured
+no better); the cost is ~45 µs per derived chunk on the worker's own inserts,
+and nothing else writes that index. If you are reading an old plan or a
+pre-117 deployment: `VACUUM (ANALYZE) page_embeddings` drains the pending
+list and restores the fast plan immediately.
+
 Failures back off `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
 exponent is clamped so a class that never goes terminal cannot grow one past
 what an `interval` can hold; a deterministic class

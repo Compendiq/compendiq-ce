@@ -123,8 +123,13 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
       animate={{ opacity: 1, y: 0 }}
       className="mt-3"
     >
-      {/* Toggle button */}
+      {/* Toggle button. `aria-expanded` because the state is otherwise only
+          inferable from the chevron glyph (review r1 finding 9), and since
+          #1617 the list behind it has two row TYPES — a keyboard or AT reader
+          now has two shapes behind what was an unannounced toggle. */}
       <button
+        type="button"
+        aria-expanded={isExpanded}
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >

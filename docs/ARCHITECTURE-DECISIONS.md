@@ -4325,18 +4325,39 @@ the row as measured text (it carries a real `vectorScore`/`rerankScore`); the
 `imageTextSynthesized` exclusion and the `image_only_context` refusal apply
 only to ADR-025's title-synthesised rows and are retired with them in #1618
 once the replacement is exercised. No operator threshold moves.
-*Erratum, #1617:* rewiring the byte pick off `image-leg-search.ts` makes the
-`image_only_context` refusal UNCONDITIONAL for the set it still reaches. A row
-is `imageTextSynthesized` exactly when its page has no `page_embeddings` row
-at all, and a derived chunk IS such a row (for an image-only page, chunk 0) —
-so a page with a valid analysis is embedded (D9.5), reached by the text legs
-and never synthesised, while a page without one has no provenance and
-therefore no attachable picture. The rule's `retrievedImages.parts.length ===
-0` conjunct is consequently always true where the rule fires. The code is left
-intact (this ADR puts its removal in #1618, after #1619 exercises the
-replacement); the two #1615-era tests that discriminated between the vision
-gate, the cap and a missing file were deleted rather than re-pinned, because
-they asserted a path the rewire removed. The optional
+*Erratum, #1617:* rewiring the byte pick off `image-leg-search.ts` would make
+the `image_only_context` refusal UNCONDITIONAL for the set it still reaches. A
+row is `imageTextSynthesized` exactly when its page has no `page_embeddings`
+row at all, and a derived chunk IS such a row (for an image-only page, chunk
+0) — so a page with a valid analysis is embedded (D9.5), reached by the text
+legs and never synthesised, while a page without one has no provenance and
+therefore, on derived provenance alone, no attachable picture. The rule's
+`retrievedImages.parts.length === 0` conjunct would be always true where the
+rule fires, and `REFUSAL_SOURCES_NOTE`'s "They are attached below as the
+closest matches" would promise attachments the turn cannot produce.
+*Erratum, #1617 review r1 (the decision taken):* **both consumers are
+derived-FIRST with ADR-025's `imageHits` as a whole-set fallback**, for the
+window in which D3's `image_embedding` leg is still live (that is, until
+#1618). `buildDerivedImageSources` and `pickRetrievedImages` prefer
+provenance; when NO row in the set carries any, the citation append and the
+byte pick read the leg's hits exactly as they did before #1617. The
+alternative — rewording the refusal so it stops promising attachments — was
+rejected because it leaves an instance that has `image_embedding` assigned
+and no analyses yet (the only instance the refusal can fire on) strictly
+worse off than before #1617: no image chips, no answer-time pictures, from a
+release that adds a retrieval path it cannot yet use. The fallback is
+WHOLE-SET rather than per-page so the two ordering quantities (a fused rank;
+a cross-modal cosine) never interleave inside one round and no attachment is
+ever cited twice, and a legacy citation carries none of D12's four provenance
+fields — which is what those fields being optional on `SourceSchema` is for.
+With it, the rule keeps its three discriminating arms (no vision, cap 0,
+every candidate skipped) and the sentence is true wherever it fires: every
+row the predicate can match carries `imageHits` by construction
+(`buildImageLegResults`). **#1618 deletes the fallback with the leg, the
+flag and the rule** — the #1615-era tests that discriminated between the
+vision gate, the cap and a missing file are restored as part of this
+decision rather than deleted, because the path they assert exists again.
+The optional
 retrieved-image attachment for a separately confirmed vision-capable **chat**
 model is kept *(epic)*, rewired from `image-leg-search.ts` to the derived
 provenance of the answer's top-K rows, under the existing count, byte,

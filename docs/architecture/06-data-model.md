@@ -768,10 +768,20 @@ together, which matters most for #1114's query-side prefix.
   language change. The QUERY side of that column is #1617's: the keyword leg
   and the #1107 pin union `pages.tsv` with derived `chunk_tsv` matches, rank a
   page by the greater of the two, and resolve every hit to the matching chunk
-  (ADR-027 D10, and see `09-flow-rag-chat.md`). #1617 adds **no DDL** — the
-  column, trigger and GIN index are all 116's, and its citations read
-  provenance from `page_embeddings.metadata` only, so the query path never
-  joins `page_image_analyses`. No runtime DDL, no second vector width, no
+  (ADR-027 D10, and see `09-flow-rag-chat.md`). #1617's own DDL is migration
+  **117**, and it is ONE index: `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the derived arm through a `BitmapAnd` only while both were idle; after a
+  corpus-wide analysis batch the full GIN's pending list re-priced that plan
+  and the planner scanned every derived chunk behind a `chunk_tsv` filter
+  (review r1: 8.9–10.4 ms against 0.021 ms, and a partial GIN WITHOUT
+  `fastupdate = off` measured no better, because a derived write burst pends
+  it identically). Both 116 indexes stay — the full GIN serves authored chunk
+  resolution, the btree partial the `page_id`-keyed composition read.
+  Citations read provenance from `page_embeddings.metadata` only, so the query
+  path never joins `page_image_analyses`.
+  No runtime DDL, no second vector width, no
   third RRF leg. The worker's batch is sweep →
   reconcile → analyze, and only the analyze step needs the assignment — and
   it needs the assignment to resolve to the SAME identity the settings row

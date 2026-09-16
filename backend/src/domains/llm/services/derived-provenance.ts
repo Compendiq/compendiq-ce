@@ -18,15 +18,14 @@
  * would travel alone — so the validity decision is made once, here, where the
  * JSON is first touched.
  */
-import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import { buildPageImageUrl } from '../../../core/services/image-references.js';
-import type { PageSource } from '@compendiq/contracts';
+import { createPageIdentityReader, type PageIdentity, type PageIdentityReader } from './page-identity.js';
 
 /**
  * `metadata->>'source'` for a derived chunk (D9.4). Spelled once and shared
  * by the lexical union, the provenance reader and the byte pick; migration
- * 116's `page_embeddings_derived_idx` is the partial index over it.
+ * 116's `page_embeddings_derived_idx` and 117's partial GIN both key on it.
  */
 export const IMAGE_ANALYSIS_CHUNK_SOURCE = 'image_analysis';
 
@@ -108,9 +107,12 @@ export interface DerivedImage {
  * There is deliberately **no cross-modal score** to sort on (ADR-027
  * `:4318`): a derived chunk was found by the text legs, so the only ranking
  * quantity in hand is the row's own fused `score`. Ties fall back to `part`
- * (an earlier part is the head of the description the reranker saw) and then
- * to the page id, so the order is total and the citation list is stable
- * between two identical requests.
+ * (an earlier part is the head of the description the reranker saw), then to
+ * the page id, then to `attachmentKey` — which is what makes the order TOTAL
+ * and the citation list stable between two identical requests. The key is
+ * needed because two DIFFERENT images of one page can tie on score and part
+ * (review r1 finding 4): without it those two fall back to `Array#sort`
+ * stability, i.e. row order, and the docstring's claim would be false.
  *
  * Dedup rather than distinct-by-construction because one image can legitimately
  * arrive twice: a multi-part serialization puts several chunks of the SAME
@@ -126,7 +128,13 @@ export function distinctDerivedImages(rows: readonly DerivedCarrier[]): DerivedI
       if (byScore !== 0) return byScore;
       const byPart = a.derived.part - b.derived.part;
       if (byPart !== 0) return byPart;
-      return a.row.pageId - b.row.pageId;
+      const byPage = a.row.pageId - b.row.pageId;
+      if (byPage !== 0) return byPage;
+      return a.derived.attachmentKey < b.derived.attachmentKey
+        ? -1
+        : a.derived.attachmentKey > b.derived.attachmentKey
+          ? 1
+          : 0;
     });
   for (const { row, derived } of ordered) {
     const key = `${row.pageId}\u0000${derived.attachmentSource}\u0000${derived.attachmentKey}`;
@@ -172,6 +180,11 @@ export interface DerivedImageSource {
  * per-page filter before any derived text was read (D14), and a second
  * predicate here would be a second place for that rule to drift.
  *
+ * `identities` is the request's shared reader: `/llm/ask` hands the SAME one
+ * to this and to `pickRetrievedImages`, so the two steps take one read
+ * between them rather than two identical ones (review r1 finding 7). A
+ * caller with nothing to share gets its own.
+ *
  * A page whose identity row has vanished (deleted between retrieval and here)
  * contributes no image entry — its page source still carries the evidence.
  * A failing read is the same answer for the whole set rather than a thrown
@@ -183,18 +196,15 @@ export interface DerivedImageSource {
 export async function buildDerivedImageSources(
   rows: readonly DerivedCarrier[],
   max: number,
+  identities: PageIdentityReader = createPageIdentityReader(),
 ): Promise<DerivedImageSource[]> {
   if (max <= 0) return [];
   const images = distinctDerivedImages(rows);
   if (images.length === 0) return [];
   const pageIds = [...new Set(images.map((i) => i.pageId))];
-  let byId: Map<number, { id: number; confluence_id: string | null; source: PageSource }>;
+  let byId: Map<number, PageIdentity>;
   try {
-    const identities = await query<{ id: number; confluence_id: string | null; source: PageSource }>(
-      `SELECT id, confluence_id, source FROM pages WHERE id = ANY($1::int[])`,
-      [pageIds],
-    );
-    byId = new Map(identities.rows.map((r) => [r.id, r]));
+    byId = await identities.load(pageIds);
   } catch (err) {
     logger.warn({ err }, 'ADR-027 D12: could not resolve page identities for image citations — omitting them');
     return [];
