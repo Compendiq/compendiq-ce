@@ -61,7 +61,10 @@ describe('parseAskSse', () => {
       answer: 'Das Bild zeigt einen Turm.',
       refused: false,
       refusalReason: null,
-      sources: [{ pageTitle: 'Turm' }, { pageTitle: 'Turm', attachmentUrl: '/api/x.png' }],
+      // #1619: the route's image source still carries an `attachmentUrl`; the
+      // parse drops it, because under a B-vs-C primary that URL is present
+      // only on the arm that has an image leg.
+      sources: [{ pageTitle: 'Turm' }, { pageTitle: 'Turm' }],
     });
     const refused = parseAskSse(sse([
       { content: 'I do not have enough information.', done: true },
@@ -116,7 +119,7 @@ describe('generateArmAnswers — the blinding invariant', () => {
     answer: `Antwort auf: ${question}`,
     refused: question.includes('ohne'),
     refusalReason: question.includes('ohne') ? 'no_context' : null,
-    sources: [{ pageTitle: 'Seite 1' }, { pageTitle: 'Seite 1', attachmentUrl: '/api/attachments/1/x.png' }],
+    sources: [{ pageTitle: 'Seite 1' }, { pageTitle: 'Seite 1' }],
   });
 
   it('writes rows with exactly the ADR fields, and the arm and query id ONLY in the mapping', async () => {
@@ -182,6 +185,16 @@ describe('assertBlinded', () => {
     expect(() => assertBlinded([{ ...row, arm: 'A' }])).toThrow(/\$\.arm/);
     expect(() => assertBlinded([{ ...row, sources: [{ pageTitle: 't', pageId: 3 }] }])).toThrow(/sources\[0\]\.pageId/);
     expect(() => assertBlinded([{ ...row, meta: { queryId: 'x' } }])).toThrow(/meta\.queryId/);
+  });
+
+  it('refuses an image citation URL, the one arm tell the amended primary pair cannot carry (#1619)', () => {
+    // Present only where an arm surfaced an image source, so absent from
+    // every arm C row by construction — which separates exactly the two arms
+    // the re-registered primary (B vs C) compares. Refused at every READ, not
+    // merely omitted at generation, so a hand-edited or older sheet cannot be
+    // judged under the amended protocol.
+    expect(() => assertBlinded([{ ...row, sources: [{ pageTitle: 't', attachmentUrl: '/api/attachments/1/x.png' }] }]))
+      .toThrow(/sources\[0\]\.attachmentUrl/);
   });
 
   it('refuses a row outside the ADR shape even when no key is on the list', () => {

@@ -40,6 +40,11 @@ function collapsed(name: string): string {
   return source(name).replace(/\s+/g, ' ');
 }
 
+/** The eval modules a script delegates to, for the same kind of pin. */
+function evalModule(name: string): string {
+  return readFileSync(new URL(`./${name}`, import.meta.url), 'utf8').replace(/\s+/g, ' ');
+}
+
 /**
  * Comments in these scripts quote flags too — including the typo that motivated
  * the unknown-flag guard — so a scan for "which flags does this script read"
@@ -377,9 +382,10 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(migrate).toBeGreaterThan(-1);
     expect(precondition).toBeGreaterThan(migrate);
     expect(seed).toBeGreaterThan(precondition);
-    // B then waits for the product's backfill, and C asserts the ablation's
-    // state on the database — both after the seed, both before the queries.
-    const backfill = raw.indexOf('await awaitArmBBackfill(');
+    // B then DRIVES the product's backfill (#1619), and C asserts the
+    // ablation's state on the database — both after the seed, both before
+    // the queries.
+    const backfill = raw.indexOf('await runArmBBackfill(');
     const cState = raw.indexOf('await assertArmCState()');
     const run = raw.indexOf('await runArmEval(');
     expect(backfill).toBeGreaterThan(seed);
@@ -389,24 +395,30 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
   });
 
   it('counts B\u2019s backfill by D5\u2019s validity predicate and decides it through the tested refusal', () => {
+    // Since #1619 the count, the drive and the refusals live in
+    // `eval/arm-b-backfill.ts` (the script drives the product's own worker
+    // rather than waiting on a human-run one), so the predicate is pinned
+    // THERE and the script is pinned to delegating to it exactly once.
+    const driver = evalModule('arm-b-backfill.ts');
     // `status = 'analyzed'` alone counts a sweep-invalidated row as "backfill
     // complete" while the product would not compose it (review r1 finding
     // 18): the identity the assignment was read under is part of the count.
-    expect(flat).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
-    expect(flat).toContain('[state.identityHash]');
-    // The version-straddle refusal is no longer pinned as source text — a
-    // query whose result is ignored passes such a pin, and `toContain(
-    // 'imageAnalysisVersions,')` pinned a trailing comma (review r2 finding
-    // 6). It is `assertSingleAnalysisVersionPair`, unit-tested in
-    // `arms.test.ts`, called EXACTLY ONCE here, and its return IS the
-    // report's version pair — which is the property the pin exists for.
-    expect(raw.split('assertSingleAnalysisVersionPair(').length - 1).toBe(1);
-    expect(flat).toContain('const versions = assertSingleAnalysisVersionPair({ analyzed: n,');
-    expect(flat).toContain('return versions;');
+    expect(driver).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
+    expect(driver).toContain('[identityHash]');
+    // The analyses and the re-embed are the PRODUCT's entrypoints, not copies.
+    expect(driver).toContain('await runImageAnalysisBatch()');
+    expect(driver).toContain('await processDirtyPages(opts.userId)');
+    // The version-straddle refusal is not pinned as source text — a query
+    // whose result is ignored passes such a pin. It is
+    // `assertSingleAnalysisVersionPair`, unit-tested in `arms.test.ts`,
+    // called EXACTLY ONCE, and its return IS the report's version pair.
+    expect(driver.split('assertSingleAnalysisVersionPair(').length - 1).toBe(1);
+    expect(driver).toContain('versions: assertSingleAnalysisVersionPair(valid),');
     // The report's version pair has exactly ONE writer, and it is that call.
     expect([...raw.matchAll(/imageAnalysisVersions\s*=\s*/g)]).toHaveLength(1);
-    expect(flat).toContain('if (arm === \'B\') imageAnalysisVersions = await awaitArmBBackfill(');
-    expect(raw.indexOf('imageAnalysisVersions = await awaitArmBBackfill(')).toBeLessThan(raw.lastIndexOf('imageAnalysisVersions'));
+    expect(flat).toContain('if (arm === \'B\') imageAnalysisVersions = await runArmBBackfill(');
+    expect(raw.split('driveArmBBackfill(').length - 1).toBe(1); // exactly one call, in `runArmBBackfill`
+    expect(flat).toContain('return backfill.versions;');
   });
 
   it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
@@ -505,7 +517,7 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     // joins nothing itself: `buildArmVerdict` reads the mapping from the
     // artifacts directory.
     expect([...body.matchAll(/readMapping\(/g)]).toHaveLength(1);
-    expect(flat).toContain('pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture())');
+    expect(flat).toContain("pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture(), { baseline: 'C', candidate: 'B' })");
     // The verdict is written before it is printed, and anything but a pass
     // sets the exit code — the gate's answer is the process's answer.
     const write = raw.indexOf('writeFileSync(out,');
