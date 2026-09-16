@@ -36,12 +36,14 @@ import {
   ARM_SAMPLE,
   EVAL_ARMS,
   HELD_FIXED_KNOBS,
+  absoluteLeakAt1,
   assertComparableArms,
   compareArmRetrieval,
   imageEvidenceGuardrailPower,
   pairedBinaryEndpoint,
   pairedGradedEndpoint,
   primaryEndpointPower,
+  type AbsoluteLeakage,
   type ArmRetrievalComparison,
   type ArmRunReport,
   type EvalArm,
@@ -453,17 +455,21 @@ function pairsInJudgedOrder(
 
 /**
  * The pilot rule on a sheet mid-judging: ψ over the first `pilotPairs`
- * image-dependent pairs judged on both arm A and arm B, in `judgedAt` order.
- * Runs BEFORE full judging — `judge-arms.ts --check --mapping` prints it —
- * so the ADR's "stop rather than judge more" can be acted on. Aggregate
- * only: nothing per item leaves this function.
+ * image-dependent pairs judged on both arms of the REGISTERED pair, in
+ * `judgedAt` order. Runs BEFORE full judging — `judge-arms.ts --check
+ * --mapping` prints it — so the ADR's "stop rather than judge more" can be
+ * acted on. Aggregate only: nothing per item leaves this function.
+ *
+ * The default pair is C → B since the #1619 amendment (A-1/A-6): with arm A
+ * unobtainable, a pilot defaulted to A/B could only ever report 0/30 and the
+ * exit-3 stop was unreachable from the CLI.
  */
 export function pilotCheck(
   answers: readonly AnswerItem[],
   judgments: readonly JudgmentRow[],
   mapping: Mapping,
   fixture: ImageFixture,
-  pair: { baseline: EvalArm; candidate: EvalArm } = { baseline: 'A', candidate: 'B' },
+  pair: { baseline: EvalArm; candidate: EvalArm } = { baseline: 'C', candidate: 'B' },
 ): DiscordanceCheck {
   const facts = labelFacts(fixture);
   const items = joinJudged(answers, judgments, mapping);
@@ -560,13 +566,36 @@ export interface TextGateControl {
   ftsLanguage: string;
   corpusManifestSha: string;
   model: string;
+  /**
+   * The revision this control was captured on (#1619). Optional because
+   * every text-gate report written before the amendment carries none — and
+   * that is precisely why a control without one cannot serve as either side
+   * of the LEGACY pair below: `scoreControls` compares language, FTS
+   * configuration, corpus and embedder, and nothing in the harness used to
+   * check the revision at all, so legacy-revision controls could be passed
+   * as `--control-a` and the document would label the pair "C vs A".
+   */
+  revisionSha?: string | undefined;
   runs: QueryRun[];
 }
 
+/**
+ * Which pair a control scores, spelled as the verdict names it. Two, since
+ * the #1619 amendment: O4's B-vs-C control (δ ≡ 0 by construction — the two
+ * arms differ only in `image_analysis`, which the text gate never consults —
+ * kept because O4 pre-registers it and a condition that cannot fail must
+ * still be stated), and A-3's text-regression detector, the candidate
+ * revision's C against a LEGACY revision's C. "C vs A" is gone with arm A.
+ */
+export const CONTROL_PAIRS = {
+  bVsC: 'B vs C',
+  legacyC: 'C (candidate revision) vs C (legacy revision)',
+} as const;
+export type ControlPairLabel = (typeof CONTROL_PAIRS)[keyof typeof CONTROL_PAIRS];
+
 export interface ControlEndpoints {
-  /** Which arms the control pairs (ADR endpoint table: B vs C, C vs A). */
-  baseline: EvalArm;
-  candidate: EvalArm;
+  /** Which pair this control scores (ADR-027's endpoint table, as amended). */
+  pair: ControlPairLabel;
   /** EN + DE pooled (O4). */
   recallAt5: PairedBinaryEndpoint;
   mrr: PairedGradedEndpoint;
@@ -574,6 +603,8 @@ export interface ControlEndpoints {
   /** Paired queries per language — O2 pre-registers 197 each. */
   perLanguage: Record<string, number>;
   n: number;
+  /** The revisions the two sides were captured on, where both recorded one. */
+  revisions: { baseline: string | null; candidate: string | null };
 }
 
 /**
@@ -586,7 +617,7 @@ export function scoreControls(
   baseline: readonly TextGateControl[],
   candidate: readonly TextGateControl[],
   opts: { seed: number; iterations?: number },
-  pair: { baseline: EvalArm; candidate: EvalArm } = { baseline: 'C', candidate: 'B' },
+  pair: ControlPairLabel = CONTROL_PAIRS.bVsC,
 ): ControlEndpoints {
   if (baseline.length !== candidate.length || baseline.length === 0) {
     throw new Error('Controls need the same languages on both arms, at least one');
@@ -624,15 +655,62 @@ export function scoreControls(
     languages.push(b.language);
     perLanguage[b.language] = b.runs.length;
   }
+  const revisionOf = (side: readonly TextGateControl[]): string | null => {
+    const shas = new Set(side.map((s) => s.revisionSha).filter((s): s is string => typeof s === 'string'));
+    return shas.size === 1 ? [...shas][0]! : null;
+  };
   return {
-    baseline: pair.baseline,
-    candidate: pair.candidate,
+    pair,
     recallAt5: pairedBinaryEndpoint(binaryRows, opts),
     mrr: pairedGradedEndpoint(gradedRows, opts),
     languages,
     perLanguage,
     n,
+    revisions: { baseline: revisionOf(baseline), candidate: revisionOf(candidate) },
   };
+}
+
+/**
+ * Amendment A-3's text-regression detector: the candidate revision's arm-C
+ * text controls against a LEGACY revision's, which is the pair that actually
+ * carries #1617's lexical chunk-resolution change and needs nothing but the
+ * text embedder.
+ *
+ * It refuses what `scoreControls` cannot see. The pooled test compares
+ * language, FTS configuration, corpus sha and text embedder and NOTHING
+ * checks the revision, so before this existed a set of same-revision reports
+ * could be passed as the legacy side and the document would publish a
+ * cross-revision regression control computed over one revision — under the
+ * old flag it was additionally labelled "C vs A", an arm neither side is.
+ * A control that records no revision is refused for the same reason: an
+ * unknown revision cannot be certified as a different one.
+ */
+export function scoreLegacyRevisionControls(
+  legacy: readonly TextGateControl[],
+  candidate: readonly TextGateControl[],
+  opts: { seed: number; iterations?: number },
+): ControlEndpoints {
+  for (const [side, label] of [[legacy, 'legacy'], [candidate, 'candidate']] as const) {
+    const missing = side.filter((s) => typeof s.revisionSha !== 'string' || s.revisionSha.length === 0);
+    if (missing.length > 0) {
+      throw new Error(
+        `The ${label} text controls record no revision (${missing.map((s) => s.language).join(', ')}), so the pair ` +
+          'cannot be certified as a cross-revision one. Re-capture them on a clean checkout — a text-gate report ' +
+          'records `revisionSha` only where git could answer for the tree that produced it (ADR-027 amendment A-3).',
+      );
+    }
+  }
+  const scored = scoreControls(legacy, candidate, opts, CONTROL_PAIRS.legacyC);
+  if (scored.revisions.baseline === null || scored.revisions.candidate === null) {
+    throw new Error('Each side of the legacy-revision control must be captured on ONE revision; these span several');
+  }
+  if (scored.revisions.baseline === scored.revisions.candidate) {
+    throw new Error(
+      `Both sides of the legacy-revision control were captured on ${scored.revisions.candidate.slice(0, 12)} — that is ` +
+        'one revision measured twice, not the regression control the verdict would label it (ADR-027 amendment A-3).',
+    );
+  }
+  return scored;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,7 +719,15 @@ export function scoreControls(
 
 export interface GateCondition {
   name: string;
-  verdict: MarginVerdict;
+  /**
+   * `retired` is a fourth state and not a missing row (#1619, amendment
+   * A-2): a condition the amendment removed from the rule IN WRITING is
+   * printed, named and excluded from the aggregation. The alternative was
+   * what the code used to do with a null endpoint — omit the row — which
+   * would have let a B-vs-C run pass a rule that silently no longer carried
+   * O5's image-evidence guardrail at all.
+   */
+  verdict: MarginVerdict | 'retired';
   detail: string;
 }
 
@@ -653,23 +739,34 @@ export interface GateDecision {
 const pp = (x: number): string => `${x >= 0 ? '+' : ''}${(100 * x).toFixed(1)} pp`;
 
 /**
- * ADR-027 "Decision rule": pass requires (1) the primary point estimate ≥ the
- * margin AND its cluster-bootstrap 95% CI excluding 0; (2) every
- * non-inferiority endpoint's one-sided lower bound above its margin — the
- * text controls for BOTH pairs the endpoint table names (B vs C, C vs A)
- * and the image-evidence guardrail; (3) neither safety endpoint worse than
- * its margin at the one-sided 95% level. A pilot ψ below the floor is
- * "inconclusive by design" and pre-empts all three. An unmeasured endpoint
- * is inconclusive and blocks. Cost enters nowhere.
+ * ADR-027 "Decision rule", as re-registered for B vs C by the #1619
+ * amendment: pass requires (1) the primary point estimate ≥ the margin AND
+ * its cluster-bootstrap 95% CI excluding 0; (2) every non-inferiority
+ * endpoint's one-sided lower bound above its margin — O4's B-vs-C text
+ * control and A-3's candidate-vs-legacy-revision one; (3) B's unsupported
+ * claims no worse than C's by more than O6's margin at the one-sided 95%
+ * level, and B's own image-negative leakage within O7's ABSOLUTE cap. A
+ * pilot ψ below the floor is "inconclusive by design" and pre-empts all
+ * three. An unmeasured endpoint is inconclusive and blocks. Cost enters
+ * nowhere.
+ *
+ * **Every pre-registered condition appears in the output, including the
+ * retired one.** O5's image-evidence guardrail was a paired test against arm
+ * A's embedding leg; with arm A unobtainable it has no comparator, and the
+ * amendment RETIRES it rather than re-pointing it. The row is printed as
+ * `retired` and excluded from the aggregation — the old code simply omitted
+ * the condition whenever the endpoint came back null, which is how a B-vs-C
+ * run would have passed a rule one condition shorter than the one on record.
  */
 export function decideGate(input: {
   primary: JudgedPairEndpoints;
-  imageEvidence: PairedBinaryEndpoint | null;
-  leakage: PairedBinaryEndpoint;
-  controls: { bVsC: ControlEndpoints | null; cVsA: ControlEndpoints | null };
+  /** O7 as an absolute cap on the CANDIDATE arm's own leakage (A-4). */
+  leakage: AbsoluteLeakage;
+  controls: { bVsC: ControlEndpoints | null; legacyC: ControlEndpoints | null };
 }): GateDecision {
   const conditions: GateCondition[] = [];
   const { primary } = input;
+  const pairLabel = `${primary.candidate} vs ${primary.baseline}`;
   if (primary.pilot.stop) {
     return {
       verdict: 'inconclusive-by-design',
@@ -684,26 +781,41 @@ export function decideGate(input: {
   const c = primary.correctness;
   const primaryPass = c.delta >= ARM_MARGINS.primaryPoints && c.ci.excludesZero;
   conditions.push({
-    name: 'primary: image-dependent answer correctness, B vs A (single-judge)',
+    name: `primary: image-dependent answer correctness, ${pairLabel} (single-judge)`,
     verdict: primaryPass ? 'pass' : c.ci.excludesZero ? 'fail' : 'inconclusive',
     detail: `${pp(c.delta)} (margin ${pp(ARM_MARGINS.primaryPoints)}), cluster-bootstrap 95% CI [${pp(c.ci.lower)}, ${pp(c.ci.upper)}], ` +
       `McNemar exact p = ${c.pValue.toFixed(4)} over ${c.wins + c.losses} discordant of ${c.n} pairs`,
   });
-  for (const [control, label, flags] of [
-    [input.controls.bVsC, 'B vs C', '--control-b/--control-c'],
-    [input.controls.cVsA, 'C vs A', '--control-a/--control-c'],
+  for (const [control, label, flags, note] of [
+    [
+      input.controls.bVsC,
+      CONTROL_PAIRS.bVsC,
+      '--control-b/--control-c',
+      'δ ≡ 0 by construction (the two arms differ only in `image_analysis`, which the text gate never consults) — ' +
+        'stated because O4 pre-registers it, never read as evidence of no regression',
+    ],
+    [
+      input.controls.legacyC,
+      CONTROL_PAIRS.legacyC,
+      '--control-legacy-c/--control-c',
+      'the one text-regression detector left in the rule (A-3): this is the pair that carries #1617\'s lexical ' +
+        'chunk-resolution change',
+    ],
   ] as const) {
     if (control) {
       const margin = `−${pp(ARM_MARGINS.textNonInferiority).slice(1)}`;
+      const revisions = control.revisions.baseline === null || control.revisions.candidate === null
+        ? ''
+        : ` [${control.revisions.baseline.slice(0, 12)} → ${control.revisions.candidate.slice(0, 12)}]`;
       conditions.push({
         name: `non-inferiority: ordinary-text R@5, ${control.languages.join(' + ')} pooled, ${label}`,
         verdict: nonInferiorityVerdict(control.recallAt5.ci, ARM_MARGINS.textNonInferiority),
-        detail: `${pp(control.recallAt5.delta)}, one-sided 95% lower bound ${pp(control.recallAt5.ci.oneSidedLower)} vs margin ${margin}`,
+        detail: `${pp(control.recallAt5.delta)}, one-sided 95% lower bound ${pp(control.recallAt5.ci.oneSidedLower)} vs margin ${margin}${revisions}; ${note}`,
       });
       conditions.push({
         name: `non-inferiority: ordinary-text MRR, ${control.languages.join(' + ')} pooled, ${label}`,
         verdict: nonInferiorityVerdict(control.mrr.ci, ARM_MARGINS.textNonInferiority),
-        detail: `${pp(control.mrr.delta)}, one-sided 95% lower bound ${pp(control.mrr.ci.oneSidedLower)} vs margin ${margin}`,
+        detail: `${pp(control.mrr.delta)}, one-sided 95% lower bound ${pp(control.mrr.ci.oneSidedLower)} vs margin ${margin}${revisions}`,
       });
     } else {
       conditions.push({
@@ -713,28 +825,39 @@ export function decideGate(input: {
       });
     }
   }
-  if (input.imageEvidence) {
-    conditions.push({
-      name: 'non-inferiority: image-evidence R@5, B vs A (underpowered guardrail, O5)',
-      verdict: nonInferiorityVerdict(input.imageEvidence.ci, ARM_MARGINS.imageEvidenceNonInferiority),
-      detail: `${pp(input.imageEvidence.delta)}, one-sided 95% lower bound ${pp(input.imageEvidence.ci.oneSidedLower)} vs margin −${pp(ARM_MARGINS.imageEvidenceNonInferiority).slice(1)}; ` +
-        `power ≈ ${imageEvidenceGuardrailPower(input.imageEvidence.n).toFixed(2)} at δ = 0 — a pass reads "no collapse", never parity`,
-    });
-  }
+  conditions.push({
+    name: 'RETIRED (O5): non-inferiority: image-evidence R@5 guardrail',
+    verdict: 'retired',
+    detail:
+      'Retired in writing by the #1619 amendment (A-2), not dropped: the endpoint was a PAIRED non-inferiority test ' +
+      `of arm B against arm A's image-embedding leg (margin −${pp(ARM_MARGINS.imageEvidenceNonInferiority).slice(1)}, ` +
+      `power ≈ ${imageEvidenceGuardrailPower(ARM_SAMPLE.imageDependent).toFixed(2)} at δ = 0), arm A is permanently ` +
+      'unobtainable, and arm C reports no image evidence at all by rule — so no comparator exists. The gate therefore ' +
+      'carries NO image-evidence guardrail; arm B\'s own image-evidence R@5 is reported on its run report as a ' +
+      'descriptive number and no condition reads it.',
+  });
   const u = primary.unsupportedClaim;
   conditions.push({
-    name: 'safety: unsupported-claim rate, B vs A',
+    name: `safety: unsupported-claim rate, ${pairLabel}`,
     verdict: safetyVerdict(u.ci, ARM_MARGINS.unsupportedClaimPoints),
-    detail: `${pp(u.delta)}, one-sided 95% upper bound ${pp(u.ci.oneSidedUpper)} vs margin ${pp(ARM_MARGINS.unsupportedClaimPoints)} (O6: B may exceed A by at most 3 pp)`,
+    detail: `${pp(u.delta)}, one-sided 95% upper bound ${pp(u.ci.oneSidedUpper)} vs margin ${pp(ARM_MARGINS.unsupportedClaimPoints)} ` +
+      `(O6: ${primary.candidate} may exceed ${primary.baseline} by at most 3 pp)`,
   });
-  const leakMargin = ARM_MARGINS.leakageQueries / ARM_MARGINS.leakageDenominator;
+  const { leakage } = input;
   conditions.push({
-    name: 'safety: image-negative leakage@1, B vs A',
-    verdict: safetyVerdict(input.leakage.ci, leakMargin),
-    detail: `${pp(input.leakage.delta)}, one-sided 95% upper bound ${pp(input.leakage.ci.oneSidedUpper)} vs margin ` +
-      `${ARM_MARGINS.leakageQueries}/${ARM_MARGINS.leakageDenominator} (${pp(leakMargin)}) over ${input.leakage.n} negatives`,
+    name: `safety: image-negative leakage@1, ABSOLUTE cap on arm ${primary.candidate} (O7 as amended)`,
+    verdict: leakage.denominator < ARM_MARGINS.leakageDenominator
+      ? 'inconclusive'
+      : leakage.queries <= ARM_MARGINS.leakageQueries ? 'pass' : 'fail',
+    detail: `${leakage.queries} of ${leakage.denominator} image-negative labels led with image evidence ` +
+      `(${pp(leakage.rate)}), cap ${ARM_MARGINS.leakageQueries} of ${ARM_MARGINS.leakageDenominator}. ` +
+      'Absolute, not paired: arm C leaks 0 on every negative by construction, so "no worse than the baseline" would ' +
+      'be a comparison against a constant (A-4)' +
+      (leakage.denominator < ARM_MARGINS.leakageDenominator
+        ? ` — and ${leakage.denominator} negatives is not the sample O2 pre-registered, so the cap is not decidable here.`
+        : '.'),
   });
-  const verdicts = conditions.map((x) => x.verdict);
+  const verdicts = conditions.map((x) => x.verdict).filter((v) => v !== 'retired');
   const verdict = verdicts.every((v) => v === 'pass') ? 'pass' : verdicts.includes('fail') ? 'fail' : 'inconclusive';
   return { verdict, conditions };
 }
@@ -835,7 +958,7 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
   }
   for (const control of controls) {
     for (const [language, n] of Object.entries(control.perLanguage)) {
-      if (n !== ARM_SAMPLE.controlPerLanguage) shortfalls.push(`control ${language} (${control.candidate} vs ${control.baseline}) pairs ${n} queries (O2: ${ARM_SAMPLE.controlPerLanguage})`);
+      if (n !== ARM_SAMPLE.controlPerLanguage) shortfalls.push(`control ${language} (${control.pair}) pairs ${n} queries (O2: ${ARM_SAMPLE.controlPerLanguage})`);
     }
   }
   // Any shortfall makes the document decide nothing, whichever check raised
@@ -922,8 +1045,13 @@ export interface ArmVerdictInput {
   fixture: ImageFixture;
   querySetSha: string;
   armReports: Partial<Record<EvalArm, ArmRunReport>>;
-  /** B's and C's controls come together; A's (for C vs A) may be absent, which leaves that endpoint unmeasured. */
-  controls: { a: TextGateControl[] | null; b: TextGateControl[]; c: TextGateControl[] } | null;
+  /**
+   * B's and C's controls come together (O4's pooled pair). `legacyC` is
+   * A-3's text-regression detector — the same text-gate reports captured on
+   * a LEGACY revision, scored against `c` — and may be absent, which leaves
+   * that endpoint unmeasured and blocking.
+   */
+  controls: { legacyC: TextGateControl[] | null; b: TextGateControl[]; c: TextGateControl[] } | null;
   allowUnderpowered: boolean;
   /** The exact `--unblind` command line, recorded on the verdict. */
   command: string;
@@ -956,7 +1084,7 @@ export interface ArmVerdictReport {
   answerRuns: AnswerRunProvenance[];
   judged: { primary: JudgedPairEndpoints; secondary: JudgedPairEndpoints[] };
   retrieval: { primary: ArmRetrievalComparison; others: ArmRetrievalComparison[] };
-  controls: { bVsC: ControlEndpoints | null; cVsA: ControlEndpoints | null };
+  controls: { bVsC: ControlEndpoints | null; legacyC: ControlEndpoints | null };
   decision: GateDecision;
   /** Every un-blinded item, for audit — after the verdict, never before. */
   items: UnblindedItem[];
@@ -992,12 +1120,24 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   const mapping = readMapping(mappingFile);
   const items = unblind(answers, judgments, mapping);
 
-  const a = input.armReports.A;
+  // The registered pair is B vs C (#1619 amendment A-1). Arm A stays a
+  // DEFINED arm — its report is still accepted and still scored as a
+  // secondary pairing where one exists — but it is no longer required, and a
+  // primary with no registered comparator is refused rather than scored
+  // against whatever else was passed.
   const b = input.armReports.B;
-  if (!a || !b) throw new Error('--unblind needs at least the arm A and arm B retrieval reports (--arm-report A=…,B=…)');
-  const c = input.armReports.C ?? null;
-  const reports: Partial<Record<EvalArm, ArmRunReport>> = { A: a, B: b, ...(c ? { C: c } : {}) };
-  for (const report of [a, b, ...(c ? [c] : [])]) {
+  const c = input.armReports.C;
+  if (!b || !c) {
+    throw new Error(
+      '--unblind needs the arm B and arm C retrieval reports (--arm-report B=…,C=…): the primary endpoint is ' +
+        'image-dependent answer correctness B vs C (ADR-027 amendment A-1). Arm A is permanently unobtainable — it ' +
+        'needs a real VL *embedding* endpoint — so it is optional here, and a run that supplies only one arm has no ' +
+        'registered comparator to score the primary against.',
+    );
+  }
+  const a = input.armReports.A ?? null;
+  const reports: Partial<Record<EvalArm, ArmRunReport>> = { B: b, C: c, ...(a ? { A: a } : {}) };
+  for (const report of [b, c, ...(a ? [a] : [])]) {
     if (report.querySetSha !== input.querySetSha) {
       throw new Error(`Arm ${report.arm}'s report was measured on query set ${report.querySetSha}, but the fixture in this checkout hashes to ${input.querySetSha}`);
     }
@@ -1005,9 +1145,9 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
       throw new Error(`Arm ${report.arm}'s report records no hardware (EVAL_HARDWARE was unset) — ADR-027 "Report provenance" refuses it`);
     }
   }
-  assertComparableArms(a, b, { baseline: 'A', candidate: 'B' });
-  if (c) {
-    assertComparableArms(c, b, { baseline: 'C', candidate: 'B' });
+  assertComparableArms(c, b, { baseline: 'C', candidate: 'B' });
+  if (a) {
+    assertComparableArms(a, b, { baseline: 'A', candidate: 'B' });
     assertComparableArms(a, c, { baseline: 'A', candidate: 'C' });
   }
 
@@ -1027,16 +1167,16 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     assertAnswerRunMatches(provenance, source, report);
     answerRuns.push(provenance);
   }
-  for (const arm of [a.arm, b.arm, ...(c ? [c.arm] : [])]) {
+  for (const arm of [b.arm, c.arm, ...(a ? [a.arm] : [])]) {
     if (!sheet.sources.some((s) => s.arm === arm)) throw new Error(`--arm-report ${arm} was given but the sheet carries no arm ${arm} answers`);
   }
 
   const stats = { seed: input.seed, ...(input.iterations ? { iterations: input.iterations } : {}) };
   const controls = {
-    bVsC: input.controls ? scoreControls(input.controls.c, input.controls.b, stats, { baseline: 'C', candidate: 'B' }) : null,
-    cVsA: input.controls?.a ? scoreControls(input.controls.a, input.controls.c, stats, { baseline: 'A', candidate: 'C' }) : null,
+    bVsC: input.controls ? scoreControls(input.controls.c, input.controls.b, stats, CONTROL_PAIRS.bVsC) : null,
+    legacyC: input.controls?.legacyC ? scoreLegacyRevisionControls(input.controls.legacyC, input.controls.c, stats) : null,
   };
-  const sample = auditSample(fixture, [controls.bVsC, controls.cVsA].filter((x): x is ControlEndpoints => x !== null));
+  const sample = auditSample(fixture, [controls.bVsC, controls.legacyC].filter((x): x is ControlEndpoints => x !== null));
   if (sample.shortfalls.length > 0 && !input.allowUnderpowered) {
     throw new Error(
       `The sample is below what ADR-027 O2 makes decidable: ${sample.shortfalls.join('; ')} (O15's independent labelling ` +
@@ -1046,19 +1186,21 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     );
   }
 
-  const primary = scoreJudgedPair(items, fixture, { baseline: 'A', candidate: 'B' }, stats);
+  const primary = scoreJudgedPair(items, fixture, { baseline: 'C', candidate: 'B' }, stats);
   const secondary: JudgedPairEndpoints[] = [];
   const others: ArmRetrievalComparison[] = [];
-  const retrievalPrimary = compareArmRetrieval(a, b, stats);
-  if (c) {
-    secondary.push(scoreJudgedPair(items, fixture, { baseline: 'C', candidate: 'B' }, stats));
+  const retrievalPrimary = compareArmRetrieval(c, b, stats);
+  if (a) {
+    secondary.push(scoreJudgedPair(items, fixture, { baseline: 'A', candidate: 'B' }, stats));
     secondary.push(scoreJudgedPair(items, fixture, { baseline: 'A', candidate: 'C' }, stats));
-    others.push(compareArmRetrieval(c, b, stats), compareArmRetrieval(a, c, stats));
+    others.push(compareArmRetrieval(a, b, stats), compareArmRetrieval(a, c, stats));
   }
   const decision = decideGate({
     primary,
-    imageEvidence: retrievalPrimary.imageEvidenceRecallAt5,
-    leakage: retrievalPrimary.leakageAt1,
+    // O7 as amended: an absolute cap on arm B's OWN leakage, read off B's
+    // report rather than from the paired endpoint, which degenerates because
+    // arm C leaks 0 on every negative by construction (A-4).
+    leakage: absoluteLeakAt1(b),
     controls,
   });
 
@@ -1116,7 +1258,7 @@ export function formatArmVerdict(report: ArmVerdictReport): string[] {
   }
   const p = report.judged.primary;
   lines.push(
-    `partial (reported separately): A ${(100 * p.partialRate.baseline).toFixed(1)}%, B ${(100 * p.partialRate.candidate).toFixed(1)}%; ` +
+    `partial (reported separately): ${p.baseline} ${(100 * p.partialRate.baseline).toFixed(1)}%, ${p.candidate} ${(100 * p.partialRate.candidate).toFixed(1)}%; ` +
       `pilot ψ = ${p.pilot.psi.toFixed(2)} over the first ${p.pilot.pairs} pairs by judgedAt${p.pilot.evaluated ? '' : ' (pilot not yet reached)'}`,
   );
   lines.push('Cost figures are reported by benchmark-query-latency.ts and the backfill card; none enters the rule above (O11).');

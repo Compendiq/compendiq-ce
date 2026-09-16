@@ -21,21 +21,19 @@
  *                           never sees this file and `--unblind` holds it to
  *                           the arm's retrieval report.
  *
- * `sources[].attachmentUrl` is the ONE arm-revealing field the ADR's row
- * shape admits: it is present only where the arm surfaced an image source
- * (A's leg hit, B's D11 citation) and never on C. It stays, because the
- * judge has to see what the answer cited; the judging protocol
- * (docs/runbooks/retrieval-eval.md "Blinding and judging") tells the judge to
- * read it as a citation and never as a reason to guess the arm.
- *
- * The asymmetry that matters, stated rather than implied: for the PRIMARY
- * B-vs-A pair the blinding holds — both arms carry the field wherever an
- * image source surfaced — but the field is absent from EVERY arm C row by
- * construction (C has no image leg and no derived chunks), so **C is the
- * separable arm**. C's correctness is a secondary endpoint judged by the
- * same person, so a judge who reads the field as an arm tell can separate
- * C's rows from A's and B's. That is a known, accepted limitation of the
- * secondary endpoints, not of the primary one (ADR-027 O10 erratum).
+ * `sources[].attachmentUrl` USED to ride along on the judged row as "the one
+ * arm-revealing field the ADR's row shape admits": present wherever an arm
+ * surfaced an image source (A's leg hit, B's D11 citation) and absent from
+ * every arm C row by construction. Under the original B-vs-A primary that
+ * made C the separable arm and was recorded as a limitation of the SECONDARY
+ * endpoints. The #1619 amendment re-registers the primary as **B vs C**, so
+ * the same field became a tell on the primary pair itself — a judge who
+ * reads it as an arm tell separates exactly the two arms the primary
+ * compares. It is therefore STRIPPED: the row carries `sources[].pageTitle`
+ * and nothing else, `attachmentUrl` is on `BLINDING_FORBIDDEN_KEYS` so
+ * every read refuses a row carrying it, and the judge reads the cited
+ * pictures off `evidenceImages` (the label's own expected images, identical
+ * on every arm) plus the corpus.
  *
  * `generateArmAnswers` takes the ask as a FUNCTION. The script wires it to
  * `buildApp().inject(...)` (`askThroughRoute`); the tests wire it to a stub
@@ -52,7 +50,6 @@ import type { ImageFixture } from './fixture.js';
 
 export const AnswerSourceSchema = z.object({
   pageTitle: z.string(),
-  attachmentUrl: z.string().optional(),
 }).strict();
 
 /**
@@ -140,7 +137,14 @@ export interface AskOutcome {
   refused: boolean;
   /** The route's `refusalReason` on a refusal; null when it answered or named none. */
   refusalReason: string | null;
-  sources: Array<{ pageTitle: string; attachmentUrl?: string }>;
+  /**
+   * Page titles only. The route's final frame also carries an
+   * `attachmentUrl` on an image source; it is dropped HERE, at the parse,
+   * rather than at the write — a field the outcome never holds cannot reach
+   * a judged row by a later edit (#1619: the primary pair is B vs C and the
+   * URL is present only on the arm that has an image leg).
+   */
+  sources: Array<{ pageTitle: string }>;
 }
 
 export type AskFn = (question: string) => Promise<AskOutcome>;
@@ -169,10 +173,7 @@ export function parseAskSse(body: string): AskOutcome {
     answer,
     refused: final.refused === true,
     refusalReason: final.refused === true && typeof final.refusalReason === 'string' ? final.refusalReason : null,
-    sources: sources.map((s) => ({
-      pageTitle: typeof s.pageTitle === 'string' ? s.pageTitle : '',
-      ...(typeof s.attachmentUrl === 'string' ? { attachmentUrl: s.attachmentUrl } : {}),
-    })),
+    sources: sources.map((s) => ({ pageTitle: typeof s.pageTitle === 'string' ? s.pageTitle : '' })),
   };
 }
 
@@ -217,6 +218,11 @@ export const BLINDING_FORBIDDEN_KEYS = [
   'arm', 'queryid', 'query_id', 'runid', 'run_id', 'config', 'revision', 'revisionsha', 'model',
   'provider', 'chunk', 'chunkindex', 'chunktext', 'derived', 'provenance', 'metadata', 'pageid',
   'page_id', 'score', 'similarity', 'confidence',
+  // #1619: an image citation is present only on an arm that HAS an image
+  // leg, and the primary pair is now B vs C — so the URL separates the two
+  // arms the primary compares. Refused at every read, not merely omitted at
+  // generation.
+  'attachmenturl', 'attachment_url',
 ] as const;
 
 /** Refuse any answers row that carries a key on the forbidden list, at any depth. */
@@ -232,7 +238,7 @@ export function assertBlinded(rows: readonly unknown[]): void {
       if (forbidden.has(key.toLowerCase())) {
         throw new Error(
           `answers row ${index} carries "${path}.${key}" — a judge who can see that can see the arm. ` +
-            'The answers file holds itemId, question, answer, refused, sources[{pageTitle, attachmentUrl?}] ' +
+            'The answers file holds itemId, question, answer, refused, sources[{pageTitle}] ' +
             'and evidenceImages, nothing else (ADR-027 "Judging protocol").',
         );
       }
@@ -303,10 +309,7 @@ export async function generateArmAnswers(
       question: label.query,
       answer: outcome.answer,
       refused: outcome.refused,
-      sources: outcome.sources.map((s) => ({
-        pageTitle: s.pageTitle,
-        ...(s.attachmentUrl !== undefined ? { attachmentUrl: s.attachmentUrl } : {}),
-      })),
+      sources: outcome.sources.map((s) => ({ pageTitle: s.pageTitle })),
       evidenceImages: [...label.expectedImages],
     });
     mapping[id] = { arm: opts.arm, queryId: label.id };

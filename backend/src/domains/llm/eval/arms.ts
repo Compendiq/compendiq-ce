@@ -104,17 +104,39 @@ export function readArmImageEnv(arm: EvalArm, env: NodeJS.ProcessEnv = process.e
   return null;
 }
 
-/** The owner decisions O1–O7 (ADR-027 "Owner decisions", confirmed 2026-09-15). */
+/**
+ * The owner decisions O1–O7 (ADR-027 "Owner decisions", confirmed
+ * 2026-09-15), as RE-REGISTERED for B vs C by the #1619 amendment
+ * (2026-09-16, ADR-027 "Amendment A-1…A-6"): arm A needs a real VL
+ * *embedding* endpoint, the owner has declined to stand one up — the stated
+ * goal being to remove VL embedding entirely — so arm A is permanently
+ * unobtainable and every endpoint that named it is re-registered against the
+ * ablation C or retired in writing. Nothing here may be re-pointed silently:
+ * `decideGate` prints every condition, including the retired one.
+ */
 export const ARM_MARGINS = {
-  /** O1: primary point estimate ≥ +5 pp, B vs A, cluster-bootstrap 95% CI excluding 0. */
+  /** O1 (A-1): primary point estimate ≥ +5 pp, B vs C, cluster-bootstrap 95% CI excluding 0. */
   primaryPoints: 0.05,
   /** O4: ordinary-text R@5 and MRR, EN + DE pooled, one-sided 95%. */
   textNonInferiority: 0.02,
-  /** O5: image-evidence R@5, B vs A — an explicitly underpowered guardrail. */
+  /**
+   * O5 (A-2): RETIRED. The image-evidence guardrail was a PAIRED
+   * non-inferiority test of B against A's image-embedding leg; under B vs C
+   * it has no comparator at all (`evidenceKeysOf('C')` returns none, so
+   * `compareArmRetrieval` sets the endpoint null by construction). The owner
+   * retired it outright rather than re-registering it as an absolute floor,
+   * so the gate carries NO image-evidence guardrail and says so on the
+   * verdict. The margin is kept only to describe what was retired.
+   */
   imageEvidenceNonInferiority: 0.05,
-  /** O6: B's unsupported-claim rate may exceed A's by at most 3 pp (upper bound). */
+  /** O6 (A-4): B's unsupported-claim rate may exceed C's by at most 3 pp (upper bound). */
   unsupportedClaimPoints: 0.03,
-  /** O7: image-negative leakage@1 may exceed A's by at most 2 queries of 48. */
+  /**
+   * O7 (A-4): re-registered as an ABSOLUTE cap. C's image-negative leakage is
+   * identically 0 for every negative (arm C reports no evidence by rule), so
+   * "no worse than the baseline" degenerates: the margin is read as "B leaks
+   * at most 2 of the 48 image-negative labels", never as a comparison.
+   */
   leakageQueries: 2,
   leakageDenominator: 48,
   /** Pilot: the first 30 judged pairs; ψ below 0.20 stops the run. */
@@ -711,6 +733,36 @@ export function imageNegativeLeakAt1(runs: readonly ArmQueryRun[]): number {
   const negatives = runs.filter((r) => r.style === 'image-negative');
   if (negatives.length === 0) return 0;
   return negatives.filter((r) => r.evidence.some((e) => e.rank === 1)).length / negatives.length;
+}
+
+/**
+ * O7 as the #1619 amendment (A-4) re-registers it: an ABSOLUTE cap on ONE
+ * arm's own image-negative leakage@1, in QUERIES as the margin is written
+ * ("at most 2 of 48"), not a paired delta.
+ *
+ * The paired form degenerates under B vs C: `evidenceKeysOf('C')` returns
+ * nothing, so the ablation leaks 0 on every negative by construction and the
+ * "no worse than the baseline" reading of the margin would be a comparison
+ * against a constant. The count is what the ADR's margin is denominated in,
+ * so it is what the gate compares — and the denominator is reported beside
+ * it, because 2 of 24 negatives is not the sample O2 pre-registered.
+ */
+export interface AbsoluteLeakage {
+  /** Image-negative labels whose rank-1 page carried this arm's image evidence. */
+  queries: number;
+  /** Image-negative labels scored — O2 pre-registers 48. */
+  denominator: number;
+  rate: number;
+}
+
+export function absoluteLeakAt1(report: ArmRunReport): AbsoluteLeakage {
+  const negatives = report.runs.filter((r) => r.style === 'image-negative');
+  const leaked = negatives.filter((r) => r.evidence.some((e) => e.rank === 1)).length;
+  return {
+    queries: leaked,
+    denominator: negatives.length,
+    rate: negatives.length === 0 ? 0 : leaked / negatives.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
