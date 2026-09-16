@@ -166,6 +166,49 @@ describe('conversation schemas (#1361)', () => {
     expect(SourceSchema.safeParse({ ...KB_SOURCE, attachmentUrl: '/api/attachments/42/turbine.png' }).success).toBe(false);
   });
 
+  // ADR-027 D12 (#1617): four provenance fields naming the image a derived
+  // description came from. They travel together with `kind`/`attachmentUrl`,
+  // never singly — a lone `contentHash` on a replayed turn would be
+  // provenance with nothing to attribute it to, and a hash is provenance and
+  // never an authorization shortcut.
+  const PROVENANCE = {
+    attachmentStore: 'confluence' as const,
+    attachmentKey: 'turbine.png',
+    contentHash: 'sha256:d34db33f',
+    analysisVersion: 1,
+  };
+
+  it('SourceSchema round-trips the four D12 provenance fields on an image source', () => {
+    const source = { ...IMAGE_SOURCE, ...PROVENANCE };
+    expect(SourceSchema.parse(source)).toEqual(source);
+  });
+
+  it('SourceSchema rejects any provenance field without kind: "image"', () => {
+    for (const [field, value] of Object.entries(PROVENANCE)) {
+      expect(SourceSchema.safeParse({ ...KB_SOURCE, [field]: value }).success).toBe(false);
+    }
+  });
+
+  it('SourceSchema rejects a SUBSET of the four on an image source', () => {
+    for (const field of Object.keys(PROVENANCE)) {
+      const partial: Record<string, unknown> = { ...IMAGE_SOURCE, ...PROVENANCE };
+      delete partial[field];
+      expect(SourceSchema.safeParse(partial).success).toBe(false);
+    }
+  });
+
+  it('SourceSchema still parses a pre-#1617 image source carrying none of them', () => {
+    // Every conversation persisted by #1115 P3 is this shape, and replay must
+    // not start failing on it.
+    expect(SourceSchema.parse(IMAGE_SOURCE)).toEqual(IMAGE_SOURCE);
+  });
+
+  it('SourceSchema rejects an attachmentStore outside the two stores', () => {
+    expect(
+      SourceSchema.safeParse({ ...IMAGE_SOURCE, ...PROVENANCE, attachmentStore: 's3' }).success,
+    ).toBe(false);
+  });
+
   it('StoredChatMessageSchema accepts refused turns and turns carrying sources', () => {
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'no', refused: true })).not.toThrow();
     expect(() => StoredChatMessageSchema.parse({ role: 'assistant', content: 'yes', sources: [KB_SOURCE, EXTERNAL_SOURCE] })).not.toThrow();

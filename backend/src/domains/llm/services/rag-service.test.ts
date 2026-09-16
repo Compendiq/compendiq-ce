@@ -2146,12 +2146,124 @@ describe('RAG Service', () => {
         spaceKey: 'DEV',
         score: 0.75,
       });
+      // ADR-027 D10: the body prefix is the fallback for a page with NO chunk
+      // rows — the `LEFT JOIN LATERAL` answers NULL and this row is what is
+      // left. It is the only surviving use of `substring(body_text,1,500)`.
       expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+      expect(results[0].chunkIndex).toBeUndefined();
+      expect(results[0].derived).toBeUndefined();
       // #1117: the keyword leg declares its provenance. `vectorScore: null` is
       // load-bearing — a keyword hit measured no similarity, and a 0 here would
       // reach ConfidenceBadge as "measured, and terrible".
       expect(results[0].keywordRank).toBe(0.75);
       expect(results[0].vectorScore).toBeNull();
+    });
+
+    it('resolves a hit to the matched CHUNK, carrying its index, section and provenance', async () => {
+      // ADR-027 D10's headline: a lexical row is the matching chunk, not a
+      // page prefix. `chunkIndex` arrives with it because sibling assembly
+      // anchors on it, and `derived` arrives when the winning chunk came from
+      // an image analysis — which is what makes the D12 citation and the
+      // answer-time byte pick reachable from a KEYWORD hit.
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 42,
+            confluence_id: 'PAGE-42',
+            title: 'Redis Overview',
+            space_key: 'DEV',
+            body_text: 'First 500 chars of body text here.',
+            rank: 0.75,
+            chunk_text: 'Screenshot shows error ERR-4711 in the console.',
+            chunk_index: 9,
+            chunk_matched: true,
+            metadata: {
+              page_title: 'Redis Overview',
+              section_title: '[Image: console.png — screenshot]',
+              space_key: 'DEV',
+              confluence_id: 'PAGE-42',
+              source: 'image_analysis',
+              attachment_source: 'confluence',
+              attachment_key: 'console.png',
+              content_hash: 'sha256:abc',
+              analysis_id: 5,
+              analysis_version: 1,
+              part: 1,
+              parts: 1,
+            },
+          },
+        ],
+      });
+
+      const results = await keywordSearch('user-1', 'ERR-4711', 10);
+      expect(results[0].chunkText).toBe('Screenshot shows error ERR-4711 in the console.');
+      expect(results[0].chunkIndex).toBe(9);
+      expect(results[0].sectionTitle).toBe('[Image: console.png — screenshot]');
+      expect(results[0].derived).toEqual({
+        attachmentSource: 'confluence',
+        attachmentKey: 'console.png',
+        contentHash: 'sha256:abc',
+        analysisId: 5,
+        analysisVersion: 1,
+        part: 1,
+        parts: 1,
+      });
+    });
+
+    it('falls back to the body prefix when the resolved chunk is an EMPTY string', async () => {
+      // Review r1 finding 5. `''` is the third state beside "a chunk" and
+      // "no chunk row at all", and it is unusable: handing the caller an
+      // empty `chunkText` loses the one context this row can offer, on
+      // exactly the path where the prefix is genuinely better. `embedPage`
+      // should never write such a row — this is the guard reading "absent
+      // means absent" for all three states rather than two.
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            page_id: 42,
+            confluence_id: 'PAGE-42',
+            title: 'Redis Overview',
+            space_key: 'DEV',
+            body_text: 'First 500 chars of body text here.',
+            rank: 0.75,
+            chunk_text: '',
+            chunk_index: 3,
+            chunk_matched: true,
+            metadata: { section_title: 'Ignored' },
+          },
+        ],
+      });
+
+      const results = await keywordSearch('user-1', 'redis', 10);
+      expect(results[0].chunkText).toBe('First 500 chars of body text here.');
+      expect(results[0].sectionTitle).toBe('Redis Overview');
+      expect(results[0].chunkIndex).toBeUndefined();
+    });
+
+    it('unions the DERIVED chunk documents into the candidate set, under the same visibility predicate', async () => {
+      // The three D10 rules that live in the SQL and nowhere else: the derived
+      // arm exists, it is restricted to derived rows (authored chunks must not
+      // contribute to a page's rank — that would double-count `pages.tsv`),
+      // it collapses per page so five matching images are ONE candidate at one
+      // rank, and it carries the visibility predicate because it reads derived
+      // TEXT (ADR-027 D14).
+      mocks.mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
+      mocks.mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await keywordSearch('user-1', 'ERR-4711', 10);
+
+      const sql = mocks.mockQuery.mock.calls[0]![0] as string;
+      expect(sql).toContain("(pe.metadata->>'source') = 'image_analysis'");
+      expect(sql).toMatch(/MAX\(ts_rank\(pe\.chunk_tsv,[\s\S]*?GROUP BY pe\.page_id/);
+      // `pages.tsv` is untouched (ADR `:4265-4267`) — the authored arm is the
+      // same predicate and the same rank expression it has always been.
+      expect(sql).toContain('ts_rank(cp.tsv,');
+      // Two visibility predicates, one per arm.
+      expect(sql.match(/cp\.source = 'confluence'/g)).toHaveLength(2);
+      // The page limit stays on PAGES, before resolution.
+      expect(sql).toMatch(/GROUP BY page_id[\s\S]*?LIMIT \$3/);
     });
 
     // ── #1351: spaceKey narrows the keyword leg ───────────────────────────
@@ -3031,7 +3143,14 @@ describe('exact-identifier pin stage (#1107)', () => {
     const call = mocks.mockQuery.mock.calls.find(
       (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('substring(cp.body_text, 1, $5)'),
     );
-    expect(call![0] as string).not.toMatch(/LIMIT 1\b/);
+    // The statement's OWN limit — the last one in it — must be the bound
+    // candidate count. Asserted as "parameterised and final" rather than as
+    // "the string contains no LIMIT 1": since #1617 the query carries a
+    // `LEFT JOIN LATERAL … LIMIT 1`, which is ADR-027 D10's chunk resolution
+    // (one CHUNK per candidate page) and not a candidate limit at all, so the
+    // old substring proxy would now fail on a query that still asks for the
+    // whole list.
+    expect(call![0] as string).toMatch(/LIMIT \$\d+\s*$/);
     expect((call![1] as unknown[])).toContain(IDENTIFIER_LOOKUP_CANDIDATES);
   });
 });

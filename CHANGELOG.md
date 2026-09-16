@@ -46,6 +46,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-027 errata move the MRL-width, probe-chip and
   Image-leg-toggle removals to the destructive half (they still gate live
   serving code) and add `image_index_last_run` to the rows it deletes.
+- **Lexical chunk resolution (ADR-027 D10, #1617).** The keyword leg's
+  candidate set is now `pages.tsv` ∪ the DERIVED per-chunk documents
+  (`page_embeddings.chunk_tsv` where `metadata.source = 'image_analysis'`), a
+  page's lexical rank is the greater of the two, and every lexical and
+  exact-identifier page hit resolves to the CHUNK that matched — ordered
+  `(chunk_tsv @@ q) DESC, ts_rank DESC, chunk_index ASC`. A fact that exists
+  only inside a screenshot is therefore findable lexically. **This is a
+  measured retrieval change that reaches AUTHORED hits too:** `chunkText` was
+  `substring(body_text, 1, 500)` for every keyword row, so the reranker's
+  input and the `/api/search?mode=hybrid` snippet now carry the matching
+  passage instead of a page prefix. The prefix survives only for a page with
+  no `page_embeddings` row at all. `pages.tsv` is unchanged, so authored page
+  ranking is bit-identical; a page with five matching images is still one
+  candidate at one rank, and there is no third RRF leg. The exact-identifier
+  pin keeps its `rag_context_chars_per_page`-sized lede unless a chunk really
+  matches the identifier (erratum #1617/Q1). `/api/search?mode=keyword` keeps
+  its own authored-text SQL (erratum #1617/Q2) — a recorded asymmetry, see
+  `docs/runbooks/retrieval-eval.md`.
+- **Image evidence in answers and citations (ADR-027 D11/D12, #1617).**
+  `SearchResult` gains `derived` provenance read from the chunk's `metadata`,
+  so a derived chunk is an ordinary result: same MMR, the same
+  `RERANK_DOC_MAX_CHARS` window with no exception, and a measured row for
+  `computeRetrievalConfidence`. A text-only chat model answers from the
+  description. `/llm/ask` appends one `kind: 'image'` source per distinct
+  `(pageId, attachmentStore, attachmentKey)` among the answer's top-K derived
+  rows (best fused rank first, capped at 4) carrying `attachmentUrl`,
+  `similarity: null` and four new optional `SourceSchema` fields —
+  `attachmentStore`, `attachmentKey`, `contentHash`, `analysisVersion` —
+  which `toPersistedSources` copies together with `kind`/`attachmentUrl` or
+  not at all, so a reopened conversation round-trips them. Replay still
+  re-applies page visibility: a revoked page's entry is `unavailable` hash or
+  no hash. The optional answer-time image bytes for a confirmed
+  vision-capable chat model are re-sourced from derived provenance, under the
+  same count, byte, format and ACL limits — falling back WHOLE-SET to the
+  legacy image leg's hits when no row in the answer's set carries provenance,
+  so an instance with `image_embedding` assigned and nothing analyzed yet
+  keeps the chips and pictures it had (and `image_only_context` keeps its
+  three discriminating arms instead of promising attachments it cannot
+  produce). #1618 retires the fallback with the leg.
+- **Migration 117 — the derived lexical arm's own index (#1617).**
+  `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the arm only while idle: after a corpus-wide analysis batch the full GIN's
+  pending list re-priced the plan and the arm scanned every derived chunk
+  behind a `chunk_tsv` filter — measured 8.9–10.4 ms for a one-row match
+  against 0.021 ms with this index, at 429 pending pages on a 4,001-page
+  corpus (review r2 re-measured the full statement at 7.8–9.0 ms steady plus
+  an 18–74 ms tail). `fastupdate = off` is what keeps the new index out of
+  that state: a plain partial GIN is already a 5–10× win, but it pends
+  identically, so its cost tracks the pending list and a bad window remains.
+  Only the embedding worker's own derived inserts pay the reloption, at
+  ~38 µs per derived chunk.
 - **Image analysis in the text index — ingestion half (ADR-027, #1616).**
   Migration 116 adds `pages.image_analysis_dirty` / `image_analysis_revision`
   and a trigger-maintained, GIN-indexed `page_embeddings.chunk_tsv` (rebuilt in
@@ -139,6 +192,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs at the provider's default temperature.
 
 ### Changed
+
+- **`image_only_context` keeps its three discriminating arms (#1617).** The
+  answer-time byte pick prefers derived provenance, and a title-synthesised
+  row by construction has none — so the pick falls back to the legacy image
+  leg's hits for such a set, and the refusal still depends on the vision
+  verdict, the cap and whether the bytes are readable, exactly as before. The
+  rule, the flag, the fallback and the legacy leg are removed together in
+  #1618.
+- The `Sources (N)` disclosure on an answer now reports its state through
+  `aria-expanded`, so a screen reader announces whether the citation list is
+  open (it has two row types since #1617: pages and pictures).
 
 - The page inspector's Details tab groups the Confluence link with provenance,
   places Notes before secondary page actions, and exposes the quality breakdown,

@@ -2,12 +2,38 @@
  * #1115 P4 — pick, load and validate the retrieved images the chat model is
  * shown.
  *
- * P3 made pictures RETRIEVABLE: the image leg ranks pages by what their
+ * P3 made pictures RETRIEVABLE: the image leg ranked pages by what their
  * images look like, and `/llm/ask` puts the matched ones on the wire as
  * `kind: 'image'` sources so a reader can open them. What it deliberately did
  * NOT do is show them to the model — an image-only page's grounding was its
- * synthesised title. This module is the other half: it turns the hits riding
- * on the returned `SearchResult`s into `image_url` content parts.
+ * synthesised title. This module is the other half: it turns the pictures the
+ * answer's rows came from into `image_url` content parts.
+ *
+ * ── Derived provenance first, the legacy leg as fallback (ADR-027 D11, #1617)
+ *
+ * The PREFERRED candidate set is `SearchResult.derived` — the D9.4 provenance
+ * of the derived chunk the TEXT legs actually matched — under the same count,
+ * byte, format and ACL limits, and with the vision gate still in the caller
+ * (ADR-025 D8's placement, restated by ADR-027 `:4307-4311`). Two consequences
+ * worth stating because they are not defects:
+ *
+ *  - **There is no per-image score any more** (`:4318`) on that path. A
+ *    cross-modal cosine was the one measure of "which picture matched
+ *    better"; a derived chunk was found by text, so the only rank in hand is
+ *    the ROW's fused score. Ordering therefore uses that, then `part` — never
+ *    a fabricated similarity.
+ *  - **With NO derived row in the set the pick falls back to ADR-025's
+ *    `imageHits`** (review r1 finding 1; ADR-027 D11's third erratum). The
+ *    legacy leg keeps ranking pages until #1618 retires it, and an instance
+ *    with `image_embedding` assigned and no analysis yet is exactly the set
+ *    that carries hits and no provenance: consuming only the new shape took
+ *    the pictures away from a deployment that had them, and left the
+ *    `image_only_context` refusal promising attachments it could not produce.
+ *    The fallback is WHOLE-SET, never per-page, so the two ordering
+ *    quantities are never mixed inside one round and no picture can be
+ *    chosen by two rules. #1618 deletes the branch with the leg; the
+ *    `LegacyImageHit` shape below is structural, so this module still does
+ *    not import `image-leg-search.ts`.
  *
  * ── Why it is a domains/llm service and not a few lines in the route ──────
  *
@@ -31,16 +57,21 @@
  *
  * ── Round-robin, not best-first ───────────────────────────────────────────
  *
- * A plain best-first sort over the flattened hits is the obvious
+ * A plain best-first sort over the flattened candidates is the obvious
  * implementation and it is wrong: a page carrying three near-identical
  * screenshots would take every slot at the default cap of 2, and the second
  * page — the one whose single picture matched almost as well — would never be
  * shown. That is image COUNT beating image BREADTH, the same head dilution
- * `MAX_IMAGE_HITS_PER_PAGE` bounds inside a page and `#1106`'s best-chunk-only
- * fusion bounds inside a leg. So selection proceeds in ROUNDS: round 0 is
- * every page's best image, ordered among themselves by the hit's own
- * similarity; round 1 is every page's second-best; and so on. A page gets a
- * second slot only once every page with hits has had a first.
+ * `#1106`'s best-chunk-only fusion bounds inside a leg. So selection proceeds
+ * in ROUNDS: round 0 is every page's best image, ordered among themselves by
+ * the carrying row's fused rank; round 1 is every page's second-best; and so
+ * on. A page gets a second slot only once every page with a candidate has had
+ * a first.
+ *
+ * Under D11 that bound is mostly structural — fusion returns one row per page,
+ * so a page usually offers exactly one derived candidate — but it stays,
+ * because a multi-part serialization and a wide fetch can still put two
+ * pictures of one page in the same top-K.
  *
  * ── Zero HTTP ─────────────────────────────────────────────────────────────
  *
@@ -51,7 +82,6 @@
  */
 
 import { createHash } from 'crypto';
-import { query } from '../../../core/db/postgres.js';
 import { logger } from '../../../core/utils/logger.js';
 import {
   resolveAttachmentBytes,
@@ -59,9 +89,9 @@ import {
   type AttachmentStoreSource,
 } from '../../../core/services/attachment-store.js';
 import { validateImage, MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
-import type { PageSource } from '@compendiq/contracts';
+import { createPageIdentityReader, type PageIdentity, type PageIdentityReader } from './page-identity.js';
 import type { ChatContentPart } from './prompts.js';
-import type { ImageHit } from './image-leg-search.js';
+import { distinctDerivedImages, type DerivedProvenance } from './derived-provenance.js';
 
 /** Exact length of `Buffer#toString('base64')` for `n` raw bytes. */
 function base64Length(rawBytes: number): number {
@@ -111,8 +141,20 @@ function base64Length(rawBytes: number): number {
 export const RETRIEVED_IMAGES_BYTE_BUDGET = base64Length(MAX_IMAGE_BYTES);
 
 /**
- * The shape this module needs off a `SearchResult` — its page id and the
- * image hits P3 attached to it.
+ * ADR-025's image-leg hit, structurally — `image-leg-search.ts`'s `ImageHit`
+ * narrowed to what a byte pick needs. Retired with the leg in #1618.
+ */
+export interface LegacyImageHit {
+  source: AttachmentStoreSource;
+  key: string;
+  /** The leg's cross-modal cosine: its only ordering quantity (ADR-025 §8). */
+  similarity: number;
+}
+
+/**
+ * The shape this module needs off a `SearchResult` — its page id, its fused
+ * ordering value, the D9.4 provenance of the derived chunk it carries and, as
+ * the pre-#1618 fallback, the legacy leg's hits.
  *
  * Structural rather than the imported `SearchResult`, because everything else
  * on that interface is about ranking and none of it belongs to this decision;
@@ -120,7 +162,14 @@ export const RETRIEVED_IMAGES_BYTE_BUDGET = base64Length(MAX_IMAGE_BYTES);
  */
 export interface RetrievedImagePage {
   pageId: number;
-  imageHits?: ImageHit[];
+  /** The row's fused rank; the only ordering quantity a derived image has. */
+  score?: number;
+  derived?: DerivedProvenance;
+  /**
+   * ADR-025's hits on this page. Read ONLY when no row in the whole set
+   * carries `derived` — see the module header's second bullet.
+   */
+  imageHits?: readonly LegacyImageHit[];
 }
 
 /** One image that really was sent, as the audit and the cache key read it. */
@@ -151,11 +200,12 @@ export interface RetrievedImagesSkipped {
   /**
    * Candidates whose bytes are identical to a picture already attached.
    *
-   * P2 indexes images per PAGE, so one diagram reused across five pages is
-   * five rows carrying the same bytes, the same embedding and therefore the
-   * same similarity — which sorts them adjacent inside a single round-robin
-   * round. Without this the model got one piece of evidence in both default
-   * slots.
+   * The analysis store keys rows per PAGE, so one diagram reused across five
+   * pages is analyzed five times, carrying the same bytes under five
+   * `(pageId, store, key)` identities that the `(pageId, store, key)` dedup
+   * cannot collapse. Their pages rank near each other, so they land in the
+   * same round-robin round. Without this the model got one piece of evidence
+   * in both default slots.
    */
   duplicate: number;
 }
@@ -192,48 +242,82 @@ interface Candidate {
   pageId: number;
   source: AttachmentStoreSource;
   key: string;
-  similarity: number;
+  /**
+   * The ordering quantity of whichever arm produced this candidate: the
+   * carrying row's fused rank on the derived path (D11), the leg's
+   * cross-modal cosine on the legacy one. The two are never mixed — the
+   * fallback is whole-set — so nothing here compares them.
+   */
+  rank: number;
 }
 
 /**
- * Flatten the pages' hits into one round-robin candidate list — see the
+ * Flatten the rows' images into one round-robin candidate list — see the
  * module docstring for why the obvious flat sort is wrong.
+ *
+ * `distinctDerivedImages` does the `(pageId, store, key)` dedup and the
+ * fused-rank ordering ONCE, shared with the D12 citation append, so a picture
+ * the model was shown and a picture the reader was cited cannot be chosen by
+ * two different rules. The legacy branch below is the pre-#1618 fallback and
+ * runs only when that produced nothing at all.
  */
 export function orderRetrievedImageCandidates(pages: RetrievedImagePage[]): Candidate[] {
-  const perPage = pages
-    .map((p) => ({
-      pageId: p.pageId,
-      // Defensive: P3 already emits these best-first, but this function's
-      // contract is "best image per page", and a producer that stopped
-      // sorting would silently degrade it into "first image per page".
-      hits: [...(p.imageHits ?? [])].sort((a, b) => b.similarity - a.similarity),
-    }))
-    .filter((p) => p.hits.length > 0);
+  const perPage: Array<{ pageId: number; images: Candidate[] }> = [];
+  const byPage = new Map<number, Candidate[]>();
+  const add = (candidate: Candidate): void => {
+    let images = byPage.get(candidate.pageId);
+    if (!images) {
+      images = [];
+      byPage.set(candidate.pageId, images);
+      // Insertion order IS best-page-first: `distinctDerivedImages` is
+      // already sorted by the carrying row's fused rank, and the legacy
+      // branch walks the rows in fused order.
+      perPage.push({ pageId: candidate.pageId, images });
+    }
+    images.push(candidate);
+  };
 
-  const deepest = perPage.reduce((n, p) => Math.max(n, p.hits.length), 0);
+  for (const image of distinctDerivedImages(pages)) {
+    add({
+      pageId: image.pageId,
+      source: image.derived.attachmentSource,
+      key: image.derived.attachmentKey,
+      rank: image.score,
+    });
+  }
+  if (perPage.length === 0) {
+    // ADR-025's leg, until #1618 retires it. Its hits arrive best-first, but
+    // the re-sort is kept from the pre-#1617 code: this function's contract
+    // is "best image per page", and a producer that stopped sorting would
+    // silently degrade it into "first image per page".
+    for (const page of pages) {
+      const hits = [...(page.imageHits ?? [])].sort((a, b) => b.similarity - a.similarity);
+      for (const hit of hits) {
+        add({ pageId: page.pageId, source: hit.source, key: hit.key, rank: hit.similarity });
+      }
+    }
+  }
+
+  const deepest = perPage.reduce((n, p) => Math.max(n, p.images.length), 0);
   const ordered: Candidate[] = [];
   for (let round = 0; round < deepest; round++) {
     const thisRound: Candidate[] = [];
     for (const p of perPage) {
-      const h = p.hits[round];
-      if (!h) continue;
-      thisRound.push({ pageId: p.pageId, source: h.source, key: h.key, similarity: h.similarity });
+      const image = p.images[round];
+      if (image) thisRound.push(image);
     }
-    thisRound.sort((a, b) => b.similarity - a.similarity);
+    thisRound.sort((a, b) => b.rank - a.rank);
     ordered.push(...thisRound);
   }
   return ordered;
 }
 
-interface PageIdentityRow {
-  id: number;
-  confluence_id: string | null;
-  source: PageSource;
-}
+/** @see PageIdentity — kept as a local name for the rows this loop reads. */
+type PageIdentityRow = PageIdentity;
 
 /**
- * Load, validate and encode up to `max` of the images the image leg matched
- * on the pages that ground this answer.
+ * Load, validate and encode up to `max` of the images whose derived
+ * descriptions ground this answer (ADR-027 D11).
  *
  * Never throws: an answer must not fail because a picture could not be read.
  * Every refusal is a skip with a counter, and the caller answers text-only —
@@ -242,7 +326,7 @@ interface PageIdentityRow {
  */
 export async function pickRetrievedImages(
   pages: RetrievedImagePage[],
-  opts: { max: number; byteBudget?: number },
+  opts: { max: number; byteBudget?: number; identities?: PageIdentityReader },
 ): Promise<RetrievedImagesPick> {
   const max = Math.floor(opts.max);
   if (!Number.isFinite(max) || max <= 0) return emptyPick();
@@ -257,11 +341,7 @@ export async function pickRetrievedImages(
   const pageIds = [...new Set(candidates.map((c) => c.pageId))];
   let identities: Map<number, PageIdentityRow>;
   try {
-    const res = await query<PageIdentityRow>(
-      `SELECT id, confluence_id, source FROM pages WHERE id = ANY($1::int[])`,
-      [pageIds],
-    );
-    identities = new Map(res.rows.map((r) => [r.id, r]));
+    identities = await (opts.identities ?? createPageIdentityReader()).load(pageIds);
   } catch (err) {
     // A failed lookup is a text-only answer, not a failed answer. The images
     // still reach the reader as sources — that list is built from the search
@@ -298,8 +378,8 @@ export async function pickRetrievedImages(
     // below bounds what is SENT and `validateImage` bounds what is ACCEPTED,
     // but neither bounds what is READ: `resolveAttachmentBytes` calls
     // `fs.readFile` with no ceiling, and `validateImage`'s `MAX_IMAGE_BYTES`
-    // check only runs once the whole buffer exists. An `ImageHit` can only
-    // exist for a row the intake wrote under that same 5 MB gate — but the
+    // check only runs once the whole buffer exists. A derived candidate can
+    // only exist for an image the analysis intake read — but the
     // reachable state is exactly the one `skipped.invalid` names: the bytes on
     // disk are no longer the bytes that were indexed, and the store will hold
     // 40 MiB. Unlike the intake worker, this loop runs on the REQUEST path,

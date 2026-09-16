@@ -87,6 +87,24 @@ export interface Source {
    * the PAGE, not a bare file.
    */
   attachmentUrl?: string;
+  /**
+   * ADR-027 D12 (#1617) — where the description that grounded this answer
+   * came from: the attachment store, the on-disk key, the content hash of
+   * those bytes and the analysis payload version.
+   *
+   * Present only together, and only with `kind: 'image'` — the contract's
+   * `SourceSchema` enforces both directions. They exist so a REPLAYED
+   * conversation round-trips the provenance the live answer carried; nothing
+   * renders them today, and `contentHash` in particular is provenance and
+   * never an authorization signal (replay re-applies page visibility, so a
+   * revoked page's entry is annotated `unavailable` hash or no hash).
+   *
+   * Absent on a pre-#1617 image source, which is why all four are optional.
+   */
+  attachmentStore?: 'confluence' | 'local';
+  attachmentKey?: string;
+  contentHash?: string;
+  analysisVersion?: number;
 }
 
 interface SourceCitationsProps {
@@ -105,8 +123,13 @@ export function SourceCitations({ sources }: SourceCitationsProps) {
       animate={{ opacity: 1, y: 0 }}
       className="mt-3"
     >
-      {/* Toggle button */}
+      {/* Toggle button. `aria-expanded` because the state is otherwise only
+          inferable from the chevron glyph (review r1 finding 9), and since
+          #1617 the list behind it has two row TYPES — a keyboard or AT reader
+          now has two shapes behind what was an unannounced toggle. */}
       <button
+        type="button"
+        aria-expanded={isExpanded}
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >

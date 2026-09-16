@@ -15,6 +15,11 @@ export interface WireSource {
   /** #1115 P3 — the image-leg discriminator; see `toPersistedSources`. */
   kind?: 'image';
   attachmentUrl?: string;
+  /** ADR-027 D12 (#1617) — copied together with `kind`/`attachmentUrl`. */
+  attachmentStore?: 'confluence' | 'local';
+  attachmentKey?: string;
+  contentHash?: string;
+  analysisVersion?: number;
 }
 
 /**
@@ -34,6 +39,14 @@ export interface WireSource {
  * pattern as the last check before `<img>` (`SourceThumbnail` hands the URL
  * to `useAuthenticatedSrc`, which sets any non-`/api/` src directly).
  *
+ * ADR-027 D12 adds four provenance fields — `attachmentStore`,
+ * `attachmentKey`, `contentHash`, `analysisVersion` — and they are copied as
+ * ONE UNIT with `kind`/`attachmentUrl`, never singly: the contract's
+ * `superRefine` rejects a subset, and a lone `contentHash` on a replayed turn
+ * would be provenance with nothing to attribute it to. An image source that
+ * carries none of them is a pre-#1617 shape and stays valid. A dropped image
+ * entry takes its provenance with it, for the same reason it takes its URL.
+ *
  * An image source whose URL fails that check is DROPPED ENTIRELY — the whole
  * entry, never a stripped survivor. `llm-ask.ts` builds one page-shaped entry
  * per search result and, separately, one image-shaped entry per image hit on
@@ -49,6 +62,14 @@ export interface WireSource {
 export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
   return sources.flatMap((s) => {
     const isImage = s.kind === 'image' && typeof s.attachmentUrl === 'string' && ATTACHMENT_URL_PATTERN.test(s.attachmentUrl);
+    // All four or none (D12). A partially-populated wire source is an upstream
+    // regression, and persisting the half of it that exists would write a row
+    // the contract refuses to parse.
+    const hasProvenance =
+      s.attachmentStore !== undefined
+      && s.attachmentKey !== undefined
+      && s.contentHash !== undefined
+      && s.analysisVersion !== undefined;
     if (s.kind === 'image' && !isImage) {
       logger.warn(
         { pageId: s.pageId, pageTitle: s.pageTitle, attachmentUrl: s.attachmentUrl ?? null },
@@ -64,6 +85,14 @@ export function toPersistedSources(sources: WireSource[]): PersistedSource[] {
       ...(s.url ? { url: s.url } : {}),
       ...(s.sectionTitle ? { sectionTitle: s.sectionTitle } : {}),
       ...(isImage ? { kind: 'image' as const, attachmentUrl: s.attachmentUrl! } : {}),
+      ...(isImage && hasProvenance
+        ? {
+            attachmentStore: s.attachmentStore!,
+            attachmentKey: s.attachmentKey!,
+            contentHash: s.contentHash!,
+            analysisVersion: s.analysisVersion!,
+          }
+        : {}),
       similarity: s.similarity ?? null,
     }];
   });

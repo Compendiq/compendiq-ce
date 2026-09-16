@@ -765,9 +765,28 @@ together, which matters most for #1114's query-side prefix.
   loses the other's update) and `page_embeddings.chunk_tsv` — a per-chunk
   tsvector maintained by a trigger that reads `admin_settings.fts_language`
   like migration 049's, rebuilt in the SAME transaction as `pages.tsv` on a
-  language change, and combined with `pages.tsv` at query time so a lexical
-  page hit resolves to the matching chunk (ADR-027 D10). No runtime DDL, no
-  second vector width, no third RRF leg. The worker's batch is sweep →
+  language change. The QUERY side of that column is #1617's: the keyword leg
+  and the #1107 pin union `pages.tsv` with derived `chunk_tsv` matches, rank a
+  page by the greater of the two, and resolve every hit to the matching chunk
+  (ADR-027 D10, and see `09-flow-rag-chat.md`). #1617's own DDL is migration
+  **117**, and it is ONE index: `page_embeddings_derived_chunk_tsv_idx`, a
+  `gin (chunk_tsv) WITH (fastupdate = off) WHERE metadata->>'source' =
+  'image_analysis'`. 116's full GIN plus its `page_id` btree partial served
+  the derived arm through a `BitmapAnd` only while both were idle; after a
+  corpus-wide analysis batch the full GIN's pending list re-priced that plan
+  and the planner scanned every derived chunk behind a `chunk_tsv` filter
+  (review r1: 8.9–10.4 ms against 0.021 ms; review r2 re-measured the full
+  statement at 7.8–9.0 ms STEADY plus an 18–74 ms tail). A partial GIN
+  WITHOUT `fastupdate = off` is already a 5–10× win, but a derived write
+  burst pends it exactly like the full one, so its cost tracks the pending
+  list and it keeps a bad window — the reloption is what makes the arm's cost
+  independent of the burst, at ~38 µs per derived chunk on `embedPage`'s
+  inserts. Both 116 indexes stay — the full GIN serves authored chunk
+  resolution, the btree partial the `page_id`-keyed composition read.
+  Citations read provenance from `page_embeddings.metadata` only, so the query
+  path never joins `page_image_analyses`.
+  No runtime DDL, no second vector width, no
+  third RRF leg. The worker's batch is sweep →
   reconcile → analyze, and only the analyze step needs the assignment — and
   it needs the assignment to resolve to the SAME identity the settings row
   retains, or it skips with `identity_drift` and writes nothing (a provider

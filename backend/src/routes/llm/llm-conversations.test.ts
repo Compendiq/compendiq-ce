@@ -322,6 +322,49 @@ describe('llm-conversations routes - CRUD', () => {
     expect(here).not.toHaveProperty('unavailable');
   });
 
+  // ADR-027 D12 (#1617): "a shared `contentHash` is provenance, never an
+  // authorization shortcut". The same picture is regularly attached to two
+  // pages, so two stored image sources can carry one hash — and the
+  // annotation is decided per PAGE, by the same visibility predicate, with
+  // the hash playing no part. An annotator that keyed on the hash (or that
+  // treated a visible twin as evidence for the invisible one) would replay a
+  // revoked page's description and thumbnail to a reader who lost access.
+  it('annotates a revoked page’s image source even when a VISIBLE page shares its contentHash', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: CONV_1, title: 't', title_source: 'question', model: 'm', page_ref: null, page_title: null,
+        messages: [
+          { role: 'user', content: 'q' },
+          { role: 'assistant', content: 'a', sources: [
+            {
+              pageTitle: 'Revoked', pageId: 9, kind: 'image',
+              attachmentUrl: '/api/attachments/9/shared.png', similarity: null,
+              attachmentStore: 'confluence', attachmentKey: 'shared.png',
+              contentHash: 'sha256:same', analysisVersion: 1,
+            },
+            {
+              pageTitle: 'Still here', pageId: 7, kind: 'image',
+              attachmentUrl: '/api/attachments/7/shared.png', similarity: null,
+              attachmentStore: 'confluence', attachmentKey: 'shared.png',
+              contentHash: 'sha256:same', analysisVersion: 1,
+            },
+          ] },
+        ],
+        created_at: new Date('2026-01-01T10:00:00Z'), updated_at: new Date('2026-01-01T11:00:00Z'),
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 7 }] }); // 9 is not visible
+
+    const body = JSON.parse((await app.inject({ method: 'GET', url: `/api/llm/conversations/${CONV_1}` })).body);
+    const [revoked, visible] = body.messages[1].sources;
+    expect(revoked.unavailable).toBe(true);
+    expect(visible).not.toHaveProperty('unavailable');
+    // The provenance round-trips untouched on both — replay is a read of what
+    // the live answer carried, and the annotation only ADDS a flag.
+    expect(revoked).toMatchObject({ contentHash: 'sha256:same', attachmentKey: 'shared.png', analysisVersion: 1 });
+    expect(visible).toMatchObject({ contentHash: 'sha256:same', attachmentStore: 'confluence' });
+  });
+
   it('reports historyTruncated: true for a conversation longer than the replay budget', async () => {
     const messages: Array<{ role: string; content: string }> = [];
     for (let n = 0; n < 6; n++) {
