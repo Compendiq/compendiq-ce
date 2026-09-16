@@ -347,6 +347,22 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
     const result = await chatCompletion(cfg, identity.model, messages, {
       temperature: 0,
       maxTokens: maxOutputTokens,
+      // ADR-027 D8 erratum (#1619): suppress provider-side reasoning. A
+      // reasoning VL model spends 82.0–93.3 % of its output tokens thinking at
+      // this ceiling — the ten-row #1619 vision pre-check, one row of which
+      // reads 99.96 % at 16,384, off a generation cut at the host's context
+      // wall (ADR-027, the table beside the amendment) —
+      // and those tokens come out of the SAME `max_tokens` budget the payload
+      // needs: 14 of 187 corpus images failed deterministically at the 8,192
+      // ceiling with reasoning on (8 `truncated:8192`, 5 `malformed`,
+      // 1 `rejected:400`). ONE of the fourteen was re-probed with these hints
+      // — `waermepumpe__3.png`, HTTP 400 → a valid payload in 62.8 s — and the
+      // other thirteen were not, so this is argued from where the budget goes,
+      // not from a re-run of all fourteen. Advisory by construction:
+      // `nonThinkingExtras` sends nothing to a strict OpenAI host, and a
+      // provider that ignores the fields is not broken. The ceiling and the
+      // 120 s per-image budget were deliberately NOT moved.
+      nonThinking: true,
       ...(input.timeoutMs != null ? { timeoutMs: input.timeoutMs } : {}),
     });
     text = result.text;

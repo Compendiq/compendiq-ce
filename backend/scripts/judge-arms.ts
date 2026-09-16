@@ -8,8 +8,9 @@
  *             (every answers-<runId>.jsonl must have its provenance-<runId>.json beside it)
  *   --check   --answers artifacts/answers-sheet-1.jsonl --judgments artifacts/judgments-sheet-1.jsonl
  *             [--mapping artifacts/mapping-sheet-1.json]   ← the pilot ψ, aggregate only
- *   --unblind --run-id sheet-1 --out-dir ./artifacts --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json
- *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json [--control-a en-A.json,de-A.json]]
+ *   --unblind --run-id sheet-1 --out-dir ./artifacts --arm-report B=arm-B.json,C=arm-C.json
+ *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json
+ *              --control-legacy-c en-legacy.json,de-legacy.json]
  *             --out verdict-sheet-1.json
  *
  * The judge sees `answers-<id>.jsonl` and nothing else; `mapping-<id>.json`
@@ -69,6 +70,10 @@ function readControls(name: string): TextGateControl[] | null {
       ftsLanguage: json.ftsLanguage ?? 'simple',
       corpusManifestSha: json.corpusManifestSha ?? '',
       model: json.model,
+      // Recorded since #1619 wherever git could answer for the tree that
+      // produced the report; `scoreLegacyRevisionControls` refuses a legacy
+      // pair whose sides do not BOTH carry one and differ.
+      ...(typeof json.revisionSha === 'string' ? { revisionSha: json.revisionSha } : {}),
       runs: json.runs,
     };
   });
@@ -153,15 +158,14 @@ function main(): void {
     // The pilot (ADR-027 "Sample size"): with the operator's mapping, ψ over
     // the first 30 image-dependent A/B pairs in judgedAt order — ONE
     // aggregate number, nothing per item, so the judge can stop below 0.20
-    // before judging the rest. It needs O15's `imageDependent` labels: the
-    // shipped fixture carries none, so until that pass lands this branch can
-    // only report 0/30 and the exit-3 stop is unreachable from the CLI
-    // (review r2 finding 9; `pilotCheck` itself is unit-tested).
+    // before judging the rest. The pair is C/B, the one the #1619 amendment
+    // registers (A-1): defaulted to A/B it could only report 0/30, because
+    // arm A is unobtainable and no sheet will ever carry its answers.
     const mappingFile = arg('mapping');
     if (mappingFile) {
-      const pilot = pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture());
+      const pilot = pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture(), { baseline: 'C', candidate: 'B' });
       if (!pilot.evaluated) {
-        console.log(`pilot: ${pilot.pairs}/${ARM_MARGINS.pilotPairs} image-dependent pairs judged on both A and B so far (ψ so far ${pilot.psi.toFixed(2)}) — keep judging; the pilot reads at ${ARM_MARGINS.pilotPairs}`);
+        console.log(`pilot: ${pilot.pairs}/${ARM_MARGINS.pilotPairs} image-dependent pairs judged on both C and B so far (ψ so far ${pilot.psi.toFixed(2)}) — keep judging; the pilot reads at ${ARM_MARGINS.pilotPairs}`);
       } else if (pilot.stop) {
         console.log(`PILOT STOP: ψ = ${pilot.psi.toFixed(2)} (${pilot.discordant}/${pilot.pairs} discordant) over the first ${pilot.pairs} judged pairs is below ${ARM_MARGINS.pilotDiscordanceFloor} — the pre-registered power calculation does not hold. Stop judging and report the run as inconclusive by design (ADR-027 "Sample size").`);
         process.exitCode = PILOT_STOP_EXIT_CODE;
@@ -185,11 +189,13 @@ function main(): void {
     }
     armReports[armRaw as EvalArm] = parseArmRunReport(JSON.parse(readFileSync(file, 'utf8')), file);
   }
-  const controlA = readControls('control-a');
+  const controlLegacyC = readControls('control-legacy-c');
   const controlB = readControls('control-b');
   const controlC = readControls('control-c');
   if ((controlB === null) !== (controlC === null)) throw new Error('--control-b and --control-c come together or not at all');
-  if (controlA !== null && controlC === null) throw new Error('--control-a pairs C vs A and needs --control-c (and --control-b) beside it');
+  if (controlLegacyC !== null && controlC === null) {
+    throw new Error('--control-legacy-c pairs the candidate C against the legacy revision\'s C and needs --control-c (and --control-b) beside it');
+  }
 
   const report = buildArmVerdict({
     dir: outDir,
@@ -197,7 +203,7 @@ function main(): void {
     fixture: loadImageFixture(),
     querySetSha: querySetSha(),
     armReports,
-    controls: controlB && controlC ? { a: controlA, b: controlB, c: controlC } : null,
+    controls: controlB && controlC ? { legacyC: controlLegacyC, b: controlB, c: controlC } : null,
     allowUnderpowered: process.argv.includes('--allow-underpowered'),
     command: commandLine(),
     seed: 1614,

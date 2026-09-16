@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ARM_ANSWERS_KNOWN_FLAGS, ARM_ANSWERS_VALUELESS_FLAGS, EVAL_KNOWN_FLAGS, EVAL_USAGE, EVAL_VALUELESS_FLAGS,
   JUDGE_KNOWN_FLAGS, JUDGE_VALUELESS_FLAGS,
+  LABEL_PACKET_KNOWN_FLAGS,
+  VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS,
 } from './cli-flags.js';
 
 /**
@@ -36,6 +38,11 @@ function source(name: string): string {
 /** Collapsed, so an argument list broken across lines still matches. */
 function collapsed(name: string): string {
   return source(name).replace(/\s+/g, ' ');
+}
+
+/** The eval modules a script delegates to, for the same kind of pin. */
+function evalModule(name: string): string {
+  return readFileSync(new URL(`./${name}`, import.meta.url), 'utf8').replace(/\s+/g, ' ');
 }
 
 /**
@@ -375,9 +382,10 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
     expect(migrate).toBeGreaterThan(-1);
     expect(precondition).toBeGreaterThan(migrate);
     expect(seed).toBeGreaterThan(precondition);
-    // B then waits for the product's backfill, and C asserts the ablation's
-    // state on the database — both after the seed, both before the queries.
-    const backfill = raw.indexOf('await awaitArmBBackfill(');
+    // B then DRIVES the product's backfill (#1619), and C asserts the
+    // ablation's state on the database — both after the seed, both before
+    // the queries.
+    const backfill = raw.indexOf('await runArmBBackfill(');
     const cState = raw.indexOf('await assertArmCState()');
     const run = raw.indexOf('await runArmEval(');
     expect(backfill).toBeGreaterThan(seed);
@@ -387,24 +395,30 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
   });
 
   it('counts B\u2019s backfill by D5\u2019s validity predicate and decides it through the tested refusal', () => {
+    // Since #1619 the count, the drive and the refusals live in
+    // `eval/arm-b-backfill.ts` (the script drives the product's own worker
+    // rather than waiting on a human-run one), so the predicate is pinned
+    // THERE and the script is pinned to delegating to it exactly once.
+    const driver = evalModule('arm-b-backfill.ts');
     // `status = 'analyzed'` alone counts a sweep-invalidated row as "backfill
     // complete" while the product would not compose it (review r1 finding
     // 18): the identity the assignment was read under is part of the count.
-    expect(flat).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
-    expect(flat).toContain('[state.identityHash]');
-    // The version-straddle refusal is no longer pinned as source text — a
-    // query whose result is ignored passes such a pin, and `toContain(
-    // 'imageAnalysisVersions,')` pinned a trailing comma (review r2 finding
-    // 6). It is `assertSingleAnalysisVersionPair`, unit-tested in
-    // `arms.test.ts`, called EXACTLY ONCE here, and its return IS the
-    // report's version pair — which is the property the pin exists for.
-    expect(raw.split('assertSingleAnalysisVersionPair(').length - 1).toBe(1);
-    expect(flat).toContain('const versions = assertSingleAnalysisVersionPair({ analyzed: n,');
-    expect(flat).toContain('return versions;');
+    expect(driver).toContain("FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1");
+    expect(driver).toContain('[identityHash]');
+    // The analyses and the re-embed are the PRODUCT's entrypoints, not copies.
+    expect(driver).toContain('await runImageAnalysisBatch()');
+    expect(driver).toContain('await processDirtyPages(opts.userId)');
+    // The version-straddle refusal is not pinned as source text — a query
+    // whose result is ignored passes such a pin. It is
+    // `assertSingleAnalysisVersionPair`, unit-tested in `arms.test.ts`,
+    // called EXACTLY ONCE, and its return IS the report's version pair.
+    expect(driver.split('assertSingleAnalysisVersionPair(').length - 1).toBe(1);
+    expect(driver).toContain('versions: assertSingleAnalysisVersionPair(valid),');
     // The report's version pair has exactly ONE writer, and it is that call.
     expect([...raw.matchAll(/imageAnalysisVersions\s*=\s*/g)]).toHaveLength(1);
-    expect(flat).toContain('if (arm === \'B\') imageAnalysisVersions = await awaitArmBBackfill(');
-    expect(raw.indexOf('imageAnalysisVersions = await awaitArmBBackfill(')).toBeLessThan(raw.lastIndexOf('imageAnalysisVersions'));
+    expect(flat).toContain('if (arm === \'B\') imageAnalysisVersions = await runArmBBackfill(');
+    expect(raw.split('driveArmBBackfill(').length - 1).toBe(1); // exactly one call, in `runArmBBackfill`
+    expect(flat).toContain('return backfill.versions;');
   });
 
   it('records the provenance the ADR refuses a report without, from the run rather than from constants', () => {
@@ -503,7 +517,7 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     // joins nothing itself: `buildArmVerdict` reads the mapping from the
     // artifacts directory.
     expect([...body.matchAll(/readMapping\(/g)]).toHaveLength(1);
-    expect(flat).toContain('pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture())');
+    expect(flat).toContain("pilotCheck(answers, judgments, readMapping(mappingFile), loadImageFixture(), { baseline: 'C', candidate: 'B' })");
     // The verdict is written before it is printed, and anything but a pass
     // sets the exit code — the gate's answer is the process's answer.
     const write = raw.indexOf('writeFileSync(out,');
@@ -537,6 +551,97 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
 
   it('touches no database', () => {
     expect(body).not.toMatch(/postgres\.js|runMigrations|closePool/);
+  });
+});
+
+/**
+ * #1619 — the O15 packet's two entrypoints. Same argument as every block
+ * above (`main()` runs at import, so the seams are pinned on the source), and
+ * one more that is specific to these two: the packet must never arrive with a
+ * decision in it, and the validator must never write one the file did not
+ * contain. Both are properties of these scripts' control flow.
+ */
+describe('build-label-packet.ts wiring (#1619)', () => {
+  const raw = source('build-label-packet.ts');
+  const flat = collapsed('build-label-packet.ts');
+  const body = code('build-label-packet.ts');
+
+  it('refuses an unknown flag and knows every flag it reads', () => {
+    expect(flat).toContain('assertKnownFlags(process.argv.slice(2), LABEL_PACKET_KNOWN_FLAGS, LABEL_PACKET_USAGE, LABEL_PACKET_VALUELESS_FLAGS)');
+    // Read sites only, not every `--x` in the source: this script's last line
+    // prints the validator's command, and those are that script's flags.
+    const read = [...body.matchAll(/\bflagValue\(process\.argv, '([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!);
+    expect(read.filter((f) => !(LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    expect(read).toContain('out-dir');
+  });
+
+  it('hands off with a command line the validator would actually accept', () => {
+    // The packet's last word to the owner is the next command. A renamed
+    // validator flag must not leave that sentence quietly wrong.
+    const handoff = raw.slice(raw.indexOf('validate-label-packet.ts --file'));
+    const named = [...handoff.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!);
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((f) => !(VALIDATE_LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+  });
+
+  it('refuses to write a packet that carries a decision, before any file exists', () => {
+    const guard = raw.indexOf('packet row(s) carry a decision');
+    const write = raw.indexOf('writeFileSync(files.csv');
+    expect(guard).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(guard);
+    // The three files the runbook names, all from the one packet.
+    expect(flat).toContain('writeFileSync(files.csv, packetCsv(rows))');
+    expect(flat).toContain('writeFileSync(files.jsonl, packetJsonl(rows))');
+    expect(flat).toContain('writeFileSync(files.readme, packetReadme(rows, fixture, files))');
+  });
+
+  it('touches no database and no model', () => {
+    expect(body).not.toMatch(/postgres\.js|runMigrations|closePool|buildApp/);
+    expect(body).not.toMatch(/fetch\(|openai|ollama/i);
+  });
+});
+
+describe('validate-label-packet.ts wiring (#1619)', () => {
+  const raw = source('validate-label-packet.ts');
+  const flat = collapsed('validate-label-packet.ts');
+  const body = code('validate-label-packet.ts');
+
+  it('refuses an unknown flag, and --write is a switch', () => {
+    expect(flat).toContain('assertKnownFlags( process.argv.slice(2), VALIDATE_LABEL_PACKET_KNOWN_FLAGS, VALIDATE_LABEL_PACKET_USAGE, VALIDATE_LABEL_PACKET_VALUELESS_FLAGS, )');
+    const inSource = new Set([
+      ...[...body.matchAll(/--([a-z][a-z0-9-]*)/g)].map((m) => m[1]!),
+      ...[...body.matchAll(/\bflagValue\(process\.argv, '([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!),
+    ]);
+    expect([...inSource].filter((f) => !(VALIDATE_LABEL_PACKET_KNOWN_FLAGS as readonly string[]).includes(f))).toEqual([]);
+    const switches = [...body.matchAll(/process\.argv\.includes\('--([a-z][a-z0-9-]*)'\)/g)].map((m) => m[1]!);
+    expect(switches.filter((f) => !(VALIDATE_LABEL_PACKET_VALUELESS_FLAGS as readonly string[]).includes(f))).toEqual([]);
+  });
+
+  it('returns before writing when the file is refused, and writes only the decisions it parsed', () => {
+    const refuse = raw.indexOf('if (problems.length > 0) {');
+    const apply = raw.indexOf('applyDecisions(raw, parsed.decisions)');
+    const write = raw.indexOf('writeFileSync(fixturePath, serializeFixture(updated))');
+    expect(refuse).toBeGreaterThan(-1);
+    expect(apply).toBeGreaterThan(refuse);
+    expect(write).toBeGreaterThan(apply);
+    // The refusal branch leaves before anything is written, and says so.
+    expect(flat).toContain('console.error(\'\\nNothing was written. Fix these and run it again.\'); process.exitCode = 1; return;');
+    // The write goes through the RAW json, never a schema round trip that
+    // would drop a field the schema does not name.
+    expect(flat).toContain('const raw = JSON.parse(readFileSync(fixturePath, \'utf8\')) as unknown;');
+    // …and only under --write: a bare run reports and changes nothing.
+    expect(flat).toContain('if (write) { writeFileSync(fixturePath, serializeFixture(updated));');
+  });
+
+  it('decides nothing itself: the verdict printed is auditSample\u2019s, and it sets the exit code', () => {
+    expect(flat).toContain('const audit = auditSample(parseWrittenFixture(updated), []);');
+    expect(flat).toContain('console.log(`\\nauditSample: ${audit.powerMode}`)');
+    expect(flat).toContain("if (audit.powerMode === 'undecidable' || validation.shortfalls.length > 0) process.exitCode = 1;");
+  });
+
+  it('touches no database and no model', () => {
+    expect(body).not.toMatch(/postgres\.js|runMigrations|closePool|buildApp/);
+    expect(body).not.toMatch(/fetch\(|openai|ollama/i);
   });
 });
 

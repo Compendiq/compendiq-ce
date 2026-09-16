@@ -63,6 +63,7 @@ import {
   confluenceAttachmentDirKey,
   extractImageReferencesFromHtml,
 } from '../../../core/services/image-references.js';
+import { markPageImagesDirty } from '../../../core/services/image-embedding-dirty.js';
 import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY } from '../../../core/services/image-embedding-target-dimensions.js';
 import type { VectorColumnTier } from '../../../core/db/vector-column-tier.js';
 import { logger } from '../../../core/utils/logger.js';
@@ -475,6 +476,23 @@ export async function seedImageCorpus(
     // bytes land in and the directory the intake looks in are computed from one
     // set of values rather than two that happen to agree.
     await writePageAttachments(page, pageId, confluenceId, corpusDir);
+    // ADR-027 D4: every product writer that stores a body carrying attachment
+    // images raises `image_analysis_dirty` beside `image_embedding_dirty`
+    // through ONE writer (`markPageImagesDirty`). The seeder writes exactly
+    // such a body, so it raises the flag the same way rather than leaving the
+    // corpus in a state no product path produces. **The flag IS the analysis
+    // queue** (D6.2): `reconcileDirtyPages` walks nothing else, migration
+    // 116's initial-backlog UPDATE ran before any of these pages existed, and
+    // a corpus seeded without it gave `--arm B` a backfill that never started
+    // — the run then died at its `--backfill-timeout` deadline reporting
+    // 0/187 valid analyses (#1619). Raised AFTER the bytes are on disk, so a
+    // reconcile that claims the page can read every picture it enumerates.
+    if (!(await markPageImagesDirty(pageId))) {
+      throw new ImageIntakeError(
+        `Could not raise image_analysis_dirty for ${page.file} (page ${pageId}): the analysis backfill walks that ` +
+          'flag and nothing else, so the run would measure an un-analysed corpus under arm B\'s name.',
+      );
+    }
     const chunks = await embedPage(userId, pageId, page.title, EVAL_SPACE_KEY, bodyHtml);
     if (chunks === 0) textSkipped.push(page.file);
 

@@ -18,6 +18,7 @@ import {
 } from './answers.js';
 import type { ImageFixture, ImageFixtureLabel } from './fixture.js';
 import {
+  CONTROL_PAIRS,
   JudgmentRowSchema,
   SINGLE_JUDGE_STATEMENT,
   assertFullyJudged,
@@ -33,14 +34,16 @@ import {
   readJudgments,
   readSheet,
   scoreControls,
+  scoreLegacyRevisionControls,
   scoreJudgedPair,
   sheetPath,
   unblind,
   type ControlEndpoints,
   type JudgedPairEndpoints,
   type JudgmentRow,
+  type TextGateControl,
 } from './judgments.js';
-import type { ArmRunReport, PairedBinaryEndpoint } from './arms.js';
+import type { AbsoluteLeakage, ArmRunReport, PairedBinaryEndpoint } from './arms.js';
 import type { ClusterBootstrapCi } from './metrics.js';
 
 /**
@@ -144,13 +147,15 @@ describe('scoreJudgedPair', () => {
 });
 
 describe('pilotCheck (ADR-027 "Sample size": ψ over the FIRST 30 JUDGED pairs)', () => {
-  // 40 image-dependent labels; A correct everywhere; B wrong on q31..q40.
+  // 40 image-dependent labels; C correct everywhere; B wrong on q31..q40.
+  // C, not A: the #1619 amendment registers the pair as C → B, and that is
+  // the pair `pilotCheck` defaults to.
   const ids = Array.from({ length: 40 }, (_, i) => `q${String(i + 1).padStart(2, '0')}`);
   const fixture: ImageFixture = { corpusManifestSha: 'c', labeledBy: 'l', notUsable: [], labels: ids.map((id, i) => label({ id, expectedFiles: [`p${i % 8}.md`] })) };
   const answers: AnswerItem[] = [];
   const mapping: Mapping = {};
   ids.forEach((queryId, i) => {
-    for (const [arm, offset] of [['A', 1], ['B', 101]] as const) {
+    for (const [arm, offset] of [['C', 1], ['B', 101]] as const) {
       answers.push(item(uuid(i + offset)));
       mapping[uuid(i + offset)] = { arm, queryId };
     }
@@ -172,14 +177,14 @@ describe('pilotCheck (ADR-027 "Sample size": ψ over the FIRST 30 JUDGED pairs)'
     expect(pilot).toMatchObject({ pairs: 30, discordant: 10, evaluated: true, stop: false });
     expect(pilot.psi).toBeCloseTo(1 / 3, 10);
     // In item-id order (uuid(1..30) first) the same sheet would read ψ = 0 and STOP — the bug review r1 named.
-    expect(scoreJudgedPair(unblind(answers, judgmentsFor(ids), mapping), fixture, { baseline: 'A', candidate: 'B' }, { seed: 1, iterations: 10 }).pilot.psi).toBeCloseTo(1 / 3, 10);
+    expect(scoreJudgedPair(unblind(answers, judgmentsFor(ids), mapping), fixture, { baseline: 'C', candidate: 'B' }, { seed: 1, iterations: 10 }).pilot.psi).toBeCloseTo(1 / 3, 10);
   });
 
   it('runs on a partly judged sheet — before --unblind is possible — and says when the pilot is not yet reached', () => {
     const partial = pilotCheck(answers, judgmentsFor(ids.slice(0, 20)), mapping, fixture);
     expect(partial).toMatchObject({ pairs: 20, evaluated: false, stop: false });
-    // A pair needs BOTH sides judged: 30 A-side rows alone are 0 pairs.
-    const oneSided = judgmentsFor(ids.slice(0, 30)).filter((j) => mapping[j.itemId]!.arm === 'A');
+    // A pair needs BOTH sides judged: 30 C-side rows alone are 0 pairs.
+    const oneSided = judgmentsFor(ids.slice(0, 30)).filter((j) => mapping[j.itemId]!.arm === 'C');
     expect(pilotCheck(answers, oneSided, mapping, fixture).pairs).toBe(0);
   });
 
@@ -198,7 +203,7 @@ function endpoint(over: Partial<PairedBinaryEndpoint> & { ci?: Partial<ClusterBo
 }
 function judgedPair(over: Partial<JudgedPairEndpoints>): JudgedPairEndpoints {
   return {
-    baseline: 'A', candidate: 'B',
+    baseline: 'C', candidate: 'B',
     correctness: endpoint({ delta: 0.12, ci: { lower: 0.03, upper: 0.2, excludesZero: true } }),
     partialRate: { baseline: 0, candidate: 0 },
     citationFaithful: endpoint({}),
@@ -209,68 +214,138 @@ function judgedPair(over: Partial<JudgedPairEndpoints>): JudgedPairEndpoints {
   };
 }
 const controls: ControlEndpoints = {
-  baseline: 'C',
-  candidate: 'B',
+  pair: CONTROL_PAIRS.bVsC,
   recallAt5: endpoint({ delta: -0.005, ci: { oneSidedLower: -0.015 } }),
   mrr: { baselineMean: 0.8, candidateMean: 0.8, delta: 0, ci: ci({ oneSidedLower: -0.01 }), n: 394 },
   languages: ['en', 'de'],
   perLanguage: { en: 197, de: 197 },
   n: 394,
+  revisions: { baseline: null, candidate: null },
 };
-const controlsCvsA: ControlEndpoints = { ...controls, baseline: 'A', candidate: 'C' };
-const bothControls = { bVsC: controls, cVsA: controlsCvsA };
-const leakage = endpoint({ delta: 0.02, ci: { oneSidedUpper: 0.04 } });
-const imageEvidence = endpoint({ delta: 0.01, ci: { oneSidedLower: -0.03 } });
+const legacyControls: ControlEndpoints = {
+  ...controls,
+  pair: CONTROL_PAIRS.legacyC,
+  revisions: { baseline: '7feb4af2aaaa', candidate: '91fbec59bbbb' },
+};
+const bothControls = { bVsC: controls, legacyC: legacyControls };
+/** O7 as amended: an absolute cap on B's own leakage, inside 2 of 48. */
+const leakage: AbsoluteLeakage = { queries: 1, denominator: 48, rate: 1 / 48 };
 
-describe('decideGate (ADR-027 "Decision rule")', () => {
-  it('passes only when all three parts hold, over BOTH control pairs the endpoint table names', () => {
-    const decision = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: bothControls });
+describe('decideGate (ADR-027 "Decision rule", re-registered B vs C by #1619)', () => {
+  it('passes only when every live part holds, over BOTH control pairs the amended endpoint table names', () => {
+    const decision = decideGate({ primary: judgedPair({}), leakage, controls: bothControls });
     expect(decision.verdict).toBe('pass');
-    expect(decision.conditions.map((c) => c.verdict)).toEqual(Array<string>(8).fill('pass'));
+    // Eight conditions, one of them the RETIRED guardrail — which is printed
+    // and excluded from the aggregation, never omitted.
+    expect(decision.conditions.map((c) => c.verdict)).toEqual([
+      'pass', 'pass', 'pass', 'pass', 'pass', 'retired', 'pass', 'pass',
+    ]);
     expect(decision.conditions.map((c) => c.name).filter((n) => n.includes('ordinary-text'))).toEqual([
       'non-inferiority: ordinary-text R@5, en + de pooled, B vs C',
       'non-inferiority: ordinary-text MRR, en + de pooled, B vs C',
-      'non-inferiority: ordinary-text R@5, en + de pooled, C vs A',
-      'non-inferiority: ordinary-text MRR, en + de pooled, C vs A',
+      'non-inferiority: ordinary-text R@5, en + de pooled, C (candidate revision) vs C (legacy revision)',
+      'non-inferiority: ordinary-text MRR, en + de pooled, C (candidate revision) vs C (legacy revision)',
     ]);
+    // The primary and both safety rows name the arms they actually scored.
+    expect(decision.conditions[0]!.name).toBe('primary: image-dependent answer correctness, B vs C (single-judge)');
+    expect(decision.conditions.map((c) => c.name)).toContain('safety: unsupported-claim rate, B vs C');
+    // The legacy control's detail carries the two revisions it spanned.
+    expect(decision.conditions[3]!.detail).toContain('7feb4af2aaaa → 91fbec59bbbb');
   });
 
-  it('is inconclusive — not a pass — when the primary CI straddles 0 or a margin interval straddles', () => {
-    const straddle = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.06, ci: { lower: -0.01, upper: 0.13 } }) }), imageEvidence, leakage, controls: bothControls });
+  it('prints the retired O5 guardrail as retired, and lets the gate pass without it', () => {
+    const decision = decideGate({ primary: judgedPair({}), leakage, controls: bothControls });
+    const retired = decision.conditions.find((c) => c.name.includes('image-evidence'))!;
+    expect(retired).toMatchObject({ verdict: 'retired', name: 'RETIRED (O5): non-inferiority: image-evidence R@5 guardrail' });
+    // It still states what was retired, including the power the guardrail had.
+    expect(retired.detail).toMatch(/power ≈ \d\.\d\d/);
+    expect(retired.detail).toMatch(/no comparator exists/);
+    expect(decision.verdict).toBe('pass');
+  });
+
+  it('is inconclusive — not a pass — when the primary CI straddles 0', () => {
+    const straddle = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.06, ci: { lower: -0.01, upper: 0.13 } }) }), leakage, controls: bothControls });
     expect(straddle.verdict).toBe('inconclusive');
-    const wideLeak = decideGate({ primary: judgedPair({}), imageEvidence, leakage: endpoint({ delta: 0.02, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.06 } }), controls: bothControls });
-    expect(wideLeak.verdict).toBe('inconclusive');
-    expect(wideLeak.conditions.find((c) => c.name.includes('leakage'))!.verdict).toBe('inconclusive');
+  });
+
+  it('reads O7 as an ABSOLUTE cap in queries, and refuses to decide it below O2\'s 48 negatives', () => {
+    const atCap = decideGate({ primary: judgedPair({}), leakage: { queries: 2, denominator: 48, rate: 2 / 48 }, controls: bothControls });
+    expect(atCap.conditions.find((c) => c.name.includes('leakage'))!.verdict).toBe('pass');
+    const over = decideGate({ primary: judgedPair({}), leakage: { queries: 3, denominator: 48, rate: 3 / 48 }, controls: bothControls });
+    expect(over.conditions.find((c) => c.name.includes('leakage'))!.verdict).toBe('fail');
+    expect(over.verdict).toBe('fail');
+    // A smaller negative slice is not the pre-registered sample: the cap is
+    // not decidable, and saying "0 of 24 — pass" would be the claim O2 sized.
+    const short = decideGate({ primary: judgedPair({}), leakage: { queries: 0, denominator: 24, rate: 0 }, controls: bothControls });
+    const row = short.conditions.find((c) => c.name.includes('leakage'))!;
+    expect(row.verdict).toBe('inconclusive');
+    expect(row.detail).toMatch(/24 negatives is not the sample O2 pre-registered/);
+    expect(short.verdict).toBe('inconclusive');
+  });
+
+  it('refuses to decide O7 on counts that are not numbers, rather than reading them as a fail', () => {
+    // Review r2 R2-10: `NaN < 48` and `NaN <= 2` are both false, so an
+    // unreadable pair used to reach the last arm of the ternary and print
+    // `fail` — deciding against the arm on missing information.
+    const unread = decideGate({
+      primary: judgedPair({}),
+      leakage: { queries: Number.NaN, denominator: Number.NaN, rate: Number.NaN },
+      controls: bothControls,
+    });
+    const row = unread.conditions.find((c) => c.name.includes('leakage'))!;
+    expect(row.verdict).toBe('inconclusive');
+    expect(row.detail).toMatch(/did not read as numbers/);
+    expect(unread.verdict).toBe('inconclusive');
   });
 
   it('fails on a primary that excludes 0 below the margin, and on a safety interval wholly beyond it', () => {
-    const below = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.03, ci: { lower: 0.01, upper: 0.05, excludesZero: true } }) }), imageEvidence, leakage, controls: bothControls });
+    const below = decideGate({ primary: judgedPair({ correctness: endpoint({ delta: 0.03, ci: { lower: 0.01, upper: 0.05, excludesZero: true } }) }), leakage, controls: bothControls });
     expect(below.verdict).toBe('fail');
-    const unsafe = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.08, ci: { oneSidedLower: 0.05, oneSidedUpper: 0.11 } }) }), imageEvidence, leakage, controls: bothControls });
+    const unsafe = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.08, ci: { oneSidedLower: 0.05, oneSidedUpper: 0.11 } }) }), leakage, controls: bothControls });
     expect(unsafe.verdict).toBe('fail');
   });
 
-  it('applies O6 as ≤ A + 3 pp on the one-sided upper bound — 3.1 pp is not a pass', () => {
-    const edge = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.031 } }) }), imageEvidence, leakage, controls: bothControls });
+  it('applies O6 as ≤ C + 3 pp on the one-sided upper bound — 3.1 pp is not a pass', () => {
+    const edge = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.031 } }) }), leakage, controls: bothControls });
     expect(edge.conditions.find((c) => c.name.includes('unsupported'))!.verdict).toBe('inconclusive');
-    const inside = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.03 } }) }), imageEvidence, leakage, controls: bothControls });
+    const inside = decideGate({ primary: judgedPair({ unsupportedClaim: endpoint({ delta: 0.01, ci: { oneSidedLower: -0.01, oneSidedUpper: 0.03 } }) }), leakage, controls: bothControls });
     expect(inside.conditions.find((c) => c.name.includes('unsupported'))!.verdict).toBe('pass');
   });
 
-  it('stops as inconclusive by design when the pilot discordance is below the floor, before anything else is read', () => {
-    const decision = decideGate({ primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }), imageEvidence, leakage, controls: bothControls });
+  it('prints every condition UNDER a pilot stop — the pre-emption decides the aggregate, not what is reported', () => {
+    // Review r1 W-6: the branch used to return one condition, so a run that
+    // stopped on ψ published neither the retired row nor a measured safety
+    // failure. O7's cap is absolute and read off the candidate's own retrieval
+    // report, so 9 of 48 negatives leaking is a fact no power argument hides.
+    const decision = decideGate({
+      primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }),
+      leakage: { queries: 9, denominator: 48, rate: 9 / 48 },
+      controls: bothControls,
+    });
     expect(decision.verdict).toBe('inconclusive-by-design');
-    expect(decision.conditions).toHaveLength(1);
+    expect(decision.conditions[0]!.name).toBe('pilot discordance');
+    expect(decision.conditions).toHaveLength(9);
+    expect(decision.conditions.find((c) => c.name.includes('leakage'))).toMatchObject({
+      verdict: 'fail', detail: expect.stringContaining('9 of 48'),
+    });
+    expect(decision.conditions.find((c) => c.name.includes('image-evidence'))!.verdict).toBe('retired');
+    // The primary is the one row the stop DOES invalidate: its interval was
+    // sized under a design the pilot says does not hold, so it is reported
+    // rather than decided — never `pass` on a stopped run.
+    const primaryRow = decision.conditions.find((c) => c.name.startsWith('primary:'))!;
+    expect(primaryRow.verdict).toBe('inconclusive');
+    expect(primaryRow.detail).toContain('reported, not decided');
   });
 
-  it('treats a missing control pair as an unmeasured — therefore blocking — endpoint, and prints the O5 power', () => {
-    const none = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: { bVsC: null, cVsA: null } });
+  it('treats a missing control pair as an unmeasured — therefore blocking — endpoint', () => {
+    const none = decideGate({ primary: judgedPair({}), leakage, controls: { bVsC: null, legacyC: null } });
     expect(none.verdict).toBe('inconclusive');
-    expect(none.conditions.find((c) => c.name.includes('image-evidence'))!.detail).toMatch(/power ≈ \d\.\d\d/);
-    // B vs C alone is not the endpoint table: C vs A still blocks.
-    const half = decideGate({ primary: judgedPair({}), imageEvidence, leakage, controls: { bVsC: controls, cVsA: null } });
+    // B vs C alone is not the amended endpoint table: the legacy-revision
+    // control is the only text-regression detector left and still blocks.
+    const half = decideGate({ primary: judgedPair({}), leakage, controls: { bVsC: controls, legacyC: null } });
     expect(half.verdict).toBe('inconclusive');
-    expect(half.conditions.find((c) => c.name === 'non-inferiority: ordinary-text controls, C vs A')).toMatchObject({ verdict: 'inconclusive', detail: expect.stringContaining('--control-a') });
+    expect(half.conditions.find((c) => c.name === `non-inferiority: ordinary-text controls, ${CONTROL_PAIRS.legacyC}`))
+      .toMatchObject({ verdict: 'inconclusive', detail: expect.stringContaining('--control-legacy-c') });
   });
 });
 
@@ -284,7 +359,7 @@ describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
   });
 
   it('accepts the pre-registered sample and names every shortfall otherwise', () => {
-    expect(auditSample(labels(190, 4, 48), [controls, controlsCvsA])).toMatchObject({ imageDependent: 190, imageNegative: 48, pages: 48, maxLabelsPerPage: 4, shortfalls: [], powerMode: 'full', powerNote: null });
+    expect(auditSample(labels(190, 4, 48), [controls, legacyControls])).toMatchObject({ imageDependent: 190, imageNegative: 48, pages: 48, maxLabelsPerPage: 4, shortfalls: [], powerMode: 'full', powerNote: null });
     // 190 labels on 20 pages (m = 9.5) pass the two counts and fail the design the power was computed under.
     expect(auditSample(labels(190, 10, 48), []).shortfalls).toEqual([
       'image-dependent labels on 19 pages (O2: ≥ 45)',
@@ -364,11 +439,28 @@ describe('scoreControls (O4, pooled EN + DE)', () => {
     const b = [control('en', (id) => (id === 'c' ? [9] : [1])), control('de', () => [1])];
     const scored = scoreControls(c, b, { seed: 1, iterations: 100 });
     // en: c loses on B (1 loss); de: b and c win on B (2 wins) → pooled 2W/1L over 6.
-    expect(scored).toMatchObject({ n: 6, languages: ['en', 'de'], baseline: 'C', candidate: 'B', perLanguage: { en: 3, de: 3 } });
+    expect(scored).toMatchObject({ n: 6, languages: ['en', 'de'], pair: CONTROL_PAIRS.bVsC, perLanguage: { en: 3, de: 3 } });
     expect(scored.recallAt5).toMatchObject({ wins: 2, losses: 1, ties: 3, n: 6 });
-    expect(scoreControls(c, b, { seed: 1, iterations: 10 }, { baseline: 'A', candidate: 'C' })).toMatchObject({ baseline: 'A', candidate: 'C' });
+    expect(scoreControls(c, b, { seed: 1, iterations: 10 }, CONTROL_PAIRS.legacyC)).toMatchObject({ pair: CONTROL_PAIRS.legacyC });
     expect(() => scoreControls(c, [{ ...b[0]!, model: 'bge-m3' }, b[1]!], { seed: 1, iterations: 10 })).toThrow(/model differs/);
     expect(() => scoreControls(c, [b[0]!], { seed: 1, iterations: 10 })).toThrow(/same languages/);
+  });
+
+  // Amendment A-3: `--control-a` scored a pair it did not name — nothing in
+  // the harness checked the revision, so same-revision reports passed as the
+  // legacy side and the document labelled them "C vs A".
+  it('certifies the legacy pair as cross-revision, and refuses a side with no revision or a shared one', () => {
+    const c = [control('en', () => [1]), control('de', () => [1])];
+    const b = [control('en', () => [1]), control('de', () => [1])];
+    const at = (sha: string, side: TextGateControl[]) => side.map((s) => ({ ...s, revisionSha: sha }));
+    const scored = scoreLegacyRevisionControls(at('7feb4af2', c), at('91fbec59', b), { seed: 1, iterations: 10 });
+    expect(scored).toMatchObject({ pair: CONTROL_PAIRS.legacyC, revisions: { baseline: '7feb4af2', candidate: '91fbec59' } });
+    expect(() => scoreLegacyRevisionControls(c, at('91fbec59', b), { seed: 1, iterations: 10 }))
+      .toThrow(/legacy text controls record no revision \(en, de\)/);
+    expect(() => scoreLegacyRevisionControls(at('7feb4af2', c), b, { seed: 1, iterations: 10 }))
+      .toThrow(/candidate text controls record no revision/);
+    expect(() => scoreLegacyRevisionControls(at('91fbec59', c), at('91fbec59', b), { seed: 1, iterations: 10 }))
+      .toThrow(/one revision measured twice/);
   });
 });
 
@@ -486,10 +578,13 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     expect(report.sample).toMatchObject({ imageDependent: 3, imageNegative: 1, pages: 2, maxLabelsPerPage: 2 });
     expect(report.sample.shortfalls).toHaveLength(3);
     expect(report.answerRuns.map((r) => r.runId)).toEqual(['run-A', 'run-B', 'run-C']);
-    // Primary B vs A over q1..q3: A 1/3, B 3/3 → B wins q1, q2; q3 tie → +66.7 pp, 2W/0L.
-    expect(report.judged.primary.correctness).toMatchObject({ n: 3, wins: 2, losses: 0, ties: 1 });
-    expect(report.judged.primary.correctness.delta).toBeCloseTo(2 / 3, 10);
-    expect(report.judged.secondary.map((s) => `${s.candidate}-${s.baseline}`)).toEqual(['B-C', 'C-A']);
+    // Primary B vs C over q1..q3 (#1619: the registered pair): C is `partial`
+    // on q1/q2 and refused q3, B is correct everywhere → 3W/0L, +100 pp.
+    expect(report.judged.primary.correctness).toMatchObject({ n: 3, wins: 3, losses: 0, ties: 0 });
+    expect(report.judged.primary.correctness.delta).toBeCloseTo(1, 10);
+    // Arm A is optional and no longer the primary's baseline; supplied, it is
+    // scored as the two secondary pairings.
+    expect(report.judged.secondary.map((s) => `${s.candidate}-${s.baseline}`)).toEqual(['B-A', 'C-A']);
     // C refused q3 (the stub's refusal frame) → its refusal rate against A is 1/4.
     expect(report.judged.secondary[1]!.refusal.candidateRate).toBe(0.25);
     // Controls were not given: the gate cannot pass, whatever the primary says.
@@ -519,8 +614,11 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     // A knob the answer run read differently from the retrieval run is a drift too.
     const knob = { ...armReports, A: { ...armReports.A, retrieval: { ...armReports.A.retrieval, rag_fetch_width: 12 } }, B: { ...armReports.B, retrieval: { ...armReports.B.retrieval, rag_fetch_width: 12 } }, C: { ...armReports.C, retrieval: { ...armReports.C.retrieval, rag_fetch_width: 12 } } };
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: knob })).toThrow(/retrieval\.rag_fetch_width: 10 vs the retrieval report's 12/);
-    // A sheet carrying arm C's answers needs arm C's report.
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { A: armReports.A, B: armReports.B } })).toThrow(/carries arm C's answers \(run run-C\) but no --arm-report C/);
+    // A sheet carrying arm A's answers needs arm A's report — even though the
+    // primary no longer reads it.
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { B: armReports.B, C: armReports.C } })).toThrow(/carries arm A's answers \(run run-A\) but no --arm-report A/);
+    // And a run with no comparator for the primary is refused outright.
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { B: armReports.B } })).toThrow(/needs the arm B and arm C retrieval reports/);
   });
 
   it('refuses a provenance file that changed after the sheet recorded its sha', () => {
@@ -667,14 +765,14 @@ describe('a floor-sized sample decides, labelled REDUCED POWER (ADR-027 O2)', ()
       ...Array.from({ length: 48 }, (_, i) => label({ id: `n${i}`, expectedFiles: [`n${i}.md`], expectedImages: [], style: 'image-negative', imageDependent: false })),
     ],
   };
-  const runsFor = (arm: 'A' | 'B') => fixture.labels.map((l) => armRun({
+  const runsFor = (arm: 'C' | 'B') => fixture.labels.map((l) => armRun({
     queryId: l.id, cluster: l.expectedFiles[0]!, style: l.style, expectedImageKeys: l.expectedImages.map((p) => p.split('/').pop()!),
-    evidence: arm === 'A' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
+    evidence: arm === 'B' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
   }));
-  const armReports = { A: armReport('A', { querySetSha, runs: runsFor('A') }), B: armReport('B', { querySetSha, runs: runsFor('B') }) };
+  const armReports = { C: armReport('C', { querySetSha, runs: runsFor('C') }), B: armReport('B', { querySetSha, runs: runsFor('B') }) };
 
   it('runs the whole rule at 144 labels without a flag, and says so on the document', async () => {
-    for (const arm of ['A', 'B'] as const) {
+    for (const arm of ['C', 'B'] as const) {
       const generated = await generateArmAnswers(async (question) => ({ answer: `[stub ${arm}] ${question}`, refused: false, refusalReason: null, sources: [{ pageTitle: 'Seite' }] }), fixture, { arm });
       const written = writeAnswerArtifacts(dir, `run-${arm}`, generated);
       writeAnswerProvenance(dir, `run-${arm}`, {
@@ -686,7 +784,7 @@ describe('a floor-sized sample decides, labelled REDUCED POWER (ADR-027 O2)', ()
         answersSha256: written.answersSha256, mappingSha256: written.mappingSha256,
       });
     }
-    const sheet = mergeSheets(dir, 'floor', (['A', 'B'] as const).map((arm) => ({
+    const sheet = mergeSheets(dir, 'floor', (['C', 'B'] as const).map((arm) => ({
       answersPath: join(dir, `answers-run-${arm}.jsonl`), mappingPath: join(dir, `mapping-run-${arm}.json`), provenancePath: join(dir, `provenance-run-${arm}.json`),
     })), 'scripts/judge-arms.ts --merge --run-id floor');
     expect(sheet.items).toBe(384);

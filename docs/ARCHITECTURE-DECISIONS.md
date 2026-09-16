@@ -5475,3 +5475,233 @@ itself is genuinely outside the dump set, and so is the capability verdict in
 - **Two dirty flags and two image tables coexist until #1618.** That is the
   cost of keeping the current release serving during qualification; #1616
   raises both flags from every writer, and #1618 drops the old ones.
+
+### Amendment (2026-09-16, #1619): the gate is re-registered B vs C, and no human judgement was taken
+
+The measurement plan above pre-registers a three-arm comparison whose primary
+endpoint is **B vs A**. Arm A requires an `image_embedding` assignment against
+a real vision-language *embedding* endpoint. The only configured provider
+serves text embedders, a reranker and a generative VL model; the owner has
+declined to stand a VL embedding endpoint up, the stated goal being to remove
+VL embedding from the product entirely. **Arm A is therefore unobtainable
+permanently, not merely un-run**, and every endpoint that named it is
+re-registered or retired here, in writing, before anything was measured.
+Nothing below was applied silently: the diff that implements it is
+A-6, and `decideGate` prints every condition, including the retired one.
+
+**A-1 — the PRIMARY endpoint is re-registered as B vs C.** Image-dependent
+answer correctness, **B vs C**, paired per query, single judge, blind to arm;
+margin +5 pp (O1 unchanged) with a cluster-bootstrap 95 % CI excluding 0. The
+primary now measures **vision enrichment alone on one revision**, not the
+whole product change: B − A, the whole-product comparison, is abandoned. Power
+carries over unchanged (ψ = 0.30, δ = 0.15, ρ = 0.10, design effect 1.4,
+N = 190, hard floor 144) **with the mechanism argument written out**: arm C,
+like arm A's text-only answer model, has no image evidence at all, and
+strictly less than arm A (which at least ranks the image's page), so the
+discordant share cannot plausibly be smaller than the A-vs-B assumption. The
+30-pair pilot and the ψ < 0.20 stop still apply, over C/B pairs. Secondary
+endpoints become citation faithfulness B vs C and refusal rate B vs C; "B vs
+A" and "C vs A" leave the endpoint table.
+
+**A-2 — O5 (image-evidence R@5) is RETIRED, not re-registered.** The endpoint
+was a paired non-inferiority test of B against arm A's embedding leg. Under
+B vs C it has no comparator: arm C reports no image evidence by rule, so
+`compareArmRetrieval` sets the paired endpoint to `null` by construction. The
+owner retired the guardrail outright rather than converting it to an absolute
+floor on B. **The gate therefore carries no image-evidence guardrail.** The
+code must make that absence explicit, and does: the condition is printed with
+verdict `retired`, names what was retired and the power it had, and is
+excluded from the aggregation. Arm B's own `imageEvidenceRecallAt5` stays on
+its run report as a descriptive number that no condition reads.
+
+*Erratum to A-2 (2026-09-16, #1619 review r1).* "Never a missing row" did not
+hold on one path: the pilot stop (ψ < 0.20) returned its own condition and
+nothing else, so a stopped run printed neither the retired row nor a MEASURED
+O7 safety failure — and O7's cap is absolute, in queries, read off the
+candidate arm's own retrieval report, which no judging-power argument makes
+conditional. The pilot pre-emption is therefore scoped to the DECISION: the
+aggregate verdict remains `inconclusive-by-design` (the pre-registration says
+the pilot pre-empts all three parts, and letting a condition fail the gate
+under it would be a post-hoc change to the rule), while every condition is
+printed with the verdict its own measurement earns — the primary row
+`inconclusive` and labelled reported-not-decided, since its interval was
+sized under the design the pilot says does not hold.
+
+**A-3 — the text non-inferiority control.** `B vs C` is δ ≡ 0 by construction
+(the two arms differ only in `image_analysis`, which the text gate never
+consults) and cannot fail; it is kept because O4 pre-registers it and a
+condition that cannot fail must still be stated as such. The real
+text-regression detector is re-registered as **C (candidate revision) vs C
+(legacy revision)** — the `legacy-revision-C` control this ADR already names —
+because that is the pair that carries #1617's lexical chunk-resolution change
+and needs nothing but the text embedder. The harness labelled that pair
+"C vs A" when it was supplied through `--control-a` and checked no revision at
+all; the flag is renamed `--control-legacy-c`, text-gate reports now record
+`revisionSha`, and the scorer refuses a side without one or two sides sharing
+a revision.
+
+**A-4 — safety endpoints.** O6 (unsupported claims, ≤ +3 pp, one-sided upper
+bound) re-registers cleanly as B vs C. O7 (leakage@1, ≤ 2 of 48) becomes an
+**absolute cap on arm B**, because arm C's image-negative leakage is
+identically 0 for every negative: the margin is read as "B leaks at most 2 of
+the 48 image-negative labels", never as "no worse than the legacy leg". A
+negative slice smaller than O2's 48 reads `inconclusive` rather than passing.
+
+**A-5 — what retirement may and may not conclude.**
+*Retirement of `page_image_embeddings` (#1618 stage 2) proceeds on the ground
+that the path was **unused in production** and carries maintenance cost —
+NOT because a measurement justified it.* No measured comparison against the
+legacy leg exists or can exist. #1619's value is regression evidence, not
+permission.
+*Also, and decisively for how the figures on record must be read:* **no human
+answer-correctness judgement was taken.** After arm A became unobtainable the
+owner declined the judging burden (≈ 1,000 items across arms, ~30 judge-hours
+at O13's rate), so the primary endpoint above was **not** measured: no judging
+sheet was produced, no `judgments-*.jsonl` exists, and no verdict document was
+un-blinded. What is on record for #1619 is **retrieval metrics only** —
+R@1/3/5/10, MRR, image-evidence recall, image-negative leakage and latency,
+per arm, with provenance — and this ADR must not be read as reporting the
+pre-registered primary endpoint. O15's labelling packet and its validator
+exist and are shipped, unused, for whoever later wants that number: the
+labelling pass plus the judging pass are all that stand between this record
+and a decided primary.
+*May be concluded from the retrieval numbers:* whether ingestion-time image
+analysis indexed as text changes ordinary retrieval on the image corpus, and
+whether arm B's derived chunks reach the top-K and leak into the image-negative
+slice. *May NOT be concluded:* anything at all about the legacy ADR-025 image
+leg, and any claim about answer quality. ADR-025's "Measured" section stays
+historical evidence about the legacy design and is never re-labelled; an
+"improved RAG" claim, if made, is scoped to "better than no image analysis",
+never "better than image embeddings".
+
+**A-6 — the code changes this amendment authorises.** `--unblind`'s required
+set is `{B, C}` and it refuses a primary with no registered comparator (arm A
+stays accepted, optional, and scored as a secondary pairing);
+`assertComparableArms(c, b, …)` is the load-bearing pair; `scoreJudgedPair`
+and `compareArmRetrieval` run C/B; `decideGate` takes an absolute leakage cap
+and emits the retired O5 condition explicitly; `pilotCheck` defaults to C/B;
+condition names carry the arms they scored; `--control-a` becomes
+`--control-legacy-c` with a revision check; `sources[].attachmentUrl` is
+stripped from the judging sheet and added to the blinding guard's forbidden
+keys, because it is present only on an arm with an image leg and therefore
+separates exactly the two arms the amended primary compares — the runbook's
+"for the primary B-vs-A pair the blinding holds … C is the separable arm" is
+falsified by A-1 and has been corrected.
+
+**Recorded beside the amendment: the output-token ceiling is a property of the
+deployment, not of the ADR.** Measured 2026-09-16 on `gemma-4-26b-a4b-it`
+(RTX 3090, LM Studio) over five corpus images at both candidate ceilings: the
+model reasons before every reply (**82.0–93.3 %** of its output tokens at
+8,192, **82.0–99.96 %** over all ten rows of the pre-check — the reasoning
+share of the raw `usage` of each request, 401/489 … 3,494/3,746 at 8,192 and
+7,578/7,581 at 16,384, that last one a generation cut at the context wall; the
+ten rows and the cut are below), five of five images produced a valid payload
+through the client at 8,192 and four of five at 16,384, and the
+worst image took 114.4 s of the 120 s per-image budget
+(`ANALYSIS_TIMEOUT_MS`). The binding constraint is neither the ceiling nor the
+budget but the provider's **loaded context window of 8,192 tokens**
+(`max_context_length` 262,144): prompt plus completion cannot exceed it, so a
+ceiling above 8,192 cannot be reached and merely lets a reply run past the
+context and come back cut — classed `malformed` rather than `truncated`, which
+D8/D13 do not re-open by raising the ceiling. The ceiling was therefore fixed
+at the shipped default **8,192**, and the remedy for an image that overruns is
+a larger loaded context on the inference host, not a higher ADR ceiling and
+not a longer timeout.
+
+The ten rows the two ranges above are computed over. **The pre-check made two
+requests per image per ceiling, not one**, and each column below says which of
+the two it came from: **(a)** the real `analyzeImage` call through the
+product's own client — the source of `wall`, `result` and `completion` — and
+**(b)** one raw `POST /v1/chat/completions` of the same body at the same
+ceiling, which is the only way to see the reasoning split because the client
+drops it — the source of `completion (raw)`, `reasoning` and `share`. (a) and
+(b) are two separate generations of the same prompt, so no row may be read as
+one request: the validated payload is (a)'s and the share is (b)'s. Recorded
+here because a shipped percentage must be checkable against the measurement it
+came from:
+
+| ceiling | image | wall (a) | result (a) | completion (a) | completion raw (b) | reasoning (b) | share (b) |
+|---|---|---:|---|---:|---:|---:|---:|
+| 8,192 | periodensystem__1.png | 63.0 s | valid | 4,397 | 6,314 | 5,588 | 88.5 % |
+| 8,192 | osi-modell__2.png | 114.4 s | valid | 7,554 | 4,543 | 4,061 | 89.4 % |
+| 8,192 | balanced-scorecard__2.png | 83.8 s | valid | 5,675 | 3,746 | 3,494 | **93.3 %** |
+| 8,192 | programmablaufplan__1.png | 43.1 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 8,192 | brandenburger-tor__1.jpg | 7.2 s | valid | 483 | 489 | 401 | **82.0 %** |
+| 16,384 | periodensystem__1.png | 95.1 s | `malformed` | — | 4,138 | 3,817 | 92.2 % |
+| 16,384 | osi-modell__2.png | 51.7 s | valid | 3,553 | 7,581 † | 7,578 † | **99.96 %** † |
+| 16,384 | balanced-scorecard__2.png | 84.6 s | valid | 5,675 | 3,746 | 3,494 | 93.3 % |
+| 16,384 | programmablaufplan__1.png | 43.7 s | valid | 3,002 | 2,303 | 1,922 | 83.5 % |
+| 16,384 | brandenburger-tor__1.jpg | 6.8 s | valid | 489 | 489 | 401 | 82.0 % |
+
+† **That (b) generation was cut at the context wall, and it is the sole source
+of the 99.96 % upper bound.** Its prompt is 611 tokens and 611 + 7,581 = 8,192
+exactly — the host's `loaded_context_length` at pre-check time — and it emitted
+**three** non-reasoning tokens, so it was still reasoning when the context ran
+out. That is the case classed `malformed` above, not a completed reply. The
+`valid` beside it is (a), the client call on the same image and ceiling, which
+returned a payload in 51.7 s.
+
+So **82.0–93.3 % is the range at the shipped 8,192 ceiling, where no (b)
+generation reached either bound** — the largest is 618 + 6,314 = 6,932 against
+an 8,192-token ceiling and an 8,192-token loaded context — and that is the
+figure to quote about this model's behaviour; **82.0–99.96 % is the range over
+all ten (b) generations, with its upper bound produced by the cut above** and
+quotable only with that said. The highest share on an uncut generation is
+93.3 %. No figure in this ADR, the runbook or the code comments may quote a
+range wider than these two.
+
+Three of the five images — `balanced-scorecard__2.png`,
+`programmablaufplan__1.png`, `brandenburger-tor__1.jpg` — report identical (b)
+figures at both ceilings: those replies never approached either ceiling, and
+the body is sent at `temperature: 0`, so raising the ceiling changed
+nothing about them. The (b) column is therefore ten requests but **seven
+distinct generations**, and the repetition is the measurement rather than a
+transcription (the two ceilings were separate runs: `brandenburger-tor__1.jpg`
+differs by six tokens in (a), 483 against 489).
+
+### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
+
+**The analysis call sends the non-thinking hints** (`think: false`,
+`chat_template_kwargs: { enable_thinking: false }`, i.e. the shipped
+`nonThinkingExtras`), on the ANALYSIS request only — never on a chat or
+answer call, so no arm's answer behaviour changes.
+
+*Why.* Reasoning tokens come out of the same `max_tokens` budget the payload
+needs, and they contribute nothing to it. Measured 2026-09-16 on
+`gemma-4-26b-a4b-it` (RTX 3090, LM Studio): the reasoning share of the reply
+is **82.0–93.3 %** of its output tokens at the shipped 8,192 ceiling and
+**82.0–99.96 %** across both candidate ceilings (that upper bound off a
+generation cut at the context wall) — both computed from the raw `usage` of
+the ten-row vision pre-check recorded above, which is the source of those two
+ranges and of the decode rate below, and of nothing else in this paragraph —
+and on the 187-image corpus
+**14 images failed deterministically at the shipped 8,192 ceiling** — eight
+`truncated:8192` (the reply hit `max_tokens`), five `malformed` and one
+`rejected:400` — every one of which D8 classes deterministic, so five
+attempts take the row to `failed_terminal` and the arm cannot complete.
+**What was re-probed with the hints is ONE of those fourteen images:**
+`waermepumpe__3.png`, which answers HTTP 400 after 73.2 s of generation as
+the product sent it and **200 with a valid payload in 62.8 s** (3,068
+completion tokens) with the hints in place. The other thirteen — including
+all eight `truncated:8192` — were **not** re-probed: #1618's Retry-failed
+path re-opened all 14 rows for real, but the provider host stopped answering
+before the backfill completed, so no post-erratum result exists for them.
+Raising the ceiling is not the remedy: the nine pre-check rows whose client
+call returned a completion decode at **66.0–71.9 tok/s** — column (a)'s
+completion over its wall in the table above, slowest 7,554 ÷ 114.4 s, fastest
+489 ÷ 6.8 s — so a 16,384-token reply is **228–248 s** against
+`ANALYSIS_TIMEOUT_MS` = 120 s, and a higher ceiling trades a deterministic
+refusal for a transient one that never terminates.
+
+*What was deliberately NOT changed:* `image_analysis_max_output_tokens` stays
+at the shipped default 8,192, `ANALYSIS_TIMEOUT_MS` stays at 120 s, and the
+payload bounds stay as shipped. The owner chose the root-cause fix over
+moving either budget.
+
+*The hints are ADVISORY.* `nonThinkingExtras` sends nothing to a strict
+OpenAI-compatible host, and a provider that ignores the fields is **not
+broken** — it simply keeps reasoning, and the operator sees the same
+`truncated`/`malformed` rows the erratum exists to prevent, with the runbook's
+loaded-context and reasoning notes as the diagnosis. Suppression is not part
+of D5's identity or cache key: it changes what a NEW analysis may say, not
+what an existing row means, exactly like the ceiling (D8).

@@ -1119,9 +1119,16 @@ must say the same thing. The tooling is in this checkout (**PR2 on #1614**):
 its provenance), `run-arm-answers.ts` (one arm's answers through the real
 ask route, arm-blinded) and `judge-arms.ts` (`--merge` the arms into one
 blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
-executes it and does not build a second one. **Nothing here is a measured
-result**: no arm has been captured on any revision, and
-`backend/src/domains/llm/eval/artifacts/1611/README.md` records why.
+executes it and does not build a second one. **What is on record so far is
+retrieval only**: arm C and legacy-revision C were captured on real models
+(2026-09-16, #1619), arm A is permanently unobtainable, arm B is NOT captured
+(100 of 187 images analysed when the driver refused the run — the interleaved
+re-embed pass could not load the text embedder, because this host serves one
+model at a time; the provider host went silent later, during the 43-second
+re-run, which is why the run has not been resumed since) and no
+human judging was taken — so no verdict document exists.
+`backend/src/domains/llm/eval/artifacts/1611/README.md` records what the two
+captures are, and what still is not.
 
 ### Running it (the recipe #1619 follows)
 
@@ -1144,8 +1151,30 @@ npx tsx scripts/run-arm-answers.ts --arm A --run-id A-<date> --report arm-A.json
 npx tsx scripts/run-retrieval-eval.ts --images --arm C --fts-language german --out arm-C.json
 npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json --out-dir artifacts/
 
-# Arm B — same candidate revision, image_analysis assigned; the seed is followed by the
-# PRODUCT's backfill on this database (start the worker against it), which the run waits for
+# Arm B — same candidate revision, image_analysis assigned. FOUR things must be on this
+# database BEFORE the run. (1) and (4) are read right after the migrations, so a missing one
+# costs a migration and not a 65-page seed; (2) and (3) are refused at the first analysis
+# batch, by name. On a disposable eval database all four are provisioned once and die with
+# the container, so a resumed run re-provisions them:
+#   1. a provider row for the vision host and the `image_analysis` assignment — made
+#      through the PRODUCT's own surface (Settings → AI Models, i.e. POST /api/llm/usecases
+#      against THIS database), because that call is also what retains D7's identity;
+#   2. the probed vision capability (`llm_model_capabilities.vision = TRUE`, migration 087),
+#      written by that surface's model probe — a hand-written assignment row leaves the
+#      capability unprobed and the driver refuses with `capability`;
+#   3. D7's retained identity, written by (1) — a missing or unparseable row reads as none
+#      and the driver refuses with `identity_drift`, never analysing anything;
+#   4. the output ceiling the run records (D8). Migration 115 seeds the row itself
+#      (`('image_analysis_max_output_tokens', '8192')`, ON CONFLICT DO NOTHING), so it
+#      always exists after the migrations and the statement below is only needed TO CHANGE
+#      the value away from the shipped default:
+#      INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+#        VALUES ('image_analysis_max_output_tokens', '<ceiling>', NOW())
+#        ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;
+# The seed is then followed by the product's own analysis backfill, which this run DRIVES
+# in-process (`eval/arm-b-backfill.ts` calls `runImageAnalysisBatch()` then
+# `processDirtyPages()`): the run owns the mkdtemp ATTACHMENTS_DIR the bytes live in, so an
+# externally started worker cannot read them. Nothing else may touch the provider meanwhile.
 npx tsx scripts/run-retrieval-eval.ts --images --arm B --fts-language german --backfill-timeout 7200 --out arm-B.json
 npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json --out-dir artifacts/
 
@@ -1154,8 +1183,9 @@ npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json
 # markdown with no attachments, so nothing on them can be analysed and no derived chunk
 # can exist: B's and C's states differ only where images do. So the B-vs-C text
 # control is δ ≡ 0 BY CONSTRUCTION and that gate condition cannot fail; the pair that
-# can detect a text regression is C vs A, which is where #1617's lexical chunk
-# resolution differs (ADR-027 endpoint table, Control row erratum). Capture B's anyway
+# can detect a text regression is candidate C vs LEGACY-revision C, which is where
+# #1617's lexical chunk resolution differs (ADR-027 amendment A-3; before it, that
+# pair was mislabelled "C vs A" and no revision was checked at all). Capture B's anyway
 # — the report is the arm's configuration, never a copy of another arm's file, and a
 # non-zero δ there would mean the two states differ where this recipe says they cannot.
 #   on the candidate revision, image_analysis UNASSIGNED:
@@ -1165,9 +1195,12 @@ npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out cont
 #   database and finds no attachment to analyse — that is the state's claim):
 npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-B.json
 npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-B.json
-#   on A's legacy revision (the text gate never touches the image leg):
-npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-A.json
-npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-A.json
+#   on the LEGACY revision (#1619 amendment A-3: this is the text-regression
+#   detector — candidate C vs legacy C — and it replaces the unobtainable arm A's
+#   controls. Each report records `revisionSha`, and --control-legacy-c refuses a
+#   pair whose two sides do not carry two different revisions):
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-legacy.json
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-legacy.json
 
 # One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts
 npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/ \
@@ -1175,15 +1208,15 @@ npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/
   --mappings artifacts/mapping-A-<date>.json,artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
 # … the judge fills artifacts/judgments-sheet-<date>.jsonl from answers-sheet-<date>.jsonl ALONE …
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl --judgments artifacts/judgments-sheet-<date>.jsonl
-# The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent A/B
+# The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent C/B
 # pairs in judgedAt order, one aggregate number. Exit code 3 = STOP (ψ < 0.20).
 # --mapping is the operator's file and never reaches the judge.
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl \
   --judgments artifacts/judgments-sheet-<date>.jsonl --mapping artifacts/mapping-sheet-<date>.json
 npx tsx scripts/judge-arms.ts --unblind --run-id sheet-<date> --out-dir artifacts/ \
-  --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json \
+  --arm-report B=arm-B.json,C=arm-C.json \
   --control-b control-en-B.json,control-de-B.json --control-c control-en-C.json,control-de-C.json \
-  --control-a control-en-A.json,control-de-A.json \
+  --control-legacy-c control-en-legacy.json,control-de-legacy.json \
   --out artifacts/verdict-sheet-<date>.json
 ```
 
@@ -1242,6 +1275,67 @@ image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
 --mapping` can only report `pilot: 0/30` against the shipped fixture, and
 its exit-3 stop is therefore unreachable from the CLI until O15's pass
 lands; the rule itself is unit-tested (`pilotCheck`, `pilotDiscordance`).
+
+### The O15 labelling packet, and what the owner does with it (#1619)
+
+Two scripts carry that human pass and neither of them decides anything.
+`build-label-packet.ts` re-presents the shipped fixture as a worksheet;
+`validate-label-packet.ts` checks what comes back and is the only thing that
+may put a value into `fixture-de-images.json`.
+
+```bash
+cd backend
+npm run label-packet -- --out-dir artifacts/1619
+#   == npx tsx scripts/build-label-packet.ts --out-dir artifacts/1619
+#   writes label-packet.csv, label-packet.jsonl and label-packet.md
+
+# … the owner fills image_dependent and class, in a spreadsheet or by hand …
+
+npm run label-packet:validate -- --file artifacts/1619/label-packet.csv
+npm run label-packet:validate -- --file artifacts/1619/label-packet.csv --write
+#   == npx tsx scripts/validate-label-packet.ts --file … [--write]
+```
+
+**What the packet contains.** One row per label — all 309 — with the query,
+the page (file, title, category and the markdown on disk), every picture on
+that page with the **attachment key** it is scored under and the file it is
+on disk, what `expectedImages` already says, the original labeller's
+rationale, and two EMPTY columns. `label-packet.md` beside them quotes
+ADR-027's definitions of image-dependent and image-negative verbatim and
+works one example of each; the examples are invented for that page, so
+reading them cannot pre-decide a real row. **No value in the packet is a
+label**, and the builder refuses to write a file in which one is.
+
+**What the owner does.** Fill `image_dependent` (`true`/`false`) on every
+row, and `class` (one of `screenshot`, `chart`, `table`, `diagram`,
+`unreadable-text`, `decorative`) on the `true` ones. Keep `label_id`;
+everything else travels back unread, and either file shape is accepted.
+Blank means "not decided yet" — the validator says how many are open and
+refuses to write a partial pass.
+
+**What the validator refuses**, each with the distance still to go rather
+than a bare failure: an unknown, duplicated or missing label id; a value
+outside `true|false` or the class list; a class without a `true`; a `true`
+without a class; a `true` on a label with no expected image (a question whose
+correct image answer is "none of them" cannot be answered from an image); and
+more than 5 image-dependent labels on one page. It then reports every O2
+count it cannot fix by itself — 190 image-dependent (hard floor 144), 48
+image-negative, ≥ 45 pages, 197 control queries per language read off
+`fixture.json` and `fixture-de.json` — and prints what `auditSample`, the
+same function `--unblind` decides under, would make of the labels: full
+power, REDUCED POWER, or a document that decides nothing. Exit code 1 for a
+refused file or an undecidable sample.
+
+The 24 image-negative labels the fixture ships are **not** a column in this
+packet: closing O2's 48 needs 24 new questions written against the corpus,
+which is the other half of O15 and a separate change to the fixture.
+
+**The packet is not committed.** It is regenerated from the fixture in about
+a second, the filled copy is an input, and `.gitignore` names both defaults
+for the same reason it names `backend/retrieval-eval.json` — a result is not
+source. What gets committed is the fixture diff `--write` produces, which
+carries every existing field untouched and adds only `imageDependent` and
+`class`.
 
 ### The three arms and the revision each runs on
 
@@ -1329,6 +1423,64 @@ differs from its arm's retrieval report.
 
 ### Endpoints and the decision rule
 
+> **Loaded context, not the ceiling, is what a reasoning VL model needs
+> (measured 2026-09-16, #1619).** `gemma-4-26b-a4b-it` spends **82.0–93.3 %
+> of its output tokens on reasoning at the shipped 8,192 ceiling**, and one
+> row reads **99.96 %** at 16,384 off a generation cut at the host's context
+> wall — the reasoning share of the ten rows of #1619's
+> vision pre-check (five corpus images × both ceilings, each row's own raw
+> `usage`: 401/489 … 3,494/3,746 at 8,192, and 7,578/7,581 at 16,384; all ten
+> are tabulated in ADR-027 beside the #1619 amendment) — and emits 0.5k–7.6k
+> completion tokens per corpus image. Served
+> with `loaded_context_length: 8192` it exhausted the context mid-generation
+> on the verbose images: ~73 s of generation and then either an HTTP 400,
+> which the analysis client classes `rejected:400`, or a cut reply with a
+> non-`length` finish reason, which it classes `malformed` — both
+> deterministic, five attempts, `failed_terminal`, and re-opened by nothing
+> (only a `truncated` row re-opens on a ceiling raise). **An operator hitting
+> this sees only `failed` rows on the card, never the cause**, so check the
+> server's loaded context before touching **Max output tokens**. Exactly two
+> loaded-context values were ever measured, both on this one host
+> (`gemma-4-26b-a4b-it` on an RTX 3090 under LM Studio): **8,192 is not enough
+> for the verbose images** — the prompt alone is 611–622 tokens, so an 8,192
+> ceiling cannot fit beside it, and those images came back `malformed` or
+> `rejected:400` as above — and **36,096 works**, the value the owner set for
+> #1619's arm B. The
+> minimum sufficient context was **not determined** (nothing between those two
+> was tried), and no second checkpoint was measured, so treat 36,096 as the
+> known-good setting on this host rather than as a threshold or a property of
+> the model family. **And it needs reasoning suppressed:** with the
+> context raised to 36,096 the ceiling became the binding constraint and 14
+> of 187 images failed — 8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`
+> — the reply spending the whole output budget on thinking. ADR-027's D8
+> erratum (#1619) therefore **ships** the non-thinking hints: `think: false` +
+> `chat_template_kwargs.enable_thinking: false`, on the ANALYSIS request only,
+> with the ceiling and `ANALYSIS_TIMEOUT_MS` left where they were. The two
+> symptoms an operator can actually see are `failed` rows in both cases:
+> `malformed` or `rejected:400` after ~73 s of generation means the loaded
+> context ran out; `truncated:8192` means the output ceiling did, i.e.
+> reasoning is still on (the hints are advisory and some hosts ignore them).
+> Raising the ceiling does not help and makes it worse; the rest of the fix is
+> on the inference host — which is why the owner raised the loaded context to
+> 36,096 for #1619's arm B **and** authorised the erratum, rather than either
+> alone.
+
+> **AMENDED 2026-09-16 (#1619, ADR-027 amendment A-1…A-6).** Arm A needs a
+> real VL *embedding* endpoint, the owner has declined to stand one up, and
+> arm A is therefore permanently unobtainable. The **primary is re-registered
+> as B vs C**; **O5's image-evidence guardrail is RETIRED** (printed as a
+> `retired` condition, excluded from the aggregation — never a missing row);
+> **O7 becomes an absolute cap on arm B** (≤ 2 of 48; arm C leaks 0 by
+> construction); the text-regression detector is **candidate C vs
+> legacy-revision C**, supplied through **`--control-legacy-c`** (which
+> replaces `--control-a` and refuses a pair that does not span two
+> revisions); the pilot reads **C/B** pairs; and `sources[].attachmentUrl` is
+> **stripped from the sheet**. Read every "B vs A" and "C vs A" below as the
+> superseded pre-registration. **No human judging was taken for #1619** (the
+> owner declined the burden), so what is on record is retrieval metrics only
+> — the paragraphs below describe the protocol that remains available, not a
+> measurement that happened.
+
 Primary: **image-dependent answer correctness, B vs A, paired per query**,
 judged blind to arm against the source image — McNemar exact on the
 discordant pairs plus a 95% cluster-bootstrap CI resampling pages. Secondary:
@@ -1339,8 +1491,9 @@ pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
 top-5 row carrying D11's `derived.attachmentKey` for an expected image — the
 same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
 reports **none**, never 0). Controls: the EN and DE text suites (197 each
-per arm, enforced), non-inferiority — **B vs C** and, when
-`--control-a` is passed, **C vs A**; a pair whose language, FTS
+per arm, enforced), non-inferiority — **B vs C** and **C vs A** (the latter
+was supplied through `--control-a`, a flag A-3 REMOVED in favour of
+`--control-legacy-c`); a pair whose language, FTS
 configuration, corpus sha or text embedder differs is refused. Of the two,
 only **C vs A** can fail: B's and C's text states are identical by
 construction (no attachments in the text corpora), so B vs C is δ ≡ 0 —
@@ -1350,8 +1503,10 @@ dependent labels must sit on ≥ 45 pages with ≤ 5 per page, or the verdict
 refuses the sheet the same way it refuses a count below the hard floor.
 
 Pass requires ALL of: primary point estimate ≥ margin AND its CI excludes 0;
-every non-inferiority lower bound above its margin (image-evidence R@5 is
-an underpowered guardrail — print its CI beside the verdict); neither
+every non-inferiority lower bound above its margin (the image-evidence R@5
+guardrail is **RETIRED** by amendment A-2 — the harness prints it as a
+`retired` row and excludes it from the aggregation, so it is not one of these
+bounds and no CI is printed beside the verdict for it); neither
 safety endpoint worse than its margin. **Cost is not a gate**: throughput,
 tokens per image, backfill wall-clock and query p50/p95 are measured and
 reported in the same document and can never fail the run — the decision is
@@ -1494,18 +1649,18 @@ condition of the decision rule with its interval, and sets the exit code to
 non-zero for anything but a pass.
 
 **One sentence for the judge, about `attachmentUrl`.** A row's
-`sources[].attachmentUrl` is present only where the arm surfaced an image
-source (A's leg hit, B's D11 citation) and never on C. It is part of the
-ADR's row shape — the judge needs to see what the answer cited — so it
-stays, and it is therefore a per-row **tell**: read it as a citation, never
-as evidence of quality, and never as a reason to guess which arm wrote a
-row. Every other arm-revealing key is refused outright by the blinding
-walk. **What that tell can and cannot separate:** for the primary B-vs-A
-pair it separates nothing, because both arms carry the field wherever an
-image source surfaced; it is absent from EVERY arm C row by construction, so
-**C is the separable arm** — and C's correctness is a secondary endpoint
-judged by the same person. Judge C's rows as citations like any other; do
-not treat the field's absence as information about the answer.
+`sources[].attachmentUrl` is **no longer written to the judge's file**
+(#1619). It is present only where an arm surfaced an image source (A's leg
+hit, B's D11 citation) and absent from every arm C row by construction, so
+under the amended **B-vs-C** primary it separates exactly the two arms the
+primary compares — it was a tolerable secondary-endpoint nuisance under the
+old B-vs-A primary and is a tell on the primary pair itself under this one.
+The row now carries `sources[{pageTitle}]` and nothing else, `attachmentUrl`
+is on the blinding guard's forbidden-key list so every READ refuses a row
+carrying it (a hand-edited or pre-amendment sheet included), and the judge
+reads the cited pictures off `evidenceImages` — the label's own expected
+images, identical on every arm — plus the corpus. Every other arm-revealing
+key is refused outright by the same walk.
 
 **Refusals are two different things.** The route's `refusalReason` is
 counted in `provenance-<runId>.json` and NEVER written to the judge's file.

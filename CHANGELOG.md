@@ -7,8 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The ADR-027 gate is re-registered B vs C, and no condition can be dropped
+  in silence (#1619).** Arm A needs a real vision-language *embedding*
+  endpoint; the owner declined to stand one up (the goal being to remove VL
+  embedding entirely), so arm A is permanently unobtainable and every
+  endpoint that named it is re-registered or retired in writing — ADR-027
+  "Amendment (2026-09-16, #1619)", drafted A-1…A-6. `--unblind` now requires
+  `{B, C}` and refuses a primary with no registered comparator (an arm A
+  report is still accepted and scored as a secondary pairing); the primary,
+  the secondary pairs, the pilot and the safety endpoints run C → B, and each
+  condition names the arms it scored. **O5's image-evidence guardrail is
+  retired**: under B vs C the paired endpoint is null by construction and
+  `decideGate` used to omit the row, so a B-vs-C run would have passed a rule
+  one condition shorter than the one on record — it is now printed as a
+  `retired` condition and excluded from the aggregation. **A pilot stop prints
+  the conditions too**: ψ below the floor pre-empts the DECISION (the
+  aggregate stays `inconclusive-by-design`), not the record, so a stopped run
+  can no longer swallow the retired row or a measured safety failure.
+  **O7 becomes an
+  absolute cap on arm B's own image-negative leakage** in queries (arm C leaks
+  0 on every negative by construction, so the paired reading compared against
+  a constant), and a slice below O2's 48 negatives reads `inconclusive`.
+  `--control-a` becomes **`--control-legacy-c`**: text-gate reports record
+  `revisionSha` where git can answer for a clean tree, and the scorer refuses
+  a side without one or two sides sharing a revision — nothing checked the
+  revision before, so legacy controls were published under the label "C vs
+  A". `sources[].attachmentUrl` is **stripped from the judging sheet** and
+  added to the blinding guard's forbidden keys: it is present only on an arm
+  with an image leg, so under the amended primary it separates exactly the two
+  arms being compared. **Retirement of the legacy image-embedding path
+  (#1618 stage 2) proceeds because it was unused in production and carries
+  maintenance cost — not because a measurement justified it — and no human
+  answer-correctness judgement was taken for #1619** (the owner declined the
+  judging burden), so the figures on record are retrieval metrics only; the
+  ADR says both plainly.
+
+### Fixed
+
+- **Image analysis asks the provider not to think (ADR-027 D8 erratum,
+  #1619).** A reasoning vision model spends **82.0–93.3 %** of its output
+  tokens on a thinking pass at the shipped 8,192 ceiling (measured over the
+  ten rows of #1619's vision pre-check, tabulated in ADR-027; one row reads
+  99.96 % at a 16,384 ceiling, off a generation cut at the host's 8,192-token
+  context wall), and those tokens come out of the same
+  `max_tokens` budget the analysis payload needs: on the 187-image eval
+  corpus, 14 images failed deterministically at the shipped 8,192 ceiling
+  (8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`) and each would have
+  gone `failed_terminal` after five attempts. The analysis request — and only
+  the analysis request, never a chat or answer call — now carries the shipped
+  non-thinking hints, so the ceiling and the 120 s per-image budget did not
+  have to move. One of those fourteen images was re-probed with the hints
+  (`waermepumpe__3.png`: HTTP 400 after 73.2 s → a valid payload in 62.8 s);
+  the other thirteen were not re-run, because the provider host stopped
+  answering before the backfill could complete. The hints
+  are advisory: strict OpenAI hosts are sent none, and a provider that ignores
+  them keeps reasoning.
+
+- **`--arm B` reaches arm B's index state unattended (#1619).** Two gaps, both
+  the harness's: the image seeder never raised `pages.image_analysis_dirty` —
+  that flag IS the analysis queue (ADR-027 D6.2) and migration 116's
+  initial-backlog UPDATE runs before any corpus page exists — so the reconcile
+  claimed nothing, no analysis was ever written and the run died at its
+  `--backfill-timeout` reporting 0/187; and nothing re-embedded afterwards,
+  while `embedPage` is the only writer of derived `page_embeddings` rows, so
+  the top-K carried no derived chunk and the run was refused at the 50%
+  image-evidence floor. The seeder now raises the flag through the product's
+  own writer (`markPageImagesDirty`), and `eval/arm-b-backfill.ts` drives the
+  product's own entrypoints — `runImageAnalysisBatch()` then
+  `processDirtyPages()` — from inside the process that owns the run's
+  `ATTACHMENTS_DIR`, which is what an external driver could not see. It
+  refuses a state it cannot advance (a `failed_terminal` row under the ceiling
+  in force, an intake skip, an unassigned or drifted identity, a failing embed
+  pass) instead of spinning to the deadline.
+
 ### Added
 
+- **O15 labelling packet and validator (ADR-027, #1619).** The gate's primary
+  endpoint runs on the image-dependent labels, and that classification is an
+  independent human pass — so the two scripts that carry it decide nothing.
+  `backend/scripts/build-label-packet.ts` re-presents all 309 shipped image
+  fixture labels as a worksheet (CSV for the spreadsheet pass, JSONL with the
+  per-image detail structured, and a header quoting ADR-027's definitions of
+  image-dependent and image-negative verbatim with a worked example of each):
+  the query, the page, every picture on it with the attachment key it is
+  scored under and the file on disk, what `expectedImages` already says, and
+  two EMPTY decision columns. It refuses to write a packet in which one is
+  filled. `backend/scripts/validate-label-packet.ts` reads the returned file
+  (either shape) and refuses an unknown, duplicated or missing label id, a
+  value outside `true|false` or the class list, a class without a `true`, a
+  `true` without a class, a `true` on a label with no expected image, and more
+  than 5 image-dependent labels on one page — then reports every O2 count it
+  cannot fix (190 image-dependent with the 144 floor, 48 image-negative, ≥ 45
+  pages, 197 control queries per language) **with the distance still to go**,
+  and prints what `auditSample` — the function `--unblind` decides under —
+  would make of the labels. `--write` records them in `fixture-de-images.json`
+  through the raw JSON, so every existing field survives and a second run is
+  byte-identical. The packet itself is generated, not committed; the fixture
+  diff is. Runbook: `docs/runbooks/retrieval-eval.md` "The O15 labelling
+  packet".
 - **Image analysis processing card and retirement preparation (ADR-027, #1618
   stage 1).** Settings → AI Models → Embeddings gains an **Image analysis**
   card beside the legacy Image index card — *is it running?*, where #1615's

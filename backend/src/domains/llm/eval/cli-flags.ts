@@ -229,7 +229,7 @@ export const ARM_ANSWERS_USAGE = [
  */
 export const JUDGE_KNOWN_FLAGS = [
   'merge', 'check', 'unblind', 'answers', 'mappings', 'mapping', 'judgments', 'run-id', 'out-dir',
-  'arm-report', 'control-a', 'control-b', 'control-c', 'out', 'allow-underpowered', 'help',
+  'arm-report', 'control-legacy-c', 'control-b', 'control-c', 'out', 'allow-underpowered', 'help',
 ] as const;
 export const JUDGE_VALUELESS_FLAGS = ['merge', 'check', 'unblind', 'allow-underpowered', 'help'] as const;
 export const JUDGE_USAGE = [
@@ -247,16 +247,16 @@ export const JUDGE_USAGE = [
   '  --check               report judging progress and refuse malformed rows. --answers <sheet>',
   '                        --judgments <file> [--mapping <mapping-<sheet>.json>]. With --mapping',
   '                        (the operator\'s file) it prints the ADR-027 pilot: ψ over the first 30',
-  '                        image-dependent A/B pairs in judgedAt order, ONE aggregate number; below',
+  '                        image-dependent C/B pairs in judgedAt order, ONE aggregate number; below',
   '                        0.20 it says STOP and exits 3 — stop judging, the run is inconclusive by',
   '                        design.',
   '  --unblind             refuse until every item has exactly one judgment by one judge, re-read every',
   '                        answer run\'s provenance-<runId>.json from --out-dir and hold it to its arm',
   '                        report (answer model, hardware, revision, hashes, knobs), then join the',
   '                        mapping, pair the arms and score every endpoint. --run-id <sheet id>',
-  '                        [--out-dir] --arm-report A=<file>,B=<file>[,C=<file>]',
+  '                        [--out-dir] --arm-report B=<file>,C=<file>[,A=<file>]',
   '                        [--control-b en.json,de.json --control-c en.json,de.json',
-  '                        [--control-a en.json,de.json]] --out <verdict.json>.',
+  '                        [--control-legacy-c en.json,de.json]] --out <verdict.json>.',
   '',
   '  --answers <files>     comma-separated answers-*.jsonl (merge) or one sheet (check)',
   '  --mappings <files>    comma-separated mapping-*.json, in the same order as --answers (merge)',
@@ -264,9 +264,13 @@ export const JUDGE_USAGE = [
   '  --judgments <file>    judgments-<id>.jsonl (check; --unblind reads it from --out-dir by run id)',
   '  --run-id <id>         the sheet id (merge writes it; unblind reads it)',
   '  --out-dir <dir>       where the artifacts live (default: the current directory)',
-  '  --arm-report <list>   the arm retrieval reports, as A=<file>,B=<file>,C=<file> (unblind)',
-  '  --control-a <files>   arm A\'s EN and DE text-gate reports, comma-separated (unblind, optional;',
-  '                        the C vs A control — unmeasured, and therefore blocking, without it)',
+  '  --arm-report <list>   the arm retrieval reports, as B=<file>,C=<file> (unblind; A=<file> optional —',
+  '                        the primary is B vs C since the #1619 amendment, and arm A is unobtainable)',
+  '  --control-legacy-c <files>  the LEGACY revision\'s EN and DE text-gate reports, comma-separated',
+  '                        (unblind, optional; amendment A-3\'s text-regression detector, candidate C vs',
+  '                        legacy C — unmeasured, and therefore blocking, without it. Refused unless both',
+  '                        sides record a revision and the two revisions differ; replaces --control-a,',
+  '                        which labelled the pair "C vs A" and checked no revision at all)',
   '  --control-b <files>   arm B\'s EN and DE text-gate reports, comma-separated (unblind, optional)',
   '  --control-c <files>   arm C\'s EN and DE text-gate reports, comma-separated (unblind, optional)',
   '  --out <file>          where the verdict report is written (unblind)',
@@ -279,4 +283,51 @@ export const JUDGE_USAGE = [
   'One judge (the repository owner), blind to arm, one row per item in judgments-<id>.jsonl:',
   '{ itemId, judge, correctness: correct|partial|incorrect|refused, citationFaithful: yes|no|na,',
   'unsupportedClaim, notes, judgedAt }. No second rater, no adjudication, no κ — the report says so.',
+].join('\n');
+
+/**
+ * #1619 — `scripts/build-label-packet.ts`: the O15 labelling packet. It reads
+ * the shipped fixture and the image corpus and writes three files; there is
+ * no input to point it at, because the packet is by definition over the
+ * labels the gate will run on.
+ */
+export const LABEL_PACKET_KNOWN_FLAGS = ['out-dir', 'help'] as const;
+export const LABEL_PACKET_VALUELESS_FLAGS = ['help'] as const;
+export const LABEL_PACKET_USAGE = [
+  'scripts/build-label-packet.ts — the O15 labelling packet: every shipped image-fixture label with the',
+  'page, the pictures and two EMPTY decision columns (#1619, ADR-027 O15)',
+  '',
+  '  --out-dir <dir>       where to write label-packet.csv, label-packet.jsonl and label-packet.md',
+  '                        (default: the current directory)',
+  '  --help                this text',
+  '',
+  'No value in the packet is a label. `imageDependent` and `class` are empty on every row and the',
+  'harness never fills one: O15 is an independent human pass, and the gate refuses to decide below',
+  'O2\'s counts rather than invent them. Fill the two columns and hand the file to',
+  'scripts/validate-label-packet.ts. Touches no database and no model.',
+].join('\n');
+
+/**
+ * #1619 — `scripts/validate-label-packet.ts`: the returned file, held to O2,
+ * O3 and O15, and written into the fixture on `--write`.
+ */
+export const VALIDATE_LABEL_PACKET_KNOWN_FLAGS = ['file', 'fixture', 'write', 'help'] as const;
+export const VALIDATE_LABEL_PACKET_VALUELESS_FLAGS = ['write', 'help'] as const;
+export const VALIDATE_LABEL_PACKET_USAGE = [
+  'scripts/validate-label-packet.ts — check the returned O15 labelling packet and, with --write, record',
+  'it in fixture-de-images.json (#1619, ADR-027 O2/O3/O15)',
+  '',
+  '  --file <path>         the returned packet, CSV or JSONL (the shape is detected from the content)',
+  '  --fixture <path>      the fixture to check it against and write into',
+  '                        (default: src/domains/llm/eval/fixture-de-images.json)',
+  '  --write               record the decisions in the fixture. Without it nothing is written.',
+  '  --help                this text',
+  '',
+  'Refused: an unknown, duplicated or missing label id, a value outside true|false or the class list, a',
+  'class without image_dependent=true, a true without a class, a true on a label with no expected image,',
+  'and more than 5 image-dependent labels on one page (O2/O3\'s cap). Every O2 count is then reported',
+  'with the distance still to go — 190 image-dependent (hard floor 144), 48 image-negative, >= 45 pages,',
+  '197 control queries per language — and the run prints what auditSample would decide with these labels',
+  '(full / REDUCED POWER / decides nothing). Exit code 1 when the file is refused or the sample decides',
+  'nothing. Touches no database and no model.',
 ].join('\n');

@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "label-packet": "tsx scripts/build-label-packet.ts",
+    "label-packet:validate": "tsx scripts/validate-label-packet.ts"
   },
   "dependencies": {
     "@compendiq/contracts": "*",
