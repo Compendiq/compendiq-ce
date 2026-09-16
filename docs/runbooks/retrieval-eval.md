@@ -1394,6 +1394,22 @@ differs from its arm's retrieval report.
 
 ### Endpoints and the decision rule
 
+> **Loaded context, not the ceiling, is what a reasoning VL model needs
+> (measured 2026-09-16, #1619).** `gemma-4-26b-a4b-it` spends 64–96 % of its
+> output tokens on reasoning and emits 0.5k–7.6k completion tokens per corpus
+> image. Served with `loaded_context_length: 8192` it exhausted the context
+> mid-generation on the verbose images: ~73 s of generation and then an HTTP
+> 400 / a cut reply, which the analysis client classes `malformed` —
+> deterministic, five attempts, `failed_terminal`, and re-opened by nothing
+> (only a `truncated` row re-opens on a ceiling raise). **An operator hitting
+> this sees only `failed` rows on the card, never the cause**, so check the
+> server's loaded context before touching **Max output tokens**: this model
+> family needs **≥ 32k loaded context** for ADR-027's payload bounds at the
+> shipped 8,192 ceiling. Raising the ceiling does not help and makes it worse;
+> the fix is on the inference host. The owner raised it to 36,096 for #1619's
+> arm B rather than change the D8 prompt contract (non-thinking hints shorten
+> the reply and were deliberately NOT adopted).
+
 > **AMENDED 2026-09-16 (#1619, ADR-027 amendment A-1…A-6).** Arm A needs a
 > real VL *embedding* endpoint, the owner has declined to stand one up, and
 > arm A is therefore permanently unobtainable. The **primary is re-registered
