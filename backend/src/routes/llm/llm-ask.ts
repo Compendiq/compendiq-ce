@@ -9,7 +9,7 @@ import {
   initialTitleFromQuestion,
 } from '../../domains/llm/services/conversation-title.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
-import { hybridSearch, buildRagContext, type RetrievalMeta, type SearchResult } from '../../domains/llm/services/rag-service.js';
+import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
 // rag-service export, because expansion is a REQUEST-level stage: /api/search
 // paginates and must never reach it.

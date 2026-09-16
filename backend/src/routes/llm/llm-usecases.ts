@@ -17,8 +17,6 @@ import {
   resolveInlineCompletionUsecase,
   resolveImageAnalysisUsecase,
   resolveConfidenceBasisPair,
-  loadProviderConfig,
-  ProviderNotFoundError,
   type ConfidenceBasisResolution,
 } from '../../domains/llm/services/llm-provider-resolver.js';
 import { VISION_PROBE_TIMEOUT_MS } from '../../domains/llm/services/vision-probe.js';
