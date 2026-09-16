@@ -43,6 +43,14 @@ import {
   type ImageLegOutcome,
   type ImageLegPage,
 } from './image-leg-search.js';
+import { readDerivedProvenance, type DerivedProvenance } from './derived-provenance.js';
+import {
+  bestChunkLateralSql,
+  derivedRankArmSql,
+  lexicalTsQuery,
+  resolveLexicalChunk,
+  type BestChunkColumns,
+} from './lexical-chunk-resolution.js';
 
 /**
  * Latency histogram for retrieval pipeline stages (#1117). `stage` is the one
@@ -162,14 +170,43 @@ interface SearchResult {
    */
   keywordRank: number | null;
   /**
-   * The best chunk's `chunk_index` (document position) when this record's
-   * representative text came from the vector leg; absent for keyword-only
-   * rows. #1106 PR 2's sibling assembly anchors its contiguous window here.
-   * Document order but NOT contiguous — embedding batches skipped on a
-   * context-length 400 leave holes, so consumers order by it, never do
-   * arithmetic on it.
+   * The best chunk's `chunk_index` (document position). #1106 PR 2's sibling
+   * assembly anchors its contiguous window here. Document order but NOT
+   * contiguous — embedding batches skipped on a context-length 400 leave
+   * holes, so consumers order by it, never do arithmetic on it.
+   *
+   * **Present on keyword and pinned rows since #1617** (ADR-027 D10): both
+   * now resolve a page hit to the CHUNK that matched, so both carry an
+   * anchor. It is still ABSENT in three cases, and each one is a claim: the
+   * page has no `page_embeddings` rows at all (the `substring(body_text,1,500)`
+   * fallback, the only surviving use of that prefix); the pin declined the
+   * swap because no chunk matched the identifier (erratum #1617/Q1, so the
+   * row is a budget-sized lede rather than something retrieval picked); or
+   * the row came from the legacy image leg, which reaches a page without
+   * matching any of its text. Sibling assembly reads this as "retrieval
+   * measured this position", so a row that measured nothing must not carry
+   * one.
    */
   chunkIndex?: number;
+  /**
+   * ADR-027 D11 (#1617) — provenance of the IMAGE this chunk's text was
+   * derived from, read from `page_embeddings.metadata` and present only on a
+   * derived chunk (`metadata.source = 'image_analysis'`).
+   *
+   * Set by every leg that can return one: the vector leg, the lexical leg's
+   * derived arm and the #1107 pin. It describes THIS row's `chunkText` and
+   * nothing else — a page found by both legs keeps the vector chunk
+   * (`reciprocalRankFusion`'s never-replace rule), so a row that lost its
+   * derived chunk to a better authored one correctly carries no provenance
+   * and cites no image.
+   *
+   * Two consumers, one shape: `llm-ask.ts` appends a D12 `kind: 'image'`
+   * citation per distinct `(pageId, attachmentSource, attachmentKey)`, and
+   * `retrieved-images.ts` selects answer-time bytes from the same set. Both
+   * go through `derived-provenance.ts`; neither reads `metadata` itself, and
+   * nothing joins `page_image_analyses` at query time.
+   */
+  derived?: DerivedProvenance;
   /**
    * #1106 PR 2 — the assembled sibling window for the LLM context, present
    * only when `assembleContext` ran and this page had fetchable siblings.
@@ -463,6 +500,9 @@ export async function vectorSearch(
           chunk_index: number;
           // `space_key` is NULL for locally-created (standalone) pages, same as
           // `confluence_id` — `SearchResult.spaceKey` has always been nullable.
+          // `metadata` also carries ADR-027 D9.4 provenance on a derived
+          // chunk; `readDerivedProvenance` is the only thing that reads those
+          // keys, so they are not restated here.
           metadata: { page_title: string; section_title: string; space_key: string | null };
           // Nullable BY DECLARATION, not by accident: `pe.<column> <=> $2` is
           // NULL whenever the vector is (a #1116 swap window on the live
@@ -511,18 +551,25 @@ export async function vectorSearch(
               (row): row is typeof row & { distance: number } =>
                 row.distance !== null && row.distance !== undefined,
             )
-            .map((row) => ({
-              pageId: row.page_id,
-              confluenceId: row.confluence_id,
-              chunkText: row.chunk_text,
-              chunkIndex: row.chunk_index,
-              pageTitle: row.metadata.page_title,
-              sectionTitle: row.metadata.section_title,
-              spaceKey: row.metadata.space_key,
-              score: 1 - row.distance, // Convert distance to similarity
-              vectorScore: 1 - row.distance,
-              keywordRank: null,
-            })),
+            .map((row) => {
+              // ADR-027 D11: a derived chunk is an ORDINARY result — same
+              // score, same window, same MMR — plus the provenance its
+              // citation and its answer-time bytes are keyed on.
+              const derived = readDerivedProvenance(row.metadata);
+              return {
+                pageId: row.page_id,
+                confluenceId: row.confluence_id,
+                chunkText: row.chunk_text,
+                chunkIndex: row.chunk_index,
+                pageTitle: row.metadata.page_title,
+                sectionTitle: row.metadata.section_title,
+                spaceKey: row.metadata.space_key,
+                score: 1 - row.distance, // Convert distance to similarity
+                vectorScore: 1 - row.distance,
+                keywordRank: null,
+                ...(derived ? { derived } : {}),
+              };
+            }),
           Number(limit),
         );
         // `rag.hits` counts kept CHUNK rows (post-truncation, up to ~fanout x
@@ -550,7 +597,14 @@ export async function vectorSearch(
 }
 
 /**
- * Keyword search: PostgreSQL full-text search on pages.
+ * Keyword search: PostgreSQL full-text search over `pages.tsv` UNION the
+ * DERIVED per-chunk documents (`page_embeddings.chunk_tsv` where
+ * `metadata.source = 'image_analysis'`), page rank `GREATEST` of the two, and
+ * every surviving page resolved to the CHUNK that matched (ADR-027 D10,
+ * #1617). A fact that exists only inside a screenshot is therefore findable
+ * lexically, and an authored hit deep in a long page now cites that passage
+ * rather than the page's first 500 characters.
+ *
  * Scoped to: Confluence pages in user's selected spaces + standalone articles
  * the user can access (shared, or private and owned by the user).
  *
@@ -599,6 +653,33 @@ export async function keywordSearch(
       const spaceKey = opts?.spaceKey;
 
       const kwSpaces = await getUserAccessibleSpaces(userId);
+      // ADR-027 D10 (#1617). The leg is now two queries' worth of work in
+      // one statement, and the three parts are deliberately separate:
+      //
+      //  - `cand` is the page CANDIDATE UNION: pages whose `pages.tsv`
+      //    matches (unchanged, index-driven, and the ONLY contributor of an
+      //    authored rank) plus pages holding a matching DERIVED chunk. Both
+      //    arms carry `visiblePagesPredicate` and the space narrowing at the
+      //    same parameter indexes — the derived arm reads derived TEXT, so
+      //    D14 must hold inside the query, not over its output.
+      //  - `ranked` collapses the union with `MAX(rank) GROUP BY page_id`,
+      //    which IS the ADR's `GREATEST(ts_rank(pages.tsv,q),
+      //    MAX(ts_rank(derived.chunk_tsv,q)))`, and is what keeps a page with
+      //    five matching images at ONE candidate and ONE vote. The LIMIT
+      //    stays on pages, so the leg's width semantics are unchanged.
+      //  - the outer `LATERAL` resolves each surviving page to the chunk that
+      //    matched, authored or derived. This replaces
+      //    `substring(body_text,1,500)` for EVERY keyword hit — the measured
+      //    change the issue's scope note names (rerank input and the
+      //    `/api/search` hybrid snippet move with it). The prefix survives
+      //    only for a page with no chunk rows at all.
+      //
+      // `pages.tsv` itself is untouched (ADR `:4265-4267`): an authored-only
+      // page's rank is the same `ts_rank` value it was before this change, so
+      // arm C's lexical numbers stand beside the historical ones.
+      const tsq = lexicalTsQuery(parser, ftsLang, 2);
+      const visibility = visiblePagesPredicate(1, 4);
+      const spaceFilter = spaceKey ? ' AND cp.space_key = $5' : '';
       const result = await query<{
         page_id: number;
         confluence_id: string | null;
@@ -606,30 +687,52 @@ export async function keywordSearch(
         space_key: string | null;
         body_text: string;
         rank: number;
-      }>(
-        `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+      } & BestChunkColumns>(
+        `WITH cand AS (
+           SELECT cp.id AS page_id, ts_rank(cp.tsv, ${tsq}) AS rank
+             FROM pages cp
+            WHERE cp.tsv @@ ${tsq}
+              AND ${visibility}
+              AND cp.deleted_at IS NULL${spaceFilter}
+           UNION ALL
+           ${derivedRankArmSql(tsq, visibility, spaceFilter)}
+         ), ranked AS (
+           SELECT page_id, MAX(rank) AS rank
+             FROM cand
+            GROUP BY page_id
+            ORDER BY rank DESC
+            LIMIT $3
+         )
+         SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
                 substring(coalesce(cp.body_text, ''), 1, 500) as body_text,
-                ts_rank(cp.tsv, ${parser}('${ftsLang}', $2)) AS rank
-         FROM pages cp
-         WHERE cp.tsv @@ ${parser}('${ftsLang}', $2)
-           AND ${visiblePagesPredicate(1, 4)}
-           AND cp.deleted_at IS NULL${spaceKey ? ' AND cp.space_key = $5' : ''}
-         ORDER BY rank DESC
-         LIMIT $3`,
+                ranked.rank AS rank,
+                best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
+           FROM ranked
+           JOIN pages cp ON cp.id = ranked.page_id
+           ${bestChunkLateralSql(tsq)}
+          ORDER BY rank DESC`,
         spaceKey ? [kwSpaces, trimmed, limit, userId, spaceKey] : [kwSpaces, trimmed, limit, userId],
       );
 
-      const mapped = result.rows.map((row) => ({
-        pageId: row.page_id,
-        confluenceId: row.confluence_id,
-        chunkText: row.body_text,
-        pageTitle: row.title,
-        sectionTitle: row.title,
-        spaceKey: row.space_key,
-        score: row.rank,
-        vectorScore: null,
-        keywordRank: row.rank,
-      }));
+      const mapped = result.rows.map((row) => {
+        const resolved = resolveLexicalChunk(row, {
+          text: row.body_text,
+          sectionTitle: row.title,
+        });
+        return {
+          pageId: row.page_id,
+          confluenceId: row.confluence_id,
+          chunkText: resolved.chunkText,
+          pageTitle: row.title,
+          sectionTitle: resolved.sectionTitle,
+          spaceKey: row.space_key,
+          score: row.rank,
+          vectorScore: null,
+          keywordRank: row.rank,
+          ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
+          ...(resolved.derived ? { derived: resolved.derived } : {}),
+        };
+      });
       span?.setAttribute('rag.hits', mapped.length);
       recordHistogram(
         RETRIEVAL_STAGE_DURATION_METRIC,
@@ -1511,11 +1614,47 @@ async function lookupIdentifier(
   // 0/off falls back to the old fixed lede rather than to nothing.
   const budget = await getRagContextCharsPerPage();
   const excerptChars = budget > 0 ? budget : PIN_EXCERPT_FALLBACK_CHARS;
-  const select = `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
-                         substring(cp.body_text, 1, $5) AS excerpt
-                  FROM pages cp
-                  WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
-  type Row = { page_id: number; confluence_id: string | null; title: string; space_key: string | null; excerpt: string | null };
+  // ADR-027 D10 gives the pin the same chunk resolution as the keyword leg,
+  // over a tsquery built from the IDENTIFIER — which is what makes an
+  // OCR-only `INC-2203` cite the description that contains it instead of the
+  // page's opening prose.
+  //
+  // **Erratum #1617/Q1 (owner decision).** The swap happens ONLY when a
+  // chunk really matches (`best.chunk_matched`). Read literally, ADR
+  // `:4276` ("a title-only match therefore yields chunk 0") would replace
+  // this stage's `rag_context_chars_per_page`-sized lede with one ~1-2k
+  // chunk on every "find the page called X" pin — and this is the one row
+  // sibling assembly cannot reach (it runs before this stage, so the row can
+  // never grow a window back), which is exactly why #1273 F9 widened the
+  // excerpt to the per-page budget in the first place. So a bare identifier
+  // pin keeps its budget lede, and only a real `chunk_tsv @@ q` hit is
+  // better evidence than it.
+  //
+  // `chooseLexicalParser` guards the same failure the keyword leg guards: a
+  // `title` identifier is an arbitrary page title, and websearch_to_tsquery
+  // ERRORS on punctuation shapes plainto merely flattens. A pin must never
+  // fail the search.
+  const ftsLang = await getFtsLanguage();
+  const identParser = chooseLexicalParser(ident.value);
+  // The excerpt parameter is $5 in every branch; the identifier tsquery text
+  // goes LAST because each branch numbers its own tail differently (an
+  // UNREFERENCED parameter cannot type-infer and kills the statement).
+  const selectWith = (tsqTextParam: number): string => {
+    const tsq = lexicalTsQuery(identParser, ftsLang, tsqTextParam);
+    return `SELECT cp.id AS page_id, cp.confluence_id, cp.title, cp.space_key,
+                   substring(cp.body_text, 1, $5) AS excerpt,
+                   best.chunk_text, best.chunk_index, best.metadata, best.chunk_matched
+            FROM pages cp
+            ${bestChunkLateralSql(tsq)}
+            WHERE ${visiblePagesPredicate(1, 3)} AND cp.deleted_at IS NULL`;
+  };
+  type Row = {
+    page_id: number;
+    confluence_id: string | null;
+    title: string;
+    space_key: string | null;
+    excerpt: string | null;
+  } & BestChunkColumns;
   const limit = IDENTIFIER_LOOKUP_CANDIDATES;
   let rows: Row[] = [];
   if (ident.kind === 'pageId') {
@@ -1531,13 +1670,13 @@ async function lookupIdentifier(
     // preference this ORDER BY exists to state.
     const r = fitsInt4
       ? await query<Row>(
-          `${select} AND (cp.confluence_id = $2 OR cp.id = $4)
+          `${selectWith(7)} AND (cp.confluence_id = $2 OR cp.id = $4)
            ORDER BY (cp.confluence_id = $2) DESC NULLS LAST, cp.id ASC LIMIT $6`,
-          [spaces, ident.value, userId, n, excerptChars, limit],
+          [spaces, ident.value, userId, n, excerptChars, limit, ident.value],
         )
       : await query<Row>(
-          `${select} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
-          [spaces, ident.value, userId, limit, excerptChars],
+          `${selectWith(6)} AND cp.confluence_id = $2 ORDER BY cp.id ASC LIMIT $4`,
+          [spaces, ident.value, userId, limit, excerptChars, ident.value],
         );
     rows = r.rows;
   } else if (ident.kind === 'issueKey') {
@@ -1569,9 +1708,9 @@ async function lookupIdentifier(
     const boundedKey = `(^|[^0-9A-Za-z._-])${ident.value}${boundary}`;
     const startsWithKey = `^${ident.value}${boundary}`;
     const titled = await query<Row>(
-      `${select} AND cp.title ~* $2
+      `${selectWith(7)} AND cp.title ~* $2
        ORDER BY (cp.title ~* $4) DESC, length(cp.title) ASC, cp.id ASC LIMIT $6`,
-      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit],
+      [spaces, boundedKey, userId, startsWithKey, excerptChars, limit, ident.value],
     );
     rows = titled.rows;
   } else if (ident.kind === 'title') {
@@ -1584,10 +1723,10 @@ async function lookupIdentifier(
     // the two cannot drift; translate() runs before the \s+ collapse
     // because Postgres's \s is ASCII-only.
     const r = await query<Row>(
-      `${select} AND cp.title % $2
+      `${selectWith(8)} AND cp.title % $2
        AND ${NORMALIZED_TITLE('cp.title', '$6', '$7')} = ${NORMALIZED_TITLE('$2', '$6', '$7')}
        ORDER BY cp.id ASC LIMIT $4`,
-      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN],
+      [spaces, ident.value, userId, limit, excerptChars, UNICODE_SPACES, UNICODE_SPACES_AS_PLAIN, ident.value],
     );
     rows = r.rows;
   } else {
@@ -1609,24 +1748,34 @@ async function lookupIdentifier(
     // collection, and this stage returns pages.
     return [];
   }
-  return rows.map((row) => ({
-    pageId: row.page_id,
-    confluenceId: row.confluence_id,
-    // Head-of-body excerpt — deliberately NOT sibling-assembled (assembly
-    // ran before this stage; #1273 review M7 records the scope line): for
-    // "find page X" the lede is the honest context, and an empty
-    // body_text yields an empty excerpt under a real title.
-    chunkText: row.excerpt ?? '',
-    pageTitle: row.title,
-    sectionTitle: row.title,
-    spaceKey: row.space_key,
-    // Ordering-only, like every other producer's score; pinned rows lead
-    // by ARRAY position and consumers never re-sort.
-    score: 0,
-    vectorScore: null,
-    keywordRank: null,
-    pinned: true as const,
-  }));
+  return rows.map((row) => {
+    // The matched chunk when one matched; otherwise the head-of-body excerpt,
+    // which is deliberately NOT sibling-assembled (assembly ran before this
+    // stage; #1273 review M7 records the scope line): for "find page X" the
+    // lede is the honest context, and an empty body_text yields an empty
+    // excerpt under a real title.
+    const resolved = resolveLexicalChunk(
+      row,
+      { text: row.excerpt ?? '', sectionTitle: row.title },
+      'on-match',
+    );
+    return {
+      pageId: row.page_id,
+      confluenceId: row.confluence_id,
+      chunkText: resolved.chunkText,
+      pageTitle: row.title,
+      sectionTitle: resolved.sectionTitle,
+      spaceKey: row.space_key,
+      // Ordering-only, like every other producer's score; pinned rows lead
+      // by ARRAY position and consumers never re-sort.
+      score: 0,
+      vectorScore: null,
+      keywordRank: null,
+      pinned: true as const,
+      ...(resolved.chunkIndex !== undefined ? { chunkIndex: resolved.chunkIndex } : {}),
+      ...(resolved.derived ? { derived: resolved.derived } : {}),
+    };
+  });
 }
 
 interface ImageLegRows {
