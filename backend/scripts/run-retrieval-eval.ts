@@ -74,7 +74,6 @@
  *   EVAL_IMAGE_EMBEDDING_BACKEND    optional provenance label for the report
  * (required on --arm A, REFUSED on --arm B and --arm C.)
  */
-import { setTimeout } from 'node:timers/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { markdownToHtml, htmlToText } from '../src/core/services/content-converter.js';
@@ -92,7 +91,8 @@ import { runEval } from '../src/domains/llm/eval/runner.js';
 import { runArmEval, runImageEval } from '../src/domains/llm/eval/runner-images.js';
 import { armRuns } from '../src/domains/llm/eval/images-metrics.js';
 import { buildImageAxisReport, formatImageAxisVerdict, type ImageAxisReport } from '../src/domains/llm/eval/images-report.js';
-import { assertArmCState, assertSingleAnalysisVersionPair, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readArmImageEnv, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { assertArmCState, commandLine, compareArmRetrieval, formatPairedBinary, imageEvidenceRecallAtK, imageNegativeLeakAt1, parseArmFlag, parseArmRunReport, querySetSha, readArmBState, readArmImageEnv, readHeldFixedProvenance, readRevisionSha, type ArmBState, type ArmRunReport, type EvalArm } from '../src/domains/llm/eval/arms.js';
+import { driveArmBBackfill } from '../src/domains/llm/eval/arm-b-backfill.js';
 import { percentile } from '../src/domains/llm/eval/latency-stats.js';
 import { flushSearchAnalytics } from '../src/domains/llm/services/rag-service.js';
 import { recallAtK, meanReciprocalRank, pairedBootstrapCi, pairedSignificance, winLoss, type QueryRun } from '../src/domains/llm/eval/metrics.js';
@@ -117,6 +117,13 @@ interface Report {
    */
   ftsLanguage: string;
   corpusManifestSha: string;
+  /**
+   * #1619: the revision the run measured, where git could answer for a clean
+   * tree. Absent on a dirty or history-less checkout — and a control without
+   * it cannot serve as either side of `--control-legacy-c`'s cross-revision
+   * pair (`scoreLegacyRevisionControls`).
+   */
+  revisionSha?: string;
   redundantSlots?: number;
   returnedSlots?: number;
   meanPairwiseSimilarity?: number;
@@ -579,6 +586,22 @@ async function measureTextAxis(ctx: AxisContext): Promise<Report> {
     ftsLanguage,
     axis: TEXT_AXIS,
     corpusManifestSha: fixture.corpusManifestSha,
+    // #1619 (ADR-027 amendment A-3): the revision this control was measured
+    // on, so `--control-legacy-c` can CERTIFY that its pair really spans two
+    // revisions instead of labelling whatever it was handed. Recorded only
+    // where `readRevisionSha` can answer for the tree — a dirty or
+    // history-less checkout records none and is refused as either side of
+    // the legacy pair, rather than silently passing as one revision or the
+    // other. The text gate itself is not gated on it: a developer iterating
+    // on a dirty tree still gets a report, it just cannot serve as a
+    // cross-revision control.
+    ...(() => {
+      try {
+        return { revisionSha: readRevisionSha() };
+      } catch {
+        return {};
+      }
+    })(),
     redundantSlots,
     returnedSlots,
     meanPairwiseSimilarity,
@@ -725,53 +748,31 @@ async function measureImageAxis(ctx: AxisContext, imageEnv: ImageAxisEnv): Promi
 /**
  * Arm B's index state is "backfill complete on the corpus", and the backfill
  * is the PRODUCT's vision-analysis worker (#1616) running against this
- * database on the candidate revision — never a copy inside the harness. So
- * the run seeds, then waits for `page_image_analyses` to carry a VALID row
- * per corpus image — D5's validity predicate, not `status = 'analyzed'`
- * alone: the row's `identity_hash` must be the retained identity of the
- * assignment this run read (`readArmBState`, before the seed), and every
- * valid row must carry ONE (prompt, schema) version pair, which the report
- * records. A sweep-invalidated row (identity drift, a version bump) is a row
- * the product would not compose, and it does not count here either. The
- * version constants themselves live in the candidate revision's contracts
- * package; this revision reads what the rows carry and refuses a mix.
+ * database on the candidate revision — never a copy inside the harness. The
+ * run now DRIVES that worker (`eval/arm-b-backfill.ts`) instead of waiting
+ * for a human to drive a second process: the analyses and the re-embed the
+ * derived chunks need are both the product's own entrypoints, and they run
+ * inside the process that owns this run's `ATTACHMENTS_DIR`.
+ *
+ * What "complete" means is unchanged — D5's validity predicate, not
+ * `status = 'analyzed'` alone: the row's `identity_hash` must be the retained
+ * identity of the assignment this run read (`readArmBState`, before the
+ * seed), and every valid row must carry ONE (prompt, schema) version pair,
+ * which the report records.
  */
-async function awaitArmBBackfill(state: ArmBState, expectedImages: number, timeoutMs: number): Promise<{ prompt: number; schema: number }> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const valid = await query<{ n: number; versions: number; prompt: number | null; schema: number | null }>(
-      `SELECT COUNT(*)::int AS n,
-              COUNT(DISTINCT (prompt_version, schema_version))::int AS versions,
-              MIN(prompt_version)::int AS prompt,
-              MIN(schema_version)::int AS schema
-         FROM page_image_analyses WHERE status = 'analyzed' AND identity_hash = $1`,
-      [state.identityHash],
-    );
-    const n = valid.rows[0]?.n ?? 0;
-    if (n >= expectedImages) {
-      // D5's validity is "one (prompt, schema) pair over the valid rows"; the
-      // refusal itself lives in `arms.ts` so it is unit-testable rather than
-      // only pinned as this script's source text (review r2 finding 6).
-      const versions = assertSingleAnalysisVersionPair({
-        analyzed: n,
-        versions: valid.rows[0]?.versions ?? 0,
-        prompt: valid.rows[0]?.prompt ?? null,
-        schema: valid.rows[0]?.schema ?? null,
-      });
-      console.log(`arm B: ${n}/${expectedImages} corpus images analysed under ${state.visionModel.identity} (prompt v${versions.prompt}, schema v${versions.schema}) — backfill complete`);
-      return versions;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `--arm B: ${n}/${expectedImages} corpus images carry a valid analysis (status analyzed under the assignment's ` +
-          `identity ${state.identityHash.slice(0, 12)}…). The backfill (the product's image-analysis worker, run against ` +
-          'THIS database with image_analysis assigned) must complete before the queries are made — start it and pass ' +
-          '--backfill-timeout <sec> to wait for it here.',
-      );
-    }
-    console.log(`arm B: waiting for the backfill — ${n}/${expectedImages} valid`);
-    await setTimeout(5000);
-  }
+async function runArmBBackfill(state: ArmBState, expectedImages: number, timeoutMs: number): Promise<{ prompt: number; schema: number }> {
+  const backfill = await driveArmBBackfill(state, expectedImages, {
+    userId: EVAL_USER_ID,
+    timeoutMs,
+    onProgress: (line) => console.log(`arm B: ${line}`),
+  });
+  console.log(
+    `arm B: ${backfill.analyses}/${expectedImages} corpus images analysed under ${state.visionModel.identity} ` +
+      `(prompt v${backfill.versions.prompt}, schema v${backfill.versions.schema}) in ${backfill.batches} batch(es) ` +
+      `over ${(backfill.wallMs / 60000).toFixed(1)} min, ${backfill.pagesReEmbedded} page(s) re-embedded in ` +
+      `${backfill.embedPasses} pass(es) — backfill complete (O11: reported, never gated)`,
+  );
+  return backfill.versions;
 }
 
 /**
@@ -845,7 +846,7 @@ async function measureArmAxis(
     if ((rows.rows[0]?.n ?? 0) !== 0) {
       throw new Error(`arm ${arm}: page_image_embeddings carries ${rows.rows[0]!.n} rows after a no-image-index seed — this database is not in arm ${arm}'s state`);
     }
-    if (arm === 'B') imageAnalysisVersions = await awaitArmBBackfill(opts.armBState!, expectedImages, opts.backfillTimeoutMs);
+    if (arm === 'B') imageAnalysisVersions = await runArmBBackfill(opts.armBState!, expectedImages, opts.backfillTimeoutMs);
     // C's state on the database itself, not only on the top-K each query
     // returns: a derived row outside every window is invisible to the runner.
     if (arm === 'C') await assertArmCState();
