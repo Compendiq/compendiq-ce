@@ -5475,3 +5475,118 @@ itself is genuinely outside the dump set, and so is the capability verdict in
 - **Two dirty flags and two image tables coexist until #1618.** That is the
   cost of keeping the current release serving during qualification; #1616
   raises both flags from every writer, and #1618 drops the old ones.
+
+### Amendment (2026-09-16, #1619): the gate is re-registered B vs C, and no human judgement was taken
+
+The measurement plan above pre-registers a three-arm comparison whose primary
+endpoint is **B vs A**. Arm A requires an `image_embedding` assignment against
+a real vision-language *embedding* endpoint. The only configured provider
+serves text embedders, a reranker and a generative VL model; the owner has
+declined to stand a VL embedding endpoint up, the stated goal being to remove
+VL embedding from the product entirely. **Arm A is therefore unobtainable
+permanently, not merely un-run**, and every endpoint that named it is
+re-registered or retired here, in writing, before anything was measured.
+Nothing below was applied silently: the diff that implements it is
+A-6, and `decideGate` prints every condition, including the retired one.
+
+**A-1 — the PRIMARY endpoint is re-registered as B vs C.** Image-dependent
+answer correctness, **B vs C**, paired per query, single judge, blind to arm;
+margin +5 pp (O1 unchanged) with a cluster-bootstrap 95 % CI excluding 0. The
+primary now measures **vision enrichment alone on one revision**, not the
+whole product change: B − A, the whole-product comparison, is abandoned. Power
+carries over unchanged (ψ = 0.30, δ = 0.15, ρ = 0.10, design effect 1.4,
+N = 190, hard floor 144) **with the mechanism argument written out**: arm C,
+like arm A's text-only answer model, has no image evidence at all, and
+strictly less than arm A (which at least ranks the image's page), so the
+discordant share cannot plausibly be smaller than the A-vs-B assumption. The
+30-pair pilot and the ψ < 0.20 stop still apply, over C/B pairs. Secondary
+endpoints become citation faithfulness B vs C and refusal rate B vs C; "B vs
+A" and "C vs A" leave the endpoint table.
+
+**A-2 — O5 (image-evidence R@5) is RETIRED, not re-registered.** The endpoint
+was a paired non-inferiority test of B against arm A's embedding leg. Under
+B vs C it has no comparator: arm C reports no image evidence by rule, so
+`compareArmRetrieval` sets the paired endpoint to `null` by construction. The
+owner retired the guardrail outright rather than converting it to an absolute
+floor on B. **The gate therefore carries no image-evidence guardrail.** The
+code must make that absence explicit, and does: the condition is printed with
+verdict `retired`, names what was retired and the power it had, and is
+excluded from the aggregation. Arm B's own `imageEvidenceRecallAt5` stays on
+its run report as a descriptive number that no condition reads.
+
+**A-3 — the text non-inferiority control.** `B vs C` is δ ≡ 0 by construction
+(the two arms differ only in `image_analysis`, which the text gate never
+consults) and cannot fail; it is kept because O4 pre-registers it and a
+condition that cannot fail must still be stated as such. The real
+text-regression detector is re-registered as **C (candidate revision) vs C
+(legacy revision)** — the `legacy-revision-C` control this ADR already names —
+because that is the pair that carries #1617's lexical chunk-resolution change
+and needs nothing but the text embedder. The harness labelled that pair
+"C vs A" when it was supplied through `--control-a` and checked no revision at
+all; the flag is renamed `--control-legacy-c`, text-gate reports now record
+`revisionSha`, and the scorer refuses a side without one or two sides sharing
+a revision.
+
+**A-4 — safety endpoints.** O6 (unsupported claims, ≤ +3 pp, one-sided upper
+bound) re-registers cleanly as B vs C. O7 (leakage@1, ≤ 2 of 48) becomes an
+**absolute cap on arm B**, because arm C's image-negative leakage is
+identically 0 for every negative: the margin is read as "B leaks at most 2 of
+the 48 image-negative labels", never as "no worse than the legacy leg". A
+negative slice smaller than O2's 48 reads `inconclusive` rather than passing.
+
+**A-5 — what retirement may and may not conclude.**
+*Retirement of `page_image_embeddings` (#1618 stage 2) proceeds on the ground
+that the path was **unused in production** and carries maintenance cost —
+NOT because a measurement justified it.* No measured comparison against the
+legacy leg exists or can exist. #1619's value is regression evidence, not
+permission.
+*Also, and decisively for how the figures on record must be read:* **no human
+answer-correctness judgement was taken.** After arm A became unobtainable the
+owner declined the judging burden (≈ 1,000 items across arms, ~30 judge-hours
+at O13's rate), so the primary endpoint above was **not** measured: no judging
+sheet was produced, no `judgments-*.jsonl` exists, and no verdict document was
+un-blinded. What is on record for #1619 is **retrieval metrics only** —
+R@1/3/5/10, MRR, image-evidence recall, image-negative leakage and latency,
+per arm, with provenance — and this ADR must not be read as reporting the
+pre-registered primary endpoint. O15's labelling packet and its validator
+exist and are shipped, unused, for whoever later wants that number: the
+labelling pass plus the judging pass are all that stand between this record
+and a decided primary.
+*May be concluded from the retrieval numbers:* whether ingestion-time image
+analysis indexed as text changes ordinary retrieval on the image corpus, and
+whether arm B's derived chunks reach the top-K and leak into the image-negative
+slice. *May NOT be concluded:* anything at all about the legacy ADR-025 image
+leg, and any claim about answer quality. ADR-025's "Measured" section stays
+historical evidence about the legacy design and is never re-labelled; an
+"improved RAG" claim, if made, is scoped to "better than no image analysis",
+never "better than image embeddings".
+
+**A-6 — the code changes this amendment authorises.** `--unblind`'s required
+set is `{B, C}` and it refuses a primary with no registered comparator (arm A
+stays accepted, optional, and scored as a secondary pairing);
+`assertComparableArms(c, b, …)` is the load-bearing pair; `scoreJudgedPair`
+and `compareArmRetrieval` run C/B; `decideGate` takes an absolute leakage cap
+and emits the retired O5 condition explicitly; `pilotCheck` defaults to C/B;
+condition names carry the arms they scored; `--control-a` becomes
+`--control-legacy-c` with a revision check; `sources[].attachmentUrl` is
+stripped from the judging sheet and added to the blinding guard's forbidden
+keys, because it is present only on an arm with an image leg and therefore
+separates exactly the two arms the amended primary compares — the runbook's
+"for the primary B-vs-A pair the blinding holds … C is the separable arm" is
+falsified by A-1 and has been corrected.
+
+**Recorded beside the amendment: the output-token ceiling is a property of the
+deployment, not of the ADR.** Measured 2026-09-16 on `gemma-4-26b-a4b-it`
+(RTX 3090, LM Studio) over five corpus images at both candidate ceilings: the
+model reasons before every reply (64–96 % of its output tokens), five of five
+images produced a valid payload at 8,192 and four of five at 16,384, and the
+worst image took 114.4 s of the 120 s per-image budget
+(`ANALYSIS_TIMEOUT_MS`). The binding constraint is neither the ceiling nor the
+budget but the provider's **loaded context window of 8,192 tokens**
+(`max_context_length` 262,144): prompt plus completion cannot exceed it, so a
+ceiling above 8,192 cannot be reached and merely lets a reply run past the
+context and come back cut — classed `malformed` rather than `truncated`, which
+D8/D13 do not re-open by raising the ceiling. The ceiling was therefore fixed
+at the shipped default **8,192**, and the remedy for an image that overruns is
+a larger loaded context on the inference host, not a higher ADR ceiling and
+not a longer timeout.

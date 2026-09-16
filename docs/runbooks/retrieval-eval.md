@@ -1154,8 +1154,9 @@ npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json
 # markdown with no attachments, so nothing on them can be analysed and no derived chunk
 # can exist: B's and C's states differ only where images do. So the B-vs-C text
 # control is δ ≡ 0 BY CONSTRUCTION and that gate condition cannot fail; the pair that
-# can detect a text regression is C vs A, which is where #1617's lexical chunk
-# resolution differs (ADR-027 endpoint table, Control row erratum). Capture B's anyway
+# can detect a text regression is candidate C vs LEGACY-revision C, which is where
+# #1617's lexical chunk resolution differs (ADR-027 amendment A-3; before it, that
+# pair was mislabelled "C vs A" and no revision was checked at all). Capture B's anyway
 # — the report is the arm's configuration, never a copy of another arm's file, and a
 # non-zero δ there would mean the two states differ where this recipe says they cannot.
 #   on the candidate revision, image_analysis UNASSIGNED:
@@ -1165,9 +1166,12 @@ npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out cont
 #   database and finds no attachment to analyse — that is the state's claim):
 npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-B.json
 npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-B.json
-#   on A's legacy revision (the text gate never touches the image leg):
-npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-A.json
-npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-A.json
+#   on the LEGACY revision (#1619 amendment A-3: this is the text-regression
+#   detector — candidate C vs legacy C — and it replaces the unobtainable arm A's
+#   controls. Each report records `revisionSha`, and --control-legacy-c refuses a
+#   pair whose two sides do not carry two different revisions):
+npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-legacy.json
+npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-legacy.json
 
 # One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts
 npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/ \
@@ -1175,15 +1179,15 @@ npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/
   --mappings artifacts/mapping-A-<date>.json,artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
 # … the judge fills artifacts/judgments-sheet-<date>.jsonl from answers-sheet-<date>.jsonl ALONE …
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl --judgments artifacts/judgments-sheet-<date>.jsonl
-# The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent A/B
+# The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent C/B
 # pairs in judgedAt order, one aggregate number. Exit code 3 = STOP (ψ < 0.20).
 # --mapping is the operator's file and never reaches the judge.
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl \
   --judgments artifacts/judgments-sheet-<date>.jsonl --mapping artifacts/mapping-sheet-<date>.json
 npx tsx scripts/judge-arms.ts --unblind --run-id sheet-<date> --out-dir artifacts/ \
-  --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json \
+  --arm-report B=arm-B.json,C=arm-C.json \
   --control-b control-en-B.json,control-de-B.json --control-c control-en-C.json,control-de-C.json \
-  --control-a control-en-A.json,control-de-A.json \
+  --control-legacy-c control-en-legacy.json,control-de-legacy.json \
   --out artifacts/verdict-sheet-<date>.json
 ```
 
@@ -1390,6 +1394,22 @@ differs from its arm's retrieval report.
 
 ### Endpoints and the decision rule
 
+> **AMENDED 2026-09-16 (#1619, ADR-027 amendment A-1…A-6).** Arm A needs a
+> real VL *embedding* endpoint, the owner has declined to stand one up, and
+> arm A is therefore permanently unobtainable. The **primary is re-registered
+> as B vs C**; **O5's image-evidence guardrail is RETIRED** (printed as a
+> `retired` condition, excluded from the aggregation — never a missing row);
+> **O7 becomes an absolute cap on arm B** (≤ 2 of 48; arm C leaks 0 by
+> construction); the text-regression detector is **candidate C vs
+> legacy-revision C**, supplied through **`--control-legacy-c`** (which
+> replaces `--control-a` and refuses a pair that does not span two
+> revisions); the pilot reads **C/B** pairs; and `sources[].attachmentUrl` is
+> **stripped from the sheet**. Read every "B vs A" and "C vs A" below as the
+> superseded pre-registration. **No human judging was taken for #1619** (the
+> owner declined the burden), so what is on record is retrieval metrics only
+> — the paragraphs below describe the protocol that remains available, not a
+> measurement that happened.
+
 Primary: **image-dependent answer correctness, B vs A, paired per query**,
 judged blind to arm against the source image — McNemar exact on the
 discordant pairs plus a 95% cluster-bootstrap CI resampling pages. Secondary:
@@ -1555,18 +1575,18 @@ condition of the decision rule with its interval, and sets the exit code to
 non-zero for anything but a pass.
 
 **One sentence for the judge, about `attachmentUrl`.** A row's
-`sources[].attachmentUrl` is present only where the arm surfaced an image
-source (A's leg hit, B's D11 citation) and never on C. It is part of the
-ADR's row shape — the judge needs to see what the answer cited — so it
-stays, and it is therefore a per-row **tell**: read it as a citation, never
-as evidence of quality, and never as a reason to guess which arm wrote a
-row. Every other arm-revealing key is refused outright by the blinding
-walk. **What that tell can and cannot separate:** for the primary B-vs-A
-pair it separates nothing, because both arms carry the field wherever an
-image source surfaced; it is absent from EVERY arm C row by construction, so
-**C is the separable arm** — and C's correctness is a secondary endpoint
-judged by the same person. Judge C's rows as citations like any other; do
-not treat the field's absence as information about the answer.
+`sources[].attachmentUrl` is **no longer written to the judge's file**
+(#1619). It is present only where an arm surfaced an image source (A's leg
+hit, B's D11 citation) and absent from every arm C row by construction, so
+under the amended **B-vs-C** primary it separates exactly the two arms the
+primary compares — it was a tolerable secondary-endpoint nuisance under the
+old B-vs-A primary and is a tell on the primary pair itself under this one.
+The row now carries `sources[{pageTitle}]` and nothing else, `attachmentUrl`
+is on the blinding guard's forbidden-key list so every READ refuses a row
+carrying it (a hand-edited or pre-amendment sheet included), and the judge
+reads the cited pictures off `evidenceImages` — the label's own expected
+images, identical on every arm — plus the corpus. Every other arm-revealing
+key is refused outright by the same walk.
 
 **Refusals are two different things.** The route's `refusalReason` is
 counted in `provenance-<runId>.json` and NEVER written to the judge's file.

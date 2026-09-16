@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The ADR-027 gate is re-registered B vs C, and no condition can be dropped
+  in silence (#1619).** Arm A needs a real vision-language *embedding*
+  endpoint; the owner declined to stand one up (the goal being to remove VL
+  embedding entirely), so arm A is permanently unobtainable and every
+  endpoint that named it is re-registered or retired in writing — ADR-027
+  "Amendment (2026-09-16, #1619)", drafted A-1…A-6. `--unblind` now requires
+  `{B, C}` and refuses a primary with no registered comparator (an arm A
+  report is still accepted and scored as a secondary pairing); the primary,
+  the secondary pairs, the pilot and the safety endpoints run C → B, and each
+  condition names the arms it scored. **O5's image-evidence guardrail is
+  retired**: under B vs C the paired endpoint is null by construction and
+  `decideGate` used to omit the row, so a B-vs-C run would have passed a rule
+  one condition shorter than the one on record — it is now printed as a
+  `retired` condition and excluded from the aggregation. **O7 becomes an
+  absolute cap on arm B's own image-negative leakage** in queries (arm C leaks
+  0 on every negative by construction, so the paired reading compared against
+  a constant), and a slice below O2's 48 negatives reads `inconclusive`.
+  `--control-a` becomes **`--control-legacy-c`**: text-gate reports record
+  `revisionSha` where git can answer for a clean tree, and the scorer refuses
+  a side without one or two sides sharing a revision — nothing checked the
+  revision before, so legacy controls were published under the label "C vs
+  A". `sources[].attachmentUrl` is **stripped from the judging sheet** and
+  added to the blinding guard's forbidden keys: it is present only on an arm
+  with an image leg, so under the amended primary it separates exactly the two
+  arms being compared. **Retirement of the legacy image-embedding path
+  (#1618 stage 2) proceeds because it was unused in production and carries
+  maintenance cost — not because a measurement justified it — and no human
+  answer-correctness judgement was taken for #1619** (the owner declined the
+  judging burden), so the figures on record are retrieval metrics only; the
+  ADR says both plainly.
+
+### Fixed
+
+- **`--arm B` reaches arm B's index state unattended (#1619).** Two gaps, both
+  the harness's: the image seeder never raised `pages.image_analysis_dirty` —
+  that flag IS the analysis queue (ADR-027 D6.2) and migration 116's
+  initial-backlog UPDATE runs before any corpus page exists — so the reconcile
+  claimed nothing, no analysis was ever written and the run died at its
+  `--backfill-timeout` reporting 0/187; and nothing re-embedded afterwards,
+  while `embedPage` is the only writer of derived `page_embeddings` rows, so
+  the top-K carried no derived chunk and the run was refused at the 50%
+  image-evidence floor. The seeder now raises the flag through the product's
+  own writer (`markPageImagesDirty`), and `eval/arm-b-backfill.ts` drives the
+  product's own entrypoints — `runImageAnalysisBatch()` then
+  `processDirtyPages()` — from inside the process that owns the run's
+  `ATTACHMENTS_DIR`, which is what an external driver could not see. It
+  refuses a state it cannot advance (a `failed_terminal` row under the ceiling
+  in force, an intake skip, an unassigned or drifted identity, a failing embed
+  pass) instead of spinning to the deadline.
+
 ### Added
 
 - **O15 labelling packet and validator (ADR-027, #1619).** The gate's primary
