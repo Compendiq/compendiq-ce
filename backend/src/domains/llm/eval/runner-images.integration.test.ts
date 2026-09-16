@@ -63,6 +63,7 @@ const { invalidateRagImageLegCache } = await import('../../../core/services/admi
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
 const { imageEvidenceRecallAtK, assertArmCState, readArmBState, readImageAnalysisAssignment } = await import('./arms.js');
+const { bumpProviderCacheVersion } = await import('../services/cache-bus.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -600,9 +601,12 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect((await readArmBState()).visionModel.identity).toContain('qwen2.5-vl-7b');
 
     // Neither arm calls a row that resolves to no model an assignment: the
-    // one reader decides it once.
+    // one reader decides it once. The provider's own columns are cached by
+    // `resolveImageAnalysisUsecase`, so clearing `default_model` bumps the
+    // cache exactly as editing a provider in Settings does.
     await query(`UPDATE llm_usecase_assignments SET model = NULL, updated_at = NOW() WHERE usecase = 'image_analysis'`);
     await query(`UPDATE llm_providers SET default_model = NULL WHERE id = $1`, [provider.rows[0]!.id]);
+    await bumpProviderCacheVersion();
     expect(await readImageAnalysisAssignment()).toBeNull();
     await expect(assertArmCState()).resolves.toBeUndefined();
     await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model/);

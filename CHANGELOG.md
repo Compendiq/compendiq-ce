@@ -64,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model, output-token ceiling and analysis version pair); `--arm B` refuses
   a wrong revision right after the migrations, before the corpus is seeded,
   and `--arm C` asserts the ablation's state on the database rather than on
-  a top-K window, reading `image_analysis` through the very predicate arm B
+  a top-K window, reading `image_analysis` through the product's own resolver, the very predicate arm B
   requires — a resolvable provider and model, so migration 115's seeded
   `('image_analysis', NULL, NULL)` row is the unassigned state both arms
   agree on and not an assignment that refuses the arm. A report is refused

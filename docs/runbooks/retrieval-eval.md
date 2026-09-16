@@ -1256,8 +1256,10 @@ lands; the rule itself is unit-tested (`pilotCheck`, `pilotDiscordance`).
 database, so that row is present and unassigned on a freshly migrated
 instance and `--arm C` runs there. `assertArmCState` and arm B's
 `readArmBState` read it through ONE function
-(`readImageAnalysisAssignment`), so the state B demands is exactly the state
-C refuses. To take a real assignment away, clear `provider_id` and `model`
+(`readImageAnalysisAssignment`), which is the product's own
+`resolveImageAnalysisUsecase` — so the state B demands is exactly the state
+C refuses, and both are what the product would call. To take a real
+assignment away, clear `provider_id` and `model`
 in Settings → AI Models (or leave the seeded row as it is); deleting the row
 is not required and the run never deletes it.
 

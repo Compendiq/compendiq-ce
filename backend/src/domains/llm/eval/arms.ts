@@ -43,7 +43,7 @@ import {
   getRagRankingPriorWeight,
   getRagRerankCandidates,
 } from '../../../core/services/admin-settings-service.js';
-import { resolveRerankUsecase, resolveUsecase } from '../services/llm-provider-resolver.js';
+import { resolveImageAnalysisUsecase, resolveRerankUsecase, resolveUsecase } from '../services/llm-provider-resolver.js';
 import { flagValue } from './cli-flags.js';
 import { IMAGE_AXIS_ENV, readImageAxisEnv, wantsImageAxis, type ImageAxisEnv } from './images-axis.js';
 import { IMAGE_DEPENDENT_CLASSES, IMAGE_FIXTURE_PATH } from './fixture.js';
@@ -544,24 +544,25 @@ export interface ImageAnalysisAssignment {
  * decide OPPOSITE things on it — arm B refuses without it (O8), arm C refuses
  * with it — so the two predicates cannot drift apart (review r3 finding 1).
  *
- * Assigned means a RESOLVABLE provider and model, never the existence of a
- * row: #1615's migration 115 seeds `('image_analysis', NULL, NULL)` on every
+ * It is the PRODUCT's definition, `resolveImageAnalysisUsecase` (#1615,
+ * ADR-027 D3: the assignment is the egress control and never inherits), not a
+ * second copy of it here: assigned means a resolvable provider AND model —
+ * the row's model or the provider's `default_model` — never the existence of
+ * a row. Migration 115 seeds `('image_analysis', NULL, NULL)` on every
  * database, so a predicate that counts rows reads every migrated database as
- * assigned — which aborted `--arm C` on the only databases it will ever run
- * on. The row is read off `llm_usecase_assignments` directly: this revision
- * has no `resolveImageAnalysisUsecase`, and the row's shape is the same as
- * every non-inheriting use case's.
+ * assigned, which aborted `--arm C` on the only databases it will ever run
+ * on; and an eval that recorded arm B's candidate by its own rule could
+ * record a model the product would not have called.
  */
 export async function readImageAnalysisAssignment(): Promise<ImageAnalysisAssignment | null> {
-  const assignment = await query<{ provider_id: string; name: string; base_url: string; model: string | null; default_model: string | null }>(
-    `SELECT p.id AS provider_id, p.name, p.base_url, a.model, p.default_model
-       FROM llm_usecase_assignments a JOIN llm_providers p ON p.id = a.provider_id
-      WHERE a.usecase = 'image_analysis'`,
-  );
-  const row = assignment.rows[0];
-  const model = row?.model || row?.default_model || '';
-  if (!row || !model) return null;
-  return { providerId: row.provider_id, providerName: row.name, baseUrl: row.base_url, model };
+  const resolved = await resolveImageAnalysisUsecase();
+  if (!resolved) return null;
+  return {
+    providerId: resolved.config.id,
+    providerName: resolved.config.name,
+    baseUrl: resolved.config.baseUrl,
+    model: resolved.model,
+  };
 }
 
 /**
