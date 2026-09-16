@@ -40,6 +40,9 @@ vi.mock('../services/openai-compatible-client.js', async () => {
 });
 
 const { seedImageCorpus, stageEvalAttachmentsDir } = await import('./seed-images.js');
+// Dynamic, like every import in this block: the hoisted `vi.mock` above must be
+// registered before the module graph is pulled in, so a static import cannot work.
+const { chat, chatCompletion } = await import('../services/openai-compatible-client.js');
 const { ensureVectorDimensions, configureEmbeddingProvider, resetEvalCorpus } = await import('./seed.js');
 const { loadImageCorpusManifest } = await import('./corpus-images.js');
 const { driveArmBBackfill, countValidAnalyses } = await import('./arm-b-backfill.js');
@@ -70,12 +73,15 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
   let identityHash: string;
   let attachmentsDir: string;
   let visionCalls = 0;
+  /** Every request body the stub received, in order — the REAL wire shape. */
+  const requestBodies: Array<Record<string, unknown>> = [];
   const previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
 
   beforeAll(async () => {
     await setupTestDb();
     server = createServer((req, res) => {
-      void readBody(req).then(() => {
+      void readBody(req).then((raw) => {
+        requestBodies.push(JSON.parse(raw) as Record<string, unknown>);
         visionCalls++;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
@@ -112,6 +118,7 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
   beforeEach(async () => {
     await truncateAllTables();
     visionCalls = 0;
+    requestBodies.length = 0;
     await query(
       `INSERT INTO users (id, username, email, role, password_hash)
        VALUES ($1::uuid, $1::text, $1::text || '@t', 'admin', 'x') ON CONFLICT (id) DO NOTHING`,
@@ -181,7 +188,7 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
     expect((await readImageAnalysisCorpusCounts()).dirtyPages).toBe(MAX_PAGES);
   }, 180_000);
 
-  it('GAP 2: driving the product\'s worker analyses every image AND re-embeds, so derived chunks exist', async () => {
+  it('GAP 2: driving the product\'s worker analyses every image AND re-embeds, so derived chunks exist — and every analysis request suppresses reasoning (ADR-027 D8 erratum)', async () => {
     await seedImageCorpus(USER, { maxPages: MAX_PAGES, imageIndex: false });
     // The seed embedded the authored text once; nothing has analysed anything.
     expect(await countValidAnalyses(identityHash)).toMatchObject({ analyzed: 0 });
@@ -205,6 +212,22 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
       `SELECT COUNT(*)::int AS n FROM page_embeddings WHERE metadata->>'source' = 'image_analysis'`,
     );
     expect(derived.rows[0]!.n).toBeGreaterThan(0);
+    // ADR-027's D8 erratum (#1619) on the real wire: every analysis request
+    // this run made asked the provider NOT to think. Reasoning comes out of the
+    // same `max_tokens` budget the payload needs, and this stub is a tolerant
+    // host (not api.openai.com), so `nonThinkingExtras` is sent in full.
+    expect(requestBodies).toHaveLength(expectedImages);
+    for (const body of requestBodies) {
+      expect(body).toMatchObject({
+        think: false,
+        chat_template_kwargs: { enable_thinking: false },
+        max_tokens: 8192,
+        temperature: 0,
+      });
+      // The opposite hint must never ride along: `think: true` is what every
+      // other tolerant-host caller sends when Think is on.
+      expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+    }
   }, 300_000);
 
   it('refuses a terminal row rather than spending the whole timeout on a backfill that cannot complete', async () => {
@@ -220,4 +243,26 @@ describe.skipIf(!dbAvailable)('arm B backfill driver (#1619)', () => {
     await expect(driveArmBBackfill(state(), expectedImages, { userId: USER, timeoutMs: 1000 }))
       .rejects.toThrow(/failed_terminal.*8192 output tokens.*no further attempt re-opens/s);
   }, 300_000);
+
+  it('sends the suppression on the ANALYSIS request ONLY — a chat call to the same tolerant host is unchanged', async () => {
+    // The erratum's scope is the load-bearing half: an answer call that stopped
+    // reasoning would change every arm's answer behaviour. Same provider, same
+    // tolerant host, the product's own chat entrypoint.
+    const cfg = { providerId, baseUrl, apiKey: null, authType: 'none' as const, verifySsl: true };
+    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }]);
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]).not.toHaveProperty('think');
+    expect(requestBodies[0]).not.toHaveProperty('chat_template_kwargs');
+
+    // And with Think ON the same call sends the OPPOSITE of the analysis hints,
+    // which is what makes `nonThinking` a per-call decision rather than a
+    // provider-wide one.
+    await chat(cfg, MODEL, [{ role: 'user', content: 'hi' }], { thinking: true });
+    expect(requestBodies[1]).toMatchObject({ think: true, chat_template_kwargs: { enable_thinking: true } });
+
+    // Precedence, because both flags can reach one request: suppression wins,
+    // so no caller can hand the analysis path a thinking pass.
+    await chatCompletion(cfg, MODEL, [{ role: 'user', content: 'hi' }], { thinking: true, nonThinking: true });
+    expect(requestBodies[2]).toMatchObject({ think: false, chat_template_kwargs: { enable_thinking: false } });
+  }, 60_000);
 });
