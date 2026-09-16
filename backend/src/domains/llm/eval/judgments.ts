@@ -1111,8 +1111,14 @@ export interface ArmVerdictReport {
   provenance: Record<EvalArm, ArmRunReport | null>;
   /** The answer runs behind the sheet, as re-read from `provenance-<runId>.json` at un-blinding. */
   answerRuns: AnswerRunProvenance[];
-  judged: { primary: JudgedPairEndpoints; secondary: JudgedPairEndpoints[] };
-  retrieval: { primary: ArmRetrievalComparison; others: ArmRetrievalComparison[] };
+  /**
+   * One pair, B vs C: the whole arm axis since ADR-027 A-1 re-registered the
+   * primary and #1618 stage 2 removed arm A. The re-registered secondaries
+   * (citation faithfulness and refusal rate, both B vs C) are fields OF that
+   * pair, so there is no second pairing to carry.
+   */
+  judged: { primary: JudgedPairEndpoints };
+  retrieval: { primary: ArmRetrievalComparison };
   controls: { bVsC: ControlEndpoints | null; legacyC: ControlEndpoints | null };
   decision: GateDecision;
   /** Every un-blinded item, for audit — after the verdict, never before. */
@@ -1209,8 +1215,6 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   }
 
   const primary = scoreJudgedPair(items, fixture, { baseline: 'C', candidate: 'B' }, stats);
-  const secondary: JudgedPairEndpoints[] = [];
-  const others: ArmRetrievalComparison[] = [];
   const retrievalPrimary = compareArmRetrieval(c, b, stats);
   const decision = decideGate({
     primary,
@@ -1234,8 +1238,8 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     sample,
     provenance: { B: b, C: c },
     answerRuns,
-    judged: { primary, secondary },
-    retrieval: { primary: retrievalPrimary, others },
+    judged: { primary },
+    retrieval: { primary: retrievalPrimary },
     controls,
     decision,
     items,

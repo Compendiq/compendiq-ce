@@ -175,9 +175,14 @@ describe('the #1614 PR2 and #1619 surfaces are held to the same discipline', () 
     expect(() => assertKnownFlags(['--no-such-flag'], known, usage, valueless)).toThrow(/--no-such-flag/);
   });
 
-  it('the eval surface documents the arm axis and its B/C refusal of the VL variables', () => {
-    expect(EVAL_USAGE).toMatch(/--arm A\|B\|C/);
-    expect(EVAL_USAGE).toMatch(/refuses EVAL_IMAGE_EMBEDDING_\*/);
-    expect(EVAL_USAGE).toContain('retrieval-eval-arm-<A|B|C>.json');
+  it('the eval surface documents the B/C arm axis and names arm A as retired', () => {
+    expect(EVAL_USAGE).toMatch(/--arm B\|C/);
+    expect(EVAL_USAGE).not.toMatch(/--arm A\|B\|C/);
+    // #1618 stage 2: the VL embedding environment is gone, so the reference
+    // must not still tell an operator to set it — and arm A's refusal has to
+    // be stated, not left to a parser error the usage text contradicts.
+    expect(EVAL_USAGE).not.toMatch(/EVAL_IMAGE_EMBEDDING_/);
+    expect(EVAL_USAGE).toMatch(/Arm A — the legacy image-embedding leg — is RETIRED/);
+    expect(EVAL_USAGE).toContain('retrieval-eval-arm-<B|C>.json');
   });
 });

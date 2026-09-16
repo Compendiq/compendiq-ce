@@ -88,9 +88,6 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   getRagImagesPerPageMax: vi.fn().mockResolvedValue(20),
   getRagImageIndexExternal: vi.fn().mockResolvedValue(true),
   invalidateRagImageIntakeCache: vi.fn(),
-  // #1115 P3 — the retrieval half, likewise at its reader default.
-  getRagImageLegEnabled: vi.fn().mockResolvedValue(true),
-  invalidateRagImageLegCache: vi.fn(),
   getRagAnswerMaxImages: vi.fn().mockResolvedValue(2),
   invalidateRagAnswerMaxImagesCache: vi.fn(),
   // #1615 — the image-analysis output-token ceiling, at its reader default.

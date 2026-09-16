@@ -615,65 +615,23 @@ export function invalidateImageAnalysisMaxOutputTokensCache(): void {
 }
 
 /**
- * #1115 P3 — `rag_image_leg_enabled`, the RETRIEVAL half of the image index.
- * Default **on**, cached like `rag_pin_identifiers` and read on the hot path
- * (once per hybrid search).
- *
- * It is deliberately a SEPARATE switch from the `image_embedding` assignment,
- * and the two are not redundant. Unassigning the use case turns off both
- * halves: nothing indexes and nothing retrieves, and the index stops being
- * filled while pages keep accumulating the dirty flag. This knob turns off
- * only the query-time half — the one extra embedding call every question pays
- * — and leaves the index being built. An operator who finds the leg too slow,
- * or who wants a clean A/B, needs exactly that and nothing else.
- *
- * It also cannot turn the leg ON: with the use case unassigned or
- * `page_image_embeddings` empty the leg does not run whatever this says. A
- * setting that can only subtract is safe to read from a cache.
- *
- * Soft-fail is "leg stays enabled", the same direction as its siblings: a DB
- * hiccup must not silently narrow retrieval, because a result set that lost
- * its image leg is indistinguishable from a corpus with no matching pictures.
- */
-const RAG_IMAGE_LEG_TTL_MS = 60_000;
-let ragImageLegCache: { value: boolean; expiresAt: number } | null = null;
-
-export async function getRagImageLegEnabled(): Promise<boolean> {
-  if (ragImageLegCache && Date.now() < ragImageLegCache.expiresAt) return ragImageLegCache.value;
-  let resolved = true;
-  try {
-    const r = await query<{ setting_value: string }>(
-      `SELECT setting_value FROM admin_settings WHERE setting_key = 'rag_image_leg_enabled'`,
-    );
-    // An OFF-list, like `rag_pin_identifiers`: anything unrecognised leaves the
-    // default standing, so a half-written row cannot disable a retrieval leg.
-    const raw = (r.rows[0]?.setting_value ?? '').trim().toLowerCase();
-    if (raw === '0' || raw === 'false' || raw === 'off') resolved = false;
-  } catch (err) {
-    logger.warn({ err }, 'Failed to resolve rag_image_leg_enabled — the image leg stays enabled');
-  }
-  ragImageLegCache = { value: resolved, expiresAt: Date.now() + RAG_IMAGE_LEG_TTL_MS };
-  return resolved;
-}
-
-export function invalidateRagImageLegCache(): void {
-  ragImageLegCache = null;
-}
-
-/**
- * #1115 P4 — `rag_answer_max_images`, how many of the images the leg matched
- * on the pages grounding an answer are ATTACHED to the question as image
- * parts. Default **2**, clamped to [0, 8], cached like its siblings and read
- * once per `/llm/ask` that gets as far as a completion.
+ * #1115 P4 — `rag_answer_max_images`, how many of the pictures behind the
+ * pages grounding an answer are ATTACHED to the question as image parts.
+ * Default **2**, clamped to [0, 8], cached like its siblings and read once per
+ * `/llm/ask` that gets as far as a completion. The candidate set is D11's
+ * derived provenance since #1617; the legacy image-embedding leg that used to
+ * supply it was retired by #1618 stage 2, and this knob SURVIVES that
+ * (ADR-025 D8/D8b, ADR-027 D11) because the optional chat attachment is not
+ * the leg.
  *
  * **Zero is a value, and this reader is the one place that shows.** Its
  * sibling `rag_images_per_page_max` refuses 0 outright, because a zero INTAKE
  * cap reconciles every row away on the next scan. A zero ANSWER cap subtracts
- * nothing durable: the index still fills, the leg still ranks, and the
- * pictures still reach the reader as `kind: 'image'` sources. So `'0'` must
- * resolve to 0 rather than falling back — otherwise the panel's own off switch
- * would be unreachable and every vision-capable deployment would keep paying
- * the bytes.
+ * nothing durable: the analyses still fill, the derived chunks still rank, and
+ * the pictures still reach the reader as `kind: 'image'` sources. So `'0'`
+ * must resolve to 0 rather than falling back — otherwise the panel's own off
+ * switch would be unreachable and every vision-capable deployment would keep
+ * paying the bytes.
  *
  * The SHAPE is strict for the intake cap's reason, read the other way round:
  * `parseInt('1e3')` is 1, and a permissive parse would read a fat-fingered row

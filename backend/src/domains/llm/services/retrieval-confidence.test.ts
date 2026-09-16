@@ -2,7 +2,7 @@
  * #1521 — which `basis: 'none'` verdict carries a NUMBER, and which carries
  * `null`.
  *
- * Five branches of `computeRetrievalConfidence` answer `basis: 'none'`, and
+ * Four branches of `computeRetrievalConfidence` answer `basis: 'none'`, and
  * exactly ONE of them puts a number in `score`. That asymmetry is load-bearing
  * prose in five places — migration 098's header, `analytics.ts`'s JSDoc,
  * `docs/architecture/09-flow-rag-chat.md`, CLAUDE.md and the on-screen rerank
@@ -11,22 +11,25 @@
  * `similarity`, so moving a number into or out of a `none` verdict is
  * invisible there.
  *
- * The five, in source order:
+ * The four, in source order:
  *
  *   1. pinned head          → { score: null,  basis: 'none' }
  *   2. empty + caveat       → { score: null,  basis: 'none' }
  *   3. empty + healthy      → { score: 0,     basis: 'none' }   ← the only number
- *   4. all image-only       → { score: null,  basis: 'none' }
- *   5. keyword-led / no cosine → { score: null, basis: 'none' }
+ *   4. keyword-led / no cosine → { score: null, basis: 'none' }
+ *
+ * There were FIVE until #1618 stage 2: an all-image-only set was the fifth,
+ * and it went with ADR-025's image leg — `imageOnly` no longer exists, so a
+ * row the legacy leg reached cannot be told apart from any other row.
  *
  * Read as a table on purpose. Each verdict is separately pinned in
  * `rag-service.test.ts`'s `computeRetrievalConfidence (#1105)` block, one cell
  * per retrieval scenario; what no assertion anywhere stated is the
- * CROSS-BRANCH claim the prose actually makes — that the five are enumerated,
- * that four of them are unmeasurable, and that the measurable one is the empty
- * HEALTHY corpus and its number is exactly `0`. Giving a second branch a
- * score, or taking 0 away from this one, breaks a documented invariant rather
- * than one scenario.
+ * CROSS-BRANCH claim the prose actually makes — that the four are enumerated,
+ * that three of them are unmeasurable, and that the measurable one is the
+ * empty HEALTHY corpus and its number is exactly `0`. Giving a second branch
+ * a score, or taking 0 away from this one, breaks a documented invariant
+ * rather than one scenario.
  *
  * Almost dependency-free, like the module it tests: the only runtime imports
  * are the formula itself and `node:fs`, which the enumeration cell uses to
@@ -92,7 +95,7 @@ interface NoneBranch {
 
 /**
  * Every branch that answers `basis: 'none'`, with the input that reaches it.
- * Adding a sixth `none` branch means adding a row here — which is the point:
+ * Adding a fifth `none` branch means adding a row here — which is the point:
  * the enumeration is the contract the five prose surfaces describe.
  */
 const NONE_BRANCHES: NoneBranch[] = [

@@ -304,11 +304,10 @@ export type ArmRunReport = z.infer<typeof ArmRunReportObject>;
 
 /**
  * The per-arm half of "Report provenance (refused if absent)": what B must
- * carry (the vision
- * model and the ceiling its backfill ran under, plus the version pair), and
- * what C must NOT carry (any of them — C has no image leg and no derived
- * rows, so a vision model or a ceiling on a C report says the database was
- * not in C's state).
+ * carry (the vision model and the ceiling its backfill ran under, plus the
+ * version pair), and what C must NOT carry (any of them — C has no image
+ * leg and no derived rows, so a vision model or a ceiling on a C report says
+ * the database was not in C's state).
  */
 export function armProvenanceProblems(report: ArmRunReport): Array<{ field: keyof ArmRunReport; message: string }> {
   const problems: Array<{ field: keyof ArmRunReport; message: string }> = [];
@@ -637,7 +636,6 @@ export async function assertArmCState(): Promise<void> {
 /**
  * The slice of a `hybridSearch` row the evidence rule reads. `derived` is
  * D11's provenance object (#1617 — "an ordinary SearchResult with a `derived`
- * provenance object read from `metadata`"), typed structurally here because
  * provenance object read from `metadata`"), typed structurally here so the
  * scorers stay independent of `rag-service`'s own row shape.
  */
@@ -829,7 +827,7 @@ export function assertComparableArms(
     if (baseline.arm === candidate.arm) {
       throw new Error(
         `Both reports are arm ${baseline.arm} — two runs of one arm are a before/after on that arm, not an ` +
-          'arm comparison. Pair A, B and C against each other.',
+          'arm comparison. Pair B and C against each other.',
       );
     }
   }

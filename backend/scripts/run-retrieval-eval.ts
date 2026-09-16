@@ -24,34 +24,36 @@
  * unrecognised flag is refused rather than ignored — a typo'd --fts-langauge
  * used to cost an hour of embedding under the default configuration.
  *
- * ── The image axis (#1115 P5b) ────────────────────────────────────────────
+ * ── The image corpus (#1115 P5b) ──────────────────────────────────────────
  *
  * `--images` measures a different question: not "did this checkout retrieve
- * better" but "what does the image leg add". So it is not a variant of the
- * gate above — it seeds a different corpus (`eval/corpus-de-images/`, through
- * the REAL intake: bytes on disk, `embedPageImages`, `page_image_embeddings`)
- * against a different fixture (`fixture-de-images.json`), and then runs every
- * query TWICE in one process — `imageLeg: false`, then `imageLeg: true` —
- * pairing the two arms per query. The verdict is the harness's own: McNemar
- * exact over the discordant pairs, overall and per `style` and per label
- * language. A `--baseline` from the other axis is refused — as is a same-axis
- * one measured through a different VL model, width or endpoint — and an
- * accepted pair compares leg-off against leg-off AND leg-on against leg-on.
- * `--deep-search` is refused on this axis: it reformulates per request, so the
- * two arms would be paraphrased separately and would not be a pair.
+ * better" but "what does vision enrichment add". So it is not a variant of
+ * the gate above — it seeds a different corpus (`eval/corpus-de-images/`,
+ * through the REAL intake: page bodies pointing at attachment bytes on disk)
+ * against a different fixture (`fixture-de-images.json`). A `--baseline` from
+ * the other axis is refused. `--deep-search` is refused here: it reformulates
+ * per request, so two arms would be paraphrased separately and would not be a
+ * pair.
+ *
+ * **#1618 stage 2 retired ADR-025's image-embedding leg**, and with it the
+ * paired leg-off/leg-on form of this axis, its `page_image_embeddings` seed
+ * phase, its VL-model baseline guard and its `EVAL_IMAGE_EMBEDDING_*`
+ * environment. A bare `--images` is therefore refused: the one measurement
+ * over this corpus is an arm run.
  *
  * ── The arm axis (#1614 PR2, ADR-027) ────────────────────────────────────
  *
- * `--images --arm A|B|C` runs ONE arm of the pre-registered A/B/C comparison
- * on the image corpus and writes an `ArmRunReport` (eval/arms.ts). The arms
- * live on different revisions and index states, so they cannot share a
- * process: pairing happens across files, here for the retrieval endpoints
- * (`--baseline` = another arm's report) and in scripts/judge-arms.ts for the
- * judged ones. A: the legacy leg, seeded through the real intake exactly as
- * the paired axis seeds it. C: text + attachment bytes only, and the run
- * asserts `page_image_embeddings` stayed empty. B: the same seed, then the
- * vision-analysis backfill must have run on this database (the product's
- * worker, on the post-#1617 revision) before the queries are made.
+ * `--images --arm B|C` runs ONE arm of the pre-registered comparison on the
+ * image corpus and writes an `ArmRunReport` (eval/arms.ts). The arms live on
+ * different revisions and database states, so they cannot share a process:
+ * pairing happens across files, here for the retrieval endpoints
+ * (`--baseline` = the other arm's report) and in scripts/judge-arms.ts for
+ * the judged ones. C: text + attachment bytes only, and the run asserts
+ * `image_analysis` is unassigned and no derived rows exist. B: the same seed,
+ * then the vision-analysis backfill must have run on this database (the
+ * product's worker, on the post-#1617 revision) before the queries are made.
+ * Arm A was the legacy image-embedding leg; ADR-027 amendment A-1
+ * re-registered the primary endpoint as B vs C and stage 2 removed the arm.
  *
  * Environment:
  *   EVAL_EMBEDDING_BASE_URL   OpenAI-compatible endpoint (Ollama's /v1 shim works)
@@ -65,12 +67,6 @@
  *                             tree must be clean, and the variable must agree
  *                             with HEAD or the run is refused (eval/arms.ts
  *                             `readRevisionSha`).
- *
- * `--images` selects the German image CORPUS, and the one measurement over it
- * is an arm run (`--arm B|C`). #1618 stage 2 retired ADR-025's image-embedding
- * leg, so the paired leg-off/leg-on form of this axis and its
- * `EVAL_IMAGE_EMBEDDING_*` environment are gone; arm A stays reproducible only
- * against its recorded revision.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

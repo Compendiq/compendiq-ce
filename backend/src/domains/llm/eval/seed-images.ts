@@ -278,7 +278,7 @@ export async function seedImageCorpus(
   const expectedTotal = pages.reduce((n, page) => n + page.images.length, 0);
   const referencedTotal = [...referencedByFile.values()].reduce((n, keys) => n + keys.length, 0);
   if (referencedTotal !== expectedTotal) {
-    throw new Error(
+    throw new ImageIntakeError(
       `The stored bodies reference ${referencedTotal} of the ${expectedTotal} images the manifest lists ` +
         `for these ${pages.length} pages, so the loss is between the manifest and the stored body — an ` +
         '`<img>` the Markdown conversion or the sanitiser dropped is never enumerated and never read. ' +

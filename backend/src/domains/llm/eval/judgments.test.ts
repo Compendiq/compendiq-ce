@@ -43,7 +43,7 @@ import {
   type JudgmentRow,
   type TextGateControl,
 } from './judgments.js';
-import type { AbsoluteLeakage, ArmRunReport, PairedBinaryEndpoint } from './arms.js';
+import type { AbsoluteLeakage, ArmRunReport, EvalArm, PairedBinaryEndpoint } from './arms.js';
 import type { ClusterBootstrapCi } from './metrics.js';
 
 /**
@@ -96,10 +96,10 @@ describe('judgmentProgress / assertFullyJudged (ADR-027 --unblind refusal)', () 
   });
 
   it('joins the mapping only after that gate, coding correct = 1 and everything else 0', () => {
-    const mapping: Mapping = { [uuid(1)]: { arm: 'A', queryId: 'q1' }, [uuid(2)]: { arm: 'B', queryId: 'q1' }, [uuid(3)]: { arm: 'B', queryId: 'q2' } };
+    const mapping: Mapping = { [uuid(1)]: { arm: 'C', queryId: 'q1' }, [uuid(2)]: { arm: 'B', queryId: 'q1' }, [uuid(3)]: { arm: 'B', queryId: 'q2' } };
     const judged = [judgment({ itemId: uuid(1) }), judgment({ itemId: uuid(2), correctness: 'partial' }), judgment({ itemId: uuid(3), correctness: 'refused' })];
     const items = unblind(answers, judged, mapping);
-    expect(items.map((i) => [i.arm, i.queryId, i.correct])).toEqual([['A', 'q1', 1], ['B', 'q1', 0], ['B', 'q2', 0]]);
+    expect(items.map((i) => [i.arm, i.queryId, i.correct])).toEqual([['C', 'q1', 1], ['B', 'q1', 0], ['B', 'q2', 0]]);
     expect(() => unblind(answers, judged.slice(0, 2), mapping)).toThrow(/Refusing to un-blind/);
   });
 });
@@ -114,7 +114,7 @@ describe('scoreJudgedPair', () => {
       label({ id: 'q4', expectedFiles: ['p3.md'], imageDependent: false }),
     ],
   };
-  const items = (rows: Array<[string, 'A' | 'B', JudgmentRow['correctness'], boolean]>) =>
+  const items = (rows: Array<[string, 'B' | 'C', JudgmentRow['correctness'], boolean]>) =>
     rows.map(([queryId, arm, correctness, unsupported], i) => ({
       itemId: uuid(i + 1), arm, queryId, refused: correctness === 'refused',
       judgment: judgment({ itemId: uuid(i + 1), correctness, unsupportedClaim: unsupported, citationFaithful: arm === 'B' ? 'yes' : 'no' }),
@@ -123,16 +123,16 @@ describe('scoreJudgedPair', () => {
 
   it('scores correctness on the image-dependent labels only, with McNemar over the discordant pairs', () => {
     const scored = scoreJudgedPair(items([
-      ['q1', 'A', 'incorrect', false], ['q1', 'B', 'correct', true],
-      ['q2', 'A', 'partial', false], ['q2', 'B', 'correct', false],
-      ['q3', 'A', 'correct', false], ['q3', 'B', 'refused', false],
-      ['q4', 'A', 'incorrect', false], ['q4', 'B', 'correct', false], // not image-dependent: excluded from the primary
-    ]), fixture, { baseline: 'A', candidate: 'B' }, { seed: 1, iterations: 200 });
-    // Primary over q1..q3: A 1/3 correct, B 2/3; B wins q1, q2 and loses q3 → 2W/1L, p = 2·P(X≤1 | Bin(3,½)) = 1.
+      ['q1', 'C', 'incorrect', false], ['q1', 'B', 'correct', true],
+      ['q2', 'C', 'partial', false], ['q2', 'B', 'correct', false],
+      ['q3', 'C', 'correct', false], ['q3', 'B', 'refused', false],
+      ['q4', 'C', 'incorrect', false], ['q4', 'B', 'correct', false], // not image-dependent: excluded from the primary
+    ]), fixture, { baseline: 'C', candidate: 'B' }, { seed: 1, iterations: 200 });
+    // Primary over q1..q3: C 1/3 correct, B 2/3; B wins q1, q2 and loses q3 → 2W/1L, p = 2·P(X≤1 | Bin(3,½)) = 1.
     expect(scored.correctness).toMatchObject({ n: 3, wins: 2, losses: 1, ties: 0, pValue: 1 });
     expect(scored.correctness.delta).toBeCloseTo(1 / 3, 10);
     expect(scored.correctness.ci.clusters).toBe(2);
-    // Partial is reported separately: A had one partial of 3, B none.
+    // Partial is reported separately: C had one partial of 3, B none.
     expect(scored.partialRate).toEqual({ baseline: 1 / 3, candidate: 0 });
     // Unsupported claims and refusals run over ALL four judged pairs.
     expect(scored.unsupportedClaim).toMatchObject({ n: 4, baselineRate: 0, candidateRate: 0.25 });
@@ -142,7 +142,7 @@ describe('scoreJudgedPair', () => {
   });
 
   it('refuses a pair with no query judged on both arms', () => {
-    expect(() => scoreJudgedPair(items([['q1', 'A', 'correct', false]]), fixture, { baseline: 'A', candidate: 'B' }, { seed: 1 })).toThrow(/No query was judged on both/);
+    expect(() => scoreJudgedPair(items([['q1', 'C', 'correct', false]]), fixture, { baseline: 'C', candidate: 'B' }, { seed: 1 })).toThrow(/No query was judged on both/);
   });
 });
 
@@ -492,7 +492,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   const querySetSha = 'f'.repeat(64);
   // The answer runs' provenance says what the arm reports say (`armReport`'s
   // defaults): same revision, hardware, corpus, query set and answer model.
-  const provenanceFor = (arm: 'A' | 'B' | 'C', generated: GeneratedAnswers, written: WrittenAnswerArtifacts): AnswerRunProvenance => ({
+  const provenanceFor = (arm: EvalArm, generated: GeneratedAnswers, written: WrittenAnswerArtifacts): AnswerRunProvenance => ({
     runId: `run-${arm}`, arm, revisionSha: 'e398de4a1234', command: `scripts/run-arm-answers.ts --arm ${arm} --run-id run-${arm}`,
     capturedAt: '2026-09-15T11:00:00.000Z', hardware: 'test host', corpusManifestSha: 'corpus-sha', querySetSha,
     answerModel: { identity: 'rtx:gemma@http://chat/v1', model: 'gemma', endpoint: 'http://chat/v1' }, temperature: 'provider default',
@@ -500,15 +500,15 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     items: generated.answers.length, refused: generated.refused, refusalReasons: generated.refusalReasons,
     answersSha256: written.answersSha256, mappingSha256: written.mappingSha256,
   });
-  const sources = (['A', 'B', 'C'] as const).map((arm) => ({
+  const sources = (['B', 'C'] as const).map((arm) => ({
     answersPath: join(dir, `answers-run-${arm}.jsonl`), mappingPath: join(dir, `mapping-run-${arm}.json`), provenancePath: join(dir, `provenance-run-${arm}.json`),
   }));
-  const runs = (arm: 'A' | 'B' | 'C') => fixture.labels.map((l) => armRun({
+  // Arm B's evidence is D11's derived provenance; arm C carries none by rule.
+  const runs = (arm: EvalArm) => fixture.labels.map((l) => armRun({
     queryId: l.id, cluster: l.expectedFiles[0]!, style: l.style, expectedImageKeys: l.expectedImages.map((p) => p.split('/').pop()!),
-    evidence: arm === 'A' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
+    evidence: arm === 'B' && l.style === 'image' ? [{ key: 'page-1__1.png', rank: 1 }] : [],
   }));
-  const armReports: Record<'A' | 'B' | 'C', ArmRunReport> = {
-    A: armReport('A', { querySetSha, runs: runs('A') }),
+  const armReports: Record<EvalArm, ArmRunReport> = {
     B: armReport('B', { querySetSha, runs: runs('B') }),
     C: armReport('C', { querySetSha, runs: runs('C') }),
   };
@@ -516,59 +516,58 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   let verdictLines: string[] = [];
 
   beforeAll(async () => {
-    for (const arm of ['A', 'B', 'C'] as const) {
+    for (const arm of ['B', 'C'] as const) {
       const generated = await generateArmAnswers(stubAsk(arm), fixture, { arm });
       writeAnswerProvenance(dir, `run-${arm}`, provenanceFor(arm, generated, writeAnswerArtifacts(dir, `run-${arm}`, generated)));
     }
   });
 
   it('refuses to merge a run whose provenance does not hash the files beside it', () => {
-    const drifted = join(dir, 'provenance-run-A-drifted.json');
-    writeFileSync(drifted, readFileSync(join(dir, 'provenance-run-A.json'), 'utf8').replace(/"answersSha256": "[0-9a-f]{64}"/, `"answersSha256": "${'0'.repeat(64)}"`));
-    expect(() => mergeSheets(dir, 'bad', [{ ...sources[0]!, provenancePath: drifted }], 'cmd')).toThrow(/does not describe .*answers-run-A\.jsonl: answers file hashes to/);
+    const drifted = join(dir, 'provenance-run-B-drifted.json');
+    writeFileSync(drifted, readFileSync(join(dir, 'provenance-run-B.json'), 'utf8').replace(/"answersSha256": "[0-9a-f]{64}"/, `"answersSha256": "${'0'.repeat(64)}"`));
+    expect(() => mergeSheets(dir, 'bad', [{ ...sources[0]!, provenancePath: drifted }], 'cmd')).toThrow(/does not describe .*answers-run-B\.jsonl: answers file hashes to/);
     expect(() => mergeSheets(dir, 'bad', [{ ...sources[0]!, provenancePath: join(dir, 'provenance-missing.json') }], 'cmd')).toThrow(/provenance-missing\.json: missing/);
   });
 
   it('merges into one blinded sheet whose mapping sha is recorded before any judgment exists', () => {
     const sheet = mergeSheets(dir, 'sheet', sources, 'scripts/judge-arms.ts --merge --run-id sheet');
-    expect(sheet.items).toBe(12);
+    expect(sheet.items).toBe(8);
     expect(sheet.command).toBe('scripts/judge-arms.ts --merge --run-id sheet');
-    expect(sheet.sources.map((s) => [s.arm, s.runId])).toEqual([['A', 'run-A'], ['B', 'run-B'], ['C', 'run-C']]);
-    expect(sheet.sources[0]!.provenanceSha256).toBe(sha256File(join(dir, 'provenance-run-A.json')));
+    expect(sheet.sources.map((s) => [s.arm, s.runId])).toEqual([['B', 'run-B'], ['C', 'run-C']]);
+    expect(sheet.sources[0]!.provenanceSha256).toBe(sha256File(join(dir, 'provenance-run-B.json')));
     expect(sheet.mappingSha256).toBe(sha256File(join(dir, 'mapping-sheet.json')));
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
     // The judge's file: no arm anywhere, and the rows are not grouped by arm.
     expect(JSON.stringify(rows)).not.toMatch(/"arm"/);
     const mapping = JSON.parse(readFileSync(join(dir, 'mapping-sheet.json'), 'utf8')) as Mapping;
     const armsInOrder = rows.map((r) => mapping[r.itemId]!.arm).join('');
-    expect(armsInOrder).not.toBe('AAAABBBBCCCC');
-    expect(JSON.parse(readFileSync(sheetPath(dir, 'sheet'), 'utf8'))).toMatchObject({ runId: 'sheet', items: 12 });
+    expect(armsInOrder).not.toBe('BBBBCCCC');
+    expect(JSON.parse(readFileSync(sheetPath(dir, 'sheet'), 'utf8'))).toMatchObject({ runId: 'sheet', items: 8 });
   });
 
   it('refuses to un-blind an unjudged or partly judged sheet', () => {
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
     writeFileSync(judgmentsPath(dir, 'sheet'), rows.slice(0, 5).map((r) => JSON.stringify(judgment({ itemId: r.itemId }))).join('\n') + '\n');
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true })).toThrow(/7 of 12 items have no judgment/);
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true })).toThrow(/3 of 8 items have no judgment/);
   });
 
   it('un-blinds a fully judged sheet, refuses below O2 without the flag, and labels the flagged run as tooling verification', () => {
     const rows = readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as AnswerItem);
     const mapping = JSON.parse(readFileSync(join(dir, 'mapping-sheet.json'), 'utf8')) as Mapping;
-    // The judge (a script here) marks B correct everywhere, A correct on q3 only, C as answered.
+    // The judge (a script here) marks B correct everywhere, C as answered.
     const verdictFor = (r: AnswerItem): JudgmentRow['correctness'] => {
-      const { arm, queryId } = mapping[r.itemId]!;
+      const { arm } = mapping[r.itemId]!;
       if (r.refused) return 'refused';
       if (arm === 'B') return 'correct';
-      if (arm === 'A') return queryId === 'q3' ? 'correct' : 'incorrect';
       return 'partial';
     };
     writeFileSync(judgmentsPath(dir, 'sheet'), rows.map((r) => JSON.stringify(judgment({ itemId: r.itemId, correctness: verdictFor(r) }))).join('\n') + '\n');
-    expect(readJudgments(judgmentsPath(dir, 'sheet'))).toHaveLength(12);
+    expect(readJudgments(judgmentsPath(dir, 'sheet'))).toHaveLength(8);
 
     // Below O2's hard floor (3 image-dependent on 2 pages, 1 negative of 48): refused outright, naming each shortfall.
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: false })).toThrow(/below what ADR-027 O2 makes decidable: 3 image-dependent labels \(O2: 190, below the hard floor 144\); 1 image-negative labels \(O2: 48\); image-dependent labels on 2 pages \(O2: ≥ 45\)/);
     // A report without hardware provenance is refused too (O9).
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { ...armReports, A: armReport('A', { querySetSha, runs: runs('A'), hardware: null }) } })).toThrow(/records no hardware/);
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { ...armReports, C: armReport('C', { querySetSha, runs: runs('C'), hardware: null }) } })).toThrow(/records no hardware/);
 
     const report = buildArmVerdict({ ...input, allowUnderpowered: true });
     expect(report.toolingVerificationOnly).toBe(true);
@@ -577,20 +576,21 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     expect(report.singleJudgeStatement).toBe(SINGLE_JUDGE_STATEMENT);
     expect(report.sample).toMatchObject({ imageDependent: 3, imageNegative: 1, pages: 2, maxLabelsPerPage: 2 });
     expect(report.sample.shortfalls).toHaveLength(3);
-    expect(report.answerRuns.map((r) => r.runId)).toEqual(['run-A', 'run-B', 'run-C']);
+    expect(report.answerRuns.map((r) => r.runId)).toEqual(['run-B', 'run-C']);
     // Primary B vs C over q1..q3 (#1619: the registered pair): C is `partial`
     // on q1/q2 and refused q3, B is correct everywhere → 3W/0L, +100 pp.
     expect(report.judged.primary.correctness).toMatchObject({ n: 3, wins: 3, losses: 0, ties: 0 });
     expect(report.judged.primary.correctness.delta).toBeCloseTo(1, 10);
-    // Arm A is optional and no longer the primary's baseline; supplied, it is
-    // scored as the two secondary pairings.
-    expect(report.judged.secondary.map((s) => `${s.candidate}-${s.baseline}`)).toEqual(['B-A', 'C-A']);
-    // C refused q3 (the stub's refusal frame) → its refusal rate against A is 1/4.
-    expect(report.judged.secondary[1]!.refusal.candidateRate).toBe(0.25);
+    // There is no second pairing: A-1 registered B vs C and #1618 stage 2
+    // removed arm A, so the re-registered secondaries (citation faithfulness
+    // and refusal rate) are fields OF the primary pair.
+    expect(report.judged).toEqual({ primary: report.judged.primary });
+    // C refused q3 (the stub's refusal frame) → its refusal rate is 1/4.
+    expect(report.judged.primary.refusal.baselineRate).toBe(0.25);
     // Controls were not given: the gate cannot pass, whatever the primary says.
     expect(report.decision.verdict).not.toBe('pass');
     expect(report.decision.conditions.filter((c) => c.name.includes('controls') && c.verdict === 'inconclusive')).toHaveLength(2);
-    expect(report.items).toHaveLength(12);
+    expect(report.items).toHaveLength(8);
     verdictLines = formatArmVerdict(report);
     expect(verdictLines[0]).toMatch(/TOOLING VERIFICATION ONLY/);
     expect(verdictLines.join('\n')).toContain('short of O2: image-dependent labels on 2 pages');
@@ -609,14 +609,11 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
   it('refuses an answer run that was not made under its arm report\'s configuration (review r1 finding 2)', () => {
     // Every arm report names another chat model than the answer runs recorded — the pair is consistent, the sheet is not.
     const other = { identity: 'rtx:llama@http://chat/v1', model: 'llama', endpoint: 'http://chat/v1' };
-    const drifted = { A: { ...armReports.A, answerModel: other }, B: { ...armReports.B, answerModel: other }, C: { ...armReports.C, answerModel: other } };
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: drifted })).toThrow(/Answer run run-A \(arm A\) was not made under arm A's held-fixed configuration.*answer model rtx:gemma@http:\/\/chat\/v1 vs the retrieval report's rtx:llama/);
+    const drifted = { B: { ...armReports.B, answerModel: other }, C: { ...armReports.C, answerModel: other } };
+    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: drifted })).toThrow(/Answer run run-B \(arm B\) was not made under arm B's held-fixed configuration.*answer model rtx:gemma@http:\/\/chat\/v1 vs the retrieval report's rtx:llama/);
     // A knob the answer run read differently from the retrieval run is a drift too.
-    const knob = { ...armReports, A: { ...armReports.A, retrieval: { ...armReports.A.retrieval, rag_fetch_width: 12 } }, B: { ...armReports.B, retrieval: { ...armReports.B.retrieval, rag_fetch_width: 12 } }, C: { ...armReports.C, retrieval: { ...armReports.C.retrieval, rag_fetch_width: 12 } } };
+    const knob = { B: { ...armReports.B, retrieval: { ...armReports.B.retrieval, rag_fetch_width: 12 } }, C: { ...armReports.C, retrieval: { ...armReports.C.retrieval, rag_fetch_width: 12 } } };
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: knob })).toThrow(/retrieval\.rag_fetch_width: 10 vs the retrieval report's 12/);
-    // A sheet carrying arm A's answers needs arm A's report — even though the
-    // primary no longer reads it.
-    expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { B: armReports.B, C: armReports.C } })).toThrow(/carries arm A's answers \(run run-A\) but no --arm-report A/);
     // And a run with no comparator for the primary is refused outright.
     expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, armReports: { B: armReports.B } })).toThrow(/needs the arm B and arm C retrieval reports/);
   });
@@ -665,7 +662,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
       writeFileSync(sheetFile, originalSheet.replace(/"answersSha256": "[0-9a-f]{64}",\n {2}"mappingSha256"/, `"answersSha256": "${sha256File(answersFile)}",\n  "mappingSha256"`));
       expect(JSON.parse(readFileSync(sheetFile, 'utf8')).answersSha256).toBe(sha256File(answersFile));
       expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 }))
-        .toThrow(/12 of 12 rows of .*answers-sheet\.jsonl differ from the answer runs they were merged from \(first: item [0-9a-f-]+\)/);
+        .toThrow(/8 of 8 rows of .*answers-sheet\.jsonl differ from the answer runs they were merged from \(first: item [0-9a-f-]+\)/);
     } finally {
       writeFileSync(answersFile, originalAnswers);
       writeFileSync(sheetFile, originalSheet);
@@ -685,12 +682,12 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
         .sort((a, b) => ((JSON.parse(a) as AnswerItem).itemId < (JSON.parse(b) as AnswerItem).itemId ? -1 : 1)).join('\n') + '\n';
       writeFileSync(answersFile, oneEdited);
       retag(oneEdited);
-      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/1 of 12 rows of .*answers-sheet\.jsonl differ/);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/1 of 8 rows of .*answers-sheet\.jsonl differ/);
       // A removed row is caught by the count.
       const shorter = lines.slice(1).join('\n') + '\n';
       writeFileSync(answersFile, shorter);
       retag(shorter);
-      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/carries 11 rows, the 3 answer runs it was merged from carry 12/);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/carries 7 rows, the 2 answer runs it was merged from carry 8/);
     } finally {
       writeFileSync(answersFile, originalAnswers);
       writeFileSync(sheetFile, originalSheet);
