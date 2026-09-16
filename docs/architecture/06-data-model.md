@@ -95,8 +95,8 @@ erDiagram
         uuid created_by_user_id FK
         bool embedding_dirty
         bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
-        bool image_analysis_dirty "PLANNED #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
-        bigint image_analysis_revision "PLANNED #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
+        bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
+        bigint image_analysis_revision "migration 116, #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
         uuid local_modified_by FK "who last edited locally (#305)"
@@ -134,8 +134,8 @@ erDiagram
         int chunk_index
         text chunk_text
         vector embedding "vector(n) or halfvec(n) — n is the resolved model's width"
-        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (PLANNED #1616, ADR-027 D9)"
-        tsvector chunk_tsv "PLANNED #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
+        jsonb metadata "page_title, section_title, space_key, confluence_id; derived rows add source = image_analysis + attachment provenance (#1616, ADR-027 D9)"
+        tsvector chunk_tsv "migration 116, #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
     }
 
     page_image_embeddings {
@@ -169,7 +169,7 @@ erDiagram
         int analysis_version "+1 per successful payload write"
         int attempts "failures since the last reset: success, Retry failed, new bytes, the sweep returning a failed/terminal row whose identity or versions changed, or the sweep re-opening a truncated row under a raised ceiling; deterministic classes go terminal at 5"
         timestamptz next_attempt_at "due time while failed (backoff, or NOW() on Retry failed / sweep return); NULL otherwise, by CHECK"
-        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling); admin-only"
+        text error "failure class + the number it needs read back (rejected:413, unavailable:404, truncated:8192 = the overrun ceiling; unavailable:bytes = the file was there but unreadable); admin-only"
     }
 
     page_relationships {
@@ -722,15 +722,18 @@ together, which matters most for #1114's query-side prefix.
     as the work queue. Design of record: ADR-025. **This is the ACTIVE
     design; ADR-027 supersedes it in part and the bullet below is the
     CANDIDATE.**
-- **CANDIDATE (#1615 merged; #1616 PLANNED, ADR-027) — image analysis in the text index.**
+- **CANDIDATE (#1615 and #1616 merged; #1617–#1619 PLANNED, ADR-027) — image analysis in the text index.**
   #1615 landed the store, the use case and the settings rows (migration 115,
   `page_image_analyses`, the `image_analysis` assignment, the retained identity
   in `admin_settings.image_analysis_identity` — JSON `{providerId, model,
   baseUrl, identityHash, assignedAt}`, written only by the assignment PUT and
   the capability re-check after a `true` probe, never cleared by an unassign
-  — and `image_analysis_max_output_tokens`); the entities still carrying
-  `PLANNED` are #1616's, and the legacy table, flag and leg stay live beside
-  them until #1618 retires them after the #1619 gate.
+  — and `image_analysis_max_output_tokens`); #1616 landed migration 116, the
+  worker, the reconcile, `embedPage` composition, derived FTS, coverage and
+  readiness. Retrieval over the derived rows (#1617), the operator surfaces
+  (#1618) and the legacy retirement (#1619) are still to come, so the legacy
+  table, flag and leg stay live beside them until #1618 retires them after
+  the #1619 gate.
   A generative vision model (`image_analysis`, a non-inheriting use case
   probed with the tri-state vision probe BEFORE its row is written) reads
   each referenced raster once at ingestion; the result is **derived data** in

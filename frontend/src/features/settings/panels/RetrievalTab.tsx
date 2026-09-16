@@ -1067,7 +1067,8 @@ export function RetrievalTab() {
           <div className="space-y-1.5 text-xs text-muted-foreground">
             <p id="ftsLanguage-help">
               Stemming and stop words for the keyword leg of search. Saving rebuilds the keyword
-              index for every page.
+              index for every page and every embedded chunk in one step; embedding writes wait
+              until it finishes.
             </p>
             {values.ftsLanguage === 'simple' && (
               // Muted, never amber: on a default install this is permanent,

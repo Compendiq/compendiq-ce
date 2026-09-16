@@ -119,6 +119,8 @@ export interface RelocatablePage {
    * back from a compensation still carrying the moved value.
    */
   image_embedding_dirty: boolean;
+  /** ADR-027 D4 (#1616) — the analysis flag, written and restored beside the legacy one. */
+  image_analysis_dirty: boolean;
   embedding_status: string | null;
   embedded_at: Date | null;
 }
@@ -126,7 +128,7 @@ export interface RelocatablePage {
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
   'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
-  'local_modified_by, embedding_dirty, image_embedding_dirty, embedding_status, embedded_at';
+  'local_modified_by, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status, embedded_at';
 
 /** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
 interface PageAce {
@@ -348,25 +350,70 @@ export async function collectAttachmentFilenames(page: {
   return [...names];
 }
 
-/** Read an attachment's bytes from whichever store currently holds it. */
+/**
+ * The refusal a relocate owes an attachment it cannot read.
+ *
+ * The stores distinguish an ABSENT file (`null` — a warning on the response,
+ * the rest of the move proceeds) from one that is there and cannot be read
+ * (`EACCES`, `EIO`, …: a throw). The second is actionable — fix the
+ * permissions and retry — but as a bare `Error` it reached the route as an
+ * opaque 500 with its message masked by the error handler, so it told the
+ * mover nothing at all (#1626 review r3). The route already speaks
+ * `RelocateError`, and this is the same refusal as the unstorable-filename
+ * one above it: the move is declined, nothing has changed.
+ */
+class AttachmentReadError extends Error {
+  constructor(public readonly cause: unknown) {
+    super('attachment bytes could not be read');
+    this.name = 'AttachmentReadError';
+  }
+}
+
+function unreadableAttachmentError(filename: string, cause: unknown): RelocateError {
+  logger.error({ err: cause, filename }, 'Relocate refused: an attachment could not be read');
+  return new RelocateError(
+    400,
+    `Attachment "${filename}" cannot be moved: its bytes could not be read from the attachment ` +
+      `store. Check the file's permissions on the server, then try again.`,
+  );
+}
+
+/**
+ * Read an attachment's bytes from whichever store currently holds it.
+ *
+ * Symmetric across the two stores: an ABSENT file answers `null` (reported as
+ * a warning, the rest of the move proceeds), while a file that is there and
+ * cannot be read THROWS and aborts the move. The cached reader draws that
+ * line in the store itself; the local fallback used to swallow everything, so
+ * a standalone page's `EACCES`-locked file was silently left behind under
+ * "missing on disk; it was not published" (#1626 review r3).
+ */
 async function readAttachmentBytes(
   page: { id: number; source: string; confluence_id: string | null },
   filename: string,
 ): Promise<Buffer | null> {
-  const cached = await readCachedAttachmentFile(
-    parentKeyFor(page.source, page.id, page.confluence_id),
-    filename,
-  );
+  let cached: Buffer | null;
+  try {
+    cached = await readCachedAttachmentFile(
+      parentKeyFor(page.source, page.id, page.confluence_id),
+      filename,
+    );
+  } catch (err) {
+    throw new AttachmentReadError(err);
+  }
   if (cached) return cached;
   if (page.source !== 'standalone') return null;
+  // Deliberately OUTSIDE the read wrapper: this is a database query, and a
+  // Postgres fault here is not a file the mover can chmod (#1626 review r4).
   const row = (await listLocalAttachmentsForRelocate(page.id)).find((r) => r.filename === filename);
   // A null path is a row whose filename the store would refuse — unreadable by
   // definition, and reported to the caller as a missing file (#1169).
   if (!row || row.path === null) return null;
   try {
     return await fs.readFile(row.path);
-  } catch {
-    return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new AttachmentReadError(err);
   }
 }
 
@@ -469,7 +516,13 @@ async function relocateToConfluence(opts: {
         `Attachment "${local}" cannot be moved: its filename is not one the attachment stores accept. Remove or rename it, then try again.`,
       );
     }
-    const data = await readAttachmentBytes(page, local);
+    let data: Buffer | null;
+    try {
+      data = await readAttachmentBytes(page, local);
+    } catch (err) {
+      if (err instanceof AttachmentReadError) throw unreadableAttachmentError(local, err.cause);
+      throw err;
+    }
     if (data === null) {
       warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);
       continue;
@@ -566,6 +619,7 @@ async function relocateToConfluence(opts: {
              last_synced = NOW(),
              embedding_dirty = TRUE,
              image_embedding_dirty = TRUE,
+             image_analysis_dirty = TRUE,
              embedding_status = 'not_embedded',
              embedded_at = NULL
            WHERE id = $1`,
@@ -667,7 +721,12 @@ async function relocateToLocal(opts: {
     removeLocalAttachmentFilesForRelocate(page.id, staged.map((s) => s.filename), txClient);
   try {
     for (const filename of await listCachedAttachments(oldConfluenceId)) {
-      const data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      let data: Buffer | null;
+      try {
+        data = await readCachedAttachmentFile(oldConfluenceId, filename);
+      } catch (err) {
+        throw unreadableAttachmentError(filename, err);
+      }
       if (data === null) continue;
       await writeLocalAttachmentFileForRelocate(page.id, filename, data, txClient);
       // Recorded only after the write succeeds, so `staged` never names a file
@@ -749,6 +808,7 @@ async function relocateToLocal(opts: {
          -- moves every image onto /api/local-attachments/ while the index
          -- still keys them under source = 'confluence'.
          image_embedding_dirty = TRUE,
+         image_analysis_dirty = TRUE,
          embedding_status = 'not_embedded',
          embedded_at = NULL,
          local_modified_at = NOW(),
@@ -897,7 +957,7 @@ async function restorePreMoveState(
          source = $2, confluence_id = $3, space_key = $4, visibility = $5,
          created_by_user_id = $6, body_html = $7, body_storage = $8,
          inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
-         embedding_dirty = $12, image_embedding_dirty = $13,
+         embedding_dirty = $12, image_embedding_dirty = $13, image_analysis_dirty = $16,
          embedding_status = $14, embedded_at = $15
        WHERE id = $1`,
       [
@@ -916,6 +976,7 @@ async function restorePreMoveState(
         snapshot.image_embedding_dirty,
         snapshot.embedding_status,
         snapshot.embedded_at,
+        snapshot.image_analysis_dirty,
       ],
     );
     await invalidateCollabDocAfterBodyWrite(snapshot.id, txClient);

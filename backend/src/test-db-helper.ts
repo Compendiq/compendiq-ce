@@ -67,11 +67,17 @@ export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
 }
 
 /**
- * Every migration that rewrites `llm_usecase_assignments_usecase_check`,
+ * Every migration that (re)writes `llm_usecase_assignments_usecase_check`,
  * oldest first. DISCOVERED, never listed: the CHECK is 054's inline column
  * constraint, so widening it for a new use case means dropping and re-adding
- * the WHOLE list (090 rerank, 093 image_embedding, 097 inline_completion,
- * 115 image_analysis, and whatever comes next).
+ * the WHOLE list (090 `rerank`, 093 `image_embedding`, 097
+ * `inline_completion`, 115 `image_analysis`, and whatever comes next).
+ *
+ * Exported because `054_llm_providers.test.ts` replays every widener in order
+ * to repair the schema its pre-054 simulation destroys: replaying only the one
+ * that happened to be current when that file was written would leave the
+ * constraint NARROWER than the schema. One definition of "which migrations
+ * write it" is enough.
  */
 export function usecaseCheckMigrations(): string[] {
   return fs
@@ -81,56 +87,54 @@ export function usecaseCheckMigrations(): string[] {
     .sort();
 }
 
-/** The use-case names the NEWEST widener admits, read from that migration. */
-function currentUsecaseNames(): string[] {
-  const wideners = usecaseCheckMigrations();
-  const newest = wideners[wideners.length - 1];
-  if (!newest) throw new Error(`No migration writes ${USECASE_CHECK}`);
-  const sql = fs.readFileSync(path.join(migrationsDir, newest), 'utf8');
-  const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(sql);
-  if (!listed) throw new Error(`${newest} rewrites ${USECASE_CHECK} but no CHECK (usecase IN (…)) was found`);
-  return [...listed[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
-}
-
 /**
- * Restore the use-case CHECK to the newest widener's list — the same class of
- * shared-schema damage as `restoreImageEmbeddingPlaceholder` above, and the
- * same remedy (run it at the start of every file, via `setupTestDb`).
+ * Restore `llm_usecase_assignments`' use-case CHECK to the newest widener's
+ * list, the same class of repair as {@link restoreImageEmbeddingPlaceholder}.
  *
- * A migration test that re-executes its own historical SQL against the shared
- * worker database re-imposes that migration's SHORTER list
- * (`097_inline_completion.test.ts` does exactly this in its `beforeEach`).
- * That is DDL: `truncateAllTables` cannot undo it, and `_migrations` still
- * lists every later widener as applied, so `runMigrations` never widens it
- * back. The next file on that worker to insert a newer use case then fails on
- * a constraint that has nothing to do with it — `image_analysis` (migration
- * 115) was the case that surfaced it.
+ * The CHECK is 054's inline column constraint, so every migration that adds a
+ * use case drops and re-adds the WHOLE list (090 `rerank`, 093
+ * `image_embedding`, 097 `inline_completion`, 115 `image_analysis`). Files on
+ * one worker database share it, `truncateAllTables` cannot undo DDL, and
+ * `runMigrations` will not repair it because `_migrations` still lists every
+ * widener as applied. So a file that recreates the table from an older DDL, or
+ * replays a subset of the wideners, or is interrupted between its own
+ * narrowing and its own repair, leaves the constraint NARROWER than the
+ * schema — and the next file to assign a newer use case fails for a reason
+ * that has nothing to do with it (#1104 was the first victim, `image_analysis`
+ * the latest). The list is read from the migration rather than duplicated
+ * here, so the next widener is covered without editing this file.
  *
- * The list is read from the migration, never spelled out here, so the next
- * use case is covered without touching this helper.
+ * Exported as well as called from `setupTestDb`, so the file that inflicts the
+ * narrowing can also repair it before handing the database on
+ * (`097_inline_completion.test.ts` replays 097's DDL in its `beforeEach`).
  */
 export async function restoreUsecaseCheck(): Promise<void> {
-  const pool = getPool();
-  const live = await pool.query<{ def: string }>(
-    `SELECT pg_get_constraintdef(c.oid) AS def
-       FROM pg_constraint c
-      WHERE c.conname = $1
-        AND c.conrelid = to_regclass('public.llm_usecase_assignments')`,
-    [USECASE_CHECK],
+  const newest = usecaseCheckMigrations().pop();
+  if (!newest) return;
+  const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(
+    fs.readFileSync(path.join(migrationsDir, newest), 'utf8'),
   );
-  const def = live.rows[0]?.def;
-  if (def === undefined) return; // no table / no constraint: a migration's own business
-
-  const expected = currentUsecaseNames();
-  const admitted = [...def.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
-  if (expected.length === admitted.length && expected.every((n) => admitted.includes(n))) return;
-
-  // Widening only: every row admitted by the narrower list is admitted here,
-  // so the ADD's validation of existing rows cannot fail.
-  await pool.query(`ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS ${USECASE_CHECK}`);
+  if (!listed) return;
+  const names = [...listed[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  const pool = getPool();
+  const present = await pool.query<{ exists: string | null }>(
+    `SELECT to_regclass('public.llm_usecase_assignments') AS exists`,
+  );
+  if (!present.rows[0]?.exists) return;
+  const { rows } = await pool.query<{ def: string }>(
+    `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conname = '${USECASE_CHECK}'`,
+  );
+  if (rows[0] && names.every((n) => rows[0]!.def.includes(`'${n}'`))) return;
+  // A row naming a use case the narrow list refuses would abort the ADD, and
+  // content is not what this repairs — every file seeds its own.
+  await pool.query('TRUNCATE TABLE llm_usecase_assignments');
+  await pool.query(
+    `ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS ${USECASE_CHECK}`,
+  );
   await pool.query(
     `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT ${USECASE_CHECK}
-       CHECK (usecase IN (${expected.map((n) => `'${n}'`).join(', ')}))`,
+       CHECK (usecase IN (${names.map((n) => `'${n}'`).join(', ')}))`,
   );
 }
 

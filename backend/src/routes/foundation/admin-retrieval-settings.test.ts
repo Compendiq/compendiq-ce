@@ -640,6 +640,26 @@ describe('admin settings — the keyword-index language comes from the row alone
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it('rebuilds page_embeddings.chunk_tsv in the SAME transaction as pages.tsv (ADR-027 D10)', async () => {
+    // A language switch that rebuilt only `pages.tsv` would leave derived (and
+    // authored) chunk text indexed under the previous configuration while the
+    // panel reports the new one.
+    await put({ ftsLanguage: 'german' });
+
+    const calls = mockQuery.mock.calls.map(([sql, params]) => ({ sql: String(sql), params }));
+    const begin = calls.findIndex((c) => /^\s*BEGIN/i.test(c.sql));
+    const pages = calls.findIndex((c) => /UPDATE pages SET tsv/i.test(c.sql));
+    const chunks = calls.findIndex((c) => /UPDATE page_embeddings SET chunk_tsv = to_tsvector/i.test(c.sql));
+    const commit = calls.findIndex((c) => /^\s*COMMIT/i.test(c.sql));
+
+    expect(chunks, 'the language save must rebuild the per-chunk lexical document').toBeGreaterThan(begin);
+    expect(chunks).toBeGreaterThan(pages);
+    expect(commit).toBeGreaterThan(chunks);
+    // Bound, not interpolated, like the pages rebuild; every row, no filter.
+    expect(calls[chunks]!.params).toEqual(['german']);
+    expect(calls[chunks]!.sql).not.toMatch(/WHERE/i);
+  });
+
   it('bounds the LOCK wait too — lifting statement_timeout removes the only cancellation there was', async () => {
     // Review r3. `UPDATE pages` carries no WHERE, so it is the widest lock the
     // app takes, and no pool sets `lock_timeout` (only `runMigrations`, to 0).
@@ -941,22 +961,37 @@ describe('PUT /api/admin/settings — the image-analysis output-token ceiling (#
 });
 
 describe('PUT /api/admin/settings — worker batch sizes (Settings → AI Models → Workers)', () => {
-  it('round-trips each size through its own row and reports 5 with no row', async () => {
+  it('round-trips each size through its own row and reports the per-key default with no row', async () => {
     const none = await app.inject({ method: 'GET', url: '/api/admin/settings' });
-    expect(AdminSettingsSchema.parse(none.json())).toMatchObject({ qualityBatchSize: 5, summaryBatchSize: 5 });
+    // 5 pages for the text workers; 50 images for the analysis worker (ADR-027 D13).
+    expect(AdminSettingsSchema.parse(none.json())).toMatchObject({ qualityBatchSize: 5, summaryBatchSize: 5, imageAnalysisBatchSize: 50 });
 
     expect((await put({ qualityBatchSize: 40 })).statusCode).toBe(200);
     expect(rows).toEqual({ quality_batch_size: '40' });
+    expect((await put({ imageAnalysisBatchSize: 200 })).statusCode).toBe(200);
+    expect(rows).toEqual({ quality_batch_size: '40', image_analysis_batch_size: '200' });
 
     const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
-    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ qualityBatchSize: 40, summaryBatchSize: 5 });
+    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ qualityBatchSize: 40, summaryBatchSize: 5, imageAnalysisBatchSize: 200 });
   });
 
   it('rejects a size the workers would refuse, rather than saving a lie', async () => {
-    for (const body of [{ qualityBatchSize: 0 }, { summaryBatchSize: 101 }, { summaryBatchSize: 2.5 }]) {
+    for (const body of [
+      { qualityBatchSize: 0 },
+      { summaryBatchSize: 101 },
+      { summaryBatchSize: 2.5 },
+      { imageAnalysisBatchSize: 0 },
+      { imageAnalysisBatchSize: 501 },
+    ]) {
       expect((await put(body)).statusCode, JSON.stringify(body)).toBe(400);
     }
     expect(rows).toEqual({});
+  });
+
+  it('reads an out-of-range image_analysis_batch_size row as the default, never as a refusal', async () => {
+    rows.image_analysis_batch_size = '9999';
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(AdminSettingsSchema.parse(res.json())).toMatchObject({ imageAnalysisBatchSize: 50 });
   });
 });
 

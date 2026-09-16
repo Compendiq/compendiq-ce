@@ -110,6 +110,45 @@ describe('extractImageReferencesFromHtml (#1115)', () => {
     ]);
     expect(extractImageReferencesFromHtml(storage)).toEqual([]);
   });
+
+  describe('compose-time context (ADR-027 D9.2)', () => {
+    it('carries the alt text as the caption, else the enclosing figcaption, else nothing', () => {
+      const html = `
+        <img src="/api/attachments/7/alt.png" alt="  Login  dialog ">
+        <figure><img src="/api/attachments/7/fig.png"><figcaption>The <b>topology</b></figcaption></figure>
+        <figure><img src="/api/attachments/7/both.png" alt="alt wins"><figcaption>ignored</figcaption></figure>
+        <img src="/api/attachments/7/none.png" alt="">
+      `;
+      expect(extractImageReferencesFromHtml(html)).toEqual([
+        { source: 'confluence', key: 'alt.png', caption: 'Login dialog' },
+        { source: 'confluence', key: 'fig.png', caption: 'The topology' },
+        { source: 'confluence', key: 'both.png', caption: 'alt wins' },
+        { source: 'confluence', key: 'none.png' },
+      ]);
+    });
+
+    it('carries the nearest PRECEDING heading, and none before the first heading', () => {
+      const html = `
+        <img src="/api/attachments/7/intro.png">
+        <h2>Install</h2><p>…</p><img src="/api/attachments/7/a.png">
+        <h3>Step 2</h3><img src="/api/attachments/7/b.png">
+        <h2>Verify</h2><img src="/api/attachments/7/c.png">
+      `;
+      expect(extractImageReferencesFromHtml(html)).toEqual([
+        { source: 'confluence', key: 'intro.png' },
+        { source: 'confluence', key: 'a.png', heading: 'Install' },
+        { source: 'confluence', key: 'b.png', heading: 'Step 2' },
+        { source: 'confluence', key: 'c.png', heading: 'Verify' },
+      ]);
+    });
+
+    it('keeps the FIRST occurrence\'s context when a reference repeats', () => {
+      const html = `<h2>One</h2><img src="/api/attachments/7/a.png" alt="first"><h2>Two</h2><img src="/api/attachments/7/a.png" alt="second">`;
+      expect(extractImageReferencesFromHtml(html)).toEqual([
+        { source: 'confluence', key: 'a.png', caption: 'first', heading: 'One' },
+      ]);
+    });
+  });
 });
 
 describe('isExternalImageKey (#1115)', () => {

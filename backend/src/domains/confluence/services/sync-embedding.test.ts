@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
   processDirtyPages: vi.fn().mockResolvedValue({ processed: 3, errors: 0 }),
   processDirtyPageImages: vi.fn().mockResolvedValue({ pages: 0 }),
+  runImageAnalysisBatch: vi.fn().mockResolvedValue({ processed: 0, reason: 'unassigned' }),
   getSpaces: vi.fn().mockResolvedValue({ results: [] }),
   getAllPagesInSpace: vi.fn().mockResolvedValue([]),
   getAllPageIds: vi.fn().mockResolvedValue(new Set<string>()),
@@ -24,6 +25,14 @@ vi.mock('../../llm/services/embedding-service.js', () => ({
 // `processDirtyPages` beside it.
 vi.mock('../../llm/services/image-embedding-service.js', () => ({
   processDirtyPageImages: mocks.processDirtyPageImages,
+}));
+
+// ADR-027 D13 (#1616) — the analysis worker has its OWN repeatable job
+// (`image-analysis`), so sync must not kick it: a per-user kick beside the
+// repeat is N+1 lease contests per cycle (#1626 review r1). Mocked so the
+// assertion below fails if the kick is ever re-added.
+vi.mock('../../llm/services/image-analysis-worker.js', () => ({
+  runImageAnalysisBatch: mocks.runImageAnalysisBatch,
 }));
 
 vi.mock('./confluence-client.js', () => ({
@@ -135,9 +144,11 @@ describe('syncUser auto-embedding', () => {
     });
   });
 
-  it('should kick the image index worker after a successful sync (#1115 P2)', async () => {
+  it('should kick the image index worker after a successful sync (#1115 P2), and not the analysis worker', async () => {
     // The image index has no repeatable job: this fire-and-forget call is its
-    // whole automatic cadence, so nothing else notices if it goes away.
+    // whole automatic cadence, so nothing else notices if it goes away. The
+    // analysis worker is the opposite: it has one, so a kick here would be
+    // a second trigger per cadence.
     setupSuccessfulSync();
 
     await syncUser('user-img-1');
@@ -145,6 +156,10 @@ describe('syncUser auto-embedding', () => {
     await vi.waitFor(() => {
       expect(mocks.processDirtyPageImages).toHaveBeenCalled();
     });
+    await vi.waitFor(() => {
+      expect(mocks.processDirtyPages).toHaveBeenCalled();
+    });
+    expect(mocks.runImageAnalysisBatch).not.toHaveBeenCalled();
   });
 
   it('should not kick the image index worker when no credentials are configured', async () => {

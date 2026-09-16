@@ -582,6 +582,40 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect((await getRow(id)).source).toBe('standalone');
     });
 
+    it('refuses the move with a named 400 when a LOCAL-store attachment is there but cannot be read', async () => {
+      // The cached reader already aborted the move on a read failure; the
+      // local-store fallback swallowed it and answered `null`, so a
+      // standalone page's `EACCES`-locked file was quietly left behind under
+      // the "missing on disk; it was not published" warning on a 200. And a
+      // propagated read failure reached the route as a bare `Error`, which
+      // app.ts masks to "Internal Server Error" (#1626 review r3).
+      const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+      await writeStoreB(id, 'locked.png', 'locked-bytes', userId);
+      h.client.createPage.mockResolvedValue(createdPage('900200'));
+
+      const lockedPath = path.resolve(attachmentsRoot, 'local', String(id), 'locked.png');
+      const realReadFile = fs.readFile.bind(fs);
+      const readSpy = vi.spyOn(fs, 'readFile').mockImplementation(async (target, options) => {
+        if (path.resolve(String(target)) === lockedPath) {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        }
+        return realReadFile(target, options);
+      });
+
+      let res;
+      try {
+        res = await toConfluence(id);
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('Attachment "locked.png" cannot be moved');
+      expect(res.json().error).toContain('permissions');
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+    });
+
     it('refuses an over-long local filename by name too, not just a hidden one (#1169)', async () => {
       // The two stores enforce different rules — the local one caps at 255
       // characters, the Confluence one does not — so the guard has to ask both.
@@ -742,6 +776,43 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         [id],
       );
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
+    });
+
+    it('refuses the move with a named 400 when a cached attachment cannot be read, staging nothing', async () => {
+      const id = await createPage({
+        title: 'Locked cache',
+        source: 'confluence',
+        confluenceId: '700500',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700500/locked.png" /></p>',
+      });
+      await writeStoreA('700500', 'locked.png', 'locked-bytes');
+
+      const lockedPath = path.resolve(attachmentsRoot, '700500', 'locked.png');
+      const realReadFile = fs.readFile.bind(fs);
+      const readSpy = vi.spyOn(fs, 'readFile').mockImplementation(async (target, options) => {
+        if (path.resolve(String(target)) === lockedPath) {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        }
+        return realReadFile(target, options);
+      });
+
+      let res;
+      try {
+        res = await toLocal(id, '700500');
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      // The staging loop's own cleanup still runs, so the abort leaves no
+      // half-migrated page: no local bytes, no rows, the page untouched —
+      // and the refusal names the file instead of 500ing (#1626 review r3).
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('Attachment "locked.png" cannot be moved');
+      expect(await storeBFiles(id)).toEqual([]);
+      expect((await query('SELECT 1 FROM local_attachments WHERE page_id = $1', [id])).rowCount).toBe(0);
+      expect(await getRow(id)).toMatchObject({ source: 'confluence', confluence_id: '700500' });
+      expect(h.client.deletePage).not.toHaveBeenCalled();
     });
 
     it('holds one shared barrier from local-file staging through transaction commit', async () => {
@@ -1531,33 +1602,34 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
    * were deletable with every suite green.
    */
   describe('image_embedding_dirty across a relocate (#1115 P2)', () => {
-    async function imageDirty(id: number): Promise<boolean> {
-      const r = await query<{ image_embedding_dirty: boolean }>(
-        'SELECT image_embedding_dirty FROM pages WHERE id = $1', [id],
+    /** Both flags — ADR-027 D4 raises the analysis flag beside the legacy one. */
+    async function imageDirty(id: number): Promise<{ image: boolean; analysis: boolean }> {
+      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean }>(
+        'SELECT image_embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1', [id],
       );
-      return r.rows[0]!.image_embedding_dirty;
+      return { image: r.rows[0]!.image_embedding_dirty, analysis: r.rows[0]!.image_analysis_dirty };
     }
 
     it('raises it on local → Confluence', async () => {
       const id = await createPage({ title: 'Moving up', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.createPage.mockResolvedValue(createdPage('900910'));
 
       expect((await toConfluence(id)).statusCode).toBe(200);
 
-      expect(await imageDirty(id)).toBe(true);
+      expect(await imageDirty(id)).toEqual({ image: true, analysis: true });
     });
 
     it('raises it on Confluence → local', async () => {
       const id = await createPage({
         title: 'Moving down', source: 'confluence', confluenceId: '700910', spaceKey: 'CONF',
       });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.deletePage.mockResolvedValue(undefined);
 
       expect((await toLocal(id, '700910')).statusCode).toBe(200);
 
-      expect(await imageDirty(id)).toBe(true);
+      expect(await imageDirty(id)).toEqual({ image: true, analysis: true });
     });
 
     it('restores it when the move is compensated', async () => {
@@ -1569,13 +1641,13 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       const id = await createPage({
         title: 'Reverted', source: 'confluence', confluenceId: '700911', spaceKey: 'CONF',
       });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.deletePage.mockRejectedValue(new ConfluenceError('server error', 500));
       h.client.getPage.mockResolvedValue({ id: '700911', status: 'current' });
 
       expect((await toLocal(id, '700911')).statusCode).toBe(500);
 
-      expect(await imageDirty(id)).toBe(false);
+      expect(await imageDirty(id)).toEqual({ image: false, analysis: false });
     });
   });
 });

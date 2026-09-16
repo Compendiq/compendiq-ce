@@ -265,6 +265,27 @@ describe('pickRetrievedImages — skip and count', () => {
     expect(picked.skipped.missing).toBe(1);
   });
 
+  it('counts a file that IS on disk but cannot be read, and keeps going', async () => {
+    // Review r2 of #1626: the store answers `null` only for an absent file
+    // now and THROWS for every other read failure, so this loop has to catch
+    // one. A directory where the file should be is the root-proof form of
+    // that fault (`EISDIR`; a `chmod 000` reads fine as root, which CI is).
+    // Without the catch the rejection leaves `pickRetrievedImages` — before
+    // the SSE headers are written — so one attachment with bad permissions
+    // would 500 the whole ask instead of dropping one picture.
+    pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
+    await fs.mkdir(path.join(tmpRoot, 'c1', 'locked.png'), { recursive: true });
+    await writeConfluenceFile('c1', 'ok.png', distinctPng('ok'));
+
+    const picked = await pickRetrievedImages(
+      [page(1, [hit('locked.png', 0.9), hit('ok.png', 0.8)])],
+      { max: 4 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['ok.png']);
+    expect(picked.skipped.missing).toBe(1);
+  });
+
   it('counts a page the identity lookup did not answer for', async () => {
     // Deleted between retrieval and the pick, or a row retrieval saw that
     // this transaction does not. Without an identity there is no directory
@@ -281,8 +302,9 @@ describe('pickRetrievedImages — skip and count', () => {
   it('answers empty when the identity lookup itself FAILS, rather than throwing', async () => {
     // Review r2. The docstring promises "never throws: an answer must not
     // fail because a picture could not be read", and this is the one path in
-    // the function that can — every other failure is already a value (`null`
-    // bytes, a `validateImage` throw caught beside it). Nothing made
+    // the function that can — the read failures are values or caught beside
+    // it (`null` for an absent file, a rethrow for an unreadable one, a
+    // `validateImage` throw). Nothing made
     // `mockQuery` reject, so turning the soft-fail into a rethrow left this
     // file and `llm-ask.test.ts` green, and the blast radius is not a missing
     // picture: the pick runs before the SSE headers are written, so the

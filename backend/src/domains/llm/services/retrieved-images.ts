@@ -316,7 +316,17 @@ export async function pickRetrievedImages(
       continue;
     }
 
-    const resolved = await resolveAttachmentBytes(location);
+    let resolved;
+    try {
+      resolved = await resolveAttachmentBytes(location);
+    } catch (err) {
+      // A read failure that is not an absence (EACCES, EIO). The answer path
+      // fails open — a picture the model does not get is the same cost as a
+      // missing one, and the user is waiting — while the analysis worker,
+      // which can retry, is the one that records it.
+      logger.warn({ err, pageId: location.pageId, key: location.key }, 'Retrieved image could not be read — skipped');
+      resolved = null;
+    }
     if (!resolved) {
       skipped.missing++;
       continue;
