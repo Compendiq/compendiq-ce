@@ -21,6 +21,7 @@ import {
   JudgmentRowSchema,
   SINGLE_JUDGE_STATEMENT,
   assertFullyJudged,
+  assertSheetIntegrity,
   auditSample,
   buildArmVerdict,
   decideGate,
@@ -30,6 +31,7 @@ import {
   mergeSheets,
   pilotCheck,
   readJudgments,
+  readSheet,
   scoreControls,
   scoreJudgedPair,
   sheetPath,
@@ -301,22 +303,24 @@ describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
   // pre-registers at power ≈ 0.80 — could only produce a document that
   // "decides nothing". O2's two sizes are two modes now.
   it.each([
-    [143, 'shortfall'],
+    [143, 'undecidable'],
     [144, 'reduced-power'],
     [189, 'reduced-power'],
     [190, 'full'],
   ] as const)('reads %i image-dependent labels as %s', (n, expected) => {
     const audit = auditSample(labels(n, 3, 48), []);
     expect(audit.imageDependent).toBe(n);
-    if (expected === 'shortfall') {
+    expect(audit.powerMode).toBe(expected);
+    if (expected === 'undecidable') {
       expect(audit.shortfalls).toEqual(['143 image-dependent labels (O2: 190, below the hard floor 144)']);
-      // Below the floor there is no mode: nothing decides.
-      expect(audit.powerMode).toBe('full');
-      expect(audit.powerNote).toBeNull();
+      // Review r3 finding 4: the mode used to stay `full` here and the
+      // achieved power was still computed, so a document whose own banner
+      // says it decides nothing printed `power ≈ 0.799 vs ≈ 0.900`.
+      expect(audit.primaryPower).toBeNull();
+      expect(audit.powerNote).toMatch(/decides\s+nothing and no achieved power is reported/);
       return;
     }
     expect(audit.shortfalls).toEqual([]);
-    expect(audit.powerMode).toBe(expected);
     if (expected === 'full') {
       expect(audit.powerNote).toBeNull();
       expect(audit.primaryPower).toBe(audit.targetPower);
@@ -325,6 +329,21 @@ describe('auditSample (O2/O3 as a check, not a serialised constant)', () => {
       expect(audit.primaryPower).toBeLessThan(audit.targetPower);
       expect(audit.primaryPower).toBeGreaterThanOrEqual(0.8);
     }
+  });
+
+  // A shortfall in any of O2's other conditions makes the document decide
+  // nothing just as a below-floor N does, so it must not carry a mode that
+  // says it decided at the pre-registered power either.
+  it('is undecidable — with no achieved power — when a non-floor condition falls short at a full-sized N', () => {
+    const audit = auditSample(labels(190, 4, 47), [{ ...controls, perLanguage: { en: 197, de: 196 } }]);
+    expect(audit.imageDependent).toBe(190);
+    expect(audit.shortfalls).toEqual([
+      '47 image-negative labels (O2: 48)',
+      'control de (B vs C) pairs 196 queries (O2: 197)',
+    ]);
+    expect(audit.powerMode).toBe('undecidable');
+    expect(audit.primaryPower).toBeNull();
+    expect(audit.powerNote).toContain('2 of O2\'s sample conditions are unmet');
   });
 
   it('states the floor\'s power as the ADR does: 0.80 at 144, 0.90 at 190', () => {
@@ -481,6 +500,15 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
     expect(verdictLines[0]).toMatch(/TOOLING VERIFICATION ONLY/);
     expect(verdictLines.join('\n')).toContain('short of O2: image-dependent labels on 2 pages');
     expect(verdictLines.join('\n')).toContain('Single-judge protocol');
+    // Review r3 finding 4: the banner says this document decides nothing, so
+    // the sample line must not quote an achieved power beside the target's —
+    // it used to print `primary power ≈ 0.799 vs ≈ 0.900` two lines under it.
+    expect(report.sample.powerMode).toBe('undecidable');
+    expect(report.reducedPower).toBe(false);
+    expect(report.sample.primaryPower).toBeNull();
+    const sampleLine = verdictLines.find((l) => l.startsWith('sample:'))!;
+    expect(sampleLine).not.toMatch(/primary power/);
+    expect(sampleLine).toContain('no achieved power (this sample decides nothing');
   });
 
   it('refuses an answer run that was not made under its arm report\'s configuration (review r1 finding 2)', () => {
@@ -539,7 +567,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
       writeFileSync(sheetFile, originalSheet.replace(/"answersSha256": "[0-9a-f]{64}",\n {2}"mappingSha256"/, `"answersSha256": "${sha256File(answersFile)}",\n  "mappingSha256"`));
       expect(JSON.parse(readFileSync(sheetFile, 'utf8')).answersSha256).toBe(sha256File(answersFile));
       expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 }))
-        .toThrow(/12 of 12 rows of answers-sheet\.jsonl differ from the answer runs they were merged from \(first: item [0-9a-f-]+\)/);
+        .toThrow(/12 of 12 rows of .*answers-sheet\.jsonl differ from the answer runs they were merged from \(first: item [0-9a-f-]+\)/);
     } finally {
       writeFileSync(answersFile, originalAnswers);
       writeFileSync(sheetFile, originalSheet);
@@ -559,7 +587,7 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
         .sort((a, b) => ((JSON.parse(a) as AnswerItem).itemId < (JSON.parse(b) as AnswerItem).itemId ? -1 : 1)).join('\n') + '\n';
       writeFileSync(answersFile, oneEdited);
       retag(oneEdited);
-      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/1 of 12 rows of answers-sheet\.jsonl differ/);
+      expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/1 of 12 rows of .*answers-sheet\.jsonl differ/);
       // A removed row is caught by the count.
       const shorter = lines.slice(1).join('\n') + '\n';
       writeFileSync(answersFile, shorter);
@@ -581,6 +609,43 @@ describe('answers → merge → judgments → --unblind → verdict (mocked chat
       expect(() => buildArmVerdict({ ...input, allowUnderpowered: true, iterations: 50 })).toThrow(/answers-run-B\.jsonl hashes to [0-9a-f]{64} but sheet-sheet\.json recorded [0-9a-f]{64} at --merge — arm B's answers changed/);
     } finally {
       writeFileSync(armFile, armOriginal);
+    }
+  });
+
+  // Review r3 finding 2: `--check` validated the judgments against the file
+  // passed as `--answers` but hashed the out-dir copy of the same name, so a
+  // tampered judge's copy outside the artifacts directory was reported as
+  // "still hashes to sheet-sheet.json". The check now takes the file it read.
+  it('holds the answers file it was HANDED to the sheet, not the out-dir copy of that name', () => {
+    const sheet = readSheet(dir, 'sheet');
+    const elsewhere = mkdtempSync(join(tmpdir(), 'arm-judge-'));
+    try {
+      const pristine = join(elsewhere, 'answers-sheet.jsonl');
+      writeFileSync(pristine, readFileSync(join(dir, 'answers-sheet.jsonl'), 'utf8'));
+      // Content-addressed: a copy that is byte-identical passes, wherever it sits.
+      expect(() => assertSheetIntegrity(dir, 'sheet', sheet, pristine)).not.toThrow();
+      const tampered = join(elsewhere, 'tampered.jsonl');
+      writeFileSync(tampered, readFileSync(pristine, 'utf8').trim().split('\n')
+        .map((l) => JSON.stringify({ ...(JSON.parse(l) as AnswerItem), answer: 'judged from a rewritten copy' })).join('\n') + '\n');
+      expect(() => assertSheetIntegrity(dir, 'sheet', sheet, tampered)).toThrow(/tampered\.jsonl hashes to [0-9a-f]{64} but sheet-sheet\.json recorded/);
+      // …and the out-dir copy, which is intact, is not what vouches for it.
+      expect(() => assertSheetIntegrity(dir, 'sheet', sheet)).not.toThrow();
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  // Review r3 finding 3: everything load-bearing is keyed on the file name,
+  // so a sheet whose `runId` field named another run was copied into the
+  // verdict document unchallenged — `runId: "sheet"` beside
+  // `sheet.runId: "some-other-run"`.
+  it('refuses a sheet whose recorded runId is not the run being read', () => {
+    const foreign = sheetPath(dir, 'other');
+    writeFileSync(foreign, readFileSync(sheetPath(dir, 'sheet'), 'utf8'));
+    try {
+      expect(() => readSheet(dir, 'other')).toThrow(/records runId "sheet", but it is the sheet for run "other"/);
+    } finally {
+      rmSync(foreign, { force: true });
     }
   });
 });

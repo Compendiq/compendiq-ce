@@ -5163,7 +5163,15 @@ is the arm-A case: A runs on the legacy revision by design, so a
 candidate-only knob can never be made to agree and no re-run would fix it —
 it is RECORDED on the comparison (`revisionSpecificKnobs`) instead of
 refusing the pair. Within one revision (B vs C) a one-sided knob is still a
-drift and still refused.
+drift and still refused. **That escape hatch is keyed on ABSENCE, so the
+RECORD is what covers it, not a refusal**: a non-named knob present on one
+side only is accepted whenever the two arms sit on different revisions, so
+deleting such a key from one report file in an A-containing pair hides a
+value drift instead of raising one. What bounds it is that the eleven named
+knobs are schema-required of both files and can never be skipped, and that
+every key taken this way is listed as `revisionSpecificKnobs` on the
+comparison in the verdict document — the audit trail a reader checks when an
+A-containing pair is questioned (review r3 finding 5).
 
 *The judge's file is verified, not merely recorded.* `sheet-<id>.json`
 records the sha256 of `answers-<id>.jsonl` and `mapping-<id>.json` before
@@ -5173,7 +5181,9 @@ also RE-DERIVES the sheet's rows from the per-arm answers files it names
 (each held to the hash the sheet and that run's own provenance recorded) and
 refuses on any differing row, so rewriting the judge's file and its recorded
 hash together is not enough. `--check` performs the same verification
-whenever the operator's sheet file is at hand, so a rewritten row surfaces
+whenever the operator's sheet file is at hand — over the file it was handed
+as `--answers`, which is the file whose judgments it just read, never the
+out-dir copy of that name — so a rewritten row surfaces
 while judging is still under way. Consequence for the operator: every run's
 three files stay in the artifacts directory under the run id they were
 written with.
@@ -5193,7 +5203,7 @@ constant in D8 is an admin setting by the same decision.
 | # | Decision | Confirmed value | Why this number | Status |
 |---|---|---|---|---|
 | O1 | Primary-endpoint margin | **+5 absolute points**, B vs A, paired image-dependent answer correctness, point estimate ≥ 0.05 and cluster-bootstrap 95% CI excluding 0 | The epic's proposal; the power calculation shows it is decidable at N = 190 under the stated assumptions | Confirmed by owner 2026-09-15 |
-| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ. **Erratum (PR2, 2026-09-16):** the hard floor is a **deciding mode**, and the harness implements it as one — ≥ 190 decides at full power, **144–189 decides at reduced power** with the achieved power printed and the document labelled REDUCED POWER, and only **< 144** is refused (`--allow-underpowered` then labels the output TOOLING VERIFICATION ONLY). The first harness thresholded on 190 alone and merely printed the floor, which left this floor with no effect. The other counts here (48 negatives, ≥ 45 pages, ≤ 5 per page, 197 × 2 controls) are not power-continuous and stay hard at any N — see "Sample size" | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
+| O2 | Sample size | **N = 190** image-dependent queries (hard floor 144), ≤ 5 per page, ≥ 45 pages, EN:DE ≈ 1:2; **48** image-negative queries (24 existing + 24 new); EN/DE text controls unchanged at **197 × 2**; pilot of 30 pairs checks ψ. **Erratum (PR2, 2026-09-16):** the hard floor is a **deciding mode**, and the harness implements it as one — ≥ 190 decides at full power, **144–189 decides at reduced power** with the achieved power printed and the document labelled REDUCED POWER, and only **< 144** is refused (`--allow-underpowered` then labels the output TOOLING VERIFICATION ONLY, and such a document reports NO achieved power: a power figure describes a decision, and a document that decides nothing has none to describe). The first harness thresholded on 190 alone and merely printed the floor, which left this floor with no effect. The other counts here (48 negatives, ≥ 45 pages, ≤ 5 per page, 197 × 2 controls) are not power-continuous and stay hard at any N — see "Sample size" | With the page design effect applied: power ≈ 0.90 for ψ = 0.30/δ = 0.15 (floor 144 at 0.80) and ≈ 0.80 for ψ = 0.25/δ = 0.12 (188); DE-heavy because the corpus is | Confirmed by owner 2026-09-15 |
 | O3 | Page clustering | cluster bootstrap by page for every CI; design effect ρ = 0.10 in the sample size; ≤ 5 labels per page | Fixture pages already carry 2–7 labels; a page-level failure mode (one bad description) would otherwise look like five independent losses | Confirmed by owner 2026-09-15 |
 | O4 | Non-inferiority, ordinary text | **2 absolute points** on R@5 and MRR, EN + DE pooled (n = 394), one-sided 95% | The epic's 1 point has power ≈ 0.40 at this n (DE ≈ 1.02 on these suites) and would most likely read inconclusive; 2 points reaches ≈ 0.87 | Confirmed by owner 2026-09-15 |
 | O5 | Non-inferiority, image-evidence R@5 | **5 absolute points**, B vs A on the primary set — **explicitly an underpowered guardrail**: the report states power ≈ 0.44 at δ = 0 and prints the one-sided CI beside the verdict; a pass reads "no collapse", never parity | A 1-point margin is undecidable at N = 190 (SE ≈ 0.033 with the page design effect, power ≈ 0.09); the primary endpoint is where the answer quality is decided | Confirmed by owner 2026-09-15 |

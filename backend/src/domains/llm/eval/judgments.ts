@@ -220,7 +220,14 @@ export function mergeSheets(dir: string, runId: string, sources: readonly MergeS
   return provenance;
 }
 
-/** Parse `sheet-<runId>.json`, naming the file in the refusal. */
+/**
+ * Parse `sheet-<runId>.json`, naming the file in the refusal — and hold the
+ * `runId` it records to the run being read. Everything load-bearing is keyed
+ * on the FILE NAME, so a sheet carrying someone else's run id was accepted
+ * and copied straight into the verdict document, which then recorded
+ * `runId: "sheet"` beside `sheet.runId: "some-other-run"` (review r3 finding
+ * 3). A verdict that mislabels its own provenance is not an audit trail.
+ */
 export function readSheet(dir: string, runId: string): SheetProvenance {
   const file = sheetPath(dir, runId);
   let json: unknown;
@@ -230,7 +237,16 @@ export function readSheet(dir: string, runId: string): SheetProvenance {
     throw new Error(`${file}: ${err instanceof Error && 'code' in err && err.code === 'ENOENT' ? 'missing' : 'not JSON'} — it is written by --merge and records what the judge was given`);
   }
   const parsed = SheetProvenanceSchema.safeParse(json);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    if (parsed.data.runId !== runId) {
+      throw new Error(
+        `${file} records runId ${JSON.stringify(parsed.data.runId)}, but it is the sheet for run ${JSON.stringify(runId)} — ` +
+          'the file name and the provenance inside it name different runs. Refused: the verdict would record one run id ' +
+          'and the sheet of another.',
+      );
+    }
+    return parsed.data;
+  }
   const first = parsed.error.issues[0];
   throw new Error(`${file} is not a sheet provenance file (${first ? `${first.path.join('.') || '<root>'}: ${first.message}` : 'invalid'})`);
 }
@@ -256,13 +272,18 @@ export function readSheet(dir: string, runId: string): SheetProvenance {
  * Each run's three files therefore have to stay in the artifacts directory
  * under the run id they were written with; that is where `--unblind` already
  * re-reads `provenance-<runId>.json` from.
+ *
+ * `answersFile` names the sheet copy to hold to that record. `--unblind`
+ * leaves it at the out-dir copy it reads; `--check` passes the path it was
+ * given as `--answers`, because a check that reads one file and vouches for
+ * another says nothing about the judgments it just validated (review r3
+ * finding 2 — a tampered copy outside `--out-dir` was reported as intact).
  */
-export function assertSheetIntegrity(dir: string, runId: string, sheet: SheetProvenance): void {
-  const answersFile = answersPath(dir, runId);
+export function assertSheetIntegrity(dir: string, runId: string, sheet: SheetProvenance, answersFile: string = answersPath(dir, runId)): void {
   const answersSha = sha256File(answersFile);
   if (answersSha !== sheet.answersSha256) {
     throw new Error(
-      `answers-${runId}.jsonl hashes to ${answersSha} but sheet-${runId}.json recorded ${sheet.answersSha256} at ` +
+      `${answersFile} hashes to ${answersSha} but sheet-${runId}.json recorded ${sheet.answersSha256} at ` +
         '--merge — the judge\'s own file changed after the sheet was made. Refused: the judgments describe rows that ' +
         'are no longer the rows the arms produced.',
     );
@@ -287,12 +308,12 @@ export function assertSheetIntegrity(dir: string, runId: string, sheet: SheetPro
   rederived.sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
   const onSheet = readAnswers(answersFile);
   if (rederived.length !== onSheet.length) {
-    throw new Error(`answers-${runId}.jsonl carries ${onSheet.length} rows, the ${sheet.sources.length} answer runs it was merged from carry ${rederived.length}. Refused.`);
+    throw new Error(`${answersFile} carries ${onSheet.length} rows, the ${sheet.sources.length} answer runs it was merged from carry ${rederived.length}. Refused.`);
   }
   const differing = onSheet.filter((row, i) => JSON.stringify(row) !== JSON.stringify(rederived[i]));
   if (differing.length > 0) {
     throw new Error(
-      `${differing.length} of ${onSheet.length} rows of answers-${runId}.jsonl differ from the answer runs they were ` +
+      `${differing.length} of ${onSheet.length} rows of ${answersFile} differ from the answer runs they were ` +
         `merged from (first: item ${differing[0]!.itemId}) — the judge's sheet was rewritten after --merge. Refused: ` +
         'the sheet is re-derived from each arm\'s own answers file, so editing it and its recorded hash together is not enough.',
     );
@@ -723,14 +744,17 @@ export function decideGate(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * Which of O2's two sample sizes the labels reached. `full` is the
- * pre-registered N = 190 (power ≈ 0.90 under ψ = 0.30 / δ = 0.15, and ≈ 0.80
- * under the pessimistic pair); `reduced-power` is the hard floor 144–189,
- * which ADR-027 "Sample size" pre-registers as decidable at power ≈ 0.80–0.90
- * and which the document therefore DECIDES under, labelled. Below the floor
- * there is no mode: the sample is a shortfall.
+ * Which of O2's sizes the labels reached. `full` is the pre-registered
+ * N = 190 (power ≈ 0.90 under ψ = 0.30 / δ = 0.15, and ≈ 0.80 under the
+ * pessimistic pair); `reduced-power` is the hard floor 144–189, which
+ * ADR-027 "Sample size" pre-registers as decidable at power ≈ 0.80–0.90 and
+ * which the document therefore DECIDES under, labelled; `undecidable` is
+ * every sample O2 makes decide nothing — and it is a MODE, not the absence
+ * of one, because `full` used to be the value a below-floor sample carried,
+ * so a document that decides nothing quoted an achieved power beside the
+ * target as though it had (review r3 finding 4).
  */
-export type SamplePowerMode = 'full' | 'reduced-power';
+export type SamplePowerMode = 'full' | 'reduced-power' | 'undecidable';
 
 export interface SampleAudit {
   imageDependent: number;
@@ -744,12 +768,20 @@ export interface SampleAudit {
    * when the verdict may decide (whether at full or at reduced power).
    */
   shortfalls: string[];
+  /**
+   * `undecidable` whenever `shortfalls` is non-empty: a document that decides
+   * nothing has no mode in which it decided.
+   */
   powerMode: SamplePowerMode;
-  /** The sentence the document carries whenever `powerMode` is `reduced-power`. */
+  /** The sentence the document carries unless `powerMode` is `full`. */
   powerNote: string | null;
   required: typeof ARM_SAMPLE;
-  /** Achieved power at the labels in hand. */
-  primaryPower: number;
+  /**
+   * Achieved power at the labels in hand, and `null` when the sample is
+   * `undecidable` — there is no power at which a document that decides
+   * nothing decided, so the figure is not published beside the target's.
+   */
+  primaryPower: number | null;
   /** Power at the pre-registered target, which the label compares against. */
   targetPower: number;
 }
@@ -765,7 +797,8 @@ export interface SampleAudit {
  *                                   states the achieved power beside the
  *                                   target's. ADR-027 pre-registers 144 as
  *                                   the hard floor at power 0.80.
- *   < 144                         → a shortfall; nothing decides.
+ *   < 144                         → a shortfall; nothing decides, and no
+ *                                   achieved power is reported.
  *
  * The other four checks are not power-continuous and stay hard: 48
  * image-negative labels (O7's margin is literally 2 of 48), ≥ 45 pages and
@@ -781,7 +814,6 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
   const maxLabelsPerPage = Object.values(perPage).reduce((a, b) => Math.max(a, b), 0);
   const imageNegative = fixture.labels.filter((l) => l.style === 'image-negative').length;
   const shortfalls: string[] = [];
-  const primaryPower = primaryEndpointPower(dependent.length);
   const targetPower = primaryEndpointPower(ARM_SAMPLE.imageDependent);
   let powerMode: SamplePowerMode = 'full';
   let powerNote: string | null = null;
@@ -791,7 +823,7 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
     powerMode = 'reduced-power';
     powerNote =
       `${dependent.length} image-dependent labels is at or above O2's hard floor of ${ARM_SAMPLE.imageDependentFloor} and below its ` +
-      `pre-registered ${ARM_SAMPLE.imageDependent}: the gate DECIDES, at power ≈ ${primaryPower.toFixed(3)} instead of ` +
+      `pre-registered ${ARM_SAMPLE.imageDependent}: the gate DECIDES, at power ≈ ${primaryEndpointPower(dependent.length).toFixed(3)} instead of ` +
       `≈ ${targetPower.toFixed(3)} (ψ = ${ARM_SAMPLE.primaryPsi}, δ = ${ARM_SAMPLE.primaryDelta}, design effect ${ARM_SAMPLE.primaryDesignEffect}). ` +
       'An inconclusive endpoint at this N is likelier than it was at the pre-registered one, and every figure is ' +
       'labelled REDUCED POWER.';
@@ -806,6 +838,17 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
       if (n !== ARM_SAMPLE.controlPerLanguage) shortfalls.push(`control ${language} (${control.candidate} vs ${control.baseline}) pairs ${n} queries (O2: ${ARM_SAMPLE.controlPerLanguage})`);
     }
   }
+  // Any shortfall makes the document decide nothing, whichever check raised
+  // it — a floor-sized labelling pass, 47 negatives or a 196-query control
+  // alike. So the mode is `undecidable` and no achieved power is published:
+  // the reduced-power label is for samples that DO decide.
+  if (shortfalls.length > 0) {
+    powerMode = 'undecidable';
+    powerNote =
+      `${shortfalls.length} of O2's sample conditions ${shortfalls.length === 1 ? 'is' : 'are'} unmet, so this sample decides ` +
+      'nothing and no achieved power is reported: a power figure describes a decision, and there is none to describe ' +
+      `(O2's pre-registered N = ${ARM_SAMPLE.imageDependent} reads ≈ ${targetPower.toFixed(3)}).`;
+  }
   return {
     imageDependent: dependent.length,
     imageNegative,
@@ -815,7 +858,7 @@ export function auditSample(fixture: ImageFixture, controls: readonly ControlEnd
     powerMode,
     powerNote,
     required: ARM_SAMPLE,
-    primaryPower,
+    primaryPower: powerMode === 'undecidable' ? null : primaryEndpointPower(dependent.length),
     targetPower,
   };
 }
@@ -1046,6 +1089,7 @@ export function formatArmVerdict(report: ArmVerdictReport): string[] {
   if (report.toolingVerificationOnly) {
     lines.push('*** TOOLING VERIFICATION ONLY — the sample is below ADR-027 O2; this document decides nothing. ***');
     for (const shortfall of report.sample.shortfalls) lines.push(`    short of O2: ${shortfall}`);
+    lines.push(`    ${report.sample.powerNote}`);
   }
   if (report.reducedPower) {
     lines.push('*** REDUCED POWER — this document DECIDES; the sample is between ADR-027 O2\'s hard floor and its pre-registered N. ***');
@@ -1053,10 +1097,17 @@ export function formatArmVerdict(report: ArmVerdictReport): string[] {
   }
   lines.push(`ADR-027 arm verdict ${report.runId} — judge ${report.judge} — ${report.decision.verdict.toUpperCase()}${report.reducedPower ? ' (REDUCED POWER)' : ''}`);
   lines.push(report.singleJudgeStatement);
+  // The power comparison belongs to a document that decided something: below
+  // O2 `primaryPower` is null and the line says so, instead of quoting
+  // ≈ 0.799 under a banner that just said nothing here decides (review r3
+  // finding 4).
+  const power = report.sample.primaryPower === null
+    ? `no achieved power (this sample decides nothing; O2's ${report.sample.required.imageDependent} reads ≈ ${report.sample.targetPower.toFixed(3)})`
+    : `primary power ≈ ${report.sample.primaryPower.toFixed(3)} vs ≈ ${report.sample.targetPower.toFixed(3)} at ${report.sample.required.imageDependent}`;
   lines.push(
     `sample: ${report.sample.imageDependent} image-dependent on ${report.sample.pages} pages, ≤ ${report.sample.maxLabelsPerPage} per page ` +
       `(O2: ${report.sample.required.imageDependent} pre-registered, hard floor ${report.sample.required.imageDependentFloor}, ≥ ${report.sample.required.minPages} pages, ` +
-      `≤ ${report.sample.required.maxLabelsPerPage} per page; primary power ≈ ${report.sample.primaryPower.toFixed(3)} vs ≈ ${report.sample.targetPower.toFixed(3)} at ${report.sample.required.imageDependent}), ` +
+      `≤ ${report.sample.required.maxLabelsPerPage} per page; ${power}), ` +
       `${report.sample.imageNegative} image-negative (O2: ${report.sample.required.imageNegative})`,
   );
   for (const condition of report.decision.conditions) {

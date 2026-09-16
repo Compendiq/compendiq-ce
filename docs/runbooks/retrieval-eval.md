@@ -1232,7 +1232,7 @@ labelling pass reaches decides which of O2's two modes `--unblind` runs in:
 |---|---|---|
 | ≥ 190 | decides | full power ≈ 0.90 |
 | 144–189 (O2's hard floor) | **decides** — no flag needed | labelled **REDUCED POWER**, achieved power printed beside ≈ 0.90 |
-| < 144 | refuses | `--allow-underpowered` scores it as **TOOLING VERIFICATION ONLY**, which decides nothing |
+| < 144 | refuses | `--allow-underpowered` scores it as **TOOLING VERIFICATION ONLY**, which decides nothing — and therefore reports NO achieved power, only O2's target |
 
 The other counts are not power-continuous and are refused at any N: 48
 image-negative labels, ≥ 45 pages, ≤ 5 image-dependent labels per page, and
@@ -1250,6 +1250,16 @@ lands; the rule itself is unit-tested (`pilotCheck`, `pilotDiscordance`).
 | A | legacy text + `page_image_embeddings` leg | the last `dev` commit before #1618 stage 2 (SHA recorded in the baseline artifact) | `image_embedding` assigned to the REAL VL endpoint (production vLLM, not the shim); legacy index filled |
 | B | candidate: vision-analysis chunks, no image leg | candidate revision (post-#1617) | `image_analysis` assigned; backfill complete |
 | C | ablation: authored text only | the SAME candidate revision as B | `image_analysis` unassigned; no derived chunks; `page_image_embeddings` empty |
+
+**"`image_analysis` unassigned" means no resolvable provider + model**, not
+"no row": migration 115 seeds `('image_analysis', NULL, NULL)` on every
+database, so that row is present and unassigned on a freshly migrated
+instance and `--arm C` runs there. `assertArmCState` and arm B's
+`readArmBState` read it through ONE function
+(`readImageAnalysisAssignment`), so the state B demands is exactly the state
+C refuses. To take a real assignment away, clear `provider_id` and `model`
+in Settings → AI Models (or leave the seeded row as it is); deleting the row
+is not required and the run never deletes it.
 
 B − C isolates vision enrichment. B − A measures the whole product change,
 including #1617's lexical chunk resolution. A legacy-revision C, if captured,
@@ -1428,7 +1438,10 @@ also **re-derives every sheet row from the per-arm `answers-<runId>.jsonl`**
 it merged (each held to the hash the sheet and that run's own provenance
 recorded) and refuses on any differing row. `--check` runs the same
 verification whenever `sheet-<sheet>.json` is in `--out-dir`, so a rewritten
-row surfaces while judging is still under way. **Keep each run's three files
+row surfaces while judging is still under way — and it hashes **the file you
+passed as `--answers`**, the one whose judgments it just read, so the
+integrity line is never about a different copy of that name sitting in
+`--out-dir`. **Keep each run's three files
 in the artifacts directory under the run id they were written with** — that
 is where both checks read them from. The judge fills `judgments-<sheet>.jsonl` from the sheet
 alone (`{ itemId, judge, correctness: correct | partial | incorrect |

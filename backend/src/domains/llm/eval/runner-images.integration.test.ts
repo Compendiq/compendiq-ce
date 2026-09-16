@@ -62,7 +62,7 @@ type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
-const { imageEvidenceRecallAtK, assertArmCState, readArmBState } = await import('./arms.js');
+const { imageEvidenceRecallAtK, assertArmCState, readArmBState, readImageAnalysisAssignment } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -566,4 +566,45 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect(updated.rowCount).toBe(1);
     await expect(assertArmCState()).rejects.toThrow(/derived row\(s\)/);
   }, 120_000);
+
+  // Review r3 finding 1: `assertArmCState` counted rows for
+  // `usecase = 'image_analysis'` and called `> 0` assigned, while #1615's
+  // migration 115 seeds `('image_analysis', NULL, NULL)` on EVERY database —
+  // so `--arm C` aborted on every database it will ever run on. The test
+  // above cannot see it because `truncateAllTables` removes that seed; this
+  // one puts back exactly what the migration writes, and pins the two arms'
+  // predicates against each other, since one shared reader is what stops
+  // them drifting again.
+  it('reads a MIGRATED database (migration 115\'s seeded row) as unassigned, and arm B refuses exactly where arm C passes', async () => {
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model) VALUES ('image_analysis', NULL, NULL)
+         ON CONFLICT (usecase) DO UPDATE SET provider_id = NULL, model = NULL, updated_at = NOW()`,
+    );
+    await query(
+      `INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('image_analysis_max_output_tokens', '8192', NOW())
+         ON CONFLICT (setting_key) DO UPDATE SET setting_value = '8192'`,
+    );
+    // The row migration 115 leaves behind is present and is NOT an assignment.
+    expect((await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`)).rows[0]!.n).toBe(1);
+    expect(await readImageAnalysisAssignment()).toBeNull();
+    await expect(assertArmCState()).resolves.toBeUndefined();
+    await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model/);
+
+    // A resolvable provider + model is what "assigned" means, for both arms.
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default, default_model)
+       VALUES ('arm-c-vision', 'http://vl.invalid/v1', 'none', true, false, 'qwen2.5-vl-7b') RETURNING id`,
+    );
+    await query(`UPDATE llm_usecase_assignments SET provider_id = $1, model = 'qwen2.5-vl-7b', updated_at = NOW() WHERE usecase = 'image_analysis'`, [provider.rows[0]!.id]);
+    await expect(assertArmCState()).rejects.toThrow(/image_analysis is assigned to arm-c-vision:qwen2\.5-vl-7b/);
+    expect((await readArmBState()).visionModel.identity).toContain('qwen2.5-vl-7b');
+
+    // Neither arm calls a row that resolves to no model an assignment: the
+    // one reader decides it once.
+    await query(`UPDATE llm_usecase_assignments SET model = NULL, updated_at = NOW() WHERE usecase = 'image_analysis'`);
+    await query(`UPDATE llm_providers SET default_model = NULL WHERE id = $1`, [provider.rows[0]!.id]);
+    expect(await readImageAnalysisAssignment()).toBeNull();
+    await expect(assertArmCState()).resolves.toBeUndefined();
+    await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model/);
+  }, 60_000);
 });

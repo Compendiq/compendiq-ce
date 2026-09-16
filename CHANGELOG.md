@@ -41,8 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model, output-token ceiling and analysis version pair); `--arm B` refuses
   a wrong revision right after the migrations, before the corpus is seeded,
   and `--arm C` asserts the ablation's state on the database rather than on
-  a top-K window. A report is refused on a dirty tree, since the recorded
-  revision pins the prompts.
+  a top-K window, reading `image_analysis` through the very predicate arm B
+  requires — a resolvable provider and model, so migration 115's seeded
+  `('image_analysis', NULL, NULL)` row is the unassigned state both arms
+  agree on and not an assignment that refuses the arm. A report is refused
+  on a dirty tree, since the recorded revision pins the prompts.
   `run-arm-answers.ts` asks every fixture question through the real ask
   route with `rag_answer_max_images = 0` and writes arm-blinded answer
   artifacts, counting each refusal's reason in the run's provenance and
@@ -60,13 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels at full power, 144–189 at reduced power with the achieved power
   printed and the document labelled `REDUCED POWER`, and below the hard
   floor of 144 the sheet is refused (`--allow-underpowered` then scores it
-  as tooling verification, deciding nothing) — as are O2's page constraints
+  as tooling verification, deciding nothing — and reporting no achieved
+  power, because a power figure describes a decision) — as are O2's page
+  constraints
   and the EN/DE control counts at any N. The judge's file is verified, not
-  just hashed at merge time: `--unblind` (and `--check`, when the
-  operator's sheet is at hand) re-hashes `answers-<sheet>.jsonl` against the
+  just hashed at merge time: `--unblind` (and `--check`, over the file it
+  was handed as `--answers`, when the operator's sheet is at hand)
+  re-hashes `answers-<sheet>.jsonl` against the
   merge's record AND re-derives every row from the per-arm answers files, so
   a sheet rewritten after judging started — even with its own recorded hash
-  updated to match — is refused. No arm has
+  updated to match — is refused; a sheet whose recorded `runId` is not the
+  run being read is refused too. No arm has
   been measured yet — the baselines and the image-dependent labelling pass
   are #1619's and the labeller's; the ADR records that the answer model
   runs at the provider's default temperature.

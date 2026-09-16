@@ -529,13 +529,47 @@ export interface ArmBState {
 }
 
 /**
+ * The `image_analysis` assignment as the product would resolve it: the
+ * provider joined, the model taken off the row or the provider's default.
+ */
+export interface ImageAnalysisAssignment {
+  providerId: string;
+  providerName: string;
+  baseUrl: string;
+  model: string;
+}
+
+/**
+ * ONE definition of "image_analysis is assigned", shared by the two arms that
+ * decide OPPOSITE things on it — arm B refuses without it (O8), arm C refuses
+ * with it — so the two predicates cannot drift apart (review r3 finding 1).
+ *
+ * Assigned means a RESOLVABLE provider and model, never the existence of a
+ * row: #1615's migration 115 seeds `('image_analysis', NULL, NULL)` on every
+ * database, so a predicate that counts rows reads every migrated database as
+ * assigned — which aborted `--arm C` on the only databases it will ever run
+ * on. The row is read off `llm_usecase_assignments` directly: this revision
+ * has no `resolveImageAnalysisUsecase`, and the row's shape is the same as
+ * every non-inheriting use case's.
+ */
+export async function readImageAnalysisAssignment(): Promise<ImageAnalysisAssignment | null> {
+  const assignment = await query<{ provider_id: string; name: string; base_url: string; model: string | null; default_model: string | null }>(
+    `SELECT p.id AS provider_id, p.name, p.base_url, a.model, p.default_model
+       FROM llm_usecase_assignments a JOIN llm_providers p ON p.id = a.provider_id
+      WHERE a.usecase = 'image_analysis'`,
+  );
+  const row = assignment.rows[0];
+  const model = row?.model || row?.default_model || '';
+  if (!row || !model) return null;
+  return { providerId: row.provider_id, providerName: row.name, baseUrl: row.base_url, model };
+}
+
+/**
  * Arm B's preconditions, read BEFORE the database is seeded: the candidate
  * revision (its `page_image_analyses` table, #1616), the `image_analysis`
  * assignment (O8: the vision model on the instance under test, refused if
- * absent) and the output-token ceiling in force (D8, recorded not
- * prescribed). The assignment is read off `llm_usecase_assignments` directly:
- * this revision has no `resolveImageAnalysisUsecase`, and the row's shape is
- * the same as every non-inheriting use case's.
+ * absent — `readImageAnalysisAssignment`, the same predicate arm C refuses
+ * on) and the output-token ceiling in force (D8, recorded not prescribed).
  */
 export async function readArmBState(): Promise<ArmBState> {
   const table = await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`);
@@ -546,14 +580,8 @@ export async function readArmBState(): Promise<ArmBState> {
         'provenance is checked by the runner: an arm B whose top-K never carries a derived row is refused.)',
     );
   }
-  const assignment = await query<{ provider_id: string; name: string; base_url: string; model: string | null; default_model: string | null }>(
-    `SELECT p.id AS provider_id, p.name, p.base_url, a.model, p.default_model
-       FROM llm_usecase_assignments a JOIN llm_providers p ON p.id = a.provider_id
-      WHERE a.usecase = 'image_analysis'`,
-  );
-  const row = assignment.rows[0];
-  const model = row?.model || row?.default_model || '';
-  if (!row || !model) {
+  const assignment = await readImageAnalysisAssignment();
+  if (!assignment) {
     throw new Error(
       '--arm B needs image_analysis assigned to a vision model on this database (ADR-027 O8: the model assigned ' +
         'in Settings → AI Models on the instance under test, recorded as provider:model@endpoint — refused if absent).',
@@ -568,9 +596,9 @@ export async function readArmBState(): Promise<ArmBState> {
     );
   }
   return {
-    visionModel: providerIdentity({ config: { name: row.name, baseUrl: row.base_url }, model }),
+    visionModel: providerIdentity({ config: { name: assignment.providerName, baseUrl: assignment.baseUrl }, model: assignment.model }),
     imageAnalysisMaxOutputTokens: ceiling,
-    identityHash: imageAnalysisIdentityHash(row.provider_id, model, row.base_url),
+    identityHash: imageAnalysisIdentityHash(assignment.providerId, assignment.model, assignment.baseUrl),
   };
 }
 
@@ -581,11 +609,18 @@ export async function readArmBState(): Promise<ArmBState> {
  * `page_image_analyses` absent or empty. A derived row that exists but ranks
  * outside every query's window is invisible to the runner's per-query check;
  * it is not invisible here.
+ *
+ * "Unassigned" is `readImageAnalysisAssignment()` returning null — arm B's
+ * own definition, negated. It used to be `COUNT(*) = 0` over
+ * `llm_usecase_assignments`, which migration 115's seeded
+ * `('image_analysis', NULL, NULL)` row makes false on every migrated
+ * database, so every `--arm C` run aborted with a refusal whose remedy
+ * ("unassign it") was already satisfied (review r3 finding 1).
  */
 export async function assertArmCState(): Promise<void> {
   const problems: string[] = [];
-  const assigned = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`);
-  if ((assigned.rows[0]?.n ?? 0) > 0) problems.push('image_analysis is assigned');
+  const assignment = await readImageAnalysisAssignment();
+  if (assignment) problems.push(`image_analysis is assigned to ${assignment.providerName}:${assignment.model}`);
   const derived = await query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM page_embeddings WHERE metadata->>'source' = 'image_analysis'`);
   if ((derived.rows[0]?.n ?? 0) > 0) problems.push(`page_embeddings carries ${derived.rows[0]!.n} derived row(s) (metadata.source = 'image_analysis')`);
   const table = await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`);

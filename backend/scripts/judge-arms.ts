@@ -138,12 +138,15 @@ function main(): void {
     // The judge's file is the one link nothing used to read back (review r2
     // finding 1). Where the operator's `sheet-<id>.json` is at hand, hold the
     // sheet to it here too, so a rewritten row is caught while judging is
-    // still under way instead of at `--unblind`.
+    // still under way instead of at `--unblind` — and hold the file THIS
+    // command just read its judgments against, `--answers`, not the out-dir
+    // copy of the same name: vouching for a file it did not read reported a
+    // tampered judge's copy as intact (review r3 finding 2).
     const sheetDir = arg('out-dir') ?? dirname(answersFile);
     const sheetRunId = runIdOfAnswersFile(answersFile);
     if (existsSync(sheetPath(sheetDir, sheetRunId))) {
-      assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId));
-      console.log(`sheet integrity: answers-${sheetRunId}.jsonl still hashes to sheet-${sheetRunId}.json and re-derives from every arm's own answers file`);
+      assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId), answersFile);
+      console.log(`sheet integrity: ${answersFile} still hashes to sheet-${sheetRunId}.json and re-derives from every arm's own answers file in ${sheetDir}`);
     } else {
       console.log(`sheet integrity: not checked — sheet-${sheetRunId}.json is not in ${sheetDir} (pass --out-dir <artifacts>); --unblind checks it before it decides anything`);
     }

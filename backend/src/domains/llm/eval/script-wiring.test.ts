@@ -521,7 +521,11 @@ describe('judge-arms.ts wiring (#1614 PR2)', () => {
     // (`judgments.test.ts` proves the refusal); `--check` checks it too when
     // the operator's sheet is in --out-dir, so a rewritten row surfaces while
     // judging is still under way.
-    expect(flat).toContain('assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId))');
+    // Review r3 finding 2: it must hash the file it was HANDED as --answers,
+    // not the out-dir copy of that name, or the line it prints vouches for a
+    // file whose judgments it never read.
+    expect(flat).toContain('assertSheetIntegrity(sheetDir, sheetRunId, readSheet(sheetDir, sheetRunId), answersFile)');
+    expect(flat).toContain('console.log(`sheet integrity: ${answersFile} still hashes to sheet-${sheetRunId}.json');
     expect(raw.indexOf('assertSheetIntegrity(')).toBeLessThan(raw.indexOf('const mappingFile = arg(\'mapping\')'));
     // Review r2 finding 10: the summary line reported only the missing count,
     // so a sheet with a duplicate and an unknown judgment said "0 items still
