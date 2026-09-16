@@ -164,6 +164,7 @@ function mockApi({
         // non-inheriting use case with no VL model behind it.
         image_embedding: imageEmbedding,
         inline_completion: row,
+        image_analysis: row,
       });
     }
     if (url.includes('/admin/retrieval-benchmark')) {

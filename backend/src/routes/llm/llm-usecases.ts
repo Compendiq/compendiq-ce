@@ -6,6 +6,9 @@ import {
   UsecaseDefaultSchema,
   VisionCapabilityDetailSchema,
   ImageEmbeddingProbeSchema,
+  ImageAnalysisCapabilityDetailSchema,
+  ImageAnalysisReanalysisScopeQuerySchema,
+  ImageAnalysisReanalysisScopeSchema,
   type LlmUsecase,
 } from '@compendiq/contracts';
 import { query, getPool } from '../../core/db/postgres.js';
@@ -14,17 +17,30 @@ import {
   resolveRerankUsecase,
   resolveImageEmbeddingUsecase,
   resolveInlineCompletionUsecase,
+  resolveImageAnalysisUsecase,
   resolveConfidenceBasisPair,
   loadProviderConfig,
+  ProviderNotFoundError,
   type ConfidenceBasisResolution,
 } from '../../domains/llm/services/llm-provider-resolver.js';
 import {
   probeImageEmbedding,
   persistImageEmbeddingProbe,
   readImageEmbeddingProbe,
+  IMAGE_PROBE_TIMEOUT_MS,
   type ImageEmbeddingProbeResult,
   type ImageProbeFailureReason,
 } from '../../domains/llm/services/image-embedding-probe.js';
+import {
+  computeIdentityHash,
+  getRetainedImageAnalysisIdentity,
+  reanalysisScopeFor,
+  resolveCandidateImageAnalysisIdentity,
+  retainImageAnalysisIdentity,
+  ImageAnalysisResolutionError,
+  type ImageAnalysisResolutionReason,
+  type ResolvedImageAnalysisIdentity,
+} from '../../domains/llm/services/image-analysis-identity.js';
 import { ensureImageEmbeddingColumn } from '../../domains/llm/services/image-embedding-index.js';
 import { getImageEmbeddingTargetDimensions } from '../../core/services/image-embedding-target-dimensions.js';
 import {
@@ -58,12 +74,14 @@ const NON_INHERITING: ReadonlySet<LlmUsecase> = new Set<LlmUsecase>([
   'rerank',
   'image_embedding',
   'inline_completion',
+  'image_analysis',
 ]);
 
 function resolveNonInheriting(usecase: LlmUsecase) {
   if (usecase === 'rerank') return resolveRerankUsecase();
   if (usecase === 'image_embedding') return resolveImageEmbeddingUsecase();
   if (usecase === 'inline_completion') return resolveInlineCompletionUsecase();
+  if (usecase === 'image_analysis') return resolveImageAnalysisUsecase();
   throw new Error(`${usecase} is not a non-inheriting use case`);
 }
 
@@ -74,6 +92,28 @@ const NO_CHAT_PROVIDER =
 /** #1115 — the same sentence for the image leg's own detail routes. */
 const NO_IMAGE_EMBEDDING_PROVIDER =
   'No provider is assigned to image embedding, so the image leg is off. Assign one in Settings → AI Models.';
+
+/** #1615 — the same sentence for the image-analysis detail routes (ADR-027 D3). */
+const NO_IMAGE_ANALYSIS_PROVIDER =
+  'No provider is assigned to image analysis, so no page image is analyzed. Assign one in Settings → AI Models.';
+
+/**
+ * #1615 — what a refused `image_analysis` assignment says (ADR-027 "Settings
+ * and capability semantics"). Four machine-readable reasons; the category,
+ * never the provider's body (#1184's rule), and each names its remedy.
+ * `text_only` is a NEGATIVE verdict; `unconfirmed` deliberately is not —
+ * transport, auth, 429 and an open breaker all land there, and none of them
+ * is evidence that the model cannot read an image.
+ */
+const IMAGE_ANALYSIS_REFUSAL_MESSAGE: Record<ImageAnalysisResolutionReason | 'text_only' | 'unconfirmed', string> = {
+  no_provider: 'That provider no longer exists. Reload Settings → AI Models and pick another.',
+  no_model:
+    'No model resolves for image analysis. Pick a model, or set a default model on the provider.',
+  text_only:
+    'This model refused the test image, so it cannot analyze page images. Pick a vision-capable model; the previous assignment is unchanged.',
+  unconfirmed:
+    'Image support could not be confirmed — the provider did not answer the probe (unreachable, an authentication or rate-limit error, or an open breaker). That is not a verdict about the model: check the endpoint and credentials, then save again. The previous assignment is unchanged.',
+};
 
 /**
  * What a refused assignment says. **The category, never the provider's body**
@@ -304,7 +344,15 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           let cfg;
           try {
             cfg = await loadProviderConfig(nextProviderId);
-          } catch {
+          } catch (err) {
+            // Only a missing ROW is the admin's to fix by picking another
+            // provider (#1615 review r2 INFO 3, the same narrowing the
+            // `image_analysis` branch below already does): a DB or
+            // decryption failure answered 422 "That provider no longer
+            // exists" told an admin to abandon a provider that is still
+            // there, and hid a 500 from every error budget that watches for
+            // one.
+            if (!(err instanceof ProviderNotFoundError)) throw err;
             return reply.code(422).send({
               error: 'That provider no longer exists. Reload Settings → AI Models and pick another.',
               statusCode: 422,
@@ -361,6 +409,73 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         }
       }
 
+      // ── #1615: image analysis is probe-gated the same way, BEFORE the row ─
+      //
+      // ADR-027 D3: the probe is the known-content vision probe through
+      // `refreshVisionCapability`, run synchronously here — not the chat
+      // path's fire-and-forget post-save probe — and only `true` writes the
+      // row. `false` and `null` are both 422s with different reasons: a
+      // text-only model is a NEGATIVE verdict; an unreachable, unauthorised or
+      // rate-limited one is UNCONFIRMED, and treating that as "text-only"
+      // would tell an admin running exactly the right endpoint to abandon it.
+      // All four refusals leave the previous assignment AND the retained
+      // identity (D7) untouched. Unassigning is not probed.
+      const analysisPatch = updates.image_analysis;
+      let imageAnalysisAssignment: ResolvedImageAnalysisIdentity | null = null;
+      if (
+        analysisPatch
+        && (Object.prototype.hasOwnProperty.call(analysisPatch, 'providerId')
+          || Object.prototype.hasOwnProperty.call(analysisPatch, 'model'))
+      ) {
+        const existing = await query<{ provider_id: string | null; model: string | null }>(
+          `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`,
+        );
+        const prev = existing.rows[0];
+        const nextProviderId = Object.prototype.hasOwnProperty.call(analysisPatch, 'providerId')
+          ? (analysisPatch.providerId ?? null)
+          : (prev?.provider_id ?? null);
+        const nextModel = Object.prototype.hasOwnProperty.call(analysisPatch, 'model')
+          ? (analysisPatch.model ?? null)
+          : (prev?.model ?? null);
+
+        if (nextProviderId) {
+          // The pair the row WOULD produce, by the one rule the scope preview
+          // also uses: assignment model, else the provider's default model.
+          let candidate: ResolvedImageAnalysisIdentity;
+          try {
+            candidate = await resolveCandidateImageAnalysisIdentity({
+              providerId: nextProviderId,
+              model: nextModel,
+            });
+          } catch (err) {
+            if (!(err instanceof ImageAnalysisResolutionError)) throw err;
+            return reply.code(422).send({
+              error: IMAGE_ANALYSIS_REFUSAL_MESSAGE[err.reason],
+              reason: err.reason,
+              statusCode: 422,
+            });
+          }
+          // Bounded like the image-embedding probe: the admin is waiting on
+          // this request, and a queue that never drains must answer
+          // `unconfirmed`, not hang the save. The verdict is persisted per
+          // pair either way — a refused pair's `false` is exactly what the
+          // capability route should show for it, and the live pair's stored
+          // verdict is a different row.
+          const detail = await refreshVisionCapability(candidate.providerId, candidate.model, {
+            timeoutMs: IMAGE_PROBE_TIMEOUT_MS,
+          });
+          if (detail.vision !== true) {
+            const reason = detail.vision === false ? 'text_only' : 'unconfirmed';
+            return reply.code(422).send({
+              error: IMAGE_ANALYSIS_REFUSAL_MESSAGE[reason],
+              reason,
+              statusCode: 422,
+            });
+          }
+          imageAnalysisAssignment = candidate;
+        }
+      }
+
       // #1114 — the pair each confidence basis resolved to BEFORE the save.
       // Read through the resolver, not the raw row, because inheritance and
       // the EE override decide what the pipeline actually scores with — and
@@ -402,7 +517,9 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           const nextModel =
             u === 'image_embedding' && imageAssignment
               ? imageAssignment.model
-              : hasModel ? (patch.model ?? null) : (prev?.model ?? null);
+              : u === 'image_analysis' && imageAnalysisAssignment
+                ? imageAnalysisAssignment.model
+                : hasModel ? (patch.model ?? null) : (prev?.model ?? null);
 
           await client.query(
             `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
@@ -496,7 +613,21 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         userId: req.userId,
         metadata: { usecases: Object.keys(updates) },
       });
-      return imageIndexWarning ? { ok: true, imageIndexWarning } : { ok: true };
+      // #1615 — D7: only after the row has committed and the provider cache
+      // has been bumped. Equal to the retained identity → resume (0);
+      // different → replaced, and the count is the after-the-fact figure the
+      // scope preview disclosed beforehand. Absent from the answer when this
+      // PUT did not assign `image_analysis` — a body that only re-pointed
+      // `summary`, or that cleared the row, discloses nothing.
+      let reanalyzeRows: number | undefined;
+      if (imageAnalysisAssignment) {
+        reanalyzeRows = (await retainImageAnalysisIdentity(imageAnalysisAssignment)).reanalyzeRows;
+      }
+      return {
+        ok: true,
+        ...(imageIndexWarning ? { imageIndexWarning } : {}),
+        ...(reanalyzeRows !== undefined ? { reanalyzeRows } : {}),
+      };
     },
   );
 
@@ -679,6 +810,138 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
         ...(ensured
           ? { rebuilt: ensured.action === 'rebuilt', dirtiedPages: ensured.dirtiedPages }
           : {}),
+      });
+    },
+  );
+
+  // ─── #1615 (ADR-027): image-analysis capability detail, re-check, scope ──
+  //
+  // The third of the three pairs above, with the same gating and for the same
+  // reasons: `probeError` is the provider's own body, so every route here is
+  // `requireAdmin`, and `UsecaseDefaultSchema` never gains it. Spelled into
+  // the path, not a `:usecase` parameter — only `image_analysis` resolves to a
+  // pair whose verdict the D13 gate reads.
+  //
+  // What is NEW relative to the chat pair is D7: the retained identity rides
+  // on the detail (`identity`, `identityDrift`), and a `true` re-check of a
+  // pair whose resolved identity differs from the retained one ADOPTS it — the
+  // documented way out of `identity_drift` after a provider `base_url` edit,
+  // the one identity dimension no assignment PUT touches.
+
+  /** The resolved pair plus the D7 state, shared by the GET and the POST. */
+  async function imageAnalysisDetailFor(
+    resolved: ResolvedImageAnalysisIdentity,
+    detail: { vision: boolean | null; probedAt: string | null; probeError: string | null },
+    reanalyzeRows?: number,
+  ) {
+    const identity = await getRetainedImageAnalysisIdentity();
+    return ImageAnalysisCapabilityDetailSchema.parse({
+      providerId: resolved.providerId,
+      model: resolved.model,
+      vision: detail.vision,
+      probedAt: detail.probedAt,
+      probeError: detail.probeError,
+      identity,
+      identityDrift: identity !== null && identity.identityHash !== resolved.identityHash,
+      ...(reanalyzeRows !== undefined ? { reanalyzeRows } : {}),
+    });
+  }
+
+  // GET — the stored verdict for the assigned pair, never a fresh probe. Read
+  // on every paint of Settings → AI Models. 404 when unassigned, nulls when
+  // never probed (the PUT probes before writing, so "assigned and never
+  // probed" is a pair whose verdict row was deleted by a provider edit —
+  // `invalidateProviderCapabilities` — and Re-check is exactly the remedy).
+  fastify.get(
+    '/admin/llm-usecases/image_analysis/capability',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (_req, reply) => {
+      const resolved = await resolveImageAnalysisUsecase().catch(() => null);
+      if (!resolved) return reply.code(404).send({ error: NO_IMAGE_ANALYSIS_PROVIDER });
+      const triple = {
+        providerId: resolved.config.providerId,
+        model: resolved.model,
+        baseUrl: resolved.config.baseUrl,
+      };
+      const detail = await readVisionCapabilityDetail(triple.providerId, triple.model);
+      return imageAnalysisDetailFor(
+        { ...triple, identityHash: computeIdentityHash(triple) },
+        { vision: detail?.vision ?? null, probedAt: detail?.probedAt ?? null, probeError: detail?.probeError ?? null },
+      );
+    },
+  );
+
+  // POST — force a fresh probe of the resolved pair and answer with it.
+  // Blocking, bounded like the PUT's probe. A `false`/`null` verdict does NOT
+  // unassign and does not touch the retained identity: the worker's gate is
+  // "assigned AND verdict true AND resolved identity = retained", so
+  // inference simply pauses until a re-check restores it. A `true` verdict
+  // adopts the resolved identity when it differs (D7's second writer) and
+  // reports the rows that adoption invalidated.
+  fastify.post(
+    '/admin/llm-usecases/image_analysis/recheck',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (req, reply) => {
+      const resolved = await resolveImageAnalysisUsecase().catch(() => null);
+      if (!resolved) return reply.code(404).send({ error: NO_IMAGE_ANALYSIS_PROVIDER });
+      const triple = {
+        providerId: resolved.config.providerId,
+        model: resolved.model,
+        baseUrl: resolved.config.baseUrl,
+      };
+      const identity: ResolvedImageAnalysisIdentity = { ...triple, identityHash: computeIdentityHash(triple) };
+
+      const detail = await refreshVisionCapability(triple.providerId, triple.model, {
+        timeoutMs: IMAGE_PROBE_TIMEOUT_MS,
+      });
+      let reanalyzeRows: number | undefined;
+      if (detail.vision === true) {
+        const retained = await retainImageAnalysisIdentity(identity);
+        if (retained.changed) reanalyzeRows = retained.reanalyzeRows;
+      }
+      emitLlmAudit({
+        event: 'llm_image_analysis_reprobed',
+        userId: req.userId,
+        metadata: {
+          providerId: triple.providerId,
+          model: triple.model,
+          vision: detail.vision,
+          identityAdopted: reanalyzeRows !== undefined,
+          reanalyzeRows: reanalyzeRows ?? null,
+        },
+      });
+      return imageAnalysisDetailFor(identity, detail, reanalyzeRows);
+    },
+  );
+
+  // GET — the scope preview (D7): what a PUT or re-check of this candidate
+  // pair WOULD invalidate, computed without probing, writing or calling. The
+  // resolution refusals are the PUT's, with the PUT's reasons; the probe's
+  // (`text_only`, `unconfirmed`) cannot occur because nothing is probed. An
+  // unparseable query is the boundary's ordinary 400; 404 is not an answer
+  // here — the route exists and the provider is a parameter. With no
+  // identity retained it answers `changed: true, reanalyzeRows: 0`.
+  fastify.get(
+    '/admin/llm-usecases/image_analysis/reanalysis-scope',
+    { preHandler: fastify.requireAdmin, ...ADMIN_LIMIT },
+    async (req, reply) => {
+      const q = ImageAnalysisReanalysisScopeQuerySchema.parse(req.query);
+      let candidate: ResolvedImageAnalysisIdentity;
+      try {
+        candidate = await resolveCandidateImageAnalysisIdentity(q);
+      } catch (err) {
+        if (!(err instanceof ImageAnalysisResolutionError)) throw err;
+        return reply.code(422).send({
+          error: IMAGE_ANALYSIS_REFUSAL_MESSAGE[err.reason],
+          reason: err.reason,
+          statusCode: 422,
+        });
+      }
+      const scope = await reanalysisScopeFor(candidate.identityHash);
+      return ImageAnalysisReanalysisScopeSchema.parse({
+        identityHash: candidate.identityHash,
+        changed: scope.changed,
+        reanalyzeRows: scope.reanalyzeRows,
       });
     },
   );

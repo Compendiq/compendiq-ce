@@ -20,7 +20,7 @@ import { query } from '../../../core/db/postgres.js';
 import { extractImageReferencesFromHtml } from '../../../core/services/image-references.js';
 import { getRetainedImageAnalysisIdentity, type ImageAnalysisPayload } from './image-analysis-provider.js';
 import { serializeImageAnalysis, substantiveChars } from './image-analysis-serialize.js';
-import { imageAnalysisStorePresent, validityParamValues, validitySql } from './image-analysis-validity.js';
+import { validityParamValues, validitySql } from './image-analysis-validity.js';
 
 /** The authored `ChunkMetadata` fields, restated: `core` owns no chunk type. */
 export interface AuthoredChunkContext {
@@ -79,8 +79,6 @@ export async function planDerivedChunks(
   context: AuthoredChunkContext,
   chunkHardLimit: number,
 ): Promise<DerivedComposition> {
-  if (!(await imageAnalysisStorePresent())) return { revision: 0, chunks: [], substantiveChars: 0 };
-
   const retained = await getRetainedImageAnalysisIdentity();
   const r = await query<CompositionRow>(
     `SELECT p.image_analysis_revision::text AS revision,

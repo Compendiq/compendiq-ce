@@ -362,6 +362,13 @@ export async function collectAttachmentFilenames(page: {
  * `RelocateError`, and this is the same refusal as the unstorable-filename
  * one above it: the move is declined, nothing has changed.
  */
+class AttachmentReadError extends Error {
+  constructor(public readonly cause: unknown) {
+    super('attachment bytes could not be read');
+    this.name = 'AttachmentReadError';
+  }
+}
+
 function unreadableAttachmentError(filename: string, cause: unknown): RelocateError {
   logger.error({ err: cause, filename }, 'Relocate refused: an attachment could not be read');
   return new RelocateError(
@@ -385,12 +392,19 @@ async function readAttachmentBytes(
   page: { id: number; source: string; confluence_id: string | null },
   filename: string,
 ): Promise<Buffer | null> {
-  const cached = await readCachedAttachmentFile(
-    parentKeyFor(page.source, page.id, page.confluence_id),
-    filename,
-  );
+  let cached: Buffer | null;
+  try {
+    cached = await readCachedAttachmentFile(
+      parentKeyFor(page.source, page.id, page.confluence_id),
+      filename,
+    );
+  } catch (err) {
+    throw new AttachmentReadError(err);
+  }
   if (cached) return cached;
   if (page.source !== 'standalone') return null;
+  // Deliberately OUTSIDE the read wrapper: this is a database query, and a
+  // Postgres fault here is not a file the mover can chmod (#1626 review r4).
   const row = (await listLocalAttachmentsForRelocate(page.id)).find((r) => r.filename === filename);
   // A null path is a row whose filename the store would refuse — unreadable by
   // definition, and reported to the caller as a missing file (#1169).
@@ -399,7 +413,7 @@ async function readAttachmentBytes(
     return await fs.readFile(row.path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
+    throw new AttachmentReadError(err);
   }
 }
 
@@ -506,7 +520,8 @@ async function relocateToConfluence(opts: {
     try {
       data = await readAttachmentBytes(page, local);
     } catch (err) {
-      throw unreadableAttachmentError(local, err);
+      if (err instanceof AttachmentReadError) throw unreadableAttachmentError(local, err.cause);
+      throw err;
     }
     if (data === null) {
       warnings.push(`Attachment "${local}" is referenced but missing on disk; it was not published.`);

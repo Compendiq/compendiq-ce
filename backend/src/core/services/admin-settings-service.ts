@@ -561,6 +561,60 @@ export function invalidateRagImageIntakeCache(): void {
 }
 
 /**
+ * #1615 (ADR-027 D8) — `image_analysis_max_output_tokens`, the `max_tokens`
+ * every image-analysis request sends and the ceiling the payload schema's
+ * bounds are derived from. Default **8,192**, allowed range **[4,096, 16,384]**
+ * (the contract's `ImageAnalysisMaxOutputTokensSchema` mirrors all three).
+ *
+ * NOT part of the retained identity (D5/D7): a change invalidates no analyzed
+ * row and fires no probe; the worker reads it once per batch, and raising it
+ * re-opens only rows that failed `truncated` under a lower ceiling (D13).
+ *
+ * The same STRICT shape as `rag_images_per_page_max`, for the same reason: a
+ * `parseInt` truncation (`'8e3'` → 8) would land below the floor and be
+ * clamped to 4,096 — a legal ceiling that silently halves every transcription
+ * bound. An unparseable or out-of-range row reads as the DEFAULT, never as a
+ * refusal and never clamped: the range's two ends are chosen, not derived, and
+ * a value outside them is not an operator's intent this reader can guess.
+ */
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT = 8192;
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN = 4096;
+export const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX = 16_384;
+
+const IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_TTL_MS = 60_000;
+let imageAnalysisMaxOutputTokensCache: { value: number; expiresAt: number } | null = null;
+
+export async function getImageAnalysisMaxOutputTokens(): Promise<number> {
+  if (imageAnalysisMaxOutputTokensCache && Date.now() < imageAnalysisMaxOutputTokensCache.expiresAt) {
+    return imageAnalysisMaxOutputTokensCache.value;
+  }
+  let value = IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT;
+  try {
+    const r = await query<{ setting_value: string }>(
+      `SELECT setting_value FROM admin_settings WHERE setting_key = 'image_analysis_max_output_tokens'`,
+    );
+    const raw = (r.rows[0]?.setting_value ?? '').trim();
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (n >= IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN && n <= IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX) {
+        value = n;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to resolve image_analysis_max_output_tokens — using the default');
+  }
+  imageAnalysisMaxOutputTokensCache = {
+    value,
+    expiresAt: Date.now() + IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_TTL_MS,
+  };
+  return value;
+}
+
+export function invalidateImageAnalysisMaxOutputTokensCache(): void {
+  imageAnalysisMaxOutputTokensCache = null;
+}
+
+/**
  * #1115 P3 — `rag_image_leg_enabled`, the RETRIEVAL half of the image index.
  * Default **on**, cached like `rag_pin_identifiers` and read on the hot path
  * (once per hybrid search).

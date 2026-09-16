@@ -74,7 +74,7 @@ import {
   type ReconcileCounts,
 } from './image-analysis-reconcile.js';
 import { intakePageImage, mimeTypeForImageFormat } from './image-intake.js';
-import { imageAnalysisStorePresent, validityParamValues, validitySql } from './image-analysis-validity.js';
+import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { assertNoShadowMigration, REEMBED_ALL_LOCK_USER } from './embedding-service.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -160,6 +160,12 @@ export interface ImageAnalysisBatchResult {
    * as the legacy image leg's own `pagesFailed` does.
    */
   pagesFailed: number;
+  /**
+   * Reconcile: individual references whose bytes were there but unreadable.
+   * One page can hold many, so this is the finer count behind `pagesFailed`
+   * and the one that tells an operator whether one image or twenty is stuck.
+   */
+  unreadableRefs: number;
   /** Another process holds the worker lock; this call did nothing. */
   alreadyRunning?: boolean;
 }
@@ -177,6 +183,7 @@ function emptyResult(): ImageAnalysisBatchResult {
     reconciledPages: 0,
     removed: 0,
     pagesFailed: 0,
+    unreadableRefs: 0,
   };
 }
 
@@ -217,7 +224,6 @@ export interface RunImageAnalysisBatchOptions {
 // ─── The batch ───────────────────────────────────────────────────────────────
 
 let running = false;
-let storeAbsentLogged = false;
 
 /**
  * Protected entrypoint shared by BullMQ's repeat, the legacy interval worker
@@ -236,17 +242,6 @@ export async function runImageAnalysisBatch(
   let guardInFlight: Promise<void> | undefined;
   let lockLost = false;
   try {
-    if (!(await imageAnalysisStorePresent())) {
-      // Migration 115 (#1615) has not landed: nothing to sweep, reconcile or
-      // analyze. The flags keep accumulating and the first batch after 115
-      // drains them (pause, not purge).
-      if (!storeAbsentLogged) {
-        storeAbsentLogged = true;
-        logger.info('page_image_analyses is absent (migration 115) — the image analysis worker is idle');
-      }
-      return { ...result, reason: 'unassigned' };
-    }
-
     token = await acquireWorkerLock(IMAGE_ANALYSIS_WORKER_LOCK, LOCK_TTL_SECONDS, { failClosed: true });
     if (!token) {
       logger.info('Image analysis batch already running elsewhere — skipping this trigger');
@@ -325,6 +320,7 @@ async function runBatchSteps(
   result.reconciledPages = reconciled.pages;
   result.removed = reconciled.removed;
   result.pagesFailed = reconciled.pagesFailed;
+  result.unreadableRefs = reconciled.unreadable;
   result.skipped += sumSkips(reconciled);
 
   // ── Step 3: analyze, gated ──────────────────────────────────────────────
@@ -806,9 +802,4 @@ export function stopImageAnalysisWorker(): void {
     clearInterval(intervalHandle);
     intervalHandle = null;
   }
-}
-
-/** Test seam: forget the once-per-process notice. */
-export function _resetImageAnalysisWorkerNoticeForTests(): void {
-  storeAbsentLogged = false;
 }

@@ -21,7 +21,7 @@ erDiagram
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
     pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
-    pages ||--o{ page_image_analyses : "PLANNED #1615 (ADR-027): one analysis row per referenced image; its text becomes derived page_embeddings rows"
+    pages ||--o{ page_image_analyses : "#1615 (ADR-027, migration 115): one analysis row per referenced image; its text becomes derived page_embeddings rows (writer: #1616)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
     pages ||--o{ local_attachments : "owns (standalone pages only)"
@@ -153,7 +153,7 @@ erDiagram
     }
 
     page_image_analyses {
-        bigint id PK "PLANNED #1615 (ADR-027 D4, migration 115) — the derived-analysis store"
+        bigint id PK "#1615 (ADR-027 D4, migration 115) — the derived-analysis store; rows are written by the #1616 worker"
         int page_id FK "ON DELETE CASCADE"
         text source "confluence | local — which attachment store the key resolves in"
         text attachment_key "URL-decoded filename inside that store"
@@ -345,7 +345,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion — plus image_analysis once migration 115 lands (PLANNED #1615, ADR-027 D3)"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion|image_analysis (the last since migration 115, #1615, ADR-027 D3 — non-inheriting, probe-gated before write)"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -722,15 +722,18 @@ together, which matters most for #1114's query-side prefix.
     as the work queue. Design of record: ADR-025. **This is the ACTIVE
     design; ADR-027 supersedes it in part and the bullet below is the
     CANDIDATE.**
-- **ADR-027 — image analysis in the text index (#1616 ingestion half SHIPPED;
-  #1615 assignment half PLANNED).** Migration 116, the worker, the reconcile,
-  `embedPage` composition, coverage and readiness are merged (#1616); the
-  `page_image_analyses` table (migration 115), the `image_analysis` use case,
-  the retained identity writer and the client are #1615's, and until it lands
-  the worker's gate is shut (`reason: 'unassigned'`) and every reader of the
-  table degrades to "no derived rows" when it is absent. The legacy table,
-  flag and leg stay live beside them until #1618 retires them after the #1619
-  gate.
+- **CANDIDATE (#1615 and #1616 merged; #1617–#1619 PLANNED, ADR-027) — image analysis in the text index.**
+  #1615 landed the store, the use case and the settings rows (migration 115,
+  `page_image_analyses`, the `image_analysis` assignment, the retained identity
+  in `admin_settings.image_analysis_identity` — JSON `{providerId, model,
+  baseUrl, identityHash, assignedAt}`, written only by the assignment PUT and
+  the capability re-check after a `true` probe, never cleared by an unassign
+  — and `image_analysis_max_output_tokens`); #1616 landed migration 116, the
+  worker, the reconcile, `embedPage` composition, derived FTS, coverage and
+  readiness. Retrieval over the derived rows (#1617), the operator surfaces
+  (#1618) and the legacy retirement (#1619) are still to come, so the legacy
+  table, flag and leg stay live beside them until #1618 retires them after
+  the #1619 gate.
   A generative vision model (`image_analysis`, a non-inheriting use case
   probed with the tri-state vision probe BEFORE its row is written) reads
   each referenced raster once at ingestion; the result is **derived data** in

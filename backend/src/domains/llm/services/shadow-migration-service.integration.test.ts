@@ -92,7 +92,6 @@ const {
 const { embedPage, enqueueReembedAll, reEmbedAll, assertNoShadowMigration, assertShadowRollbackWindowClear } = await import('./embedding-service.js');
 const { logger } = await import('../../../core/utils/logger.js');
 const { invalidateRagConfidenceThresholdCache } = await import('../../../core/services/admin-settings-service.js');
-const { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } = await import('./__fixtures__/image-analysis-store.js');
 const { computeIdentityHash, IMAGE_ANALYSIS_IDENTITY_KEY, IMAGE_ANALYSIS_PROMPT_VERSION, IMAGE_ANALYSIS_SCHEMA_VERSION } = await import('./image-analysis-provider.js');
 
 const dbAvailable = await isDbAvailable();
@@ -212,7 +211,6 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
   }, 30_000);
   afterAll(async () => {
     await resetCanonicalSchema();
-    await dropImageAnalysisStoreIfProvisioned();
     await teardownTestDb();
   });
   beforeEach(async () => {
@@ -474,7 +472,6 @@ describe.skipIf(!dbAvailable)('#1116 shadow migration service', () => {
     });
 
     it('dual-writes derived image-analysis rows, keeps them out of the shadow average, and a NULL derived shadow vector blocks it (ADR-027 D2)', async () => {
-      await ensureImageAnalysisStore();
       await startShadowMigration({ providerId: shadowProviderId, model: SHADOW_MODEL });
       const triple = { providerId: shadowProviderId, model: 'qwen3-vl', baseUrl: 'http://vision/v1' };
       const identityHash = computeIdentityHash(triple);

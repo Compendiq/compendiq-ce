@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runMigrations, getPool, closePool, checkConnection } from './core/db/postgres.js';
 
 let initialized = false;
@@ -58,12 +61,66 @@ export async function restoreImageEmbeddingPlaceholder(): Promise<void> {
   }
 }
 
+/**
+ * Restore `llm_usecase_assignments`' use-case CHECK to the newest widener's
+ * list, the same class of repair as {@link restoreImageEmbeddingPlaceholder}.
+ *
+ * The CHECK is 054's inline column constraint, so every migration that adds a
+ * use case drops and re-adds the WHOLE list (090 `rerank`, 093
+ * `image_embedding`, 097 `inline_completion`, 115 `image_analysis`). Files on
+ * one worker database share it, `truncateAllTables` cannot undo DDL, and
+ * `runMigrations` will not repair it because `_migrations` still lists every
+ * widener as applied. So a file that recreates the table from an older DDL, or
+ * replays a subset of the wideners, or is interrupted between its own
+ * narrowing and its own repair, leaves the constraint NARROWER than the
+ * schema — and the next file to assign a newer use case fails for a reason
+ * that has nothing to do with it (#1104 was the first victim, `image_analysis`
+ * the latest). The list is read from the migration rather than duplicated
+ * here, so the next widener is covered without editing this file.
+ */
+async function restoreUsecaseCheck(): Promise<void> {
+  const migrationsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'core', 'db', 'migrations');
+  const newest = fs
+    .readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => fs.readFileSync(path.join(migrationsDir, f), 'utf8').includes('llm_usecase_assignments_usecase_check'))
+    .sort()
+    .pop();
+  if (!newest) return;
+  const listed = /CHECK\s*\(\s*usecase\s+IN\s*\(([^)]*)\)/i.exec(
+    fs.readFileSync(path.join(migrationsDir, newest), 'utf8'),
+  );
+  if (!listed) return;
+  const names = [...listed[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  const pool = getPool();
+  const present = await pool.query<{ exists: string | null }>(
+    `SELECT to_regclass('public.llm_usecase_assignments') AS exists`,
+  );
+  if (!present.rows[0]?.exists) return;
+  const { rows } = await pool.query<{ def: string }>(
+    `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conname = 'llm_usecase_assignments_usecase_check'`,
+  );
+  if (rows[0] && names.every((n) => rows[0]!.def.includes(`'${n}'`))) return;
+  // A row naming a use case the narrow list refuses would abort the ADD, and
+  // content is not what this repairs — every file seeds its own.
+  await pool.query('TRUNCATE TABLE llm_usecase_assignments');
+  await pool.query(
+    `ALTER TABLE llm_usecase_assignments DROP CONSTRAINT IF EXISTS llm_usecase_assignments_usecase_check`,
+  );
+  await pool.query(
+    `ALTER TABLE llm_usecase_assignments ADD CONSTRAINT llm_usecase_assignments_usecase_check
+       CHECK (usecase IN (${names.map((n) => `'${n}'`).join(', ')}))`,
+  );
+}
+
 export async function setupTestDb(): Promise<void> {
   if (!initialized) {
     await runMigrations();
     initialized = true;
   }
   await restoreImageEmbeddingPlaceholder();
+  await restoreUsecaseCheck();
 }
 
 const DEADLOCK = '40P01';

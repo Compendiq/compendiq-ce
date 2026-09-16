@@ -61,7 +61,6 @@ vi.mock('./llm-provider-resolver.js', async () => {
 });
 
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { embedPage } from './embedding-service.js';
 import { getEmbeddingCoverage } from './rag-service.js';
@@ -164,10 +163,8 @@ const PROSE = '<p>' + 'Compendiq release notes describe the pipeline stages in d
 describe.skipIf(!dbAvailable)('embedPage composes derived chunks (ADR-027 D9, #1616)', () => {
   beforeAll(async () => {
     await setupTestDb();
-    await ensureImageAnalysisStore();
   }, 30_000);
   afterAll(async () => {
-    await dropImageAnalysisStoreIfProvisioned();
     await teardownTestDb();
   });
   beforeEach(async () => {

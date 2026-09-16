@@ -353,6 +353,36 @@ describe.skipIf(!dbAvailable)('PUT /api/admin/llm-usecases — image_embedding i
     expect((res.json() as { error: string }).error).toMatch(/model/i);
   });
 
+  /**
+   * #1615 review r2: the two ways `loadProviderConfig` can fail are two
+   * different answers. A row that is GONE is the admin's to fix by picking
+   * another provider (422 with that copy). A database or decryption failure
+   * is the server's, and answering it with "that provider no longer exists"
+   * sent an admin to abandon a provider that is still there — and hid a 500
+   * from everything that counts them. The DB error is a real one: the column
+   * the load selects is renamed for the duration of the call, so Postgres
+   * itself raises inside the route.
+   */
+  it('answers 422 for a provider row that is gone', async () => {
+    const res = await put({ image_embedding: { providerId: '11111111-2222-4333-8444-555555555555' } });
+    expect(res.statusCode).toBe(422);
+    // `inject`'s payload is untyped; the refusal shape is this route's own.
+    const body = res.json() as { error: string };
+    expect(body.error).toMatch(/no longer exists/i);
+  });
+
+  it('lets a real database failure be a 500, not that 422', async () => {
+    const id = await seedProvider('vlbox-dberr', goodUrl, 'vl-2b');
+    await query(`ALTER TABLE llm_providers RENAME COLUMN default_model TO default_model_tmp`);
+    try {
+      const res = await put({ image_embedding: { providerId: id } });
+      expect(res.statusCode).toBe(500);
+      expect(res.body).not.toMatch(/no longer exists/i);
+    } finally {
+      await query(`ALTER TABLE llm_providers RENAME COLUMN default_model_tmp TO default_model`);
+    }
+  });
+
   it('leaves the index in place when the assignment is cleared, and probes nothing', async () => {
     const id = await seedProvider('vlbox2', goodUrl, 'vl-2b');
     expect((await put({ image_embedding: { providerId: id } })).statusCode).toBe(200);
@@ -552,7 +582,7 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases includes image_embedd
     });
     const body = r.json() as Record<string, { resolved: { providerId: string; model: string } }>;
     expect(Object.keys(body).sort()).toEqual([
-      'auto_tag', 'chat', 'embedding', 'image_embedding', 'inline_completion', 'quality', 'rerank', 'summary',
+      'auto_tag', 'chat', 'embedding', 'image_analysis', 'image_embedding', 'inline_completion', 'quality', 'rerank', 'summary',
     ]);
     expect(body.image_embedding!.resolved).toMatchObject({
       providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '',

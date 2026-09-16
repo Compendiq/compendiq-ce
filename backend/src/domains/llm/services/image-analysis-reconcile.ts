@@ -35,9 +35,9 @@
  * statement (D6.3) — only when its VALID derived set changed: an `analyzed`
  * row was deleted, re-pended under new bytes, or moved to `skipped`. A new
  * `pending` or `skipped` row, or a `pending`/`failed` row re-pended, composes
- * nothing before and nothing after, so it bumps nothing: the first batch after
- * migration 115 lands over an existing corpus inserts `pending` rows for every
- * image page without re-embedding one of them. Because the reconcile runs
+ * nothing before and nothing after, so it bumps nothing: the first batch over
+ * an existing corpus inserts `pending` rows for every image page without
+ * re-embedding one of them. Because the reconcile runs
  * unassigned too, a pause never composes a description of bytes that are gone.
  *
  * A reconcile that throws re-raises the flag (D6.2).

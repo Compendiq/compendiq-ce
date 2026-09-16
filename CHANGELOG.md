@@ -23,8 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from sibling assembly; an image-only page with a substantive analysis is
   embeddable and counted by coverage. Every image writer raises the new flag
   beside `image_embedding_dirty`. New Workers-tab knob `imageAnalysisBatchSize`
-  (default 50, [1, 500]). Inference stays paused until #1615's assignment,
-  identity and client land behind the `image-analysis-provider.ts` seam.
+  (default 50, [1, 500]). Inference runs against #1615's assigned vision
+  model, retained identity and `analyzeImage` client directly: with both
+  halves merged there is no seam module left between them. A batch's job
+  summary names `pagesFailed` and the number of unreadable references beside
+  the analyzed/failed counts, so a batch whose only problem is a
+  partially-unreadable page is not recorded as an unqualified success. A
+  relocate that cannot read an attachment still refuses with a 400 naming the
+  file, but a database fault while looking the attachment up is a 500 again,
+  not a permissions complaint.
+- **Image analysis (vision) use case (#1615, ADR-027).** `image_analysis` as a third non-inheriting ADR-021 use case: probe-gated assignment PUT (422 `reason` = `no_provider` / `no_model` / `text_only` / `unconfirmed`, previous assignment and retained identity untouched), retained identity in `admin_settings.image_analysis_identity` (pause, not purge), `GET/POST /admin/llm-usecases/image_analysis/capability|recheck`, the `reanalysis-scope` preview, `GET /admin/pages/:id/image-analyses`, the `image_analysis_max_output_tokens` setting (default 8,192, [4,096, 16,384]), migration 115 (`page_image_analyses`), `imageAnalysisPayloadSchema(T)` contracts, the pure `analyzeImage` client with D8's six failure classes, `chatCompletion()` (finish reason + usage), a bounded `probeVision` timeout, and the Settings → AI Models **Image analysis (vision)** card with **Max output tokens**. The use-case assignment rows and their capability strips now stack below 640 px instead of clipping. Every non-inheriting row's **"Assigned, but no model resolves"** line now follows the SAVED assignment rather than the draft, so it appears only once a pick is saved and persists through a draft-unassign of a saved-but-unresolvable `rerank`, `image_embedding`, `inline_completion` or `image_analysis` row until Save — verdicts describe what is saved, the same rule the egress sentence uses. A description OF a refusal or error screenshot is no longer classed `refused`: the pattern match on `description` counts only when nothing else in the payload read the image. Assigning `image_embedding` maps only a missing provider ROW to its 422; a database failure is a 500 again.
 - Drag an article onto another in a local-space sidebar to nest it as a
   sub-article. Click the row's drag handle for the same move, including
   back to top level.

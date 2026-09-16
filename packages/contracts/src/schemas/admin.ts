@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX,
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN,
+} from '../image-analysis.js';
 
 export const ReEmbedRequestSchema = z.object({
   model: z.string().optional(), // New embedding model (requires env var change + restart)
@@ -242,6 +246,31 @@ export const ImageEmbeddingTargetDimensionsSchema = z
   .int()
   .min(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN)
   .max(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
+
+/**
+ * #1615 (ADR-027 D8) — `image_analysis_max_output_tokens`, the `max_tokens`
+ * every image-analysis request sends and the ceiling the payload schema's
+ * bounds are derived from at one token per character. Default 8,192, range
+ * [4,096, 16,384]: 4,096 is the smallest ceiling at which every transcription
+ * bound keeps at least a third of its width (an edge still fits
+ * `A -> B: label`, a table cell still holds a number and its unit) — below
+ * it a smaller `max_tokens` would be an unconditional refusal to transcribe
+ * rather than a budget; 16,384 is twice the reference, and since nothing
+ * grows above the reference every token past 8,192 buys only headroom for
+ * scripts that tokenize below one character per token, while the whole
+ * ceiling is charged against the served context on every request.
+ *
+ * NOT part of the retained identity: a change invalidates no analyzed row
+ * (a stored payload was validated against the bounds in force when it was
+ * written); raising it re-opens only rows that failed `truncated` under a
+ * lower ceiling. The reader mirrors the three constants, which live beside
+ * the payload schema in `../image-analysis.ts`.
+ */
+export const ImageAnalysisMaxOutputTokensSchema = z
+  .number()
+  .int()
+  .min(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MIN)
+  .max(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_MAX);
 
 /**
  * #1114 — which model a confidence threshold was calibrated against, and
@@ -514,6 +543,12 @@ export const AdminSettingsSchema = z.object({
   /** #1115 P4 — how many retrieved images the answer path shows the model. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema,
   /**
+   * #1615 — the image-analysis output-token ceiling, required on read for the
+   * same reason: the GET resolves it through its own reader, so an absent or
+   * unparseable row answers with the default the worker is using.
+   */
+  imageAnalysisMaxOutputTokens: ImageAnalysisMaxOutputTokensSchema,
+  /**
    * #1285 — the HNSW `ef_search` floor, required on read for the same reason
    * as every knob above: the GET resolves it through its own reader, so an
    * absent row (and a deployment still on the deprecated `RAG_EF_SEARCH` env
@@ -634,6 +669,8 @@ export const UpdateAdminSettingsSchema = z.object({
   ragImageLegEnabled: RagImageLegEnabledSchema.optional(),
   /** #1115 P4 — the Retrieval tab's `Images shown to the model` cap. */
   ragAnswerMaxImages: RagAnswerMaxImagesSchema.optional(),
+  /** #1615 — the image-analysis card's `Max output tokens` row. Omit to leave unchanged. */
+  imageAnalysisMaxOutputTokens: ImageAnalysisMaxOutputTokensSchema.optional(),
   /** #1285 — the Retrieval tab's `Index search depth` floor, beside Fetch width. */
   ragEfSearch: RagEfSearchSchema.optional(),
   /** #1444 — opt-in collab gateway. Omitted → leave unchanged. */

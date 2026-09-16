@@ -3,12 +3,19 @@ import { useAuthStore } from '../../stores/auth-store';
 const API_BASE = '/api';
 
 export class ApiError extends Error {
+  /**
+   * `reason` (#1615) — the category slug some admin routes send beside
+   * `error` (the probe-gated assignment PUTs answer 422 `{ error, reason }`,
+   * where `reason` is what a client branches on and `error` is the prose).
+   * Additive: routes that send none leave it undefined.
+   */
   constructor(
     public statusCode: number,
     message: string,
     public code?: string,
     public remoteVersion?: number,
     public localVersion?: number,
+    public reason?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -119,6 +126,7 @@ export async function apiFetch<T = unknown>(
       code?: unknown;
       remoteVersion?: unknown;
       localVersion?: unknown;
+      reason?: unknown;
     } | null;
     throw new ApiError(
       res.status,
@@ -126,6 +134,7 @@ export async function apiFetch<T = unknown>(
       typeof raw?.code === 'string' ? raw.code : undefined,
       typeof raw?.remoteVersion === 'number' ? raw.remoteVersion : undefined,
       typeof raw?.localVersion === 'number' ? raw.localVersion : undefined,
+      typeof raw?.reason === 'string' ? raw.reason : undefined,
     );
   }
 

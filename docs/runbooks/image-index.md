@@ -32,8 +32,12 @@ Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 > pre-registered A/B/C measurement (`retrieval-eval.md`, "Arm protocol") that
 > decides the cutover. Until #1618 retires this leg after that gate, every
 > section below is what runs; nothing about the candidate is measured yet, and
-> the operator surface for it (an **Image analysis (vision)** selector and an
-> **Image analysis** progress card) arrives with #1615/#1618.
+> the operator surface for it has landed in part: the **Image analysis (vision)**
+> selector (#1615 — probe-gated assignment, retained identity, **Re-check**,
+> **Max output tokens**; see `docs/ADMIN-GUIDE.md`, "Image analysis (vision)")
+> is live in Settings → AI Models, while the **Image analysis** progress card
+> arrives with #1618. Nothing on that selector changes what this runbook
+> operates.
 
 ---
 
@@ -469,10 +473,10 @@ a model:
    (`image_analysis_revision`, `embedding_dirty`) only when its VALID derived
    set changed — an `analyzed` row deleted, re-pended under new bytes or
    skipped by policy — so `embedPage` drops stale derived chunks; new
-   `pending`/`skipped` rows bump nothing. In particular the first batch after
-   migration 115 lands drains 116's backlog seed (every image-referencing
-   page) into `pending` rows **without re-embedding a single page**; pages
-   re-embed as analyses complete.
+   `pending`/`skipped` rows bump nothing. In particular the first batch on an
+   upgraded instance drains 116's backlog seed (every image-referencing page)
+   into `pending` rows **without re-embedding a single page**; pages re-embed
+   as analyses complete.
 3. **Analyze** up to `image_analysis_batch_size` images (Settings → AI Models
    → Workers, default 50, [1, 500]) — only when `image_analysis` is assigned,
    its vision verdict is `true` and the resolved identity equals the retained
@@ -513,8 +517,9 @@ ends the batch (`provider_status`) and re-probes the pair; three identical
 `unavailable:<status>`, never terminal) — serve the model with a larger
 context or lower Max output tokens, then Run Now. The last batch result is in
 `admin_settings.image_analysis_last_run`; the operator card, Run Now, Retry
-failed and Re-analyze all arrive with #1618. While migration 115 (#1615) is
-absent the worker is idle and logs so once.
+failed and Re-analyze all arrive with #1618. With `image_analysis` unassigned
+the worker still sweeps and reconciles every cadence and returns
+`reason: 'unassigned'` — a pause, not a purge.
 
 Derived chunks are ordinary `page_embeddings` rows after every authored index
 with `metadata.source = 'image_analysis'`; they are excluded from both page

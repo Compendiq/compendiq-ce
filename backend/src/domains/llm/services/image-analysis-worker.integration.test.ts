@@ -5,7 +5,6 @@ import os from 'os';
 import { createHash } from 'crypto';
 import { createClient, type RedisClientType } from 'redis';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { invalidateRagImageIntakeCache } from '../../../core/services/admin-settings-service.js';
 import { setRedisClient } from '../../../core/services/redis-cache.js';
@@ -215,12 +214,11 @@ async function pageState(pageId: number): Promise<{ revision: number; embeddingD
   };
 }
 
-const SHAPE_KEYS = ['processed', 'reused', 'skipped', 'failed', 'terminal', 'repended', 'returned', 'reopened', 'reconciledPages', 'removed', 'pagesFailed'];
+const SHAPE_KEYS = ['processed', 'reused', 'skipped', 'failed', 'terminal', 'repended', 'returned', 'reopened', 'reconciledPages', 'removed', 'pagesFailed', 'unreadableRefs'];
 
 describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () => {
   beforeAll(async () => {
     await setupTestDb();
-    await ensureImageAnalysisStore();
     previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
     attachmentsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cq-image-analysis-worker-'));
     process.env.ATTACHMENTS_DIR = attachmentsDir;
@@ -232,7 +230,6 @@ describe.skipIf(!dbAvailable)('runImageAnalysisBatch (ADR-027 D13, #1616)', () =
     if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
     else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
     await fs.rm(attachmentsDir, { recursive: true, force: true });
-    await dropImageAnalysisStoreIfProvisioned();
     await teardownTestDb();
   });
   beforeEach(async () => {

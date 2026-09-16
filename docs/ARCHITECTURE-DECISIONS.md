@@ -4166,7 +4166,18 @@ with the class in `error`. Five are **deterministic** — the same request
 produces the same outcome at `temperature: 0`, so a retry is the same
 reply again: **malformed** (no JSON object, or Zod rejects), **empty** (not
 substantive), **refused** (the reply matches the provider refusal patterns
-`sanitize-llm-input.ts` already knows), **truncated** (`finish_reason =
+`sanitize-llm-input.ts` already knows — *erratum, #1615: that module carries
+prompt-injection patterns only; `REFUSAL_PATTERNS` live in
+`image-analysis-client.ts`, beside the prompt they are matched against.
+Second erratum, #1615 review r2: "the reply" is the whole reply only when no
+JSON object parsed; inside a conforming payload the patterns run on
+`description` alone — never on `visibleText`, which transcribes the image —
+and a match there is `refused` only when nothing outside the description
+observed the image (no transcription clearing the floor, no `structured`
+block with content). A description OF a refusal or error screenshot, the
+image class a software knowledge base is full of, is otherwise a
+`failed_terminal` row whose page never contributes its
+text*), **truncated** (`finish_reason =
 'length'`: a reply that ignored the bounds, or in the residual case above
 spent more than a token per character — either way the same request cuts
 at the same place), **rejected** (a 4xx the provider attributes to *this

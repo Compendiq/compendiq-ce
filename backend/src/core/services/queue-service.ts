@@ -433,7 +433,14 @@ function registerAllWorkers(): void {
       // eslint-disable-next-line boundaries/dependencies -- orchestrator needs cross-domain access
       const { runImageAnalysisBatch } = await import('../../domains/llm/services/image-analysis-worker.js');
       const r = await runImageAnalysisBatch();
-      const counts = `${r.processed} analyzed, ${r.reused} reused, ${r.skipped} skipped, ${r.failed} failed (${r.terminal} terminal), ${r.reconciledPages} pages reconciled`;
+      // `pagesFailed` is named here because this string is the only
+      // operator-readable summary of a batch (`job_history.result_summary`),
+      // and a batch whose ONLY problem is a partially-unreadable page has
+      // `failed = 0` — it would otherwise read as an unqualified success
+      // (#1626 review r4).
+      const counts = `${r.processed} analyzed, ${r.reused} reused, ${r.skipped} skipped, `
+        + `${r.failed} failed (${r.terminal} terminal), ${r.reconciledPages} pages reconciled`
+        + `, ${r.pagesFailed} pages failed (${r.unreadableRefs} unreadable references)`;
       if (r.reason === 'lease_lost') {
         throw new Error(`Image analysis batch stopped: the worker lease was lost. Partial counts: ${counts}.`);
       }

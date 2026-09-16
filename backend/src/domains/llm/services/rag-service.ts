@@ -33,7 +33,7 @@ import {
 import { withSpan, recordHistogram } from '../../../telemetry.js';
 import { MIN_EMBEDDABLE_TEXT_CHARS } from './embedding-service.js';
 import { getRetainedImageAnalysisIdentity } from './image-analysis-provider.js';
-import { imageAnalysisStorePresent, validityParamValues, validitySql } from './image-analysis-validity.js';
+import { validityParamValues, validitySql } from './image-analysis-validity.js';
 import { efSearchFor } from './hnsw-ef-search.js';
 import { formatQueryForEmbedding } from './query-instruction.js';
 import {
@@ -1070,13 +1070,10 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
   const covSpaces = await getUserAccessibleSpaces(userId);
   // ADR-027 D9.5: an image-only page with a currently valid analysis is
   // embeddable, so the denominator counts it beside the prose pages, under
-  // the same validity predicate composition uses. While migration 115 is
-  // absent the clause is omitted and the count is what it was.
-  const withAnalyses = await imageAnalysisStorePresent();
-  const retained = withAnalyses ? await getRetainedImageAnalysisIdentity() : null;
-  const analyzedClause = withAnalyses
-    ? ` OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = cp.id AND ${validitySql('a', 3, 4, 5)})`
-    : '';
+  // the same validity predicate composition uses. With nothing retained the
+  // predicate is unsatisfiable, so the count is what it was before ADR-027.
+  const retained = await getRetainedImageAnalysisIdentity();
+  const analyzedClause = ` OR EXISTS (SELECT 1 FROM page_image_analyses a WHERE a.page_id = cp.id AND ${validitySql('a', 3, 4, 5)})`;
   const result = await query<{ embedded: number; total: number }>(
     `SELECT
        COUNT(*) FILTER (WHERE EXISTS (
@@ -1089,9 +1086,7 @@ export async function getEmbeddingCoverage(userId: string): Promise<EmbeddingCov
        AND COALESCE(cp.page_type, 'page') != 'folder'
        AND cp.body_html IS NOT NULL
        AND (char_length(cp.body_text) >= ${Number(MIN_EMBEDDABLE_TEXT_CHARS)}${analyzedClause})`,
-    withAnalyses
-      ? [covSpaces, userId, ...validityParamValues({ identityHash: retained?.identityHash ?? null })]
-      : [covSpaces, userId],
+    [covSpaces, userId, ...validityParamValues({ identityHash: retained?.identityHash ?? null })],
   );
   const embedded = result.rows[0]?.embedded ?? 0;
   const total = result.rows[0]?.total ?? 0;

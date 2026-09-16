@@ -18,8 +18,6 @@
  * and its negation (the sweep's `NOT (…)`) are exact complements even for a
  * hash-less or version-less row, exactly as the strict `===` chain is.
  */
-import { query } from '../../../core/db/postgres.js';
-import { logger } from '../../../core/utils/logger.js';
 import {
   IMAGE_ANALYSIS_PROMPT_VERSION,
   IMAGE_ANALYSIS_SCHEMA_VERSION,
@@ -75,41 +73,4 @@ export function isValidAnalysisRow(row: ValidityRow, params: ValidityParams): bo
     row.prompt_version === IMAGE_ANALYSIS_PROMPT_VERSION &&
     row.schema_version === IMAGE_ANALYSIS_SCHEMA_VERSION
   );
-}
-
-/**
- * Whether `page_image_analyses` (migration 115, #1615) exists.
- *
- * The two ADR-027 packages merge in either order, and every reader of the
- * table on this side — composition on every embed, coverage on every hybrid
- * search, the worker on every cadence — must degrade to "no derived rows"
- * rather than fail while 115 is absent. A present table stays present, so the
- * positive answer is cached for the process; a negative one is re-checked
- * after {@link STORE_RECHECK_MS} so a rolling deploy that applies 115 is
- * noticed without a restart.
- */
-const STORE_RECHECK_MS = 60_000;
-let storePresent = false;
-let storeCheckedAt = 0;
-
-export async function imageAnalysisStorePresent(): Promise<boolean> {
-  if (storePresent) return true;
-  if (Date.now() - storeCheckedAt < STORE_RECHECK_MS) return false;
-  storeCheckedAt = Date.now();
-  try {
-    const r = await query<{ present: string | null }>(
-      `SELECT to_regclass('public.page_image_analyses')::text AS present`,
-    );
-    storePresent = r.rows[0]?.present != null;
-  } catch (err) {
-    logger.warn({ err }, 'Could not check for page_image_analyses — treating the store as absent');
-    storePresent = false;
-  }
-  return storePresent;
-}
-
-/** Test seam: forget the cached answer (a suite that drops or restores the table). */
-export function _resetImageAnalysisStorePresenceForTests(): void {
-  storePresent = false;
-  storeCheckedAt = 0;
 }

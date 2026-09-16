@@ -4,7 +4,6 @@ import path from 'path';
 import os from 'os';
 import { createHash } from 'crypto';
 import { setupTestDb, truncateAllTables, teardownTestDb, isDbAvailable } from '../../../test-db-helper.js';
-import { ensureImageAnalysisStore, dropImageAnalysisStoreIfProvisioned } from './__fixtures__/image-analysis-store.js';
 import { query } from '../../../core/db/postgres.js';
 import { invalidateRagImageIntakeCache } from '../../../core/services/admin-settings-service.js';
 import { ImageAnalysisLeaseLostError, reconcileDirtyPages, reconcilePageImageAnalyses } from './image-analysis-reconcile.js';
@@ -88,7 +87,6 @@ async function markAnalyzed(pageId: number, key: string): Promise<void> {
 describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)', () => {
   beforeAll(async () => {
     await setupTestDb();
-    await ensureImageAnalysisStore();
     previousAttachmentsDir = process.env.ATTACHMENTS_DIR;
     attachmentsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cq-image-analysis-reconcile-'));
     process.env.ATTACHMENTS_DIR = attachmentsDir;
@@ -97,7 +95,6 @@ describe.skipIf(!dbAvailable)('reconcilePageImageAnalyses (ADR-027 D4/D6, #1616)
     if (previousAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
     else process.env.ATTACHMENTS_DIR = previousAttachmentsDir;
     await fs.rm(attachmentsDir, { recursive: true, force: true });
-    await dropImageAnalysisStoreIfProvisioned();
     await teardownTestDb();
   });
   beforeEach(async () => {

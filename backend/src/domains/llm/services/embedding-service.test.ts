@@ -66,6 +66,20 @@ vi.mock('./openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// ADR-027 D9: the derived-chunk composition seam, inert here for the same
+// reason the shadow path below is. These unit tests script `mocks.query`
+// statement by statement; composition issues one more read of its own and has
+// its own real-Postgres suite (`image-analysis-compose.integration.test.ts`),
+// where the page, the analyses and the revision guard are real rather than a
+// scripted reply. A page with no analyses composes nothing, which is what an
+// empty plan means.
+// A plain function, not a `vi.fn()`: this suite calls `vi.resetAllMocks()`
+// per test, which would strip a mocked resolution and hand `embedPage`
+// `undefined`.
+vi.mock('./image-analysis-compose.js', () => ({
+  planDerivedChunks: async () => ({ revision: 0, chunks: [], substantiveChars: 0 }),
+}));
+
 // #1116: the shadow-migration seam. These unit tests exercise the live embed
 // pipeline against a scripted query mock; the shadow path has its own
 // integration suite, so it is inert here (no active migration).
