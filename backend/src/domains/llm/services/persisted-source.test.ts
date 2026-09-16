@@ -42,6 +42,64 @@ describe('toPersistedSources', () => {
     expect(s).not.toHaveProperty('score');
   });
 
+  // ADR-027 D12 (#1617): the four provenance fields are copied as ONE unit
+  // with `kind`/`attachmentUrl`, and a dropped image entry takes them with it.
+  const PROVENANCE = {
+    attachmentStore: 'confluence' as const,
+    attachmentKey: 'a.png',
+    contentHash: 'sha256:d34db33f',
+    analysisVersion: 1,
+  };
+
+  it('copies the four D12 provenance fields with kind and attachmentUrl', () => {
+    const [s] = toPersistedSources([{
+      kind: 'image', pageId: 42, pageTitle: 'Page 42', spaceKey: 'OPS',
+      attachmentUrl: '/api/attachments/42/a.png', similarity: null, score: 0.0328,
+      ...PROVENANCE,
+    }]);
+    expect(s).toEqual({
+      pageTitle: 'Page 42', spaceKey: 'OPS', pageId: 42,
+      kind: 'image', attachmentUrl: '/api/attachments/42/a.png', similarity: null,
+      ...PROVENANCE,
+    });
+    // The producer's own output must satisfy the contract's co-presence rule.
+    expect(SourceSchema.parse(s)).toEqual(s);
+  });
+
+  it('drops the provenance with the entry when the URL is unusable', () => {
+    // Not "keeps the hash for the audit trail": a persisted source carrying
+    // provenance and no renderable image is a row the contract refuses, and
+    // `contentHash` is provenance rather than an access token (D12).
+    expect(toPersistedSources([{
+      kind: 'image', pageId: 42, pageTitle: 'Page 42',
+      attachmentUrl: 'https://evil.example/a.png', ...PROVENANCE,
+    }])).toEqual([]);
+  });
+
+  it('copies NO provenance when the wire source carries only some of the four', () => {
+    // A partially populated wire source is an upstream regression; persisting
+    // the half that exists writes a row `SourceSchema` cannot parse, which
+    // would then fail a reopen rather than this call.
+    const [s] = toPersistedSources([{
+      kind: 'image', pageId: 42, pageTitle: 'Page 42',
+      attachmentUrl: '/api/attachments/42/a.png', similarity: null,
+      contentHash: 'sha256:d34db33f',
+    }]);
+    expect(s).not.toHaveProperty('contentHash');
+    expect(SourceSchema.parse(s)).toEqual(s);
+  });
+
+  it('still persists a pre-#1617 image source that carries none of the four', () => {
+    const [s] = toPersistedSources([{
+      kind: 'image', pageId: 42, pageTitle: 'Page 42',
+      attachmentUrl: '/api/attachments/42/a.png', similarity: null,
+    }]);
+    expect(s).toEqual({
+      pageTitle: 'Page 42', pageId: 42, kind: 'image',
+      attachmentUrl: '/api/attachments/42/a.png', similarity: null,
+    });
+  });
+
   // The `toEqual` literals above pin the shape as of today, but TypeScript
   // alone does not: the return type's field is optional and the object is
   // built through a spread, so excess-property checking never sees a

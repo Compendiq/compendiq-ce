@@ -246,6 +246,33 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
    * their own basis names. Without this, every assertion above is satisfiable
    * by a formula that answers `{ score: null, basis: 'none' }` for everything.
    */
+  it('treats a DERIVED row as measured text, and still excludes an imageOnly one (ADR-027 D11)', () => {
+    // The two halves in one case, because the distinction is the whole point:
+    // a derived chunk carries a REAL `vectorScore` over text the analysis
+    // produced, so it belongs in the sample; ADR-025's `imageOnly` row
+    // carries a stand-in `chunkText` and no measurement, so it does not.
+    // Mixing them up in either direction moves an operator threshold without
+    // anyone changing one — which ADR-027 `:4302-4306` forbids.
+    expect(
+      computeRetrievalConfidence([
+        row(1, {
+          vectorScore: 0.61,
+          chunkIndex: 3,
+          derived: {
+            attachmentSource: 'confluence',
+            attachmentKey: 'console.png',
+            contentHash: 'sha256:abc',
+            analysisId: 1,
+            analysisVersion: 1,
+            part: 1,
+            parts: 1,
+          },
+        }),
+        row(2, { imageOnly: true, imageTextSynthesized: true }),
+      ]),
+    ).toEqual({ score: 0.61, basis: 'similarity' });
+  });
+
   it('still measures what it can — the none verdicts are not the whole formula', () => {
     expect(computeRetrievalConfidence([row(1, { vectorScore: 0.58 })])).toEqual({
       score: 0.58,

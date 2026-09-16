@@ -507,6 +507,31 @@ runs — same transaction, same lock — when **Keyword index language** is
 saved: the PUT is slower than it was by the chunk table, and the settings
 copy says so.
 
+**Migration 117's index, and why the first corpus-wide batch used to be slow
+(#1617 review r1).** 117 adds
+`page_embeddings_derived_chunk_tsv_idx` — `gin (chunk_tsv) WITH (fastupdate =
+off) WHERE metadata->>'source' = 'image_analysis'` — which is the index the
+keyword leg's derived arm uses. Before it, the arm shared 116's FULL GIN, and
+a batch of derived writes puts that index into a PENDING LIST state
+(`SELECT pending_pages FROM pgstatginindex('page_embeddings_chunk_tsv_idx')`)
+that re-prices the plan: measured on a 4,001-page corpus at 429 pending
+pages, the arm dropped the GIN for `page_embeddings_derived_idx` plus a
+`chunk_tsv` filter over every derived chunk — 8.9–10.4 ms for a one-row match
+against 0.021 ms, on every keyword query and every `/llm/ask` for as long as
+the batch keeps the list full. Re-measured in review r2 at ~360k derived
+chunks it is worse than that: 7.8–9.0 ms on the full `keywordSearch` as a
+STEADY state, plus an 18–74 ms tail whenever the pending list crosses the
+planner's flip point. `fastupdate = off` is what keeps 117 out of that state.
+A plain partial GIN is already a 5–10× win (0.90–2.00 ms on the full
+statement), but it pends like the full one, so its cost tracks the pending
+list (0.47/0.89/1.08 ms at 233/465/415 pending pages) and it still flipped to
+the filter plan once in twelve write steps; only the reloption makes the cost
+independent of the burst. It is paid at ~38 µs per derived chunk by the
+EMBEDDING worker's inserts (`embedPage`, which the analysis worker triggers by
+raising `embedding_dirty`), and nothing else writes that index. If you are
+reading an old plan or a pre-117 deployment: `VACUUM (ANALYZE) page_embeddings`
+drains the pending list and restores the fast plan immediately.
+
 Failures back off `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` — the
 exponent is clamped so a class that never goes terminal cannot grow one past
 what an `interval` can hold; a deterministic class

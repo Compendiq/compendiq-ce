@@ -20,7 +20,7 @@ import {
 } from './retrieved-images.js';
 import { buildPng, buildJpeg, SVG_BYTES } from '../../../core/services/test-image-fixtures.js';
 import { MAX_IMAGE_BYTES } from '../../../core/services/image-validator.js';
-import type { ImageHit } from './image-leg-search.js';
+import type { DerivedProvenance } from './derived-provenance.js';
 
 /**
  * #1115 P4 — the pick step, against REAL bytes on a real temp
@@ -70,12 +70,45 @@ async function writeLocalFile(pageId: number, name: string, bytes: Buffer) {
   await fs.writeFile(path.join(tmpRoot, 'local', String(pageId), name), bytes);
 }
 
-function hit(key: string, similarity: number, source: 'confluence' | 'local' = 'confluence'): ImageHit {
-  return { source, key, similarity, attachmentUrl: `/api/attachments/x/${key}` };
+interface ImageSpec {
+  key: string;
+  /** The carrying row's fused rank — the only ordering quantity D11 leaves. */
+  rank: number;
+  source: 'confluence' | 'local';
 }
 
-function page(pageId: number, hits: ImageHit[]): RetrievedImagePage {
-  return { pageId, imageHits: hits };
+function hit(key: string, rank: number, source: 'confluence' | 'local' = 'confluence'): ImageSpec {
+  return { key, rank, source };
+}
+
+/**
+ * One page's derived rows, in serialization order (ADR-027 D11).
+ *
+ * The input shape changed with #1617 and the tests say so: a page's images no
+ * longer ride on ONE result row as `imageHits` with a cross-modal similarity
+ * each — each derived chunk IS its own row, carrying the page's fused `score`
+ * and its own `part`. `rows()` below flattens the per-page groups back into
+ * the flat result list the answer path hands over.
+ */
+function page(pageId: number, images: ImageSpec[]): RetrievedImagePage[] {
+  return images.map((image, i) => ({
+    pageId,
+    score: image.rank,
+    derived: {
+      attachmentSource: image.source,
+      attachmentKey: image.key,
+      contentHash: `hash-${pageId}-${image.key}`,
+      analysisId: pageId * 100 + i,
+      analysisVersion: 1,
+      part: i + 1,
+      parts: images.length,
+    } satisfies DerivedProvenance,
+  }));
+}
+
+/** The flat top-K row list, from per-page groups. */
+function rows(...groups: RetrievedImagePage[][]): RetrievedImagePage[] {
+  return groups.flat();
 }
 
 /**
@@ -97,16 +130,16 @@ describe('pickRetrievedImages — the gate costs nothing when there is nothing t
     // The knob's off switch. `rag_answer_max_images = 0` must not merely
     // discard the parts at the end — it must never touch the disk, which is
     // what makes "turn it off" a cost decision rather than a display one.
-    const picked = await pickRetrievedImages([page(1, [hit('a.png', 0.9)])], { max: 0 });
+    const picked = await pickRetrievedImages(rows(page(1, [hit('a.png', 0.9)])), { max: 0 });
 
     expect(picked.parts).toEqual([]);
     expect(picked.used).toEqual([]);
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('reads no page row when no result carries an image hit', async () => {
+  it('reads no page row when no result carries derived provenance', async () => {
     const picked = await pickRetrievedImages(
-      [{ pageId: 1 }, { pageId: 2, imageHits: [] }],
+      [{ pageId: 1, score: 0.4 }, { pageId: 2, score: 0.3 }],
       { max: 4 },
     );
 
@@ -132,17 +165,16 @@ describe('pickRetrievedImages — selection order', () => {
     await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
-      [
+      rows(
         page(1, [hit('a1.png', 0.91), hit('a2.png', 0.88), hit('a3.png', 0.87)]),
-        page(2, [hit('b1.png', 0.55)]),
-      ],
+        page(2, [hit('b1.png', 0.55)])),
       { max: 2 },
     );
 
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['a1.png', 'b1.png']);
   });
 
-  it('orders within a round by the hit similarity, not by the page rank', async () => {
+  it('orders a round by the carrying row’s fused rank — the only rank D11 leaves', async () => {
     pageRows([
       { id: 1, confluence_id: 'c1', source: 'confluence' },
       { id: 2, confluence_id: 'c2', source: 'confluence' },
@@ -151,31 +183,71 @@ describe('pickRetrievedImages — selection order', () => {
     await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('a1.png', 0.40)]), page(2, [hit('b1.png', 0.92)])],
+      rows(page(1, [hit('a1.png', 0.40)]), page(2, [hit('b1.png', 0.92)])),
       { max: 2 },
     );
 
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['b1.png', 'a1.png']);
   });
 
-  it('takes a page’s BEST image even when its hits arrive out of order', async () => {
-    // The per-page re-sort in `orderRetrievedImageCandidates` is defensive —
-    // P3 already emits `imageHits` best-first — and nothing exercised it, so
-    // deleting it left the suite green while the contract silently became
-    // "the FIRST image per page" instead of "the best". At `max: 1` the two
-    // read differently for the first time: with the sort the model is shown
-    // the 0.93 picture, without it the 0.41 one that happens to be listed
+  it('takes a page’s BEST-RANKED image even when its rows arrive out of order', async () => {
+    // The ordering in `distinctDerivedImages` is what makes this function's
+    // contract "best image per page" rather than "first image per page". At
+    // `max: 1` the two read differently: with the sort the model is shown the
+    // 0.93 row's picture, without it the 0.41 one that happens to be listed
     // first, and D8 forbids any signal that the wrong picture was chosen.
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
     await writeConfluenceFile('c1', 'weak.png', distinctPng('weak'));
     await writeConfluenceFile('c1', 'best.png', distinctPng('best'));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('weak.png', 0.41), hit('best.png', 0.93)])],
+      rows(page(1, [hit('weak.png', 0.41), hit('best.png', 0.93)])),
       { max: 1 },
     );
 
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['best.png']);
+  });
+
+  it('breaks a tie inside one page by part — an earlier part is the head of the description', async () => {
+    // The realistic same-page case, and the one the rank cannot decide: a
+    // multi-part serialization puts several chunks of one picture in the
+    // index, and rows of the same page carry the SAME fused score. Without
+    // the `part` tiebreak the choice falls to array order, which is the
+    // arbitrary result of a fusion sort.
+    pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
+    await writeConfluenceFile('c1', 'first.png', distinctPng('first'));
+    await writeConfluenceFile('c1', 'second.png', distinctPng('second'));
+
+    const picked = await pickRetrievedImages(
+      [
+        { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'second.png', contentHash: 'h2', analysisId: 2, analysisVersion: 1, part: 2, parts: 2 } },
+        { pageId: 1, score: 0.7, derived: { attachmentSource: 'confluence', attachmentKey: 'first.png', contentHash: 'h1', analysisId: 1, analysisVersion: 1, part: 1, parts: 2 } },
+      ],
+      { max: 1 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['first.png']);
+  });
+
+  it('takes one image per distinct (pageId, store, key), however many rows name it', async () => {
+    // A multi-part serialization of ONE picture is several rows carrying the
+    // same `(pageId, store, key)`. Two of them in one top-K must not spend
+    // two of the model's slots on the same file — and unlike the byte-digest
+    // dedupe below, this one must hold BEFORE any byte is read.
+    pageRows([
+      { id: 1, confluence_id: 'c1', source: 'confluence' },
+      { id: 2, confluence_id: 'c2', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c1', 'multi.png', distinctPng('multi'));
+    await writeConfluenceFile('c2', 'other.png', distinctPng('other'));
+
+    const picked = await pickRetrievedImages(
+      rows(page(1, [hit('multi.png', 0.9), hit('multi.png', 0.9)]), page(2, [hit('other.png', 0.4)])),
+      { max: 2 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['multi.png', 'other.png']);
+    expect(picked.skipped.duplicate).toBe(0);
   });
 
   it('comes back to a page for its second image once every page has had one', async () => {
@@ -188,7 +260,7 @@ describe('pickRetrievedImages — selection order', () => {
     await writeConfluenceFile('c2', 'b1.png', distinctPng('b1'));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('a1.png', 0.91), hit('a2.png', 0.90)]), page(2, [hit('b1.png', 0.55)])],
+      rows(page(1, [hit('a1.png', 0.91), hit('a2.png', 0.90)]), page(2, [hit('b1.png', 0.55)])),
       { max: 3 },
     );
 
@@ -206,7 +278,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
     const jpeg = buildJpeg(20, 10);
     await writeConfluenceFile('c7', 'shot.png', jpeg);
 
-    const picked = await pickRetrievedImages([page(7, [hit('shot.png', 0.7)])], { max: 2 });
+    const picked = await pickRetrievedImages(rows(page(7, [hit('shot.png', 0.7)])), { max: 2 });
 
     expect(picked.parts).toEqual([
       { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${jpeg.toString('base64')}` } },
@@ -223,7 +295,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
     await writeLocalFile(9, 'pasted.png', png);
 
     const picked = await pickRetrievedImages(
-      [page(9, [hit('pasted.png', 0.8, 'local')])],
+      rows(page(9, [hit('pasted.png', 0.8, 'local')])),
       { max: 2 },
     );
 
@@ -242,7 +314,7 @@ describe('pickRetrievedImages — the parts it builds', () => {
     pageRows([{ id: 11, confluence_id: 'not-the-key', source: 'standalone' }]);
     await writeConfluenceFile('11', 'diagram.png', buildPng(5, 5));
 
-    const picked = await pickRetrievedImages([page(11, [hit('diagram.png', 0.7)])], { max: 2 });
+    const picked = await pickRetrievedImages(rows(page(11, [hit('diagram.png', 0.7)])), { max: 2 });
 
     expect(picked.used.map((u) => u.attachmentKey)).toEqual(['diagram.png']);
   });
@@ -257,7 +329,7 @@ describe('pickRetrievedImages — skip and count', () => {
     await writeConfluenceFile('c2', 'b1.png', buildPng(4, 4));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('gone.png', 0.99)]), page(2, [hit('b1.png', 0.5)])],
+      rows(page(1, [hit('gone.png', 0.99)]), page(2, [hit('b1.png', 0.5)])),
       { max: 2 },
     );
 
@@ -278,7 +350,7 @@ describe('pickRetrievedImages — skip and count', () => {
     await writeConfluenceFile('c1', 'ok.png', distinctPng('ok'));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('locked.png', 0.9), hit('ok.png', 0.8)])],
+      rows(page(1, [hit('locked.png', 0.9), hit('ok.png', 0.8)])),
       { max: 4 },
     );
 
@@ -293,7 +365,7 @@ describe('pickRetrievedImages — skip and count', () => {
     // test above forbids.
     pageRows([]);
 
-    const picked = await pickRetrievedImages([page(4, [hit('a.png', 0.9)])], { max: 2 });
+    const picked = await pickRetrievedImages(rows(page(4, [hit('a.png', 0.9)])), { max: 2 });
 
     expect(picked.used).toEqual([]);
     expect(picked.skipped.missing).toBe(1);
@@ -313,7 +385,7 @@ describe('pickRetrievedImages — skip and count', () => {
     mockQuery.mockRejectedValue(new Error('connection terminated'));
 
     await expect(
-      pickRetrievedImages([page(1, [hit('a.png', 0.9)])], { max: 2 }),
+      pickRetrievedImages(rows(page(1, [hit('a.png', 0.9)])), { max: 2 }),
     ).resolves.toEqual({
       parts: [],
       used: [],
@@ -327,7 +399,7 @@ describe('pickRetrievedImages — skip and count', () => {
     await writeConfluenceFile('c1', 'logo.svg', SVG_BYTES);
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('chart.png', 0.9), hit('logo.svg', 0.8)])],
+      rows(page(1, [hit('chart.png', 0.9), hit('logo.svg', 0.8)])),
       { max: 4 },
     );
 
@@ -355,7 +427,7 @@ describe('pickRetrievedImages — skip and count', () => {
       const bloated = Buffer.concat([buildPng(4, 4), Buffer.alloc(MAX_IMAGE_BYTES + 1)]);
       await writeConfluenceFile('c1', 'replaced.png', bloated);
 
-      const picked = await pickRetrievedImages([page(1, [hit('replaced.png', 0.9)])], { max: 2 });
+      const picked = await pickRetrievedImages(rows(page(1, [hit('replaced.png', 0.9)])), { max: 2 });
 
       expect(picked.used).toEqual([]);
       expect(picked.skipped.invalid).toBe(1);
@@ -382,7 +454,7 @@ describe('pickRetrievedImages — skip and count', () => {
       pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
       await writeConfluenceFile('c1', 'fine.png', buildPng(4, 4));
 
-      const picked = await pickRetrievedImages([page(1, [hit('fine.png', 0.9)])], { max: 2 });
+      const picked = await pickRetrievedImages(rows(page(1, [hit('fine.png', 0.9)])), { max: 2 });
 
       expect(picked.used.map((u) => u.attachmentKey)).toEqual(['fine.png']);
     } finally {
@@ -397,7 +469,7 @@ describe('pickRetrievedImages — skip and count', () => {
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
     await writeConfluenceFile('c1', 'huge.png', buildPng(5000, 2));
 
-    const picked = await pickRetrievedImages([page(1, [hit('huge.png', 0.9)])], { max: 2 });
+    const picked = await pickRetrievedImages(rows(page(1, [hit('huge.png', 0.9)])), { max: 2 });
 
     expect(picked.used).toEqual([]);
     expect(picked.skipped.invalid).toBe(1);
@@ -418,7 +490,7 @@ describe('pickRetrievedImages — the byte budget', () => {
     // Room for exactly one: base64 of one file, plus a byte.
     const oneFits = distinctPng('a1').toString('base64').length + 1;
     const picked = await pickRetrievedImages(
-      [page(1, [hit('a1.png', 0.9)]), page(2, [hit('b1.png', 0.8)])],
+      rows(page(1, [hit('a1.png', 0.9)]), page(2, [hit('b1.png', 0.8)])),
       { max: 4, byteBudget: oneFits },
     );
 
@@ -430,7 +502,7 @@ describe('pickRetrievedImages — the byte budget', () => {
     pageRows([{ id: 1, confluence_id: 'c1', source: 'confluence' }]);
     await writeConfluenceFile('c1', 'a1.png', buildPng(4, 4));
 
-    const picked = await pickRetrievedImages([page(1, [hit('a1.png', 0.9)])], {
+    const picked = await pickRetrievedImages(rows(page(1, [hit('a1.png', 0.9)])), {
       max: 4,
       byteBudget: 4,
     });
@@ -459,7 +531,7 @@ describe('pickRetrievedImages — the byte budget', () => {
     await writeConfluenceFile('c2', 'small.png', small);
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('big.png', 0.9)]), page(2, [hit('small.png', 0.5)])],
+      rows(page(1, [hit('big.png', 0.9)]), page(2, [hit('small.png', 0.5)])),
       { max: 4, byteBudget: small.toString('base64').length + 10 },
     );
 
@@ -476,7 +548,7 @@ describe('pickRetrievedImages — the byte budget', () => {
     await writeConfluenceFile('c2', 'b.png', Buffer.concat([buildPng(5, 5), Buffer.alloc(40_000)]));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.5)])],
+      rows(page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.5)])),
       { max: 4, byteBudget: 8 },
     );
 
@@ -502,7 +574,7 @@ describe('pickRetrievedImages — the byte budget', () => {
     await writeConfluenceFile('c2', 'b.png', fat('b'));
 
     const picked = await pickRetrievedImages(
-      [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)])],
+      rows(page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)])),
       { max: 4 },
     );
 
@@ -551,11 +623,10 @@ describe('pickRetrievedImages — byte-identical pictures', () => {
     await writeConfluenceFile('c3', 'other.png', other);
 
     const picked = await pickRetrievedImages(
-      [
+      rows(
         page(1, [hit('diagram.png', 0.90)]),
         page(2, [hit('diagram.png', 0.90)]),
-        page(3, [hit('other.png', 0.55)]),
-      ],
+        page(3, [hit('other.png', 0.55)])),
       { max: 2 },
     );
 
@@ -618,10 +689,87 @@ describe('pickRetrievedImages — one lookup, whatever the page count', () => {
     await writeConfluenceFile('c3', 'c.png', distinctPng('c'));
 
     await pickRetrievedImages(
-      [page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)]), page(3, [hit('c.png', 0.7)])],
+      rows(page(1, [hit('a.png', 0.9)]), page(2, [hit('b.png', 0.8)]), page(3, [hit('c.png', 0.7)])),
       { max: 3 },
     );
 
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pickRetrievedImages — ADR-025’s leg as the pre-#1618 fallback', () => {
+  /** One legacy image-leg row: hits on the page, no derived provenance. */
+  function legacyPage(
+    pageId: number,
+    hits: Array<{ key: string; similarity: number; source?: 'confluence' | 'local' }>,
+  ): RetrievedImagePage {
+    return {
+      pageId,
+      score: 0.0164,
+      imageHits: hits.map((h) => ({ source: h.source ?? 'confluence', key: h.key, similarity: h.similarity })),
+    };
+  }
+
+  it('attaches the leg’s picture when NO row carries derived provenance', async () => {
+    // Review r1 finding 1. An instance with `image_embedding` assigned and
+    // nothing analyzed yet is exactly this set, and it had answer-time
+    // pictures before #1617. Consuming derived provenance only took them
+    // away — which is also what made the `image_only_context` refusal's
+    // "they are attached below" false for the one set that reaches it.
+    pageRows([{ id: 5, confluence_id: 'c5', source: 'confluence' }]);
+    await writeConfluenceFile('c5', 'legacy.png', distinctPng('legacy'));
+
+    const picked = await pickRetrievedImages([legacyPage(5, [{ key: 'legacy.png', similarity: 0.71 }])], { max: 2 });
+
+    expect(picked.parts).toHaveLength(1);
+    expect(picked.used).toEqual([
+      { pageId: 5, source: 'confluence', attachmentKey: 'legacy.png', bytes: distinctPng('legacy').length },
+    ]);
+  });
+
+  it('orders the legacy candidates by the leg’s own cross-modal similarity', async () => {
+    // The legacy arm's ordering quantity is per-IMAGE, unlike D11's per-ROW
+    // fused rank — so the best picture of the pair must win the single slot
+    // even though both pages carry the same fused score.
+    pageRows([
+      { id: 6, confluence_id: 'c6', source: 'confluence' },
+      { id: 7, confluence_id: 'c7', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c6', 'weak.png', distinctPng('weak'));
+    await writeConfluenceFile('c7', 'strong.png', distinctPng('strong'));
+
+    const picked = await pickRetrievedImages(
+      [legacyPage(6, [{ key: 'weak.png', similarity: 0.41 }]), legacyPage(7, [{ key: 'strong.png', similarity: 0.83 }])],
+      { max: 1 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['strong.png']);
+  });
+
+  it('IGNORES the leg entirely as soon as one row carries provenance — whole-set, never per-page', async () => {
+    // The fallback must not let a legacy hit ride along beside a derived one:
+    // the two ordering quantities are incomparable (a fused rank against a
+    // cross-modal cosine), and a page whose picture is BOTH a hit and an
+    // analysed attachment would otherwise spend two of the slots on one file.
+    pageRows([
+      { id: 8, confluence_id: 'c8', source: 'confluence' },
+      { id: 9, confluence_id: 'c9', source: 'confluence' },
+    ]);
+    await writeConfluenceFile('c8', 'derived.png', distinctPng('derived'));
+    await writeConfluenceFile('c9', 'legacy.png', distinctPng('legacy2'));
+
+    const picked = await pickRetrievedImages(
+      [...page(8, [hit('derived.png', 0.9)]), legacyPage(9, [{ key: 'legacy.png', similarity: 0.99 }])],
+      { max: 4 },
+    );
+
+    expect(picked.used.map((u) => u.attachmentKey)).toEqual(['derived.png']);
+  });
+
+  it('reads no page row when the set has neither provenance nor hits', async () => {
+    const picked = await pickRetrievedImages([{ pageId: 10, score: 0.2, imageHits: [] }], { max: 4 });
+
+    expect(picked.parts).toEqual([]);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
