@@ -66,6 +66,20 @@ vi.mock('./openai-compatible-client.js', () => ({
   invalidateDispatcher: vi.fn(),
 }));
 
+// ADR-027 D9: the derived-chunk composition seam, inert here for the same
+// reason the shadow path below is. These unit tests script `mocks.query`
+// statement by statement; composition issues one more read of its own and has
+// its own real-Postgres suite (`image-analysis-compose.integration.test.ts`),
+// where the page, the analyses and the revision guard are real rather than a
+// scripted reply. A page with no analyses composes nothing, which is what an
+// empty plan means.
+// A plain function, not a `vi.fn()`: this suite calls `vi.resetAllMocks()`
+// per test, which would strip a mocked resolution and hand `embedPage`
+// `undefined`.
+vi.mock('./image-analysis-compose.js', () => ({
+  planDerivedChunks: async () => ({ revision: 0, chunks: [], substantiveChars: 0 }),
+}));
+
 // #1116: the shadow-migration seam. These unit tests exercise the live embed
 // pipeline against a scripted query mock; the shadow path has its own
 // integration suite, so it is inert here (no active migration).
@@ -1241,9 +1255,10 @@ describe('embedding-service', () => {
     // Short pages are "processed" (embedPage returns 0 but doesn't throw)
     expect(result).toEqual({ processed: 2, errors: 0 });
 
-    // Verify the UPDATE queries were called to mark pages as not dirty
+    // Verify the settle UPDATE (revision-guarded clear, ADR-027 D6.3) ran
+    // for each page
     const updateCalls = mocks.query.mock.calls.filter(
-      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes('UPDATE pages SET embedding_dirty = FALSE'),
+      (call: unknown[]) => typeof call[0] === 'string' && call[0].includes("embedding_status = 'not_embedded'"),
     );
     expect(updateCalls).toHaveLength(2);
   });
@@ -1292,10 +1307,12 @@ describe('embedPage', () => {
     // Should have called UPDATE to clear embedding_dirty AND set the terminal
     // 'not_embedded' status (clearing any error) so short pages don't stay stuck
     // showing the transient 'embedding' status (using pages.id, not confluence_id).
+    // The clear is guarded on `image_analysis_revision` like the embed write
+    // (ADR-027 D6.3); with the analysis store absent the snapshot is 0.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [101],
+      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded', embedding_error = NULL\s+WHERE id = \$1/),
+      [101, 0],
     );
   });
 
@@ -1309,8 +1326,8 @@ describe('embedPage', () => {
     // Same terminal-status write as the too-short case for empty text.
     expect(mocks.query).toHaveBeenCalledTimes(1);
     expect(mocks.query).toHaveBeenCalledWith(
-      `UPDATE pages SET embedding_dirty = FALSE, embedding_status = 'not_embedded', embedding_error = NULL WHERE id = $1`,
-      [102],
+      expect.stringMatching(/embedding_dirty = CASE WHEN image_analysis_revision = \$2 THEN FALSE ELSE embedding_dirty END,\s+embedding_status = 'not_embedded'/),
+      [102, 0],
     );
   });
 

@@ -361,6 +361,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_embedding_dirty
            END,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_analysis_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- Stamp local-edit markers (#305): chat write-back is a local
            -- AI edit. Previously the write was invisible to sync, which
@@ -401,6 +405,10 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
            image_embedding_dirty = CASE
              WHEN body_html IS DISTINCT FROM $4 THEN TRUE
              ELSE image_embedding_dirty
+           END,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+             ELSE image_analysis_dirty
            END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- Clear local-edit markers (#305): the Confluence push for

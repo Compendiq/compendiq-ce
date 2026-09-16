@@ -1124,9 +1124,14 @@ of that enumerator and shares its directory rule, so the reader's key and the
 citation's URL cannot drift. Design of record: ADR-025 (the ACTIVE design);
 operations: `docs/runbooks/image-index.md`.
 
-**Candidate (ADR-027, PLANNED #1615/#1616): analysis text is DERIVED data,
-still never a conversion rule.** The paragraph above stays true under the
-candidate. A generative vision model reads the attachment's bytes at
+**Candidate (ADR-027; #1616's ingestion half shipped, #1615 PLANNED):
+analysis text is DERIVED data, still never a conversion rule.** The paragraph
+above stays true under the candidate. Every writer that raises
+`image_embedding_dirty` now raises `image_analysis_dirty` in the same
+statement (the attachment writers through `core/services/image-embedding-dirty.ts`,
+the body writers inline, gated on `body_html`), and the reconcile
+(`domains/llm/services/image-analysis-reconcile.ts`) claims that flag before
+enumerating. A generative vision model reads the attachment's bytes at
 ingestion and its output is stored in `page_image_analyses` and composed by
 `embedPage` into `page_embeddings` rows — it is never written into
 `body_storage`, `body_html` or `body_text`, never shown in the editor, and

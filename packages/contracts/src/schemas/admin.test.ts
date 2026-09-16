@@ -34,6 +34,8 @@ const validReadPayload = {
   // Worker batch sizes — required on read; the Workers tab hydrates from them.
   qualityBatchSize: 5,
   summaryBatchSize: 5,
+  // #1616 — the image-analysis worker's batch size, seeded by migration 116.
+  imageAnalysisBatchSize: 50,
   // Issue #1051 — self-registration policy (required on read).
   registrationMode: 'closed',
   // #1118 — retrieval knobs, required on read. Values are the reader defaults.

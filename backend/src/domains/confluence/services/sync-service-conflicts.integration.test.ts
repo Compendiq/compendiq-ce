@@ -255,12 +255,13 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
    * dirtying on it re-scans pages whose pictures are provably identical.
    */
   describe('image_embedding_dirty on the conflict-policy update (#1115 P2)', () => {
-    async function imageFlags(id: number): Promise<{ image: boolean; text: boolean }> {
-      const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean }>(
-        `SELECT image_embedding_dirty, embedding_dirty FROM pages WHERE id = $1`,
+    async function imageFlags(id: number): Promise<{ image: boolean; text: boolean; analysis: boolean }> {
+      const r = await query<{ image_embedding_dirty: boolean; embedding_dirty: boolean; image_analysis_dirty: boolean }>(
+        `SELECT image_embedding_dirty, embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1`,
         [id],
       );
-      return { image: r.rows[0]!.image_embedding_dirty, text: r.rows[0]!.embedding_dirty };
+      const row = r.rows[0]!;
+      return { image: row.image_embedding_dirty, text: row.embedding_dirty, analysis: row.image_analysis_dirty };
     }
 
     it('raises it when body_html changes', async () => {
@@ -270,11 +271,11 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
         spaceKey: 'DOCS',
         body: 'OLD-REMOTE-CONTENT',
       });
-      await query(`UPDATE pages SET image_embedding_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
 
       await __internal.applyConflictPolicyForExistingPage(makeArgs({ confluenceId: 'c-img-1' }));
 
-      expect(await imageFlags(inserted.id)).toEqual({ image: true, text: true });
+      expect(await imageFlags(inserted.id)).toEqual({ image: true, text: true, analysis: true });
     });
 
     it('leaves it alone when only body_text differs', async () => {
@@ -284,7 +285,7 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
         spaceKey: 'DOCS',
         body: 'INCOMING-HTML',
       });
-      await query(`UPDATE pages SET image_embedding_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
+      await query(`UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE, embedding_dirty = FALSE WHERE id = $1`, [inserted.id]);
 
       // Same html, different text — the flattener disagreeing with itself
       // across a converter upgrade. The text side re-embeds; the image side
@@ -293,7 +294,7 @@ describe.skipIf(!dbAvailable)('sync-service conflict policy branch (EE #118 Phas
         makeArgs({ confluenceId: 'c-img-2', bodyHtml: 'INCOMING-HTML' }),
       );
 
-      expect(await imageFlags(inserted.id)).toEqual({ image: false, text: true });
+      expect(await imageFlags(inserted.id)).toEqual({ image: false, text: true, analysis: false });
     });
   });
 

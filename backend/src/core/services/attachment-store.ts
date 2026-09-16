@@ -318,17 +318,31 @@ function cachedAttachmentPath(pageId: string, filename: string): string {
   return resolved;
 }
 
-/** Read one cached attachment's bytes by key + filename, or null if absent. */
+/**
+ * `readFile` that answers `null` for an ABSENT file (`ENOENT`) and rethrows
+ * everything else. The distinction is the whole point: `EACCES`, `EIO`,
+ * `ESTALE` are facts about the disk right now, not about the corpus, and a
+ * caller that records "no such file" for them parks a recoverable image
+ * behind a state no re-read ever revisits (#1626 review r2).
+ */
+async function readFileOrAbsent(resolved: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(resolved);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Read one cached attachment's bytes by key + filename, or null if absent.
+ * Any other read failure throws (see {@link readFileOrAbsent}).
+ */
 export async function readCachedAttachmentFile(
   pageId: string,
   filename: string,
 ): Promise<Buffer | null> {
-  const resolved = cachedAttachmentPath(pageId, filename);
-  try {
-    return await fs.readFile(resolved);
-  } catch {
-    return null;
-  }
+  return readFileOrAbsent(cachedAttachmentPath(pageId, filename));
 }
 
 // ── Validated removal (#1349) ──────────────────────────────────────────────
@@ -492,9 +506,14 @@ function isDirectChildKey(key: string): boolean {
  * **This applies NO authorisation** — see the module header. It is for the
  * embedding worker and for the post-retrieval answer path, never for a route.
  *
- * Never throws: a page's images are enumerated from its HTML, and one bad key
- * must not abort the whole page's batch. A refusal is logged and answered as
- * an absence.
+ * A refused key is logged and answered as an absence: a page's images are
+ * enumerated from its HTML, and one bad key must not abort the whole page's
+ * batch. A read failure that is NOT an absence (`EACCES`, `EIO`, `ESTALE` —
+ * anything but `ENOENT`) THROWS: the file may well be there and readable in
+ * a minute, and only the caller knows whether that means "fail open for this
+ * answer" (`retrieved-images.ts`) or "retry later" (the analysis worker's
+ * `failed (unavailable:bytes)`). Collapsing it into `null` used to park such
+ * an image as `skipped (missing)`, a state no re-read revisits.
  *
  * Note it reads the EXACT key and does not run `readAttachment`'s `.xref-`
  * fallback. Normally the key IS the on-disk name: it comes out of the same
@@ -524,17 +543,19 @@ export async function resolveAttachmentBytes(
     return null;
   }
 
+  let resolved: string;
   try {
-    const bytes = source === 'local'
-      ? await readLocalStoreFile(pageId, key)
-      : await readCachedAttachmentFile(confluenceTreeKey(pageSource, pageId, confluenceId), key);
-
-    if (bytes === null) return null;
-    return { bytes, sniffedFormat: sniffImageFormat(bytes) };
+    resolved = source === 'local'
+      ? localStorePath(pageId, key)
+      : cachedAttachmentPath(confluenceTreeKey(pageSource, pageId, confluenceId), key);
   } catch (err) {
-    logger.warn({ err, pageId, source, key }, 'attachment-store: could not resolve attachment bytes');
+    logger.warn({ err, pageId, source, key }, 'attachment-store: refused an attachment path');
     return null;
   }
+
+  const bytes = await readFileOrAbsent(resolved);
+  if (bytes === null) return null;
+  return { bytes, sniffedFormat: sniffImageFormat(bytes) };
 }
 
 /**
@@ -559,15 +580,6 @@ function localStorePath(pageId: number, key: string): string {
     throw new Error('Path traversal detected');
   }
   return resolved;
-}
-
-async function readLocalStoreFile(pageId: number, key: string): Promise<Buffer | null> {
-  const resolved = localStorePath(pageId, key);
-  try {
-    return await fs.readFile(resolved);
-  } catch {
-    return null;
-  }
 }
 
 /**

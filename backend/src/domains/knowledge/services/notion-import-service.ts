@@ -816,7 +816,7 @@ async function persistStandalonePage(opts: {
               visibility = $7, path = $8, depth = $9, labels = $10,
               author = COALESCE($11, author),
               verified_at = COALESCE($12, verified_at),
-              embedding_dirty = TRUE, image_embedding_dirty = TRUE
+              embedding_dirty = TRUE, image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
         WHERE id = $1 AND deleted_at IS NULL`,
       [
         opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey,
@@ -831,10 +831,10 @@ async function persistStandalonePage(opts: {
     `INSERT INTO pages
        (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
-        page_type, embedding_dirty, image_embedding_dirty, embedding_status,
+        page_type, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status,
         last_synced, labels, author, verified_at, notion_page_id, path, depth)
      VALUES ($1, $2, $3, $4, NULL, 'standalone', $5, $6, 1, $7, NULL, $8,
-             'page', TRUE, TRUE, 'not_embedded',
+             'page', TRUE, TRUE, TRUE, 'not_embedded',
              NOW(), $9, $10, $11, $12, $13, $14)`,
     [
       opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,

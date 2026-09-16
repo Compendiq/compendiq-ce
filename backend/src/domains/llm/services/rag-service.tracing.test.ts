@@ -240,6 +240,36 @@ describe.skipIf(!dbAvailable)('#1117 retrieval spans + stage histogram', () => {
     expect(hybrid!.attributes['rag.page_merge_pages']).toBe(1);
   });
 
+  it('never crosses the authored/derived boundary in sibling assembly, and a derived anchor returns only itself (ADR-027 D2)', async () => {
+    // chunk 0 is the seeded authored anchor; chunk 1 is a DERIVED row right
+    // beside it in chunk_index order. Provenance is `metadata.source`, never
+    // position, so the window must not pull it in.
+    const pageId = (await query<{ id: number }>(`SELECT id FROM pages LIMIT 1`)).rows[0]!.id;
+    await query(
+      `INSERT INTO page_embeddings (page_id, chunk_index, chunk_text, embedding, metadata)
+       VALUES ($1, 1, $2, $3, $4::jsonb)`,
+      [
+        pageId,
+        '[Image: shot.png — screenshot]\nPage: Runbook\nDescription: derived text about the queue',
+        pgvector.toSql(fakeVec(21)),
+        JSON.stringify({ page_title: 'Runbook', section_title: '[Image: shot.png — screenshot]', space_key: SPACE, source: 'image_analysis', attachment_source: 'confluence', attachment_key: 'shot.png' }),
+      ],
+    );
+
+    const authored = await hybridSearch(USER, 'restart the queue', 5, undefined, { assembleContext: true });
+    expect(authored[0]!.chunkText).toBe('restart the queue');
+    expect(authored[0]!.contextText ?? authored[0]!.chunkText).not.toContain('[Image: shot.png');
+
+    // Now the derived row is the vector leg's best hit: it keeps its own
+    // text and gains no context window at all.
+    generateEmbeddingMock.mockImplementation(async () => [fakeVec(21)]);
+    const derived = await hybridSearch(USER, 'derived text about the queue', 5, undefined, { assembleContext: true });
+    const hit = derived.find((r) => r.chunkText.startsWith('[Image: shot.png'));
+    expect(hit).toBeDefined();
+    expect(hit!.contextText).toBeUndefined();
+    expect(hit!.mergedChunkCount).toBeUndefined();
+  });
+
   it("records 'none' on a keyword_fallback — no anchors, no fetch, and 'assembled' must not mean 'the query did not throw' (#1270 F6+F2)", async () => {
     // No embeddings at all: the vector leg is empty, the keyword leg finds
     // the page, every row is anchor-less — the stage runs, fetches nothing

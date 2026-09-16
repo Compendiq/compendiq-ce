@@ -113,6 +113,18 @@ export interface PageImageReference {
    * exist. A bare directory and a nested path are both refused below.
    */
   key: string;
+  /**
+   * Author-supplied caption of the FIRST occurrence: the `<img alt>`, else
+   * the enclosing `<figure>`'s `<figcaption>` text (ADR-027 D9.2). Compose-time
+   * context for the derived chunk, never prompt input; absent when neither
+   * carries text.
+   */
+  caption?: string;
+  /**
+   * Text of the nearest `h1`–`h6` PRECEDING the first occurrence in document
+   * order (ADR-027 D9.2). Absent when no heading precedes it.
+   */
+  heading?: string;
 }
 
 /** `/api/local-attachments/<page id>/<file>` — must be tested BEFORE the next. */
@@ -232,8 +244,16 @@ export function extractImageReferencesFromHtml(bodyHtml: string | null | undefin
   const dom = new JSDOM(`<body>${bodyHtml}</body>`, { contentType: 'text/html' });
   const refs = new Map<string, PageImageReference>();
 
-  for (const img of [...dom.window.document.getElementsByTagName('img')]) {
-    const src = img.getAttribute('src');
+  // One document-order walk over headings and images together, so each image
+  // sees the heading that precedes it (ADR-027 D9.2's "nearest preceding").
+  let heading: string | undefined;
+  for (const el of [...dom.window.document.body.querySelectorAll('h1, h2, h3, h4, h5, h6, img')]) {
+    if (el.tagName !== 'IMG') {
+      const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+      heading = text || undefined;
+      continue;
+    }
+    const src = el.getAttribute('src');
     if (!src) continue;
 
     // Strip a query string and a fragment before anything else: `a.png?v=2` is
@@ -271,7 +291,19 @@ export function extractImageReferencesFromHtml(bodyHtml: string | null | undefin
     if (key.includes('\0') || key.startsWith('.') || path.basename(key) !== key) continue;
 
     const dedupeKey = `${source}:${key}`;
-    if (!refs.has(dedupeKey)) refs.set(dedupeKey, { source, key });
+    if (refs.has(dedupeKey)) continue;
+
+    const alt = (el.getAttribute('alt') ?? '').replace(/\s+/g, ' ').trim();
+    const figcaption = alt
+      ? ''
+      : (el.closest('figure')?.querySelector('figcaption')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const caption = alt || figcaption || undefined;
+    refs.set(dedupeKey, {
+      source,
+      key,
+      ...(caption !== undefined ? { caption } : {}),
+      ...(heading !== undefined ? { heading } : {}),
+    });
   }
 
   return [...refs.values()];

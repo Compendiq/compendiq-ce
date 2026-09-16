@@ -390,6 +390,72 @@ which reads the STORED body rather than Confluence's storage format, because a
 standalone page has no `body_storage` and a relocated one still carries a stale
 copy describing attachments its body no longer points at.
 
+### Image analysis in the text index (ADR-027, #1616 — ingestion half)
+
+The ADR-027 candidate's ingestion side lives in `domains/llm/services/`, all
+of it `llm` → `core` only; the vision assignment, identity and client modules
+it consumes are #1615's and reach it through one import point:
+
+- **`image-analysis-provider.ts`** — a PURE re-export of #1615's
+  `image-analysis-identity.ts` (the resolved and retained identity),
+  `image-analysis-client.ts` (`analyzeImage` and its failure classing),
+  `getImageAnalysisMaxOutputTokens` and the `@compendiq/contracts` payload
+  types. It holds no logic: while the two packages were in flight it carried
+  local stand-ins with the agreed signatures, and #1615's merge replaced every
+  one of them.
+- **`image-analysis-validity.ts`** — D5's ONE validity predicate
+  (`validitySql` / `isValidAnalysisRow`) with the prompt and schema versions
+  bound from code. With nothing retained the predicate is unsatisfiable, so a
+  never-assigned instance composes and counts nothing.
+- **`image-intake.ts`** — the raster intake both image pipelines share
+  (resolve bytes, sniff, `MAX_IMAGE_BYTES` / `MAX_IMAGE_DIMENSION`, sha256),
+  moved out of `image-embedding-service.ts` under #1616's ownership. Its
+  outcomes separate the corpus from the disk: `skipped` (absent, unsupported,
+  oversized, …) is a verdict, `unavailable` is a read failure that is NOT an
+  absence (`EACCES`, `EIO`, …) and carries no skip reason.
+- **`image-analysis-reconcile.ts`** — D4/D6.2: claim `image_analysis_dirty`
+  BEFORE enumerating, upsert `page_image_analyses` rows from the body's
+  current references (new → `pending`; changed hash → `pending`, fresh
+  budget; gone → deleted; absent file → row kept, `missing` only when never
+  rowed; unreadable file → no row for that reference, an existing one kept,
+  the page's other references still written, the page left dirty and counted
+  in the batch's `pagesFailed`; policy → `skipped`), and bump `image_analysis_revision` +
+  `embedding_dirty` in one statement only when the VALID derived set changed
+  (an `analyzed` row deleted, re-pended or skipped — D6.3); a new
+  `pending`/`skipped` row bumps nothing.
+- **`image-analysis-worker.ts`** — D13: `runImageAnalysisBatch()` on the
+  #1612 pattern (`worker:lock:image-analysis`, 600 s / 60 s, `assertLockHeld`
+  before every write, the last-run line included). Step 1 sweep (+ inverse
+  `reused`, stale-failed return, `truncated:<ceiling>` re-open), step 2
+  reconcile, step 3 analyze behind the three-term gate; a work row whose file
+  is ABSENT at call time → `skipped (missing)`, out of the work window, one
+  that is there but unreadable → `failed (unavailable:bytes)` with an attempt
+  charged and never terminal; backoff
+  `LEAST(15 min × 2^LEAST(attempts, 7), 24 h)` (clamped exponent),
+  `IMAGE_ANALYSIS_MAX_ATTEMPTS` = 5, provider-status and uniform-rejection
+  stops with re-probe; `retryFailedImageAnalyses`, `reanalyzeAllImages` (409
+  under the one-active-run rule) and `readImageAnalysisLastRun` for #1618's
+  card. Queue `image-analysis` (concurrency 1, sync cadence) in
+  `core/services/queue-service.ts` is its one scheduled trigger; sync does
+  not kick it.
+- **`image-analysis-serialize.ts`** — D8's deterministic
+  `serializeImageAnalysis(payload, context)` (fixed labels, bounded context
+  lines, ≤ 3 parts over `CHUNK_HARD_LIMIT`) and `substantiveChars`.
+- **`image-analysis-compose.ts`** — D9: `planDerivedChunks` reads the valid
+  rows and the page's `image_analysis_revision`; `embedPage` appends them
+  after every authored index with `metadata.source = 'image_analysis'` +
+  provenance, excludes them from both page averages, dual-writes them under a
+  shadow, and clears `embedding_dirty` only if the revision is unchanged.
+- **`image-analysis-readiness.ts`** — the pure readiness function
+  (`none | complete | partial | pending | failed | skipped`) and the corpus
+  counts #1618 renders.
+
+`core/services/image-embedding-dirty.ts` and every inline `image_embedding_dirty`
+writer raise `image_analysis_dirty` in the same statement; `rag-service.ts`'s
+coverage query counts a page with a valid analysis and its sibling window never
+crosses the authored/derived boundary. The FTS-language PUT rebuilds
+`page_embeddings.chunk_tsv` in the same transaction as `pages.tsv`.
+
 `core/services/image-embedding-target-dimensions.ts` holds the MRL truncation
 width (`admin_settings.image_embedding_target_dimensions`), in `core` because
 `routes/foundation/admin.ts` writes it through `PUT /admin/settings` and

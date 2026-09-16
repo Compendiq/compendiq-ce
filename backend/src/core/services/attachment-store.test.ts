@@ -296,6 +296,31 @@ describe('resolveAttachmentBytes (#1115)', () => {
       pageId: 777, confluenceId: null, pageSource: 'standalone', source: 'local', key: 'absent.png',
     })).toBeNull();
   });
+
+  // root reads through any mode bits, so the EACCES this needs cannot be
+  // produced there; the worker suite covers the same boundary with a fault
+  // injected above the store.
+  it.skipIf(process.getuid?.() === 0)('throws for a read failure that is not an absence, in both trees', async () => {
+    // The distinction the analysis worker rests on (#1626 review r2): an
+    // absent file is `null`, a file that is there but unreadable is an error
+    // the caller classifies — never the same `null`.
+    const confluence = await writeFileAt(path.join('44556677', 'locked.png'), pngBytes());
+    const local = await writeFileAt(path.join('local', '31', 'locked.png'), pngBytes());
+    await fsReal.chmod(confluence, 0o000);
+    await fsReal.chmod(local, 0o000);
+    try {
+      await expect(store.resolveAttachmentBytes({
+        pageId: 12, confluenceId: '44556677', pageSource: 'confluence', source: 'confluence', key: 'locked.png',
+      })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(store.resolveAttachmentBytes({
+        pageId: 31, confluenceId: null, pageSource: 'standalone', source: 'local', key: 'locked.png',
+      })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(store.readCachedAttachmentFile('44556677', 'locked.png')).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      await fsReal.chmod(confluence, 0o644);
+      await fsReal.chmod(local, 0o644);
+    }
+  });
 });
 
 describe('the hoist is a move, not a copy', () => {

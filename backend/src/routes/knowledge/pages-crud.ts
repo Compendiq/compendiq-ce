@@ -1210,9 +1210,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         `INSERT INTO pages
            (title, body_html, body_text, body_storage, source, created_by_user_id,
             visibility, version, space_key, confluence_id, parent_id,
-            page_type, embedding_dirty, image_embedding_dirty, embedding_status, last_synced, labels)
+            page_type, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status, last_synced, labels)
          VALUES ($1, $2, $3, NULL, 'standalone', $4, $5, 1, $6, NULL, $7,
-                 $8, $9, $9, 'not_embedded', NOW(), $10)
+                 $8, $9, $9, $9, 'not_embedded', NOW(), $10)
          RETURNING id, title, version`,
         [body.title, effectiveBodyHtml, bodyText, userId,
          visibility, spaceKey, body.parentId ?? null,
@@ -1312,12 +1312,12 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // trigger, so it raises the flag as well.
       `INSERT INTO pages
          (confluence_id, space_key, title, body_storage, body_html, body_text,
-          version, parent_id, source, embedding_dirty, image_embedding_dirty, embedding_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, 'not_embedded')
+          version, parent_id, source, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confluence', TRUE, TRUE, TRUE, 'not_embedded')
        ON CONFLICT (confluence_id) WHERE confluence_id IS NOT NULL DO UPDATE SET
          title = EXCLUDED.title, body_storage = EXCLUDED.body_storage, body_html = EXCLUDED.body_html,
          body_text = EXCLUDED.body_text, version = EXCLUDED.version, last_synced = NOW(),
-         image_embedding_dirty = TRUE`,
+         image_embedding_dirty = TRUE, image_analysis_dirty = TRUE`,
       // #1123: bind the RESOLVED `confluenceParentId`, not the raw
       // `body.parentId`. A Confluence-sourced child must store its parent's
       // `confluence_id` — binding the frontend's internal numeric id wrote the
@@ -1450,6 +1450,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_embedding_dirty
            END,
+           image_analysis_dirty = CASE
+             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+             ELSE image_analysis_dirty
+           END,
            embedding_status = 'not_embedded', embedded_at = NULL,
            -- #828: the content changed, so re-queue the summary and quality
            -- workers. Reset both status AND retry_count — a page that had
@@ -1554,6 +1558,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
          image_embedding_dirty = CASE
            WHEN body_html IS DISTINCT FROM $4 THEN TRUE
            ELSE image_embedding_dirty
+         END,
+         image_analysis_dirty = CASE
+           WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+           ELSE image_analysis_dirty
          END,
          embedding_status = 'not_embedded', embedded_at = NULL,
          -- #828: content changed on this app-side Confluence push, so re-queue
@@ -1979,6 +1987,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
             ELSE image_embedding_dirty
           END,
+          image_analysis_dirty = CASE
+            WHEN body_html IS DISTINCT FROM draft_body_html THEN TRUE
+            ELSE image_analysis_dirty
+          END,
           embedding_status = 'not_embedded', embedded_at = NULL,
           last_modified_at = NOW(),
           -- Stamp local-edit markers (#305): publishing a draft is a local
@@ -2386,6 +2398,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
                image_embedding_dirty = CASE
                  WHEN body_html IS DISTINCT FROM $4 THEN TRUE
                  ELSE image_embedding_dirty
+               END,
+               image_analysis_dirty = CASE
+                 WHEN body_html IS DISTINCT FROM $4 THEN TRUE
+                 ELSE image_analysis_dirty
                END,
                embedding_status = 'not_embedded', embedded_at = NULL,
                -- Clear local-edit markers (#305): this is a bulk
