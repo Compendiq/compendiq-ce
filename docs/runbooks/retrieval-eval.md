@@ -1119,9 +1119,13 @@ must say the same thing. The tooling is in this checkout (**PR2 on #1614**):
 its provenance), `run-arm-answers.ts` (one arm's answers through the real
 ask route, arm-blinded) and `judge-arms.ts` (`--merge` the arms into one
 blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
-executes it and does not build a second one. **Nothing here is a measured
-result**: no arm has been captured on any revision, and
-`backend/src/domains/llm/eval/artifacts/1611/README.md` records why.
+executes it and does not build a second one. **What is on record so far is
+retrieval only**: arm C and legacy-revision C were captured on real models
+(2026-09-16, #1619), arm A is permanently unobtainable, arm B is NOT captured
+(100 of 187 images analysed when the provider host stopped answering) and no
+human judging was taken — so no verdict document exists.
+`backend/src/domains/llm/eval/artifacts/1611/README.md` records what the two
+captures are, and what still is not.
 
 ### Running it (the recipe #1619 follows)
 
@@ -1144,8 +1148,26 @@ npx tsx scripts/run-arm-answers.ts --arm A --run-id A-<date> --report arm-A.json
 npx tsx scripts/run-retrieval-eval.ts --images --arm C --fts-language german --out arm-C.json
 npx tsx scripts/run-arm-answers.ts --arm C --run-id C-<date> --report arm-C.json --out-dir artifacts/
 
-# Arm B — same candidate revision, image_analysis assigned; the seed is followed by the
-# PRODUCT's backfill on this database (start the worker against it), which the run waits for
+# Arm B — same candidate revision, image_analysis assigned. FOUR things must be on this
+# database BEFORE the run: it reads them right after the migrations and refuses before the
+# corpus is seeded if any is missing. On a disposable eval database they are provisioned
+# once and die with the container, so a resumed run re-provisions them:
+#   1. a provider row for the vision host and the `image_analysis` assignment — made
+#      through the PRODUCT's own surface (Settings → AI Models, i.e. POST /api/llm/usecases
+#      against THIS database), because that call is also what retains D7's identity;
+#   2. the probed vision capability (`llm_model_capabilities.vision = TRUE`, migration 087),
+#      written by that surface's model probe — a hand-written assignment row leaves the
+#      capability unprobed and the driver refuses with `capability`;
+#   3. D7's retained identity, written by (1) — a missing or unparseable row reads as none
+#      and the driver refuses with `identity_drift`, never analysing anything;
+#   4. the output ceiling the run records (D8), if it is not the shipped default:
+#      INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+#        VALUES ('image_analysis_max_output_tokens', '8192', NOW())
+#        ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value;
+# The seed is then followed by the product's own analysis backfill, which this run DRIVES
+# in-process (`eval/arm-b-backfill.ts` calls `runImageAnalysisBatch()` then
+# `processDirtyPages()`): the run owns the mkdtemp ATTACHMENTS_DIR the bytes live in, so an
+# externally started worker cannot read them. Nothing else may touch the provider meanwhile.
 npx tsx scripts/run-retrieval-eval.ts --images --arm B --fts-language german --backfill-timeout 7200 --out arm-B.json
 npx tsx scripts/run-arm-answers.ts --arm B --run-id B-<date> --report arm-B.json --out-dir artifacts/
 
@@ -1395,11 +1417,17 @@ differs from its arm's retrieval report.
 ### Endpoints and the decision rule
 
 > **Loaded context, not the ceiling, is what a reasoning VL model needs
-> (measured 2026-09-16, #1619).** `gemma-4-26b-a4b-it` spends 64–96 % of its
-> output tokens on reasoning and emits 0.5k–7.6k completion tokens per corpus
-> image. Served with `loaded_context_length: 8192` it exhausted the context
-> mid-generation on the verbose images: ~73 s of generation and then an HTTP
-> 400 / a cut reply, which the analysis client classes `malformed` —
+> (measured 2026-09-16, #1619).** `gemma-4-26b-a4b-it` spends **82.0–93.3 %
+> of its output tokens on reasoning at the shipped 8,192 ceiling**, and up to
+> **99.96 %** at 16,384 — the reasoning share of the ten rows of #1619's
+> vision pre-check (five corpus images × both ceilings, each row's own raw
+> `usage`: 401/489 … 3,494/3,746 at 8,192, and 7,578/7,581 at 16,384; all ten
+> are tabulated in ADR-027 beside the #1619 amendment) — and emits 0.5k–7.6k
+> completion tokens per corpus image. Served
+> with `loaded_context_length: 8192` it exhausted the context mid-generation
+> on the verbose images: ~73 s of generation and then either an HTTP 400,
+> which the analysis client classes `rejected:400`, or a cut reply with a
+> non-`length` finish reason, which it classes `malformed` — both
 > deterministic, five attempts, `failed_terminal`, and re-opened by nothing
 > (only a `truncated` row re-opens on a ceiling raise). **An operator hitting
 > this sees only `failed` rows on the card, never the cause**, so check the
@@ -1407,17 +1435,19 @@ differs from its arm's retrieval report.
 > family needs **≥ 32k loaded context** for ADR-027's payload bounds at the
 > shipped 8,192 ceiling. **And it needs reasoning suppressed:** with the
 > context raised to 36,096 the ceiling became the binding constraint and 14
-> of 187 images failed `truncated:8192` / `malformed` / `rejected:400` — the
-> reply spending the whole output budget on thinking. ADR-027's D8 erratum
-> (#1619) therefore sends `think: false` +
-> `chat_template_kwargs.enable_thinking: false` on the ANALYSIS request only.
-> The two symptoms an operator can actually see are `failed` rows in both
-> cases: `malformed` after ~73 s of generation means the loaded context ran
-> out; `truncated:8192` means the output ceiling did, i.e. reasoning is still
-> on (the hints are advisory and some hosts ignore them). Raising the ceiling does not help and makes it worse;
-> the fix is on the inference host. The owner raised it to 36,096 for #1619's
-> arm B rather than change the D8 prompt contract (non-thinking hints shorten
-> the reply and were deliberately NOT adopted).
+> of 187 images failed — 8 `truncated:8192`, 5 `malformed`, 1 `rejected:400`
+> — the reply spending the whole output budget on thinking. ADR-027's D8
+> erratum (#1619) therefore **ships** the non-thinking hints: `think: false` +
+> `chat_template_kwargs.enable_thinking: false`, on the ANALYSIS request only,
+> with the ceiling and `ANALYSIS_TIMEOUT_MS` left where they were. The two
+> symptoms an operator can actually see are `failed` rows in both cases:
+> `malformed` or `rejected:400` after ~73 s of generation means the loaded
+> context ran out; `truncated:8192` means the output ceiling did, i.e.
+> reasoning is still on (the hints are advisory and some hosts ignore them).
+> Raising the ceiling does not help and makes it worse; the rest of the fix is
+> on the inference host — which is why the owner raised the loaded context to
+> 36,096 for #1619's arm B **and** authorised the erratum, rather than either
+> alone.
 
 > **AMENDED 2026-09-16 (#1619, ADR-027 amendment A-1…A-6).** Arm A needs a
 > real VL *embedding* endpoint, the owner has declined to stand one up, and
@@ -1445,8 +1475,9 @@ pre-registered margins. Retrieval: page R@1/5/10, MRR, image-evidence R@5
 top-5 row carrying D11's `derived.attachmentKey` for an expected image — the
 same fact as `metadata.attachment_key`, in the shape #1617 exposes; C
 reports **none**, never 0). Controls: the EN and DE text suites (197 each
-per arm, enforced), non-inferiority — **B vs C** and, when
-`--control-a` is passed, **C vs A**; a pair whose language, FTS
+per arm, enforced), non-inferiority — **B vs C** and **C vs A** (the latter
+was supplied through `--control-a`, a flag A-3 REMOVED in favour of
+`--control-legacy-c`); a pair whose language, FTS
 configuration, corpus sha or text embedder differs is refused. Of the two,
 only **C vs A** can fail: B's and C's text states are identical by
 construction (no attachments in the text corpora), so B vs C is δ ≡ 0 —
