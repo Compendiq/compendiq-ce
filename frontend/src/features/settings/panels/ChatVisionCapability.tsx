@@ -61,10 +61,12 @@ export function ChatVisionCapability({ vision }: { vision: boolean | null }) {
   const probeError = capability?.probeError ?? null;
 
   return (
-    // Indented to the assignment grid's second column, so the strip reads as
-    // detail belonging to the row above rather than a sixth use case.
-    <div className="grid grid-cols-[140px_1fr] gap-2">
-      <span aria-hidden="true" />
+    // Indented to the assignment grid's second column from `sm` up, so the
+    // strip reads as detail belonging to the row above rather than a sixth
+    // use case; below `sm` the row stacks and the spacer collapses with it
+    // (#1615 review r1).
+    <div className="grid gap-2 sm:grid-cols-[140px_1fr]">
+      <span aria-hidden="true" className="hidden sm:block" />
       <div className="space-y-1.5">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs">
           <span className="text-muted-foreground">Image support</span>

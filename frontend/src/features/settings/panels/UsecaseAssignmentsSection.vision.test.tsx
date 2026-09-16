@@ -58,6 +58,11 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
+    image_analysis: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -71,6 +76,8 @@ function renderSection() {
         providers={[providerA]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />
     </QueryClientProvider>,

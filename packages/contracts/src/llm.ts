@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ImageAnalysisIdentitySchema } from './image-analysis.js';
 
 // ─── Use-cases (#1104 adds 'rerank' — see ADR-021 amendment: it targets a
 // /v1/rerank endpoint via a dedicated client, and UNASSIGNED means the
@@ -13,9 +14,15 @@ import { z } from 'zod';
 // high-frequency, low-latency path with its own token and stop limits, so an
 // unassigned row means ghost text is OFF rather than inherited from a default
 // model an operator never chose for per-keystroke traffic.
+//
+// #1615 (ADR-027 D3) adds `image_analysis` under the same rule: the
+// assignment IS the egress control — no image byte leaves the host until an
+// administrator has explicitly assigned a provider for this purpose — so
+// unassigned means no new inference, never the default provider, never the
+// chat provider, never a cloud fallback.
 export const LlmUsecaseSchema = z.enum([
   'chat', 'summary', 'quality', 'auto_tag', 'embedding', 'rerank', 'image_embedding',
-  'inline_completion',
+  'inline_completion', 'image_analysis',
 ]);
 export type LlmUsecase = z.infer<typeof LlmUsecaseSchema>;
 
@@ -77,6 +84,10 @@ export const UsecaseAssignmentsSchema = z.object({
   image_embedding: UsecaseAssignmentSchema,
   // #1417 — high-frequency editor traffic is opt-in and never inherits.
   inline_completion: UsecaseAssignmentSchema,
+  // #1615 — same story as rerank and image_embedding: `resolved` is
+  // informational, analysis runs only on an explicit assignment
+  // (resolveImageAnalysisUsecase), and unassigned pauses new inference.
+  image_analysis: UsecaseAssignmentSchema,
 });
 export type UsecaseAssignments = z.infer<typeof UsecaseAssignmentsSchema>;
 
@@ -93,6 +104,7 @@ export const UpdateUsecaseAssignmentsInputSchema = z.object({
   rerank: UpdateUsecaseAssignmentInputSchema.optional(),
   image_embedding: UpdateUsecaseAssignmentInputSchema.optional(),
   inline_completion: UpdateUsecaseAssignmentInputSchema.optional(),
+  image_analysis: UpdateUsecaseAssignmentInputSchema.optional(),
 });
 export type UpdateUsecaseAssignmentsInput = z.infer<typeof UpdateUsecaseAssignmentsInputSchema>;
 
@@ -144,6 +156,26 @@ export const VisionCapabilityDetailSchema = z.object({
   probeError: z.string().nullable(),
 });
 export type VisionCapabilityDetail = z.infer<typeof VisionCapabilityDetailSchema>;
+
+/**
+ * #1615 (ADR-027) — `GET /admin/llm-usecases/image_analysis/capability` and
+ * `POST /admin/llm-usecases/image_analysis/recheck`: the chat detail above for
+ * the pair `image_analysis` resolves to, plus the D7 state the card renders.
+ *
+ * `identity` is the RETAINED identity (`admin_settings.image_analysis_identity`),
+ * which survives an unassign and can differ from the resolved pair;
+ * `identityDrift` is that difference — a provider `base_url` edit is the one
+ * identity dimension no assignment PUT touches, and while it stands the worker
+ * skips inference (`identity_drift`). `reanalyzeRows` is present only on the
+ * re-check, only when a `true` verdict adopted a new identity: the count of
+ * analyzed rows that replacement invalidated. Admin-only like its parent.
+ */
+export const ImageAnalysisCapabilityDetailSchema = VisionCapabilityDetailSchema.extend({
+  identity: ImageAnalysisIdentitySchema.nullable(),
+  identityDrift: z.boolean(),
+  reanalyzeRows: z.number().int().min(0).optional(),
+});
+export type ImageAnalysisCapabilityDetail = z.infer<typeof ImageAnalysisCapabilityDetailSchema>;
 
 // ─── Admin-only image-embedding probe result (#1115) ─────────────────────
 /**

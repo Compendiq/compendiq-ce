@@ -2184,3 +2184,34 @@ feature degrades so that background processing keeps working. It clears on its
 own as staged entries expire. If it recurs, raise Redis `--maxmemory` in
 `docker/docker-compose.yml` (and `REDIS_MEM_LIMIT` above it) rather than raising
 the percentage — the remaining fifth is the headroom the queues write into.
+
+### Image analysis (vision) — #1615, ADR-027
+
+The candidate that replaces the image-embedding leg. Settings → AI Models →
+LLM providers → **Image analysis (vision)**.
+
+- **The assignment is the egress control.** No page image leaves the host
+  until you save a provider here; the card names the saved provider that
+  receives them. It never inherits the default or the chat provider.
+- **Save is probe-gated.** Saving runs the known-content vision probe on the
+  pair the row would resolve to (your model, else the provider's default) and
+  writes the row only on a `true` verdict. Four refusals, each leaving the
+  previous assignment untouched: **provider not found**, **no model
+  resolves**, **the model refused the test image** (text-only — pick a
+  vision-capable model) and **image support could not be confirmed**
+  (unreachable, auth, 429, open breaker — not a verdict about the model; fix
+  the endpoint and save again, or **Re-check**).
+- **Pause, not purge.** Unassigning stops new analysis; descriptions already
+  indexed and still valid stay searchable. The **Index identity** line shows
+  the model identity the index was built under; if the provider's endpoint
+  moved, an amber notice says analysis is paused and **Re-check** re-probes
+  the new endpoint and, on `true`, adopts it — which re-analyzes every image
+  (the toast states the count). `GET /api/admin/llm-usecases/image_analysis/reanalysis-scope?providerId=…&model=…`
+  discloses that count before you commit.
+- **Max output tokens** (default 8,192, range 4,096–16,384) is the vision
+  reply's ceiling. Lower it if the model's context refuses the default; raise
+  it for scripts that tokenize below one character per token. Saving it fires
+  no probe and re-analyzes nothing.
+- **Inspection:** `GET /api/admin/pages/:id/image-analyses[?payload=1]`
+  (admin, page-visibility checked) lists a page's analysis rows with their
+  failure class and validity.

@@ -71,6 +71,14 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
+    // #1615 — unassigned, like the two above: the card renders its copy and
+    // the ceiling row; the capability strip inside it is gated on the SAVED
+    // assignment.
+    image_analysis: {
+      providerId: null,
+      model: null,
+      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+    },
   };
 }
 
@@ -97,6 +105,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
         embeddingAction={<button type="button">Start re-embed</button>}
       />,
@@ -115,6 +125,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -136,6 +148,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -157,6 +171,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -178,6 +194,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -208,6 +226,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -225,6 +245,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
       />,
       { wrapper: Wrapper },
@@ -256,6 +278,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -274,6 +298,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={4}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -290,6 +316,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={4000}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -303,6 +331,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={onImageTargetDimensionsChange}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
     );
@@ -319,6 +349,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -359,6 +391,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -415,6 +449,8 @@ describe('UsecaseAssignmentsSection', () => {
         providers={[providerA, providerB]}
         imageTargetDimensions={null}
         onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
       />,
       { wrapper: Wrapper },
@@ -436,5 +472,52 @@ describe('UsecaseAssignmentsSection', () => {
     expect(screen.queryByTestId('usecase-chat-model-option-bge-m3')).not.toBeInTheDocument();
     expect(screen.queryByTestId('usecase-chat-model-option-bge-reranker-v2-m3')).not.toBeInTheDocument();
     expect(screen.queryByTestId('usecase-chat-model-option-nomic-embed-text')).not.toBeInTheDocument();
+  });
+
+  /**
+   * #1615 review r1 — "Assigned, but no model resolves" is a verdict about
+   * what is SAVED. A draft provider pick carries the server's NIL resolution
+   * for the saved NULL row, so it used to call the stage disabled for a
+   * provider the server had never been asked about.
+   */
+  it('the unresolvable line follows the saved row, not an unsaved provider pick', () => {
+    const Wrapper = createWrapper();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('[]', { headers: { 'Content-Type': 'application/json' } }),
+    );
+    const draft = makeAssignments();
+    draft.image_analysis = { ...draft.image_analysis, providerId: providerA.id };
+    const { rerender } = render(
+      <UsecaseAssignmentsSection
+        assignments={draft}
+        savedAssignments={makeAssignments()}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
+        onChange={() => {}}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(screen.queryByTestId('usecase-image_analysis-unresolvable')).not.toBeInTheDocument();
+    expect(screen.getByTestId('usecase-row-image_analysis')).not.toHaveTextContent('not resolvable');
+
+    const saved = makeAssignments();
+    saved.rerank = { ...saved.rerank, providerId: providerB.id };
+    rerender(
+      <UsecaseAssignmentsSection
+        assignments={saved}
+        savedAssignments={saved}
+        providers={[providerA, providerB]}
+        imageTargetDimensions={null}
+        onImageTargetDimensionsChange={() => {}}
+        imageAnalysisMaxOutputTokens={8192}
+        onImageAnalysisMaxOutputTokensChange={() => {}}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('usecase-rerank-unresolvable')).toHaveTextContent(/rerank is disabled/i);
+    expect(screen.getByTestId('usecase-row-rerank')).toHaveTextContent('not resolvable');
   });
 });

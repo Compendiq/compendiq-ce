@@ -80,7 +80,13 @@ export interface LlmAdminAuditEntry {
      * beyond the vision case: a successful re-probe can retype the image
      * column, empty `page_image_embeddings` and re-dirty the whole corpus.
      */
-    | 'llm_image_embedding_reprobed';
+    | 'llm_image_embedding_reprobed'
+    /**
+     * #1615 — an admin forced a fresh vision probe of the `image_analysis`
+     * pair. A `true` verdict can adopt a new retained identity (ADR-027 D7),
+     * which re-pends every analyzed row at the next sweep.
+     */
+    | 'llm_image_analysis_reprobed';
   userId: string | null;
   metadata?: Record<string, unknown>;
 }

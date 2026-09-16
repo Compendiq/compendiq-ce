@@ -165,10 +165,12 @@ export function ImageEmbeddingCapability({
   });
 
   return (
-    // Indented to the assignment grid's second column, so the strip reads as
-    // detail belonging to the row above rather than an eighth use case.
-    <div className="grid grid-cols-[140px_1fr] gap-2">
-      <span aria-hidden="true" />
+    // Indented to the assignment grid's second column from `sm` up, so the
+    // strip reads as detail belonging to the row above rather than an eighth
+    // use case; below `sm` the row stacks and the spacer collapses with it
+    // (#1615 review r1).
+    <div className="grid gap-2 sm:grid-cols-[140px_1fr]">
+      <span aria-hidden="true" className="hidden sm:block" />
       <div className="space-y-1.5">
         <p className="text-muted-foreground text-xs">{IMAGE_EMBEDDING_DESCRIPTION}</p>
         <p className="text-muted-foreground text-xs" data-testid="image-embedding-support-note">
