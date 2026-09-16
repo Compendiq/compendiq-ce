@@ -297,10 +297,29 @@ describe('decideGate (ADR-027 "Decision rule", re-registered B vs C by #1619)', 
     expect(inside.conditions.find((c) => c.name.includes('unsupported'))!.verdict).toBe('pass');
   });
 
-  it('stops as inconclusive by design when the pilot discordance is below the floor, before anything else is read', () => {
-    const decision = decideGate({ primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }), leakage, controls: bothControls });
+  it('prints every condition UNDER a pilot stop — the pre-emption decides the aggregate, not what is reported', () => {
+    // Review r1 W-6: the branch used to return one condition, so a run that
+    // stopped on ψ published neither the retired row nor a measured safety
+    // failure. O7's cap is absolute and read off the candidate's own retrieval
+    // report, so 9 of 48 negatives leaking is a fact no power argument hides.
+    const decision = decideGate({
+      primary: judgedPair({ pilot: { pairs: 30, discordant: 4, psi: 4 / 30, evaluated: true, stop: true } }),
+      leakage: { queries: 9, denominator: 48, rate: 9 / 48 },
+      controls: bothControls,
+    });
     expect(decision.verdict).toBe('inconclusive-by-design');
-    expect(decision.conditions).toHaveLength(1);
+    expect(decision.conditions[0]!.name).toBe('pilot discordance');
+    expect(decision.conditions).toHaveLength(9);
+    expect(decision.conditions.find((c) => c.name.includes('leakage'))).toMatchObject({
+      verdict: 'fail', detail: expect.stringContaining('9 of 48'),
+    });
+    expect(decision.conditions.find((c) => c.name.includes('image-evidence'))!.verdict).toBe('retired');
+    // The primary is the one row the stop DOES invalidate: its interval was
+    // sized under a design the pilot says does not hold, so it is reported
+    // rather than decided — never `pass` on a stopped run.
+    const primaryRow = decision.conditions.find((c) => c.name.startsWith('primary:'))!;
+    expect(primaryRow.verdict).toBe('inconclusive');
+    expect(primaryRow.detail).toContain('reported, not decided');
   });
 
   it('treats a missing control pair as an unmeasured — therefore blocking — endpoint', () => {

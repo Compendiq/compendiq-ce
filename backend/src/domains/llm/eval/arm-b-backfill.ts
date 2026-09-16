@@ -198,8 +198,11 @@ export async function driveArmBBackfill(
     // refuses the arm. One pass at the end is one swap, at the quietest
     // moment of the run, and the completion bar is unchanged: the run is not
     // arm B until `pagesAwaitingEmbed` reaches 0.
-    const awaiting = await readImageAnalysisCorpusCounts();
-    if (analysesComplete && awaiting.pagesAwaitingEmbed > 0) {
+    // `counts` above is still current here: this branch only runs once the
+    // analyses are complete, and that is exactly the iteration in which no
+    // batch ran. Re-reading it would be a second aggregate query every 5 s of
+    // a multi-hour run for an answer that cannot have changed.
+    if (analysesComplete) {
       const embed = await processDirtyPages(opts.userId);
       embedPasses++;
       pagesReEmbedded += embed.processed;
@@ -213,7 +216,7 @@ export async function driveArmBBackfill(
         );
       } else {
         advanced = advanced || embed.processed > 0;
-        progress(`embed pass ${embedPasses}: re-embedded ${embed.processed} page(s) of ${awaiting.pagesAwaitingEmbed} awaiting`);
+        progress(`embed pass ${embedPasses}: re-embedded ${embed.processed} page(s) of ${counts.pagesAwaitingEmbed} awaiting`);
       }
     }
 

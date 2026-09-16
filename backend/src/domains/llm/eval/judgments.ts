@@ -750,13 +750,27 @@ const pp = (x: number): string => `${x >= 0 ? '+' : ''}${(100 * x).toFixed(1)} p
  * three. An unmeasured endpoint is inconclusive and blocks. Cost enters
  * nowhere.
  *
- * **Every pre-registered condition appears in the output, including the
- * retired one.** O5's image-evidence guardrail was a paired test against arm
- * A's embedding leg; with arm A unobtainable it has no comparator, and the
- * amendment RETIRES it rather than re-pointing it. The row is printed as
- * `retired` and excluded from the aggregation — the old code simply omitted
- * the condition whenever the endpoint came back null, which is how a B-vs-C
- * run would have passed a rule one condition shorter than the one on record.
+ * **Every pre-registered condition appears in the output on every path** —
+ * including the retired one, and including a pilot stop. O5's image-evidence
+ * guardrail was a paired test against arm A's embedding leg; with arm A
+ * unobtainable it has no comparator, and the amendment RETIRES it rather than
+ * re-pointing it. The row is printed as `retired` and excluded from the
+ * aggregation — the old code simply omitted the condition whenever the
+ * endpoint came back null, which is how a B-vs-C run would have passed a rule
+ * one condition shorter than the one on record.
+ *
+ * **The pilot stop pre-empts the DECISION, never the printing** (#1619 review
+ * r1, W-6). It used to return that one condition and nothing else, so a run
+ * that stopped on ψ printed neither the retired row nor a MEASURED safety
+ * failure: O7's leakage cap is absolute, in queries, and read off the
+ * candidate arm's own retrieval report, so "9 of 48 negatives led with image
+ * evidence" is a fact about the candidate that no judging-power argument can
+ * make disappear. The aggregate verdict stays `inconclusive-by-design` —
+ * the pre-registration says the pilot pre-empts all three parts, and letting a
+ * condition fail the gate under it would be a post-hoc change to the rule —
+ * but the primary row is printed `inconclusive` and labelled reported-not-
+ * decided, and every other condition is printed with the verdict its own
+ * measurement earns.
  */
 export function decideGate(input: {
   primary: JudgedPairEndpoints;
@@ -767,24 +781,27 @@ export function decideGate(input: {
   const conditions: GateCondition[] = [];
   const { primary } = input;
   const pairLabel = `${primary.candidate} vs ${primary.baseline}`;
-  if (primary.pilot.stop) {
-    return {
-      verdict: 'inconclusive-by-design',
-      conditions: [{
-        name: 'pilot discordance',
-        verdict: 'inconclusive',
-        detail: `ψ = ${primary.pilot.psi.toFixed(2)} over the first ${primary.pilot.pairs} judged pairs is below ` +
-          `${ARM_MARGINS.pilotDiscordanceFloor} — the pre-registered power calculation does not hold; stop and report.`,
-      }],
-    };
+  const pilotStop = primary.pilot.stop;
+  if (pilotStop) {
+    conditions.push({
+      name: 'pilot discordance',
+      verdict: 'inconclusive',
+      detail: `ψ = ${primary.pilot.psi.toFixed(2)} over the first ${primary.pilot.pairs} judged pairs is below ` +
+        `${ARM_MARGINS.pilotDiscordanceFloor} — the pre-registered power calculation does not hold; stop and report. ` +
+        'This pre-empts the DECISION, not the printing: every condition below is still emitted with the verdict its ' +
+        'own measurement earns, and the aggregate is inconclusive-by-design whatever they say.',
+    });
   }
   const c = primary.correctness;
   const primaryPass = c.delta >= ARM_MARGINS.primaryPoints && c.ci.excludesZero;
   conditions.push({
     name: `primary: image-dependent answer correctness, ${pairLabel} (single-judge)`,
-    verdict: primaryPass ? 'pass' : c.ci.excludesZero ? 'fail' : 'inconclusive',
+    verdict: pilotStop ? 'inconclusive' : primaryPass ? 'pass' : c.ci.excludesZero ? 'fail' : 'inconclusive',
     detail: `${pp(c.delta)} (margin ${pp(ARM_MARGINS.primaryPoints)}), cluster-bootstrap 95% CI [${pp(c.ci.lower)}, ${pp(c.ci.upper)}], ` +
-      `McNemar exact p = ${c.pValue.toFixed(4)} over ${c.wins + c.losses} discordant of ${c.n} pairs`,
+      `McNemar exact p = ${c.pValue.toFixed(4)} over ${c.wins + c.losses} discordant of ${c.n} pairs` +
+      (pilotStop
+        ? ' — reported, not decided: the pilot stop above says the paired design this interval was sized under does not hold.'
+        : ''),
   });
   for (const [control, label, flags, note] of [
     [
@@ -858,7 +875,11 @@ export function decideGate(input: {
         : '.'),
   });
   const verdicts = conditions.map((x) => x.verdict).filter((v) => v !== 'retired');
-  const verdict = verdicts.every((v) => v === 'pass') ? 'pass' : verdicts.includes('fail') ? 'fail' : 'inconclusive';
+  // The pilot stop pre-empts all three parts of the rule as pre-registered, so
+  // it decides the AGGREGATE outright — the rows above are printed, not read.
+  const verdict = pilotStop
+    ? 'inconclusive-by-design'
+    : verdicts.every((v) => v === 'pass') ? 'pass' : verdicts.includes('fail') ? 'fail' : 'inconclusive';
   return { verdict, conditions };
 }
 

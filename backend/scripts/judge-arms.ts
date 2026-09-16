@@ -8,8 +8,9 @@
  *             (every answers-<runId>.jsonl must have its provenance-<runId>.json beside it)
  *   --check   --answers artifacts/answers-sheet-1.jsonl --judgments artifacts/judgments-sheet-1.jsonl
  *             [--mapping artifacts/mapping-sheet-1.json]   ← the pilot ψ, aggregate only
- *   --unblind --run-id sheet-1 --out-dir ./artifacts --arm-report A=arm-A.json,B=arm-B.json,C=arm-C.json
- *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json [--control-a en-A.json,de-A.json]]
+ *   --unblind --run-id sheet-1 --out-dir ./artifacts --arm-report B=arm-B.json,C=arm-C.json
+ *             [--control-b en-B.json,de-B.json --control-c en-C.json,de-C.json
+ *              --control-legacy-c en-legacy.json,de-legacy.json]
  *             --out verdict-sheet-1.json
  *
  * The judge sees `answers-<id>.jsonl` and nothing else; `mapping-<id>.json`
