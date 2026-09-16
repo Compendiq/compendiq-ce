@@ -42,7 +42,10 @@ rerank off, FTS `german`, hardware
 **What is NOT here, and why.** Arm A is permanently unobtainable: it needs a
 real VL *embedding* endpoint and the owner declined to stand one up (ADR-027
 amendment A-1). Arm B is **NOT captured** — 100 of 187 images carried a valid
-analysis when the provider host stopped answering; the driver's 187/187
+analysis when the driver refused the run, because the interleaved re-embed
+pass could not load the text embedder on a host that serves one model at a
+time; the provider host itself went silent later, during the 43-second re-run,
+which is why the run has not been resumed since. The driver's 187/187
 completion bar was not relaxed and no `arm-B-*.json` exists anywhere in this
 tree. No answer run, sheet, judgments file or verdict document exists either:
 no human answer-correctness judging was taken for #1619 (A-5), and O15's
@@ -74,6 +77,20 @@ carry before the run, is in `docs/runbooks/retrieval-eval.md` ("Arm protocol").
    this fix (arm C, arm B, legacy-revision C)".** There is no arm-B artefact:
    there are TWO captures, the two above. The commit message is history and is
    not rewritten; this line is its correction.
+4. **The legacy capture's `command` records an absolute developer path**, where
+   its sibling records a repo-relative one: `--out` was passed as
+   `/Users/simon/localGIT/compendiq/compendiq-ce-1619/backend/src/domains/llm/eval/artifacts/1611/arm-C-legacy-7feb4af2.json`.
+   The string is left exactly as the run recorded it. `command` is the
+   provenance field the rule above is built on — "Every artifact records … the
+   command line that produced it" — so normalising it would make the file
+   record a command line that was never run, which is the one thing this
+   directory may not hold. #1619's round-1 review fix did rewrite it to the
+   repo-relative form (`896d2dfd`, whose message says the capture "now records
+   the same form"); round 2 caught that as an edit to committed evidence and
+   restored the captured bytes, so the file is byte-identical to its capture
+   again and that commit message stands as history, corrected here. Future runs
+   should pass a repo-relative `--out` (run from `backend/`, as the sibling
+   capture and the runbook recipe do) so the recorded line is portable.
 
 The rule for adding to this directory is the table above and nothing else: a
 real-model run, written by the harness, recording its own revision, command

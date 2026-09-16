@@ -22,4 +22,14 @@ query; the rows are not byte-equal, and the README in this directory says why.
 configuration on, zero in effect: no query in the DE image fixture is an exact
 identifier, so #1107's pin never fired.
 
+The `command` field records the ABSOLUTE `--out` path this run was actually
+given:
+
+  /Users/simon/localGIT/compendiq/compendiq-ce-1619/backend/src/domains/llm/eval/artifacts/1611/arm-C-legacy-7feb4af2.json
+
+The sibling capture records a repo-relative one. This string is left exactly as
+captured: `command` is a provenance field, so a tidied one would record a
+command line that was never run. Future runs should pass a repo-relative
+`--out` from `backend/`.
+
 Full context: README.md in this directory, "Errata on these two files".
