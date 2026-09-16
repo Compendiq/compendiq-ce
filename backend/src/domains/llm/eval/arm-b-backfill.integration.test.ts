@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { rm } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
