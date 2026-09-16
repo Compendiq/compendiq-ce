@@ -42,6 +42,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Image analysis asks the provider not to think (ADR-027 D8 erratum,
+  #1619).** A reasoning vision model spends 64–96 % of its output tokens on a
+  thinking pass, and those tokens come out of the same `max_tokens` budget the
+  analysis payload needs: on the 187-image eval corpus, 14 images failed
+  deterministically at the shipped 8,192 ceiling (`truncated:8192`,
+  `malformed`, `rejected:400`) and each would have gone `failed_terminal`
+  after five attempts. The analysis request — and only the analysis request,
+  never a chat or answer call — now carries the shipped non-thinking hints, so
+  the ceiling and the 120 s per-image budget did not have to move. The hints
+  are advisory: strict OpenAI hosts are sent none, and a provider that ignores
+  them keeps reasoning.
+
 - **`--arm B` reaches arm B's index state unattended (#1619).** Two gaps, both
   the harness's: the image seeder never raised `pages.image_analysis_dirty` —
   that flag IS the analysis queue (ADR-027 D6.2) and migration 116's

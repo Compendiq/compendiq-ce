@@ -5590,3 +5590,36 @@ D8/D13 do not re-open by raising the ceiling. The ceiling was therefore fixed
 at the shipped default **8,192**, and the remedy for an image that overruns is
 a larger loaded context on the inference host, not a higher ADR ceiling and
 not a longer timeout.
+
+### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
+
+**The analysis call sends the non-thinking hints** (`think: false`,
+`chat_template_kwargs: { enable_thinking: false }`, i.e. the shipped
+`nonThinkingExtras`), on the ANALYSIS request only — never on a chat or
+answer call, so no arm's answer behaviour changes.
+
+*Why.* Reasoning tokens come out of the same `max_tokens` budget the payload
+needs, and they contribute nothing to it. Measured 2026-09-16 on
+`gemma-4-26b-a4b-it` (RTX 3090, LM Studio): the reasoning share of the reply
+is **64–96 %** of its output tokens, and on the 187-image corpus **14 images
+failed deterministically at the shipped 8,192 ceiling** — eight
+`truncated:8192` (the reply hit `max_tokens`), five `malformed` and one
+`rejected:400` — every one of which D8 classes deterministic, so five
+attempts take the row to `failed_terminal` and the arm cannot complete. The
+same images answer a **valid payload** with the hints in place. Raising the
+ceiling is not the remedy: at a measured 68–100 tok/s a 16,384-token reply is
+160–240 s against `ANALYSIS_TIMEOUT_MS` = 120 s, so a higher ceiling trades a
+deterministic refusal for a transient one that never terminates.
+
+*What was deliberately NOT changed:* `image_analysis_max_output_tokens` stays
+at the shipped default 8,192, `ANALYSIS_TIMEOUT_MS` stays at 120 s, and the
+payload bounds stay as shipped. The owner chose the root-cause fix over
+moving either budget.
+
+*The hints are ADVISORY.* `nonThinkingExtras` sends nothing to a strict
+OpenAI-compatible host, and a provider that ignores the fields is **not
+broken** — it simply keeps reasoning, and the operator sees the same
+`truncated`/`malformed` rows the erratum exists to prevent, with the runbook's
+loaded-context and reasoning notes as the diagnosis. Suppression is not part
+of D5's identity or cache key: it changes what a NEW analysis may say, not
+what an existing row means, exactly like the ceiling (D8).

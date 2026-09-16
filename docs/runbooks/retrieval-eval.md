@@ -1405,7 +1405,16 @@ differs from its arm's retrieval report.
 > this sees only `failed` rows on the card, never the cause**, so check the
 > server's loaded context before touching **Max output tokens**: this model
 > family needs **≥ 32k loaded context** for ADR-027's payload bounds at the
-> shipped 8,192 ceiling. Raising the ceiling does not help and makes it worse;
+> shipped 8,192 ceiling. **And it needs reasoning suppressed:** with the
+> context raised to 36,096 the ceiling became the binding constraint and 14
+> of 187 images failed `truncated:8192` / `malformed` / `rejected:400` — the
+> reply spending the whole output budget on thinking. ADR-027's D8 erratum
+> (#1619) therefore sends `think: false` +
+> `chat_template_kwargs.enable_thinking: false` on the ANALYSIS request only.
+> The two symptoms an operator can actually see are `failed` rows in both
+> cases: `malformed` after ~73 s of generation means the loaded context ran
+> out; `truncated:8192` means the output ceiling did, i.e. reasoning is still
+> on (the hints are advisory and some hosts ignore them). Raising the ceiling does not help and makes it worse;
 > the fix is on the inference host. The owner raised it to 36,096 for #1619's
 > arm B rather than change the D8 prompt contract (non-thinking hints shorten
 > the reply and were deliberately NOT adopted).

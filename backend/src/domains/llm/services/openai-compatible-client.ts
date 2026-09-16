@@ -466,6 +466,17 @@ export interface ChatCompletionOptions extends StreamChatOptions {
    * every other caller, which is the behaviour `chat()` always had.
    */
   temperature?: number;
+  /**
+   * Ask a reasoning model NOT to think (`nonThinkingExtras`). Set by the
+   * image-analysis call alone (ADR-027 D8 erratum, #1619): a reasoning pass
+   * spends the output budget without contributing to the payload — measured
+   * at 64–96 % of the reply's tokens, and 14 of 187 corpus images failed
+   * deterministically at the 8,192 ceiling because of it. The hints are
+   * ADVISORY: strict OpenAI hosts are sent none, and a provider that ignores
+   * them is not broken. Never set on a chat or answer call, so no arm's
+   * answer behaviour changes.
+   */
+  nonThinking?: boolean;
 }
 
 /**
@@ -496,7 +507,7 @@ export async function chatCompletion(
             model, messages, stream: false,
             ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
             ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-            ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
+            ...(opts?.nonThinking === true ? nonThinkingExtras(cfg.baseUrl) : thinkingExtras(cfg.baseUrl, model, opts?.thinking)),
           }),
           dispatcher: dispatcherFor(cfg),
           signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
