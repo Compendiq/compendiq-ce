@@ -32,8 +32,12 @@ Design of record: ADR-025 in `docs/ARCHITECTURE-DECISIONS.md` and
 > pre-registered A/B/C measurement (`retrieval-eval.md`, "Arm protocol") that
 > decides the cutover. Until #1618 retires this leg after that gate, every
 > section below is what runs; nothing about the candidate is measured yet, and
-> the operator surface for it (an **Image analysis (vision)** selector and an
-> **Image analysis** progress card) arrives with #1615/#1618.
+> the operator surface for it has landed in part: the **Image analysis (vision)**
+> selector (#1615 — probe-gated assignment, retained identity, **Re-check**,
+> **Max output tokens**; see `docs/ADMIN-GUIDE.md`, "Image analysis (vision)")
+> is live in Settings → AI Models, while the **Image analysis** progress card
+> arrives with #1618. Nothing on that selector changes what this runbook
+> operates.
 
 ---
 

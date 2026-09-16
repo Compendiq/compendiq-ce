@@ -445,9 +445,38 @@ async function boundedErrorDetail(res: { body?: ReadableStream | null }): Promis
   return winner.trim().slice(0, ERROR_BODY_MAX_CHARS);
 }
 
-export async function chat(
-  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
-): Promise<string> {
+/**
+ * #1615 (ADR-027 D8) — what a non-streaming completion answers beyond its
+ * text. `finishReason` is the provider's `finish_reason` (`'length'` is how a
+ * reply that overran `max_tokens` announces itself, and the analysis client
+ * classes it `truncated`); `usage` is the provider's token report, null when
+ * it sent none (O11 reports tokens per image as a corpus mean from it).
+ */
+export interface ChatCompletionResult {
+  text: string;
+  finishReason: string | null;
+  usage: { promptTokens?: number; completionTokens?: number } | null;
+}
+
+export interface ChatCompletionOptions extends StreamChatOptions {
+  /**
+   * Sampling temperature, sent as the standard `temperature` field when set.
+   * The analysis client sends `0`: D8's deterministic failure classes rest on
+   * the same request producing the same reply. Omitted (provider default) for
+   * every other caller, which is the behaviour `chat()` always had.
+   */
+  temperature?: number;
+}
+
+/**
+ * One non-streaming chat completion through the queue and the per-provider
+ * breaker, answering the text AND the two wire fields `chat()` discards.
+ * `tools` is never sent — nothing in this codebase asks a provider to call
+ * one, and the analysis path (D8) must not.
+ */
+export async function chatCompletion(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: ChatCompletionOptions,
+): Promise<ChatCompletionResult> {
   // Created BEFORE enqueue so the budget covers queue wait too (see
   // StreamChatOptions.timeoutMs) — a backlogged queue must spend the budget
   // waiting and abort on admission, not run a request the caller gave up on.
@@ -466,18 +495,38 @@ export async function chat(
           body: JSON.stringify({
             model, messages, stream: false,
             ...(opts?.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+            ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
             ...thinkingExtras(cfg.baseUrl, model, opts?.thinking),
           }),
           dispatcher: dispatcherFor(cfg),
           signal: deadline ? AbortSignal.any([signal, deadline]) : signal,
         });
         if (!res.ok) throw new LlmHttpError('chat', res.status, await errorDetail(res));
-        const body = await res.json() as { choices: Array<{ message?: CompletionText }> };
-        return composeAssistantText(body.choices[0]?.message, opts?.thinking);
+        const body = await res.json() as {
+          choices: Array<{ message?: CompletionText; finish_reason?: string | null }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+        };
+        const choice = body.choices[0];
+        return {
+          text: composeAssistantText(choice?.message, opts?.thinking),
+          finishReason: choice?.finish_reason ?? null,
+          usage: body.usage
+            ? {
+                ...(typeof body.usage.prompt_tokens === 'number' ? { promptTokens: body.usage.prompt_tokens } : {}),
+                ...(typeof body.usage.completion_tokens === 'number' ? { completionTokens: body.usage.completion_tokens } : {}),
+              }
+            : null,
+        };
       }),
     ),
     { 'llm.provider_id': cfg.providerId, 'llm.model': model },
   );
+}
+
+export async function chat(
+  cfg: ProviderConfig, model: string, messages: ChatMessage[], opts?: StreamChatOptions,
+): Promise<string> {
+  return (await chatCompletion(cfg, model, messages, opts)).text;
 }
 
 /**

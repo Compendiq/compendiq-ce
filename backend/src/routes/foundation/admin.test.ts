@@ -93,6 +93,11 @@ vi.mock('../../core/services/admin-settings-service.js', () => ({
   invalidateRagImageLegCache: vi.fn(),
   getRagAnswerMaxImages: vi.fn().mockResolvedValue(2),
   invalidateRagAnswerMaxImagesCache: vi.fn(),
+  // #1615 — the image-analysis output-token ceiling, at its reader default.
+  // Its own row → default cascade and PUT invalidation are exercised against
+  // the real service in `admin-retrieval-settings.test.ts`.
+  getImageAnalysisMaxOutputTokens: vi.fn().mockResolvedValue(8192),
+  invalidateImageAnalysisMaxOutputTokensCache: vi.fn(),
   // #1285 — the ef_search floor, likewise at its reader default. Its own
   // row → env-bootstrap → 100 cascade is exercised against the real service.
   // Review r1: the GET reads the SOURCE too, so the panel can tell an

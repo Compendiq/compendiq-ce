@@ -104,6 +104,9 @@ import {
   getRagAnswerMaxImages,
   invalidateRagImageIntakeCache,
   invalidateRagAnswerMaxImagesCache,
+  getImageAnalysisMaxOutputTokens,
+  invalidateImageAnalysisMaxOutputTokensCache,
+  IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT,
   getRagEfSearch,
   invalidateRagEfSearchCache,
   RAG_EF_SEARCH_DEFAULT,
@@ -223,6 +226,7 @@ beforeEach(() => {
   invalidateRagRankingPriorCache();
   invalidateRagImageIntakeCache();
   invalidateRagAnswerMaxImagesCache();
+  invalidateImageAnalysisMaxOutputTokensCache();
   invalidateRagEfSearchCache();
   // #1285 — the deprecated bootstrap variable is process-global too. A stray
   // value would make the "absent row answers with the default" assertions
@@ -882,6 +886,57 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
     }
     expect(rows).toEqual({});
+  });
+});
+
+/**
+ * #1615 (ADR-027 D8) — the image-analysis output-token ceiling, through the
+ * same key table and against the REAL reader, so "the next batch sends the
+ * new `max_tokens`" is a claim about this handler and not about a spy.
+ */
+describe('PUT /api/admin/settings — the image-analysis output-token ceiling (#1615)', () => {
+  it('writes image_analysis_max_output_tokens under its documented key and the next read sees it', async () => {
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT);
+    const res = await put({ imageAnalysisMaxOutputTokens: 6000 });
+    expect(res.statusCode).toBe(200);
+    expect(rows).toEqual({ image_analysis_max_output_tokens: '6000' });
+    // The reader's 60 s TTL cache was primed by the read above; the write
+    // must have dropped it, or the worker keeps sending the old ceiling.
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(6000);
+  });
+
+  it('answers the saved ceiling on the READ half', async () => {
+    await put({ imageAnalysisMaxOutputTokens: 16384 });
+    const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
+    expect(res.statusCode).toBe(200);
+    expect(AdminSettingsSchema.parse(res.json()).imageAnalysisMaxOutputTokens).toBe(16384);
+  });
+
+  it('rejects a ceiling outside [4096, 16384] rather than saving one the reader would discard', async () => {
+    for (const body of [
+      { imageAnalysisMaxOutputTokens: 4095 },
+      { imageAnalysisMaxOutputTokens: 16385 },
+      { imageAnalysisMaxOutputTokens: 8192.5 },
+      { imageAnalysisMaxOutputTokens: '8192' },
+    ]) {
+      const res = await put(body);
+      expect(res.statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rows).toEqual({});
+  });
+
+  it('reads an unparseable or out-of-range row as the DEFAULT, never clamped and never a refusal', async () => {
+    // A row written outside this handler (psql, a restored dump). The floor
+    // is a chosen boundary, not a clamp target: '100' must not become 4,096
+    // and quietly halve every transcription bound.
+    for (const raw of ['100', '99999', '8e3', 'eight thousand', '']) {
+      rows = { image_analysis_max_output_tokens: raw };
+      invalidateImageAnalysisMaxOutputTokensCache();
+      await expect(getImageAnalysisMaxOutputTokens(), raw).resolves.toBe(IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS_DEFAULT);
+    }
+    rows = { image_analysis_max_output_tokens: '4096' };
+    invalidateImageAnalysisMaxOutputTokensCache();
+    await expect(getImageAnalysisMaxOutputTokens()).resolves.toBe(4096);
   });
 });
 

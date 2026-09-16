@@ -124,9 +124,22 @@ function describeProbeFailure(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export interface ProbeVisionOptions {
+  /**
+   * #1615 — hard budget covering queue wait plus the request, forwarded to
+   * `chat()`. The assignment PUT for `image_analysis` runs this probe
+   * synchronously inside an admin request and bounds it the way the
+   * image-embedding probe bounds its own (`IMAGE_PROBE_TIMEOUT_MS`); a probe
+   * that runs out of budget is `null` (unconfirmed), never `false`. Absent
+   * for the chat path's fire-and-forget refresh, which keeps its old behaviour.
+   */
+  timeoutMs?: number;
+}
+
 export async function probeVision(
   cfg: ProviderConfig,
   model: string,
+  opts?: ProbeVisionOptions,
 ): Promise<{ vision: boolean | null; error?: string }> {
   const messages: ChatMessage[] = [
     { role: 'system', content: 'Answer with three words only.' },
@@ -149,7 +162,10 @@ export async function probeVision(
     // token budget cuts off mid-think, turning a capable vision-reasoning model into
     // a cached false negative. 512 tokens gives reasoning models enough room to
     // complete their thinking block and output the answer.
-    const reply = await chat(cfg, model, messages, { maxTokens: 512 });
+    const reply = await chat(cfg, model, messages, {
+      maxTokens: 512,
+      ...(opts?.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+    });
     const vision = replyNamesBandsInOrder(reply);
     logger.debug(
       { providerId: cfg.providerId, model, vision, reply: reply.slice(0, 120) },

@@ -24,3 +24,4 @@ export * from './schemas/compliance-reports.js';
 export * from './schemas/backup.js';
 export * from './types/common.js';
 export * from './llm.js';
+export * from './image-analysis.js';
