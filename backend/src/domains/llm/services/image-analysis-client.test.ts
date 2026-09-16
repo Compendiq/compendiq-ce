@@ -199,6 +199,72 @@ describe('analyzeImage — the five deterministic classes', () => {
     expect((await run()).ok).toBe(true);
   });
 
+  /**
+   * Review r2: the `description` match on its own turned a legitimate
+   * analysis of the image class a software knowledge base is full of — a
+   * refusal screenshot, a German error dialog, a slide about refusals — into
+   * a `refused` row that D13 retries to `failed_terminal`, so those pages
+   * never contribute their text. What tells the two apart is the rest of the
+   * payload: a model that read the pixels also transcribes them.
+   */
+  it('a description OF a refusal or an error screenshot stays ok when the payload also read the image', async () => {
+    const described = [
+      {
+        language: 'en',
+        description:
+          'Screenshot of a chat assistant window. The assistant reply reads: "I\'m sorry, but I can\'t help with that."',
+        visibleText: 'New chat\nYou: Summarise this contract\nAssistant: I\'m sorry, but I can\'t help with that.',
+      },
+      {
+        language: 'de',
+        description:
+          'Fehlerdialog des Confluence-Editors: "Es tut mir leid, die Seite konnte nicht geladen werden."',
+        visibleText: 'Fehler\nEs tut mir leid, die Seite konnte nicht geladen werden.\nErneut versuchen',
+      },
+      {
+        language: 'en',
+        description: 'A training-deck slide titled "As an AI language model", listing three refusal styles.',
+        visibleText: 'As an AI language model\n1 Hard refusal\n2 Soft refusal\n3 Partial answer',
+      },
+    ];
+    for (const over of described) {
+      respond = () => ({ status: 200, body: chatReply(JSON.stringify({ ...OK_PAYLOAD, ...over })) });
+      expect((await run()).ok, over.description.slice(0, 48)).toBe(true);
+    }
+  });
+
+  it('a structured block is evidence too, and a refusal with neither block nor transcription is still refused', async () => {
+    // No transcription to clear the floor, but the block this kind carries is
+    // itself a reading of the image.
+    respond = () => ({
+      status: 200,
+      body: chatReply(JSON.stringify({
+        ...OK_PAYLOAD,
+        kind: 'table',
+        language: 'en',
+        description: 'Support runbook table whose second row quotes the reply "I cannot help with that".',
+        visibleText: '',
+        structured: { tableRows: ['Case | Reply', 'Policy block | I cannot help with that'] },
+      })),
+    });
+    expect((await run()).ok).toBe(true);
+
+    // The real refusal: nothing outside the sentence, and `limitations` is
+    // not evidence — a refusing model writes one as readily as a describing one.
+    respond = () => ({
+      status: 200,
+      body: chatReply(JSON.stringify({
+        ...OK_PAYLOAD,
+        language: 'en',
+        description:
+          "I'm sorry, but I can't analyze this image. Describe it to me and I will do my best to help instead.",
+        visibleText: '',
+        limitations: ['The image could not be processed.'],
+      })),
+    });
+    expect(await run()).toMatchObject({ ok: false, class: 'refused' });
+  });
+
   it('truncated: finish_reason length, carrying the ceiling it overran', async () => {
     respond = () => ({ status: 200, body: chatReply('{"schemaVersion":1,"kind":"table","descr', 'length') });
     const r = (await run({ maxOutputTokens: 4096 })) as ImageAnalysisFailure;

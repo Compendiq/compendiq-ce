@@ -75,13 +75,17 @@ export const IMAGE_ANALYSIS_PROMPT = [
  * describing. ADR-027 D8 names "the provider refusal patterns
  * `sanitize-llm-input.ts` already knows"; that module carries prompt-INJECTION
  * patterns only, so the refusal list lives here, beside the one prompt it is
- * matched against (erratum recorded in ADR-027). Matched against the whole
- * reply when no JSON object was found, and against the parsed `description`
- * otherwise — a refusal wrapped in the requested JSON is still a refusal,
- * however long the sentence, so this runs BEFORE the substantive floor
- * (review r1: a 54-character wrapped refusal passed the floor and was `ok`).
- * `visibleText` is deliberately NOT matched: it is a transcription of what
- * the image shows, and a screenshot of a chat refusal is a legitimate image.
+ * matched against (erratum recorded in ADR-027).
+ * Matched against the whole reply when no JSON object was
+ * found, and against the parsed `description` otherwise — a refusal wrapped
+ * in the requested JSON is still a refusal, however long the sentence, so
+ * that runs BEFORE the substantive floor (review r1: a 54-character wrapped
+ * refusal passed the floor and was `ok`) — but only when nothing outside
+ * the description observed the image (review r2: a legitimate description of
+ * a refusal or error screenshot otherwise classes `refused`; see
+ * `observesImageOutsideDescription`). `visibleText` is never matched at all:
+ * it is a transcription of what the image shows, and a screenshot of a chat
+ * refusal is a legitimate image.
  */
 export const REFUSAL_PATTERNS: readonly RegExp[] = [
   /\bI(?:'m| am) (?:sorry|unable|not able)\b/i,
@@ -249,9 +253,42 @@ function scrubStrings(value: unknown): unknown {
 }
 
 /** URLs alone never count towards substance (D8). */
+const withoutUrls = (s: string) => s.replace(/\bhttps?:\/\/\S+/gi, '').trim();
+
 function substantiveChars(payload: ImageAnalysisPayloadV1): number {
-  const withoutUrls = (s: string) => s.replace(/\bhttps?:\/\/\S+/gi, '').trim();
   return withoutUrls(payload.description).length + withoutUrls(payload.visibleText).length;
+}
+
+/**
+ * Whether anything OUTSIDE `description` actually observed the image: a
+ * transcription that clears the substantive floor on its own, or a
+ * structured block with content in it. `limitations` is not such evidence —
+ * a refusing model writes one as readily as a describing one.
+ *
+ * This is what gates the `description` refusal match (review r2 INFO 2).
+ * A description OF a refusal or an error screenshot is a legitimate
+ * analysis of exactly the image class a software knowledge base is full of
+ * — "the assistant reply reads: 'I'm sorry, but I can't help with that'",
+ * a German "Es tut mir leid" dialog, a slide titled "As an AI language
+ * model" — and it arrives with the transcription or the block that proves
+ * the model read the pixels. A refusal has no such half: the model that
+ * declines has nothing to transcribe.
+ */
+function observesImageOutsideDescription(payload: ImageAnalysisPayloadV1): boolean {
+  if (withoutUrls(payload.visibleText).length >= MIN_SUBSTANTIVE_ANALYSIS_CHARS) return true;
+  const block = payload.structured;
+  if (!block) return false;
+  if ((block.tableRows?.length ?? 0) > 0) return true;
+  if (
+    block.diagram
+    && ((block.diagram.nodes?.length ?? 0) > 0 || (block.diagram.edges?.length ?? 0) > 0)
+  ) {
+    return true;
+  }
+  const chart = block.chart;
+  return Boolean(
+    chart && (chart.xAxis || chart.yAxis || chart.trend || (chart.series?.length ?? 0) > 0),
+  );
 }
 
 function failure(
@@ -364,8 +401,17 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
   const payload = validated.data;
 
   // Order matters (D8): a refusal delivered inside the requested JSON is a
-  // refusal whether or not it clears the floor — a polite one easily does.
-  if (REFUSAL_PATTERNS.some((p) => p.test(payload.description))) return failure('refused');
+  // refusal whether or not it clears the floor — a polite one easily does,
+  // and it runs BEFORE the floor for that reason. It is a refusal only when
+  // the rest of the payload observed nothing, though: the same sentence
+  // inside a payload that also transcribes the image, or carries its table,
+  // chart or diagram block, is a description OF a refusal screenshot.
+  if (
+    REFUSAL_PATTERNS.some((p) => p.test(payload.description))
+    && !observesImageOutsideDescription(payload)
+  ) {
+    return failure('refused');
+  }
   if (substantiveChars(payload) < MIN_SUBSTANTIVE_ANALYSIS_CHARS) return failure('empty');
 
   return {

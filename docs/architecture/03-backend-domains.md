@@ -488,7 +488,10 @@ writes a `page_image_analyses` row (the worker, the reconcile and the sweep are
   and not in `sanitize-llm-input.ts`, ADR-027 erratum; on the bare reply when
   no JSON parsed, else on the parsed `description` BEFORE the substantive
   floor, so a polite wrapped refusal cannot pass as a description — never on
-  `visibleText`, which transcribes the image), `empty` (below the floor),
+  `visibleText`, which transcribes the image, and only when nothing outside
+  the description observed the image either, so a description OF a refusal
+  or error screenshot with the transcription or the `structured` block beside
+  it stays an analysis), `empty` (below the floor),
   `truncated` (with the ceiling), `rejected` (exactly 400/413/415/422, with
   the status) and `unavailable` (408, 429, 5xx and non-HTTP failures keep the
   batch running; every other 4xx is the provider-level default arm,

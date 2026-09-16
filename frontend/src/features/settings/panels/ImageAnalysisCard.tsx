@@ -144,7 +144,15 @@ export function ImageAnalysisCard({
     // identity line and the ceiling input clipped (review r1, AC-6).
     <div className="grid gap-2 sm:grid-cols-[140px_1fr]" data-testid="image-analysis-card">
       <span aria-hidden="true" className="hidden sm:block" />
-      <div className="space-y-1.5">
+      {/*
+        `min-w-0` because a grid item's automatic minimum size is its
+        min-content size, and `overflow-wrap: break-word` (the `break-words`
+        below) deliberately does not shrink that: the unbreakable endpoint URL
+        in the identity line otherwise grows this single track past the 324 px
+        card and carries every line of the strip 66 px out with it, clipped
+        with no scrollbar (review r2, measured in both themes).
+      */}
+      <div className="min-w-0 space-y-1.5">
         <p className="text-muted-foreground text-xs">{IMAGE_ANALYSIS_DESCRIPTION}</p>
         {/*
           Which provider receives page images — the egress disclosure the ADR
@@ -269,9 +277,18 @@ export function ImageAnalysisCard({
           The retained identity (ADR-027 D7): the model identity the index was
           built under, which survives an unassign. Provider · model · endpoint
           · short hash — the ceiling is deliberately NOT in this row.
+
+          `break-words` for the same reason the probe body at the foot of this
+          strip carries it: the endpoint is a URL with no break opportunity in
+          it, and at 390 px this card is ~324 px wide (review r2: a realistic
+          50-character hyphen-free endpoint ran 66 px past the card, clipped
+          with no scrollbar).
         */}
         {assigned && capability?.identity && (
-          <p className="text-muted-foreground text-xs" data-testid="image-analysis-identity">
+          <p
+            className="text-muted-foreground text-xs break-words"
+            data-testid="image-analysis-identity"
+          >
             <span>Index identity</span>{' '}
             <span className="text-foreground font-mono">{capability.identity.model}</span>
             {' · '}

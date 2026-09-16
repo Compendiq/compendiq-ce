@@ -20,6 +20,7 @@ import {
   resolveImageAnalysisUsecase,
   resolveConfidenceBasisPair,
   loadProviderConfig,
+  ProviderNotFoundError,
   type ConfidenceBasisResolution,
 } from '../../domains/llm/services/llm-provider-resolver.js';
 import {
@@ -343,7 +344,15 @@ export async function llmUsecaseRoutes(fastify: FastifyInstance) {
           let cfg;
           try {
             cfg = await loadProviderConfig(nextProviderId);
-          } catch {
+          } catch (err) {
+            // Only a missing ROW is the admin's to fix by picking another
+            // provider (#1615 review r2 INFO 3, the same narrowing the
+            // `image_analysis` branch below already does): a DB or
+            // decryption failure answered 422 "That provider no longer
+            // exists" told an admin to abandon a provider that is still
+            // there, and hid a 500 from every error budget that watches for
+            // one.
+            if (!(err instanceof ProviderNotFoundError)) throw err;
             return reply.code(422).send({
               error: 'That provider no longer exists. Reload Settings → AI Models and pick another.',
               statusCode: 422,
