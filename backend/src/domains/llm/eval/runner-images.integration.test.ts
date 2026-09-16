@@ -62,7 +62,7 @@ type SearchResult = import('../services/rag-service.js').SearchResult;
 const { invalidateRagImageLegCache } = await import('../../../core/services/admin-settings-service.js');
 const { flushSearchAnalytics } = await import('../services/rag-service.js');
 const { imageHitAtK } = await import('./images-metrics.js');
-const { imageEvidenceRecallAtK, assertArmCState, readArmBState, imageAnalysisIdentityHash } = await import('./arms.js');
+const { imageEvidenceRecallAtK, assertArmCState, readArmBState } = await import('./arms.js');
 type ImageFixture = import('./fixture.js').ImageFixture;
 type ImageFixtureLabel = import('./fixture.js').ImageFixtureLabel;
 
@@ -499,40 +499,32 @@ describe.skipIf(!dbAvailable)('single-arm runner (#1614 PR2, ADR-027 arms)', () 
     expect(vl.requests).toHaveLength(0);
   }, 120_000);
 
-  it('readArmBState reads the image_analysis assignment and the D8 ceiling off the database, and refuses either missing', async () => {
+  it('readArmBState refuses a database with image_analysis unassigned (O8), on the revision that has the table', async () => {
     // Which of `readArmBState`'s three refusals is reachable depends on the
-    // revision. Since #1615 (migration 115) `page_image_analyses` EXISTS
-    // here, so the table branch is unreachable and the assignment and
-    // ceiling branches are the live ones — and until now only the call
-    // POSITION was pinned (review r2 finding 5).
+    // revision. Since #1615's migration 115 `page_image_analyses` EXISTS
+    // here, so the table branch is unreachable and the ASSIGNMENT refusal
+    // (O8) is the live one — and until now only the call POSITION was pinned
+    // (review r2 finding 5). The accepting path needs a real vision
+    // assignment, which is #1615's surface and its own tests.
     expect((await query<{ exists: string | null }>(`SELECT to_regclass('public.page_image_analyses') AS exists`)).rows[0]!.exists).not.toBeNull();
-    await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model on this database/);
-
-    const provider = await query<{ id: string }>(
-      `INSERT INTO llm_providers (name, base_url, auth_type, verify_ssl, is_default, default_model)
-       VALUES ('eval-vision', 'http://vision.invalid/v1', 'none', true, false, 'qwen-vl') RETURNING id`,
+    // The assignment row is migration 115's seed, which `truncateAllTables`
+    // does not restore, so this test neither depends on what another file
+    // left in it nor leaves anything behind — the order-dependence class of
+    // review r2 finding 11.
+    const previous = await query<{ provider_id: string | null; model: string | null }>(
+      `SELECT provider_id, model FROM llm_usecase_assignments WHERE usecase = 'image_analysis'`,
     );
-    const providerId = provider.rows[0]!.id;
-    await query(
-      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model, updated_at)
-       VALUES ('image_analysis', $1, 'qwen-vl', NOW())
-       ON CONFLICT (usecase) DO UPDATE SET provider_id = $1, model = 'qwen-vl', updated_at = NOW()`,
-      [providerId],
-    );
-
-    // No ceiling row: the report records the ceiling the backfill ran under (D8).
-    await query(`DELETE FROM admin_settings WHERE setting_key = 'image_analysis_max_output_tokens'`);
-    await expect(readArmBState()).rejects.toThrow(/image_analysis_max_output_tokens reads null/);
-    await query(`INSERT INTO admin_settings (setting_key, setting_value, updated_at) VALUES ('image_analysis_max_output_tokens', 'lots', NOW())`);
-    await expect(readArmBState()).rejects.toThrow(/image_analysis_max_output_tokens reads "lots"/);
-
-    await query(`UPDATE admin_settings SET setting_value = '8192' WHERE setting_key = 'image_analysis_max_output_tokens'`);
-    const state = await readArmBState();
-    expect(state).toEqual({
-      visionModel: { identity: 'eval-vision:qwen-vl@http://vision.invalid/v1', model: 'qwen-vl', endpoint: 'http://vision.invalid/v1' },
-      imageAnalysisMaxOutputTokens: 8192,
-      identityHash: imageAnalysisIdentityHash(providerId, 'qwen-vl', 'http://vision.invalid/v1'),
-    });
+    try {
+      await query(`UPDATE llm_usecase_assignments SET provider_id = NULL, model = NULL, updated_at = NOW() WHERE usecase = 'image_analysis'`);
+      await expect(readArmBState()).rejects.toThrow(/--arm B needs image_analysis assigned to a vision model on this database/);
+    } finally {
+      if (previous.rows.length > 0) {
+        await query(
+          `UPDATE llm_usecase_assignments SET provider_id = $1, model = $2, updated_at = NOW() WHERE usecase = 'image_analysis'`,
+          [previous.rows[0]!.provider_id, previous.rows[0]!.model],
+        );
+      }
+    }
   }, 60_000);
 
   it('arm B REFUSES a run in which no derived evidence ever surfaced, instead of publishing text retrieval as the candidate', async () => {
