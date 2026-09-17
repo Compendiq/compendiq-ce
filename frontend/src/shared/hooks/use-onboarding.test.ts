@@ -35,6 +35,7 @@ function settingsFixture(
     theme: 'graphite',
     syncIntervalMin: 15,
     confluenceConnected: false,
+    confluenceEnabled: true,
     showSpaceHomeContent: true,
     customPrompts: {},
     inlineCompletionEnabled: false,
@@ -96,6 +97,50 @@ describe('useOnboarding — step derivation', () => {
       'create-page',
     ]);
     expect(ONBOARDING_STEP_IDS).toEqual(result.current.steps.map((s) => s.id));
+  });
+
+  /**
+   * Standalone mode (#1623): there is no account to connect and no spaces to
+   * choose, so those rows are not part of this user's checklist at all. The
+   * ids stay in `ONBOARDING_STEP_IDS` — it types the copy table — so the
+   * assertion here is the rendered subset, not the constant.
+   */
+  it('drops the two Confluence milestones when the integration is off', () => {
+    const { wrapper } = harness(settingsFixture({ confluenceEnabled: false }));
+    const { result } = renderHook(() => useOnboarding(), { wrapper });
+
+    expect(result.current.steps.map((s) => s.id)).toEqual(['ask-ai', 'shortcuts', 'create-page']);
+  });
+
+  /**
+   * A dropped step is not a done step. Marking them complete would count work
+   * the user never did towards a congratulation, and — before graduation
+   * derived from `steps.length` — would have graduated a brand-new standalone
+   * user on their first render.
+   */
+  it('does not pre-complete the dropped steps for a standalone user', () => {
+    const { wrapper } = harness(
+      settingsFixture({ confluenceEnabled: false, hasConfluencePat: true, selectedSpaces: ['ENG'] }),
+    );
+    const { result } = renderHook(() => useOnboarding(), { wrapper });
+
+    expect(result.current.completedCount).toBe(0);
+    expect(result.current.allComplete).toBe(false);
+  });
+
+  /**
+   * The flag is read as `=== false`. A settings payload written before the
+   * column existed omits the key, and treating that absence as "off" would
+   * hide the Confluence steps from every connected user mid-deploy.
+   */
+  it('keeps all five steps when the payload predates the flag', () => {
+    const legacy = settingsFixture();
+    delete (legacy as Partial<SettingsResponse>).confluenceEnabled;
+    const { wrapper } = harness(legacy);
+    const { result } = renderHook(() => useOnboarding(), { wrapper });
+
+    expect(result.current.steps).toHaveLength(5);
+    expect(result.current.steps[0]?.id).toBe('connect-confluence');
   });
 
   it('reports nothing complete for a brand-new user', () => {
@@ -457,5 +502,40 @@ describe('useOnboarding — completion', () => {
 
     await Promise.resolve();
     expect(putBodies()).toEqual([]);
+  });
+
+  /**
+   * A standalone user can finish (#1623). Graduation counts against
+   * `steps.length`, so the three stored milestones are the whole list — a
+   * check against a hardcoded five would strand these users one step short of
+   * a congratulation they can never reach, forever.
+   */
+  it('graduates a standalone user on the three steps their list has, exactly once', async () => {
+    apiFetchMock.mockResolvedValue({});
+    const marks = {
+      firstAiQueryMade: true,
+      shortcutsModalViewed: true,
+      pageCreatedOrEdited: true,
+    };
+    const { queryClient, wrapper } = harness(
+      settingsFixture({ confluenceEnabled: false }, { ...marks, pageCreatedOrEdited: false }),
+    );
+    const { result, rerender } = renderHook(() => useOnboarding({ trackCompletion: true }), {
+      wrapper,
+    });
+    expect(result.current.steps).toHaveLength(3);
+    expect(result.current.allComplete).toBe(false);
+
+    act(() => {
+      queryClient.setQueryData(['settings'], settingsFixture({ confluenceEnabled: false }, marks));
+    });
+
+    await waitFor(() => expect(putBodies()).toHaveLength(1));
+    const [body] = putBodies() as [{ onboardingState: { completedAt: string } }];
+    expect(typeof body.onboardingState.completedAt).toBe('string');
+
+    rerender();
+    await Promise.resolve();
+    expect(putBodies()).toHaveLength(1);
   });
 });
