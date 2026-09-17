@@ -181,15 +181,24 @@ describe('Bulk Pages Routes (Parallelized)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConfluenceToHtml.mockReturnValue('<p>content</p>');
-    // Default: batch ownership query returns both pages
-    // Note: confluence_id matches the IDs sent by delete/sync tests ('page-1', 'page-2')
-    // Tag tests override this default with their own mocks using integer PKs
-    mockQueryFn.mockResolvedValue({
-      rows: [
-        { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: ['existing-tag'] },
-        { id: 2, confluence_id: 'page-2', space_key: 'ENG', source: 'confluence', labels: ['existing-tag'] },
-      ],
-      rowCount: 2,
+    // #1636: `findSubtreeKeyAmbiguity` runs before the standalone cascade, and
+    // ZERO rows is what "this subtree is safe to act on" looks like. It is
+    // answered on its own rather than by the catch-all below, because a row
+    // there is a 409 and the bulk delete never runs at all.
+    mockQueryFn.mockImplementation((sql: unknown) => {
+      if (typeof sql === 'string' && /conflicting_page_id/.test(sql)) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      // Default: batch ownership query returns both pages
+      // Note: confluence_id matches the IDs sent by delete/sync tests ('page-1', 'page-2')
+      // Tag tests override this default with their own mocks using integer PKs
+      return Promise.resolve({
+        rows: [
+          { id: 1, confluence_id: 'page-1', space_key: 'OPS', source: 'confluence', labels: ['existing-tag'] },
+          { id: 2, confluence_id: 'page-2', space_key: 'ENG', source: 'confluence', labels: ['existing-tag'] },
+        ],
+        rowCount: 2,
+      });
     });
     // `DELETE FROM pages … RETURNING id` answers with the rows it actually
     // destroyed, and since #1349 fixer r1 the icon pass keys off exactly that

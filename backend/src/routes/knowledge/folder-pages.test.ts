@@ -270,6 +270,9 @@ describe('Folder pages (#414)', () => {
           draft_updated_at: null,
         }],
       });
+      // #1636: the detail route then counts this page's live descendants
+      // through the shared subtree walk and reports `descendantCount`.
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
 
       const response = await app.inject({
         method: 'GET',

@@ -38,14 +38,15 @@ export async function insertStandalonePage(
   visibility: 'private' | 'shared',
   createdBy: string,
   spaceKey: string,
-  opts: { dirty?: boolean; deletedAt?: Date } = {},
+  opts: { dirty?: boolean; deletedAt?: Date; parentId?: string | null } = {},
 ): Promise<number> {
   const res = await query<{ id: number }>(
     `INSERT INTO pages (space_key, title, body_html, body_text, version, source,
-                        visibility, created_by_user_id, embedding_dirty, embedding_status, deleted_at)
-     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, $5, 'not_embedded', $6)
+                        visibility, created_by_user_id, embedding_dirty, embedding_status, deleted_at,
+                        parent_id)
+     VALUES ($1, $2, '<p>x</p>', 'x', 1, 'standalone', $3, $4, $5, 'not_embedded', $6, $7)
      RETURNING id`,
-    [spaceKey, title, visibility, createdBy, opts.dirty ?? false, opts.deletedAt ?? null],
+    [spaceKey, title, visibility, createdBy, opts.dirty ?? false, opts.deletedAt ?? null, opts.parentId ?? null],
   );
   return res.rows[0]!.id;
 }
@@ -54,14 +55,15 @@ export async function insertConfluencePage(
   confluenceId: string,
   title: string,
   spaceKey: string,
-  opts: { deletedAt?: Date } = {},
+  opts: { deletedAt?: Date; parentId?: string | null } = {},
 ): Promise<number> {
   const res = await query<{ id: number }>(
     `INSERT INTO pages (confluence_id, source, space_key, title, body_text,
-                        body_storage, body_html, inherit_perms, embedding_dirty, deleted_at)
-     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE, FALSE, $4)
+                        body_storage, body_html, inherit_perms, embedding_dirty, deleted_at,
+                        parent_id)
+     VALUES ($1, 'confluence', $2, $3, 'text', '', '', TRUE, FALSE, $4, $5)
      RETURNING id`,
-    [confluenceId, spaceKey, title, opts.deletedAt ?? null],
+    [confluenceId, spaceKey, title, opts.deletedAt ?? null, opts.parentId ?? null],
   );
   return res.rows[0]!.id;
 }

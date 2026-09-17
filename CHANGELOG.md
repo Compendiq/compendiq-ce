@@ -94,6 +94,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Trashing a standalone article now takes its whole sub-article subtree with
+  it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its
+  live descendants kept `parent_id` pointing at a trashed page: `GET
+  /api/pages/tree`'s `LEFT JOIN pages parent_page ON (…) AND parent_page.deleted_at
+  IS NULL` answered `parentId: null` for them and the sidebar rendered them as
+  top-level pages. `has_children` on `GET /api/pages/:id` matched
+  `parent_id = confluence_id` only, so a standalone parent reported `false`
+  however many sub-articles it had, and no dialog could warn. Soft delete and
+  `?permanent=true` now walk the subtree in one statement
+  (`core/services/page-subtree.ts`; `UNION`, so a `parent_id` cycle terminates
+  instead of hanging the request) and `hasChildren` uses the tree's
+  dual-identifier join. `GET /api/pages/:id` gains `descendantCount` (the live
+  STANDALONE descendants OF THE CALLER'S OWN — exactly the rows the cascade
+  takes), and all three delete dialogs name what the action costs from
+  `shared/lib/trash-copy.ts`.
+
+  A cascade only ever touches rows the caller may act on. Both cascades guard
+  on `source = 'standalone'` (Confluence owns a synced row's lifecycle, and its
+  sync upsert would resurrect anything trashed locally) **and** on
+  `created_by_user_id` (`POST /api/pages` validates a `parentId` for existence
+  and space but not for ownership, so another user's article can legitimately
+  sit inside this subtree — trashing it would put it in a trash its owner
+  cannot restore from, and `?permanent=true` would destroy it outright). A row
+  either guard skips stays live under a trashed parent, so the tree renders it
+  at the root: that orphan is the stated, deliberate cost of not acting outside
+  the caller's authority. A subtree whose parent identifier is ambiguous — a
+  standalone page whose PK is also another page's `confluence_id`, which
+  `pages.id` being a serial makes reachable — is REFUSED with 409
+  `subtree_identifier_ambiguous` rather than resolved, the same rule
+  `PUT /pages/:id/move` and the bulk selection resolver already follow (#1166,
+  #1167); resolving it either way would cascade into an unrelated tree.
+
+  Restore puts back the whole delete BATCH (the rows sharing the cascade's
+  single `deleted_at`), and answers 409 `Restore "<title>" first` when the
+  page's DIRECT parent is still in the trash *and* is one the caller can
+  actually restore — their own standalone row. A live direct parent never
+  blocks a restore however far up the chain something else is trashed, and an
+  unrestorable trashed parent (Confluence-sourced, or another user's) no longer
+  blocks it either: refusing there left the row stuck until the 30-day purge
+  destroyed it. `POST /pages/bulk/delete` shares the walk and its guards; its
+  response still counts the selected pages.
+
 - **Image analysis asks the provider not to think (ADR-027 D8 erratum,
   #1619).** A reasoning vision model spends **82.0–93.3 %** of its output
   tokens on a thinking pass at the shipped 8,192 ceiling (measured over the

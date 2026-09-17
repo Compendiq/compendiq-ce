@@ -1304,6 +1304,10 @@ describe('ArticleRightPane', () => {
 
   // --- Delete via ConfirmDialog (replaces native confirm()) ---
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
+    // Standalone, because the soft-delete copy asserted below is the copy of
+    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
+    // deletes upstream with no Trash to restore from (#1636).
+    currentMockPage = { ...mockPage, source: 'standalone' };
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
@@ -1322,6 +1326,61 @@ describe('ArticleRightPane', () => {
       expect(mockDeletePage).toHaveBeenCalledWith('page-1');
     });
     expect(mockNavigate).toHaveBeenCalledWith('/');
+  });
+
+  /**
+   * #1636 — the same copy module as PageViewPage's dialog, driven by the same
+   * server-side `descendantCount`. `mockPage` carries no count, so every other
+   * test here is exercising the unknown-count fallback.
+   */
+  it('names the sub-article count when the page has descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'standalone', descendantCount: 2 } as typeof currentMockPage;
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Move to trash'));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/^This page has 2 sub-articles\./)).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and 2 sub-articles to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * …and the count is quoted for a STANDALONE page only, because a
+   * Confluence-sourced page is not trashed at all: its delete propagates UP to
+   * Confluence, and afterwards `GET /pages/trash` filters
+   * `source = 'standalone'` while restore refuses anything else — the row never
+   * reaches Trash and can never be restored from it. The N=0 copy this used to
+   * render promised a 30-day restore that no later action could honour.
+   */
+  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Move to trash'));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
   });
 
   it('cancelling the move-to-trash dialog does not delete', async () => {
@@ -1365,7 +1424,7 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('Danger zone'));
     fireEvent.click(screen.getByText('Move to trash'));
 
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {

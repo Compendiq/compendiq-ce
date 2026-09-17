@@ -3,6 +3,7 @@ import { m } from 'framer-motion';
 import { RefreshCw, Database, Gauge, Trash2, X, Loader2 } from 'lucide-react';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button } from '../../shared/components/Button';
+import { bulkTrashConfirmCopy } from '../../shared/lib/trash-copy';
 import { useBulkPageAction, type BulkAction } from '../../shared/hooks/use-bulk-page-actions';
 import { useKeyboardShortcuts, type ShortcutDefinition } from '../../shared/hooks/use-keyboard-shortcuts';
 
@@ -35,6 +36,7 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
   const count = selectedIds.length;
   const noun = count === 1 ? 'page' : 'pages';
   const run = useCallback((action: BulkAction) => bulk.mutate({ action, ids: selectedIds }), [bulk, selectedIds]);
+  const deleteCopy = bulkTrashConfirmCopy(count, confluenceCount);
 
   const shortcuts = useMemo<ShortcutDefinition[]>(() => {
     if (count === 0 || bulk.isPending || pendingDelete) return [];
@@ -208,13 +210,15 @@ export function BulkActionBar({ selectedIds, confluenceCount, onClear }: BulkAct
         </Button>
       </m.div>
 
-      {/* Matches the single-page delete dialog's wording: name the action, the
-          reversibility window, and the terminal consequence. */}
+      {/* The copy lives in `trash-copy.ts` because three surfaces confirm the
+          same two cascading deletes — this bar, the article inspector and the
+          page view — and a fourth hand-written variant is how one of them ends
+          up promising a restore the request will not give. */}
       <ConfirmDialog
         open={pendingDelete}
-        title={`Move ${count} ${noun} to trash?`}
-        description={`${count === 1 ? 'It' : 'They'} can be restored from Trash for 30 days, then ${count === 1 ? 'it is' : 'they are'} permanently deleted.`}
-        confirmLabel={`Move ${count} ${noun} to trash`}
+        title={deleteCopy.title}
+        description={deleteCopy.description}
+        confirmLabel={deleteCopy.confirmLabel}
         destructive
         onConfirm={() => {
           setPendingDelete(false);

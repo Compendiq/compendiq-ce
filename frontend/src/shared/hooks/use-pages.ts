@@ -48,6 +48,17 @@ interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
+  /**
+   * The descendants a trash by the current user would move: live,
+   * `source = 'standalone'`, created by this user, the page itself excluded
+   * (#1636) — exactly the set `DELETE /pages/:id` cascades, guard for guard.
+   * `hasChildren` answers the different question of what the tree shows, and
+   * can be true with a count of 0 (a Confluence-sourced or another user's
+   * subtree). Optional because the API predates the field: absent means "not
+   * known", which the trash dialog must render as the no-sub-articles copy
+   * rather than as a guess.
+   */
+  descendantCount?: number;
   summaryHtml: string | null;
   summaryGeneratedAt: string | null;
   summaryModel: string | null;

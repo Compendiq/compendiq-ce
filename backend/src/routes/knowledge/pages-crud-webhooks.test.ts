@@ -65,7 +65,17 @@ vi.mock('../../core/services/webhook-emit-hook.js', () => ({
 const mockQueryFn = vi.fn();
 // Transaction client returned by getPool().connect() — since #766 the delete
 // route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+const mockTxQueryFn = vi.fn();
+/**
+ * Empty by default. The standalone permanent-delete case below overrides this
+ * to model #1636's walk-then-delete inside the transaction, so it has to be
+ * restored between tests — otherwise the Confluence cleanup inherits its
+ * RETURNING and starts discarding marks for rows nobody destroyed.
+ */
+function resetTxQuery(): void {
+  mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+}
+resetTxQuery();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({
@@ -124,6 +134,7 @@ describe('pages-crud webhook emit call-sites', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTxQuery();
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
   });
 
@@ -335,8 +346,14 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
-      // UPDATE deleted_at
+      // #1636's pre-flight: `findSubtreeKeyAmbiguity` runs before the cascade
+      // and ZERO rows is "the subtree is safe to act on". A row here would be
+      // a 409 and no webhook at all.
       mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // The cascade UPDATE … RETURNING: one row here, the page itself. Since
+      // #1636 the webhook is emitted per RETURNING id, not per request, so a
+      // mock that answers with nothing would emit nothing.
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -350,6 +367,32 @@ describe('pages-crud webhook emit call-sites', () => {
       expect(event.payload).toEqual({ pageId: 11, isHardDelete: false });
     });
 
+    it('emits one page.deleted per id the cascade trashed (#1636)', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{
+          id: 11, source: 'standalone', created_by_user_id: TEST_USER,
+          confluence_id: null, space_key: null,
+        }],
+      });
+      // The pre-flight ambiguity check — see the case above.
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // The cascade trashed the page and two sub-articles in one statement.
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 13 }] });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/11',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(3);
+      expect(mockEmitWebhookEvent.mock.calls.map(([event]) => event.payload)).toEqual([
+        { pageId: 11, isHardDelete: false },
+        { pageId: 12, isHardDelete: false },
+        { pageId: 13, isHardDelete: false },
+      ]);
+    });
+
     it('emits page.deleted with isHardDelete=true on standalone permanent delete', async () => {
       // SELECT existing page
       mockQueryFn.mockResolvedValueOnce({
@@ -358,8 +401,24 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
-      // DELETE FROM pinned_pages, DELETE FROM pages
+      // The pre-flight ambiguity check on the pool, then the pinned_pages
+      // sweep: zero rows either way.
       mockQueryFn.mockResolvedValue({ rows: [] });
+      // Since #1636 the permanent branch is ONE statement on the transaction
+      // client — `WITH RECURSIVE d AS (…) DELETE FROM pages WHERE id IN (SELECT
+      // id FROM d WHERE …) RETURNING id, visibility` — and the webhook is
+      // emitted per RETURNING row. The ambiguity is re-checked under the
+      // attachment lock, on this same client, and must answer zero rows.
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        const text = typeof sql === 'string' ? sql : '';
+        if (/conflicting_page_id/.test(text)) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        if (/DELETE FROM pages\b/i.test(text) && /RETURNING/i.test(text)) {
+          return Promise.resolve({ rows: [{ id: 12, visibility: 'private' }], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
 
       const response = await app.inject({
         method: 'DELETE',

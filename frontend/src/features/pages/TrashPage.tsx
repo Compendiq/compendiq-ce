@@ -6,6 +6,36 @@ import { toast } from 'sonner';
 import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { Button, IconButton } from '../../shared/components/Button';
+import { ApiError } from '../../shared/lib/api';
+
+/**
+ * The server's reason, when there is one. A restore can be REFUSED with a
+ * specific, actionable sentence (#1636: 409 `Restore "<parent>" first`), and a
+ * flat "Failed to restore page" tells the person looking at the Trash nothing
+ * about what to do next. The fallback stays for a genuinely message-less
+ * failure.
+ */
+function restoreFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : 'Failed to restore page';
+}
+
+/**
+ * #1636 — the restore route answers 409 when the target's ANCESTOR is still in
+ * the trash (restoring it alone would put it back at the tree root). Inside a
+ * bulk restore that ancestor is usually part of the same selection, so the
+ * refusal is transient, not a failure.
+ *
+ * The route's OTHER 409 is a permanent refusal — a live import of the same page
+ * already exists — and re-firing it would report the same decision twice. Two
+ * different problems sharing one status code means the status cannot be the
+ * classifier: the server marks the transient one with a `reason` slug, and that
+ * is what is matched here.
+ */
+const ANCESTOR_TRASHED_REASON = 'restore_ancestor_trashed';
+
+function isAncestorConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.reason === ANCESTOR_TRASHED_REASON;
+}
 
 export function TrashPage() {
   const navigate = useNavigate();
@@ -33,8 +63,8 @@ export function TrashPage() {
         return next;
       });
       toast.success('Page restored');
-    } catch {
-      toast.error('Failed to restore page');
+    } catch (error) {
+      toast.error(restoreFailureMessage(error));
     }
   };
 
@@ -43,11 +73,77 @@ export function TrashPage() {
     setIsBulkRestoring(true);
     const ids = Array.from(selectedIds);
     try {
-      await Promise.all(ids.map((id) => restoreMutation.mutateAsync(id)));
-      toast.success(`Restored ${ids.length} ${ids.length === 1 ? 'page' : 'pages'}`);
-      setSelectedIds(new Set());
-    } catch {
-      toast.error('Failed to restore some pages');
+      const restoredIds = new Set<string>();
+      // Keyed by id so a later pass can retract an earlier refusal: the same id
+      // must not be reported as failed once it has actually come back.
+      const failures = new Map<string, unknown>();
+
+      // One cascade puts a parent and its sub-articles in ONE batch, and one
+      // request per selected row means whichever lands first restores the whole
+      // batch — so a sibling is refused (409) for an ancestor that is itself in
+      // this selection. Those refusals are transient and have to be re-asked.
+      //
+      // Re-asking is a LOOP of passes, not one extra pass, because one pass can
+      // only clear one level: with A -> B -> C each trashed by a separate action
+      // (three distinct `deleted_at` batches, so three separate restores), pass
+      // 1 restores A while B and C are both refused, and firing B and C
+      // together again lets C observe B still trashed. Ids inside a pass stay
+      // concurrent; it is the passes that must be serialised.
+      //
+      // The loop stops the moment a pass fails to shrink the refused set. That
+      // is a genuine block — an ancestor outside this selection — and another
+      // identical pass would only re-ask the server for a decision it has
+      // already made. Each pass therefore either shrinks `pending` or ends the
+      // loop, so the number of passes is bounded by the selection size.
+      let pending = ids;
+      while (pending.length > 0) {
+        const results = await Promise.allSettled(pending.map((id) => restoreMutation.mutateAsync(id)));
+        const refused: string[] = [];
+        pending.forEach((id, index) => {
+          const result = results[index]!;
+          if (result.status === 'fulfilled') {
+            restoredIds.add(id);
+            failures.delete(id);
+            return;
+          }
+          failures.set(id, result.reason);
+          if (isAncestorConflict(result.reason)) refused.push(id);
+        });
+        if (refused.length >= pending.length) break;
+        pending = refused;
+      }
+
+      // Reported in selection order, so the sentence the user reads does not
+      // depend on which request happened to settle first.
+      const failureReasons = ids.filter((id) => failures.has(id)).map((id) => failures.get(id));
+
+      // Prune exactly what came back, in BOTH outcomes. A partial restore used
+      // to leave the succeeded ids selected while their rows left the list (the
+      // mutation invalidates `['trash']`), so the floating bar kept a stale
+      // count, `toggleSelectAll`'s size comparison went wrong, and pressing
+      // Restore Selected again re-POSTed already-live ids — answered 200
+      // `restored: false` — under a toast that claimed a fresh restore. The
+      // failed ids stay selected on purpose: they are exactly what a retry is.
+      if (restoredIds.size > 0) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of restoredIds) next.delete(id);
+          return next;
+        });
+      }
+
+      if (failureReasons.length === 0) {
+        toast.success(`Restored ${ids.length} ${ids.length === 1 ? 'page' : 'pages'}`);
+      } else {
+        // Say what actually happened, then why: a partial restore that reports
+        // only the failure reads as "nothing worked".
+        const reason = restoreFailureMessage(failureReasons[0]);
+        toast.error(
+          restoredIds.size > 0
+            ? `Restored ${restoredIds.size} of ${ids.length} pages. ${reason}`
+            : `Failed to restore ${ids.length === 1 ? 'the page' : 'the selected pages'}. ${reason}`,
+        );
+      }
     } finally {
       setIsBulkRestoring(false);
     }
