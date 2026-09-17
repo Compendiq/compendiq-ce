@@ -87,6 +87,21 @@ export const UpdateUsecaseAssignmentInputSchema = z.object({
   providerId: z.string().uuid().nullable().optional(), // undefined=leave, null=clear, uuid=set
   model: z.string().nullable().optional(),
 });
+/**
+ * Deliberately NOT `.strict()`. An unknown key — including a retired one such
+ * as #1618's `image_embedding` — is stripped, and the rest of the body still
+ * applies: `PUT /admin/llm-usecases` answers 200 and writes nothing for it.
+ *
+ * A 400 was considered and rejected. On the wire a retired name is
+ * indistinguishable from one an older backend has not learned yet, so
+ * refusing unknown keys would make a newer bundle (rolling deploy, cached SPA)
+ * lose the operator's whole save over a name the server does not know.
+ * Narrowing it to the retired names alone would mean a blacklist of dead
+ * names maintained forever. Resurrection is closed structurally instead:
+ * migration 118 deleted the rows and narrowed the use-case CHECK to the eight
+ * survivors. Pinned by `llm-usecases.test.ts` "ignores a retired use-case key
+ * and still applies the rest of the body".
+ */
 export const UpdateUsecaseAssignmentsInputSchema = z.object({
   chat: UpdateUsecaseAssignmentInputSchema.optional(),
   summary: UpdateUsecaseAssignmentInputSchema.optional(),

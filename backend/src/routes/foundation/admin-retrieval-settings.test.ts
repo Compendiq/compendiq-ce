@@ -332,6 +332,31 @@ describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', ()
     expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
   });
 
+  /**
+   * #1618 stage 2 — a retired settings key is IGNORED, and the save that
+   * carried it still lands. `UpdateAdminSettingsSchema` is a plain `z.object`,
+   * so unknown keys are stripped rather than refused, and that is the intended
+   * contract: on the wire a retired key is indistinguishable from one an older
+   * backend has not learned yet, so refusing it would mean a newer bundle
+   * (rolling deploy, cached SPA) loses the operator's whole save over a name
+   * the server merely does not know. `.strict()` would break that for every
+   * future key; a blacklist of dead names would have to be maintained forever.
+   *
+   * What must hold is that the retired key writes nothing — migration 118
+   * deleted its row, and a handler that forwarded unknown keys into
+   * `admin_settings` would re-create it here. Out-of-range values on LIVE keys
+   * still 400, above: "unknown" and "invalid" are different answers.
+   */
+  it('ignores retired keys and still applies the rest of the body (#1618)', async () => {
+    const res = await put({
+      ragFetchWidth: 40,
+      ragImageLegEnabled: true,
+      imageEmbeddingTargetDimensions: 512,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
+  });
+
   it('rejects out-of-range values at the schema edge rather than saving a lie', async () => {
     for (const body of [
       { ragFetchWidth: 9 }, // reader would fall back to the default

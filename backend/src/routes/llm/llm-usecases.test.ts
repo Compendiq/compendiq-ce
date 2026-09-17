@@ -170,6 +170,48 @@ describe.skipIf(!dbAvailable)('GET /api/admin/llm-usecases', () => {
   });
 
   /**
+   * #1618 stage 2 — a retired use-case key is IGNORED, and the save that
+   * carried it still lands. `UpdateUsecaseAssignmentsInputSchema` is a plain
+   * `z.object`, so unknown keys are stripped rather than refused, and that is
+   * the intended contract: a retired key is indistinguishable on the wire from
+   * a key an older backend has not learned yet, so refusing it would mean a
+   * newer bundle (rolling deploy, cached SPA) loses the operator's whole save
+   * over a name the server merely does not know. Making THIS name a 400 would
+   * need either `.strict()`, which breaks that for every future key, or a
+   * blacklist of dead names maintained forever.
+   *
+   * What must hold instead is that the key writes nothing: migration 118
+   * dropped the rows and narrowed the CHECK, so the only resurrection route is
+   * a handler that forwards an unknown key into the assignments table — which
+   * would surface here as a row, or as the 500 that CHECK would raise.
+   */
+  it('ignores a retired use-case key and still applies the rest of the body (#1618)', async () => {
+    const a = await app.inject({
+      method: 'POST', url: '/api/admin/llm-providers',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'A', baseUrl: 'http://a/v1', authType: 'none', verifySsl: true, defaultModel: 'mA' }),
+    });
+    const providerId: string = a.json().id;
+    const put = await app.inject({
+      method: 'PUT', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      payload: JSON.stringify({
+        image_embedding: { providerId, model: 'vl-embedding' },
+        summary: { providerId, model: 'mA' },
+      }),
+    });
+    expect(put.statusCode).toBe(200);
+    const stored = await query<{ usecase: string }>('SELECT usecase FROM llm_usecase_assignments');
+    expect(stored.rows.map((r) => r.usecase).sort()).toEqual(['summary']);
+    const get = await app.inject({
+      method: 'GET', url: '/api/admin/llm-usecases',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    expect(Object.keys(get.json())).not.toContain('image_embedding');
+    expect(get.json().summary).toMatchObject({ providerId, model: 'mA' });
+  });
+
+  /**
    * #1154: the post-save probe is a real outbound chat completion. Only the
    * `chat` assignment ever resolves to a model that will be shown an image, so
    * saving anything else must not fire one.

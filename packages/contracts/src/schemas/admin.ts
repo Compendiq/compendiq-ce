@@ -537,6 +537,21 @@ export const AdminSettingsSchema = z.object({
   clientInferenceEnabled: z.boolean(),
 });
 
+/**
+ * Deliberately NOT `.strict()`. An unknown key — including a retired one such
+ * as #1618's `ragImageLegEnabled` / `imageEmbeddingTargetDimensions` — is
+ * stripped, and the rest of the body still applies: `PUT /admin/settings`
+ * answers 200 and writes no `admin_settings` row for it. An out-of-range value
+ * on a LIVE key still 400s; "unknown" and "invalid" are different answers.
+ *
+ * A 400 for retired keys was considered and rejected: on the wire a retired
+ * name is indistinguishable from one an older backend has not learned yet, so
+ * refusing unknown keys would make a newer bundle (rolling deploy, cached SPA)
+ * lose the operator's whole save. Migration 118 deleted the retired rows, so
+ * resurrection would need a handler that forwards unknown keys — pinned
+ * against by `admin-retrieval-settings.test.ts` "ignores retired keys and
+ * still applies the rest of the body".
+ */
 export const UpdateAdminSettingsSchema = z.object({
   ftsLanguage: FtsLanguageEnum.optional(),
   embeddingChunkSize: z.number().int().min(128).max(2048).optional(),
