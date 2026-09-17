@@ -118,6 +118,15 @@ vi.mock('../../hooks/use-standalone', () => ({
   useMovePage: () => ({ mutate: vi.fn() }),
 }));
 
+// #1623: the tree reads `confluenceEnabled` to decide whether an empty
+// workspace should be pointed at Confluence at all. `undefined` is the
+// default here on purpose — it is the "settings not resolved" case, which
+// must keep the pre-#1623 copy.
+let mockUserSettings: { confluenceEnabled?: boolean } | undefined;
+vi.mock('../../hooks/use-settings', () => ({
+  useSettings: () => ({ data: mockUserSettings }),
+}));
+
 function createWrapper(initialPath = '/pages') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -136,6 +145,7 @@ function createWrapper(initialPath = '/pages') {
 describe('SidebarTreeView', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    mockUserSettings = undefined;
     mockTreeData = { ...defaultTreeData };
     mockPinnedData = { items: [], total: 0 };
     mockLocalSpaces = [...defaultLocalSpaces];
@@ -1856,6 +1866,31 @@ describe('SidebarTreeNode memoization', () => {
       useUiStore.setState({ treeSidebarSpaceKey: 'DEV' });
       render(<SidebarTreeView />, { wrapper: createWrapper() });
       expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
+    });
+
+    // #1623: standalone mode. "Sync a Space" is the one action that cannot
+    // help a workspace where nothing syncs, and the copy blamed an empty
+    // library on an unconnected Confluence.
+    it('offers a page, not a Confluence sync, when the integration is off', () => {
+      mockUserSettings = { confluenceEnabled: false };
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      expect(screen.getByText('No pages yet')).toBeInTheDocument();
+      expect(screen.getByText('Create a page to get started.')).toBeInTheDocument();
+      expect(screen.queryByText('No pages synced yet')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Confluence/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Sync a Space')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('New Page'));
+      expect(mockNavigate).toHaveBeenCalledWith('/pages/new');
+    });
+
+    it('keeps the sync prompt while the integration is on', () => {
+      mockUserSettings = { confluenceEnabled: true };
+      render(<SidebarTreeView />, { wrapper: createWrapper() });
+
+      expect(screen.getByText('No pages synced yet')).toBeInTheDocument();
+      expect(screen.getByText('Sync a Space')).toBeInTheDocument();
     });
   });
 
