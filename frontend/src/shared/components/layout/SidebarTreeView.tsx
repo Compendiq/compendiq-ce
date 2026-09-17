@@ -24,6 +24,7 @@ import { usePageTree, usePinnedPages } from '../../hooks/use-pages';
 import { useSpaces } from '../../hooks/use-spaces';
 import { useLocalSpaces, useReorderPage, useMovePage } from '../../hooks/use-standalone';
 import { useClickOutside } from '../../hooks/use-click-outside';
+import { useSettings } from '../../hooks/use-settings';
 import { COLLAPSED_TREE_SIDEBAR_WIDTH, useUiStore } from '../../../stores/ui-store';
 import { cn } from '../../lib/cn';
 import { Button, IconButton } from '../Button';
@@ -458,6 +459,13 @@ export function SidebarTreeView({
   const { data: confluenceSpaces } = useSpaces();
   const { data: localSpacesData } = useLocalSpaces();
   const { data: pinnedData } = usePinnedPages();
+  // #1623: in standalone mode the tree must not send an empty workspace to
+  // Confluence settings — nothing syncs, so "Sync a Space" is the one action
+  // that cannot help. `=== false` on purpose: settings in flight, a failed
+  // read or a payload predating the flag all mean "unknown", which keeps
+  // today's copy rather than guessing standalone.
+  const { data: userSettings } = useSettings();
+  const confluenceOff = userSettings?.confluenceEnabled === false;
   const {
     data: treeData,
     isLoading,
@@ -1238,20 +1246,26 @@ export function SidebarTreeView({
               <FileText size={20} className="text-muted-foreground" />
             </div>
             <p className="text-xs font-medium text-foreground/70">
-              {treeSidebarSpaceKey ? 'No pages in this space' : 'No pages synced yet'}
+              {treeSidebarSpaceKey
+                ? 'No pages in this space'
+                : confluenceOff ? 'No pages yet' : 'No pages synced yet'}
             </p>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              {treeSidebarSpaceKey ? 'This space has no content.' : 'Sync a Confluence space to get started.'}
+              {treeSidebarSpaceKey
+                ? 'This space has no content.'
+                : confluenceOff
+                  ? 'Create a page to get started.'
+                  : 'Sync a Confluence space to get started.'}
             </p>
             {!treeSidebarSpaceKey && (
               <Button
-                onClick={() => navigate('/settings')}
+                onClick={() => navigate(confluenceOff ? '/pages/new' : '/settings')}
                 variant="secondary"
                 size="sm"
                 leftIcon={<Plus size={12} />}
                 className="mt-3"
               >
-                Sync a Space
+                {confluenceOff ? 'New Page' : 'Sync a Space'}
               </Button>
             )}
           </div>
