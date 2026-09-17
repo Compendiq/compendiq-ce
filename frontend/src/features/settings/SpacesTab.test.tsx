@@ -559,4 +559,58 @@ describe('SpacesTab', () => {
       });
     });
   });
+
+  // #1623: Confluence off = standalone mode. The spaces already stored here
+  // are local rows and stay fully manageable; only the two controls that go
+  // and ask Confluence for something disappear.
+  describe('with the Confluence integration off (#1623)', () => {
+    const SYNCED = [
+      { key: 'DEV', name: 'Development', lastSynced: '2026-03-01T00:00:00Z', pageCount: 42 },
+    ];
+
+    function renderOff(body: unknown = []) {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+      render(<SpacesTab confluenceEnabled={false} onSave={mockOnSave} />, {
+        wrapper: createWrapper(),
+      });
+      return fetchSpy;
+    }
+
+    it('offers neither Fetch Spaces nor Sync Selected, and never asks for the available spaces', async () => {
+      const fetchSpy = renderOff();
+
+      // Settle on the off-state line so the absences below are read after the
+      // first render pass, not before it.
+      await screen.findByTestId('spaces-confluence-off');
+      expect(screen.queryByText('Fetch Spaces')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sync Selected')).not.toBeInTheDocument();
+      // The dead end it used to point at is gone with it.
+      expect(screen.queryByText(/Click "Fetch Spaces"/)).not.toBeInTheDocument();
+
+      const requested = fetchSpy.mock.calls.map(([input]) =>
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+      );
+      expect(requested.some((url) => url.includes('/spaces/available'))).toBe(false);
+    });
+
+    it('says why, and links to the panel that turns it back on', async () => {
+      renderOff();
+
+      const off = await screen.findByTestId('spaces-confluence-off');
+      expect(off).toHaveTextContent(/Confluence sync is off/);
+      expect(off.querySelector('a')).toHaveAttribute('href', '/settings/personal/confluence');
+    });
+
+    it('still lists the stored spaces and still offers to remove one', async () => {
+      renderOff(SYNCED);
+
+      expect(await screen.findByText('Development')).toBeInTheDocument();
+      expect(screen.getByLabelText('Remove Development')).toBeInTheDocument();
+      expect(screen.getByText('Save Selection (0)')).toBeInTheDocument();
+    });
+  });
 });

@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react';
 import * as Switch from '@radix-ui/react-switch';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, CheckSquare, Square, Trash2, Search, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { apiFetch } from '../../shared/lib/api';
 import { cn } from '../../shared/lib/cn';
+import { CONFLUENCE_SETTINGS_PATH } from '../../shared/lib/routes';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { SpaceHomePicker } from './SpaceHomePicker';
@@ -29,12 +31,28 @@ interface SyncedSpace {
 interface SpacesTabProps {
   selectedSpaces?: string[];
   showSpaceHomeContent?: boolean;
+  /**
+   * #1623: false when the user turned the Confluence integration off, i.e.
+   * standalone mode. The spaces already stored in Compendiq stay listed,
+   * selectable, re-homeable and removable — they are local rows — but the
+   * two controls that ask Confluence for something (Fetch Spaces, Sync
+   * Selected) are not rendered, because there is nothing behind them.
+   *
+   * Defaults to true so a caller that hasn't loaded settings yet (or a
+   * pre-#1623 payload, which omits the key) behaves exactly as before.
+   */
+  confluenceEnabled?: boolean;
   onSave: (values: Record<string, unknown>) => Promise<unknown>;
 }
 
 const EMPTY_SPACES: string[] = [];
 
-export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, showSpaceHomeContent = true, onSave }: SpacesTabProps) {
+export function SpacesTab({
+  selectedSpaces: initialSelected = EMPTY_SPACES,
+  showSpaceHomeContent = true,
+  confluenceEnabled = true,
+  onSave,
+}: SpacesTabProps) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set(initialSelected));
   // Space awaiting remove confirmation (#721; ConfirmDialog replaces native confirm()).
@@ -164,19 +182,41 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Select which Confluence spaces to sync and monitor.
+          {confluenceEnabled
+            ? 'Select which Confluence spaces to sync and monitor.'
+            : 'Manage the spaces already stored in Compendiq.'}
         </p>
-        <Button
-          onClick={() => fetchSpaces()}
-          disabled={loadingAvailable}
-          isLoading={loadingAvailable}
-          variant="secondary"
-          size="sm"
-          leftIcon={!loadingAvailable ? <RefreshCw size={14} /> : undefined}
-        >
-          Fetch Spaces
-        </Button>
+        {confluenceEnabled && (
+          <Button
+            onClick={() => fetchSpaces()}
+            disabled={loadingAvailable}
+            isLoading={loadingAvailable}
+            variant="secondary"
+            size="sm"
+            leftIcon={!loadingAvailable ? <RefreshCw size={14} /> : undefined}
+          >
+            Fetch Spaces
+          </Button>
+        )}
       </div>
+
+      {/* #1623: standalone mode, said once and said honestly — the spaces
+          below are real local rows, they just stopped exchanging anything
+          with Confluence. The link is the only next step there is, so it
+          goes in the sentence rather than in a second CTA. */}
+      {!confluenceEnabled && (
+        <p className="text-sm text-muted-foreground" data-testid="spaces-confluence-off">
+          Confluence sync is off, so spaces can't be fetched or synced. Everything already here
+          stays browsable and editable. Turn the integration back on in{' '}
+          <Link
+            className="underline underline-offset-2 hover:text-foreground"
+            to={CONFLUENCE_SETTINGS_PATH}
+          >
+            Confluence settings
+          </Link>
+          .
+        </p>
+      )}
 
       {/* Show space home content toggle */}
       <div className="flex items-center justify-between rounded-lg border border-border bg-foreground/5 px-4 py-3">
@@ -335,9 +375,19 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
             Clear filter
           </button>
         </div>
-      ) : (
+      ) : confluenceEnabled ? (
         <div className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground">
           Click "Fetch Spaces" to load available Confluence spaces.
+        </div>
+      ) : (
+        /* #1623: no Fetch Spaces button exists in standalone mode, so
+           pointing at it would be a dead end. State the fact; the off-state
+           line above already owns the explanation and the link. */
+        <div
+          className="rounded-lg border border-border bg-foreground/5 py-8 text-center text-sm text-muted-foreground"
+          data-testid="spaces-none-stored"
+        >
+          No spaces are stored in Compendiq.
         </div>
       )}
 
@@ -351,16 +401,21 @@ export function SpacesTab({ selectedSpaces: initialSelected = EMPTY_SPACES, show
         >
           Save Selection ({selected.size})
         </Button>
-        <Button
-          onClick={() => syncMutation.mutate()}
-          disabled={selected.size === 0 || syncMutation.isPending}
-          isLoading={syncMutation.isPending}
-          variant="secondary"
-          size="sm"
-          leftIcon={!syncMutation.isPending ? <RefreshCw size={14} /> : undefined}
-        >
-          Sync Selected
-        </Button>
+        {/* #1623: a manual pull, so it goes with the integration. Save
+            Selection stays — it writes a local setting and costs nothing to
+            prepare before turning Confluence back on. */}
+        {confluenceEnabled && (
+          <Button
+            onClick={() => syncMutation.mutate()}
+            disabled={selected.size === 0 || syncMutation.isPending}
+            isLoading={syncMutation.isPending}
+            variant="secondary"
+            size="sm"
+            leftIcon={!syncMutation.isPending ? <RefreshCw size={14} /> : undefined}
+          >
+            Sync Selected
+          </Button>
+        )}
       </div>
 
       {/* #721 remove confirmation. Copy mirrors the backend reality

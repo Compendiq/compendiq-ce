@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { SyncTab } from './panels/SyncTab';
 
 // SyncTab is prop-less: it self-fetches the sync overview plus the quality /
@@ -104,8 +105,14 @@ function createWrapper() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
 
+  // MemoryRouter because the #1623 off-state line carries a <Link> to the
+  // Confluence panel.
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
+    );
   };
 }
 
@@ -490,6 +497,74 @@ describe('Settings SyncTab', () => {
       await waitFor(() => {
         expect(trigger).not.toHaveAttribute('aria-disabled');
       });
+    });
+  });
+
+  // #1623: Confluence off = standalone mode. Only the Confluence link's own
+  // reporting goes; the maintenance sections describe the local corpus and
+  // the corpus is still there.
+  describe('with the Confluence integration off (#1623)', () => {
+    beforeEach(() => {
+      // Admin, so the (admin-only) attachment storage section is in play.
+      authState = { user: { role: 'admin' }, accessToken: 'test-token', setAuth: vi.fn(), clearAuth: vi.fn() };
+      mockFetchResponses();
+    });
+
+    it('drops the sync overview, the space grid and Missing Assets, and never fetches the overview', async () => {
+      render(<SyncTab confluenceEnabled={false} />, { wrapper: createWrapper() });
+
+      await screen.findByTestId('sync-confluence-off');
+      expect(screen.queryByTestId('sync-overview-sync-now')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-overview-refresh')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-overview-force-resync-all')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-overview-status')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-metric-spaces')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-overview-space-OPS')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('sync-overview-issue-page-1')).not.toBeInTheDocument();
+
+      const requested = fetchSpy.mock.calls.map(([input]) =>
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
+      );
+      expect(requested.some((url) => url.includes('/settings/sync-overview'))).toBe(false);
+      // …and it is not the skeleton either: the disabled query never resolves,
+      // so the panel had to stop depending on it.
+      expect(screen.queryByTestId('sync-tab-error')).not.toBeInTheDocument();
+    });
+
+    it('keeps the maintenance sections that run on the local corpus', async () => {
+      render(<SyncTab confluenceEnabled={false} />, { wrapper: createWrapper() });
+
+      expect(await screen.findByTestId('attachment-storage-section')).toBeInTheDocument();
+      expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
+      expect(screen.getByTestId('summary-worker-section')).toBeInTheDocument();
+      // Their triggers too — the workers still have work to do.
+      expect(screen.getByTestId('quality-force-rescan')).toBeInTheDocument();
+      expect(screen.getByTestId('summary-force-rescan')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('quality-metric-analyzed')).toHaveTextContent('75');
+      });
+      expect(screen.getByTestId('summary-metric-summarized')).toHaveTextContent('80');
+    });
+
+    it('says why, and links to the panel that turns it back on', async () => {
+      render(<SyncTab confluenceEnabled={false} />, { wrapper: createWrapper() });
+
+      const off = await screen.findByTestId('sync-confluence-off');
+      expect(off).toHaveTextContent(/Confluence sync is off/);
+      expect(off.querySelector('a')).toHaveAttribute('href', '/settings/personal/confluence');
+    });
+
+    it('renders the full overview again once the integration is on', async () => {
+      render(<SyncTab confluenceEnabled />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('sync-overview-status')).toHaveTextContent('Idle');
+      });
+      expect(screen.getByTestId('sync-overview-sync-now')).toBeInTheDocument();
+      expect(screen.getByTestId('sync-overview-space-OPS')).toBeInTheDocument();
+      expect(screen.getByTestId('quality-worker-section')).toBeInTheDocument();
+      expect(screen.getByTestId('summary-worker-section')).toBeInTheDocument();
+      expect(screen.queryByTestId('sync-confluence-off')).not.toBeInTheDocument();
     });
   });
 });
