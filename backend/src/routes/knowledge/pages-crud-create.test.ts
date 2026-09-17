@@ -3,6 +3,9 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import { pagesCrudRoutes } from './pages-crud.js';
+// `vi.mock` below is hoisted, so this static import already resolves to the
+// mocked module.
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 
 const mockCacheInvalidate = vi.fn();
 const mockCacheInvalidateAcrossUsers = vi.fn();
@@ -26,6 +29,8 @@ vi.mock('../../core/utils/logger.js', () => ({
 }));
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  // #1623: the toggle helper the page/AI write paths consult.
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
   getClientForUser: vi.fn().mockResolvedValue(null),
 }));
 
@@ -359,6 +364,30 @@ describe('POST /api/pages - parentId validation', () => {
     expect(response.statusCode).toBe(400);
     const body = JSON.parse(response.payload);
     expect(body.error).toContain('Confluence not configured');
+  });
+
+  // #1623 — creating a page IN a Confluence space is Confluence work: a local
+  // row cannot even carry a Confluence space key, so there is no local path to
+  // fall back to. It must name the integration, never ask for credentials.
+  it('refuses a create in a Confluence space with the integration-off message', async () => {
+    mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
+    vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages',
+      payload: {
+        title: 'Should not reach Confluence',
+        bodyHtml: '<p>Hello</p>',
+        spaceKey: 'CONFSPACE',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.payload);
+    expect(body.error).toBe('Confluence integration is disabled');
+    expect(body.error).not.toContain('not configured');
+    expect(getClientForUser).not.toHaveBeenCalled();
   });
 
   it('should auto-detect standalone when source is omitted and space is local', async () => {

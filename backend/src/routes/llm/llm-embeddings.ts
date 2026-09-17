@@ -4,7 +4,8 @@ import { confluenceToHtml } from '../../core/services/content-converter.js';
 import { assertNoShadowMigration, getEmbeddingStatus, processDirtyPages, reEmbedAll, isProcessingUser, embedPage, resetFailedEmbeddings, getAdminChunkSettings } from '../../domains/llm/services/embedding-service.js';
 import type { EmbeddingProgressEvent } from '../../domains/llm/services/embedding-service.js';
 import { isEmbeddingLocked } from '../../core/services/redis-cache.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
 import { ForceEmbedTreeRequestSchema } from '@compendiq/contracts';
 import { logger } from '../../core/utils/logger.js';
 import { EMBEDDING_RATE_LIMIT } from './_helpers.js';
@@ -135,6 +136,15 @@ export async function llmEmbeddingRoutes(fastify: FastifyInstance) {
   fastify.post('/embeddings/force-embed-tree', EMBEDDING_RATE_LIMIT, async (request, reply) => {
     const { pageId } = ForceEmbedTreeRequestSchema.parse(request.body);
     const userId = request.userId;
+
+    // #1623 — this walks the REMOTE tree (`getPage` + `getDescendantPages`), so
+    // it is Confluence work with no local equivalent: with the integration off
+    // it refuses by naming the integration rather than asking for the
+    // credentials that are still on file. Local embedding is unaffected —
+    // `POST /embeddings/process` and the dirty-page worker keep running.
+    if (!(await isConfluenceEnabled(userId))) {
+      throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
+    }
 
     const client = await getClientForUser(userId);
     if (!client) {

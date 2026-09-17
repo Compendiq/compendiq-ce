@@ -371,6 +371,56 @@ describe.skipIf(!dbAvailable)('delete atomicity — no local/Confluence divergen
     expect(await getRow('conf-404')).toBeNull();
   });
 
+  // #1623 — off is standalone, and these cases run the REAL
+  // `isConfluenceEnabled` against Postgres (only the client factory is stubbed).
+  it('integration off → destroys the local row and issues no Confluence delete', async () => {
+    await query(
+      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      [userId],
+    );
+    const pageId = await insertPage('conf-off');
+    await insertPin(pageId);
+    const deletePage = vi.fn();
+    mockGetClientForUser.mockResolvedValue({ deletePage });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/pages/conf-off' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().message).toContain('left untouched');
+    // Gone locally…
+    expect(await getRow('conf-off')).toBeNull();
+    const pins = await query('SELECT 1 FROM pinned_pages WHERE page_id = $1', [pageId]);
+    expect(pins.rowCount).toBe(0);
+    // …and never touched upstream. The route did not even ask for a client, so
+    // `Confluence not configured` is unreachable for this user too.
+    expect(deletePage).not.toHaveBeenCalled();
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+  });
+
+  it('integration off → bulk delete destroys the local rows and issues no Confluence delete', async () => {
+    await query(
+      'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+      [userId],
+    );
+    await insertPage('bulk-off-1');
+    await insertPage('bulk-off-2');
+    const deletePage = vi.fn();
+    mockGetClientForUser.mockResolvedValue({ deletePage });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/pages/bulk/delete',
+      payload: { ids: ['bulk-off-1', 'bulk-off-2'] },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ succeeded: 2, failed: 0 });
+    expect(await getRow('bulk-off-1')).toBeNull();
+    expect(await getRow('bulk-off-2')).toBeNull();
+    expect(deletePage).not.toHaveBeenCalled();
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+  });
+
   it('(a) upstream delete succeeds but the local hard-delete fails → article is hidden (soft-deleted), never a live orphan; sync purge converges it', async () => {
     const strandedId = await insertPage('conf-strand');
     await seedIcon(strandedId);

@@ -14,7 +14,10 @@ vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
+const mockIsConfluenceEnabled = vi.fn();
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  // #1623: the toggle helper the page/AI write paths consult.
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
@@ -106,6 +109,9 @@ describe('PUT /api/pages/:id', () => {
     mockHtmlToText.mockReturnValue('converted');
     // Default: the test user can reach the OPS space used by the Confluence fixture.
     mockGetUserAccessibleSpaces.mockResolvedValue(['OPS']);
+    // Default: the integration is on (the pre-#1623 behaviour of every case
+    // in this file).
+    mockIsConfluenceEnabled.mockResolvedValue(true);
 
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, version, space_key')) {
@@ -469,6 +475,72 @@ describe('PUT /api/pages/:id', () => {
       expect(response.statusCode).toBe(200);
       expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
       expect(mockCacheInvalidate).not.toHaveBeenCalledWith('user-1', 'pages');
+    });
+  });
+
+  // #1623 — with the integration off the app is standalone: an already-synced
+  // article keeps working, and nothing may reach Confluence.
+  describe('Confluence integration off (#1623)', () => {
+    it('updates the local row and calls no Confluence client for a synced page', async () => {
+      // The Confluence fixture from beforeEach (id 42, source 'confluence'),
+      // plus the guarded local UPDATE matching its one row (#926).
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id, version, space_key')) {
+          return Promise.resolve({
+            rows: [{
+              id: 42, version: 7, space_key: 'OPS', source: 'confluence',
+              created_by_user_id: null, visibility: 'shared',
+              confluence_id: 'page-1', deleted_at: null, page_type: 'page',
+            }],
+          });
+        }
+        if (sql.includes('UPDATE pages SET')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      mockIsConfluenceEnabled.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/page-1',
+        payload: { title: 'Edited offline', bodyHtml: '<p>local edit</p>', version: 7 },
+      });
+
+      expect(response.statusCode).toBe(200);
+      // The page is still a Confluence article, and the local version moved on.
+      expect(JSON.parse(response.payload)).toMatchObject({
+        id: 42,
+        source: 'confluence',
+        version: 8,
+      });
+      // The write went to the local row, stamped as a local edit (#305) so the
+      // next sync's existing conflict handling sees the divergence.
+      const localWrite = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string'
+          && (c[0] as string).includes('UPDATE pages SET')
+          && (c[0] as string).includes('local_modified_at = NOW()'),
+      );
+      expect(localWrite).toBeDefined();
+      // Nothing upstream was attempted — not even a client was asked for, so
+      // there is no code path left that could push or prompt for credentials.
+      expect(mockGetClientForUser).not.toHaveBeenCalled();
+      expect(mockHtmlToConfluence).not.toHaveBeenCalled();
+    });
+
+    it('keeps the credential error for an ENABLED user with no credentials', async () => {
+      // The regression this guards: `Confluence not configured` is a credential
+      // prompt and must stay reachable ONLY while the integration is on.
+      mockGetClientForUser.mockResolvedValue(null);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/pages/page-1',
+        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.payload).message).toBe('Confluence not configured');
     });
   });
 });

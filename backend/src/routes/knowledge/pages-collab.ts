@@ -34,6 +34,7 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
 import { uploadLocalImagesToConfluence } from '../../domains/confluence/services/pasted-image-uploader.js';
+import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
 
 const UPGRADE_LIMIT_PER_MIN = 20;
 
@@ -330,7 +331,10 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     }
     const bodyText = htmlToText(html);
 
-    if (existing.source === 'confluence') {
+    // #1623 — ONE rule: a synced page whose owner switched the integration off
+    // takes exactly the path a standalone page takes below. Nothing goes
+    // upstream, and no credential prompt is reachable from here.
+    if (!(await pageWriteStaysLocal(userId, existing.source))) {
       return commitConfluencePage({
         fastify,
         request,
@@ -399,21 +403,37 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
     }
 
     runtime?.broadcastControl(pageId, { type: 'pages_version', version: newVersion });
-    logger.info({ pageId, version: newVersion, confluence: false }, 'collab.commit');
+    logger.info(
+      { pageId, version: newVersion, confluence: false, source: existing.source },
+      'collab.commit',
+    );
 
     const cache = new RedisCache(fastify.redis);
-    if (existing.visibility === 'shared') {
+    // A Confluence-sourced page is visible to every user with space access
+    // (#893) even when this user's integration is off, so its local write
+    // clears every cache the remote path would have cleared.
+    if (existing.visibility === 'shared' || existing.source === 'confluence') {
       await cache.invalidateAcrossUsers('pages');
     } else {
       await cache.invalidate(userId, 'pages');
     }
-    await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(pageId), { source: 'collab_commit', title: body.title }, request);
+    await logAuditEvent(
+      userId,
+      'PAGE_UPDATED',
+      'page',
+      String(pageId),
+      // `confluence: false` on a Confluence-sourced page is the audit trail's
+      // record that the edit stayed local (#1623).
+      { source: 'collab_commit', title: body.title, ...(existing.source === 'confluence' ? { confluence: false } : {}) },
+      request,
+    );
 
     return CollabCommitResponseSchema.parse({
       id: pageId,
       title: body.title,
       version: newVersion,
-      source: 'standalone' as const,
+      source: existing.source as 'standalone' | 'confluence',
+      ...(existing.source === 'confluence' ? { pushedToConfluence: false as const } : {}),
     });
   });
 

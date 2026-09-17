@@ -13,6 +13,7 @@ import {
 } from '@compendiq/contracts';
 import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
@@ -344,8 +345,11 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;
 
-    if (existingPage.source === 'standalone') {
-      // --- Standalone page: update local DB only (no Confluence sync) ---
+    // #1623 — ONE rule: a page with no upstream, and a synced page whose owner
+    // switched the integration off, take the SAME local write. Nothing is
+    // pushed to Confluence while it is off.
+    if (await pageWriteStaysLocal(userId, existingPage.source)) {
+      // --- Local write: update local DB only (no Confluence sync) ---
       newVersion = currentVersion + 1;
       await query(
         `UPDATE pages SET

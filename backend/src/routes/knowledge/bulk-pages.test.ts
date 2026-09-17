@@ -23,6 +23,8 @@ vi.mock('../../core/services/redis-cache.js', () => {
 });
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  // #1623: the toggle helper the page/AI write paths consult.
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
   getClientForUser: vi.fn().mockResolvedValue({
     deletePage: vi.fn().mockResolvedValue(undefined),
     getPage: vi.fn().mockResolvedValue({
@@ -132,7 +134,7 @@ vi.mock('../../core/db/postgres.js', () => ({
   closePool: vi.fn(),
 }));
 
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 import { cleanPageAttachments } from '../../domains/confluence/services/attachment-handler.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
@@ -300,6 +302,36 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       const body = JSON.parse(response.body);
       expect(body.succeeded).toBe(1);
       expect(body.failed).toBe(0);
+      expect(getClientForUser).not.toHaveBeenCalled();
+    });
+
+    // #1623 — off is standalone, so a synced page is still deletable; it is
+    // just deleted locally, and Confluence keeps its copy.
+    it('deletes Confluence-sourced pages locally when the integration is off', async () => {
+      vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{ id: 1, confluence_id: 'page-1', source: 'confluence', space_key: 'DEV' }],
+        rowCount: 1,
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: ['page-1'] },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.succeeded).toBe(1);
+      expect(body.failed).toBe(0);
+      // The local row is gone…
+      const localDelete = mockTxQueryFn.mock.calls.find(
+        (call: unknown[]) => typeof call[0] === 'string'
+          && (call[0] as string).includes('DELETE FROM pages'),
+      );
+      expect(localDelete).toBeDefined();
+      // …and nothing was deleted upstream: the route never even asked for a
+      // client, so neither a `deletePage` nor a credential prompt is reachable.
       expect(getClientForUser).not.toHaveBeenCalled();
     });
 
@@ -582,6 +614,23 @@ describe('Bulk Pages Routes (Parallelized)', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+
+    // #1623 — a re-sync is Confluence work with no local equivalent, so it
+    // refuses by naming the integration instead of asking for credentials that
+    // are still stored.
+    it('refuses with the integration-off message when Confluence is disabled', async () => {
+      vi.mocked(isConfluenceEnabled).mockResolvedValueOnce(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/sync',
+        payload: { ids: ['page-1', 'page-2'] },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error).toBe('Confluence integration is disabled');
+      expect(getClientForUser).not.toHaveBeenCalled();
     });
 
     it('re-queues the image index when the refresh rewrites body_html (#1115 P2)', async () => {

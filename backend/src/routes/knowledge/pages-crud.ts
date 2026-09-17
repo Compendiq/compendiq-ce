@@ -2,7 +2,11 @@ import { FastifyInstance } from 'fastify';
 import { query, getPool } from '../../core/db/postgres.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
+import {
+  CONFLUENCE_DISABLED_MESSAGE,
+  pageWriteStaysLocal,
+} from '../../domains/confluence/services/standalone-mode.js';
 import { htmlToConfluence, confluenceToHtml } from '../../core/services/content-converter.js';
 import { cleanPageAttachments, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
 import { assertNonSsrfUrl, SsrfError } from '../../core/utils/ssrf-guard.js';
@@ -50,6 +54,74 @@ import { uploadLocalImagesToConfluence } from '../../domains/confluence/services
 /** Escape ILIKE metacharacters so user input like "100%" doesn't match all rows. */
 function escapeIlikeTerm(term: string): string {
   return term.replace(/[%_\\]/g, '\\$&');
+}
+
+/**
+ * Destroy the local rows of Confluence-sourced pages whose upstream copy is no
+ * longer this app's concern — deleted upstream just now, already 404 there, or
+ * never touched because the user's integration is off (#1623) — and collect
+ * everything the rows leave behind.
+ *
+ * Shared by the two arms of the bulk delete so the local half of the work is
+ * written once: the standalone-mode arm issues no Confluence call at all, and
+ * must still clean up exactly what the remote arm cleans up.
+ */
+async function destroyDeletedConfluenceRows(args: {
+  numericIds: number[];
+  confluenceIds: string[];
+  limit: <T>(fn: () => Promise<T>) => Promise<T>;
+}): Promise<void> {
+  const { numericIds, confluenceIds, limit } = args;
+  if (numericIds.length === 0) return;
+
+  const txClient = await getPool().connect();
+  // The ids the COMMIT really destroyed — empty on the rollback branch,
+  // which must not reach the irreversible icon discard (#1349 fixer r1).
+  let destroyedNumericIds: number[] = [];
+  try {
+    await txClient.query('BEGIN');
+    await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [numericIds]);
+    const destroyed = await txClient.query<{ id: number }>(
+      'DELETE FROM pages WHERE id = ANY($1::int[]) RETURNING id',
+      [numericIds],
+    );
+    await txClient.query('COMMIT');
+    destroyedNumericIds = destroyed.rows.map((r) => r.id);
+  } catch (cleanupErr) {
+    await txClient.query('ROLLBACK').catch(() => undefined);
+    // Any upstream delete already happened and cannot be rolled back — the rows
+    // stay soft-deleted (hidden) and `purgeDeletedPages` converges them; never
+    // a live orphan.
+    logger.error(
+      { pageIds: numericIds, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+      'Bulk local cleanup failed after the page deletes — rows left soft-deleted for sync to purge',
+    );
+  } finally {
+    txClient.release();
+  }
+  // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
+  await Promise.allSettled(confluenceIds.map((id) => limit(() => cleanPageAttachments(id))));
+  // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
+  // and is a second pass rather than a line inside the one above
+  // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it
+  // walks the ids the COMMIT returned rather than the ids we intended
+  // to delete (#1349 fixer r1): the catch above does not rethrow, so on
+  // a rollback every row is still alive with its `icon_kind = 'image'`
+  // and the mark is the only copy of those bytes. Left alone, it is
+  // collected by `purgeDeletedPages` after its own committed DELETE.
+  await Promise.allSettled(
+    destroyedNumericIds.map((pageId) => limit(() => discardPageIconForDeletedPage(pageId))),
+  );
+  await Promise.allSettled(
+    destroyedNumericIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
+  );
+  // A Confluence-sourced bulk delete is always a hard delete of the local row.
+  for (const pageId of numericIds) {
+    emitWebhookEvent({
+      eventType: 'page.deleted',
+      payload: { pageId, isHardDelete: true },
+    });
+  }
 }
 
 /**
@@ -1481,6 +1553,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // #1623 — creating a page IN Confluence is Confluence work, not a local
+    // write: a standalone row cannot even hold a Confluence space key (see the
+    // local branch above), so there is no local path to fall back to. Refuse by
+    // naming the integration, never by asking for credentials. Local spaces and
+    // spaceless articles stay fully available while the integration is off.
+    if (!(await isConfluenceEnabled(userId))) {
+      throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
+    }
+
     const client = await getClientForUser(userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
@@ -1617,11 +1698,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.badRequest('Folder pages cannot have body content. Only the title can be updated.');
     }
 
-    if (existingPage.source === 'standalone') {
-      // --- Standalone article: no Confluence call ---
+    // #1623 — ONE rule: an article with no upstream, and a synced article whose
+    // owner switched the integration off, take the SAME local write path. No
+    // remote version check, no image upload, no `updatePage`.
+    if (await pageWriteStaysLocal(userId, existingPage.source)) {
+      // --- Local write: no Confluence call ---
 
-      // Access control: only owner or shared pages can be edited
-      if (existingPage.created_by_user_id !== userId && existingPage.visibility !== 'shared') {
+      // Access control. A Confluence-sourced article is space-scoped no matter
+      // which mode this user is in, so it keeps the space check the remote path
+      // applies below instead of the standalone owner rule (its
+      // `created_by_user_id` is NULL — sync created the row).
+      if (existingPage.source === 'confluence') {
+        if (existingPage.space_key) {
+          const accessibleSpaces = await getUserAccessibleSpaces(userId);
+          if (!accessibleSpaces.includes(existingPage.space_key)) {
+            throw fastify.httpErrors.forbidden('Access denied to this space');
+          }
+        }
+      } else if (existingPage.created_by_user_id !== userId && existingPage.visibility !== 'shared') {
         throw fastify.httpErrors.forbidden('Not authorized to edit this page');
       }
 
@@ -1697,13 +1791,23 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // change what OTHER users see (#893) — their cached trees/lists would
       // serve stale data for up to the cache TTL (15 min) if we only
       // invalidated the editor's own cache. Private edits stay per-user.
+      // A Confluence-sourced article is visible to every user with space
+      // access (#893), so a local write to one clears what the remote path
+      // would have cleared.
       const visibilityChanged = body.visibility && body.visibility !== existingPage.visibility;
-      if (visibilityChanged || existingPage.visibility === 'shared') {
+      if (visibilityChanged || existingPage.visibility === 'shared' || existingPage.source === 'confluence') {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
       }
-      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id), { source: 'standalone', title: body.title }, request);
+      await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(id),
+        // `pushedToConfluence: false` on a synced article is the audit trail's
+        // record that the edit stayed local (#1623).
+        {
+          source: existingPage.source,
+          title: body.title,
+          ...(existingPage.source === 'confluence' ? { pushedToConfluence: false } : {}),
+        }, request);
 
       emitWebhookEvent({
         eventType: 'page.updated',
@@ -1715,7 +1819,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         },
       });
 
-      return { id: existingPage.id, title: body.title, version: newVersion, source: 'standalone' };
+      return { id: existingPage.id, title: body.title, version: newVersion, source: existingPage.source };
     }
 
     // --- Confluence article: existing flow ---
@@ -2021,7 +2125,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       return { message: isPermanent ? 'Page permanently deleted' : 'Page moved to trash' };
     }
 
-    // --- Confluence article: existing flow ---
+    // --- Confluence-sourced article ---
     // RBAC: verify user has access to this page's space before allowing delete
     if (existingPage.space_key) {
       const accessibleSpaces = await getUserAccessibleSpaces(userId);
@@ -2030,12 +2134,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
-    const client = await getClientForUser(userId);
-    if (!client) {
+    // #1623 — ONE rule, delete flavour. With the integration off the delete
+    // stays local: the local row is destroyed exactly as it is below, and
+    // `deletePage` is never called. The Confluence page survives, so turning
+    // the integration back on hands this page to the sync upsert that already
+    // re-imports anything present upstream — no new reconciliation model.
+    //
+    // The row is DESTROYED rather than trashed because the trash is
+    // standalone-only (`GET /pages/trash` and `/restore` both refuse a
+    // Confluence-sourced row), so a soft delete here would hide the article
+    // where nobody could restore it.
+    const staysLocal = await pageWriteStaysLocal(userId, existingPage.source);
+    const client = staysLocal ? null : await getClientForUser(userId);
+    if (!staysLocal && !client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
     }
 
-    // #766: record the delete intent locally FIRST (soft-delete), so a failure at
+    // #766 (remote path only — `client` is null in standalone mode): record the
+    // delete intent locally FIRST (soft-delete), so a failure at
     // any later step can never leave a user-visible local article whose Confluence
     // counterpart is already gone. Ordering:
     //   1. soft-delete the row (single atomic UPDATE — hides it from every
@@ -2052,51 +2168,54 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // or a full sync runs — incremental sync never re-upserts an unmodified
     // page.) A failure after 2 leaves at worst a hidden soft-deleted row that
     // `purgeDeletedPages` converges — never the live orphan from #766.
-    const intent = await query<{ id: number }>(
-      'UPDATE pages SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
-      [existingPage.id],
-    );
-    const intentRecordedHere = (intent.rowCount ?? 0) > 0;
-
-    // Propagate the delete to Confluence. A 404 means the page is already gone
-    // remotely — the desired end state is already true, so we treat it as success
-    // and fall through to local cleanup rather than leaving an orphaned, undeletable
-    // row behind (#706). Any other error is re-thrown so we never silently drop a
-    // page when Confluence genuinely failed (e.g. 5xx, auth, permissions).
     let alreadyGone = false;
-    try {
-      await client.deletePage(existingPage.confluence_id!);
-    } catch (err) {
-      if (err instanceof ConfluenceError && err.statusCode === 404) {
-        alreadyGone = true;
-        logger.info(
-          { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
-          'Confluence page already deleted remotely (404) — cleaning up locally',
-        );
-      } else {
-        // Upstream genuinely failed: roll back the delete intent so neither side
-        // changed. Only clear a soft-delete WE set — a row that was already
-        // soft-deleted (e.g. by sync reconciliation) must stay that way.
-        if (intentRecordedHere) {
-          try {
-            await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [existingPage.id]);
-          } catch (restoreErr) {
-            // Worst case: the page stays hidden although it still exists in
-            // Confluence. Deletion reconciliation revives soft-deleted rows
-            // whose page is still in the live listing (once the soft-delete is
-            // older than the revival grace window), so this self-heals within
-            // a couple of sync cycles.
-            logger.error(
-              { pageId: existingPage.id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
-              'Failed to clear delete intent after Confluence delete failure — sync reconciliation will revive the page',
-            );
+    if (client) {
+      const intent = await query<{ id: number }>(
+        'UPDATE pages SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL RETURNING id',
+        [existingPage.id],
+      );
+      const intentRecordedHere = (intent.rowCount ?? 0) > 0;
+
+      // Propagate the delete to Confluence. A 404 means the page is already gone
+      // remotely — the desired end state is already true, so we treat it as success
+      // and fall through to local cleanup rather than leaving an orphaned, undeletable
+      // row behind (#706). Any other error is re-thrown so we never silently drop a
+      // page when Confluence genuinely failed (e.g. 5xx, auth, permissions).
+      try {
+        await client.deletePage(existingPage.confluence_id!);
+      } catch (err) {
+        if (err instanceof ConfluenceError && err.statusCode === 404) {
+          alreadyGone = true;
+          logger.info(
+            { pageId: existingPage.id, confluenceId: existingPage.confluence_id },
+            'Confluence page already deleted remotely (404) — cleaning up locally',
+          );
+        } else {
+          // Upstream genuinely failed: roll back the delete intent so neither side
+          // changed. Only clear a soft-delete WE set — a row that was already
+          // soft-deleted (e.g. by sync reconciliation) must stay that way.
+          if (intentRecordedHere) {
+            try {
+              await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [existingPage.id]);
+            } catch (restoreErr) {
+              // Worst case: the page stays hidden although it still exists in
+              // Confluence. Deletion reconciliation revives soft-deleted rows
+              // whose page is still in the live listing (once the soft-delete is
+              // older than the revival grace window), so this self-heals within
+              // a couple of sync cycles.
+              logger.error(
+                { pageId: existingPage.id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) },
+                'Failed to clear delete intent after Confluence delete failure — sync reconciliation will revive the page',
+              );
+            }
           }
+          throw err;
         }
-        throw err;
       }
     }
 
-    // Upstream is gone (deleted now, or already 404). Finish the local cleanup in
+    // Upstream is gone (deleted now, already 404, or never touched because the
+    // integration is off). Finish the local cleanup in
     // ONE transaction on a dedicated client — pool.query() draws a random
     // connection per call, so separate statements would not be atomic
     // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
@@ -2122,8 +2241,8 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       // The user-visible outcome (page gone on both sides) is achieved — log
       // loudly instead of failing the request.
       logger.error(
-        { pageId: existingPage.id, confluenceId: existingPage.confluence_id, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
-        'Local cleanup failed after successful Confluence delete — row left soft-deleted for sync to purge',
+        { pageId: existingPage.id, confluenceId: existingPage.confluence_id, staysLocal, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+        'Local cleanup failed after the page delete — row left soft-deleted for sync to purge',
       );
     } finally {
       txClient.release();
@@ -2164,7 +2283,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     await cache.invalidateAcrossUsers('pages');
     await cache.invalidateAcrossUsers('spaces');
 
-    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id), { alreadyGoneRemotely: alreadyGone }, request);
+    await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
+      // `upstreamDeleted: false` is the audit trail's record that the delete
+      // stayed local because the integration is off (#1623).
+      { alreadyGoneRemotely: alreadyGone, upstreamDeleted: !staysLocal }, request);
 
     emitWebhookEvent({
       eventType: 'page.deleted',
@@ -2175,9 +2297,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     });
 
     return {
-      message: alreadyGone
-        ? 'Page was already removed in Confluence — removed locally'
-        : 'Page deleted',
+      message: staysLocal
+        ? 'Page removed locally. Confluence is disconnected, so the Confluence page was left untouched.'
+        : alreadyGone
+          ? 'Page was already removed in Confluence — removed locally'
+          : 'Page deleted',
     };
   });
 
@@ -2557,12 +2681,25 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     }
     const standaloneSucceeded = standaloneNumericIds.length;
 
-    // Delete Confluence pages via API
+    // Delete Confluence pages via API — or locally, when the integration is off
     const bulkLimit = pLimit(5);
     let confluenceSucceeded = 0;
     if (confluencePages.length > 0) {
-      const client = await getClientForUser(userId);
-      if (!client) {
+      // #1623 — the single delete's ONE rule, in bulk: with the integration off
+      // the selected rows are destroyed LOCALLY and no `deletePage` is issued.
+      // The upstream pages survive, so re-enabling the integration hands them
+      // straight back to the sync upsert that re-imports whatever is there.
+      const staysLocal = await pageWriteStaysLocal(userId, 'confluence');
+      const client = staysLocal ? null : await getClientForUser(userId);
+      if (staysLocal) {
+        await destroyDeletedConfluenceRows({
+          numericIds: confluencePages.map((p) => p.id),
+          confluenceIds: confluencePages.map((p) => p.confluence_id!).filter(Boolean),
+          limit: bulkLimit,
+        });
+        confluenceSucceeded += confluencePages.length;
+      } else if (!client) {
+        // Integration ON but unconfigured — unchanged credential error.
         confluencePages.forEach((p) => {
           failed++;
           errors.push(`Page ${p.confluence_id ?? p.id}: Confluence not configured`);
@@ -2633,60 +2770,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
           }
         }
 
-        // Upstream is gone for these. Finish the local cleanup in ONE transaction
-        // (page_embeddings/page_versions cascade-delete via FK; pinned_pages also
-        // cascades, deleted explicitly for clarity).
-        if (deletedConfluenceNumericIds.length > 0) {
-          const txClient = await getPool().connect();
-          // The ids the COMMIT really destroyed — empty on the rollback branch,
-          // which must not reach the irreversible icon discard (#1349 fixer r1).
-          let destroyedNumericIds: number[] = [];
-          try {
-            await txClient.query('BEGIN');
-            await txClient.query('DELETE FROM pinned_pages WHERE page_id = ANY($1::int[])', [deletedConfluenceNumericIds]);
-            const destroyed = await txClient.query<{ id: number }>(
-              'DELETE FROM pages WHERE id = ANY($1::int[]) RETURNING id',
-              [deletedConfluenceNumericIds],
-            );
-            await txClient.query('COMMIT');
-            destroyedNumericIds = destroyed.rows.map((r) => r.id);
-          } catch (cleanupErr) {
-            await txClient.query('ROLLBACK').catch(() => undefined);
-            // Upstream deletes already happened — the rows stay soft-deleted
-            // (hidden) and `purgeDeletedPages` converges them; never a live orphan.
-            logger.error(
-              { pageIds: deletedConfluenceNumericIds, err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
-              'Bulk local cleanup failed after successful Confluence deletes — rows left soft-deleted for sync to purge',
-            );
-          } finally {
-            txClient.release();
-          }
-          // Filesystem attachment cleanup cannot join the DB transaction — best-effort.
-          await Promise.allSettled(deletedConfluenceIds.map((id) => bulkLimit(() => cleanPageAttachments(id))));
-          // The icon store is keyed by `pages.id`, so it takes the NUMERIC ids
-          // and is a second pass rather than a line inside the one above
-          // (#1349 review r2 — see `discardPageIconForDeletedPage`), and it
-          // walks the ids the COMMIT returned rather than the ids we intended
-          // to delete (#1349 fixer r1): the catch above does not rethrow, so on
-          // a rollback every row is still alive with its `icon_kind = 'image'`
-          // and the mark is the only copy of those bytes. Left alone, it is
-          // collected by `purgeDeletedPages` after its own committed DELETE.
-          await Promise.allSettled(
-            destroyedNumericIds.map((pageId) =>
-              bulkLimit(() => discardPageIconForDeletedPage(pageId)),
-            ),
-          );
-          await Promise.allSettled(
-            destroyedNumericIds.map((pageId) => tombstoneCollabRoomAfterCommit(pageId)),
-          );
-          // Confluence bulk delete is always a hard delete (Confluence API + local row removal).
-          for (const pageId of deletedConfluenceNumericIds) {
-            emitWebhookEvent({
-              eventType: 'page.deleted',
-              payload: { pageId, isHardDelete: true },
-            });
-          }
-        }
+        // Upstream is gone for these — destroy the local rows and collect what
+        // they leave behind (the same local half the standalone arm above runs).
+        await destroyDeletedConfluenceRows({
+          numericIds: deletedConfluenceNumericIds,
+          confluenceIds: deletedConfluenceIds,
+          limit: bulkLimit,
+        });
       }
     }
 
@@ -2716,6 +2806,13 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.post('/pages/bulk/sync', async (request, reply) => {
     const parsed = BulkIdsOrFilterSchema.parse(request.body);
     const userId = request.userId;
+
+    // #1623 — a re-sync is Confluence work with no local equivalent: it pulls
+    // upstream content. With the integration off it refuses by naming the
+    // integration, never by asking for credentials that are still on file.
+    if (!(await isConfluenceEnabled(userId))) {
+      throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
+    }
 
     const client = await getClientForUser(userId);
     if (!client) {
