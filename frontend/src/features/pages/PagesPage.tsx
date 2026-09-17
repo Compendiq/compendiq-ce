@@ -701,7 +701,8 @@ export function PagesPage() {
   const activeFilterCount = activeFilters.length;
 
   /**
-   * Why the browse list is empty — four answers, not one (#1402 phase 3).
+   * Why the browse list is empty — five answers, not one (#1402 phase 3,
+   * #1623).
    *
    * A filter or a search term emptying the list is the user's own doing and
    * already says which. What was left undiagnosed is the unfiltered case: it
@@ -734,14 +735,27 @@ export function PagesPage() {
    * `settings !== undefined`, and reads `selectedSpaces` with the same optional
    * chain — `useSettings()` does no runtime validation, so a response missing
    * the field would otherwise throw during render and take the route down.
+   *
+   * #1623 adds the fifth answer, and it outranks both Confluence ones: the
+   * integration can be switched OFF, which is standalone mode, not a gap.
+   * Asking a standalone user for a token or a space selection would advertise
+   * the one feature they explicitly declined, so both prompts are suppressed
+   * and the generic copy below drops its "or connect a Confluence space"
+   * half. A filter or a search term still speaks first — that emptiness is
+   * the user's own doing in standalone mode too. The test is `=== false`, not
+   * falsy: a payload predating the column omits the key, and reading
+   * "unknown" as "off" would strip the setup prompts from the users who do
+   * still need them.
    */
   const unfilteredEmpty = activeFilterCount === 0 && !search;
   const settingsKnown = settings !== undefined;
+  const confluenceOff = settingsKnown && settings.confluenceEnabled === false;
   const promptConfluenceConnect =
-    unfilteredEmpty && settingsKnown && !settings.hasConfluencePat;
+    unfilteredEmpty && settingsKnown && !confluenceOff && !settings.hasConfluencePat;
   const promptSelectSpaces =
     unfilteredEmpty &&
     settingsKnown &&
+    !confluenceOff &&
     settings.hasConfluencePat === true &&
     (settings.selectedSpaces?.length ?? 0) === 0;
 
@@ -1983,7 +1997,11 @@ export function PagesPage() {
                       ? (search
                           ? `No pages match "${search}" with ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`
                           : `No pages match ${summarizeFilterLabels(activeFilters.map((f) => f.label))}`)
-                      : (search ? 'Try a different search term' : 'Create a page, or connect a Confluence space to fill this list')
+                      : (search
+                          ? 'Try a different search term'
+                          : confluenceOff
+                            ? 'Create a page to fill this list — nothing syncs in while this workspace is standalone.'
+                            : 'Create a page, or connect a Confluence space to fill this list')
               }
               action={
                 promptConfluenceConnect
@@ -1992,7 +2010,13 @@ export function PagesPage() {
                     ? { label: 'Choose spaces', onClick: () => navigate(SPACES_SETTINGS_PATH) }
                     : activeFilterCount > 0
                       ? { label: 'Clear filters', onClick: clearAllFilters }
-                      : (!search ? { label: 'Go to Settings', onClick: () => navigate('/settings') } : undefined)
+                      /* Standalone mode: the settings root has nothing left to
+                         offer a user who has already made this choice, and
+                         `Create a Page` below is the only true next step — so
+                         this case carries no primary CTA at all. */
+                      : (!search && !confluenceOff
+                          ? { label: 'Go to Settings', onClick: () => navigate('/settings') }
+                          : undefined)
               }
               /* The checklist one block above asks for this same setup, and
                  the header's `New Page` is this route's own primary action. A
