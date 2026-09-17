@@ -177,3 +177,86 @@ describe('ConfluenceTab — trust and guidance at PAT entry', () => {
     ).toBeInTheDocument();
   });
 });
+
+// #1623. Off is STANDALONE mode, not a broken or read-only mode: everything
+// keeps working locally, nothing syncs, and the stored credentials stay put.
+describe('ConfluenceTab — integration toggle', () => {
+  const offSettings = {
+    confluenceUrl: 'https://confluence.example.com',
+    hasConfluencePat: true,
+    confluenceEnabled: false,
+  } as SettingsResponse;
+
+  it('hides the credential form, the connection test and Save while the integration is off', () => {
+    render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} />);
+
+    expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByLabelText(/confluence url/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/personal access token/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /test connection/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('confluence-save-btn')).not.toBeInTheDocument();
+  });
+
+  it('describes off as standalone mode without asking for credentials or implying read-only pages', () => {
+    const { container } = render(<ConfluenceTab settings={offSettings} onSave={vi.fn()} />);
+    const copy = container.textContent ?? '';
+
+    expect(copy).toMatch(/standalone/i);
+    // The owner's semantic: local writes keep working, they just never travel.
+    expect(copy).toMatch(/editable/i);
+    expect(copy).not.toMatch(/read-only|read only/i);
+    // Nothing may solicit a URL or a token while the integration is off — the
+    // saved ones are retained, so re-enabling is a click, not a re-paste.
+    expect(copy).not.toMatch(/\b(add|paste|enter|create)\b[^.]*\b(url|token|address)/i);
+    expect(copy).toMatch(/kept/i);
+  });
+
+  it('saves the new flag on its own, once, without touching the credentials', () => {
+    const onSave = vi.fn();
+    render(<ConfluenceTab settings={settings} onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('confluence-enabled'));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: false });
+  });
+
+  it('saves the flag when switched back on', () => {
+    const onSave = vi.fn();
+    render(<ConfluenceTab settings={offSettings} onSave={onSave} />);
+
+    fireEvent.click(screen.getByTestId('confluence-enabled'));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith({ confluenceEnabled: true });
+  });
+
+  it('keeps the masked placeholder for a stored token, so re-enabling needs no re-paste', () => {
+    render(
+      <ConfluenceTab
+        settings={{ ...offSettings, confluenceEnabled: true } as SettingsResponse}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
+      'placeholder',
+      '••••••••••',
+    );
+
+    // Off and on again: still masked, never an empty "paste your token" field.
+    fireEvent.click(screen.getByTestId('confluence-enabled'));
+    fireEvent.click(screen.getByTestId('confluence-enabled'));
+    expect(screen.getByLabelText(/personal access token/i)).toHaveAttribute(
+      'placeholder',
+      '••••••••••',
+    );
+  });
+
+  it('treats a payload from before the flag existed as on', () => {
+    // `confluenceEnabled` is absent here, not false — the column defaults to
+    // TRUE, so a falsy read would hide a working user's credential form.
+    render(<ConfluenceTab settings={settings} onSave={vi.fn()} />);
+    expect(screen.getByTestId('confluence-enabled')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByLabelText(/confluence url/i)).toBeInTheDocument();
+  });
+});
