@@ -645,6 +645,11 @@ describe('Draft-while-published routes', () => {
   describe('GET /api/pages/:id (draft fields)', () => {
     it('includes hasDraft=true and draftUpdatedAt when a draft exists', async () => {
       mockQuery.mockImplementation((sql: string) => {
+        // #1636: GET /pages/:id counts the live descendants through the shared
+        // subtree walk after the row and access check.
+        if (sql.includes('COUNT(*)::text AS count FROM d')) {
+          return Promise.resolve({ rows: [{ count: '0' }] });
+        }
         if (sql.includes('cp.id, cp.confluence_id')) {
           return Promise.resolve({
             rows: [{
@@ -686,6 +691,9 @@ describe('Draft-while-published routes', () => {
 
     it('includes hasDraft=false when no draft exists', async () => {
       mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('COUNT(*)::text AS count FROM d')) {
+          return Promise.resolve({ rows: [{ count: '0' }] });
+        }
         if (sql.includes('cp.id, cp.confluence_id')) {
           return Promise.resolve({
             rows: [{
