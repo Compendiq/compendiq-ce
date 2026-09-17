@@ -2504,9 +2504,11 @@ html[data-dyslexia-spacing="true"] :where(.prose) :where(pre, code) {
 
 /* Horizontal rules — neutral divider.
    Padding (not margin) is the hover target so the drag handle can land on
-   a 1px rule. background-clip keeps the painted line 1px tall. */
+   a 1px rule. background-clip keeps the painted line 1px tall; box-sizing:
+   content-box preserves the 1px height under Tailwind's border-box reset (#1637). */
 .prose :where(hr),
 .tiptap hr {
+  box-sizing: content-box;
   border: none;
   height: 1px;
   margin: 0.5rem 0;

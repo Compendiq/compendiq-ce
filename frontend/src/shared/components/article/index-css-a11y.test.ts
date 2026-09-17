@@ -70,9 +70,10 @@ describe('editor chrome tokens', () => {
     expect(ruleBody('.prose :where(strong)')).not.toContain('var(--color-foreground)');
   });
 
-  it('gives horizontal rules a padded hit box for the drag handle', () => {
+  it('gives horizontal rules a padded hit box for the drag handle and preserves 1px line', () => {
     expect(normalized).toContain('.tiptap hr');
     expect(normalized).toContain('background-clip: content-box');
+    expect(ruleBody('.prose :where(hr)')).toContain('box-sizing: content-box');
   });
 
   it('rounds table corner cells instead of collapsing the grid', () => {
