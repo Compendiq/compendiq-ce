@@ -17,10 +17,19 @@ export type PageVersionSummary = z.infer<typeof PageVersionSummarySchema>;
  * - `ok` — the historical list was (re)imported; the response is complete.
  * - `skipped_no_credentials` — the viewing user has no stored Confluence
  *   URL/PAT, so the import never ran; historical versions may be missing.
+ * - `skipped_confluence_off` — #1623: the user turned the Confluence
+ *   integration off, so the import was never attempted. Distinct from
+ *   `skipped_no_credentials` because it is a deliberate choice, not a
+ *   configuration gap: the client must NOT prompt for a URL or PAT.
  * - `failed` — the import was attempted but errored (Confluence unreachable,
  *   auth rejected, …); the list may be incomplete.
  */
-export const VersionBackfillStatusSchema = z.enum(['ok', 'skipped_no_credentials', 'failed']);
+export const VersionBackfillStatusSchema = z.enum([
+  'ok',
+  'skipped_no_credentials',
+  'skipped_confluence_off',
+  'failed',
+]);
 export type VersionBackfillStatus = z.infer<typeof VersionBackfillStatusSchema>;
 
 export const PageVersionsResponseSchema = z.object({
