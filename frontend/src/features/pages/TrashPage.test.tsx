@@ -235,6 +235,7 @@ describe('TrashPage', () => {
           JSON.stringify({
             error: 'Conflict',
             message: 'Restore "Parent article" first',
+            reason: 'restore_ancestor_trashed',
           }),
           { status: 409, headers: { 'Content-Type': 'application/json' } },
         ),
@@ -266,7 +267,11 @@ describe('TrashPage', () => {
         const refused = pageId === '3' && restoreCalls === 1;
         if (refused) {
           return new Response(
-            JSON.stringify({ error: 'Conflict', message: 'Restore "Deleted Article" first' }),
+            JSON.stringify({
+              error: 'Conflict',
+              message: 'Restore "Deleted Article" first',
+              reason: 'restore_ancestor_trashed',
+            }),
             { status: 409, headers: { 'Content-Type': 'application/json' } },
           );
         }
@@ -290,5 +295,37 @@ describe('TrashPage', () => {
       ([url, init]) => typeof url === 'string' && url.includes('/restore') && init?.method === 'POST',
     );
     expect(restoreRequests.length).toBe(3);
+  });
+
+  /**
+   * The restore route answers 409 for two different reasons, and only ONE is
+   * transient: the ancestor guard clears itself once the rest of the selection
+   * has landed, while a live import of the same page is a permanent refusal.
+   * Retrying on the status alone re-fires a request the server has already
+   * decided — and reports the same refusal twice.
+   */
+  it('does not retry the route\u2019s other 409 — a permanent refusal', async () => {
+    let restoreCalls = 0;
+    mockApi(mockTrashData, {
+      restore: () => {
+        restoreCalls += 1;
+        return new Response(
+          JSON.stringify({ error: 'Conflict', message: 'A live import of this page already exists' }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    fireEvent.click(screen.getByTestId('trash-select-all'));
+    fireEvent.click(await screen.findByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        'Failed to restore the page. A live import of this page already exists',
+      );
+    });
+    expect(restoreCalls).toBe(1);
   });
 });

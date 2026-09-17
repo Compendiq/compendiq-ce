@@ -117,9 +117,12 @@ export const PageDetailSchema = PageSummarySchema.extend({
   bodyText: z.string(),
   hasChildren: z.boolean().default(false),
   /**
-   * Live descendants of this page (`deleted_at IS NULL`), the page itself
-   * excluded — exactly the set `DELETE /api/pages/:id` cascades to trash
-   * (#1636). Clients must READ this rather than derive a count from the page
+   * Live STANDALONE descendants of this page (`deleted_at IS NULL AND source =
+   * 'standalone'`), the page itself excluded — exactly the set `DELETE
+   * /api/pages/:id` cascades to trash (#1636), whose UPDATE arm carries that
+   * same source guard. It is NOT "the rows the tree shows": `hasChildren` is
+   * that question, and it can be true with a count of 0 (a Confluence-sourced
+   * subtree). Clients must READ this rather than derive a count from the page
    * tree: the tree is space/visibility filtered, may be mid-load, and cannot
    * know what the server will delete. Optional so a cached payload written
    * before #1636 still parses; treat absent as 0.

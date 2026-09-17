@@ -707,16 +707,42 @@ Consequences worth remembering. `hasChildren` on `GET /api/pages/:id` uses the
 tree's dual-identifier join (the old form matched `parent_id = confluence_id`
 only, so every standalone parent answered `false`), which also means the field
 now reads `true` for standalone pages whose children the UI previously could not
-see. A restore is refused with 409 `Restore "<ancestor>" first` when the page's
-parent is still in the trash — restoring it alone would re-create the orphan
-inside Trash — and it is idempotent for an already-live page, because a bulk
-restore fires one request per selected row and a cascade batch spans several of
-them. The dialog copy for both delete surfaces lives in
+see. It answers the TREE's question; `descendantCount` answers the DELETE's —
+live STANDALONE descendants — so `true` with a count of 0 is a real answer (a
+Confluence-sourced subtree), and the count carries the cascade's own
+`source = 'standalone'` guard for exactly that reason. A restore is refused with
+409 `Restore "<ancestor>" first` when the page's parent is still in the trash —
+restoring it alone would re-create the orphan inside Trash — and it is
+idempotent for an already-live page, because a bulk restore fires one request
+per selected row and a cascade batch spans several of them. That 409 carries
+`reason: 'restore_ancestor_trashed'`, which is what `TrashPage` retries: the
+route's other 409 (a live import of the same page already exists) is permanent,
+so the status code alone cannot be the classifier. The ancestor title is echoed
+only when the caller could read that ancestor (`GET /api/pages/:id`'s rule:
+owner-or-shared, space-scoped for Confluence rows) — a page can be created under
+another user's, and naming it unconditionally made the refusal a name oracle.
+The dialog copy for both delete surfaces lives in
 `frontend/src/shared/lib/trash-copy.ts`; the count comes from the server, never
 from `usePageTree()` (space/visibility filtered, possibly mid-load, and it
-cannot know what the delete will do). Trash is 30-day retention for the OWNER
+cannot know what the delete will do), and both call sites gate it on
+`page.source === 'standalone'` — the Confluence branch of the delete removes
+exactly one row, so a synced page must not be promised a cascade. Trash is
+30-day retention for the OWNER
 (`created_by_user_id`), so a cascaded sub-article owned by someone else lands in
 THEIR trash, and it can only be restored after its parent.
+
+The `source = 'standalone'` guard is not decoration, and it is NOT redundant
+with "a standalone subtree cannot contain a Confluence-sourced row": that
+invariant is false in practice, reachable both through `POST /api/pages` with a
+Confluence-sourced body under a standalone parent and through `PUT
+/pages/:id/move` re-parenting a synced page (neither looks at the parent's
+source). Keep the guard — Confluence owns such a row's lifecycle and the sync
+upsert would resurrect anything trashed locally — and accept the residual
+orphan for that one shape: the guarded row survives the cascade with a
+`parent_id` pointing at a trashed parent, so the tree renders it at the root,
+and the dialog warns about none of it (the count excludes it). Both the
+integration suite (`pages-crud-cascade-trash.integration.test.ts`, the
+"stated limitation" case) and the PR body record it.
 
 ## Library Search
 

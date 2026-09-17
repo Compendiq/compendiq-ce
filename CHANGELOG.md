@@ -107,12 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of hanging the request), `?permanent=true` also discards each deleted
   page's icon directory — the standalone hard delete never did — and
   `hasChildren` uses the tree's dual-identifier join. `GET /api/pages/:id`
-  gains `descendantCount` (live descendants, the page excluded), and both
-  delete dialogs name the count from `shared/lib/trash-copy.ts`. Restore puts
+  gains `descendantCount` (live STANDALONE descendants, the page excluded —
+  exactly the rows the cascade takes), and both delete dialogs name the count
+  from `shared/lib/trash-copy.ts`. The cascade walks through a
+  Confluence-sourced row inside a standalone subtree but never trashes it
+  (Confluence owns that row's lifecycle, and its sync upsert would resurrect
+  anything trashed locally), so for that one mixed-source shape the orphan
+  above survives — a stated limitation, not part of this fix. Restore puts
   back the whole delete BATCH (the rows sharing the cascade's single
   `deleted_at`), and answers 409 `Restore "<ancestor>" first` when the page's
   parent is still in the trash, because restoring it alone would re-create the
-  orphan inside Trash. `POST /pages/bulk/delete` shares the walk; its response
+  orphan inside Trash — the title is echoed only when the caller could read
+  that ancestor. `POST /pages/bulk/delete` shares the walk; its response
   still counts the selected pages.
 
 - **Image analysis asks the provider not to think (ADR-027 D8 erratum,

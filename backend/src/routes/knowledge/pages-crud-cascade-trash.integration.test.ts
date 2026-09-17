@@ -69,6 +69,14 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Only `POST /api/pages` needs this boundary, and only to make the mixed-source
+// counterexample reachable through the real route (see the source-guard cases).
+const mockConfluenceClient = vi.hoisted(() => ({ createPage: vi.fn() }));
+vi.mock('../../domains/confluence/services/sync-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../domains/confluence/services/sync-service.js')>()),
+  getClientForUser: vi.fn(async () => mockConfluenceClient),
+}));
+
 const dbAvailable = await isDbAvailable();
 
 /** The trios every case builds: fixture order is root → child → grandchild. */
@@ -212,6 +220,30 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       await insertConfluencePage('conf-child', 'Synced child', 'NOTES', { parentId: 'conf-parent' });
 
       const response = await app.inject({ method: 'GET', url: `/api/pages/${parent}` });
+      const body = response.json() as { hasChildren: boolean; descendantCount: number };
+      expect(body.hasChildren).toBe(true);
+      // …but a Confluence subtree is Confluence's lifecycle, and the trash
+      // takes none of it: `hasChildren` is the tree's question, the count is
+      // the cascade's, and the cascade moves `source = 'standalone'` rows only.
+      expect(body.descendantCount).toBe(0);
+    });
+
+    /**
+     * The count and the cascade are the same set, so a Confluence-sourced row
+     * inside a standalone subtree must not be counted: the DELETE leaves it
+     * live (its own guard — see the mixed-source delete case below). This shape
+     * is reachable: `PUT /pages/:id/move` re-parents a synced page under a
+     * standalone parent without touching its `source`, and `POST /pages` stores
+     * one the same way, so the subtree is not source-pure in practice.
+     */
+    it('counts only the standalone descendants the cascade will actually trash', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      await insertConfluencePage('conf-in-tree', 'Synced child', 'NOTES', { parentId: String(root) });
+      await insertStandalonePage('Local grandchild', 'private', userA, 'NOTES', {
+        parentId: 'conf-in-tree',
+      });
+
+      const response = await app.inject({ method: 'GET', url: `/api/pages/${root}` });
       const body = response.json() as { hasChildren: boolean; descendantCount: number };
       expect(body.hasChildren).toBe(true);
       expect(body.descendantCount).toBe(1);
@@ -413,6 +445,96 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(trashed.rows.map((row) => row.id)).toHaveLength(promised);
     });
 
+    /**
+     * `source = 'standalone'` on the cascade's UPDATE is not decoration, and
+     * the subtree it protects is not source-pure: a Confluence-sourced page can
+     * sit inside a standalone one (`PUT /pages/:id/move` re-parents a synced
+     * page under a standalone parent and keeps its source; `POST /pages` never
+     * checks the parent's source either). Confluence owns that row's lifecycle
+     * and its sync upsert would resurrect it, so the cascade walks THROUGH it —
+     * the standalone grandchild below it must still be trashed — while leaving
+     * the row itself alone.
+     */
+    it('walks through a Confluence-sourced row but leaves it live (the source guard)', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      const synced = await insertConfluencePage('conf-in-tree', 'Synced child', 'NOTES', {
+        parentId: String(root),
+      });
+      const local = await insertStandalonePage('Local grandchild', 'private', userA, 'NOTES', {
+        parentId: 'conf-in-tree',
+      });
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+      expect(response.statusCode).toBe(200);
+
+      // The standalone row below the synced one went with the cascade…
+      expect(await liveIds([root, local])).toEqual([]);
+      // …and the Confluence-sourced row did not: the walk visited it, the
+      // UPDATE's guard skipped it.
+      expect(await liveIds([synced])).toEqual([synced]);
+    });
+
+    /**
+     * The same shape created the way a person reaches it: `POST /api/pages`
+     * with a Confluence-sourced body under a standalone parent never checks the
+     * parent's source, and stores `parent_id = <parent PK>` with
+     * `source = 'confluence'` (`PUT /pages/:id/move` re-parents identically).
+     *
+     * Two consequences, both STATED LIMITATIONS of this PR rather than bugs to
+     * fix here — a bigger blast radius than #1636 (a synced subtree belongs to
+     * Confluence, and its sync upsert resurrects anything trashed locally):
+     *
+     *   1. the guarded row survives the cascade with a `parent_id` pointing at
+     *      a trashed parent, so `GET /api/pages/tree` renders it at the ROOT —
+     *      the issue's orphan symptom, for mixed-source subtrees only;
+     *   2. the confirm dialog warns about none of it, because
+     *      `descendantCount` counts only the rows the cascade will take.
+     *
+     * Pinned so the documented limitation cannot drift from the wire behaviour.
+     */
+    it('leaves a Confluence-sourced child created under a standalone parent behind (stated limitation)', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      mockConfluenceClient.createPage.mockResolvedValue({
+        id: '987654321',
+        title: 'Synced child',
+        version: { number: 1 },
+        body: { storage: { value: '<p>x</p>' } },
+      });
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'Synced child',
+          bodyHtml: '<p>x</p>',
+          spaceKey: 'NOTES',
+          source: 'confluence',
+          parentId: String(root),
+        },
+      });
+      expect(created.statusCode).toBe(200);
+
+      const syncedRows = await query<{ id: number; source: string; parent_id: string | null }>(
+        'SELECT id, source, parent_id FROM pages WHERE confluence_id = $1',
+        ['987654321'],
+      );
+      const synced = syncedRows.rows[0]!;
+      expect(synced).toMatchObject({ source: 'confluence', parent_id: String(root) });
+
+      // The detail route sees the child (the tree join is dual-identifier) and
+      // still reports nothing for the trash to take.
+      const detail = await app.inject({ method: 'GET', url: `/api/pages/${root}` });
+      const detailBody = detail.json() as { hasChildren: boolean; descendantCount: number };
+      expect(detailBody.hasChildren).toBe(true);
+      expect(detailBody.descendantCount).toBe(0);
+
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
+      expect(response.statusCode).toBe(200);
+      expect(await liveIds([synced.id])).toEqual([synced.id]);
+      const items = await treeItems();
+      expect(items.find((item) => item.id === String(synced.id))?.parentId).toBeNull();
+    });
+
     it('refuses to trash a page the caller does not own', async () => {
       const root = await insertStandalonePage('Root', 'private', userB, 'NOTES');
       currentUserId = userA;
@@ -495,6 +617,33 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(response.statusCode).toBe(200);
       expect(await existingIds([tree.root, tree.child, tree.grandchild])).toEqual([]);
     });
+
+    /**
+     * The permanent path's guard is the second half of the same rule as the
+     * soft cascade's: a Confluence-sourced row inside a standalone subtree is
+     * destroyed by neither. Its standalone descendants still go with the
+     * subtree — the walk visits the synced row, the DELETE's `source` guard
+     * skips it.
+     */
+    it('destroys the standalone rows below a Confluence-sourced one, and only those', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      const synced = await insertConfluencePage('conf-in-tree', 'Synced child', 'NOTES', {
+        parentId: String(root),
+      });
+      const local = await insertStandalonePage('Local grandchild', 'private', userA, 'NOTES', {
+        parentId: 'conf-in-tree',
+      });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${root}?permanent=true`,
+      });
+      expect(response.statusCode).toBe(200);
+
+      expect(await existingIds([root, local])).toEqual([]);
+      expect(await existingIds([synced])).toEqual([synced]);
+      expect(deletedPayloads().map((payload) => payload.pageId).sort()).toEqual([root, local].sort());
+    });
   });
 
   // ── restore ───────────────────────────────────────────────────────────────
@@ -554,9 +703,97 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       const response = await app.inject({ method: 'POST', url: `/api/pages/${child}/restore` });
 
       expect(response.statusCode).toBe(409);
-      const body = response.json() as { error?: string; message?: string };
+      const body = response.json() as { error?: string; message?: string; reason?: string };
       expect(`${body.message ?? ''}${body.error ?? ''}`).toContain('Parent article');
+      // The client branches on the reason, not on the prose: 409 is also the
+      // answer to a permanent refusal (a live import of the same page).
+      expect(body.reason).toBe('restore_ancestor_trashed');
       expect(await liveIds([child])).toEqual([]);
+    });
+
+    /**
+     * The title is the ANCESTOR's, and the ancestor is not necessarily the
+     * caller's page: `POST /pages` happily hangs a page under someone else's
+     * (a cascade still trashes the whole subtree, which is #1636's point). The
+     * refusal must not turn that into an existence/name oracle for a page the
+     * caller cannot read — the same 404 rule `GET /api/pages/:id` applies.
+     */
+    it('refuses without naming an ancestor the caller cannot read', async () => {
+      const aliceRoot = await insertStandalonePage('ALICE SECRET LEDGER', 'private', userA, 'NOTES');
+      const bobChild = await insertStandalonePage('Bob draft', 'private', userB, 'NOTES', {
+        parentId: String(aliceRoot),
+      });
+
+      // Alice trashes her private page; the cascade takes Bob's page with it.
+      currentUserId = userA;
+      await app.inject({ method: 'DELETE', url: `/api/pages/${aliceRoot}` });
+      expect(await liveIds([bobChild])).toEqual([]);
+
+      currentUserId = userB;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${bobChild}/restore` });
+
+      expect(response.statusCode).toBe(409);
+      const body = response.json() as { message?: string; reason?: string };
+      expect(body.message ?? '').not.toContain('ALICE SECRET LEDGER');
+      expect(body.message).toMatch(/parent page/i);
+      expect(body.reason).toBe('restore_ancestor_trashed');
+      expect(await liveIds([bobChild])).toEqual([]);
+    });
+
+    /**
+     * The reader rule for a Confluence-sourced ancestor is the space scope
+     * `GET /api/pages/:id` applies to one — and it must fail closed: a
+     * Confluence row with no space is a title the caller cannot be given.
+     * (The row is TRASHED, so `userCanAccessPage`, which resolves pages with
+     * `deleted_at IS NULL`, cannot answer this.)
+     */
+    it('scopes a Confluence-sourced ancestor by the caller’s space access', async () => {
+      const synced = await insertConfluencePage('conf-ancestor', 'Synced ancestor', 'NOTES', {
+        deletedAt: new Date(),
+      });
+      const child = await insertStandalonePage('Child article', 'private', userA, 'NOTES', {
+        parentId: 'conf-ancestor',
+        deletedAt: new Date(),
+      });
+
+      const readable = await app.inject({ method: 'POST', url: `/api/pages/${child}/restore` });
+      expect(readable.statusCode).toBe(409);
+      // `inject().json()` is untyped; only the refusal's prose is read here.
+      const readableBody = readable.json() as { message?: string };
+      expect(readableBody.message).toContain('Synced ancestor');
+
+      mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+      const unreadable = await app.inject({ method: 'POST', url: `/api/pages/${child}/restore` });
+      expect(unreadable.statusCode).toBe(409);
+      const unreadableBody = unreadable.json() as { message?: string };
+      expect(unreadableBody.message).not.toContain('Synced ancestor');
+      expect(unreadableBody.message).toMatch(/parent page/i);
+      expect(await existingIds([synced, child])).toHaveLength(2);
+    });
+
+    /**
+     * The other half of the same rule: a caller who CAN read the ancestor still
+     * gets its title, and shared visibility is one way to be able to read it
+     * (`GET /api/pages/:id`'s standalone rule is owner-or-shared). Degrading
+     * this case would leave the Trash's "restore the parent first" refusal
+     * naming nothing the person could act on.
+     */
+    it('still names the ancestor for a caller who can read it', async () => {
+      const shared = await insertStandalonePage('Shared roadmap', 'shared', userA, 'NOTES');
+      const bobChild = await insertStandalonePage('Bob draft', 'private', userB, 'NOTES', {
+        parentId: String(shared),
+      });
+
+      currentUserId = userA;
+      await app.inject({ method: 'DELETE', url: `/api/pages/${shared}` });
+
+      currentUserId = userB;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${bobChild}/restore` });
+
+      expect(response.statusCode).toBe(409);
+      const body = response.json() as { message?: string; reason?: string };
+      expect(body.message).toContain('Shared roadmap');
+      expect(body.reason).toBe('restore_ancestor_trashed');
     });
 
     it('is idempotent for a page the caller already restored', async () => {

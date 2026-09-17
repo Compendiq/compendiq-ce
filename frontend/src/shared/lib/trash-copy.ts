@@ -9,9 +9,17 @@
  * that one of them eventually says something else.
  *
  * The quantity is the server's `descendantCount` from `GET /api/pages/:id` —
- * live descendants, the page excluded, i.e. exactly the set the cascade takes.
- * It is never derived from `usePageTree()`: the tree is space/visibility
- * filtered, may still be loading, and cannot know what the request will delete.
+ * live STANDALONE descendants, the page excluded, i.e. exactly the set the
+ * cascade takes. It is never derived from `usePageTree()`: the tree is
+ * space/visibility filtered, may still be loading, and cannot know what the
+ * request will delete.
+ *
+ * Both call sites gate the count on the page's source
+ * (`page?.source === 'standalone' ? page.descendantCount : 0`): the Confluence
+ * branch of `DELETE /pages/:id` removes exactly one row and leaves its
+ * sub-articles live, so a synced page would otherwise be promised a cascade the
+ * request does not perform. `N = 0` is the copy for every page the cascade
+ * cannot take, not only for the pages that have no children.
  *
  * An unknown count renders the N=0 copy. That state is real (the detail is
  * still in flight, or its fetch failed) and the honest fallback is the copy

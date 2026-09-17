@@ -655,8 +655,11 @@ export function PageViewPage() {
   // #1636: the trash also cascades to the page's sub-articles, and the dialog
   // says how many — from the server's own `descendantCount` (the count comes
   // from the same walk the delete uses), never from the client tree, which is
-  // filtered and may be mid-load.
-  const trashCopy = trashConfirmCopy(page?.descendantCount);
+  // filtered and may be mid-load. The count is quoted ONLY for a standalone
+  // page: the Confluence branch of the delete is Confluence's own lifecycle and
+  // removes exactly one row, so a synced page would be promised a cascade it
+  // does not perform (and Trash could not restore what it left behind).
+  const trashCopy = trashConfirmCopy(page?.source === 'standalone' ? page.descendantCount : 0);
 
   const handleDeletePage = useCallback(() => {
     if (!id) return;

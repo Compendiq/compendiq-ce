@@ -136,18 +136,31 @@ describe.skipIf(!dbAvailable)('page-subtree — real PostgreSQL (#1636)', () => 
     expect(await trashedAncestorOf(child)).toBeNull();
     expect(await trashedAncestorOf(grandparent)).toBeNull();
 
+    // The row travels with the fields a caller needs to decide whether it may
+    // be NAMED in a refusal: the title belongs to a page the restoring user
+    // does not necessarily own (a page can be created under another user's),
+    // and `parent_id` holds no reader information of its own.
+    const expected = {
+      id: parent,
+      title: 'Parent',
+      source: 'standalone',
+      spaceKey: null,
+      visibility: 'private',
+      createdByUserId: owner,
+    };
+
     await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [parent]);
-    expect(await trashedAncestorOf(child)).toEqual({ id: parent, title: 'Parent' });
+    expect(await trashedAncestorOf(child)).toEqual(expected);
 
     // The NEAREST trashed ancestor is the actionable one — the caller can
     // restore it right now, and its own restore re-runs this guard one level up.
     await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [grandparent]);
-    expect(await trashedAncestorOf(child)).toEqual({ id: parent, title: 'Parent' });
+    expect(await trashedAncestorOf(child)).toEqual(expected);
 
     // The page's own state is the restore route's separate guard, never an
     // "ancestor" of itself.
     await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [child]);
-    expect(await trashedAncestorOf(child)).toEqual({ id: parent, title: 'Parent' });
+    expect(await trashedAncestorOf(child)).toEqual(expected);
   });
 
   it('terminates the ancestor walk on a cycle', async () => {

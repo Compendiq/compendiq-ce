@@ -1330,7 +1330,7 @@ describe('ArticleRightPane', () => {
    * test here is exercising the unknown-count fallback.
    */
   it('names the sub-article count when the page has descendants (#1636)', async () => {
-    currentMockPage = { ...mockPage, descendantCount: 2 };
+    currentMockPage = { ...mockPage, source: 'standalone', descendantCount: 2 } as typeof currentMockPage;
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
@@ -1347,6 +1347,32 @@ describe('ArticleRightPane', () => {
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
     expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
+  /**
+   * …and the count is quoted for a STANDALONE page only. A Confluence-sourced
+   * page reports descendants (its subtree is real and the tree shows it) but
+   * its delete removes exactly one row: the sub-articles stay live and cannot
+   * be restored from Trash, so naming them would be the over-promise #1636
+   * exists to remove.
+   */
+  it('keeps the no-sub-articles copy for a Confluence page that reports descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Move to trash'));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(
+      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
   });
 
   it('cancelling the move-to-trash dialog does not delete', async () => {

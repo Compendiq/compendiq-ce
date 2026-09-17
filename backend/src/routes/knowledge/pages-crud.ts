@@ -31,6 +31,7 @@ import {
   subtreeIds,
   trashBatchIds,
   trashedAncestorOf,
+  type TrashedAncestor,
 } from '../../core/services/page-subtree.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
@@ -328,6 +329,29 @@ async function readBodyWithSizeCap(
     return { ok: false, reason: 'read-failed' };
   }
   return { ok: true, buffer: Buffer.concat(chunks) };
+}
+
+/**
+ * Can `userId` read the trashed page an error message is about to name?
+ *
+ * This is `GET /api/pages/:id`'s own readability rule — standalone pages are
+ * owner-or-shared, Confluence-sourced pages are space-scoped — evaluated on a
+ * row that is BY DEFINITION trashed (the restore refusal only ever sees
+ * trashed ancestors). `userCanAccessPage` cannot be reused for it: that helper
+ * resolves the page with `deleted_at IS NULL`, so it answers "no" for every
+ * ancestor and would silently strip the title from the refusals that should
+ * name one.
+ *
+ * `space_key IS NULL` answers "no": a Confluence-sourced row with no space is
+ * not something the detail route could serve either, and an authorization
+ * predicate must fail closed.
+ */
+async function callerCanReadTrashedPage(trashed: TrashedAncestor, userId: string): Promise<boolean> {
+  if (trashed.source !== 'standalone') {
+    if (!trashed.spaceKey) return false;
+    return (await getUserAccessibleSpaces(userId)).includes(trashed.spaceKey);
+  }
+  return trashed.createdByUserId === userId || trashed.visibility === 'shared';
 }
 
 export async function pagesCrudRoutes(fastify: FastifyInstance) {
@@ -912,8 +936,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
       hasChildren: row.has_children,
-      // Live descendants, the page itself excluded (#1636): what the confirm
-      // dialog names and what a trash of this page moves.
+      // Live STANDALONE descendants, the page itself excluded (#1636): what the
+      // confirm dialog names and what a trash of this page moves. Deliberately
+      // not a restatement of `hasChildren` — the tree shows a Confluence
+      // subtree the cascade will not take.
       descendantCount,
       embeddingDirty: row.embedding_dirty,
       embeddingStatus: row.embedding_status,
@@ -1117,7 +1143,7 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   });
 
   // POST /api/pages/:id/restore - restore a soft-deleted standalone article from trash
-  fastify.post('/pages/:id/restore', async (request) => {
+  fastify.post('/pages/:id/restore', async (request, reply) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
 
@@ -1154,9 +1180,26 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // /api/pages/tree` renders that as a top-level page — the orphan this issue
     // is about, re-created inside Trash. Name the ancestor the caller has to
     // restore first instead.
+    //
+    // The title is that ANCESTOR's, and the ancestor need not be the caller's
+    // page: a page can be created under another user's (`POST /pages` never
+    // checks), and the cascade then trashes both. Echoing it unconditionally
+    // turned this refusal into an existence/name oracle for a page the caller
+    // gets a 404 on, so it is echoed only when the caller could read that page
+    // — `GET /api/pages/:id`'s own rule, which is also the `reason` slug's
+    // meaning: 409 here is a transient "restore the parent first", while the
+    // route's other 409 (a live import already exists) is a permanent refusal
+    // the client must not retry.
     const trashedAncestor = await trashedAncestorOf(page.id);
     if (trashedAncestor) {
-      throw fastify.httpErrors.conflict(`Restore "${trashedAncestor.title}" first`);
+      return reply.status(409).send({
+        statusCode: 409,
+        error: 'Conflict',
+        message: (await callerCanReadTrashedPage(trashedAncestor, userId))
+          ? `Restore "${trashedAncestor.title}" first`
+          : 'Restore the parent page first',
+        reason: 'restore_ancestor_trashed',
+      });
     }
 
     if (page.notion_page_id) {

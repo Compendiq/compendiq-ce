@@ -49,10 +49,13 @@ interface PageDetail extends PageSummary {
   bodyText: string;
   hasChildren: boolean;
   /**
-   * Live descendants of this page, the page itself excluded (#1636) — exactly
-   * the set `DELETE /pages/:id` cascades to trash. Optional because the API
-   * predates the field: absent means "not known", which the trash dialog must
-   * render as the no-sub-articles copy rather than as a guess.
+   * Live STANDALONE descendants of this page, the page itself excluded (#1636)
+   * — exactly the set `DELETE /pages/:id` cascades to trash, whose UPDATE arm
+   * carries the same `source = 'standalone'` guard. `hasChildren` answers the
+   * different question of what the tree shows, and can be true with a count of
+   * 0. Optional because the API predates the field: absent means "not known",
+   * which the trash dialog must render as the no-sub-articles copy rather than
+   * as a guess.
    */
   descendantCount?: number;
   summaryHtml: string | null;

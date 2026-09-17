@@ -960,8 +960,10 @@ export function ArticleRightPane({
   // the dialog to <body>, so its position in the tree only matters for state.
   //
   // #1636: same copy module as PageViewPage, same server-side count —
-  // `descendantCount` is what the cascade will take.
-  const trashCopy = trashConfirmCopy(page?.descendantCount);
+  // `descendantCount` is what the cascade will take — and the same source gate:
+  // a Confluence-sourced page's delete removes exactly one row, so its real
+  // descendants must not be named as trashed-with-it.
+  const trashCopy = trashConfirmCopy(page?.source === 'standalone' ? page.descendantCount : 0);
   const confirmTrashDialog = (
     <ConfirmDialog
       open={confirmTrashOpen}

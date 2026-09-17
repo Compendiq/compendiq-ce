@@ -24,9 +24,17 @@ function restoreFailureMessage(error: unknown): string {
  * the trash (restoring it alone would put it back at the tree root). Inside a
  * bulk restore that ancestor is usually part of the same selection, so the
  * refusal is transient, not a failure.
+ *
+ * The route's OTHER 409 is a permanent refusal — a live import of the same page
+ * already exists — and re-firing it would report the same decision twice. Two
+ * different problems sharing one status code means the status cannot be the
+ * classifier: the server marks the transient one with a `reason` slug, and that
+ * is what is matched here.
  */
+const ANCESTOR_TRASHED_REASON = 'restore_ancestor_trashed';
+
 function isAncestorConflict(error: unknown): boolean {
-  return error instanceof ApiError && error.statusCode === 409;
+  return error instanceof ApiError && error.reason === ANCESTOR_TRASHED_REASON;
 }
 
 export function TrashPage() {

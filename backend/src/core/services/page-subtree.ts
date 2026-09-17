@@ -103,13 +103,24 @@ export async function subtreeIds(
 /**
  * Live descendants of `rootId`, the page itself excluded — the number
  * `GET /api/pages/:id` publishes as `descendantCount`, and exactly the set the
- * cascade will trash. Computed from the same walk as the cascade so the dialog
- * cannot promise a count the delete does not perform.
+ * cascade will trash.
+ *
+ * `source = 'standalone'` is the cascade's OWN guard, not a refinement: the
+ * delete's UPDATE arm moves `deleted_at IS NULL AND source = 'standalone'` rows
+ * only, because Confluence owns a synced row's lifecycle and its sync upsert
+ * would resurrect anything trashed locally. A subtree is not source-pure — a
+ * Confluence-sourced page can sit inside a standalone one (`PUT
+ * /pages/:id/move` re-parents a synced page under a standalone parent and keeps
+ * its source; `POST /pages` never checks the parent's source) — so a count
+ * without this arm would name rows the request does not touch, which is the
+ * over-promise `descendantCount` exists to prevent. The walk still VISITS those
+ * rows: the standalone descendants below them are trashed with the rest.
  */
 export async function activeDescendantCount(rootId: number): Promise<number> {
   const result = await query<{ count: string }>(
     `${PAGE_SUBTREE_CTE}
-     SELECT COUNT(*)::text AS count FROM d WHERE deleted_at IS NULL AND id <> $1`,
+     SELECT COUNT(*)::text AS count FROM d
+      WHERE deleted_at IS NULL AND source = 'standalone' AND id <> $1`,
     [rootId],
   );
   return parseInt(result.rows[0]!.count, 10);
@@ -144,7 +155,29 @@ interface AncestorRow {
   confluence_id: string | null;
   parent_id: string | null;
   title: string;
+  source: string;
+  space_key: string | null;
+  visibility: string;
+  created_by_user_id: string | null;
   deleted_at: Date | null;
+}
+
+/**
+ * A trashed ancestor, with the fields a caller needs to decide whether it may
+ * be NAMED in the refusal.
+ *
+ * The title belongs to a page the restoring user does not necessarily own (a
+ * page can be created under another user's — that is how a cascade reaches a
+ * page it was never asked to trash), so the reader rule is not the restore
+ * route's business to guess: it travels with the row.
+ */
+export interface TrashedAncestor {
+  id: number;
+  title: string;
+  source: string;
+  spaceKey: string | null;
+  visibility: string;
+  createdByUserId: string | null;
 }
 
 /**
@@ -163,19 +196,23 @@ interface AncestorRow {
  * followed here, bounded by the visited set: `UNION` deduplicates, so a
  * `parent_id` cycle terminates instead of looping.
  */
-export async function trashedAncestorOf(pageId: number): Promise<{ id: number; title: string } | null> {
+export async function trashedAncestorOf(pageId: number): Promise<TrashedAncestor | null> {
   const result = await query<AncestorRow>(
     `WITH RECURSIVE ancestors AS (
-       SELECT p.id, p.confluence_id, p.parent_id, p.title, p.deleted_at
+       SELECT p.id, p.confluence_id, p.parent_id, p.title, p.source, p.space_key,
+              p.visibility, p.created_by_user_id, p.deleted_at
          FROM pages p
         WHERE p.id = $1
        UNION
-       SELECT p.id, p.confluence_id, p.parent_id, p.title, p.deleted_at
+       SELECT p.id, p.confluence_id, p.parent_id, p.title, p.source, p.space_key,
+              p.visibility, p.created_by_user_id, p.deleted_at
          FROM pages p
          JOIN ancestors a ON a.parent_id IS NOT NULL
               AND (p.confluence_id = a.parent_id OR CAST(p.id AS TEXT) = a.parent_id)
      )
-     SELECT id, confluence_id, parent_id, title, deleted_at FROM ancestors`,
+     SELECT id, confluence_id, parent_id, title, source, space_key, visibility,
+            created_by_user_id, deleted_at
+       FROM ancestors`,
     [pageId],
   );
 
@@ -185,7 +222,16 @@ export async function trashedAncestorOf(pageId: number): Promise<{ id: number; t
   while (cursor?.parent_id) {
     const parent = byKey.get(cursor.parent_id);
     if (!parent || seen.has(parent.id)) return null;
-    if (parent.deleted_at) return { id: parent.id, title: parent.title };
+    if (parent.deleted_at) {
+      return {
+        id: parent.id,
+        title: parent.title,
+        source: parent.source,
+        spaceKey: parent.space_key,
+        visibility: parent.visibility,
+        createdByUserId: parent.created_by_user_id,
+      };
+    }
     seen.add(parent.id);
     cursor = parent;
   }

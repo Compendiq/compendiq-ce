@@ -935,9 +935,14 @@ describe('PageViewPage', () => {
    * `hasChildren: true` and no `descendantCount`, so every other test in this
    * file is exercising the unknown-count fallback: it passes only while that
    * fallback is the N=0 copy.
+   *
+   * The count is quoted for a STANDALONE page only: the Confluence branch of
+   * `DELETE /pages/:id` is Confluence's own lifecycle and removes exactly one
+   * row (its sub-articles stay live, and Trash cannot restore them), so naming
+   * a count there would be the over-promise this dialog exists to remove.
    */
   it('names the sub-article count when the page has descendants (#1636)', async () => {
-    currentMockPage = { ...mockPage, descendantCount: 3 };
+    currentMockPage = { ...mockPage, source: 'standalone', createdByUserId: '1', descendantCount: 3 };
     render(<PageViewPage />, { wrapper: createWrapper() });
     act(() => {
       capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
@@ -954,7 +959,7 @@ describe('PageViewPage', () => {
   });
 
   it('uses the singular copy for exactly one sub-article (#1636)', async () => {
-    currentMockPage = { ...mockPage, descendantCount: 1 };
+    currentMockPage = { ...mockPage, source: 'standalone', createdByUserId: '1', descendantCount: 1 };
     render(<PageViewPage />, { wrapper: createWrapper() });
     act(() => {
       capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
@@ -964,6 +969,26 @@ describe('PageViewPage', () => {
     expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
       'Move page and sub-article to trash',
     );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+  });
+
+  it('keeps the no-sub-articles copy for a Confluence page that reports descendants (#1636)', async () => {
+    // A synced page can answer `descendantCount > 0` (its subtree is real, and
+    // `hasChildren` sees it), but the Confluence branch of the delete does not
+    // cascade: promising the sub-articles would be a lie about the request.
+    currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(
+      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
 
     fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
     await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
