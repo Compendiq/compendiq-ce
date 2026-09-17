@@ -148,7 +148,7 @@ client-claimed identity. Color is deterministic from `userId`.
 |----------------|---------------|---------------------------|
 | In-memory `Y.Doc` + Redis **incremental** `doc.on('update')` | Every keystroke | Live truth. `Y.applyUpdate(..., 'redis')` on receive so the handler does not loop. |
 | `page_collaborative_docs.doc_state` / `state_vector` | Debounced **2 s** after last applied update, and immediately when the last editor disconnects | Increments **this table's** `version` (persistence generation). Always. |
-| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty` / gated `image_embedding_dirty`. **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. |
+| `pages.body_html` + `pages.body_text` | Same 2 s debounce (and last-disconnect) | **Does not** increment `pages.version`. **Does** raise `embedding_dirty`, and `image_analysis_dirty` when `body_html` actually changed (#1618 stage 2 retired the `image_embedding_dirty` write that used to sit beside it). **Does not** stamp `local_modified_*`. **Does not** re-queue summary/quality. |
 | `pages.body_storage` (XHTML via `htmlToConfluence`) | Explicit Save/Publish / `POST /api/pages/:id/collab/commit` only | Commit increments `pages.version` (standalone locally; Confluence from `confPage.version.number` **after** `updatePage` succeeds) |
 | Confluence DC | Collab commit for `source = 'confluence'` | Remote write **first**, same order as today's PUT |
 

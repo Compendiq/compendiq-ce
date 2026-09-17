@@ -428,23 +428,28 @@ Four rules are load-bearing:
   defeats, while the viewport gate is exact.
   Lower the cap if the single-answer case stops holding.
 
-**In Settings → AI Models, the leg has three admin surfaces**, one per question
-an operator actually asks. *Can it run?* — the **Image embedding** row on **LLM
+**In Settings → AI Models, the leg had three admin surfaces**, one per question
+an operator asked. *Can it run?* — the **Image embedding** row on **LLM
 providers** (`UsecaseAssignmentsSection` + `ImageEmbeddingCapability`: the
 assignment, the MRL truncation field, the **Last probe** chip and **Re-check**).
-*Is it running?* — the **Image index** card on **Embeddings**
-(`ImageIndexCard`: status, counters, last run by skip reason, **Process now**,
-**Re-scan all**). *How should it behave?* — the **Image retrieval** group on
-**Retrieval** (`RetrievalTab`: **Image leg**, **Images per page**, **Index
-external images**, **Images shown to the model**). Splitting them that way is
-deliberate: a row count and a last run are the honest answer to "is it
-working?", which is why the probe row **points at** the Embeddings card instead
-of claiming an index it cannot see, and why the Retrieval group's unassigned
-notice **points back at** LLM providers while leaving its own controls enabled —
-they are settings, not actions.
+*Is it running?* — the **Image index** card on **Embeddings** (`ImageIndexCard`:
+status, counters, last run by skip reason, **Process now**, **Re-scan all**).
+*How should it behave?* — the **Image leg** toggle in the **Image retrieval**
+group on **Retrieval**. **#1618 stage 2 deleted all three** (ADR-027): the
+components are gone and no AI Models sub-tab mentions an image embedding, an
+image index, an MRL width or an image leg. What survives in that Retrieval group
+are the three settings that were never the leg's — **Images per page**, **Index
+external images** and **Images shown to the model** — which bound what the
+answer path sends to the chat model and still apply to the derived
+`image_analysis` provenance that replaced the leg. The *can it run? / is it
+running?* split those surfaces were built on is the one the replacement
+inherited, described next: a row count and a last run are the honest answer to
+"is it working?", which is why the capability strip on LLM providers **points
+at** the Embeddings card rather than claiming an index it cannot see.
 
-**A fourth surface arrived with #1615 (ADR-027): the Image analysis (vision)
-row** on **LLM providers** (`UsecaseAssignmentsSection` + `ImageAnalysisCard`).
+**The replacement's first surface arrived with #1615 (ADR-027): the Image
+analysis (vision) row** on **LLM providers** (`UsecaseAssignmentsSection` +
+`ImageAnalysisCard`).
 The row is the ordinary provider select and `ModelPicker` (manual model IDs
 accepted; the probe on Save validates them); the card beneath it is gated on the
 SAVED assignment, never the draft, for everything that describes the live leg:
@@ -465,15 +470,15 @@ headline chosen from `ApiError.reason` (`no_provider` / `no_model` / `text_only`
 new identity toasts the `reanalyzeRows` disclosure in amber, a resume the
 ordinary success.
 
-**A fifth arrived with #1618 stage 1: the Image analysis card** on
+**Its second arrived with #1618 stage 1: the Image analysis card** on
 **Embeddings** (`ImageAnalysisProgressCard`), which answers *is it running?*
-for the candidate exactly as `ImageIndexCard` does for the legacy leg — and
-sits BESIDE it, not in its place, because while both designs are on `dev` the
-legacy leg is still the only image retrieval that serves and an upgrading
-operator has to read both. Stage 2 deletes the legacy card and this one takes
-its slot. The Max output tokens row stays on LLM providers (ADR-027
-`:4856-4860`): *can it run?* and *is it running?* are two surfaces, one job
-each.
+for the replacement exactly as `ImageIndexCard` did for the legacy leg. Stage 1
+landed it BESIDE the legacy card, because while both designs were on `dev` the
+legacy leg was still the only image retrieval that served and an upgrading
+operator had to read both; **#1618 stage 2 deleted the legacy card and this one
+now holds that slot alone**. The Max output tokens row stays on LLM providers
+(ADR-027 `:4856-4860`): *can it run?* and *is it running?* are two surfaces, one
+job each.
 
 It copies the incumbent's argument rather than its markup. **Three fetch
 states, never one** — pending renders em-dashes, and a failed READ says the
