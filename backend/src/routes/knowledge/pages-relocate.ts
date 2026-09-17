@@ -26,7 +26,8 @@ import { RedisCache } from '../../core/services/redis-cache.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { requireGlobalPermission } from '../../core/utils/rbac-guards.js';
 import { userCanAccessPage, getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { getClientForUser, isSyncRunning } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled, isSyncRunning } from '../../domains/confluence/services/sync-service.js';
+import { CONFLUENCE_DISABLED_MESSAGE } from '../../domains/confluence/services/standalone-mode.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { logger } from '../../core/utils/logger.js';
 import {
@@ -335,6 +336,18 @@ export async function pagesRelocateRoutes(fastify: FastifyInstance) {
             throw fastify.httpErrors.badRequest('Target space is not a local space');
           }
         }
+      }
+
+      // #1623 — a relocate is two-sided by definition: it either CREATES the
+      // article upstream or DELETES it upstream (the confirmation the client
+      // just signed names the Confluence page being removed). Neither half can
+      // run with the integration off, and committing only the local half would
+      // leave a live Confluence page the next sync re-imports as a duplicate.
+      // So it refuses by naming the integration — never by asking for
+      // credentials, which are still on file. Ordinary edits, deletes and AI
+      // writes on the same article keep working locally.
+      if (!(await isConfluenceEnabled(userId))) {
+        throw fastify.httpErrors.badRequest(CONFLUENCE_DISABLED_MESSAGE);
       }
 
       const client = await getClientForUser(userId);

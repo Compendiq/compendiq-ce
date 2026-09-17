@@ -15,6 +15,8 @@ vi.mock('../../core/services/redis-cache.js', () => {
 });
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  // #1623: the toggle helper the page/AI write paths consult.
+  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
   getClientForUser: vi.fn().mockResolvedValue(null),
 }));
 

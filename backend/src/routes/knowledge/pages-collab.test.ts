@@ -1270,6 +1270,85 @@ describe.skipIf(!canRun)('POST /api/pages/:id/collab/commit Confluence (#1448)',
     expect(ws.readyState).toBe(WebSocket.OPEN);
     ws.close();
   });
+
+  // #1623 — exercises the REAL `isConfluenceEnabled` against Postgres: the
+  // user keeps working, credentials stay on file, and nothing is pushed.
+  it('integration off → commit writes the local row, no Confluence call, credentials kept', async () => {
+    const { token, userId, pageId, ws } = await seedLiveConfluencePage({ version: 4 });
+    await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
+    const getPage = vi.spyOn(ConfluenceClient.prototype, 'getPage').mockRejectedValue(
+      new Error('getPage must not run while the integration is off'),
+    );
+    const updatePage = vi.spyOn(ConfluenceClient.prototype, 'updatePage').mockRejectedValue(
+      new Error('updatePage must not run while the integration is off'),
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'Saved offline' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      id: pageId,
+      title: 'Saved offline',
+      version: 5,
+      source: 'confluence',
+      pushedToConfluence: false,
+    });
+    expect(getPage).not.toHaveBeenCalled();
+    expect(updatePage).not.toHaveBeenCalled();
+
+    const page = await query<{
+      version: number;
+      title: string;
+      local_modified_at: Date | null;
+      local_modified_by: string | null;
+    }>(
+      'SELECT version, title, local_modified_at, local_modified_by FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(page.rows[0]!.version).toBe(5);
+    expect(page.rows[0]!.title).toBe('Saved offline');
+    // The local-edit marker (#305) is what the next sync's existing conflict
+    // handling reads once the integration comes back on.
+    expect(page.rows[0]!.local_modified_at).not.toBeNull();
+    expect(page.rows[0]!.local_modified_by).toBe(userId);
+
+    // A toggle never clears credentials — re-enabling must not ask for the PAT.
+    const creds = await query<{ confluence_url: string | null; confluence_pat: string | null }>(
+      'SELECT confluence_url, confluence_pat FROM user_settings WHERE user_id = $1',
+      [userId],
+    );
+    expect(creds.rows[0]!.confluence_url).toBe('https://confluence.example.com');
+    expect(creds.rows[0]!.confluence_pat).toBeTruthy();
+    ws.close();
+  });
+
+  it('integration on but credentials cleared → still the credential error', async () => {
+    // The regression guard: `Confluence not configured` is a credential prompt
+    // and stays reachable ONLY for an enabled user.
+    const { token, userId, pageId, ws } = await seedLiveConfluencePage({ version: 4 });
+    await query(
+      'UPDATE user_settings SET confluence_url = NULL, confluence_pat = NULL WHERE user_id = $1',
+      [userId],
+    );
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/collab/commit`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { title: 'No credentials' },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().message).toBe('Confluence not configured');
+    const page = await query<{ version: number }>('SELECT version FROM pages WHERE id = $1', [pageId]);
+    expect(page.rows[0]!.version).toBe(4);
+    ws.close();
+  });
 });
 
 describe.skipIf(!canRun)('inbound sync while collab:active (#1448)', () => {

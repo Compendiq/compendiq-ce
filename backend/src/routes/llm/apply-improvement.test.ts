@@ -61,7 +61,10 @@ vi.mock('../../domains/llm/services/embedding-service.js', () => ({
   computePageRelationships: vi.fn(),
 }));
 
+const mockIsConfluenceEnabled = vi.fn();
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
+  // #1623: the toggle helper the page/AI write paths consult.
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
 }));
 
@@ -138,6 +141,8 @@ describe('POST /api/llm/improvements/apply', () => {
 
     // Default: Confluence client available
     mockGetClientForUser.mockResolvedValue(mockClient);
+    // Default: the integration is on (pre-#1623 behaviour of this suite).
+    mockIsConfluenceEnabled.mockResolvedValue(true);
 
     // Default: page exists in DB with version 5 (Confluence source)
     mockQuery.mockImplementation((sql: string) => {
@@ -180,6 +185,35 @@ describe('POST /api/llm/improvements/apply', () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+
+  // #1623 — off is standalone: Apply still rewrites the article, it just
+  // rewrites the LOCAL row and never pushes.
+  it('applies to the local row without touching Confluence when the integration is off', async () => {
+    mockIsConfluenceEnabled.mockResolvedValue(false);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/llm/improvements/apply',
+      payload: {
+        pageId: 'page-1',
+        improvedMarkdown: '## Improved content\n\nThis is better.',
+        version: 5,
+        title: 'My Article',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // Local version bump, not a Confluence version.
+    expect(JSON.parse(response.payload)).toMatchObject({ id: 42, version: 6 });
+    const localWrite = mockQuery.mock.calls.find(
+      (c) => typeof c[0] === 'string'
+        && (c[0] as string).includes('UPDATE pages SET')
+        && (c[0] as string).includes('local_modified_at = NOW()'),
+    );
+    expect(localWrite).toBeDefined();
+    expect(mockClient.updatePage).not.toHaveBeenCalled();
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
   });
 
   it('returns 404 when page does not exist in local cache', async () => {

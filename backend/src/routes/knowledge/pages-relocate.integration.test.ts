@@ -1650,4 +1650,48 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(await imageDirty(id)).toEqual({ analysis: false });
     });
   });
+
+  // #1623 — a relocate is two-sided by definition (create upstream / delete
+  // upstream), so it is the one page operation that refuses while the
+  // integration is off instead of falling back to a local write. Committing
+  // only the local half would leave a live Confluence page for the next sync to
+  // re-import as a duplicate. Real `isConfluenceEnabled`, real user_settings
+  // row — only the client factory is stubbed in this suite.
+  describe('Confluence integration off (#1623)', () => {
+    beforeEach(async () => {
+      await query(
+        'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
+        [userId],
+      );
+    });
+
+    it('refuses a local → Confluence move by naming the integration, changing nothing', async () => {
+      const id = await createPage({ title: 'Stay local', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
+
+      const res = await toConfluence(id);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Confluence integration is disabled');
+      expect(res.json().error).not.toContain('not configured');
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      const row = await getRow(id);
+      expect(row.source).toBe('standalone');
+      expect(row.confluence_id).toBeNull();
+    });
+
+    it('refuses a Confluence → local move as well, leaving the upstream page alone', async () => {
+      const id = await createPage({
+        title: 'Stay synced', source: 'confluence', confluenceId: '700923', spaceKey: 'CONF',
+      });
+
+      const res = await toLocal(id, '700923');
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Confluence integration is disabled');
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      const row = await getRow(id);
+      expect(row.source).toBe('confluence');
+      expect(row.confluence_id).toBe('700923');
+    });
+  });
 });
