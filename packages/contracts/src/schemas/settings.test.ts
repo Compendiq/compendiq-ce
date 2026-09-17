@@ -44,6 +44,7 @@ describe('client inference / spellcheck settings (#1418)', () => {
       theme: 'graphite',
       syncIntervalMin: 15,
       confluenceConnected: false,
+      confluenceEnabled: true,
       showSpaceHomeContent: true,
       customPrompts: {},
       confluencePatPromptDismissed: false,
@@ -61,6 +62,49 @@ describe('client inference / spellcheck settings (#1418)', () => {
     expect(SettingsResponseSchema.parse(base).clientInferenceWithoutServer).toBe(true);
     const { clientInferenceEnabled: _drop, ...without } = base;
     expect(() => SettingsResponseSchema.parse(without)).toThrow();
+  });
+});
+
+describe('Confluence integration toggle (#1623)', () => {
+  it('requires confluenceEnabled on the read schema', () => {
+    // A client that cannot see the flag would keep showing connect prompts to
+    // a standalone user, so the response carries it unconditionally — even
+    // for a user row that predates migration 119.
+    const base = {
+      confluenceUrl: null,
+      hasConfluencePat: false,
+      selectedSpaces: [],
+      theme: 'graphite',
+      syncIntervalMin: 15,
+      confluenceConnected: false,
+      confluenceEnabled: false,
+      showSpaceHomeContent: true,
+      customPrompts: {},
+      confluencePatPromptDismissed: false,
+      inlineCompletionEnabled: true,
+      inlineCompletionDelay: 'balanced',
+      inlineCompletionMode: 'full',
+      inlineCompletionCodeOnly: false,
+      clientInferenceEnabled: false,
+      clientInferenceWithoutServer: true,
+      clientInferenceAdminEnabled: false,
+      clientSpellcheckEnabled: false,
+      clientSpellcheckLanguages: ['en_US', 'de_DE'],
+      onboardingState: {},
+    };
+    expect(SettingsResponseSchema.parse(base).confluenceEnabled).toBe(false);
+    const { confluenceEnabled: _drop, ...without } = base;
+    expect(() => SettingsResponseSchema.parse(without)).toThrow();
+  });
+
+  it('carries confluenceEnabled through a patch without materialising siblings', () => {
+    // The route parses the body with this schema and a non-strict z.object
+    // STRIPS unknown keys, so an unmodelled toggle write would silently
+    // no-op. This is the case that catches that.
+    const parsed = UpdateSettingsSchema.parse({ confluenceEnabled: false });
+    expect(parsed).toEqual({ confluenceEnabled: false });
+    expect('confluenceUrl' in parsed).toBe(false);
+    expect('confluencePat' in parsed).toBe(false);
   });
 });
 
