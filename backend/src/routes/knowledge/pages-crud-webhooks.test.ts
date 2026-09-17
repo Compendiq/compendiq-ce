@@ -346,6 +346,10 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
+      // #1636's pre-flight: `findSubtreeKeyAmbiguity` runs before the cascade
+      // and ZERO rows is "the subtree is safe to act on". A row here would be
+      // a 409 and no webhook at all.
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
       // The cascade UPDATE … RETURNING: one row here, the page itself. Since
       // #1636 the webhook is emitted per RETURNING id, not per request, so a
       // mock that answers with nothing would emit nothing.
@@ -370,6 +374,8 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
+      // The pre-flight ambiguity check — see the case above.
+      mockQueryFn.mockResolvedValueOnce({ rows: [] });
       // The cascade trashed the page and two sub-articles in one statement.
       mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 13 }] });
 
@@ -395,16 +401,21 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
-      // DELETE FROM pinned_pages, DELETE FROM pages
+      // The pre-flight ambiguity check on the pool, then the pinned_pages
+      // sweep: zero rows either way.
       mockQueryFn.mockResolvedValue({ rows: [] });
-      // The hard delete walks its subtree on the transaction client and
-      // deletes exactly what the walk returned (#1636).
+      // Since #1636 the permanent branch is ONE statement on the transaction
+      // client — `WITH RECURSIVE d AS (…) DELETE FROM pages WHERE id IN (SELECT
+      // id FROM d WHERE …) RETURNING id, visibility` — and the webhook is
+      // emitted per RETURNING row. The ambiguity is re-checked under the
+      // attachment lock, on this same client, and must answer zero rows.
       mockTxQueryFn.mockImplementation((sql: unknown) => {
-        if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
-          return Promise.resolve({ rows: [{ id: 12 }], rowCount: 1 });
+        const text = typeof sql === 'string' ? sql : '';
+        if (/conflicting_page_id/.test(text)) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
         }
-        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
-          return Promise.resolve({ rows: [{ id: 12 }], rowCount: 1 });
+        if (/DELETE FROM pages\b/i.test(text) && /RETURNING/i.test(text)) {
+          return Promise.resolve({ rows: [{ id: 12, visibility: 'private' }], rowCount: 1 });
         }
         return Promise.resolve({ rows: [], rowCount: 0 });
       });

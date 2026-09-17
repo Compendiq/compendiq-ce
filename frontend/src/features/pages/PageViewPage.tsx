@@ -44,7 +44,7 @@ import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
-import { trashConfirmCopy } from '../../shared/lib/trash-copy';
+import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../shared/lib/trash-copy';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
@@ -648,18 +648,26 @@ export function PageViewPage() {
     });
   }, [id, isPinned, page, pinMutation, unpinMutation]);
 
-  // Deleting soft-deletes into the 30-day trash, so the confirm copy must
-  // not claim the action "cannot be undone". ConfirmDialog replaces the
-  // native confirm() to match the neumorphic design system.
+  // Deleting a STANDALONE page soft-deletes into the 30-day trash, so the
+  // confirm copy must not claim the action "cannot be undone". ConfirmDialog
+  // replaces the native confirm() to match the neumorphic design system.
   //
-  // #1636: the trash also cascades to the page's sub-articles, and the dialog
+  // #1636: that trash also cascades to the page's sub-articles, and the dialog
   // says how many — from the server's own `descendantCount` (the count comes
   // from the same walk the delete uses), never from the client tree, which is
-  // filtered and may be mid-load. The count is quoted ONLY for a standalone
-  // page: the Confluence branch of the delete is Confluence's own lifecycle and
-  // removes exactly one row, so a synced page would be promised a cascade it
-  // does not perform (and Trash could not restore what it left behind).
-  const trashCopy = trashConfirmCopy(page?.source === 'standalone' ? page.descendantCount : 0);
+  // filtered and may be mid-load.
+  //
+  // A Confluence-sourced page takes the other branch of `DELETE /pages/:id`
+  // entirely: the delete propagates UP to Confluence, and the row never enters
+  // Trash (`GET /pages/trash` filters `source = 'standalone'`, and restore
+  // refuses anything else). Promising it a 30-day restore was the one thing
+  // this dialog could say that no later action can make true.
+  //
+  // While `page` is undefined — detail in flight, or its fetch failed — the
+  // source is unknown too, so the no-promise fallback stands.
+  const trashCopy = page
+    ? (page.source === 'standalone' ? trashConfirmCopy(page.descendantCount) : confluenceDeleteConfirmCopy())
+    : trashConfirmCopy(undefined);
 
   const handleDeletePage = useCallback(() => {
     if (!id) return;

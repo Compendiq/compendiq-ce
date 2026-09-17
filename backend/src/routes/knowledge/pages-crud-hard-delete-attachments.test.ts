@@ -77,36 +77,70 @@ vi.mock('../../core/services/page-icon-store.js', () => ({
 
 const mockQueryFn = vi.fn();
 /**
- * The transaction client. `DELETE FROM pages … RETURNING id` answers with the
- * row it destroyed, and since fixer r1 the icon discard keys off exactly that
- * — so the default has to model the RETURNING rather than hand back an empty
- * set. `rejectPageDelete()` below flips it to the rollback branch.
+ * The transaction client.
+ *
+ * Since #1636 the standalone permanent branch is ONE data-modifying statement
+ * — `WITH RECURSIVE d AS (…) DELETE FROM pages WHERE id IN (SELECT id FROM d
+ * WHERE source = 'standalone' AND created_by_user_id = $2) RETURNING id,
+ * visibility` — so there is no separate id SELECT to answer and the ids the
+ * cleanup follows are exactly that statement's RETURNING set. The Confluence
+ * path's own `DELETE FROM pages WHERE id = $1 RETURNING id` reads only its
+ * `rowCount`, and since fixer r1 the icon discard keys off exactly that, so the
+ * default has to model the RETURNING rather than hand back an empty set.
  */
 const mockTxQueryFn = vi.fn();
 /**
- * The subtree the hard-delete transaction walks (#1636): the page itself plus
- * one sub-article. The route deletes every id the walk returns and cleans the
- * directories of every id the DELETE's RETURNING reports, so the mock has to
- * model BOTH statements rather than assume a single-row delete.
+ * What the standalone DELETE reports having destroyed: the page itself plus one
+ * cascaded sub-article. A single-row answer would make the cascade half of the
+ * cleanup contract unobservable.
  */
-const TX_SUBTREE_IDS = [42, 43];
-function resetTxQuery(): void {
-  mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
-    if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
+const TX_DESTROYED_IDS = [42, 43];
+/**
+ * What a WALK of the same subtree would visit — one row more, standing in for a
+ * row the statement's own guards skip (`source = 'standalone'`,
+ * `created_by_user_id = $2`) while descending through it.
+ *
+ * Nothing in the route reads a bare walk any more, so this answers a statement
+ * that is not currently sent. It is a deliberate trap rather than dead code: a
+ * cleanup driven by the walk instead of by the DELETE's `RETURNING` would
+ * `rm -rf` the attachment and icon directories of a row that is still LIVE and
+ * holds the only copy of those bytes, and this branch is what makes that
+ * regression fail the cases below instead of quietly passing them.
+ */
+const TX_WALKED_IDS = [42, 43, 44];
+function answerTxStatement(sql: unknown, destroyed: number[], params?: unknown[]) {
+  const text = typeof sql === 'string' ? sql : '';
+  // #1636's ambiguity re-check under the attachment lock. Zero rows means the
+  // subtree is safe to act on; a row here rolls the transaction back, which the
+  // integration suite drives against real Postgres.
+  if (/conflicting_page_id/.test(text)) {
+    return Promise.resolve({ rows: [], rowCount: 0 });
+  }
+  if (/SELECT id FROM d\b/.test(text) && !/DELETE FROM/i.test(text)) {
+    return Promise.resolve({
+      rows: TX_WALKED_IDS.map((id) => ({ id })),
+      rowCount: TX_WALKED_IDS.length,
+    });
+  }
+  if (/DELETE FROM pages\b/i.test(text) && /RETURNING/i.test(text)) {
+    // The standalone cascade is the `WITH RECURSIVE` form and reports its whole
+    // batch; the Confluence path deletes the one id it bound.
+    if (/^\s*WITH RECURSIVE/i.test(text)) {
       return Promise.resolve({
-        rows: TX_SUBTREE_IDS.map((id) => ({ id })),
-        rowCount: TX_SUBTREE_IDS.length,
+        rows: destroyed.map((id) => ({ id, visibility: 'private' })),
+        rowCount: destroyed.length,
       });
     }
-    if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
-      // The standalone cascade binds an id array (#1636); the Confluence path
-      // binds a single id.
-      const bound = params?.[0];
-      const ids = Array.isArray(bound) ? (bound as number[]) : typeof bound === 'number' ? [bound] : [];
-      return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
-    }
-    return Promise.resolve({ rows: [], rowCount: 0 });
-  });
+    const bound = params?.[0];
+    const ids = typeof bound === 'number' ? [bound] : [];
+    return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
+  }
+  return Promise.resolve({ rows: [], rowCount: 0 });
+}
+function resetTxQuery(): void {
+  mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) =>
+    answerTxStatement(sql, TX_DESTROYED_IDS, params),
+  );
 }
 resetTxQuery();
 vi.mock('../../core/db/postgres.js', () => ({
@@ -179,53 +213,67 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
         visibility: 'private',
       }],
     });
-    // Subsequent statements (pinned_pages delete, pages delete/update).
-    mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
+    // Everything the route sends on the POOL afterwards. #1636's pre-flight
+    // ambiguity check is answered explicitly with ZERO rows: a row there is a
+    // 409 and the request never reaches the transaction at all.
+    mockQueryFn.mockImplementation((sql: unknown) => {
+      if (typeof sql === 'string' && /conflicting_page_id/.test(sql)) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      // pinned_pages sweep, the soft-delete cascade, the Confluence update.
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
   }
 
-  it('hard delete (permanent=true) removes the attachment directories of every id in the subtree', async () => {
+  it('hard delete (permanent=true) removes the attachment directories of every id the DELETE destroyed', async () => {
     stubStandalonePageLoad();
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/42?permanent=true' });
 
     expect(response.statusCode).toBe(200);
-    // #1636: the walk's ids are what the DELETE removed, and EVERY one of them
-    // gets its directories collected — a cascaded sub-article's bytes leak
-    // otherwise, and the sweep only converges them a day later.
-    expect(mockCleanupStandaloneDirs.mock.calls.map(([pageId]) => pageId)).toEqual(TX_SUBTREE_IDS);
+    // #1636: EVERY id the DELETE reported gets its directories collected — a
+    // cascaded sub-article's bytes leak otherwise, and the daily sweep only
+    // converges them much later.
+    expect(mockCleanupStandaloneDirs.mock.calls.map(([pageId]) => pageId)).toEqual(
+      TX_DESTROYED_IDS,
+    );
     expect(mockCleanupStandaloneDirs).toHaveBeenCalledWith(
       43,
       expect.objectContaining({ query: mockTxQueryFn }),
     );
-    // Same set, same reason: the mark is the only copy of those bytes.
-    expect(mockDiscardPageIcon.mock.calls.map(([pageId]) => pageId)).toEqual(TX_SUBTREE_IDS);
+    // The icon directory goes with them, and THIS helper is what carries that
+    // guarantee now: `cleanupStandalonePageAttachmentDirs` calls
+    // `deletePageIconImage` unconditionally, on the same barrier-owning client
+    // (its own behaviour is covered against real files in
+    // `core/services/standalone-attachment-cleanup.integration.test.ts`). The
+    // route's separate `discardPageIconForDeletedPage` call was therefore
+    // removed from this path: a second pass would repeat the work OUTSIDE the
+    // barrier the first one was ordered against.
+    expect(mockDiscardPageIcon).not.toHaveBeenCalled();
   });
 
   /**
    * #1636 review hazard: the cleanup must never run for an id the transaction
-   * did NOT destroy. A mock whose DELETE answers with a subset of the walk is
-   * the only way to make that branch reachable without fault injection.
+   * did NOT destroy. The DELETE's own guards (`source = 'standalone'`,
+   * `created_by_user_id = $2`) skip rows the walk descends THROUGH, so its
+   * `RETURNING` is a subset of the subtree — and every skipped row is still
+   * LIVE and still holds the only copy of its bytes.
    */
-  it('cleans only the ids the DELETE’s RETURNING reported', async () => {
+  it('cleans only the ids the DELETE’s RETURNING reported, never the walked subtree', async () => {
     stubStandalonePageLoad();
-    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
-      if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
-        return Promise.resolve({ rows: TX_SUBTREE_IDS.map((id) => ({ id })), rowCount: 2 });
-      }
-      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
-        // The database refused the second row — only 42 really went.
-        void params;
-        return Promise.resolve({ rows: [{ id: 42 }], rowCount: 1 });
-      }
-      return Promise.resolve({ rows: [], rowCount: 0 });
-    });
+    // The walk reaches 42, 43 and 44 (`TX_WALKED_IDS`); only 42 was destroyed.
+    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) =>
+      answerTxStatement(sql, [42], params),
+    );
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/42?permanent=true' });
 
     expect(response.statusCode).toBe(200);
     expect(mockCleanupStandaloneDirs.mock.calls.map(([pageId]) => pageId)).toEqual([42]);
-    // The icon discard follows the same committed set, never the intended one.
-    expect(mockDiscardPageIcon.mock.calls.map(([pageId]) => pageId)).toEqual([42]);
+    // The two survivors keep their directories — and their icons, which now
+    // travel with the same helper.
+    expect(mockCleanupStandaloneDirs).toHaveBeenCalledTimes(1);
+    expect(mockDiscardPageIcon).not.toHaveBeenCalled();
   });
 
   it('keeps the shared attachment barrier across the hard-delete SQL and filesystem cleanup', async () => {

@@ -67,7 +67,7 @@ import { useSettings } from '../../hooks/use-settings';
 import { apiFetch } from '../../lib/api';
 import { cn } from '../../lib/cn';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { trashConfirmCopy } from '../../lib/trash-copy';
+import { confluenceDeleteConfirmCopy, trashConfirmCopy } from '../../lib/trash-copy';
 import type { TocHeading } from './TableOfContents';
 
 // ---------- Outline tree helpers ----------
@@ -960,10 +960,14 @@ export function ArticleRightPane({
   // the dialog to <body>, so its position in the tree only matters for state.
   //
   // #1636: same copy module as PageViewPage, same server-side count —
-  // `descendantCount` is what the cascade will take — and the same source gate:
-  // a Confluence-sourced page's delete removes exactly one row, so its real
-  // descendants must not be named as trashed-with-it.
-  const trashCopy = trashConfirmCopy(page?.source === 'standalone' ? page.descendantCount : 0);
+  // `descendantCount` is what the cascade will take — and the same split by
+  // source: a Confluence-sourced page's delete goes UP to Confluence and never
+  // reaches Trash, so it gets the irreversible copy rather than a 30-day
+  // restore it cannot be given. An unloaded `page` has an unknown source too,
+  // so it keeps the no-promise fallback.
+  const trashCopy = page
+    ? (page.source === 'standalone' ? trashConfirmCopy(page.descendantCount) : confluenceDeleteConfirmCopy())
+    : trashConfirmCopy(undefined);
   const confirmTrashDialog = (
     <ConfirmDialog
       open={confirmTrashOpen}

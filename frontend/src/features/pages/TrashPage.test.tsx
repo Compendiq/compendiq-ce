@@ -75,6 +75,25 @@ const twoItemTrash = {
 };
 
 /**
+ * A -> B -> C, each trashed by a SEPARATE action: three distinct `deleted_at`
+ * batches, so restoring the chain takes three separate restores and one
+ * concurrent retry pass cannot clear it (#1636).
+ */
+const threeLevelTrash = {
+  items: ['3', '4', '5'].map((id, depth) => ({
+    id,
+    title: `Level ${depth}`,
+    source: 'standalone',
+    visibility: 'private',
+    deletedAt: new Date(Date.now() - (depth + 1) * DAY_MS).toISOString(),
+    createdAt: new Date(Date.now() - 10 * DAY_MS).toISOString(),
+    deletedBy: 'simon',
+    autoPurgeAt: new Date(Date.now() + 29 * DAY_MS).toISOString(),
+  })),
+  total: 3,
+};
+
+/**
  * Mocks fetch at the network boundary, answering only the real backend
  * endpoints: GET /api/pages/trash and POST /api/pages/:id/restore.
  * Everything else (e.g. the old /api/trash path) gets a 404.
@@ -106,6 +125,35 @@ function mockApi(trashData: unknown, options: { restore?: (pageId: string) => Re
       headers: { 'Content-Type': 'application/json' },
     });
   });
+}
+
+/** The route's transient 409: the target's ancestor is still in the trash. */
+function ancestorConflict(parentTitle: string): Response {
+  return new Response(
+    JSON.stringify({
+      error: 'Conflict',
+      message: `Restore "${parentTitle}" first`,
+      reason: 'restore_ancestor_trashed',
+    }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+function restored(pageId: string): Response {
+  return new Response(JSON.stringify({ id: pageId, title: 'x', restored: true }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/** One entry of a `fetch` spy's recorded calls. */
+type FetchCall = [input: RequestInfo | URL, init?: RequestInit];
+
+/** Every restore POST the component actually sent, in order. */
+function restoreUrls(calls: readonly FetchCall[]): string[] {
+  return calls
+    .filter(([, init]) => init?.method === 'POST')
+    .map(([url]) => (typeof url === 'string' ? url : String(url)))
+    .filter((url) => url.endsWith('/restore'));
 }
 
 describe('TrashPage', () => {
@@ -252,32 +300,28 @@ describe('TrashPage', () => {
 
   /**
    * A cascade puts several rows in ONE batch, and one request per selected row
-   * means whichever lands first restores the whole batch: its sibling is then
-   * refused (409) for an ancestor that IS in this selection. Retrying after the
-   * others settle is what keeps the toast from reporting a failure for work
-   * that is already done.
+   * means whichever lands first restores the whole batch: the SUB-ARTICLE's own
+   * request is then refused (409) for an ancestor that IS in this selection.
+   * Retrying after the others settle is what keeps the toast from reporting a
+   * failure for work that is already done.
+   *
+   * The refusal is keyed on the page id and that id's own attempt count, never
+   * on a global call counter: `Array.from(selectedIds)` order is an internal
+   * detail of the Set, and a counter-keyed fixture reds the build when that
+   * order changes with no behaviour change at all. Refusing the PARENT — as
+   * this fixture used to — also modelled the parent as its own blocked
+   * descendant, which is not a state the route can produce.
    */
-  it('retries a refused bulk restore once the rest of the selection has settled', async () => {
-    let restoreCalls = 0;
+  it('retries the sub-article refused for an ancestor inside the same selection', async () => {
+    const attempts = new Map<string, number>();
     const fetchSpy = mockApi(twoItemTrash, {
       restore: (pageId) => {
-        restoreCalls += 1;
-        // The parent is restored first and takes its sub-article with it, so
-        // the sub-article's own (concurrent) request is refused once.
-        const refused = pageId === '3' && restoreCalls === 1;
-        if (refused) {
-          return new Response(
-            JSON.stringify({
-              error: 'Conflict',
-              message: 'Restore "Deleted Article" first',
-              reason: 'restore_ancestor_trashed',
-            }),
-            { status: 409, headers: { 'Content-Type': 'application/json' } },
-          );
-        }
-        return new Response(JSON.stringify({ id: pageId, title: 'x', restored: true }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
+        const attempt = (attempts.get(pageId) ?? 0) + 1;
+        attempts.set(pageId, attempt);
+        // '4' is the sub-article; '3' is the parent whose restore takes the
+        // whole batch — and therefore the sub-article — back with it.
+        if (pageId === '4' && attempt === 1) return ancestorConflict('Deleted Article');
+        return restored(pageId);
       },
     });
     render(<TrashPage />, { wrapper: createWrapper() });
@@ -290,11 +334,121 @@ describe('TrashPage', () => {
       expect(toast.success).toHaveBeenCalledWith('Restored 2 pages');
     });
     expect(toast.error).not.toHaveBeenCalled();
-    // One request per row plus the single retry.
-    const restoreRequests = fetchSpy.mock.calls.filter(
-      ([url, init]) => typeof url === 'string' && url.includes('/restore') && init?.method === 'POST',
-    );
-    expect(restoreRequests.length).toBe(3);
+    // One request per row plus the sub-article's single retry — and the parent
+    // is never re-asked, because it was never refused.
+    expect(restoreUrls(fetchSpy.mock.calls)).toEqual([
+      '/api/pages/3/restore',
+      '/api/pages/4/restore',
+      '/api/pages/4/restore',
+    ]);
+  });
+
+  /**
+   * #1636 — A -> B -> C, each trashed by a separate action, is three distinct
+   * `deleted_at` batches and therefore three separate restores. ONE extra
+   * concurrent pass cannot resolve that chain: pass 1 restores A while B and C
+   * are both refused, and firing B and C together again lets C observe B still
+   * trashed. The refused set is therefore re-asked in serialised passes for as
+   * long as it keeps shrinking.
+   */
+  it('retries in passes, so a chain deeper than one level still resolves', async () => {
+    const attempts = new Map<string, number>();
+    const fetchSpy = mockApi(threeLevelTrash, {
+      restore: (pageId) => {
+        const attempt = (attempts.get(pageId) ?? 0) + 1;
+        attempts.set(pageId, attempt);
+        // '4' is live once its parent '3' is back: refused for one pass. '5' is
+        // one level deeper and stays refused until '4' is back: two passes.
+        if (pageId === '4' && attempt === 1) return ancestorConflict('Level 0');
+        if (pageId === '5' && attempt <= 2) return ancestorConflict('Level 1');
+        return restored(pageId);
+      },
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    fireEvent.click(screen.getByTestId('trash-select-all'));
+    fireEvent.click(await screen.findByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith('Restored 3 pages');
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(attempts.get('5')).toBe(3);
+    // 3 + 2 + 1: every pass carries only the ids still refused.
+    expect(restoreUrls(fetchSpy.mock.calls)).toHaveLength(6);
+  });
+
+  /**
+   * An ancestor that is NOT in this selection is a genuine block, not a race —
+   * no later pass can change it. So the loop stops the first time a pass fails
+   * to shrink the refused set; without that, "retry while refused" is a retry
+   * without end, and the user is told about a refusal the server has already
+   * made final.
+   */
+  it('stops re-asking once a pass makes no progress', async () => {
+    const attempts = new Map<string, number>();
+    const fetchSpy = mockApi(mockTrashData, {
+      restore: (pageId) => {
+        attempts.set(pageId, (attempts.get(pageId) ?? 0) + 1);
+        return ancestorConflict('Parent article');
+      },
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    fireEvent.click(screen.getByTestId('trash-select-all'));
+    fireEvent.click(await screen.findByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        'Failed to restore the page. Restore "Parent article" first',
+      );
+    });
+    expect(restoreUrls(fetchSpy.mock.calls)).toEqual(['/api/pages/3/restore']);
+  });
+
+  /**
+   * #1636 — a partial restore used to clear NOTHING from the selection: the
+   * `setSelectedIds(new Set())` sat in the all-succeeded branch only. The rows
+   * that did restore left the list (the mutation invalidates `['trash']`) but
+   * stayed selected, so the bar kept a stale count, select-all's size
+   * comparison went wrong, and pressing Restore Selected again re-POSTed
+   * already-live ids — answered 200 `restored: false` — under a toast claiming
+   * a fresh restore. The failed id stays selected on purpose: it is exactly
+   * what a retry is for.
+   */
+  it('deselects the ids that restored and keeps the failure selected', async () => {
+    const fetchSpy = mockApi(twoItemTrash, {
+      restore: (pageId) =>
+        pageId === '4'
+          ? new Response(
+              JSON.stringify({ error: 'Internal Server Error', message: 'Database unavailable' }),
+              { status: 500, headers: { 'Content-Type': 'application/json' } },
+            )
+          : restored(pageId),
+    });
+    render(<TrashPage />, { wrapper: createWrapper() });
+    await screen.findByTestId('trash-list');
+
+    fireEvent.click(screen.getByTestId('trash-select-all'));
+    fireEvent.click(await screen.findByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('Restored 1 of 2 pages. Database unavailable');
+    });
+    expect(screen.getByTestId('trash-bulk-count')).toHaveTextContent('1 page selected');
+
+    // The second press can only address the failure: the restored id is out of
+    // the selection, so it is never asked again.
+    fireEvent.click(screen.getByTestId('trash-bulk-restore-btn'));
+
+    await waitFor(() => {
+      expect(restoreUrls(fetchSpy.mock.calls).filter((url) => url === '/api/pages/4/restore'))
+        .toHaveLength(2);
+    });
+    expect(restoreUrls(fetchSpy.mock.calls).filter((url) => url === '/api/pages/3/restore'))
+      .toHaveLength(1);
   });
 
   /**

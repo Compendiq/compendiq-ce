@@ -293,7 +293,15 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
       expect(mockCacheInvalidate).not.toHaveBeenCalled();
     });
 
-    it('invalidates the pages cache across all users when deleting a shared standalone page', async () => {
+    /**
+     * #1636: the scope is read off the ROWS THE CASCADE TOUCHED
+     * (`RETURNING id, visibility`), not off the target page — visibility is per
+     * page, so a private parent can hold a shared sub-article. The mock
+     * therefore has to answer the cascade UPDATE with the rows it trashed; a
+     * statement that reports nothing invalidates nothing across users, however
+     * the target row is shaped.
+     */
+    it('invalidates the pages cache across all users when the cascade trashed a shared page', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
           return Promise.resolve({
@@ -305,6 +313,14 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
               space_key: null,
               visibility: 'shared',
             }],
+          });
+        }
+        // The soft cascade. The shared row here is a SUB-ARTICLE, so this also
+        // covers the case the target's own visibility cannot answer.
+        if (typeof sql === 'string' && /UPDATE pages SET deleted_at = NOW\(\)/.test(sql)) {
+          return Promise.resolve({
+            rows: [{ id: 10, visibility: 'private' }, { id: 11, visibility: 'shared' }],
+            rowCount: 2,
           });
         }
         return Promise.resolve({ rows: [], rowCount: 0 });
@@ -321,7 +337,7 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
       expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalledWith('spaces');
     });
 
-    it('keeps per-user invalidation when deleting a private standalone page', async () => {
+    it('keeps per-user invalidation when the cascade trashed only private pages', async () => {
       mockQueryFn.mockImplementation((sql: string) => {
         if (typeof sql === 'string' && sql.includes('id, source, created_by_user_id')) {
           return Promise.resolve({
@@ -333,6 +349,12 @@ describe('DELETE /api/pages/:id RBAC space access checks', () => {
               space_key: null,
               visibility: 'private',
             }],
+          });
+        }
+        if (typeof sql === 'string' && /UPDATE pages SET deleted_at = NOW\(\)/.test(sql)) {
+          return Promise.resolve({
+            rows: [{ id: 10, visibility: 'private' }, { id: 11, visibility: 'private' }],
+            rowCount: 2,
           });
         }
         return Promise.resolve({ rows: [], rowCount: 0 });

@@ -117,15 +117,20 @@ export const PageDetailSchema = PageSummarySchema.extend({
   bodyText: z.string(),
   hasChildren: z.boolean().default(false),
   /**
-   * Live STANDALONE descendants of this page (`deleted_at IS NULL AND source =
-   * 'standalone'`), the page itself excluded — exactly the set `DELETE
-   * /api/pages/:id` cascades to trash (#1636), whose UPDATE arm carries that
-   * same source guard. It is NOT "the rows the tree shows": `hasChildren` is
-   * that question, and it can be true with a count of 0 (a Confluence-sourced
+   * The descendants of this page that a trash by THE CALLING USER would move:
+   * live, `source = 'standalone'`, created by the caller, the page itself
+   * excluded (#1636). It carries every guard `DELETE /api/pages/:id`'s cascade
+   * carries, because a count that named rows the request leaves alone is the
+   * over-promise this field exists to prevent — Confluence owns a synced row's
+   * lifecycle, and another user's article inside the subtree is not the
+   * caller's to trash.
+   *
+   * It is NOT "the rows the tree shows": `hasChildren` is that question, and it
+   * can be true with a count of 0 (a Confluence-sourced or another user's
    * subtree). Clients must READ this rather than derive a count from the page
    * tree: the tree is space/visibility filtered, may be mid-load, and cannot
    * know what the server will delete. Optional so a cached payload written
-   * before #1636 still parses; treat absent as 0.
+   * before #1636 still parses; treat absent as unknown and promise nothing.
    */
   descendantCount: z.number().int().nonnegative().optional(),
   summaryHtml: z.string().nullable().optional(),

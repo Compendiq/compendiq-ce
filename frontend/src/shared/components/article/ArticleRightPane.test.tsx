@@ -1304,6 +1304,10 @@ describe('ArticleRightPane', () => {
 
   // --- Delete via ConfirmDialog (replaces native confirm()) ---
   it('Delete opens the move-to-trash dialog; confirming soft-deletes and navigates home', async () => {
+    // Standalone, because the soft-delete copy asserted below is the copy of
+    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
+    // deletes upstream with no Trash to restore from (#1636).
+    currentMockPage = { ...mockPage, source: 'standalone' };
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
@@ -1350,29 +1354,33 @@ describe('ArticleRightPane', () => {
   });
 
   /**
-   * …and the count is quoted for a STANDALONE page only. A Confluence-sourced
-   * page reports descendants (its subtree is real and the tree shows it) but
-   * its delete removes exactly one row: the sub-articles stay live and cannot
-   * be restored from Trash, so naming them would be the over-promise #1636
-   * exists to remove.
+   * …and the count is quoted for a STANDALONE page only, because a
+   * Confluence-sourced page is not trashed at all: its delete propagates UP to
+   * Confluence, and afterwards `GET /pages/trash` filters
+   * `source = 'standalone'` while restore refuses anything else — the row never
+   * reaches Trash and can never be restored from it. The N=0 copy this used to
+   * render promised a 30-day restore that no later action could honour.
    */
-  it('keeps the no-sub-articles copy for a Confluence page that reports descendants (#1636)', async () => {
+  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
     currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 
     fireEvent.click(screen.getByText('Move to trash'));
     await screen.findByTestId('confirm-dialog');
 
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
     expect(
-      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+      screen.getByText(
+        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
 
     fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
     await waitFor(() => {
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });
+    expect(mockDeletePage).not.toHaveBeenCalled();
   });
 
   it('cancelling the move-to-trash dialog does not delete', async () => {
@@ -1416,7 +1424,7 @@ describe('ArticleRightPane', () => {
     fireEvent.click(screen.getByText('Danger zone'));
     fireEvent.click(screen.getByText('Move to trash'));
 
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('confirm-dialog-confirm'));
 
     await waitFor(() => {

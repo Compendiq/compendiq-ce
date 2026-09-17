@@ -149,7 +149,13 @@ describe('BulkActionBar', () => {
     expect(screen.getByTestId('bulk-sync-btn')).not.toHaveTextContent('(2)');
   });
 
-  it('confirms before deleting, naming the reversibility window', async () => {
+  /**
+   * #1636 — the bulk delete cascades: `POST /pages/bulk/delete` trashes every
+   * live sub-article of every selected page, so a dialog quoting the selection
+   * alone under-reported the action by the whole subtree. The copy is the one
+   * in `trash-copy.ts`, shared with both single-page surfaces.
+   */
+  it('confirms with the cascade and the reversibility window named', async () => {
     render(
       <BulkActionBar selectedIds={['1', '2']} confluenceCount={0} onClear={vi.fn()} />,
       { wrapper: createWrapper() },
@@ -157,10 +163,45 @@ describe('BulkActionBar', () => {
 
     fireEvent.click(screen.getByTestId('bulk-delete-btn'));
 
-    expect(await screen.findByText('Move 2 pages to trash?')).toBeInTheDocument();
+    expect(await screen.findByText('Move 2 pages and any sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/also moves its sub-articles/)).toBeInTheDocument();
     expect(screen.getByText(/restored from Trash for 30 days/)).toBeInTheDocument();
     // Nothing sent until the user confirms.
     expect(apiFetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A Confluence-sourced page is not trashed at all: the delete propagates up
+   * to Confluence and the row never reaches Trash, so promising a restore for
+   * part of the selection is the one thing this dialog must not do.
+   */
+  it('warns that the synced pages in a mixed selection are deleted in Confluence', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2', '3']} confluenceCount={1} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-delete-btn'));
+
+    expect(await screen.findByText('Delete 3 selected pages?')).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 of the selected pages is synced from Confluence: it is deleted in Confluence instead/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Move 2 pages to trash and delete 1 in Confluence' }),
+    ).toBeInTheDocument();
+  });
+
+  it('promises no restore when every selected page is Confluence-sourced', async () => {
+    render(
+      <BulkActionBar selectedIds={['1', '2']} confluenceCount={2} onClear={vi.fn()} />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByTestId('bulk-delete-btn'));
+
+    expect(await screen.findByText('Delete 2 pages in Confluence permanently?')).toBeInTheDocument();
+    expect(screen.queryByText(/restored from Trash/)).not.toBeInTheDocument();
   });
 
   it('deletes only after confirmation', async () => {
@@ -170,7 +211,9 @@ describe('BulkActionBar', () => {
     );
 
     fireEvent.click(screen.getByTestId('bulk-delete-btn'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Move 2 pages to trash' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Move 2 pages and any sub-articles to trash' }),
+    );
 
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/pages/bulk/delete', {
@@ -221,15 +264,19 @@ describe('BulkActionBar', () => {
     );
 
     fireEvent.click(screen.getByTestId('bulk-delete-btn'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Move 2 pages to trash' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Move 2 pages and any sub-articles to trash' }),
+    );
 
     await waitFor(() => {
       expect(toastMock.warning).toHaveBeenCalledWith(
         '1 page could not be moved to trash — Page 9: not the owner',
       );
     });
-    // The page that did succeed is still reported.
-    expect(toastMock.success).toHaveBeenCalledWith('1 page moved to trash');
+    // The page that did succeed is still reported — and `succeeded` counts
+    // SELECTED pages, not rows changed, so the toast names the cascade rather
+    // than reading as "one row moved".
+    expect(toastMock.success).toHaveBeenCalledWith('1 page moved to trash, with its sub-articles');
   });
 
   it('reports only the failure when nothing succeeded', async () => {
@@ -362,7 +409,7 @@ describe('BulkActionBar', () => {
     );
 
     fireEvent.keyDown(document, { key: 'Delete' });
-    expect(await screen.findByText('Move 2 pages to trash?')).toBeInTheDocument();
+    expect(await screen.findByText('Move 2 pages and any sub-articles to trash?')).toBeInTheDocument();
   });
 
   it('provides accessible labels and tooltips for all action buttons', () => {

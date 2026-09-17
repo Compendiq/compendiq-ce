@@ -73,39 +73,74 @@ export function TrashPage() {
     setIsBulkRestoring(true);
     const ids = Array.from(selectedIds);
     try {
-      const results = await Promise.allSettled(ids.map((id) => restoreMutation.mutateAsync(id)));
+      const restoredIds = new Set<string>();
+      // Keyed by id so a later pass can retract an earlier refusal: the same id
+      // must not be reported as failed once it has actually come back.
+      const failures = new Map<string, unknown>();
 
       // One cascade puts a parent and its sub-articles in ONE batch, and one
       // request per selected row means whichever lands first restores the whole
       // batch — so a sibling is refused (409) for an ancestor that is itself in
-      // this selection. Retry exactly those, once, now that the others have
-      // settled: the page is live by then and the retry is a no-op success.
-      const refusedIds = ids.filter(
-        (_id, index) => results[index]!.status === 'rejected' && isAncestorConflict(results[index]!.reason),
-      );
-      const retried =
-        refusedIds.length > 0
-          ? await Promise.allSettled(refusedIds.map((id) => restoreMutation.mutateAsync(id)))
-          : [];
+      // this selection. Those refusals are transient and have to be re-asked.
+      //
+      // Re-asking is a LOOP of passes, not one extra pass, because one pass can
+      // only clear one level: with A -> B -> C each trashed by a separate action
+      // (three distinct `deleted_at` batches, so three separate restores), pass
+      // 1 restores A while B and C are both refused, and firing B and C
+      // together again lets C observe B still trashed. Ids inside a pass stay
+      // concurrent; it is the passes that must be serialised.
+      //
+      // The loop stops the moment a pass fails to shrink the refused set. That
+      // is a genuine block — an ancestor outside this selection — and another
+      // identical pass would only re-ask the server for a decision it has
+      // already made. Each pass therefore either shrinks `pending` or ends the
+      // loop, so the number of passes is bounded by the selection size.
+      let pending = ids;
+      while (pending.length > 0) {
+        const results = await Promise.allSettled(pending.map((id) => restoreMutation.mutateAsync(id)));
+        const refused: string[] = [];
+        pending.forEach((id, index) => {
+          const result = results[index]!;
+          if (result.status === 'fulfilled') {
+            restoredIds.add(id);
+            failures.delete(id);
+            return;
+          }
+          failures.set(id, result.reason);
+          if (isAncestorConflict(result.reason)) refused.push(id);
+        });
+        if (refused.length >= pending.length) break;
+        pending = refused;
+      }
 
-      const failures = [
-        ...results.filter(
-          (result) => result.status === 'rejected' && !isAncestorConflict(result.reason),
-        ),
-        ...retried.filter((result) => result.status === 'rejected'),
-      ].map((result) => (result as PromiseRejectedResult).reason);
+      // Reported in selection order, so the sentence the user reads does not
+      // depend on which request happened to settle first.
+      const failureReasons = ids.filter((id) => failures.has(id)).map((id) => failures.get(id));
 
-      if (failures.length === 0) {
+      // Prune exactly what came back, in BOTH outcomes. A partial restore used
+      // to leave the succeeded ids selected while their rows left the list (the
+      // mutation invalidates `['trash']`), so the floating bar kept a stale
+      // count, `toggleSelectAll`'s size comparison went wrong, and pressing
+      // Restore Selected again re-POSTed already-live ids — answered 200
+      // `restored: false` — under a toast that claimed a fresh restore. The
+      // failed ids stay selected on purpose: they are exactly what a retry is.
+      if (restoredIds.size > 0) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of restoredIds) next.delete(id);
+          return next;
+        });
+      }
+
+      if (failureReasons.length === 0) {
         toast.success(`Restored ${ids.length} ${ids.length === 1 ? 'page' : 'pages'}`);
-        setSelectedIds(new Set());
       } else {
         // Say what actually happened, then why: a partial restore that reports
         // only the failure reads as "nothing worked".
-        const restored = ids.length - failures.length;
-        const reason = restoreFailureMessage(failures[0]);
+        const reason = restoreFailureMessage(failureReasons[0]);
         toast.error(
-          restored > 0
-            ? `Restored ${restored} of ${ids.length} pages. ${reason}`
+          restoredIds.size > 0
+            ? `Restored ${restoredIds.size} of ${ids.length} pages. ${reason}`
             : `Failed to restore ${ids.length === 1 ? 'the page' : 'the selected pages'}. ${reason}`,
         );
       }

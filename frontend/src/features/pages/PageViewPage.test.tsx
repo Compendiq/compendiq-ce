@@ -908,6 +908,10 @@ describe('PageViewPage', () => {
   });
 
   it('Alt+Shift+D opens the move-to-trash dialog; confirming soft-deletes the page', async () => {
+    // Standalone, because the soft-delete copy asserted below is the copy of
+    // the soft-delete branch: `mockPage` is Confluence-sourced, and that branch
+    // deletes upstream with no Trash to restore from (#1636).
+    currentMockPage = { ...mockPage, source: 'standalone' };
     render(<PageViewPage />, { wrapper: createWrapper() });
     const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');
     expect(deleteShortcut).toBeDefined();
@@ -934,12 +938,11 @@ describe('PageViewPage', () => {
    * #1636 — the dialog must name what the trash actually moves. `mockPage` has
    * `hasChildren: true` and no `descendantCount`, so every other test in this
    * file is exercising the unknown-count fallback: it passes only while that
-   * fallback is the N=0 copy.
+   * fallback is the no-cascade copy.
    *
-   * The count is quoted for a STANDALONE page only: the Confluence branch of
-   * `DELETE /pages/:id` is Confluence's own lifecycle and removes exactly one
-   * row (its sub-articles stay live, and Trash cannot restore them), so naming
-   * a count there would be the over-promise this dialog exists to remove.
+   * The count is quoted for a STANDALONE page only, because only that branch of
+   * `DELETE /pages/:id` trashes a subtree. The Confluence branch is a different
+   * action entirely — see below.
    */
   it('names the sub-article count when the page has descendants (#1636)', async () => {
     currentMockPage = { ...mockPage, source: 'standalone', createdByUserId: '1', descendantCount: 3 };
@@ -974,21 +977,31 @@ describe('PageViewPage', () => {
     await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
   });
 
-  it('keeps the no-sub-articles copy for a Confluence page that reports descendants (#1636)', async () => {
-    // A synced page can answer `descendantCount > 0` (its subtree is real, and
-    // `hasChildren` sees it), but the Confluence branch of the delete does not
-    // cascade: promising the sub-articles would be a lie about the request.
+  /**
+   * A synced page is not trashed at all: `DELETE /pages/:id` propagates the
+   * delete UP to Confluence, and afterwards `GET /pages/trash` filters
+   * `source = 'standalone'` while restore refuses anything else — the row never
+   * reaches Trash and can never be restored. The N=0 copy this used to render
+   * promised a 30-day restore, which is the one sentence no later action could
+   * make true.
+   */
+  it('promises no restore for a Confluence page — its delete goes upstream (#1636)', async () => {
     currentMockPage = { ...mockPage, source: 'confluence', descendantCount: 2 };
     render(<PageViewPage />, { wrapper: createWrapper() });
     act(() => {
       capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
     });
 
-    expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+    expect(await screen.findByText('Delete page in Confluence permanently?')).toBeInTheDocument();
     expect(
-      screen.getByText('It can be restored from Trash for 30 days, then it is permanently deleted.'),
+      screen.getByText(
+        'This page is synced from Confluence, so deleting it here deletes it in Confluence too. This cannot be undone.',
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Move to trash');
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent('Delete permanently in Confluence');
+    // Its real descendants are left live, so naming a cascade would be a lie
+    // about the request as much as the restore promise was.
+    expect(screen.queryByText(/sub-article/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
     await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
@@ -1411,7 +1424,7 @@ describe('PageViewPage', () => {
       act(() => {
         deleteShortcut!.action();
       });
-      expect(await screen.findByText('Move page to trash?')).toBeInTheDocument();
+      expect(await screen.findByTestId('confirm-dialog')).toBeInTheDocument();
 
       currentMockPage = {
         ...mockPage,
@@ -1427,7 +1440,6 @@ describe('PageViewPage', () => {
       // Left open, confirming would trash page B (mutateAsync(id) with the
       // new id). It must be dismissed on navigation instead.
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
-      expect(screen.queryByText('Move page to trash?')).not.toBeInTheDocument();
       expect(mockDeleteMutateAsync).not.toHaveBeenCalled();
     });
   });
