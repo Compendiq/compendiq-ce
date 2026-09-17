@@ -76,12 +76,6 @@ export interface LlmAdminAuditEntry {
     /** #1184 — an admin forced a fresh vision probe of the resolved chat pair. */
     | 'llm_vision_capability_reprobed'
     /**
-     * #1115 — an admin forced a fresh image-embedding probe. Worth auditing
-     * beyond the vision case: a successful re-probe can retype the image
-     * column, empty `page_image_embeddings` and re-dirty the whole corpus.
-     */
-    | 'llm_image_embedding_reprobed'
-    /**
      * #1615 — an admin forced a fresh vision probe of the `image_analysis`
      * pair. A `true` verdict can adopt a new retained identity (ADR-027 D7),
      * which re-pends every analyzed row at the next sweep.
