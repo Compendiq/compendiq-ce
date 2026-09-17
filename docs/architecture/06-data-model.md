@@ -54,6 +54,7 @@ erDiagram
         uuid user_id PK,FK
         text confluence_url
         bytea confluence_pat "AES-256-GCM"
+        bool confluence_enabled "per-user Confluence integration toggle (#1623)"
         text[] selected_spaces
         text ollama_model
         text theme
@@ -805,6 +806,20 @@ together, which matters most for #1114's query-side prefix.
   top-K nearest-neighbour edges from this index scoped to the changed pages,
   instead of AVG-ing the whole `page_embeddings` table and doing an index-less
   pairwise scan on every embedding run.
+- **The Confluence toggle is a mode, not a credential state (#1623,
+  migration 119).** `user_settings.confluence_enabled` is `BOOLEAN NOT NULL
+  DEFAULT TRUE`, so every row that predates the column keeps behaving exactly
+  as it did and the no-row read path in `routes/foundation/settings.ts` emits
+  the same `true`. `FALSE` means **standalone mode**: no scheduled or manual
+  sync, no upstream push when a page is saved, moved or deleted, and no
+  surface that asks for a URL or a PAT. It deliberately does **not** clear
+  `confluence_url` or `confluence_pat` — re-enabling needs no re-paste — and
+  previously synced rows keep their `pages.confluence_id` and their history,
+  so the column is independent of the derived `confluenceConnected` (which
+  answers only whether credentials exist). Do not confuse it with
+  `pages.source = 'standalone'`, which classifies a single row's origin; this
+  column is a per-user integration mode and says nothing about any page's
+  provenance.
 - **Encryption at rest.** `user_settings.confluence_pat` and
   `user_settings.notion_integration_token` (#1462) are stored as
   ciphertext blobs (AES-256-GCM, key from `PAT_ENCRYPTION_KEY`). Never

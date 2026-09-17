@@ -174,6 +174,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Confluence is now a per-user toggle, and off means standalone mode (#1623,
+  migration 119).** The authorisation, verbatim: **"When confluence is off the
+  app should be in standalone mode, all features should work just with no sync
+  to confluence."** `user_settings.confluence_enabled` is `BOOLEAN NOT NULL
+  DEFAULT TRUE`, so every existing deployment is untouched and a row that
+  predates the column reads as enabled — the no-row read path in
+  `GET /api/settings` emits the same `true`. `confluenceEnabled` is
+  **required** on `SettingsResponseSchema` (a client that cannot see the flag
+  would keep nagging a standalone user) and **optional** on
+  `UpdateSettingsSchema`, where an omitted key leaves the column alone.
+  **Off is not a degraded product:** pages, the editor, search, the AI
+  assistant, Q&A, quality analysis, versions and the knowledge graph all keep
+  working on the local corpus. Scheduled and manual sync stay idle and no save,
+  move or delete is pushed upstream — a page that synced earlier stays fully
+  editable, movable and deletable, its writes landing locally while it keeps
+  its `confluence_id` and its history. **Credentials are retained, never
+  cleared**, so switching back on needs no re-paste, and
+  `Confluence not configured` stays reserved for an *enabled* user whose
+  credentials are missing or broken. **No surface asks for a URL or a PAT while
+  the flag is off:** Settings → Confluence renders the credential form only
+  behind a `Sync with Confluence` switch that saves on flip (the panel's Save
+  still submits credentials only); the first-run wizard's Confluence step
+  offers `Use Standalone Mode`, and a successful connection test re-enables the
+  integration; Spaces & Sync drops `Fetch Spaces`, `Sync Selected` and the sync
+  overview while keeping the saved space selection listed and editable; the
+  Library's browse-empty state answers the mode ahead of both Confluence
+  branches and carries no primary action, because there is nothing to finish in
+  Settings; the Getting Started checklist renders three milestones instead of
+  five, omitting the two Confluence steps rather than greying them out or
+  ticking them; and version history reports a new `skipped_confluence_off`
+  backfill status — "the list below is this page's local history" — instead of
+  the credential prompt `skipped_no_credentials` earns. One backend truth
+  source, `isConfluenceEnabled(userId)` in
+  `domains/confluence/services/sync-service.ts` (`true` when no row exists);
+  `getClientForUser` returns `null` when the flag is off, and because it also
+  returns `null` for enabled-but-unconfigured, a caller that must keep working
+  locally asks the helper instead of inferring the mode from a null client.
+  Every read is `confluenceEnabled === false`, never a falsy test: a payload
+  from a backend predating the field legitimately omits the key, and falsy would
+  read *unknown* as *off* and turn a connected user's workspace standalone.
+  **A local write succeeds; only a Confluence-ONLY operation refuses** —
+  creating a page *in* a Confluence space, `POST /pages/bulk/sync`,
+  `POST /embeddings/force-embed-tree` and `POST /pages/:id/relocate` answer
+  `Confluence integration is disabled`, `POST /api/sync` answers 200 with the
+  same sentence and writes no `SYNC_STARTED` audit row,
+  `GET /api/spaces/available` answers 409 and a `selectedSpaces` write 422,
+  while `DELETE /pages/:id` deletes the local row and leaves the upstream page
+  alone. Re-enabling introduces no reconciliation model: a standalone stretch is
+  reconciled by the existing `local_modified_at` conflict path on the next sync.
+
 - **O15 labelling packet and validator (ADR-027, #1619).** The gate's primary
   endpoint runs on the image-dependent labels, and that classification is an
   independent human pass — so the two scripts that carry it decide nothing.
