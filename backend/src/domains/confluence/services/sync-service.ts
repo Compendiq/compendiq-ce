@@ -249,15 +249,47 @@ async function tryClaimSpaceReconcile(spaceKey: string): Promise<boolean> {
 }
 
 /**
+ * Whether the Confluence integration is switched on for a user (#1623).
+ *
+ * Off means standalone mode: every feature keeps working, nothing syncs to or
+ * from Confluence. `user_settings.confluence_enabled` is `NOT NULL DEFAULT
+ * TRUE`, so the only unknown is a user with no settings row at all — nothing
+ * has been switched off there, so the integration counts as on.
+ *
+ * This is the single source of truth for the toggle on the backend: callers
+ * that keep working locally must distinguish "integration off" from "not
+ * configured" here rather than inferring it from a null client.
+ */
+export async function isConfluenceEnabled(userId: string): Promise<boolean> {
+  const result = await query<{ confluence_enabled: boolean }>(
+    'SELECT confluence_enabled FROM user_settings WHERE user_id = $1',
+    [userId],
+  );
+  return result.rows[0]?.confluence_enabled !== false;
+}
+
+/**
  * Get a ConfluenceClient for a user by decrypting their stored credentials.
+ *
+ * Returns `null` both when the integration is switched off and when it is on
+ * but unconfigured — the two are NOT interchangeable for callers that must
+ * keep serving the user locally; those ask `isConfluenceEnabled` as well.
  */
 export async function getClientForUser(userId: string): Promise<ConfluenceClient | null> {
-  const result = await query<{ confluence_url: string | null; confluence_pat: string | null }>(
-    'SELECT confluence_url, confluence_pat FROM user_settings WHERE user_id = $1',
+  const result = await query<{
+    confluence_url: string | null;
+    confluence_pat: string | null;
+    confluence_enabled: boolean | null;
+  }>(
+    'SELECT confluence_url, confluence_pat, confluence_enabled FROM user_settings WHERE user_id = $1',
     [userId],
   );
 
   const row = result.rows[0];
+  // Switched off → standalone mode, so nothing may leave the box. Compared to
+  // `false` explicitly: credentials are retained across a toggle, and a falsy
+  // check would also reject rows that simply carry no value for the column.
+  if (row?.confluence_enabled === false) return null;
   if (!row?.confluence_url || !row?.confluence_pat) return null;
 
   const pat = decryptPat(row.confluence_pat);
@@ -268,6 +300,15 @@ export async function getClientForUser(userId: string): Promise<ConfluenceClient
  * Sync all pages from a user's selected spaces.
  */
 export async function syncUser(userId: string): Promise<void> {
+  // Standalone mode (#1623): the integration is off, so a scheduled or manual
+  // run has nothing to do. Credentials stay on the row, so this is not a
+  // configuration problem — say so, and settle the status back to idle.
+  if (!(await isConfluenceEnabled(userId))) {
+    logger.info({ userId }, 'Confluence integration disabled, skipping sync (standalone mode)');
+    await setSyncStatus(userId, { userId, status: 'idle' });
+    return;
+  }
+
   const client = await getClientForUser(userId);
   if (!client) {
     logger.warn({ userId }, 'No Confluence credentials configured, skipping sync');
@@ -2034,6 +2075,7 @@ export async function runScheduledSync(): Promise<number> {
     const users = await query<{ user_id: string }>(
       `SELECT DISTINCT us.user_id FROM user_settings us
        WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+         AND us.confluence_enabled
          AND EXISTS (
            SELECT 1 FROM space_role_assignments sra
            WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT
@@ -2076,10 +2118,11 @@ export function startSyncWorker(intervalMinutes = 15): void {
     }, SYNC_LOCK_RENEW_INTERVAL_MS);
 
     try {
-      // Get all users with configured connections and RBAC space assignments
+      // Users with a configured, switched-on connection and RBAC space assignments
       const users = await query<{ user_id: string }>(
         `SELECT DISTINCT us.user_id FROM user_settings us
          WHERE us.confluence_url IS NOT NULL AND us.confluence_pat IS NOT NULL
+           AND us.confluence_enabled
            AND EXISTS (
              SELECT 1 FROM space_role_assignments sra
              WHERE sra.principal_type = 'user' AND sra.principal_id = us.user_id::TEXT

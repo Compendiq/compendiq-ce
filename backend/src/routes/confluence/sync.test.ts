@@ -6,11 +6,13 @@ import sensible from '@fastify/sensible';
 const mockSyncUser = vi.fn().mockResolvedValue(undefined);
 const mockGetSyncStatus = vi.fn();
 const mockSetSyncStatus = vi.fn();
+const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
 
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   syncUser: (...args: unknown[]) => mockSyncUser(...args),
   getSyncStatus: (...args: unknown[]) => mockGetSyncStatus(...args),
   setSyncStatus: (...args: unknown[]) => mockSetSyncStatus(...args),
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 vi.mock('../../core/services/audit-service.js', () => ({
@@ -49,6 +51,7 @@ describe('Sync routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsConfluenceEnabled.mockResolvedValue(true);
   });
 
   describe('POST /api/sync', () => {
@@ -103,6 +106,25 @@ describe('Sync routes', () => {
       const body = JSON.parse(response.body);
       expect(body.message).toBe('Sync started');
       expect(body.status.status).toBe('syncing');
+    });
+
+    it('reports the off state without starting a run when the integration is disabled (#1623)', async () => {
+      mockGetSyncStatus.mockReturnValue({ userId: 'test-user-id', status: 'idle' });
+      mockIsConfluenceEnabled.mockResolvedValue(false);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/sync',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.message).toBe('Confluence integration is disabled');
+      expect(body.status.status).toBe('idle');
+
+      // No phantom 'syncing' status, no background work.
+      expect(mockSetSyncStatus).not.toHaveBeenCalled();
+      expect(mockSyncUser).not.toHaveBeenCalled();
     });
   });
 
