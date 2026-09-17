@@ -6,10 +6,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { VersionHistory } from './VersionHistory';
 import { useAuthStore } from '../../stores/auth-store';
 
+// #1623: the panel reads `confluenceEnabled` off the ['settings'] query, so the
+// stub has to be settable per test. vi.hoisted because vi.mock's factory is
+// hoisted above ordinary top-level consts.
+const { settingsRef } = vi.hoisted(() => ({
+  settingsRef: { current: {} as Record<string, unknown> },
+}));
 vi.mock('../../shared/hooks/use-settings', () => ({
-  useSettings: () => ({
-    data: { confluenceUrl: 'https://confluence.example.com' },
-  }),
+  useSettings: () => ({ data: settingsRef.current }),
 }));
 
 function createWrapper(externalQueryClient?: QueryClient) {
@@ -69,6 +73,10 @@ function mockVersionsResponse() {
 
 describe('VersionHistory', () => {
   beforeEach(() => {
+    settingsRef.current = {
+      confluenceUrl: 'https://confluence.example.com',
+      confluenceEnabled: true,
+    };
     useAuthStore.getState().setAuth('test-token', {
       id: '1',
       username: 'testuser',
@@ -335,6 +343,88 @@ describe('VersionHistory', () => {
     });
     expect(screen.queryByText(/could not be imported/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/may be incomplete/i)).not.toBeInTheDocument();
+  });
+
+  it('states plainly that the import is off — and asks for no credential — when backfillStatus is skipped_confluence_off (#1623)', async () => {
+    const base = JSON.parse(await mockVersionsResponse().text());
+    settingsRef.current = { confluenceUrl: 'https://confluence.example.com', confluenceEnabled: false };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...base,
+          backfillStatus: 'skipped_confluence_off',
+          // A credential prompt on the wire must not reach this surface: for
+          // this status the panel owns the copy.
+          backfillDetail: 'Add your Confluence URL and PAT in Settings → Confluence.',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Confluence integration is off/i)).toBeInTheDocument();
+    // Nothing anywhere in the dialog asks for a PAT or names a credential gap.
+    expect(document.body.textContent).not.toContain('PAT');
+    expect(screen.queryByText(/no Confluence credentials/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Add your/i)).not.toBeInTheDocument();
+  });
+
+  it('empty history for an integration-off user says versions are recorded on edit, not that a PAT is needed (#1623)', async () => {
+    settingsRef.current = { confluenceUrl: null, confluenceEnabled: false };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ versions: [], pageId: 'page-1' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No version history available/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/recorded here\s+each time this page is edited/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('PAT');
+  });
+
+  it('a versions response cached before the toggle cannot ask an integration-off user for a PAT (#1623)', async () => {
+    // staleTime on ['pages', id, 'versions'] is 5 minutes, so the status the
+    // server sent while Confluence was still on outlives the toggle.
+    const base = JSON.parse(await mockVersionsResponse().text());
+    settingsRef.current = { confluenceUrl: 'https://confluence.example.com', confluenceEnabled: false };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...base, backfillStatus: 'skipped_no_credentials' }),
+        { headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    render(
+      <VersionHistory pageId="page-1" model="qwen3.5" />,
+      { wrapper: createWrapper() },
+    );
+
+    fireEvent.click(screen.getByText('History'));
+
+    await waitFor(() => {
+      expect(screen.getByText('v3')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Confluence integration is off/i)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('PAT');
   });
 
   it('shows loading state in dialog', async () => {
