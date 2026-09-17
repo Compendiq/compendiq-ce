@@ -14,6 +14,37 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
   const [pat, setPat] = useState('');
   const [testing, setTesting] = useState(false);
   const [testSuccess, setTestSuccess] = useState<boolean | null>(null);
+  const [choosingStandalone, setChoosingStandalone] = useState(false);
+
+  /**
+   * #1623: declining Confluence is a *decision*, not a deferral. Persisting
+   * `confluenceEnabled: false` is what puts the instance in standalone mode —
+   * every feature keeps working, nothing syncs — so the rest of the app stops
+   * asking for a URL and a PAT. Advancing without the write (the old
+   * behaviour) left the flag at its default `true`, and the admin who had just
+   * said "no thanks" met a connect prompt on every surface afterwards.
+   *
+   * The write must never trap anyone in setup: a failed PUT is reported and
+   * the wizard still advances, exactly as a failed in-wizard sync does.
+   */
+  async function handleStandalone() {
+    setChoosingStandalone(true);
+    try {
+      await apiFetch('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ confluenceEnabled: false }),
+      });
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? `Could not save standalone mode: ${err.message}`
+          : 'Could not save standalone mode',
+      );
+    } finally {
+      setChoosingStandalone(false);
+    }
+    onNext();
+  }
 
   async function handleTest(e: FormEvent) {
     e.preventDefault();
@@ -21,12 +52,17 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
     setTestSuccess(null);
 
     try {
-      // Save settings first, then test the connection
+      // Save settings first, then test the connection. `confluenceEnabled` is
+      // sent explicitly (#1623): an admin who picked standalone earlier in the
+      // same session — or on an earlier run of the wizard — has the flag
+      // persisted as false, and entering credentials now is the clearest
+      // possible statement that they want the integration back on.
       await apiFetch('/settings', {
         method: 'PUT',
         body: JSON.stringify({
           confluenceUrl,
           confluencePat: pat,
+          confluenceEnabled: true,
         }),
       });
 
@@ -61,8 +97,9 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
     >
       <h2 className="text-xl font-semibold">Connect Confluence</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Connect to your Confluence Data Center instance to sync knowledge base pages. This step is optional
-        -- you can always configure it later.
+        Connect to your Confluence Data Center instance to sync knowledge base pages. Confluence is
+        optional: in standalone mode every feature works against your local library, with nothing
+        synced either way. You can switch either direction later in Settings.
       </p>
 
       <form onSubmit={handleTest} className="mt-6 space-y-4">
@@ -155,13 +192,17 @@ export function ConfluenceStep({ onNext, onBack }: ConfluenceStepProps) {
           Back
         </button>
         <div className="flex items-center gap-3">
+          {/* Same test id as the old "Skip for Now": the control is in the
+              same place doing the same navigation, it just now says what it
+              means and records the choice. */}
           <button
             type="button"
-            onClick={onNext}
+            onClick={handleStandalone}
+            disabled={choosingStandalone}
             className="nm-icon-button px-4 py-2 text-sm"
             data-testid="skip-confluence-btn"
           >
-            Skip for Now
+            {choosingStandalone ? 'Saving...' : 'Use Standalone Mode'}
           </button>
           <button
             type="button"
