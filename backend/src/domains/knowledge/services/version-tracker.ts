@@ -217,7 +217,7 @@ export async function restoreVersion(
          -- #1115 P2 (review r2) — a restore is a BODY writer, and the one whose
          -- whole purpose is to swap the body for a different one, so it
          -- routinely adds and removes <img> elements. It performs no attachment
-         -- write, so nothing in image-embedding-dirty.ts fires, and neither
+         -- write, so nothing in image-analysis-dirty.ts fires, and neither
          -- source self-heals: a standalone page is never touched by sync, and a
          -- Confluence page's restore is pushed upstream and the returned version
          -- written back, so the next syncPage takes the version-unchanged branch

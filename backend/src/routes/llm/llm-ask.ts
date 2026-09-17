@@ -575,10 +575,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       })),
       // ADR-027 D12 (#1617) — one `kind: 'image'` entry per distinct
       // `(pageId, attachment_source, attachment_key)` among the answer's
-      // top-K DERIVED rows, or ADR-025's leg hits while it is still the only
-      // arm with images (built above). The page whose best hit is a derived
-      // chunk is still cited as a page source above (its `chunkText` is the
-      // evidence the model saw); this is the picture that evidence came from.
+      // top-K DERIVED rows (built above; ADR-025's leg hits were the other
+      // source of these entries until #1618 stage 2 retired the leg). The page
+      // whose best hit is a derived chunk is still cited as a page source
+      // above (its `chunkText` is the evidence the model saw); this is the
+      // picture that evidence came from.
       //
       // Five decisions, all deliberate:
       //

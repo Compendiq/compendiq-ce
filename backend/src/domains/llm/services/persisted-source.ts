@@ -12,7 +12,12 @@ export interface WireSource {
   score?: number;
   similarity?: number | null;
   rerankScore?: number | null;
-  /** #1115 P3 — the image-leg discriminator; see `toPersistedSources`. */
+  /**
+   * ADR-027 D12 — the derived-provenance discriminator; see
+   * `toPersistedSources`. Introduced as the image leg's discriminator
+   * (#1115 P3); the leg was retired in #1618 stage 2 and the `image_analysis`
+   * chunks inherited the shape.
+   */
   kind?: 'image';
   attachmentUrl?: string;
   /** ADR-027 D12 (#1617) — copied together with `kind`/`attachmentUrl`. */
