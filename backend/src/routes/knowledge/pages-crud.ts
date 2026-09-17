@@ -981,19 +981,27 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   // GET /api/pages/:id/has-children - check if a page has sub-pages
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
+    const userId = request.userId;
 
     // #1636: this used to match `parent_id = $1` alone, which disagrees with
     // both the tree and the `hasChildren` field for a synced child (linked by
     // confluence_id, not by the parent's PK). Resolve the page and ask the same
-    // dual-identifier question `GET /pages/:id` asks, with the same numeric
+    // dual-identifier question `GET /api/pages/:id` asks, with the same numeric
     // normalisation its sibling routes apply to the id arm (#1167).
     const isNumericId = /^\d+$/.test(id);
-    const result = await query<{ has_children: boolean }>(
+    const result = await query<{
+      has_children: boolean;
+      source: string;
+      space_key: string | null;
+      visibility: string;
+      created_by_user_id: string | null;
+    }>(
       `SELECT EXISTS(
                 SELECT 1 FROM pages c2
                  WHERE (c2.parent_id = cp.confluence_id OR CAST(cp.id AS TEXT) = c2.parent_id)
                    AND c2.deleted_at IS NULL
-              ) as has_children
+              ) as has_children,
+              cp.source, cp.space_key, cp.visibility, cp.created_by_user_id
          FROM pages cp
         WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
           AND cp.deleted_at IS NULL`,
@@ -1002,6 +1010,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
 
     const row = result.rows[0];
     if (!row) throw fastify.httpErrors.notFound('Page not found');
+
+    // Access control: same pattern as GET /pages/:id — 404, no existence
+    // oracle. Resolving the row is new here (#1636): without this check the
+    // 404-vs-200 split tells any authenticated caller that a page it cannot
+    // read exists, and whether that page has children.
+    if (row.source === 'confluence') {
+      const spaces = await getUserAccessibleSpaces(userId);
+      if (!row.space_key || !spaces.includes(row.space_key)) {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    } else {
+      if (row.created_by_user_id !== userId && row.visibility !== 'shared') {
+        throw fastify.httpErrors.notFound('Page not found');
+      }
+    }
+
     return { hasChildren: row.has_children };
   });
 
@@ -1750,16 +1774,24 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
             // DELETE is what keeps a Confluence-sourced row in the subtree
             // (which Confluence owns) out of it.
             const subtreeRows = await subtreeIds(existingPage.id, { client });
-            await client.query(
-              'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
-              [userId, subtreeRows],
-            );
             const destroyed = await client.query<{ id: number }>(
               `DELETE FROM pages WHERE id = ANY($1::int[]) AND source = 'standalone' RETURNING id`,
               [subtreeRows],
             );
-            await client.query('COMMIT');
             affectedIds = destroyed.rows.map((row) => row.id);
+            // Scoped to what the DELETE removed, not to the walked subtree: the
+            // walk visits the Confluence-sourced row the `source` guard skips,
+            // and that row stays LIVE, so its pin must stay too — a pin is
+            // visible in the UI (`pinned-pages.ts` filters `deleted_at IS NULL`)
+            // and never comes back. `RETURNING id` is what makes the two sets
+            // one, exactly as the soft path below keys off its UPDATE's
+            // `RETURNING`. Still scoped to the deleter: sweeping someone else's
+            // row would be a silent, unrelated data change.
+            await client.query(
+              'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+              [userId, affectedIds],
+            );
+            await client.query('COMMIT');
           } catch (err) {
             await client.query('ROLLBACK').catch(() => undefined);
             throw err;

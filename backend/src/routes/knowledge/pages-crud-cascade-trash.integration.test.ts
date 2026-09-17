@@ -295,6 +295,69 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(padded.statusCode).toBe(200);
       expect(padded.json()).toEqual({ hasChildren: true });
     });
+
+    /**
+     * The deprecated route resolves a page row, so it answers an existence
+     * question — and must refuse the same callers its siblings refuse. Before
+     * #1636 the handler could never 404 (`SELECT COUNT(*)` always returned a
+     * row), so a 404 here is a NEW discriminator: without the access check it
+     * becomes an existence oracle for a page `GET /api/pages/:id` will not
+     * show, and it leaks `hasChildren` alongside it.
+     */
+    it('refuses a page the caller cannot read, exactly as its sibling routes do', async () => {
+      const priv = await insertStandalonePage('Private', 'private', userA, 'NOTES');
+      await insertStandalonePage('Child', 'private', userA, 'NOTES', { parentId: String(priv) });
+
+      currentUserId = userB;
+      for (const url of [
+        `/api/pages/${priv}`,
+        `/api/pages/${priv}/children`,
+        `/api/pages/${priv}/has-children`,
+      ]) {
+        const response = await app.inject({ method: 'GET', url });
+        expect(response.statusCode, url).toBe(404);
+      }
+
+      // …and a page the caller CAN read still answers, agreeing with the field.
+      const shared = await insertStandalonePage('Shared', 'shared', userA, 'NOTES');
+      await insertStandalonePage('Shared child', 'shared', userA, 'NOTES', { parentId: String(shared) });
+
+      const answer = await app.inject({ method: 'GET', url: `/api/pages/${shared}/has-children` });
+      expect(answer.statusCode).toBe(200);
+      expect(answer.json()).toEqual({ hasChildren: true });
+
+      const detail = await app.inject({ method: 'GET', url: `/api/pages/${shared}` });
+      expect((detail.json() as { hasChildren: boolean }).hasChildren).toBe(true);
+    });
+
+    /**
+     * The other source, and the same rule: a Confluence page is scoped by the
+     * caller's space access, and a row with no `space_key` fails CLOSED — there
+     * is nothing to check membership against.
+     */
+    it('scopes a Confluence page by the caller’s space access', async () => {
+      const synced = await insertConfluencePage('conf-scoped', 'Synced', 'NOTES');
+      await insertConfluencePage('conf-scoped-child', 'Synced child', 'NOTES', {
+        parentId: 'conf-scoped',
+      });
+      const spaceless = await insertConfluencePage('conf-spaceless', 'No space', 'NOTES');
+      await query('UPDATE pages SET space_key = NULL WHERE id = $1', [spaceless]);
+
+      currentUserId = userB;
+      mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+      expect(
+        (await app.inject({ method: 'GET', url: `/api/pages/${synced}/has-children` })).statusCode,
+      ).toBe(404);
+
+      mockGetUserAccessibleSpaces.mockResolvedValue(['NOTES']);
+      expect(
+        (await app.inject({ method: 'GET', url: `/api/pages/${spaceless}/has-children` })).statusCode,
+      ).toBe(404);
+
+      const allowed = await app.inject({ method: 'GET', url: `/api/pages/${synced}/has-children` });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json()).toEqual({ hasChildren: true });
+    });
   });
 
   // ── soft delete ───────────────────────────────────────────────────────────
@@ -643,6 +706,46 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(await existingIds([root, local])).toEqual([]);
       expect(await existingIds([synced])).toEqual([synced]);
       expect(deletedPayloads().map((payload) => payload.pageId).sort()).toEqual([root, local].sort());
+    });
+
+    /**
+     * The pin sweep is scoped to what the DELETE actually removed, never to the
+     * walked subtree: the walk visits the Confluence-sourced row the `source`
+     * guard skips, and sweeping the walked set would destroy the deleter's own
+     * pin on a page that is still live. A pin is visible in the UI
+     * (`pinned-pages.ts` filters `deleted_at IS NULL`) and never comes back, so
+     * that is unrelated user data — and the soft path, which keys off the
+     * UPDATE's `RETURNING`, keeps it. The two delete paths must not disagree.
+     */
+    it('keeps the deleter’s pin on a Confluence-sourced descendant the hard delete leaves live', async () => {
+      const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
+      const synced = await insertConfluencePage('conf-in-tree', 'Synced child', 'NOTES', {
+        parentId: String(root),
+      });
+      const local = await insertStandalonePage('Local grandchild', 'private', userA, 'NOTES', {
+        parentId: 'conf-in-tree',
+      });
+      await query('INSERT INTO pinned_pages (user_id, page_id) VALUES ($1, $2), ($1, $3)', [
+        userA,
+        synced,
+        local,
+      ]);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/pages/${root}?permanent=true`,
+      });
+      expect(response.statusCode).toBe(200);
+
+      // The synced row survived the delete, so its pin must survive it too —
+      // the pin rows of the destroyed pages go with them.
+      expect(await existingIds([synced])).toEqual([synced]);
+      const mine = await query<{ page_id: number }>(
+        'SELECT page_id FROM pinned_pages WHERE user_id = $1 ORDER BY page_id',
+        [userA],
+      );
+      expect(mine.rows).toEqual([{ page_id: synced }]);
+      expect(await existingIds([root, local])).toEqual([]);
     });
   });
 
