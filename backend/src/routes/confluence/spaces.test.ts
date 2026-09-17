@@ -21,8 +21,12 @@ vi.mock('../../core/services/rbac-service.js', () => ({
   invalidateRbacCache: (...args: unknown[]) => mockInvalidateRbacCache(...args),
 }));
 
+const mockGetClientForUser = vi.fn().mockResolvedValue(null);
+const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
+
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  getClientForUser: vi.fn(),
+  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
   unsyncSpace: (...args: unknown[]) => mockUnsyncSpace(...args),
 }));
 
@@ -80,6 +84,8 @@ describe('Spaces routes', () => {
     mockInvalidateRbacCache.mockResolvedValue(undefined);
     mockUnsyncSpace.mockResolvedValue({ pagesDeleted: 0 });
     mockLogAuditEvent.mockResolvedValue(undefined);
+    mockGetClientForUser.mockResolvedValue(null);
+    mockIsConfluenceEnabled.mockResolvedValue(true);
     // Re-arm Redis SCAN to terminate immediately for tests that don't
     // care about cache invalidation; tests that DO care override this.
     mockRedisScan.mockReset().mockResolvedValue({ cursor: '0', keys: [] });
@@ -392,5 +398,26 @@ describe('Spaces routes', () => {
 
     expect(response.statusCode).toBe(403);
     expect(mockUnsyncSpace).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/spaces/available does not ask an off user for credentials (#1623)', async () => {
+    mockIsConfluenceEnabled.mockResolvedValueOnce(false);
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces/available' });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().message).toBe('Confluence integration is disabled');
+    // Credentials are retained while off — never consulted, never prompted for.
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/spaces/available still reports missing credentials for an enabled user (#1623)', async () => {
+    mockIsConfluenceEnabled.mockResolvedValueOnce(true);
+    mockGetClientForUser.mockResolvedValueOnce(null);
+
+    const response = await app.inject({ method: 'GET', url: '/api/spaces/available' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toBe('Confluence not configured');
   });
 });
