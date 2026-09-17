@@ -55,10 +55,12 @@ export interface UpdateSettingsToastOptions {
  * (the `SettingsPanelRoute` registry) and, silently, by the onboarding
  * checklist (`use-onboarding.ts`).
  *
- * Saving Confluence credentials also invalidates the cached page-versions
- * queries: their `backfillStatus: 'skipped_no_credentials'` hint is cached
- * for 5 minutes, so without this a user who just added a PAT would reopen
- * the version-history dialog and still be told to add one (#763 follow-up).
+ * Saving Confluence credentials — or flipping the integration itself off or
+ * on (#1623) — also invalidates the cached page-versions queries: their
+ * `backfillStatus` hint (`skipped_no_credentials`, `skipped_confluence_off`)
+ * is cached for 5 minutes, so without this a user who just added a PAT or
+ * re-enabled the integration would reopen the version-history dialog and
+ * still be told version history is unavailable (#763 follow-up).
  */
 export function useUpdateSettings({
   silent,
@@ -71,9 +73,9 @@ export function useUpdateSettings({
       apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) }),
     onSuccess: (_data, body) => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
-      if ('confluenceUrl' in body || 'confluencePat' in body) {
+      if ('confluenceUrl' in body || 'confluencePat' in body || 'confluenceEnabled' in body) {
         // ['pages', <id>, 'versions'] (list) and ['pages', <id>, 'versions', n]
-        // (detail) — both depend on the viewer's Confluence credentials.
+        // (detail) — both depend on the viewer's Confluence integration state.
         queryClient.invalidateQueries({
           predicate: (q) => q.queryKey[0] === 'pages' && q.queryKey[2] === 'versions',
         });

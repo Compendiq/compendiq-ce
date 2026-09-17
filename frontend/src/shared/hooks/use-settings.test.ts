@@ -78,6 +78,24 @@ describe('useUpdateSettings', () => {
     expect(queryClient.getQueryState(['pages', 'page-1'])?.isInvalidated).toBe(false);
   });
 
+  it('invalidates cached page-versions queries when the Confluence integration is toggled (#1623)', async () => {
+    apiFetchMock.mockResolvedValue({});
+    const { queryClient, wrapper } = createQueryClientAndWrapper();
+    // Turning the integration back on leaves the same kind of stale hint
+    // behind as adding a PAT did — here `skipped_confluence_off`.
+    queryClient.setQueryData(['pages', 'page-1', 'versions'], {
+      versions: [],
+      pageId: 'page-1',
+      backfillStatus: 'skipped_confluence_off',
+    });
+
+    const { result } = renderHook(() => useUpdateSettings(), { wrapper });
+    result.current.mutate({ confluenceEnabled: true });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryClient.getQueryState(['pages', 'page-1', 'versions'])?.isInvalidated).toBe(true);
+  });
+
   it('does not touch page-versions queries on unrelated settings saves', async () => {
     apiFetchMock.mockResolvedValue({});
     const { queryClient, wrapper } = createQueryClientAndWrapper();
