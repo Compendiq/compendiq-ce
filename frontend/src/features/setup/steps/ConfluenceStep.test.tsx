@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { LazyMotion, domMax } from 'framer-motion';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { UpdateSettingsSchema } from '@compendiq/contracts';
+import { toast } from 'sonner';
 import { ConfluenceStep } from './ConfluenceStep';
 
 vi.mock('sonner', () => ({
@@ -480,19 +481,98 @@ describe('ConfluenceStep', () => {
       expect(screen.queryByTestId('space-picker')).not.toBeInTheDocument();
     });
 
-    it('keeps "Skip for Now" working verbatim once the picker is showing', async () => {
+    it('keeps the standalone control working once the picker is showing', async () => {
       const { onNext } = renderStep();
       await connect();
       await waitFor(() => {
         expect(screen.getByTestId('space-option-ENG')).toBeInTheDocument();
       });
 
-      const skip = screen.getByTestId('skip-confluence-btn');
-      expect(skip).toHaveTextContent('Skip for Now');
-      expect(skip).not.toBeDisabled();
+      const standalone = screen.getByTestId('skip-confluence-btn');
+      expect(standalone).toHaveTextContent('Use Standalone Mode');
+      expect(standalone).not.toBeDisabled();
 
-      fireEvent.click(skip);
-      expect(onNext).toHaveBeenCalledTimes(1);
+      fireEvent.click(standalone);
+      await waitFor(() => {
+        expect(onNext).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  // ── #1623: declining Confluence is a decision, not a deferral ─────────────
+
+  describe('standalone choice (#1623)', () => {
+    it('persists confluenceEnabled: false exactly once, then advances', async () => {
+      const { spy } = mockApi();
+      const { onNext } = renderStep();
+
+      fireEvent.click(screen.getByTestId('skip-confluence-btn'));
+
+      await waitFor(() => {
+        expect(onNext).toHaveBeenCalledTimes(1);
+      });
+
+      const puts = spy.mock.calls.filter(
+        ([reqUrl, init]) =>
+          urlOf(reqUrl!).endsWith('/api/settings') &&
+          (init as RequestInit | undefined)?.method === 'PUT',
+      );
+      // One write, and only one: the flag is the whole payload, so a second
+      // call could only be re-sending it.
+      expect(puts).toHaveLength(1);
+      const body = JSON.parse((puts[0]![1] as RequestInit).body as string);
+      expect(body.confluenceEnabled).toBe(false);
+      // Declining must not also blank the credentials of an admin who had
+      // already connected on an earlier run — the flag alone is the decision.
+      expect(body.confluenceUrl).toBeUndefined();
+      expect(body.confluencePat).toBeUndefined();
+      // And it must satisfy the contract the backend parses with.
+      expect(UpdateSettingsSchema.parse(body).confluenceEnabled).toBe(false);
+    });
+
+    it('re-enables the integration when credentials are entered and pass', async () => {
+      // A user who chose standalone earlier has confluence_enabled = false
+      // persisted; connecting now has to flip it back, or the app stays in
+      // standalone mode with working credentials sitting unused.
+      const { spy } = mockApi();
+      renderStep();
+
+      await connect();
+
+      const credentialPut = spy.mock.calls.find(
+        ([reqUrl, init]) =>
+          urlOf(reqUrl!).endsWith('/api/settings') &&
+          (init as RequestInit | undefined)?.method === 'PUT' &&
+          ((init as RequestInit).body as string).includes('confluencePat'),
+      );
+      expect(credentialPut).toBeDefined();
+      const body = JSON.parse((credentialPut![1] as RequestInit).body as string);
+      expect(body.confluenceEnabled).toBe(true);
+      expect(UpdateSettingsSchema.parse(body).confluenceEnabled).toBe(true);
+    });
+
+    it('still advances when the standalone write fails', async () => {
+      // A failed settings write must never trap an admin in setup — the same
+      // rule the in-wizard sync failure follows.
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        if (
+          urlOf(input).includes('/settings') &&
+          methodOf(init as RequestInit | undefined) === 'PUT'
+        ) {
+          return jsonResponse({ message: 'Database unavailable' }, 500);
+        }
+        return jsonResponse([]);
+      });
+      const { onNext } = renderStep();
+
+      fireEvent.click(screen.getByTestId('skip-confluence-btn'));
+
+      await waitFor(() => {
+        expect(onNext).toHaveBeenCalledTimes(1);
+      });
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringContaining('Database unavailable'),
+      );
     });
   });
 });
