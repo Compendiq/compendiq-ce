@@ -898,6 +898,19 @@ describe('PagesPage', () => {
           cta: 'Go to Settings',
           destination: '/settings',
         },
+        {
+          // #1623. Both Confluence diagnoses are literally true of this user
+          // — no PAT, no spaces — and both are now the wrong thing to say:
+          // they sell the one feature the user explicitly switched off.
+          // Standalone is a choice, not a gap, so the generic title answers
+          // and every panel CTA goes, `Go to Settings` included: there is
+          // nothing left to finish there. `cta: null` says exactly that.
+          name: 'integration switched off — standalone mode, not a gap',
+          settings: { confluenceEnabled: false, hasConfluencePat: false, selectedSpaces: [] },
+          title: 'No pages found',
+          cta: null,
+          destination: null,
+        },
       ] as const;
 
       /**
@@ -921,12 +934,22 @@ describe('PagesPage', () => {
           const block = await emptyState();
 
           expect(block.getByTestId('empty-state-title')).toHaveTextContent(state.title);
-          expect(block.getByRole('button', { name: state.cta })).toBeInTheDocument();
-          // Exactly one diagnosis at a time — the other three must be absent.
-          for (const other of matrix.filter((m) => m.title !== state.title)) {
+          if (state.cta !== null) {
+            expect(block.getByRole('button', { name: state.cta })).toBeInTheDocument();
+          }
+          // Exactly one diagnosis at a time — every other row's CTA must be
+          // absent. Keyed on the CTA rather than the title, because the
+          // standalone row shares `No pages found` with the connected-and-
+          // empty row while having to REJECT its `Go to Settings`; keying on
+          // the title would excuse the one pair that now differs.
+          for (const other of matrix.filter((m) => m.cta !== null && m.cta !== state.cta)) {
             expect(block.queryByRole('button', { name: other.cta })).not.toBeInTheDocument();
           }
         });
+
+        // The standalone row has no panel CTA to land anywhere; its only
+        // affordance is `Create a Page`, asserted on its own below.
+        if (state.cta === null) continue;
 
         it(`lands the CTA on the right panel: ${state.name}`, async () => {
           serve(state.settings);
@@ -1006,6 +1029,36 @@ describe('PagesPage', () => {
         render(<PagesPage />, { wrapper: createWrapper() });
         const block = await emptyState();
 
+        for (const button of block.getAllByRole('button')) {
+          expect(button).not.toHaveClass('nm-button-primary');
+        }
+      });
+
+      /**
+       * #1623: with the integration off the library is standalone, and the
+       * empty state has to be honest about that rather than quietly reusing
+       * copy written for a user who is mid-setup.
+       *
+       * The generic sentence this case falls through to still ended "or
+       * connect a Confluence space to fill this list" and still handed out a
+       * filled `Go to Settings` — both of which advertise the integration the
+       * user just switched off and send them to a panel with nothing left to
+       * do. So the whole block is asserted Confluence-free, down to the
+       * description, with `Create a Page` as the only affordance and no
+       * filled accent (the header's `New Page` stays the route's single one).
+       */
+      it('drops every Confluence prompt when the integration is switched off', async () => {
+        serve({ confluenceEnabled: false, hasConfluencePat: false, selectedSpaces: [] });
+        render(<PagesPage />, { wrapper: createWrapper() });
+        const block = await emptyState();
+
+        expect(block.getByTestId('empty-state-title')).toHaveTextContent('No pages found');
+        expect(
+          block.getByText('Create a page to fill this list — nothing syncs in while this workspace is standalone.'),
+        ).toBeInTheDocument();
+        expect(block.queryByText(/Confluence/i)).not.toBeInTheDocument();
+
+        expect(block.getByRole('button', { name: 'Create a Page' })).toBeInTheDocument();
         for (const button of block.getAllByRole('button')) {
           expect(button).not.toHaveClass('nm-button-primary');
         }
