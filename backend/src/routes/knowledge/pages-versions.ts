@@ -8,7 +8,7 @@ import {
   restoreVersion,
 } from '../../domains/knowledge/services/version-tracker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence } from '../../core/services/content-converter.js';
 import {
   backfillVersionHistory,
@@ -131,7 +131,17 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     // standalone pages, where no Confluence backfill applies.
     let backfillStatus: VersionBackfillStatus | undefined;
     let backfillDetail: string | undefined;
-    if (ctx.confluenceId) {
+    if (ctx.confluenceId && !(await isConfluenceEnabled(userId))) {
+      // #1623: Confluence off = standalone mode. The import is not supposed to
+      // run, so it is answered BEFORE `getClientForUser` — no credential
+      // lookup, no PAT decryption, nothing contacted. This is a deliberate
+      // choice rather than a configuration gap, which is why it is its own
+      // status and why the detail never asks for a URL or a PAT: the page
+      // keeps its local history and stays fully usable.
+      backfillStatus = 'skipped_confluence_off';
+      backfillDetail =
+        'The Confluence integration is off, so historical versions were not imported — the history below is this page’s local history.';
+    } else if (ctx.confluenceId) {
       // Two distinct failure paths: constructing the client (stored-credential
       // lookup / PAT decryption) throwing means Confluence was never contacted,
       // so the detail points at the stored credentials rather than the import.

@@ -35,8 +35,12 @@ vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
 // --- Mock: confluence client (HTTP boundary) ---
 const mockUpdatePage = vi.fn();
 const mockGetClientForUser = vi.fn();
+// #1623: the route asks whether the integration is on BEFORE it asks for a
+// client, so the flag has to be mockable independently of the credentials.
+const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 // --- Mock: content converter ---
@@ -177,6 +181,7 @@ describe('GET /api/pages/:id/versions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+    mockIsConfluenceEnabled.mockResolvedValue(true);
   });
 
   it('returns history with the current version included', async () => {
@@ -338,6 +343,32 @@ describe('GET /api/pages/:id/versions', () => {
     expect(body.versions).toHaveLength(1);
     expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
     expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
+  });
+
+  it('reports "skipped_confluence_off" without constructing a client when the integration is off (#1623)', async () => {
+    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
+    // Credentials are RETAINED across a toggle, so a usable client is exactly
+    // what a flag-off account still has — the flag, not the credentials, is
+    // what stops the import.
+    mockGetClientForUser.mockResolvedValue({});
+    mockIsConfluenceEnabled.mockResolvedValue(false);
+    mockGetVersionHistory.mockResolvedValue([]);
+
+    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(body.backfillStatus).toBe('skipped_confluence_off');
+    // Standalone mode is a choice, not a gap: the detail must never send the
+    // user off to paste a URL or a PAT.
+    expect(body.backfillDetail).not.toMatch(/PAT/i);
+    expect(body.backfillDetail).not.toMatch(/credential/i);
+    expect(body.backfillDetail).not.toMatch(/Confluence URL/i);
+    // Confluence is not touched at all — not even the stored-credential lookup.
+    expect(mockGetClientForUser).not.toHaveBeenCalled();
+    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
+    // The page stays fully usable: its local history is still returned.
+    expect(body.versions).toHaveLength(1);
+    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
   });
 
   it('reports "failed" AND still returns the current row when the backfill throws (#763)', async () => {

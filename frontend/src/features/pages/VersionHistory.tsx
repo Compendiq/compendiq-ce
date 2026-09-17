@@ -144,13 +144,28 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
   // #763: non-ok backfill means the historical Confluence import never ran or
   // failed — the list still renders, but with a hint that it may be incomplete.
   const backfillStatus = versionsData?.backfillStatus;
+  const importWarned = backfillStatus === 'skipped_no_credentials' || backfillStatus === 'failed';
+  // #1623: an integration-off user has not misconfigured anything, so this
+  // surface must never ask them for a URL or a PAT. Two reasons the settings
+  // flag is consulted and not just the status:
+  //   - the copy for `skipped_confluence_off` is LOCAL rather than the
+  //     server's `backfillDetail`, so no credential prompt can reach this
+  //     dialog from the wire at all;
+  //   - a `['pages', id, 'versions']` response cached before the user turned
+  //     the integration off (staleTime is 5 minutes) still carries the old
+  //     `skipped_no_credentials` / `failed` status, and that hint would ask a
+  //     standalone-mode user for a PAT they deliberately stopped using.
+  const confluenceOff =
+    backfillStatus === 'skipped_confluence_off' || settings?.confluenceEnabled === false;
   const backfillNotice =
-    backfillStatus === 'skipped_no_credentials' || backfillStatus === 'failed'
-      ? versionsData?.backfillDetail ??
-        (backfillStatus === 'skipped_no_credentials'
-          ? `Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → ${SETTINGS_PANELS.confluence.label}.`
-          : 'Importing historical versions from Confluence failed — the list below may be incomplete.')
-      : null;
+    backfillStatus === 'skipped_confluence_off' || (confluenceOff && importWarned)
+      ? 'The Confluence integration is off, so historical versions were not imported — the list below is this page’s local history.'
+      : importWarned
+        ? versionsData?.backfillDetail ??
+          (backfillStatus === 'skipped_no_credentials'
+            ? `Historical versions could not be imported: no Confluence credentials are configured for your account. Add your PAT in Settings → ${SETTINGS_PANELS.confluence.label}.`
+            : 'Importing historical versions from Confluence failed — the list below may be incomplete.')
+        : null;
 
   const restoreMutation = useMutation({
     mutationFn: ({ version, expected }: { version: number; expected?: number }) =>
@@ -303,9 +318,21 @@ export function VersionHistory({ pageId, currentBodyText: _currentBodyText, mode
               )}
               {versions.length === 0 ? (
               <div className="px-5 py-6 text-center text-sm text-muted-foreground">
-                No version history available yet. Historical versions are imported
-                from Confluence when this dialog opens — importing them requires a
-                Confluence PAT (Settings &rarr; Confluence).
+                {confluenceOff ? (
+                  /* #1623: standalone mode. Nothing was supposed to be imported,
+                     so nothing is missing — pointing this user at a PAT would
+                     describe a gap that does not exist. */
+                  <>
+                    No version history available yet. A new version is recorded here
+                    each time this page is edited.
+                  </>
+                ) : (
+                  <>
+                    No version history available yet. Historical versions are imported
+                    from Confluence when this dialog opens — importing them requires a
+                    Confluence PAT ({`Settings → ${SETTINGS_PANELS.confluence.label}`}).
+                  </>
+                )}
               </div>
               ) : (
               <>
