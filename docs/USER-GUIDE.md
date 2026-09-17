@@ -10,13 +10,59 @@ This guide covers day-to-day usage of Compendiq for knowledge base management, A
 
 1. **Open Compendiq** in your browser (default: `http://localhost:5273` for development, or the URL provided by your administrator).
 2. **Register an account.** The first user automatically receives the admin role.
-3. **Configure your Confluence connection** (optional): go to **Settings** and enter your Confluence Data Center URL and Personal Access Token (PAT).
+3. **Decide whether you are using Confluence.** Compendiq can run either as a
+   front end over Confluence Data Center or entirely on its own. To connect,
+   go to **Settings → Confluence** and enter your Confluence Data Center URL
+   and Personal Access Token (PAT). To work without Confluence, choose
+   **Use Standalone Mode** on the setup wizard's Confluence step, or turn the
+   **Sync with Confluence** switch in **Settings → Confluence** off — see
+   [Standalone mode](#standalone-mode-working-without-confluence) below.
+   Either direction can be changed later.
+
+### Standalone mode: working without Confluence
+
+The **Sync with Confluence** switch sits at the top of **Settings → Confluence**
+and is **on** by default, so an existing installation keeps behaving exactly as
+it did. It saves the moment you flip it — the panel's **Save** button only ever
+submits credentials. Turn the switch off and Compendiq runs standalone:
+
+- **Everything keeps working.** Pages, the editor, search, the AI assistant,
+  Q&A, quality analysis, tags, notes, versions and the knowledge graph all run
+  against the pages you already have.
+- **Nothing syncs, in either direction.** Scheduled and manual syncs stay idle,
+  and saving, moving or deleting a page no longer pushes that change upstream.
+  Your edits never leave Compendiq.
+- **Pages you synced earlier stay usable.** They remain readable, editable,
+  movable and deletable, and the AI keeps using them. Those edits are local and
+  are not sent to Confluence.
+- **Your credentials are kept.** Switching the integration off does not erase
+  your Confluence URL or PAT, so switching back on takes one click and no
+  re-entry.
+- **Nothing asks you to set Confluence up.** While the switch is off the URL
+  and PAT fields are not shown at all, no screen prompts you for either, and
+  the Confluence-specific onboarding steps and empty-state prompts stop
+  appearing.
+
+The only things standalone mode takes away are the actions that exist purely to
+talk to Confluence: you cannot create a page **in** a Confluence space, run a
+bulk sync, or move a page across the Confluence boundary while the switch is
+off. Compendiq says so plainly when you try, and it never asks you for
+credentials to do it.
+
+Turning the switch back on restores the credential form with your saved values
+and resumes sync with the space selection you already had; edits you made while
+standalone are reconciled by the normal sync conflict handling, exactly as a
+local edit between two syncs always was. Entering credentials in the setup
+wizard turns the integration back on for you.
 
 ### The Getting Started checklist
 
 The Pages overview carries a short **Getting started** checklist for as long as
-you have steps outstanding. It tracks five milestones and ticks each one off by
-itself as you do it — there is nothing to mark complete by hand:
+you have steps outstanding. It ticks each milestone off by itself as you do it —
+there is nothing to mark complete by hand. **Which steps it shows depends on
+whether the Confluence integration is on.**
+
+With Confluence on, there are five:
 
 1. Connect your Confluence account
 2. Choose the spaces to sync
@@ -24,15 +70,27 @@ itself as you do it — there is nothing to mark complete by hand:
 4. Learn the keyboard shortcuts
 5. Create or edit a page
 
+In standalone mode the two Confluence steps are not shown at all — neither as
+outstanding work nor as greyed-out rows — so the checklist is three steps, the
+progress line counts out of three, and it completes when you have done them:
+
+1. Ask your first question
+2. Learn the keyboard shortcuts
+3. Create or edit a page
+
 Each outstanding step carries a button that takes you straight to it. The
 checklist never blocks the page list, and **Dismiss guide** hides it for good —
 once hidden it stays hidden, even when a later step completes behind it.
 
-When the last step lands, a short note appears above the five checked
-milestones, saying so and telling you where to find the guide afterwards. The
-note and completed checklist stay until you leave the overview or dismiss them.
+When the last step lands, a short note appears above the checked milestones,
+saying so and telling you where to find the guide afterwards. The note and
+completed checklist stay until you leave the overview or dismiss them.
 They appear when you return to the overview even if the final step was completed
 somewhere else — you do not have to be looking at the checklist at the time.
+
+Switching **Sync with Confluence** off never ticks anything for you: a
+standalone user who has done nothing yet reads `0 of 3 done` and still has to
+ask a question, look at the shortcuts and create or edit a page.
 
 To bring it back at any time — finished or dismissed — open the account menu in
 the top right and choose **Getting Started Guide**.
@@ -46,7 +104,12 @@ To connect Compendiq to your Confluence Data Center instance:
 3. Click **Create token**.
 4. Give it a name (e.g., "Compendiq") and set an expiry.
 5. Copy the generated token.
-6. In Compendiq, go to **Settings**, paste the token in the PAT field, and enter your Confluence base URL.
+6. In Compendiq, go to **Settings → Confluence**, paste the token in the PAT field, and enter your Confluence base URL.
+
+Those two fields are only shown while **Sync with Confluence** is on. If the
+panel shows the switch and nothing else, you are in standalone mode — turn the
+switch on to reveal the form, with any credentials you saved earlier still in
+place.
 
 Your PAT is encrypted at rest with AES-256-GCM and is never sent back to the browser after saving.
 
@@ -60,7 +123,7 @@ After configuring your Confluence connection:
 4. Select the spaces you want to sync to Compendiq.
 5. Click **Sync** to start the initial synchronization.
 
-Synced spaces are periodically updated in the background (default: every 15 minutes).
+Synced spaces are periodically updated in the background (default: every 15 minutes) for as long as **Sync with Confluence** is on. In standalone mode that schedule does not run, and **Fetch Spaces**, **Sync Selected** and the sync overview are not offered; the spaces you already have stay listed and your selection stays editable, so nothing you configured is lost when you switch back on.
 
 ## Working with Pages
 
@@ -95,7 +158,9 @@ an access denial discards them until a successful authorized read.
 ### Creating a Page
 
 1. Click **New Page** (or press `Alt+N`).
-2. Choose a space (Confluence or local).
+2. Choose a space (Confluence or local). In standalone mode only local spaces
+   are available — a page cannot be created in a Confluence space while
+   **Sync with Confluence** is off.
 3. Enter a title and start writing in the TipTap editor.
 4. Use the formatting toolbar or keyboard shortcuts for rich text.
 5. Save with `Ctrl+S`.
@@ -179,6 +244,11 @@ Compendiq tracks version history for all pages:
 2. Open **Details → Page actions → Version history** in the right panel.
 3. View diffs between versions.
 4. Restore a previous version if needed.
+
+For a page that came from Confluence, opening the history also imports that
+page's older Confluence versions the first time you look. In standalone mode
+that import is not attempted — you see the versions Compendiq recorded itself,
+and the panel says so instead of asking you to connect Confluence.
 
 ### Tagging Pages
 

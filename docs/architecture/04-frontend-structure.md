@@ -548,8 +548,9 @@ sequenceDiagram
 
 ## Getting Started checklist (#1402)
 
-`features/onboarding/OnboardingChecklistCard` is a dismissible five-step
-checklist that `PagesPage` renders as a sibling block between the Library
+`features/onboarding/OnboardingChecklistCard` is a dismissible, **conditional**
+checklist — five steps with the Confluence integration on, three in standalone
+mode (#1623) — that `PagesPage` renders as a sibling block between the Library
 header and the search toolbar. It is **additive chrome**: it never wraps,
 gates or replaces the page tree's loading, failed, failed-with-cache or empty
 states, and it renders nothing at all — not a collapsed sliver — once
@@ -560,8 +561,8 @@ TanStack Query cache, read through `shared/hooks/use-onboarding.ts`:
 
 | Step | Source | Where it is recorded |
 |---|---|---|
-| Connect your Confluence account | computed `hasConfluencePat` | — |
-| Choose the spaces to sync | computed `selectedSpaces.length > 0` | — |
+| Connect your Confluence account | computed `hasConfluencePat` (Confluence on only) | — |
+| Choose the spaces to sync | computed `selectedSpaces.length > 0` (Confluence on only) | — |
 | Ask your first question | stored `firstAiQueryMade` | `AskMode` **and** `dock/use-dock-actions`, in `runStream`'s success-only `onComplete` |
 | Learn the keyboard shortcuts | stored `shortcutsModalViewed` | `KeyboardShortcutsModal`, on open |
 | Create or edit a page | stored `pageCreatedOrEdited` | `useCreatePage().onSuccess`, `useUpdatePage().onSettled` on the no-error path |
@@ -570,6 +571,21 @@ Two of the five are **computed, never persisted** — a stored `patConfigured`
 would drift the moment a user disconnected their PAT (phase 1's reasoning, in
 `packages/contracts/src/schemas/settings.ts`). The three stored flags are
 partial-patched one key at a time and merged server-side.
+
+**The first two rows are conditional (#1623).** When
+`settings.confluenceEnabled === false` the hook builds the remaining three only:
+the Confluence steps are omitted from the rendered list *entirely* — not greyed
+out, not marked complete — because a standalone user has no account to connect
+and the toggle's rule is that no surface solicits a URL or a PAT while it is
+off. `ONBOARDING_STEP_IDS` still holds all five ids (it types `STEP_COPY`); the
+rendered list is a subset of it. Everything counted downstream is therefore
+derived from the rendered list, never from a literal five: `allComplete` is
+`completedCount === steps.length`, the progress line reads
+`{completedCount} of {steps.length} done`, and the celebration says `All done`.
+Flipping the toggle completes nothing on its own — a standalone user with no
+activity reads `0 of 3 done`. The flag is read as `=== false` and never as
+falsy, since a response from a backend that predates the field omits the key and
+falsy would read *unknown* as *off*.
 
 There are **two independent `/llm/ask` send paths** and no shared send
 function, so both are wired; missing one would leave half of users without
@@ -601,12 +617,13 @@ Neither half of that is session-scoped by accident.
   its milestone while `NewPagePage` navigates away, so the caller is normally
   gone before the write settles.
 
-When all five are true, `useOnboarding({ trackCompletion: true })` — mounted by
+When every rendered step is true, `useOnboarding({ trackCompletion: true })` — mounted by
 the card and nowhere else — writes `completedAt` and `dismissed: true` once and
 never again. **The completion line is driven by that server fact, not by an
-in-mount transition**: three of the five CTAs navigate away from `/`, so the
+in-mount transition**: most CTAs navigate away from `/` (three of the five, two
+of the standalone three), so the
 last milestone normally lands on another route and the overview is re-entered
-already-complete. The card congratulates whichever client finds all five done
+already-complete. The card congratulates whichever client finds every rendered step done
 with `completedAt` still null — and only while the guide is **not** dismissed,
 so a flag flipping behind a closed guide records the graduation without
 resurfacing the panel. **User Menu → Getting Started Guide** brings the
@@ -614,8 +631,8 @@ finished list (not a second congratulation — `completedAt` is set by then) bac
 at any time by clearing `dismissed`.
 
 The congratulation is an **addition, not a replacement**: it renders above the
-five checked rows rather than instead of them. `shortcuts` is the one milestone
-completable in place, so when it is the fifth step the graduating render was the
+checked rows rather than instead of them. `shortcuts` is the one milestone
+completable in place, so when it is the last step the graduating render was the
 render that discarded the activated CTA below — Radix then restored focus on
 dialog close to a detached node and it fell to `<body>`. The `role="status"`
 region is mounted empty from the first paint and only its text changes: a live
