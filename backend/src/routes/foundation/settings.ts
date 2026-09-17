@@ -13,7 +13,7 @@ import { validateUrlSyntaxAndProtocol, addAllowedBaseUrl, removeAllowedBaseUrl, 
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getSelectedSyncSpaces, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { getSyncOverview } from '../../domains/confluence/services/sync-overview-service.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 import { logger } from '../../core/utils/logger.js';
 import { confluenceDispatcher } from '../../core/utils/tls-config.js';
 import { getAiGuardrails, getAiOutputRules } from '../../core/services/ai-safety-service.js';
@@ -74,6 +74,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       client_spellcheck_enabled: boolean;
       client_spellcheck_languages: ClientSpellcheckLanguage[] | null;
       onboarding_state: Record<string, unknown> | null;
+      confluence_enabled: boolean;
     }>(
       `SELECT confluence_url, confluence_pat, theme, sync_interval_min,
               show_space_home_content, custom_prompts,
@@ -82,7 +83,7 @@ export async function settingsRoutes(fastify: FastifyInstance) {
               inline_completion_mode, inline_completion_code_only,
               client_inference_enabled, client_inference_without_server,
               client_spellcheck_enabled, client_spellcheck_languages,
-              onboarding_state
+              onboarding_state, confluence_enabled
          FROM user_settings WHERE user_id = $1`,
       [request.userId],
     );
@@ -118,6 +119,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         // #1402: same empty-object-in, fully-defaulted-out pattern as below —
         // a brand new row has never had any onboarding activity recorded.
         onboardingState: OnboardingStateSchema.parse({}),
+        // #1623: the column defaults to TRUE, so a user who has never had a
+        // user_settings row is Confluence-enabled — matching every install
+        // that predates the toggle.
+        confluenceEnabled: true,
       };
     }
 
@@ -161,6 +166,10 @@ export async function settingsRoutes(fastify: FastifyInstance) {
         }
         return parsed.data;
       })(),
+      // #1623: `?? true` for the same reason as clientInferenceEnabled above —
+      // a row read by a replica or fixture that predates migration 119 has no
+      // value here, and "off" must be an explicit choice, never an absence.
+      confluenceEnabled: row.confluence_enabled ?? true,
     };
   });
 
@@ -248,6 +257,13 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     if (body.showSpaceHomeContent !== undefined) {
       updates.push(`show_space_home_content = $${paramIdx++}`);
       values.push(body.showSpaceHomeContent);
+    }
+
+    // #1623: the standalone-mode switch. Stored credentials are deliberately
+    // left alone on the way off so re-enabling doesn't ask for the PAT again.
+    if (body.confluenceEnabled !== undefined) {
+      updates.push(`confluence_enabled = $${paramIdx++}`);
+      values.push(body.confluenceEnabled);
     }
 
     if (body.customPrompts !== undefined) {
@@ -376,6 +392,19 @@ export async function settingsRoutes(fastify: FastifyInstance) {
       // INSERT path needs the check; deselecting (empty set / DELETE below) is
       // always safe and must not require a live PAT lookup.
       if (newSpaces.length > 0) {
+        // #1623: getClientForUser also returns null for a user who simply
+        // switched the integration off, so a bare !client check would answer a
+        // standalone user with a credential complaint they cannot act on.
+        // Selecting spaces to sync is meaningless with nothing syncing, and
+        // #815's PAT-visibility check cannot be skipped (it is the only thing
+        // stopping a user from self-granting editor on an arbitrary space key),
+        // so the smallest correct answer is to refuse the selection and name
+        // the real reason. Deselection (the DELETE path below) stays available.
+        if (!(await isConfluenceEnabled(request.userId))) {
+          throw fastify.httpErrors.unprocessableEntity(
+            'Confluence integration is off; turn it back on to choose spaces to sync',
+          );
+        }
         const client = await getClientForUser(request.userId);
         if (!client) {
           throw fastify.httpErrors.badRequest('Confluence not configured');

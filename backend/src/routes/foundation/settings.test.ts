@@ -69,8 +69,12 @@ vi.mock('../../domains/confluence/services/sync-overview-service.js', () => ({
 // #815: PUT /settings must validate selectedSpaces against the caller's own
 // PAT-visible spaces before self-assigning the editor role.
 const mockGetClientForUser = vi.fn();
+// #1623: the route asks whether the integration is on at all before it blames
+// the caller's credentials — these tests all describe a Confluence-enabled user.
+const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
 vi.mock('../../domains/confluence/services/sync-service.js', () => ({
   getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
+  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
 }));
 
 // Spy on ssrf-guard functions to verify allowlist management
