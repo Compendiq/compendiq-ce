@@ -988,6 +988,17 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // confluence_id, not by the parent's PK). Resolve the page and ask the same
     // dual-identifier question `GET /api/pages/:id` asks, with the same numeric
     // normalisation its sibling routes apply to the id arm (#1167).
+    //
+    // The access decision below reads ONE row, so that row must be the one the
+    // caller named. The id arm is a dual-identifier lookup, and a page whose PK
+    // equals another page's `confluence_id` matches BOTH — with no ordering, the
+    // answer came from whichever row the scan reached first, so a Confluence
+    // decoy in a space the caller cannot read 404'd an id `GET /api/pages/:id`
+    // serves 200. PK-first is the same resolution the detail route applies to a
+    // numeric id (`cp.id = $1`), so the two can no longer disagree; the ordering
+    // only breaks a tie — a numeric `confluence_id` with no PK match still
+    // resolves through the confluence_id arm. LIMIT 1 states the single-row
+    // contract the handler already relied on by reading `rows[0]`.
     const isNumericId = /^\d+$/.test(id);
     const result = await query<{
       has_children: boolean;
@@ -1004,7 +1015,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.source, cp.space_key, cp.visibility, cp.created_by_user_id
          FROM pages cp
         WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
-          AND cp.deleted_at IS NULL`,
+          AND cp.deleted_at IS NULL
+        ${isNumericId ? 'ORDER BY (cp.id::text = $2) DESC' : ''}
+        LIMIT 1`,
       isNumericId ? [id, toPageIdText(id)] : [id],
     );
 

@@ -358,6 +358,64 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(allowed.statusCode).toBe(200);
       expect(allowed.json()).toEqual({ hasChildren: true });
     });
+
+    /**
+     * The route decides from ONE row, and the numeric id arm is a
+     * dual-identifier lookup: a page whose PK equals another page's
+     * `confluence_id` matches both. The Confluence decoy is inserted FIRST, so
+     * it is the physical-first match — which is the row the route used to read.
+     * Resolving it ran the space check against a space this caller cannot read
+     * and 404'd an id `GET /api/pages/:id` serves 200, making the deprecated
+     * route stricter than the detail route for a legitimate caller.
+     *
+     * The row choice must be PK-first — the resolution the detail route applies
+     * to a numeric id (`cp.id = $1`) — so the two cannot disagree.
+     */
+    it('resolves the PK row when the identifier also matches another page’s confluence_id', async () => {
+      await insertConfluencePage('1000', 'Decoy', 'OTHER');
+      const target = await insertStandalonePage('Target', 'private', userA, 'NOTES');
+      // Park the standalone row on the decoy's identifier: it is now the second
+      // row of the two the lookup matches, matching the reviewer's fixture.
+      await query('UPDATE pages SET id = 1000 WHERE id = $1', [target]);
+      await insertStandalonePage('Target child', 'private', userA, 'NOTES', { parentId: '1000' });
+
+      // Precondition of the shape, asserted so this case cannot quietly become
+      // vacuous: the unordered lookup really does return the decoy first.
+      const unordered = await query<{ source: string }>(
+        `SELECT cp.source FROM pages cp
+          WHERE (cp.confluence_id = '1000' OR cp.id::text = '1000')
+            AND cp.deleted_at IS NULL`,
+      );
+      expect(unordered.rows[0]!.source).toBe('confluence');
+      expect(unordered.rows).toHaveLength(2);
+
+      const detail = await app.inject({ method: 'GET', url: '/api/pages/1000' });
+      expect(detail.statusCode).toBe(200);
+      const detailBody = detail.json() as { hasChildren: boolean };
+      expect(detailBody.hasChildren).toBe(true);
+
+      const response = await app.inject({ method: 'GET', url: '/api/pages/1000/has-children' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ hasChildren: true });
+    });
+
+    /**
+     * The other half of PK-first: it only breaks a tie. A numeric
+     * `confluence_id` that matches no page PK still resolves through the
+     * `confluence_id` arm, and is still scoped by that row's space.
+     */
+    it('still resolves a numeric confluence_id that matches no page PK', async () => {
+      await insertConfluencePage('2200000000', 'Synced', 'NOTES');
+      await insertConfluencePage('2200000000-child', 'Synced child', 'NOTES', { parentId: '2200000000' });
+
+      const response = await app.inject({ method: 'GET', url: '/api/pages/2200000000/has-children' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ hasChildren: true });
+
+      mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+      const denied = await app.inject({ method: 'GET', url: '/api/pages/2200000000/has-children' });
+      expect(denied.statusCode).toBe(404);
+    });
   });
 
   // ── soft delete ───────────────────────────────────────────────────────────
