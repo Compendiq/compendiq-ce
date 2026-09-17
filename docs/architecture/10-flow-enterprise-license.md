@@ -180,7 +180,7 @@ volume, not the deployment's bounded `/tmp` tmpfs.
 flowchart LR
     routes["Seven admitted text inference routes"] --> quota["EE department quota + stream admission"]
     quota --> text["Assigned text model or department fallback"]
-    retrieval["embedding / rerank / image_embedding"] --> assigned["Existing dedicated assignments<br/>never department text fallback"]
+    retrieval["embedding / rerank / image_analysis"] --> assigned["Existing dedicated assignments<br/>never department text fallback"]
     text --> audit["CE audit hook<br/>provider usage or estimates"]
     audit --> persist["Selected audit writer"]
     audit --> meter["EE admitted-request accounting<br/>once; cache replay excluded"]

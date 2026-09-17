@@ -3342,7 +3342,9 @@ on another is silently degraded. D7 makes honouring this cheap — but only
 *partly automatic*: a move to a different endpoint changes the recorded
 identity and rebuilds at the next probe, while an in-place upgrade behind the
 same base URL is invisible to every signal this code has, and stays an operator
-step (`docs/runbooks/image-index.md` §2).
+step (the runbook this named, `docs/runbooks/image-index.md` §2, was deleted
+with the leg in #1618 stage 2; the successor section for the replacement is
+`docs/runbooks/image-analysis.md` §7).
 
 ### Intake, in one paragraph (P2, shipped)
 
@@ -3475,7 +3477,10 @@ its wire shape unchanged; `mode=semantic` never reaches `hybridSearch` at all.
 On `/llm/ask` the wire gains `kind: 'image'` source entries carrying
 `attachmentUrl` (built by the inverse of the `<img src>` enumerator) and
 `similarity: null`, capped at four per answer. The page and web source shapes
-are untouched. Operations: `docs/runbooks/image-index.md` §6.
+are untouched. Operations: the runbook this named,
+`docs/runbooks/image-index.md` §6, was deleted with the leg in #1618 stage 2;
+the successor section for the replacement is
+`docs/runbooks/image-analysis.md` §6.
 
 ### v1 scope fence
 
