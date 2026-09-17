@@ -957,10 +957,14 @@ npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out cont
 npx tsx scripts/run-retrieval-eval.ts --lang en --out control-en-legacy.json
 npx tsx scripts/run-retrieval-eval.ts --lang de --fts-language german --out control-de-legacy.json
 
-# One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts
+# One blinded sheet for the judge; the mapping's sha256 is recorded BEFORE judging starts.
+# TWO arms, never three: both file schemas type their `arm` as `z.enum(EVAL_ARMS)` = B|C
+# (`eval/answers.ts` MappingSchema/AnswerRunProvenanceSchema, `eval/judgments.ts`
+# SheetProvenanceSchema), so a pair naming arm A is refused at parse time and --merge
+# never gets as far as hashing it.
 npx tsx scripts/judge-arms.ts --merge --run-id sheet-<date> --out-dir artifacts/ \
-  --answers artifacts/answers-A-<date>.jsonl,artifacts/answers-B-<date>.jsonl,artifacts/answers-C-<date>.jsonl \
-  --mappings artifacts/mapping-A-<date>.json,artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
+  --answers artifacts/answers-B-<date>.jsonl,artifacts/answers-C-<date>.jsonl \
+  --mappings artifacts/mapping-B-<date>.json,artifacts/mapping-C-<date>.json
 # … the judge fills artifacts/judgments-sheet-<date>.jsonl from answers-sheet-<date>.jsonl ALONE …
 npx tsx scripts/judge-arms.ts --check --answers artifacts/answers-sheet-<date>.jsonl --judgments artifacts/judgments-sheet-<date>.jsonl
 # The ADR's pilot, BEFORE judging the rest: ψ over the first 30 image-dependent C/B
@@ -1095,7 +1099,7 @@ carries every existing field untouched and adds only `imageDependent` and
 
 | Arm | What | Revision | Index state |
 |---|---|---|---|
-| A | legacy text + `page_image_embeddings` leg | the last `dev` commit before #1618 stage 2 (SHA recorded in the baseline artifact) | `image_embedding` assigned to the REAL VL endpoint (production vLLM, not the shim); legacy index filled |
+| A | legacy text + `page_image_embeddings` leg — **PERMANENTLY UNOBTAINABLE, historical only** (ADR-027 amendment A-1). `--arm A` is refused like any unknown arm on every revision this runbook applies to; the archived baseline is reproducible only by checking out the `revisionSha` its artifact records | not prescribable: the leg's revision is the last `dev` commit before #1618 stage 2 (SHA in the archived artifact), and no current one can run it | not obtainable: `image_embedding` needed a REAL VL embedding endpoint the owner has declined to stand up, and #1618 stage 2 dropped the assignment, the column and the index it filled |
 | B | candidate: vision-analysis chunks, no image leg | candidate revision (post-#1617) | `image_analysis` assigned; backfill complete |
 | C | ablation: authored text only | the SAME candidate revision as B | `image_analysis` unassigned; no derived chunks (and, post-#1618, no legacy index to be empty) |
 
@@ -1111,11 +1115,14 @@ assignment away, clear `provider_id` and `model`
 in Settings → AI Models (or leave the seeded row as it is); deleting the row
 is not required and the run never deletes it.
 
-B − C isolates vision enrichment. B − A measures the whole product change,
-including #1617's lexical chunk resolution. A legacy-revision C, if captured,
-is a regression control for that change and is labelled so; it is never
-substituted for C. The 2026-08-18 numbers above and every 307/22 shim result
-are historical and unpairable.
+B − C isolates vision enrichment, and since ADR-027 amendment A-1 it is the
+pre-registered primary. B − A *would* have measured the whole product change,
+including #1617's lexical chunk resolution; that pair can no longer be formed
+at all, which is why the primary was re-registered and why the
+legacy-revision C captured on 2026-09-16 is what carries the regression
+control for #1617. It is labelled so and is never substituted for C. The
+2026-08-18 numbers above and every 307/22 shim result are historical and
+unpairable.
 
 ### What #1617 changed, and the one path it deliberately did not
 

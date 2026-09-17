@@ -102,6 +102,13 @@ backend/src/domains/llm/eval/corpus-*/.queries.json
 backend/retrieval-eval.json
 backend/query-latency.json
 
+# #1619: same rule, same cwd — `run-retrieval-eval.ts --images --arm B|C`
+# defaults its report to `retrieval-eval-arm-<arm>.json` so an arm run cannot
+# overwrite the text-gate baseline above. Anchored to `backend/` on purpose:
+# the arm reports kept as evidence live under
+# `backend/src/domains/llm/eval/artifacts/` and are COMMITTED.
+backend/retrieval-eval-arm-*.json
+
 # #1115: tools/eval-corpus-images/build.py stages the whole image corpus here
 # and swaps it over the real directory only when the run succeeds. A failed run
 # leaves it standing on purpose, for inspection — never to be committed.

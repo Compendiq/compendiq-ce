@@ -243,10 +243,13 @@ export async function seedImageCorpus(
     // set of values rather than two that happen to agree.
     await writePageAttachments(page, pageId, confluenceId, corpusDir);
     // ADR-027 D4: every product writer that stores a body carrying attachment
-    // images raises `image_analysis_dirty` beside `image_embedding_dirty`
-    // through ONE writer (`markPageImagesDirty`). The seeder writes exactly
-    // such a body, so it raises the flag the same way rather than leaving the
-    // corpus in a state no product path produces. **The flag IS the analysis
+    // images raises `image_analysis_dirty` through ONE writer
+    // (`markPageImagesDirty`). It is the ONLY image flag left: #1618 stage 2
+    // (migration 118) dropped the legacy image-embedding column this writer
+    // used to raise beside it, and this file's integration test asserts that
+    // column's absence. The seeder writes exactly such a body,
+    // so it raises the flag the same way rather than leaving the corpus in a
+    // state no product path produces. **The flag IS the analysis
     // queue** (D6.2): `reconcileDirtyPages` walks nothing else, migration
     // 116's initial-backlog UPDATE ran before any of these pages existed, and
     // a corpus seeded without it gave `--arm B` a backfill that never started
