@@ -1324,6 +1324,31 @@ describe('ArticleRightPane', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 
+  /**
+   * #1636 — the same copy module as PageViewPage's dialog, driven by the same
+   * server-side `descendantCount`. `mockPage` carries no count, so every other
+   * test here is exercising the unknown-count fallback.
+   */
+  it('names the sub-article count when the page has descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, descendantCount: 2 };
+    render(<ArticleRightPane />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByText('Move to trash'));
+    await screen.findByTestId('confirm-dialog');
+
+    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/^This page has 2 sub-articles\./)).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and 2 sub-articles to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
+    });
+    expect(mockDeletePage).not.toHaveBeenCalled();
+  });
+
   it('cancelling the move-to-trash dialog does not delete', async () => {
     render(<ArticleRightPane />, { wrapper: createWrapper() });
 

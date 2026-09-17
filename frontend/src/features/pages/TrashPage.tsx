@@ -6,6 +6,28 @@ import { toast } from 'sonner';
 import { useTrash, useRestorePage } from '../../shared/hooks/use-standalone';
 import { HeaderHost } from '../../shared/components/layout/header-slot';
 import { Button, IconButton } from '../../shared/components/Button';
+import { ApiError } from '../../shared/lib/api';
+
+/**
+ * The server's reason, when there is one. A restore can be REFUSED with a
+ * specific, actionable sentence (#1636: 409 `Restore "<parent>" first`), and a
+ * flat "Failed to restore page" tells the person looking at the Trash nothing
+ * about what to do next. The fallback stays for a genuinely message-less
+ * failure.
+ */
+function restoreFailureMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : 'Failed to restore page';
+}
+
+/**
+ * #1636 — the restore route answers 409 when the target's ANCESTOR is still in
+ * the trash (restoring it alone would put it back at the tree root). Inside a
+ * bulk restore that ancestor is usually part of the same selection, so the
+ * refusal is transient, not a failure.
+ */
+function isAncestorConflict(error: unknown): boolean {
+  return error instanceof ApiError && error.statusCode === 409;
+}
 
 export function TrashPage() {
   const navigate = useNavigate();
@@ -33,8 +55,8 @@ export function TrashPage() {
         return next;
       });
       toast.success('Page restored');
-    } catch {
-      toast.error('Failed to restore page');
+    } catch (error) {
+      toast.error(restoreFailureMessage(error));
     }
   };
 
@@ -43,11 +65,42 @@ export function TrashPage() {
     setIsBulkRestoring(true);
     const ids = Array.from(selectedIds);
     try {
-      await Promise.all(ids.map((id) => restoreMutation.mutateAsync(id)));
-      toast.success(`Restored ${ids.length} ${ids.length === 1 ? 'page' : 'pages'}`);
-      setSelectedIds(new Set());
-    } catch {
-      toast.error('Failed to restore some pages');
+      const results = await Promise.allSettled(ids.map((id) => restoreMutation.mutateAsync(id)));
+
+      // One cascade puts a parent and its sub-articles in ONE batch, and one
+      // request per selected row means whichever lands first restores the whole
+      // batch — so a sibling is refused (409) for an ancestor that is itself in
+      // this selection. Retry exactly those, once, now that the others have
+      // settled: the page is live by then and the retry is a no-op success.
+      const refusedIds = ids.filter(
+        (_id, index) => results[index]!.status === 'rejected' && isAncestorConflict(results[index]!.reason),
+      );
+      const retried =
+        refusedIds.length > 0
+          ? await Promise.allSettled(refusedIds.map((id) => restoreMutation.mutateAsync(id)))
+          : [];
+
+      const failures = [
+        ...results.filter(
+          (result) => result.status === 'rejected' && !isAncestorConflict(result.reason),
+        ),
+        ...retried.filter((result) => result.status === 'rejected'),
+      ].map((result) => (result as PromiseRejectedResult).reason);
+
+      if (failures.length === 0) {
+        toast.success(`Restored ${ids.length} ${ids.length === 1 ? 'page' : 'pages'}`);
+        setSelectedIds(new Set());
+      } else {
+        // Say what actually happened, then why: a partial restore that reports
+        // only the failure reads as "nothing worked".
+        const restored = ids.length - failures.length;
+        const reason = restoreFailureMessage(failures[0]);
+        toast.error(
+          restored > 0
+            ? `Restored ${restored} of ${ids.length} pages. ${reason}`
+            : `Failed to restore ${ids.length === 1 ? 'the page' : 'the selected pages'}. ${reason}`,
+        );
+      }
     } finally {
       setIsBulkRestoring(false);
     }

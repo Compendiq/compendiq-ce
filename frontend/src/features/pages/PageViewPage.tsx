@@ -44,6 +44,7 @@ import { AutoGrowTextarea } from '../../shared/components/AutoGrowTextarea';
 import { ShortcutHint } from '../../shared/components/ShortcutHint';
 import { ConfirmDialog } from '../../shared/components/ConfirmDialog';
 import { Button, IconButton } from '../../shared/components/Button';
+import { trashConfirmCopy } from '../../shared/lib/trash-copy';
 import { usePresence } from './use-presence';
 import { PresenceAvatarStack } from './PresenceAvatarStack';
 import { ConfluenceModifiedAlert } from './ConfluenceModifiedAlert';
@@ -650,6 +651,13 @@ export function PageViewPage() {
   // Deleting soft-deletes into the 30-day trash, so the confirm copy must
   // not claim the action "cannot be undone". ConfirmDialog replaces the
   // native confirm() to match the neumorphic design system.
+  //
+  // #1636: the trash also cascades to the page's sub-articles, and the dialog
+  // says how many — from the server's own `descendantCount` (the count comes
+  // from the same walk the delete uses), never from the client tree, which is
+  // filtered and may be mid-load.
+  const trashCopy = trashConfirmCopy(page?.descendantCount);
+
   const handleDeletePage = useCallback(() => {
     if (!id) return;
     setConfirmTrashOpen(true);
@@ -1173,11 +1181,16 @@ export function PageViewPage() {
         />
       )}
 
+      {/* #1636: the copy comes from `trash-copy.ts`, shared with the article
+          inspector's dialog, so the two can never disagree about what a trash
+          costs. It names the sub-article count from the server's
+          `descendantCount`; while the detail is loading (or failed) it falls
+          back to the copy that promises nothing extra. */}
       <ConfirmDialog
         open={confirmTrashOpen}
-        title="Move page to trash?"
-        description="It can be restored from Trash for 30 days, then it is permanently deleted."
-        confirmLabel="Move to trash"
+        title={trashCopy.title}
+        description={trashCopy.description}
+        confirmLabel={trashCopy.confirmLabel}
         destructive
         onConfirm={handleConfirmMoveToTrash}
         onCancel={() => setConfirmTrashOpen(false)}

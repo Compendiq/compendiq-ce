@@ -48,6 +48,13 @@ interface PageDetail extends PageSummary {
   bodyHtml: string;
   bodyText: string;
   hasChildren: boolean;
+  /**
+   * Live descendants of this page, the page itself excluded (#1636) — exactly
+   * the set `DELETE /pages/:id` cascades to trash. Optional because the API
+   * predates the field: absent means "not known", which the trash dialog must
+   * render as the no-sub-articles copy rather than as a guess.
+   */
+  descendantCount?: number;
   summaryHtml: string | null;
   summaryGeneratedAt: string | null;
   summaryModel: string | null;

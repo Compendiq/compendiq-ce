@@ -930,6 +930,45 @@ describe('PageViewPage', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/');
   });
 
+  /**
+   * #1636 — the dialog must name what the trash actually moves. `mockPage` has
+   * `hasChildren: true` and no `descendantCount`, so every other test in this
+   * file is exercising the unknown-count fallback: it passes only while that
+   * fallback is the N=0 copy.
+   */
+  it('names the sub-article count when the page has descendants (#1636)', async () => {
+    currentMockPage = { ...mockPage, descendantCount: 3 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Move page and sub-articles to trash?')).toBeInTheDocument();
+    expect(screen.getByText(/^This page has 3 sub-articles\./)).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and 3 sub-articles to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+  });
+
+  it('uses the singular copy for exactly one sub-article (#1636)', async () => {
+    currentMockPage = { ...mockPage, descendantCount: 1 };
+    render(<PageViewPage />, { wrapper: createWrapper() });
+    act(() => {
+      capturedShortcuts.find((s) => s.key === 'Alt+Shift+D')!.action();
+    });
+
+    expect(await screen.findByText('Move page and its sub-article to trash?')).toBeInTheDocument();
+    expect(screen.getByTestId('confirm-dialog-confirm')).toHaveTextContent(
+      'Move page and sub-article to trash',
+    );
+
+    fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument());
+  });
+
   it('cancelling the move-to-trash dialog does not delete', async () => {
     render(<PageViewPage />, { wrapper: createWrapper() });
     const deleteShortcut = capturedShortcuts.find((s) => s.key === 'Alt+Shift+D');

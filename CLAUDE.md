@@ -678,6 +678,46 @@ Panel usage goes through the authenticated collection path, without content in
 event metadata. Impression semantics and adoption evaluation are documented in
 `docs/ADMIN-GUIDE.md`.
 
+## Standalone Trash Cascade (#1636)
+
+Trashing a standalone article takes its WHOLE subtree, so the delete, the
+restore and the number the confirm dialog shows must all come from one
+definition: `backend/src/core/services/page-subtree.ts`. Both delete paths
+(soft and `?permanent=true`), the bulk delete, `descendantCount` on
+`GET /api/pages/:id` and the restore batch read that walk, and re-implementing
+any of them in a route is how the two disagree.
+
+Four things in it look simplifiable and are not. (1) The recursive arm has NO
+`deleted_at` filter: a walk that stops at a trashed intermediate leaves its LIVE
+grandchildren behind, orphaned at the tree root — the #1636 bug, one level down —
+while `deleted_at IS NULL` on the UPDATE's IN-subquery still lets an
+already-trashed descendant keep its ORIGINAL stamp. (2) `UNION`, never
+`UNION ALL`: `parent_id` is unconstrained TEXT, so a cycle is only prevented
+from hanging the request by the deduplication. (3) The join is the
+dual-identifier form `p.parent_id = COALESCE(d.confluence_id, d.id::text)` —
+a standalone child points at its parent's PK, a synced child at its parent's
+`confluence_id` — and the id arm is TEXT so a Confluence content id above 2^31
+cannot overflow the cast (#1167). (4) The cascade is ONE data-modifying
+statement, because `NOW()` is transaction time and the rows it touches then
+share one `deleted_at`; that equality IS the restore batch key
+(`trashBatchIds`), so splitting the cascade into SELECT-then-UPDATE silently
+breaks restore.
+
+Consequences worth remembering. `hasChildren` on `GET /api/pages/:id` uses the
+tree's dual-identifier join (the old form matched `parent_id = confluence_id`
+only, so every standalone parent answered `false`), which also means the field
+now reads `true` for standalone pages whose children the UI previously could not
+see. A restore is refused with 409 `Restore "<ancestor>" first` when the page's
+parent is still in the trash — restoring it alone would re-create the orphan
+inside Trash — and it is idempotent for an already-live page, because a bulk
+restore fires one request per selected row and a cascade batch spans several of
+them. The dialog copy for both delete surfaces lives in
+`frontend/src/shared/lib/trash-copy.ts`; the count comes from the server, never
+from `usePageTree()` (space/visibility filtered, possibly mid-load, and it
+cannot know what the delete will do). Trash is 30-day retention for the OWNER
+(`created_by_user_id`), so a cascaded sub-article owned by someone else lands in
+THEIR trash, and it can only be restored after its parent.
+
 ## Library Search
 
 Search provenance comes from `pages.source`, never a space key, historical

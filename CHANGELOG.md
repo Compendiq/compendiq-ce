@@ -94,6 +94,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Trashing a standalone article now takes its whole sub-article subtree with
+  it (#1636).** `DELETE /api/pages/:id` soft-deleted exactly one row, so its
+  live descendants kept `parent_id` pointing at a trashed page: `GET
+  /api/pages/tree`'s `LEFT JOIN pages parent_page ON (…) AND parent_page.deleted_at
+  IS NULL` answered `parentId: null` for them and the sidebar rendered them as
+  top-level pages. `has_children` on `GET /api/pages/:id` matched
+  `parent_id = confluence_id` only, so a standalone parent reported `false`
+  however many sub-articles it had, and no dialog could warn. Soft delete and
+  `?permanent=true` now walk the subtree in one statement
+  (`core/services/page-subtree.ts`; `UNION`, so a `parent_id` cycle terminates
+  instead of hanging the request), `?permanent=true` also discards each deleted
+  page's icon directory — the standalone hard delete never did — and
+  `hasChildren` uses the tree's dual-identifier join. `GET /api/pages/:id`
+  gains `descendantCount` (live descendants, the page excluded), and both
+  delete dialogs name the count from `shared/lib/trash-copy.ts`. Restore puts
+  back the whole delete BATCH (the rows sharing the cascade's single
+  `deleted_at`), and answers 409 `Restore "<ancestor>" first` when the page's
+  parent is still in the trash, because restoring it alone would re-create the
+  orphan inside Trash. `POST /pages/bulk/delete` shares the walk; its response
+  still counts the selected pages.
+
 - **Image analysis asks the provider not to think (ADR-027 D8 erratum,
   #1619).** A reasoning vision model spends **82.0–93.3 %** of its output
   tokens on a thinking pass at the shipped 8,192 ceiling (measured over the
