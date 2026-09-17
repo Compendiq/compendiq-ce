@@ -296,6 +296,10 @@ export function LlmTab() {
   }
 
   function handleSave() {
+    // In-flight guard: the button stays natively enabled while the mutation
+    // runs (see its `aria-disabled` below), so a second Enter must be refused
+    // here rather than by the browser.
+    if (save.isPending) return;
     if (!assignments || !rawAssignments) return;
     const diff = diffUsecaseAssignments(rawAssignments, assignments);
     // An unsaved embedding assignment is started from the row's re-embed
@@ -406,7 +410,16 @@ export function LlmTab() {
             className={
               embeddingPending && otherAssignmentsDirty ? 'nm-button-ghost' : 'nm-button-primary'
             }
-            disabled={save.isPending || (embeddingPending !== null && !otherAssignmentsDirty)}
+            // `save.isPending` is NOT a native `disabled`: disabling the
+            // focused element blurs it, and the browser moves focus to
+            // <body> — measured on the refusal paths of #1615's probe, where
+            // the admin who pressed Enter lost their place exactly when a
+            // 422 needed reading. `aria-disabled` plus the `handleSave`
+            // guard keeps the control focused and still refuses the second
+            // press. The embedding gate below is a standing "not allowed"
+            // state, not a transient one, so it stays natively disabled.
+            disabled={embeddingPending !== null && !otherAssignmentsDirty}
+            aria-disabled={save.isPending || undefined}
             onClick={handleSave}
             {...(embeddingPending
               ? { 'aria-describedby': 'usecase-save-embedding-hint' }

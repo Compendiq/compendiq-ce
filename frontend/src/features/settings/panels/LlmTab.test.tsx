@@ -133,6 +133,8 @@ function mockRoutes(options?: {
   putResult?: Record<string, unknown>;
   /** #1615 — the machine-readable reason beside `putError`. */
   putReason?: string;
+  /** Hold the assignments PUT open this long, so the in-flight state is observable. */
+  putDelayMs?: number;
   /** #1615 — serve `image_analysis` as ASSIGNED to providerB / qwen3-vl. */
   analysisAssigned?: boolean;
   /** #1615 — the capability detail, or `null` for a 404. */
@@ -181,6 +183,11 @@ function mockRoutes(options?: {
       });
     }
     if (url.endsWith('/admin/llm-usecases') && (init as RequestInit).method === 'PUT') {
+      if (options?.putDelayMs) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, options.putDelayMs);
+        await promise;
+      }
       if (options?.putError) {
         return new Response(
           JSON.stringify({ error: options.putError, statusCode: 422, ...(options.putReason ? { reason: options.putReason } : {}) }),
@@ -1171,6 +1178,37 @@ describe('LlmTab — image analysis (#1615)', () => {
     );
     expect(screen.getByTestId('usecase-summary-provider')).toHaveValue(providerB.id);
     expect(screen.getByTestId('usecase-image_analysis-provider')).toHaveValue(providerB.id);
+  });
+
+  // Measured in a real browser on #1615's refusal paths: Save was natively
+  // `disabled` while the mutation ran, and disabling the element the admin had
+  // just pressed with Enter blurs it — the browser moves focus to <body>, so
+  // they lost their place exactly when a 422 needed reading. jsdom does not
+  // move focus on `disabled`, so what this pins is the mechanism: in flight
+  // the control is `aria-disabled` and NEVER natively disabled, and the press
+  // that is in flight is still refused.
+  it('marks Save aria-disabled in flight instead of natively disabling the focused control', async () => {
+    const spy = mockRoutes({ putError: 'Server sentence naming the remedy.', putReason: 'text_only', putDelayMs: 80 });
+    render(<LlmTab />, { wrapper: createWrapper() });
+    await screen.findByTestId('usecase-row-image_analysis');
+    fireEvent.change(screen.getByTestId('usecase-image_analysis-provider'), { target: { value: providerB.id } });
+
+    const save = screen.getByRole('button', { name: /save use-case assignments/i });
+    save.focus();
+    fireEvent.click(save);
+
+    const inFlight = await screen.findByRole('button', { name: /saving…/i });
+    expect(inFlight).toBe(save);
+    expect(save).toHaveAttribute('aria-disabled', 'true');
+    expect(save).not.toBeDisabled();
+    expect(save).toHaveFocus();
+
+    // A second press while the first is in flight sends no second PUT: the
+    // handler guards it, because the element is deliberately still clickable.
+    fireEvent.click(save);
+    await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
+    expect(putsOf(spy).filter((c) => urlOf(c).endsWith('/admin/llm-usecases'))).toHaveLength(1);
+    expect(save).toHaveFocus();
   });
 
   it('discloses reanalyzeRows in amber when the save adopted a new identity, and not on a resume', async () => {
