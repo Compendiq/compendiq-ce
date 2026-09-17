@@ -74,8 +74,24 @@ vi.mock('../../../core/utils/logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// Every queue in this file is POSITIONAL (`mockResolvedValueOnce` chains), so
+// any new SELECT on the `syncUser` path silently shifts all of them by one.
+// The #1623 toggle read (`SELECT confluence_enabled FROM user_settings`) runs
+// as step 0 of `syncUser` and is answered HERE, by SQL content, so it never
+// consumes a queue slot. Add further content-routed reads the same way rather
+// than prepending to a dozen queues.
+function routeQuery(...args: unknown[]) {
+  const sql = typeof args[0] === 'string' ? args[0] : '';
+  // `isConfluenceEnabled` only — `getClientForUser` also selects the column,
+  // but alongside `confluence_url`, and it IS modelled in the queues.
+  if (sql.includes('confluence_enabled') && !sql.includes('confluence_url')) {
+    return Promise.resolve({ rows: [{ confluence_enabled: true }], rowCount: 1 });
+  }
+  return mocks.query(...args);
+}
+
 vi.mock('../../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mocks.query(...args),
+  query: (...args: unknown[]) => routeQuery(...args),
   // EE #118 conflict-detection wraps the htmlChanged-path UPDATE in a
   // transaction with `SELECT ... FOR UPDATE`. The transaction goes
   // through `getPool().connect()` rather than the global `query`. We
@@ -84,7 +100,7 @@ vi.mock('../../../core/db/postgres.js', () => ({
   // `mockResolvedValueOnce` queue still drives the order.
   getPool: () => ({
     connect: async () => ({
-      query: (...args: unknown[]) => mocks.query(...args),
+      query: (...args: unknown[]) => routeQuery(...args),
       release: () => {},
     }),
   }),

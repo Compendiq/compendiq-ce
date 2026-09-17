@@ -107,12 +107,21 @@ vi.mock('../../../core/services/redis-cache.js', () => ({
 }));
 
 // Now import the module under test
-import { getSyncStatus, setSyncStatus, startSyncWorker, stopSyncWorker, syncUser, runScheduledSync } from './sync-service.js';
+import {
+  getSyncStatus,
+  setSyncStatus,
+  startSyncWorker,
+  stopSyncWorker,
+  syncUser,
+  runScheduledSync,
+  getClientForUser,
+  isConfluenceEnabled,
+} from './sync-service.js';
 import { query } from '../../../core/db/postgres.js';
 import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
 import { cleanPageAttachments } from './attachment-handler.js';
 import { clearAttachmentFailures } from '../../../core/services/redis-cache.js';
-import { ConfluenceError } from './confluence-client.js';
+import { ConfluenceClient, ConfluenceError } from './confluence-client.js';
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -880,6 +889,94 @@ describe('sync-service', () => {
 
       await expect(syncUser('user-1')).rejects.toThrow();
       expect(mockConfluenceClientInstance.getPage).not.toHaveBeenCalledWith('page-2');
+    });
+  });
+
+  // ── Confluence integration toggle (#1623) ─────────────────────────────────
+
+  describe('Confluence integration toggle (#1623)', () => {
+    /** `SELECT ... FROM user_settings WHERE user_id = $1` for one row. */
+    function givenUserSettingsRow(row: Record<string, unknown> | undefined) {
+      vi.mocked(query).mockImplementation(async (sql: string) => {
+        const sqlStr = typeof sql === 'string' ? sql : '';
+        if (sqlStr.includes('user_settings')) {
+          return {
+            rows: row ? [row] : [],
+            rowCount: row ? 1 : 0, command: '', oid: 0, fields: [],
+          } as QueryResult;
+        }
+        return { rows: [], rowCount: 0, command: '', oid: 0, fields: [] } as QueryResult;
+      });
+    }
+
+    it('getClientForUser returns null when the integration is switched off', async () => {
+      // Credentials are retained across a toggle — the flag alone decides.
+      givenUserSettingsRow({
+        confluence_url: 'https://confluence.test',
+        confluence_pat: 'encrypted-pat',
+        confluence_enabled: false,
+      });
+
+      await expect(getClientForUser('user-1')).resolves.toBeNull();
+      expect(ConfluenceClient).not.toHaveBeenCalled();
+    });
+
+    it('getClientForUser still builds a client when the row carries no flag value', async () => {
+      // A row without the column is "unknown", not "off": treating it as off
+      // would silently disable every configured user.
+      givenUserSettingsRow({
+        confluence_url: 'https://confluence.test',
+        confluence_pat: 'encrypted-pat',
+      });
+
+      await expect(getClientForUser('user-1')).resolves.not.toBeNull();
+      expect(ConfluenceClient).toHaveBeenCalledWith('https://confluence.test', 'decrypted-pat');
+    });
+
+    it('isConfluenceEnabled defaults to true when the user has no settings row', async () => {
+      givenUserSettingsRow(undefined);
+
+      await expect(isConfluenceEnabled('user-1')).resolves.toBe(true);
+    });
+
+    it('isConfluenceEnabled reports false only for an explicitly disabled row', async () => {
+      givenUserSettingsRow({ confluence_enabled: false });
+      await expect(isConfluenceEnabled('user-1')).resolves.toBe(false);
+
+      givenUserSettingsRow({ confluence_enabled: true });
+      await expect(isConfluenceEnabled('user-1')).resolves.toBe(true);
+    });
+
+    it('syncUser skips the run and settles the status to idle when the integration is off', async () => {
+      givenUserSettingsRow({
+        confluence_url: 'https://confluence.test',
+        confluence_pat: 'encrypted-pat',
+        confluence_enabled: false,
+      });
+      mockRedisSet.mockResolvedValue('OK');
+
+      await syncUser('user-1');
+
+      expect(mockConfluenceClientInstance.getAllSpaces).not.toHaveBeenCalled();
+      const statusWrite = mockRedisSet.mock.calls.find(
+        (call) => call[0] === 'sync:status:user-1',
+      );
+      expect(statusWrite?.[1]).toContain('"status":"idle"');
+    });
+
+    it('runScheduledSync only selects users whose integration is switched on', async () => {
+      mockRedisSet.mockResolvedValue('OK'); // lock acquired
+      mockRedisEval.mockResolvedValue(1);
+      vi.mocked(query).mockResolvedValue({
+        rows: [], rowCount: 0, command: '', oid: 0, fields: [],
+      } as QueryResult);
+
+      await runScheduledSync();
+
+      const userSelect = vi.mocked(query).mock.calls
+        .map((call) => (typeof call[0] === 'string' ? call[0] : ''))
+        .find((sql) => sql.includes('FROM user_settings us'));
+      expect(userSelect).toContain('us.confluence_enabled');
     });
   });
 });

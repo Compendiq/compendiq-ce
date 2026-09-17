@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
-import { getClientForUser, unsyncSpace } from '../../domains/confluence/services/sync-service.js';
+import { getClientForUser, isConfluenceEnabled, unsyncSpace } from '../../domains/confluence/services/sync-service.js';
 import { getUserAccessibleSpaces, userHasPermission, isSystemAdmin, invalidateRbacCache } from '../../core/services/rbac-service.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { logger } from '../../core/utils/logger.js';
@@ -176,6 +176,13 @@ export async function spacesRoutes(fastify: FastifyInstance) {
 
   // GET /api/spaces/available - fetch spaces from Confluence for selection
   fastify.get('/spaces/available', async (request) => {
+    // In standalone mode there is no Confluence to browse, and the user's
+    // credentials are intact — answering "not configured" would send them off
+    // to re-paste a PAT they still have. Say what is actually true (#1623).
+    if (!(await isConfluenceEnabled(request.userId))) {
+      throw fastify.httpErrors.conflict('Confluence integration is disabled');
+    }
+
     const client = await getClientForUser(request.userId);
     if (!client) {
       throw fastify.httpErrors.badRequest('Confluence not configured');
