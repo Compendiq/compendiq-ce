@@ -83,11 +83,27 @@ const mockQueryFn = vi.fn();
  * set. `rejectPageDelete()` below flips it to the rollback branch.
  */
 const mockTxQueryFn = vi.fn();
+/**
+ * The subtree the hard-delete transaction walks (#1636): the page itself plus
+ * one sub-article. The route deletes every id the walk returns and cleans the
+ * directories of every id the DELETE's RETURNING reports, so the mock has to
+ * model BOTH statements rather than assume a single-row delete.
+ */
+const TX_SUBTREE_IDS = [42, 43];
 function resetTxQuery(): void {
   mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+    if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
+      return Promise.resolve({
+        rows: TX_SUBTREE_IDS.map((id) => ({ id })),
+        rowCount: TX_SUBTREE_IDS.length,
+      });
+    }
     if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
-      const id = params?.[0] as number | undefined;
-      return Promise.resolve({ rows: id === undefined ? [] : [{ id }], rowCount: id === undefined ? 0 : 1 });
+      // The standalone cascade binds an id array (#1636); the Confluence path
+      // binds a single id.
+      const bound = params?.[0];
+      const ids = Array.isArray(bound) ? (bound as number[]) : typeof bound === 'number' ? [bound] : [];
+      return Promise.resolve({ rows: ids.map((id) => ({ id })), rowCount: ids.length });
     }
     return Promise.resolve({ rows: [], rowCount: 0 });
   });
@@ -167,14 +183,49 @@ describe('#1349 standalone hard delete cleans attachment directories', () => {
     mockQueryFn.mockResolvedValue({ rows: [], rowCount: 1 });
   }
 
-  it('hard delete (permanent=true) removes the attachment directories', async () => {
+  it('hard delete (permanent=true) removes the attachment directories of every id in the subtree', async () => {
     stubStandalonePageLoad();
 
     const response = await app.inject({ method: 'DELETE', url: '/api/pages/42?permanent=true' });
 
     expect(response.statusCode).toBe(200);
-    expect(mockCleanupStandaloneDirs).toHaveBeenCalledTimes(1);
-    expect(mockCleanupStandaloneDirs).toHaveBeenCalledWith(42, expect.anything());
+    // #1636: the walk's ids are what the DELETE removed, and EVERY one of them
+    // gets its directories collected — a cascaded sub-article's bytes leak
+    // otherwise, and the sweep only converges them a day later.
+    expect(mockCleanupStandaloneDirs.mock.calls.map(([pageId]) => pageId)).toEqual(TX_SUBTREE_IDS);
+    expect(mockCleanupStandaloneDirs).toHaveBeenCalledWith(
+      43,
+      expect.objectContaining({ query: mockTxQueryFn }),
+    );
+    // Same set, same reason: the mark is the only copy of those bytes.
+    expect(mockDiscardPageIcon.mock.calls.map(([pageId]) => pageId)).toEqual(TX_SUBTREE_IDS);
+  });
+
+  /**
+   * #1636 review hazard: the cleanup must never run for an id the transaction
+   * did NOT destroy. A mock whose DELETE answers with a subset of the walk is
+   * the only way to make that branch reachable without fault injection.
+   */
+  it('cleans only the ids the DELETE’s RETURNING reported', async () => {
+    stubStandalonePageLoad();
+    mockTxQueryFn.mockImplementation((sql: unknown, params?: unknown[]) => {
+      if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
+        return Promise.resolve({ rows: TX_SUBTREE_IDS.map((id) => ({ id })), rowCount: 2 });
+      }
+      if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql) && /RETURNING/i.test(sql)) {
+        // The database refused the second row — only 42 really went.
+        void params;
+        return Promise.resolve({ rows: [{ id: 42 }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    const response = await app.inject({ method: 'DELETE', url: '/api/pages/42?permanent=true' });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockCleanupStandaloneDirs.mock.calls.map(([pageId]) => pageId)).toEqual([42]);
+    // The icon discard follows the same committed set, never the intended one.
+    expect(mockDiscardPageIcon.mock.calls.map(([pageId]) => pageId)).toEqual([42]);
   });
 
   it('keeps the shared attachment barrier across the hard-delete SQL and filesystem cleanup', async () => {

@@ -65,7 +65,17 @@ vi.mock('../../core/services/webhook-emit-hook.js', () => ({
 const mockQueryFn = vi.fn();
 // Transaction client returned by getPool().connect() — since #766 the delete
 // route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+const mockTxQueryFn = vi.fn();
+/**
+ * Empty by default. The standalone permanent-delete case below overrides this
+ * to model #1636's walk-then-delete inside the transaction, so it has to be
+ * restored between tests — otherwise the Confluence cleanup inherits its
+ * RETURNING and starts discarding marks for rows nobody destroyed.
+ */
+function resetTxQuery(): void {
+  mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+}
+resetTxQuery();
 vi.mock('../../core/db/postgres.js', () => ({
   query: (...args: unknown[]) => mockQueryFn(...args),
   getPool: vi.fn().mockReturnValue({
@@ -124,6 +134,7 @@ describe('pages-crud webhook emit call-sites', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTxQuery();
     mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
   });
 
@@ -335,8 +346,10 @@ describe('pages-crud webhook emit call-sites', () => {
           confluence_id: null, space_key: null,
         }],
       });
-      // UPDATE deleted_at
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+      // The cascade UPDATE … RETURNING: one row here, the page itself. Since
+      // #1636 the webhook is emitted per RETURNING id, not per request, so a
+      // mock that answers with nothing would emit nothing.
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -350,6 +363,30 @@ describe('pages-crud webhook emit call-sites', () => {
       expect(event.payload).toEqual({ pageId: 11, isHardDelete: false });
     });
 
+    it('emits one page.deleted per id the cascade trashed (#1636)', async () => {
+      mockQueryFn.mockResolvedValueOnce({
+        rows: [{
+          id: 11, source: 'standalone', created_by_user_id: TEST_USER,
+          confluence_id: null, space_key: null,
+        }],
+      });
+      // The cascade trashed the page and two sub-articles in one statement.
+      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 13 }] });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/api/pages/11',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(3);
+      expect(mockEmitWebhookEvent.mock.calls.map(([event]) => event.payload)).toEqual([
+        { pageId: 11, isHardDelete: false },
+        { pageId: 12, isHardDelete: false },
+        { pageId: 13, isHardDelete: false },
+      ]);
+    });
+
     it('emits page.deleted with isHardDelete=true on standalone permanent delete', async () => {
       // SELECT existing page
       mockQueryFn.mockResolvedValueOnce({
@@ -360,6 +397,17 @@ describe('pages-crud webhook emit call-sites', () => {
       });
       // DELETE FROM pinned_pages, DELETE FROM pages
       mockQueryFn.mockResolvedValue({ rows: [] });
+      // The hard delete walks its subtree on the transaction client and
+      // deletes exactly what the walk returned (#1636).
+      mockTxQueryFn.mockImplementation((sql: unknown) => {
+        if (typeof sql === 'string' && /SELECT id FROM d\b/.test(sql)) {
+          return Promise.resolve({ rows: [{ id: 12 }], rowCount: 1 });
+        }
+        if (typeof sql === 'string' && /DELETE FROM pages\b/i.test(sql)) {
+          return Promise.resolve({ rows: [{ id: 12 }], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      });
 
       const response = await app.inject({
         method: 'DELETE',

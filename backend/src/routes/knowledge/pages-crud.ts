@@ -24,6 +24,14 @@ import { cleanupStandalonePageAttachmentDirs } from '../../core/services/standal
 import { withLocalAttachmentMutationLock } from '../../core/services/attachment-snapshot-lock.js';
 import { discardPageIconForDeletedPage } from '../../core/services/page-icon-store.js';
 import { tombstoneCollabRoomAfterCommit } from '../../core/services/collab-tombstone.js';
+import {
+  PAGE_SUBTREE_CTE,
+  PAGE_SUBTREE_CTE_MANY_ROOTS,
+  activeDescendantCount,
+  subtreeIds,
+  trashBatchIds,
+  trashedAncestorOf,
+} from '../../core/services/page-subtree.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
 import { STANDALONE_TRASH_RETENTION_DAYS } from '../../core/services/data-retention-service.js';
 import { processDirtyPages, isProcessingUser, assertShadowRollbackWindowClear } from '../../domains/llm/services/embedding-service.js';
@@ -845,7 +853,15 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
               cp.quality_score, cp.quality_status, cp.quality_completeness, cp.quality_clarity,
               cp.quality_structure, cp.quality_accuracy, cp.quality_readability,
               cp.quality_summary, cp.quality_analyzed_at, cp.quality_error,
-              EXISTS(SELECT 1 FROM pages c2 WHERE c2.parent_id = cp.confluence_id AND cp.confluence_id IS NOT NULL AND c2.deleted_at IS NULL) as has_children,
+              -- Same predicate as GET /pages/tree's LEFT JOIN (#1636): the dual
+              -- identifier join, so a synced child (parent_id = parent's
+              -- confluence_id) and a standalone child (parent_id = parent's PK)
+              -- are both found. The old form carried a cp.confluence_id IS NOT
+              -- NULL guard, which made every standalone parent answer false
+              -- however many sub-articles it had.
+              EXISTS(SELECT 1 FROM pages c2
+                      WHERE (c2.parent_id = cp.confluence_id OR CAST(cp.id AS TEXT) = c2.parent_id)
+                        AND c2.deleted_at IS NULL) as has_children,
               cp.summary_html, cp.summary_status, cp.summary_generated_at, cp.summary_model, cp.summary_error,
               cp.source, cp.visibility, cp.created_by_user_id,
               (cp.draft_body_html IS NOT NULL) as has_draft, cp.draft_updated_at,
@@ -876,6 +892,11 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       }
     }
 
+    // Counted through the same walk the delete cascade uses (#1636), from the
+    // page's own PK — so it cannot drift from the ids the trash actually
+    // takes, and a Confluence-id lookup still gets the row's numeric root.
+    const descendantCount = await activeDescendantCount(row.id);
+
     return {
       id: String(row.id),
       confluenceId: row.confluence_id,
@@ -891,6 +912,9 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       lastModifiedAt: row.last_modified_at,
       lastSynced: row.last_synced,
       hasChildren: row.has_children,
+      // Live descendants, the page itself excluded (#1636): what the confirm
+      // dialog names and what a trash of this page moves.
+      descendantCount,
       embeddingDirty: row.embedding_dirty,
       embeddingStatus: row.embedding_status,
       embeddedAt: row.embedded_at,
@@ -932,14 +956,27 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
   fastify.get('/pages/:id/has-children', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
 
-    const result = await query<{ count: string }>(
-      'SELECT COUNT(*) as count FROM pages WHERE parent_id = $1 AND deleted_at IS NULL',
-      [id],
+    // #1636: this used to match `parent_id = $1` alone, which disagrees with
+    // both the tree and the `hasChildren` field for a synced child (linked by
+    // confluence_id, not by the parent's PK). Resolve the page and ask the same
+    // dual-identifier question `GET /pages/:id` asks, with the same numeric
+    // normalisation its sibling routes apply to the id arm (#1167).
+    const isNumericId = /^\d+$/.test(id);
+    const result = await query<{ has_children: boolean }>(
+      `SELECT EXISTS(
+                SELECT 1 FROM pages c2
+                 WHERE (c2.parent_id = cp.confluence_id OR CAST(cp.id AS TEXT) = c2.parent_id)
+                   AND c2.deleted_at IS NULL
+              ) as has_children
+         FROM pages cp
+        WHERE ${isNumericId ? '(cp.confluence_id = $1 OR cp.id::text = $2)' : 'cp.confluence_id = $1'}
+          AND cp.deleted_at IS NULL`,
+      isNumericId ? [id, toPageIdText(id)] : [id],
     );
 
     const row = result.rows[0];
-    if (!row) throw new Error('Expected a row from COUNT query');
-    return { hasChildren: parseInt(row.count, 10) > 0 };
+    if (!row) throw fastify.httpErrors.notFound('Page not found');
+    return { hasChildren: row.has_children };
   });
 
   // GET /api/pages/:id/children - list child pages for the Confluence Children macro
@@ -1104,7 +1141,22 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
       throw fastify.httpErrors.forbidden('Not the owner');
     }
     if (!page.deleted_at) {
-      throw fastify.httpErrors.badRequest('Page is not in trash');
+      // #1636: already live, so the desired end state already holds. A bulk
+      // restore fires ONE request per selected row, and a cascade batch spans
+      // several rows: whichever request lands first restores all of them, so
+      // its siblings arrive here. Reporting a failure for work that is already
+      // done would make the Trash toast lie about the outcome.
+      return { id: page.id, title: page.title, restored: false };
+    }
+
+    // #1636: restoring a page whose parent is still in the trash would put it
+    // back with a `parent_id` pointing at a hidden row, and `GET
+    // /api/pages/tree` renders that as a top-level page — the orphan this issue
+    // is about, re-created inside Trash. Name the ancestor the caller has to
+    // restore first instead.
+    const trashedAncestor = await trashedAncestorOf(page.id);
+    if (trashedAncestor) {
+      throw fastify.httpErrors.conflict(`Restore "${trashedAncestor.title}" first`);
     }
 
     if (page.notion_page_id) {
@@ -1119,11 +1171,18 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         [page.created_by_user_id, page.id, page.notion_page_id],
       );
       if (clash.rows.length > 0) {
-        throw fastify.httpErrors.conflict('A live import of this Notion page already exists');
+        throw fastify.httpErrors.conflict('A live import of this page already exists');
       }
     }
 
-    await query('UPDATE pages SET deleted_at = NULL WHERE id = $1', [page.id]);
+    // #1636: restore the DELETE BATCH, not just the row. A cascade is one
+    // UPDATE, so everything it trashed shares one `deleted_at`; `trashBatchIds`
+    // selects exactly that set (the page plus those descendants) in SQL, where
+    // the timestamptz comparison is exact. A descendant trashed on its own
+    // carries a different stamp and stays in the trash — the person who trashed
+    // it did not ask for it back.
+    const batchIds = await trashBatchIds(page.id);
+    await query('UPDATE pages SET deleted_at = NULL WHERE id = ANY($1::int[])', [batchIds]);
 
     // A restored shared page reappears in every user's lists/trees (#893) —
     // mirror the delete path: clear all users' caches. Private stays per-user.
@@ -1132,8 +1191,10 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     } else {
       await cache.invalidate(userId, 'pages');
     }
+    // ONE audit row for the target, covering the whole batch — the ids
+    // themselves would make an unbounded payload (same rule as the cascade).
     await logAuditEvent(userId, 'PAGE_RESTORED', 'page', String(id),
-      { source: 'standalone', title: page.title }, request);
+      { source: 'standalone', title: page.title, restoredCount: batchIds.length }, request);
 
     return { id: page.id, title: page.title, restored: true };
   });
@@ -1625,50 +1686,114 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
         throw fastify.httpErrors.forbidden('Not authorized to delete this page');
       }
 
-      if (queryParams.permanent === 'true') {
+      const isPermanent = queryParams.permanent === 'true';
+      // The ids this request actually affected. Every per-page side effect
+      // (tombstone, webhook, attachment/icon cleanup) keys off THIS set, never
+      // off the target alone: a cascade hides or destroys rows, and a row
+      // nothing told anyone about is the leak #1636's review would find.
+      let affectedIds: number[];
+
+      if (isPermanent) {
+        affectedIds = [];
         // Hard delete and attachment cleanup share one barrier-owning client,
         // so a backup cannot archive the post-delete database with pre-delete
         // directories (or the inverse).
         await withLocalAttachmentMutationLock(async (client) => {
           try {
             await client.query('BEGIN');
-            await client.query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = $2', [
-              userId,
-              existingPage.id,
-            ]);
-            await client.query('DELETE FROM pages WHERE id = $1', [existingPage.id]);
+            // Walked inside the transaction so the ids the DELETE removes and
+            // the directories this cleanup removes are the same set. The walk
+            // visits everything below the page; `source = 'standalone'` on the
+            // DELETE is what keeps a Confluence-sourced row in the subtree
+            // (which Confluence owns) out of it.
+            const subtreeRows = await subtreeIds(existingPage.id, { client });
+            await client.query(
+              'DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])',
+              [userId, subtreeRows],
+            );
+            const destroyed = await client.query<{ id: number }>(
+              `DELETE FROM pages WHERE id = ANY($1::int[]) AND source = 'standalone' RETURNING id`,
+              [subtreeRows],
+            );
             await client.query('COMMIT');
+            affectedIds = destroyed.rows.map((row) => row.id);
           } catch (err) {
             await client.query('ROLLBACK').catch(() => undefined);
             throw err;
           }
-          await cleanupStandalonePageAttachmentDirs(existingPage.id, client);
+          // Only a COMMITTED delete reaches the filesystem: on the rollback
+          // branch every row is still alive and holds the only copy of its
+          // bytes (#1349's fixer r1 — the icon store's contract is the same).
+          for (const pageId of affectedIds) {
+            await cleanupStandalonePageAttachmentDirs(pageId, client);
+          }
         });
       } else {
-        // Soft delete — move to trash
-        await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [existingPage.id]);
+        // Soft delete — move to trash.
+        //
+        // ONE data-modifying statement (#1636): the walk and the UPDATE cannot
+        // disagree, and the statement's `NOW()` is transaction time, so every
+        // row the cascade trashes carries the SAME `deleted_at`. That equality
+        // is the restore batch key — splitting this into a SELECT followed by
+        // an UPDATE would produce distinct stamps and resurrect-or-orphan the
+        // subtree on restore (see `trashBatchIds`).
+        //
+        // `UNION` in the walk is the cycle guard, and `deleted_at IS NULL` on
+        // the IN-subquery means an already-trashed descendant keeps its ORIGINAL
+        // stamp, so it stays in its own batch.
+        const cascaded = await query<{ id: number }>(
+          `${PAGE_SUBTREE_CTE}
+           UPDATE pages SET deleted_at = NOW()
+            WHERE id IN (SELECT id FROM d WHERE deleted_at IS NULL AND source = 'standalone')
+           RETURNING id`,
+          [existingPage.id],
+        );
+        affectedIds = cascaded.rows.map((row) => row.id);
+        // Scoped to the deleter: a pin of a trashed page is invisible to its
+        // owner (`pinned-pages.ts` filters `deleted_at IS NULL`) and sweeping
+        // someone else's row would be a silent, unrelated data change. Matches
+        // the bulk delete's standalone sweep.
+        await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [
+          userId,
+          affectedIds,
+        ]);
       }
-      await tombstoneCollabRoomAfterCommit(existingPage.id);
+
+      for (const pageId of affectedIds) {
+        if (isPermanent) {
+          // The icon store is keyed by `pages.id` and the mark is the ONLY copy
+          // of those bytes (migrations 095/096 persist just the sha), so — like
+          // the Confluence path — it is discarded only AFTER the commit, per
+          // destroyed id. The standalone hard delete never did this at all
+          // (#1636 review): a permanently deleted page left its mark behind
+          // until something else happened to reuse the id.
+          await discardPageIconForDeletedPage(pageId);
+        }
+        await tombstoneCollabRoomAfterCommit(pageId);
+        emitWebhookEvent({
+          eventType: 'page.deleted',
+          payload: { pageId, isHardDelete: isPermanent },
+        });
+      }
 
       // A shared standalone page is visible to every user (#893), so its
       // removal must clear all users' cached lists/trees. Private stays per-user.
+      // ONCE per request, never per descendant: the cascade changed one tree.
       if (existingPage.visibility === 'shared') {
         await cache.invalidateAcrossUsers('pages');
       } else {
         await cache.invalidate(userId, 'pages');
       }
+      // ONE audit row, for the ROOT. Audit rows are read by humans and must
+      // stay bounded, so the payload carries the cascade's size, not its ids.
       await logAuditEvent(userId, 'PAGE_DELETED', 'page', String(id),
-        { source: 'standalone', permanent: queryParams.permanent === 'true' }, request);
+        {
+          source: 'standalone',
+          permanent: isPermanent,
+          cascadedCount: affectedIds.filter((pageId) => pageId !== existingPage.id).length,
+        }, request);
 
-      emitWebhookEvent({
-        eventType: 'page.deleted',
-        payload: {
-          pageId: existingPage.id,
-          isHardDelete: queryParams.permanent === 'true',
-        },
-      });
-
-      return { message: queryParams.permanent === 'true' ? 'Page permanently deleted' : 'Page moved to trash' };
+      return { message: isPermanent ? 'Page permanently deleted' : 'Page moved to trash' };
     }
 
     // --- Confluence article: existing flow ---
@@ -2148,12 +2273,27 @@ export async function pagesCrudRoutes(fastify: FastifyInstance) {
     // Soft-delete standalone pages (move to trash)
     const standaloneNumericIds = standalonePages.map((r) => r.id);
     if (standaloneNumericIds.length > 0) {
-      await Promise.all([
-        query('UPDATE pages SET deleted_at = NOW() WHERE id = ANY($1::int[])', [standaloneNumericIds]),
-        query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [userId, standaloneNumericIds]),
+      // #1636: the cascade expands the id set — the selected pages AND their
+      // live descendants — in one data-modifying statement, so a bulk-deleted
+      // parent cannot orphan its sub-articles at the tree root. The response
+      // contract is unchanged: `succeeded` counts SELECTED pages (that is what
+      // the drift check on `expectedCount` is about), while the EFFECT covers
+      // the whole subtree.
+      const cascaded = await query<{ id: number }>(
+        `${PAGE_SUBTREE_CTE_MANY_ROOTS}
+         UPDATE pages SET deleted_at = NOW()
+          WHERE id IN (SELECT id FROM d WHERE deleted_at IS NULL AND source = 'standalone')
+         RETURNING id`,
+        [standaloneNumericIds],
+      );
+      const trashedIds = cascaded.rows.map((row) => row.id);
+      // Sequential, not Promise.all: the sweep needs the cascade's RETURNING.
+      await query('DELETE FROM pinned_pages WHERE user_id = $1 AND page_id = ANY($2::int[])', [
+        userId,
+        trashedIds,
       ]);
       // Bulk delete is a soft-delete (move to trash) for standalone pages.
-      for (const pageId of standaloneNumericIds) {
+      for (const pageId of trashedIds) {
         await tombstoneCollabRoomAfterCommit(pageId);
         emitWebhookEvent({
           eventType: 'page.deleted',
