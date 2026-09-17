@@ -23,7 +23,7 @@ truth. Two writers move `body_html`:
 
 | Path | What it writes | What it must not write |
 |------|----------------|------------------------|
-| **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_embedding_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
+| **Snapshot** (debounced 2 s after an applied update, and immediately on last disconnect) | `pages.body_html`, `pages.body_text`, `embedding_dirty`, gated `image_analysis_dirty`. `page_collaborative_docs.doc_state` / `state_vector` (persistence generation `version`). | `pages.version`, `local_modified_at` / `local_modified_by`, `summary_status` / `quality_status`, `body_storage`. Snapshot HTML is search freshness, not a Save. Stamping local-modified would make confluence-wins treat a pause as `hasLocalEdits`. |
 | **Commit** (`POST /api/pages/:id/collab/commit`) | Snapshot HTML from the Y.Doc (do **not** bump `pages.version` yet). **Standalone:** `title`, `body_html`, `body_text`, `version = version + 1`, `local_modified_*`, summary/quality pending, embedding flags. Retry once if two commits race. **Confluence:** GET remote version; if `version.number` moved vs current `pages.version` → 409 `{ code: 'confluence_modified', remoteVersion, localVersion }`, no `updatePage`, room stays live. Else `htmlToConfluence` + `uploadLocalImagesToConfluence` then **`client.updatePage` first** (pass the current local version; the client adds 1). On 5xx local version unchanged. On success one transaction: `body_html` / `body_text` / `body_storage` / `version = confPage.version.number` / `last_synced` / clear `local_modified_*` / summary+quality pending. Broadcasts WS control type 4 `pages_version`. | Client `bodyHtml` / client `version`. Never increment `pages.version` before the remote write succeeds. |
 
 A non-collab `body_html` writer (PUT, restore, Apply, draft-publish) **409s**
@@ -1121,15 +1121,14 @@ Two things this pipeline nonetheless owns, because the index depends on them:
 
 `buildPageImageUrl` (`core/services/image-references.ts`) is the exact inverse
 of that enumerator and shares its directory rule, so the reader's key and the
-citation's URL cannot drift. Design of record: ADR-025 (the ACTIVE design);
-operations: `docs/runbooks/image-index.md`.
+citation's URL cannot drift. Design of record: ADR-027 (ADR-025 is superseded
+in full — #1618 stage 2 retired the image-embedding space);
+operations: `docs/runbooks/image-analysis.md`.
 
-**Candidate (ADR-027; #1616's ingestion half shipped, #1615 PLANNED):
-analysis text is DERIVED data, still never a conversion rule.** The paragraph
-above stays true under the candidate. Every writer that raises
-`image_embedding_dirty` now raises `image_analysis_dirty` in the same
-statement (the attachment writers through `core/services/image-embedding-dirty.ts`,
-the body writers inline, gated on `body_html`), and the reconcile
+**Analysis text is DERIVED data, still never a conversion rule (ADR-027).**
+The paragraph above stays true of it. Every attachment writer raises
+`image_analysis_dirty` through `core/services/image-analysis-dirty.ts` and
+every body writer raises it inline, gated on `body_html`, and the reconcile
 (`domains/llm/services/image-analysis-reconcile.ts`) claims that flag before
 enumerating. A generative vision model reads the attachment's bytes at
 ingestion and its output is stored in `page_image_analyses` and composed by

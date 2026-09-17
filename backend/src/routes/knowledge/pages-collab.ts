@@ -131,10 +131,6 @@ async function commitConfluencePage(args: {
          version = $6, last_synced = NOW(), last_modified_at = NOW(),
          local_modified_at = NULL, local_modified_by = NULL,
          embedding_dirty = TRUE,
-         image_embedding_dirty = CASE
-           WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-           ELSE image_embedding_dirty
-         END,
          image_analysis_dirty = CASE
            WHEN body_html IS DISTINCT FROM $3 THEN TRUE
            ELSE image_analysis_dirty
@@ -369,10 +365,6 @@ export async function pagesCollabRoutes(fastify: FastifyInstance) {
            local_modified_at = NOW(),
            local_modified_by = $5,
            embedding_dirty = TRUE,
-           image_embedding_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_embedding_dirty
-           END,
            image_analysis_dirty = CASE
              WHEN body_html IS DISTINCT FROM $3 THEN TRUE
              ELSE image_analysis_dirty

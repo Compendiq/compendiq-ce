@@ -5,7 +5,7 @@ import { resolve } from 'path';
 /**
  * Regression guard for #1456 / #1442 D: ADMIN-GUIDE must teach the live
  * Settings → AI Models path for hosted OpenAI + DeepSeek, keep chat-only
- * hosts off embedding / rerank / image_embedding, and label the legacy LLM
+ * hosts off embedding / rerank / image_analysis, and label the legacy LLM
  * env table bootstrap-only — never revive `LLM_PROVIDER=openai` as the path.
  */
 
@@ -24,13 +24,13 @@ describe('ADMIN-GUIDE hosted OpenAI + DeepSeek (#1456)', () => {
     expect(guide).toContain('https://api.deepseek.com/v1');
   });
 
-  it('warns that a chat-only host must not cover embedding / rerank / image embedding', () => {
+  it('warns that a chat-only host must not cover embedding / rerank / image analysis', () => {
     expect(guide).toMatch(
-      /Chat-only hosts must not cover embedding \/ rerank \/ image embedding/i,
+      /Chat-only hosts must not cover embedding \/ rerank \/ image analysis/i,
     );
     expect(guide).toMatch(/\*\*Embedding\*\*/);
     expect(guide).toMatch(/\*\*Rerank\*\*/);
-    expect(guide).toMatch(/\*\*Image embedding\*\*/);
+    expect(guide).toMatch(/\*\*Image analysis\*\*/);
     expect(guide).toMatch(/hosted DeepSeek/i);
   });
 

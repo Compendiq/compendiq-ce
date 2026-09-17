@@ -15,7 +15,7 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 
 /**
  * #1349 — Settings → Spaces & Sync: attachment storage + the dry-run-first
- * orphan sweep. ImageIndexCard is the pattern of record.
+ * orphan sweep. ImageAnalysisProgressCard is the pattern of record.
  *
  * Three rules carried over from that card and from ADR-010:
  *
@@ -63,7 +63,7 @@ import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
  * refresh. Both actions are
  * fire-and-forget 202s and the card polls `running` (read server-side from
  * the worker lock) at 5s — at, not under, the admin rate limit's comfort
- * zone — with ImageIndexCard's warm-up window, because the lock is taken
+ * zone — with ImageAnalysisProgressCard's warm-up window, because the lock is taken
  * after the POST answers and one early refetch would otherwise cache
  * `running: false` and never re-arm the interval.
  */
@@ -228,7 +228,7 @@ export function AttachmentStorageCard() {
     onSuccess: (result, dryRun) => {
       if (result.alreadyRunning) {
         // Neither success nor failure: the press was a no-op against a sweep
-        // that already holds the lock (ImageIndexCard's neutral precedent).
+        // that already holds the lock (the image-analysis card's neutral precedent).
         //
         // The copy names the REMEDY, not an outcome (fixer r1). The lock is
         // taken `failClosed`, so the server answers `alreadyRunning` for two
@@ -367,7 +367,7 @@ export function AttachmentStorageCard() {
   // pressed Dry run was dropped to `<body>` at the top of a ~30-stop settings
   // panel for the whole run, and after the confirm dialog `ConfirmDialog`'s
   // restore aimed at a button that had already gone inert. CLAUDE.md's
-  // Retrieval-panel ruling is the recipe, and `ImageIndexCard` — this card's
+  // Retrieval-panel ruling is the recipe, and `ImageAnalysisProgressCard` — this card's
   // own named pattern of record — is converted in the same change so the two
   // do not end up with two busy behaviours.
   const actionsDisabled = isPending || running || trigger.isPending;
@@ -639,8 +639,8 @@ export function AttachmentStorageCard() {
               <span className="text-foreground font-mono">{lastRun.deleted.directories}</span>{' '}
               director{lastRun.deleted.directories === 1 ? 'y' : 'ies'} (
               {formatBytes(lastRun.deleted.bytes)})
-              {lastRun.deleted.imageEmbeddingRows > 0 &&
-                `, pruned ${lastRun.deleted.imageEmbeddingRows} image-index row${lastRun.deleted.imageEmbeddingRows === 1 ? '' : 's'}`}
+              {lastRun.deleted.imageAnalysisRows > 0 &&
+                `, pruned ${lastRun.deleted.imageAnalysisRows} image-analysis row${lastRun.deleted.imageAnalysisRows === 1 ? '' : 's'}`}
             </>
           )}
         </p>

@@ -37,8 +37,6 @@ import {
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
   invalidateRagImageIntakeCache,
-  getRagImageLegEnabled,
-  invalidateRagImageLegCache,
   getRagAnswerMaxImages,
   invalidateRagAnswerMaxImagesCache,
   getImageAnalysisMaxOutputTokens,
@@ -58,10 +56,6 @@ import { listClientAssetManifest } from '../../core/services/client-model-assets
 import { toFixedDecimalString } from '../../core/utils/fixed-decimal.js';
 import { getRegistrationMode } from '../../core/services/registration-policy-service.js';
 import { getFtsLanguage } from '../../core/services/fts-language.js';
-import {
-  getImageEmbeddingTargetDimensions,
-  IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
-} from '../../core/services/image-embedding-target-dimensions.js';
 import {
   setLlmConcurrencyClusterWide,
   setLlmMaxQueueDepthClusterWide,
@@ -399,10 +393,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ragRankingPriorWeight,
       ragImagesPerPageMax,
       ragImageIndexExternal,
-      ragImageLegEnabled,
       ragAnswerMaxImages,
       imageAnalysisMaxOutputTokens,
-      imageEmbeddingTargetDimensions,
       efSearch,
       qualityBatchSize,
       summaryBatchSize,
@@ -445,25 +437,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // from the release the worker ships in.
       getRagImagesPerPageMax(),
       getRagImageIndexExternal(),
-      // #1115 P3 — the retrieval half. Its own reader and its own cache: it is
-      // read once per hybrid search, where the intake pair is read once per
-      // page scanned, so sharing a cache entry would tie a hot-path read to an
-      // invalidation the worker triggers.
-      getRagImageLegEnabled(),
       // #1115 P4 — the ANSWER half: how many of the matched images the chat
-      // model is shown. A third reader rather than a widened one for the same
-      // reason again — it is read once per ask that reaches a completion, and
-      // it is the only one of the three whose 0 is meaningful.
+      // model is shown. Its own reader rather than a widened one — it is read
+      // once per ask that reaches a completion, and it is the one image knob
+      // whose 0 is meaningful.
       getRagAnswerMaxImages(),
       // #1615 (ADR-027 D8) — the image-analysis output-token ceiling, through
       // its own cached reader: the worker reads it once per batch, and an
       // unparseable or out-of-range row reads as the default there, so this
       // is the value the next batch will send as `max_tokens`.
       getImageAnalysisMaxOutputTokens(),
-      // #1115 — uncached, like `getFtsLanguage`: it is read a handful of times
-      // per admin action, and a stale one would let a probe fired seconds after
-      // the width was saved measure the OLD width and type the column to it.
-      getImageEmbeddingTargetDimensions(),
       // #1285 — the `ef_search` floor, through its own cached reader for the
       // #1118 reason plus one of its own: this is the only knob on the panel
       // with a deprecated env var behind it, and the reader owns the
@@ -536,11 +519,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       embeddingChunkSize: parseInt(map['embedding_chunk_size'] ?? '500', 10),
       embeddingChunkOverlap: parseInt(map['embedding_chunk_overlap'] ?? '50', 10),
       drawioEmbedUrl: map['drawio_embed_url'] ?? null,
-      // #1115 — the MRL truncation width the image leg requests, or null for
-      // the model's native width. Read through its own reader (which discards
-      // an out-of-range row) rather than off `map`, so the panel is shown the
-      // number the probe and P2's embedder will actually send.
-      imageEmbeddingTargetDimensions,
       // Issue #257 — re-embed-all job history retention (default 150, [10, 10000]).
       reembedHistoryRetention: parseInt(map['reembed_history_retention'] ?? '150', 10),
       // Issue #264 — retention for ADMIN_ACCESS_DENIED audit rows
@@ -590,8 +568,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
       // #1115 P2 — the image-index intake knobs.
       ragImagesPerPageMax,
       ragImageIndexExternal,
-      // #1115 P3 — the retrieval half.
-      ragImageLegEnabled,
       // #1115 P4 — the answer half.
       ragAnswerMaxImages,
       // #1615 — the image-analysis output-token ceiling (ADR-027 D8).
@@ -701,28 +677,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
         await query(`DELETE FROM admin_settings WHERE setting_key = 'drawio_embed_url'`);
       } else {
         updates.push({ key: 'drawio_embed_url', value: body.drawioEmbedUrl });
-      }
-    }
-    // #1115 — the image leg's MRL truncation width, with the same three-state
-    // semantics: absent leaves it, null clears it back to the model's native
-    // width, a number pins what every image-side call requests. Zod already
-    // bounded it to [64, 16000]; `columnTypeFor` decides the tier from what the
-    // model ANSWERS, so nothing here is interpolated into DDL.
-    //
-    // Writing it does not re-probe on its own. The panel's Save re-sends the
-    // image assignment when this changes, and Re-check is the other entry
-    // point — those are the only two moments the column is brought in line.
-    if (body.imageEmbeddingTargetDimensions !== undefined) {
-      if (body.imageEmbeddingTargetDimensions === null) {
-        await query(
-          `DELETE FROM admin_settings WHERE setting_key = $1`,
-          [IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY],
-        );
-      } else {
-        updates.push({
-          key: IMAGE_EMBEDDING_TARGET_DIMENSIONS_KEY,
-          value: String(body.imageEmbeddingTargetDimensions),
-        });
       }
     }
     // Per-user concurrent SSE-stream cap (#268). Zod already validated the
@@ -860,14 +814,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
         'rag_image_index_external',
         invalidateRagImageIntakeCache,
         body.ragImageIndexExternal !== undefined ? String(body.ragImageIndexExternal) : undefined,
-      ],
-      // #1115 P3 — the retrieval half, through the same cached path so the
-      // next hybrid search reads the new value rather than the old one for up
-      // to a minute (#1118's lesson).
-      [
-        'rag_image_leg_enabled',
-        invalidateRagImageLegCache,
-        body.ragImageLegEnabled !== undefined ? String(body.ragImageLegEnabled) : undefined,
       ],
       // #1115 P4 — the answer half. `!== undefined`, never a truthiness test:
       // 0 is this knob's off switch (the only one of the three image knobs

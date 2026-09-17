@@ -66,11 +66,12 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
     // the value parseFtsLanguageArg returned. Any `ftsLanguage: <expr>`
     // outside a type declaration is a label decoupled from the run.
     //
-    // Counted, not merely present (#1115 P5b): there are three report builders
-    // now — the text gate's, the image axis's and the arm axis's (#1614 PR2) —
-    // and one that published a constant while the others kept the shorthand
-    // would pass a bare `toMatch`.
-    expect(raw.match(/\n\s*ftsLanguage,\n/g)).toHaveLength(3);
+    // Counted, not merely present (#1115 P5b): there are two report builders
+    // — the text gate's and the arm axis's (#1614 PR2) — and one that
+    // published a constant while the other kept the shorthand would pass a
+    // bare `toMatch`. #1618 stage 2 removed the third (the paired image
+    // axis), so the count came down with it.
+    expect(raw.match(/\n\s*ftsLanguage,\n/g)).toHaveLength(2);
     const annotated = [...raw.matchAll(/ftsLanguage:\s*([^,;\n]+)/g)].map((m) => m[1]!.trim());
     expect([...new Set(annotated)]).toEqual(['string']);
   });
@@ -176,13 +177,19 @@ describe('run-retrieval-eval.ts wiring (#1114)', () => {
 });
 
 /**
- * #1115 P5b — the image axis's wiring, for exactly the reason the block above
- * exists: every module it composes has its own tests, and a mutant that leaves
- * each of them correct while composing them in the wrong ORDER passes the whole
- * suite. The orderings below are not stylistic — each one is a state the
- * product itself refuses to be in.
+ * #1115 P5b — the image CORPUS's wiring, for exactly the reason the block
+ * above exists: every module it composes has its own tests, and a mutant that
+ * leaves each of them correct while composing them in the wrong ORDER passes
+ * the whole suite. The orderings below are not stylistic — each one is a state
+ * the product itself refuses to be in.
+ *
+ * **#1618 stage 2 retired the PAIRED image axis.** `--images` measured
+ * ADR-025's image-embedding leg off against on, in one process, and every cell
+ * about the VL environment, the index probe, the `imageHits` arms and the
+ * paired verdict table went with the leg. What is left over the image corpus
+ * is the ADR-027 arm axis below, which `--images` now REQUIRES.
  */
-describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
+describe('run-retrieval-eval.ts image corpus wiring (#1115 P5b)', () => {
   const raw = source('run-retrieval-eval.ts');
   const flat = collapsed('run-retrieval-eval.ts');
 
@@ -194,23 +201,18 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(flat).toContain("langArg && langArg !== 'en' ? langArg : 'en'");
   });
 
-  it('requires the VL endpoint from ITS OWN variables before it touches the database', () => {
-    expect(flat).toContain('readImageAxisEnv()');
-    // Never the text pair: that endpoint would answer, in the wrong shape,
-    // with a vector from a different space.
-    expect(raw).not.toContain('EVAL_IMAGE_EMBEDDING_BASE_URL ?? process.env.EVAL_EMBEDDING_BASE_URL');
-    // …and BEFORE the disposable-database guard, which is the first thing that
-    // opens a connection and runs the migrations. Read inside the measurement
-    // instead, a missing variable cost a connection, a migration run and a
-    // provider probe before saying so — the whole argument the unknown-flag
-    // guard is written out of, one environment over.
-    const env = raw.indexOf('readImageAxisEnv()');
-    const lang = raw.indexOf('parseImageAxisLanguage(process.argv)');
-    const db = raw.indexOf('assertDisposableDatabase(');
-    expect(env).toBeGreaterThan(-1);
-    expect(lang).toBeGreaterThan(-1);
-    expect(db).toBeGreaterThan(env);
-    expect(db).toBeGreaterThan(lang);
+  it('REFUSES a bare --images, before the database is touched', () => {
+    // The paired axis is gone, so `--images` alone selects nothing. Falling
+    // through to the text gate would seed the ENGLISH corpus and score it
+    // against a report the operator reads as the image one — and the refusal
+    // has to land beside the flag parsing, before `assertDisposableDatabase`
+    // opens a connection and runs the migrations.
+    expect(flat).toContain('if (imageAxis && !arm) {');
+    expect(flat).toContain('--images needs --arm B or --arm C.');
+    const refusal = raw.indexOf('--images needs --arm B or --arm C.');
+    expect(refusal).toBeGreaterThan(-1);
+    expect(raw.indexOf('assertDisposableDatabase(')).toBeGreaterThan(refusal);
+    expect(raw.indexOf('await runMigrations()')).toBeGreaterThan(refusal);
   });
 
   it('defaults its report to a DIFFERENT file, so it cannot overwrite a text baseline', () => {
@@ -238,17 +240,11 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(raw.indexOf('await runMigrations()')).toBeGreaterThan(stages);
   });
 
-  it('refuses a same-axis baseline measured through a different VL model (review r2)', () => {
-    // `baseline.model` is the TEXT embedder and is identical on both axes, so
-    // without this guard two runs of different checkpoints passed every check
-    // the harness makes and their difference was printed as a verdict about
-    // retrieval logic — the exact comparison the text-model guard refuses.
-    expect(flat).toContain('assertComparableImageModel(baseline.images, report.images)');
-    const axisGuard = raw.indexOf('assertComparableAxis(');
-    const modelGuard = raw.indexOf('assertComparableImageModel(');
-    const shaGuard = raw.indexOf('if (baseline.corpusManifestSha !== report.corpusManifestSha)');
-    expect(modelGuard).toBeGreaterThan(axisGuard);
-    expect(shaGuard).toBeGreaterThan(modelGuard);
+  it('decides one verdict rule, never a second copy of the McNemar branch', () => {
+    // The text gate's `compareArm` and the arm axis's `compareArmRetrieval`
+    // both report a paired verdict; a second inline McNemar branch is how the
+    // two would come to disagree about the same numbers.
+    expect(raw.match(/mcnemar-exact/g)).toHaveLength(1);
   });
 
   it('stages the attachments directory before the seeder writes a byte', () => {
@@ -261,14 +257,11 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(seed).toBeGreaterThan(stage);
   });
 
-  it('prepares (and probes) the image index before any image is embedded', () => {
-    // `prepareImageIndex` writes the truncation width, probes the pair and
-    // types the column. Run after the seed, every image would be embedded
-    // against an untyped column and fail on the first insert.
-    const prepare = raw.indexOf('await prepareImageIndex(imageEnv)');
-    const seed = raw.indexOf('await seedImageCorpus(');
-    expect(prepare).toBeGreaterThan(-1);
-    expect(seed).toBeGreaterThan(prepare);
+  it('runs the single-arm runner over the seeded page map, under the whole-fixture power floor', () => {
+    expect(flat).toContain('await runArmEval(fixture, { arm, userId: EVAL_USER_ID, pageIdByFile: seeded.pageIdByFile,');
+    // The whole-fixture power floor applies to the image fixture as well —
+    // Recall@K over N moves in 1/N steps whatever the labels carry.
+    expect(flat).toContain('const fixture = loadImageFixture(); assertFixturePower(fixture);');
   });
 
   it('certifies the FTS configuration and records a DISTINCT corpus claim on this axis', () => {
@@ -281,38 +274,18 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     // aimed at the wrong corpus could no longer tell the two apart, and the
     // refusal switched off for the state it exists to catch.
     expect(raw.indexOf('await recordCorpusLanguage(IMAGE_AXIS_CORPUS_CLAIM)', seed)).toBeGreaterThan(seed);
-    // One call each on the paired axis and the arm axis (#1614 PR2 seeds the
-    // same corpus once more, under the same claim), so neither can quietly go
-    // back to writing the language while the constant sits unused beside it.
+    // One call each on the text gate and the arm axis, so neither can quietly
+    // go back to writing the language while the constant sits unused beside
+    // it. Two before #1618 stage 2, when the paired axis seeded the same
+    // corpus a second time.
     expect(raw.match(/recordCorpusLanguage\(language\)/g)).toHaveLength(1);
-    expect(raw.match(/recordCorpusLanguage\(IMAGE_AXIS_CORPUS_CLAIM\)/g)).toHaveLength(2);
+    expect(raw.match(/recordCorpusLanguage\(IMAGE_AXIS_CORPUS_CLAIM\)/g)).toHaveLength(1);
     expect(raw.indexOf('await recordCorpusLanguage(language)')).toBeLessThan(seed);
   });
 
-  it('publishes MEASURED participation counts, per query and from the leg-on arm', () => {
-    // Zero is a refusal condition on the text gate (`runner.ts` throws when an
-    // assembly-on run assembled nothing), so a hardcoded 0 in these fields
-    // asserts the broken state the harness refuses to publish. And the counts
-    // are the ON arm's, never a sum over both: `queries` is the label count, so
-    // an arm-query total prints participation above 100% (review r1).
-    expect(flat).toContain('assemblyParticipatingQueries: run.assemblyParticipatingQueries.on');
-    expect(flat).toContain('pinParticipatingQueries: run.pinParticipatingQueries.on');
-    expect(flat).toContain('expansionParticipatingQueries: run.expansionParticipatingQueries.on');
-    expect(flat).toContain('expansionSkippedQueries: run.expansionSkippedQueries.on');
-    expect(flat).not.toContain('assemblyParticipatingQueries: 0');
-    expect(flat).not.toContain('pinParticipatingQueries: 0');
-  });
-
-  it('runs the paired runner over the seeded page map', () => {
-    expect(flat).toContain('await runImageEval(fixture, { userId: EVAL_USER_ID, pageIdByFile: seeded.pageIdByFile,');
-    // The whole-fixture power floor applies to the image fixture as well —
-    // Recall@K over N moves in 1/N steps whatever the labels carry.
-    expect(flat).toContain('const fixture = loadImageFixture(); assertFixturePower(fixture);');
-  });
-
   it('marks the report with its axis and refuses a cross-axis baseline FIRST', () => {
-    expect(flat).toContain('axis: IMAGE_AXIS');
     expect(flat).toContain('axis: TEXT_AXIS');
+    expect(flat).toContain('axis: ARM_AXIS');
     expect(flat).toContain('assertComparableAxis(baseline.axis, report.axis ?? TEXT_AXIS)');
     // Ahead of the language and corpus-sha refusals: a cross-axis pair trips
     // those too, and "a different corpus" sends the reader looking for a
@@ -323,25 +296,6 @@ describe('run-retrieval-eval.ts image axis wiring (#1115 P5b)', () => {
     expect(axisGuard).toBeGreaterThan(-1);
     expect(langGuard).toBeGreaterThan(axisGuard);
     expect(shaGuard).toBeGreaterThan(axisGuard);
-  });
-
-  it('compares a same-axis baseline arm by arm, not only the arm the top-level runs carry', () => {
-    // `runs` IS the leg-on arm, so comparing it alone would blame the image
-    // leg for a change that moved the text legs.
-    expect(flat).toContain("compareArm('leg OFF', baseline.images.runsOff, report.images.runsOff)");
-    expect(flat).toContain("compareArm('leg ON', baseline.images.runsOn, report.images.runsOn)");
-    // One verdict rule, shared — never a second copy of the McNemar branch.
-    expect(raw.match(/mcnemar-exact/g)).toHaveLength(1);
-  });
-
-  it('publishes the leg-ON arm as the top-level scores, since that is the shipped configuration', () => {
-    expect(flat).toContain('recallAtK: images.legOn.recallAtK');
-    expect(flat).toContain('mrr: images.legOn.mrr');
-    expect(flat).toContain("const runsOn = armRuns(run.pairs, 'on')");
-  });
-
-  it('prints the paired verdict table rather than the text gate\'s redundancy line', () => {
-    expect(flat).toContain('formatImageAxisVerdict(report.images)');
   });
 });
 
@@ -354,24 +308,19 @@ describe('run-retrieval-eval.ts arm axis wiring (#1614 PR2)', () => {
   const raw = source('run-retrieval-eval.ts');
   const flat = collapsed('run-retrieval-eval.ts');
 
-  it('parses the arm and reads its environment beside the other flags, before the database is touched', () => {
+  it('parses the arm beside the other flags, before the database is touched', () => {
     expect(flat).toContain('const arm = parseArmFlag(process.argv)');
-    expect(flat).toContain('const armImageEnv = arm ? readArmImageEnv(arm) : null');
     const parse = raw.indexOf('parseArmFlag(process.argv)');
-    const env = raw.indexOf('readArmImageEnv(arm)');
     const db = raw.indexOf('assertDisposableDatabase(');
     expect(parse).toBeGreaterThan(-1);
-    expect(env).toBeGreaterThan(parse);
-    expect(db).toBeGreaterThan(env);
-    // The paired axis still reads its own environment; the arm axis never
-    // falls back to it (B and C REFUSE those variables).
-    expect(flat).toContain('const imageEnv = arm ? armImageEnv : imageAxis ? readImageAxisEnv() : null');
+    expect(db).toBeGreaterThan(parse);
+    // #1618 stage 2: no arm reads a VL EMBEDDING environment. Arms B and C
+    // never had one, arm A is retired, and a variable the script still read
+    // would be an endpoint nothing can honour.
+    expect(code('run-retrieval-eval.ts')).not.toMatch(/EVAL_IMAGE_EMBEDDING_[A-Z]+\b/);
   });
 
-  it('reads B\u2019s precondition before the seed, seeds the index on A only, and asserts each arm state before the queries', () => {
-    expect(flat).toContain("imageIndex: arm === 'A'");
-    expect(flat).toContain("DELETE FROM llm_usecase_assignments WHERE usecase = 'image_embedding'");
-    expect(flat).toContain('SELECT COUNT(*)::int AS n FROM page_image_embeddings');
+  it('reads B\u2019s precondition before the seed and asserts each arm state before the queries', () => {
     // "--arm B refuses at once" is only true where the probe runs: the
     // candidate table, the image_analysis assignment and its ceiling are
     // read right after the migrations and BEFORE the 65-page seed (review

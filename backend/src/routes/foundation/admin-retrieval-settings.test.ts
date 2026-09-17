@@ -100,7 +100,6 @@ import {
   invalidateRagRankingPriorCache,
   getRagImagesPerPageMax,
   getRagImageIndexExternal,
-  getRagImageLegEnabled,
   getRagAnswerMaxImages,
   invalidateRagImageIntakeCache,
   invalidateRagAnswerMaxImagesCache,
@@ -280,58 +279,6 @@ function stored(key: string): string | undefined {
   return rows[key];
 }
 
-/**
- * #1115 — the image leg's MRL truncation width.
- *
- * It lives here rather than beside the assignment because it is an
- * `admin_settings` row like every knob above, and because three different
- * callers have to read the SAME number: the assignment probe, `Re-check`, and
- * (from P2) the image embedder and the query side. The write path is what makes
- * the remedy the settings row, the 422 and the runbook all name actually
- * performable — vLLM's `dimensions` is a per-request parameter, so without a
- * stored value nothing ever sends one and an 8B stays at 4096 for ever.
- */
-describe('PUT /api/admin/settings — the image leg’s MRL truncation width (#1115)', () => {
-  it('persists the requested width under image_embedding_target_dimensions', async () => {
-    const res = await put({ imageEmbeddingTargetDimensions: 2048 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-  });
-
-  it('clears the row on an explicit null — back to the model’s native width', async () => {
-    await put({ imageEmbeddingTargetDimensions: 2048 });
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-
-    const res = await put({ imageEmbeddingTargetDimensions: null });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
-  });
-
-  it('leaves the stored width alone when the body omits it', async () => {
-    await put({ imageEmbeddingTargetDimensions: 2048 });
-    const res = await put({ ragFetchWidth: 40 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('2048');
-  });
-
-  it.each([63, 16_001, 2048.5])('refuses %s at the boundary', async (value) => {
-    const res = await put({ imageEmbeddingTargetDimensions: value });
-    expect(res.statusCode).toBe(400);
-    expect(stored('image_embedding_target_dimensions')).toBeUndefined();
-  });
-
-  /**
-   * 4000 is the largest INDEXABLE width, not the largest legal one — the row
-   * reports the unindexed tier rather than refusing it, and `columnTypeFor`
-   * accepts it. Refusing here would make the two disagree.
-   */
-  it('accepts a storable-but-unindexable width', async () => {
-    const res = await put({ imageEmbeddingTargetDimensions: 4096 });
-    expect(res.statusCode).toBe(200);
-    expect(stored('image_embedding_target_dimensions')).toBe('4096');
-  });
-});
-
 describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', () => {
   it('writes each knob under its documented admin_settings key', async () => {
     const res = await put({
@@ -382,6 +329,31 @@ describe('PUT /api/admin/settings — retrieval knobs are persisted (#1118)', ()
     // the default" read alike today, but a row nobody set is a lie about what
     // the operator configured — and the assembly budget's last-good fallback
     // is written assuming no phantom row.
+    expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
+  });
+
+  /**
+   * #1618 stage 2 — a retired settings key is IGNORED, and the save that
+   * carried it still lands. `UpdateAdminSettingsSchema` is a plain `z.object`,
+   * so unknown keys are stripped rather than refused, and that is the intended
+   * contract: on the wire a retired key is indistinguishable from one an older
+   * backend has not learned yet, so refusing it would mean a newer bundle
+   * (rolling deploy, cached SPA) loses the operator's whole save over a name
+   * the server merely does not know. `.strict()` would break that for every
+   * future key; a blacklist of dead names would have to be maintained forever.
+   *
+   * What must hold is that the retired key writes nothing — migration 118
+   * deleted its row, and a handler that forwarded unknown keys into
+   * `admin_settings` would re-create it here. Out-of-range values on LIVE keys
+   * still 400, above: "unknown" and "invalid" are different answers.
+   */
+  it('ignores retired keys and still applies the rest of the body (#1618)', async () => {
+    const res = await put({
+      ragFetchWidth: 40,
+      ragImageLegEnabled: true,
+      imageEmbeddingTargetDimensions: 512,
+    });
+    expect(res.statusCode).toBe(200);
     expect(Object.keys(rows)).toEqual(['rag_fetch_width']);
   });
 
@@ -817,34 +789,6 @@ describe('PUT /api/admin/settings — image-index intake knobs (#1115 P2)', () =
   });
 });
 
-describe('PUT /api/admin/settings — the image retrieval leg (#1115 P3)', () => {
-  it('writes rag_image_leg_enabled under its documented key', async () => {
-    const res = await put({ ragImageLegEnabled: false });
-
-    expect(res.statusCode).toBe(200);
-    expect(rows).toEqual({ rag_image_leg_enabled: 'false' });
-  });
-
-  it('makes the NEXT SEARCH see the change — the write goes through the cached path (#1118)', async () => {
-    // The leg reads this per request through a 60-second cache. A write that
-    // did not invalidate would leave the leg running (or dark) for a minute
-    // after an operator turned it off (or on) — the #1118 lesson, restated
-    // for the one knob that costs an outbound request per question.
-    await put({ ragImageLegEnabled: false });
-    await expect(getRagImageLegEnabled()).resolves.toBe(false);
-    await put({ ragImageLegEnabled: true });
-    await expect(getRagImageLegEnabled()).resolves.toBe(true);
-  });
-
-  it('rejects anything that is not a boolean, rather than saving a value the reader ignores', async () => {
-    for (const body of [{ ragImageLegEnabled: 'off' }, { ragImageLegEnabled: 0 }]) {
-      const res = await put(body);
-      expect(res.statusCode, JSON.stringify(body)).toBe(400);
-    }
-    expect(rows).toEqual({});
-  });
-});
-
 describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () => {
   it('writes rag_answer_max_images under its documented key', async () => {
     const res = await put({ ragAnswerMaxImages: 4 });
@@ -881,10 +825,12 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
     // of 2, i.e. a control that reports a value the answer path is not using.
     //
     // Parsed through `AdminSettingsSchema` rather than asserted key by key,
-    // because the same gap is open on P2's two intake knobs and P3's leg
-    // toggle — the schema requires all four, so one parse holds the whole
-    // Image retrieval group to the contract.
-    await put({ ragAnswerMaxImages: 5, ragImagesPerPageMax: 40, ragImageLegEnabled: false });
+    // because the same gap is open on P2's two intake knobs — the schema
+    // requires all three, so one parse holds the surviving Image group to the
+    // contract. #1618 stage 2 retired `ragImageLegEnabled`, which used to be
+    // the fourth; the cap itself SURVIVES the retirement (ADR-025 D8/D8b,
+    // ADR-027 D11) because the optional chat attachment is not the leg.
+    await put({ ragAnswerMaxImages: 5, ragImagesPerPageMax: 40 });
 
     const res = await app.inject({ method: 'GET', url: '/api/admin/settings' });
 
@@ -892,7 +838,9 @@ describe('PUT /api/admin/settings — the answer-path image cap (#1115 P4)', () 
     const settings = AdminSettingsSchema.parse(res.json());
     expect(settings.ragAnswerMaxImages).toBe(5);
     expect(settings.ragImagesPerPageMax).toBe(40);
-    expect(settings.ragImageLegEnabled).toBe(false);
+    // The retired toggle must not come back on the read half either: a stale
+    // field would render a control for a leg that no longer exists.
+    expect(Object.keys(res.json() as object)).not.toContain('ragImageLegEnabled');
   });
 
   it('rejects a cap outside the reader range, rather than saving a lie', async () => {

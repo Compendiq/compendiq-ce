@@ -629,13 +629,16 @@ describe('ProviderEditModal — Test connection', () => {
     expect(testConnectionButton()).not.toBeDisabled();
   });
 
-  it('names D4 on a hosted preset: saving does not assign embedding / rerank / image_embedding', () => {
+  it('names D4 on a hosted preset: saving does not assign embedding / rerank / image_analysis', () => {
     const Wrapper = createWrapper();
     render(<ProviderEditModal mode="create" open onClose={() => {}} onSaved={() => {}} />, { wrapper: Wrapper });
     fireEvent.change(presetSelect(), { target: { value: 'openai' } });
     expect(screen.getByText(/do not assign/i).textContent).toMatch(/embedding/i);
     expect(screen.getByText(/do not assign/i).textContent).toMatch(/rerank/i);
-    expect(screen.getByText(/do not assign/i).textContent).toMatch(/image embedding/i);
+    // #1618 retired `image_embedding`; the third non-inheriting use case a
+    // chat-only host must not be given is the vision one.
+    expect(screen.getByText(/do not assign/i).textContent).toMatch(/image analysis/i);
+    expect(screen.getByText(/do not assign/i).textContent).not.toMatch(/image embedding/i);
   });
 
   it('keeps a live status region for the dialog life and announces listed models in it', async () => {

@@ -113,7 +113,7 @@ export const AnswerRunProvenanceSchema = z.object({
   /**
    * The route's `refusalReason` per refused item, counted here and NEVER
    * written to the judge's file. Only protocol refusals (`no_context`,
-   * `weak_match`, `image_only_context`) can appear: an infrastructure refusal
+   * `weak_match`, `image_only_context` before #1618 stage 2 retired it) can appear: an infrastructure refusal
    * aborts the run (`INFRASTRUCTURE_REFUSAL_REASONS`).
    */
   refusalReasons: z.record(z.string(), z.number().int().nonnegative()),

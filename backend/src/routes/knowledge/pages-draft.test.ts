@@ -362,13 +362,12 @@ describe('Draft-while-published routes', () => {
       expect(response.statusCode).toBe(200);
       const update = txSql.find((s) => s.includes('UPDATE pages SET'));
       expect(update).toBeDefined();
-      expect(update).toMatch(
-        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
-      );
-      // ADR-027 D4: the analysis flag rides the same gate.
+      // ADR-027 D4: the analysis flag carries the gate #1618 retired the
+      // legacy `image_embedding_dirty` half of.
       expect(update).toMatch(
         /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
       );
+      expect(update).not.toContain('image_embedding_dirty');
     });
 
     it('returns 400 when no draft exists', async () => {

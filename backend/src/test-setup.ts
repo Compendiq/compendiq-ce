@@ -35,9 +35,7 @@ async function bootWorkerDb(): Promise<void> {
     await ensureWorkerDatabase(process.env.POSTGRES_URL!);
     // Files that never call setupTestDb still query Postgres (collab
     // persistence, etc.). Sequential mode hid that because an earlier
-    // file had already migrated the shared database. Re-running this
-    // before every file also restores probe-time image-index DDL, which
-    // truncateAllTables cannot undo.
+    // file had already migrated the shared database.
     await setupTestDb();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

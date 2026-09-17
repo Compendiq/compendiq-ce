@@ -124,14 +124,23 @@ function describeProbeFailure(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * How long one vision probe may take, queue wait included.
+ *
+ * An admin is watching a spinner while the `image_analysis` assignment PUT
+ * runs this probe synchronously, so the gate is bounded by this rather than by
+ * `LLM_STREAM_TIMEOUT_MS` (300s). Generous enough for a cold server with a
+ * busy queue, because an image prompt is 10–25x a short text one. Lived on the
+ * retired image-embedding probe until #1618 stage 2.
+ */
+export const VISION_PROBE_TIMEOUT_MS = 60_000;
+
 export interface ProbeVisionOptions {
   /**
    * #1615 — hard budget covering queue wait plus the request, forwarded to
-   * `chat()`. The assignment PUT for `image_analysis` runs this probe
-   * synchronously inside an admin request and bounds it the way the
-   * image-embedding probe bounds its own (`IMAGE_PROBE_TIMEOUT_MS`); a probe
-   * that runs out of budget is `null` (unconfirmed), never `false`. Absent
-   * for the chat path's fire-and-forget refresh, which keeps its old behaviour.
+   * `chat()`. A probe that runs out of budget is `null` (unconfirmed), never
+   * `false`. Absent for the chat path's fire-and-forget refresh, which keeps
+   * its old behaviour.
    */
   timeoutMs?: number;
 }

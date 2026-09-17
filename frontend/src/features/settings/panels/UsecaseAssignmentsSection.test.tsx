@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { LlmProvider, UsecaseAssignments } from '@compendiq/contracts';
-import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN } from '@compendiq/contracts';
 import { UsecaseAssignmentsSection } from './UsecaseAssignmentsSection';
 import { useAuthStore } from '../../../stores/auth-store';
 
@@ -56,16 +55,6 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
     },
-    // #1115 — unassigned, like rerank: the image leg never inherits, so the
-    // row renders with the strip and without a probe. It belongs in the
-    // fixture because the schema requires it, and the section renders `null`
-    // for a row the document omits — which silently took the truncation field
-    // out of every test in this file.
-    image_embedding: {
-      providerId: null,
-      model: null,
-      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
-    },
     inline_completion: {
       providerId: null,
       model: null,
@@ -103,8 +92,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -123,8 +110,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -146,8 +131,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -169,8 +152,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -192,8 +173,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -224,8 +203,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
@@ -243,8 +220,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={updated}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={onChange}
@@ -259,87 +234,6 @@ describe('UsecaseAssignmentsSection', () => {
     });
   });
 
-  /**
-   * #1115 final review, nit 2 — the truncation field is controlled by `LlmTab`,
-   * and until now the only clamp ran at Save. That left the field showing a
-   * number that was not the one about to be sent. The component's own contract
-   * is what this pins: on BLUR it reports the clamped value back, and on every
-   * keystroke before that it reports exactly what was typed — a per-keystroke
-   * clamp rewrites `4` to `64` and makes `4000`, the largest indexable width,
-   * unreachable from an empty field.
-   */
-  it('reports the truncation width clamped on blur and verbatim while typing', () => {
-    const Wrapper = createWrapper();
-    const onImageTargetDimensionsChange = vi.fn();
-    const { rerender } = render(
-      <UsecaseAssignmentsSection
-        assignments={makeAssignments()}
-        savedAssignments={makeAssignments()}
-        providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
-        imageAnalysisMaxOutputTokens={8192}
-        onImageAnalysisMaxOutputTokensChange={() => {}}
-        onChange={() => {}}
-      />,
-      { wrapper: Wrapper },
-    );
-    const field = screen.getByTestId('image-embedding-target-dimensions');
-
-    // Mid-entry: passed through untouched, below the floor and all.
-    fireEvent.change(field, { target: { value: '4' } });
-    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(4);
-
-    // Blur settles it on the value that will actually be sent.
-    rerender(
-      <UsecaseAssignmentsSection
-        assignments={makeAssignments()}
-        savedAssignments={makeAssignments()}
-        providers={[providerA, providerB]}
-        imageTargetDimensions={4}
-        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
-        imageAnalysisMaxOutputTokens={8192}
-        onImageAnalysisMaxOutputTokensChange={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
-    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(
-      IMAGE_EMBEDDING_TARGET_DIMENSIONS_MIN,
-    );
-
-    // An in-range width is left alone, and an empty field still means "native".
-    rerender(
-      <UsecaseAssignmentsSection
-        assignments={makeAssignments()}
-        savedAssignments={makeAssignments()}
-        providers={[providerA, providerB]}
-        imageTargetDimensions={4000}
-        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
-        imageAnalysisMaxOutputTokens={8192}
-        onImageAnalysisMaxOutputTokensChange={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
-    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(4000);
-
-    rerender(
-      <UsecaseAssignmentsSection
-        assignments={makeAssignments()}
-        savedAssignments={makeAssignments()}
-        providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={onImageTargetDimensionsChange}
-        imageAnalysisMaxOutputTokens={8192}
-        onImageAnalysisMaxOutputTokensChange={() => {}}
-        onChange={() => {}}
-      />,
-    );
-    fireEvent.blur(screen.getByTestId('image-embedding-target-dimensions'));
-    expect(onImageTargetDimensionsChange).toHaveBeenLastCalledWith(null);
-  });
-
   it('shows resolved provider/model summary', () => {
     const Wrapper = createWrapper();
     render(
@@ -347,8 +241,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -389,8 +281,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={assignments}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -447,8 +337,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -492,8 +380,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={draft}
         savedAssignments={makeAssignments()}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -510,8 +396,6 @@ describe('UsecaseAssignmentsSection', () => {
         assignments={saved}
         savedAssignments={saved}
         providers={[providerA, providerB]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}

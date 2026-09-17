@@ -224,7 +224,7 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
      *
      * A restore is the one app action whose entire purpose is to swap the body
      * for a different one, so it routinely adds and removes `<img>` elements —
-     * and it performs no attachment write, so none of `image-embedding-dirty.ts`'s
+     * and it performs no attachment write, so none of `image-analysis-dirty.ts`'s
      * callers fires either. Neither source recovers on the success path: a
      * standalone page is never touched by sync at all, and for a Confluence page
      * `pages-versions.ts` pushes the restored body upstream and writes back the
@@ -233,10 +233,10 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
      * `htmlChanged`) would raise the flag — which after a clean
      * `htmlToConfluence`/`confluenceToHtml` round trip it does not.
      */
-    it('raises image_embedding_dirty when the restore changes the body', async () => {
+    it('raises image_analysis_dirty when the restore changes the body', async () => {
       await query(
         `UPDATE pages SET version = 3, body_html = '<p>a</p><img src="/api/attachments/1/pic.png">',
-                          image_embedding_dirty = FALSE, image_analysis_dirty = FALSE
+                          image_analysis_dirty = FALSE
            WHERE id = $1`,
         [pageId],
       );
@@ -245,20 +245,20 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
 
       await restoreVersion(pageId, 2);
 
-      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean }>(
-        'SELECT image_embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1',
+      const r = await query<{ image_analysis_dirty: boolean }>(
+        'SELECT image_analysis_dirty FROM pages WHERE id = $1',
         [pageId],
       );
-      expect(r.rows[0]).toEqual({ image_embedding_dirty: true, image_analysis_dirty: true });
+      expect(r.rows[0]).toEqual({ image_analysis_dirty: true });
     });
 
-    it('leaves image_embedding_dirty alone for a title-only restore', async () => {
+    it('leaves image_analysis_dirty alone for a title-only restore', async () => {
       // Gated on `body_html` alone: the `src` attributes live in the HTML, so a
       // restore that only moves the title cannot move an image, and re-scanning
       // its pictures is pure cost.
       await query(
         `UPDATE pages SET version = 3, title = 'Now', body_html = '<p>same</p>', body_text = 'same',
-                          image_embedding_dirty = FALSE, image_analysis_dirty = FALSE
+                          image_analysis_dirty = FALSE
            WHERE id = $1`,
         [pageId],
       );
@@ -266,11 +266,11 @@ describe.skipIf(!dbAvailable)('VersionTracker', () => {
 
       await restoreVersion(pageId, 2);
 
-      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean; title: string }>(
-        'SELECT image_embedding_dirty, image_analysis_dirty, title FROM pages WHERE id = $1',
+      const r = await query<{ image_analysis_dirty: boolean; title: string }>(
+        'SELECT image_analysis_dirty, title FROM pages WHERE id = $1',
         [pageId],
       );
-      expect(r.rows[0]).toEqual({ title: 'Then', image_embedding_dirty: false, image_analysis_dirty: false });
+      expect(r.rows[0]).toEqual({ title: 'Then', image_analysis_dirty: false });
     });
 
     it('derives body_text from body_html when the snapshot lacks body_text', async () => {

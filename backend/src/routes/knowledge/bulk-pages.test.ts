@@ -589,13 +589,12 @@ describe('Bulk Pages Routes (Parallelized)', () => {
         .map((c) => c[0] as string)
         .find((sql) => typeof sql === 'string' && sql.includes('UPDATE pages SET') && sql.includes('body_storage'));
       expect(update).toBeDefined();
-      expect(update).toMatch(
-        /image_embedding_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
-      );
-      // ADR-027 D4: the analysis flag rides the same gate.
+      // ADR-027 D4: the analysis flag carries the gate #1115's retired
+      // `image_embedding_dirty` used to share with it (#1618).
       expect(update).toMatch(
         /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/,
       );
+      expect(update).not.toContain('image_embedding_dirty');
     });
 
     it('should report not-found pages in sync', async () => {

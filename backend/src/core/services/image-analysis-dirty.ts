@@ -1,10 +1,10 @@
 /**
- * #1115 P2 — raising `pages.image_embedding_dirty`; ADR-027 D4 (#1616) —
- * raising `pages.image_analysis_dirty` beside it, from the same writers, in
- * the same statements, until #1618 retires the legacy flag.
+ * ADR-027 D4 (#1616) — raising `pages.image_analysis_dirty`. #1618 stage 2
+ * retired the legacy `image_embedding_dirty` column this module used to raise
+ * beside it; the writer, its callers and its rules are otherwise unchanged.
  *
- * **The flag is the queue.** `processDirtyPageImages` walks nothing else, so a
- * write that does not raise it leaves `page_image_embeddings` describing bytes
+ * **The flag is the queue.** `reconcileDirtyPages` walks nothing else, so a
+ * write that does not raise it leaves `page_image_analyses` describing bytes
  * that have changed or gone — and nothing ever notices, because a stale row
  * and a correct one are the same shape.
  *
@@ -41,9 +41,9 @@
  * (`backend/eslint.config.js:50-53`); `domains/confluence` is the other.
  *
  * **`embedding_dirty` is never touched here**, and that is the whole reason
- * migration 093 gave the two flags separate columns: an attachment changing
- * under an *unchanged page version* must re-embed the images and not the text.
- * A shared `SET … = TRUE` would silently re-chunk and re-embed the corpus every
+ * the image flag is a separate column: an attachment changing under an
+ * *unchanged page version* must re-analyse the images and not the text. A
+ * shared `SET … = TRUE` would silently re-chunk and re-embed the corpus every
  * time somebody pasted a screenshot.
  *
  * Neither function throws for a page it cannot find. They are called from the
@@ -66,7 +66,7 @@ import { logger } from '../utils/logger.js';
  * review). It swallows its own error by design — a whole sync must not die on
  * the way to raising a flag — so a caller wrapping it in `try`/`catch` gets a
  * dead branch and counts a failed UPDATE as a success. The flag IS the queue
- * (ADR-025), so a counter that over-reports it hides exactly the backlog an
+ * (ADR-027 D6.2), so a counter that over-reports it hides exactly the backlog an
  * operator would go looking for. `false` therefore means the write threw;
  * `true` means it went through, whether or not the page was in scope.
  *
@@ -77,7 +77,7 @@ export async function markPageImagesDirty(
   pageId: number,
   client?: Pick<PoolClient, 'query'>,
 ): Promise<boolean> {
-  const statement = `UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
+  const statement = `UPDATE pages SET image_analysis_dirty = TRUE
         WHERE id = $1 AND deleted_at IS NULL AND COALESCE(page_type, 'page') != 'folder'`;
   try {
     if (client) {
@@ -87,7 +87,7 @@ export async function markPageImagesDirty(
     }
     return true;
   } catch (err) {
-    logger.warn({ err, pageId }, 'Could not mark a page image_embedding_dirty');
+    logger.warn({ err, pageId }, 'Could not mark a page image_analysis_dirty');
     return false;
   }
 }
@@ -136,7 +136,7 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
   try {
     const byConfluenceId = await query<{ existed: boolean }>(
       `WITH marked AS (
-         UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
+         UPDATE pages SET image_analysis_dirty = TRUE
            WHERE confluence_id = $1
              AND deleted_at IS NULL
              AND COALESCE(page_type, 'page') != 'folder'
@@ -157,7 +157,7 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
       return;
     }
     await query(
-      `UPDATE pages SET image_embedding_dirty = TRUE, image_analysis_dirty = TRUE
+      `UPDATE pages SET image_analysis_dirty = TRUE
         WHERE id = $1
           AND source <> 'confluence'
           AND deleted_at IS NULL
@@ -165,6 +165,6 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
       [asId],
     );
   } catch (err) {
-    logger.warn({ err, attachmentKey }, 'Could not mark a page image_embedding_dirty by attachment key');
+    logger.warn({ err, attachmentKey }, 'Could not mark a page image_analysis_dirty by attachment key');
   }
 }

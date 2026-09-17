@@ -44,12 +44,11 @@ export const HNSW_HALFVEC_MAX_DIMS = 4000;
 /**
  * pgvector's own ceiling on a declared column width.
  *
- * The same number is `IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX` in
- * `packages/contracts`, which bounds the MRL truncation width an admin may ask
- * for — a request that succeeds there and then throws here is a probe the
- * operator passed and a column that cannot be built. Contracts cannot import
- * the backend, so the equality is asserted from this side, in
- * `vector-column-tier.test.ts`.
+ * It used to be mirrored in `packages/contracts` as
+ * `IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX`, the bound on the MRL truncation
+ * width an admin could ask the legacy image probe for. #1618 retired that
+ * setting with the image space, so this is the only statement of the ceiling
+ * left and no cross-package equality has to hold.
  */
 export const VECTOR_MAX_DIMS = 16_000;
 

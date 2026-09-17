@@ -25,7 +25,6 @@ import {
   primaryEndpointPower,
   rankedEvidence,
   revisionSpecificKnobs,
-  readArmImageEnv,
   readRevisionSha,
   type RetrievalKnobs,
 } from './arms.js';
@@ -40,33 +39,17 @@ import {
 describe('parseArmFlag', () => {
   it('reads a valid arm on top of --images and nothing without the flag', () => {
     expect(parseArmFlag(['--images', '--arm', 'C'])).toBe('C');
-    expect(parseArmFlag(['--images', '--arm=A'])).toBe('A');
+    expect(parseArmFlag(['--images', '--arm=B'])).toBe('B');
     expect(parseArmFlag(['--images'])).toBeNull();
   });
 
-  it('refuses an unknown arm and an arm without --images', () => {
-    expect(() => parseArmFlag(['--images', '--arm', 'D'])).toThrow(/A\|B\|C/);
+  it('refuses an unknown arm, the retired arm A, and an arm without --images', () => {
+    expect(() => parseArmFlag(['--images', '--arm', 'D'])).toThrow(/B\|C/);
+    // #1618 stage 2: arm A named the legacy embedding leg, which no longer
+    // exists, so the parser refuses it exactly like any other unknown arm
+    // rather than accepting a flag nothing can honour (ADR-027 A-1, A-5).
+    expect(() => parseArmFlag(['--images', '--arm', 'A'])).toThrow(/B\|C/);
     expect(() => parseArmFlag(['--arm', 'C'])).toThrow(/needs --images/);
-  });
-});
-
-describe('readArmImageEnv', () => {
-  const vl = { EVAL_IMAGE_EMBEDDING_BASE_URL: 'http://vl/v1', EVAL_IMAGE_EMBEDDING_MODEL: 'vl' };
-
-  it('requires the VL pair on arm A', () => {
-    expect(readArmImageEnv('A', vl as NodeJS.ProcessEnv)).toMatchObject({ baseUrl: 'http://vl/v1', model: 'vl' });
-    expect(() => readArmImageEnv('A', {} as NodeJS.ProcessEnv)).toThrow(/EVAL_IMAGE_EMBEDDING_BASE_URL/);
-  });
-
-  it('refuses ANY VL variable on arms B and C, and returns null without them', () => {
-    for (const arm of ['B', 'C'] as const) {
-      expect(readArmImageEnv(arm, {} as NodeJS.ProcessEnv)).toBeNull();
-      expect(() => readArmImageEnv(arm, vl as NodeJS.ProcessEnv)).toThrow(/no image leg/);
-      // Even a lone dimensions variable: it would be read by nobody and
-      // recorded by nobody, and a report that silently ignores an operator's
-      // configuration is the drift the flag guard exists to stop.
-      expect(() => readArmImageEnv(arm, { EVAL_IMAGE_EMBEDDING_DIMENSIONS: '512' } as NodeJS.ProcessEnv)).toThrow(/EVAL_IMAGE_EMBEDDING_DIMENSIONS/);
-    }
   });
 });
 
@@ -86,28 +69,27 @@ describe('the owner decisions as constants', () => {
 });
 
 describe('evidence attribution (ADR-027 endpoint table)', () => {
-  const row = { pageId: 7, imageHits: [{ key: 'leg.png' }], derived: { attachmentKey: 'derived.png' } };
+  const row = { pageId: 7, derived: { attachmentKey: 'derived.png' } };
 
-  it('reads the leg on A, the derived provenance on B, nothing on C', () => {
-    expect(evidenceKeysOf('A', row)).toEqual(['leg.png']);
+  it('reads the derived provenance on B and nothing on C', () => {
     expect(evidenceKeysOf('B', row)).toEqual(['derived.png']);
     expect(evidenceKeysOf('C', row)).toEqual([]);
   });
 
   it('reads no B evidence from a row without derived provenance — this revision\'s rows', () => {
-    expect(evidenceKeysOf('B', { pageId: 7, imageHits: [{ key: 'leg.png' }] })).toEqual([]);
+    expect(evidenceKeysOf('B', { pageId: 7 })).toEqual([]);
     expect(evidenceKeysOf('B', { pageId: 7, derived: { attachmentKey: '' } })).toEqual([]);
     expect(evidenceKeysOf('B', { pageId: 7, derived: null })).toEqual([]);
   });
 
   it('ranks evidence by PAGE, so a page repeated across rows keeps one rank', () => {
     const rows = [
-      { pageId: 1, imageHits: [{ key: 'a.png' }] },
-      { pageId: 1, imageHits: [{ key: 'b.png' }] },
-      { pageId: 2, imageHits: [] },
-      { pageId: 3, imageHits: [{ key: 'c.png' }] },
+      { pageId: 1, derived: { attachmentKey: 'a.png' } },
+      { pageId: 1, derived: { attachmentKey: 'b.png' } },
+      { pageId: 2, derived: null },
+      { pageId: 3, derived: { attachmentKey: 'c.png' } },
     ];
-    expect(rankedEvidence('A', rows)).toEqual([
+    expect(rankedEvidence('B', rows)).toEqual([
       { key: 'a.png', rank: 1 }, { key: 'b.png', rank: 1 }, { key: 'c.png', rank: 3 },
     ]);
   });
@@ -120,8 +102,8 @@ describe('evidence attribution (ADR-027 endpoint table)', () => {
       armRun({ queryId: 'negative', style: 'image-negative', expectedImageKeys: [], evidence: [{ key: 'x.png', rank: 1 }] }),
     ];
     // 1 of the 3 image-labelled runs has the expected image at rank ≤ 5; the negative is not scored.
-    expect(imageEvidenceRecallAtK('A', runs, 5)).toBeCloseTo(1 / 3, 10);
-    expect(imageEvidenceRecallAtK('A', runs, 6)).toBeCloseTo(2 / 3, 10);
+    expect(imageEvidenceRecallAtK('B', runs, 5)).toBeCloseTo(1 / 3, 10);
+    expect(imageEvidenceRecallAtK('B', runs, 6)).toBeCloseTo(2 / 3, 10);
     expect(imageEvidenceRecallAtK('C', runs, 5)).toBeNull();
     // Leakage@1: the one negative carried evidence at rank 1.
     expect(imageNegativeLeakAt1(runs)).toBe(1);
@@ -131,8 +113,8 @@ describe('evidence attribution (ADR-027 endpoint table)', () => {
 
 describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
   it('accepts two different arms under one held-fixed configuration', () => {
-    expect(() => assertComparableArms(armReport('A'), armReport('B'))).not.toThrow();
-    expect(() => assertComparableArms(armReport('A'), armReport('B'), { baseline: 'A', candidate: 'B' })).not.toThrow();
+    expect(() => assertComparableArms(armReport('C'), armReport('B'))).not.toThrow();
+    expect(() => assertComparableArms(armReport('C'), armReport('B'), { baseline: 'C', candidate: 'B' })).not.toThrow();
   });
 
   it('refuses two runs of the same arm', () => {
@@ -140,17 +122,16 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
   });
 
   it('refuses a report that is not the arm the pair names it as', () => {
-    expect(() => assertComparableArms(armReport('C'), armReport('B'), { baseline: 'A', candidate: 'B' })).toThrow(/baseline report is arm C/);
+    expect(() => assertComparableArms(armReport('C'), armReport('B'), { baseline: 'B', candidate: 'B' })).toThrow(/baseline report is arm C/);
   });
 
-  it('refuses B and C on different revisions, and does not require A to share one', () => {
+  it('refuses B and C on different revisions — the ablation is the SAME candidate revision', () => {
     expect(() => assertComparableArms(armReport('C', { revisionSha: 'abcdef0' }), armReport('B'))).toThrow(/SAME candidate revision/);
-    expect(() => assertComparableArms(armReport('A', { revisionSha: 'abcdef0' }), armReport('B'))).not.toThrow();
   });
 
   it('refuses a legacy-revision C control as either side of a pair', () => {
     expect(() => assertComparableArms(armReport('C', { control: 'legacy-revision-C' }), armReport('B'))).toThrow(/never substituted for arm C/);
-    expect(() => assertComparableArms(armReport('A'), armReport('C', { control: 'legacy-revision-C' }))).toThrow(/never substituted/);
+    expect(() => assertComparableArms(armReport('B'), armReport('C', { control: 'legacy-revision-C' }))).toThrow(/never substituted/);
   });
 
   it.each([
@@ -164,10 +145,10 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
     ['retrieval.rag_fetch_width', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }],
     ['retrieval.rag_answer_max_images', { retrieval: heldFixedKnobs({ rag_answer_max_images: 2 }) }],
     // A knob recorded on one side only is a drift too, never a default —
-    // on the SAME revision, which A and B share in these fixtures.
+    // on the SAME revision, which B and C share in these fixtures.
     ['retrieval.topK', { retrieval: heldFixedKnobs({ topK: 10 }) }],
   ] as const)('refuses a pair whose %s differs, naming the field', (field, over) => {
-    expect(() => assertComparableArms(armReport('A'), armReport('B', over))).toThrow(new RegExp(`held-fixed[\\s\\S]*${field.replace('.', '\\.')}`));
+    expect(() => assertComparableArms(armReport('C'), armReport('B', over))).toThrow(new RegExp(`held-fixed[\\s\\S]*${field.replace('.', '\\.')}`));
   });
 
   it('requires the ADR\'s named knobs of every report, so "neither side recorded it" cannot pass the comparison', () => {
@@ -181,31 +162,34 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
     // Two reports that BOTH omit it compare nothing — which is why the schema,
     // not the comparison, is where the named set is enforced.
     const knobs = partial as RetrievalKnobs;
-    expect(() => assertComparableArms({ ...armReport('A'), retrieval: knobs }, { ...armReport('B'), retrieval: knobs })).not.toThrow();
+    expect(() => assertComparableArms({ ...armReport('C'), retrieval: knobs }, { ...armReport('B'), retrieval: knobs })).not.toThrow();
     expect(HELD_FIXED_KNOBS).toContain('rag_mmr_lambda');
   });
 
   it('records — never refuses — a knob only one REVISION defines, and still refuses one-sided knobs within a revision', () => {
-    // Arm A runs on the legacy revision by design, so a knob that exists only
-    // on the candidate revision can never be made to agree: refusing it would
-    // block the gate with no re-run that fixes it (review r2 finding 4).
-    const legacyA = armReport('A', { revisionSha: 'abcdef0' });
-    const candidateB = armReport('B', { retrieval: heldFixedKnobs({ rag_derived_chunk_boost: 0.25 }) });
-    expect(revisionSpecificKnobs(legacyA, candidateB)).toEqual(['rag_derived_chunk_boost']);
-    expect(() => assertComparableArms(legacyA, candidateB, { baseline: 'A', candidate: 'B' })).not.toThrow();
-    expect(compareArmRetrieval(legacyA, candidateB, { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual(['rag_derived_chunk_boost']);
+    // The legacy-revision-C control runs on the legacy revision by design, so
+    // a knob that exists only on the candidate revision can never be made to
+    // agree: refusing it would block the gate with no re-run that fixes it
+    // (review r2 finding 4). Arm A was that cross-revision pair until A-1
+    // re-registered the gate B vs C and #1618 stage 2 removed the arm.
+    const legacyC = armReport('C', { control: 'legacy-revision-C', revisionSha: 'abcdef0' });
+    const candidateC = armReport('C', { retrieval: heldFixedKnobs({ rag_derived_chunk_boost: 0.25 }) });
+    expect(revisionSpecificKnobs(legacyC, candidateC)).toEqual(['rag_derived_chunk_boost']);
+    expect(() => assertComparableArms(legacyC, candidateC)).not.toThrow();
+    expect(compareArmRetrieval(legacyC, candidateC, { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual(['rag_derived_chunk_boost']);
     // A named knob is never revision-specific, whatever the revisions are.
-    expect(revisionSpecificKnobs(legacyA, armReport('B', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toEqual([]);
-    expect(() => assertComparableArms(legacyA, armReport('B', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toThrow(/retrieval\.rag_fetch_width/);
+    expect(revisionSpecificKnobs(legacyC, armReport('C', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toEqual([]);
+    expect(() => assertComparableArms(legacyC, armReport('C', { retrieval: heldFixedKnobs({ rag_fetch_width: 99 }) }))).toThrow(/retrieval\.rag_fetch_width/);
     // B and C share the candidate revision, so a one-sided knob there is a drift.
+    const candidateB = armReport('B', { retrieval: heldFixedKnobs({ rag_derived_chunk_boost: 0.25 }) });
     expect(revisionSpecificKnobs(armReport('C'), candidateB)).toEqual([]);
     expect(() => assertComparableArms(armReport('C'), candidateB, { baseline: 'C', candidate: 'B' })).toThrow(/retrieval\.rag_derived_chunk_boost/);
-    expect(compareArmRetrieval(armReport('A'), armReport('B'), { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual([]);
+    expect(compareArmRetrieval(armReport('C'), armReport('B'), { seed: 1, iterations: 10 }).revisionSpecificKnobs).toEqual([]);
   });
 
   it('refuses a report that does not carry its own arm\'s provenance, whichever side it is on', () => {
-    expect(() => assertComparableArms(armReport('A'), armReport('B', { imageAnalysisMaxOutputTokens: null }))).toThrow(/arm B must record imageAnalysisMaxOutputTokens/);
-    expect(() => assertComparableArms(armReport('A'), armReport('B', { visionModel: null }))).toThrow(/arm B must record visionModel/);
+    expect(() => assertComparableArms(armReport('C'), armReport('B', { imageAnalysisMaxOutputTokens: null }))).toThrow(/arm B must record imageAnalysisMaxOutputTokens/);
+    expect(() => assertComparableArms(armReport('C'), armReport('B', { visionModel: null }))).toThrow(/arm B must record visionModel/);
     expect(() => assertComparableArms(armReport('C', { imageAnalysisMaxOutputTokens: 8192 }), armReport('B'))).toThrow(/arm C must not carry imageAnalysisMaxOutputTokens/);
   });
 
@@ -217,7 +201,7 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
     expect(() => assertComparableArms(legacy, candidate)).not.toThrow();
     const cmp = compareArmRetrieval(legacy, candidate, { seed: 1, iterations: 10 });
     expect(cmp.regressionControl).toBe(true);
-    expect(compareArmRetrieval(armReport('A'), armReport('B'), { seed: 1, iterations: 10 }).regressionControl).toBe(false);
+    expect(compareArmRetrieval(armReport('C'), armReport('B'), { seed: 1, iterations: 10 }).regressionControl).toBe(false);
     // The un-blind step names its pairs; a control is refused there even as C vs C.
     expect(() => assertComparableArms(legacy, candidate, { baseline: 'C', candidate: 'C' })).toThrow(/never substituted/);
     // Two controls, or a control against A or B, are not that pairing.
@@ -228,10 +212,9 @@ describe('assertComparableArms (ADR-027 "Held fixed across arms")', () => {
 
 describe('armProvenanceProblems (ADR-027 "Report provenance", per arm)', () => {
   it('accepts each arm\'s own shape and names what is missing or foreign', () => {
-    for (const arm of ['A', 'B', 'C'] as const) expect(armProvenanceProblems(armReport(arm))).toEqual([]);
+    for (const arm of ['B', 'C'] as const) expect(armProvenanceProblems(armReport(arm))).toEqual([]);
     expect(armProvenanceProblems(armReport('B', { visionModel: null, imageAnalysisMaxOutputTokens: null })).map((p) => p.field))
       .toEqual(['visionModel', 'imageAnalysisMaxOutputTokens']);
-    expect(armProvenanceProblems(armReport('A', { imageIndexIdentity: null })).map((p) => p.field)).toEqual(['imageIndexIdentity']);
     expect(armProvenanceProblems(armReport('C', { visionModel: armReport('B').visionModel })).map((p) => p.field)).toEqual(['visionModel']);
   });
 
@@ -311,9 +294,9 @@ describe('commandLine (ADR-027 "Report provenance": commands)', () => {
 
 describe('parseArmRunReport (ADR-027 "Report provenance")', () => {
   it('refuses a report missing a provenance field, naming it', () => {
-    const withoutQuerySet: Record<string, unknown> = { ...armReport('A') };
+    const withoutQuerySet: Record<string, unknown> = { ...armReport('B') };
     delete withoutQuerySet.querySetSha;
-    expect(() => parseArmRunReport(withoutQuerySet, 'arm-A.json')).toThrow(/arm-A\.json is not an arm run report \(querySetSha/);
+    expect(() => parseArmRunReport(withoutQuerySet, 'arm-B.json')).toThrow(/arm-B\.json is not an arm run report \(querySetSha/);
     expect(() => parseArmRunReport({ axis: 'images' }, 'x.json')).toThrow(/not an arm run report/);
   });
 
@@ -324,33 +307,34 @@ describe('parseArmRunReport (ADR-027 "Report provenance")', () => {
 
 describe('compareArmRetrieval', () => {
   it('pairs by query id, scores the retrieval rows and reports image evidence as none against C', () => {
-    const runsA = [
-      armRun({ queryId: 'q1', retrieved: [9, 1], expected: [1], cluster: 'p1', evidence: [{ key: 'img-1.png', rank: 2 }] }),
+    // Arm C carries no evidence by rule (`evidenceKeysOf`), so the paired
+    // image-evidence endpoint is null on every admissible pair — which is
+    // precisely why ADR-027 A-2 RETIRED the guardrail rather than
+    // re-registering it, and why A-4 reads O7's leakage as an absolute cap on
+    // arm B against arm C's structural zero.
+    const runsC = [
+      armRun({ queryId: 'q1', retrieved: [9, 1], expected: [1], cluster: 'p1', evidence: [] }),
       armRun({ queryId: 'q2', retrieved: [2], expected: [2], cluster: 'p1', evidence: [] }),
-      armRun({ queryId: 'n1', retrieved: [5], expected: [3], cluster: 'p2', style: 'image-negative', expectedImageKeys: [], evidence: [{ key: 'z', rank: 1 }] }),
+      armRun({ queryId: 'n1', retrieved: [5], expected: [3], cluster: 'p2', style: 'image-negative', expectedImageKeys: [], evidence: [] }),
     ];
     const runsB = [
       armRun({ queryId: 'q1', retrieved: [1], expected: [1], cluster: 'p1', evidence: [{ key: 'img-1.png', rank: 1 }] }),
       armRun({ queryId: 'q2', retrieved: [9], expected: [2], cluster: 'p1', evidence: [] }),
-      armRun({ queryId: 'n1', retrieved: [3], expected: [3], cluster: 'p2', style: 'image-negative', expectedImageKeys: [], evidence: [] }),
+      armRun({ queryId: 'n1', retrieved: [3], expected: [3], cluster: 'p2', style: 'image-negative', expectedImageKeys: [], evidence: [{ key: 'z', rank: 1 }] }),
     ];
-    const cmp = compareArmRetrieval(armReport('A', { runs: runsA }), armReport('B', { runs: runsB }), { seed: 1, iterations: 100 });
+    const cmp = compareArmRetrieval(armReport('C', { runs: runsC }), armReport('B', { runs: runsB }), { seed: 1, iterations: 100 });
     // R@1: q1 0→1 (win), q2 1→0 (loss), n1 0→1 (win) → 2W/1L over 3 pairs.
     expect(cmp.recallAt['@1']).toMatchObject({ wins: 2, losses: 1, ties: 0, n: 3 });
     expect(cmp.recallAt['@1']!.pValue).toBeCloseTo(mcnemarP(2, 1), 10);
-    // Image evidence: both image labels; A hits within 5 on q1 (rank 2), B too → tie; q2 neither.
-    expect(cmp.imageEvidenceRecallAt5).toMatchObject({ n: 2, wins: 0, losses: 0, ties: 2 });
-    expect(cmp.imageEvidenceGuardrailPower).toBeGreaterThan(0);
-    // Leakage@1 over the one negative: A leaked, B did not → one loss for B's rate (a win for safety).
-    expect(cmp.leakageAt1).toMatchObject({ n: 1, baselineRate: 1, candidateRate: 0 });
-    const vsC = compareArmRetrieval(armReport('C', { runs: runsA.map((r) => ({ ...r, evidence: [] })) }), armReport('B', { runs: runsB }), { seed: 1, iterations: 100 });
-    expect(vsC.imageEvidenceRecallAt5).toBeNull();
-    expect(vsC.imageEvidenceGuardrailPower).toBeNull();
+    expect(cmp.imageEvidenceRecallAt5).toBeNull();
+    expect(cmp.imageEvidenceGuardrailPower).toBeNull();
+    // Leakage@1 over the one negative: C cannot leak, B did — the cap is read on B alone.
+    expect(cmp.leakageAt1).toMatchObject({ n: 1, baselineRate: 0, candidateRate: 1 });
   });
 
   it('refuses query sets that do not pair one-to-one', () => {
     expect(() => compareArmRetrieval(
-      armReport('A', { runs: [armRun({ queryId: 'q1' }), armRun({ queryId: 'q2' })] }),
+      armReport('C', { runs: [armRun({ queryId: 'q1' }), armRun({ queryId: 'q2' })] }),
       armReport('B', { runs: [armRun({ queryId: 'q1' })] }),
       { seed: 1, iterations: 10 },
     )).toThrow(/do not pair one-to-one/);

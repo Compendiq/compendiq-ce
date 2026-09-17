@@ -2,7 +2,7 @@
  * #1521 — which `basis: 'none'` verdict carries a NUMBER, and which carries
  * `null`.
  *
- * Five branches of `computeRetrievalConfidence` answer `basis: 'none'`, and
+ * Four branches of `computeRetrievalConfidence` answer `basis: 'none'`, and
  * exactly ONE of them puts a number in `score`. That asymmetry is load-bearing
  * prose in five places — migration 098's header, `analytics.ts`'s JSDoc,
  * `docs/architecture/09-flow-rag-chat.md`, CLAUDE.md and the on-screen rerank
@@ -11,22 +11,25 @@
  * `similarity`, so moving a number into or out of a `none` verdict is
  * invisible there.
  *
- * The five, in source order:
+ * The four, in source order:
  *
  *   1. pinned head          → { score: null,  basis: 'none' }
  *   2. empty + caveat       → { score: null,  basis: 'none' }
  *   3. empty + healthy      → { score: 0,     basis: 'none' }   ← the only number
- *   4. all image-only       → { score: null,  basis: 'none' }
- *   5. keyword-led / no cosine → { score: null, basis: 'none' }
+ *   4. keyword-led / no cosine → { score: null, basis: 'none' }
+ *
+ * There were FIVE until #1618 stage 2: an all-image-only set was the fifth,
+ * and it went with ADR-025's image leg — `imageOnly` no longer exists, so a
+ * row the legacy leg reached cannot be told apart from any other row.
  *
  * Read as a table on purpose. Each verdict is separately pinned in
  * `rag-service.test.ts`'s `computeRetrievalConfidence (#1105)` block, one cell
  * per retrieval scenario; what no assertion anywhere stated is the
- * CROSS-BRANCH claim the prose actually makes — that the five are enumerated,
- * that four of them are unmeasurable, and that the measurable one is the empty
- * HEALTHY corpus and its number is exactly `0`. Giving a second branch a
- * score, or taking 0 away from this one, breaks a documented invariant rather
- * than one scenario.
+ * CROSS-BRANCH claim the prose actually makes — that the four are enumerated,
+ * that three of them are unmeasurable, and that the measurable one is the
+ * empty HEALTHY corpus and its number is exactly `0`. Giving a second branch
+ * a score, or taking 0 away from this one, breaks a documented invariant
+ * rather than one scenario.
  *
  * Almost dependency-free, like the module it tests: the only runtime imports
  * are the formula itself and `node:fs`, which the enumeration cell uses to
@@ -92,7 +95,7 @@ interface NoneBranch {
 
 /**
  * Every branch that answers `basis: 'none'`, with the input that reaches it.
- * Adding a sixth `none` branch means adding a row here — which is the point:
+ * Adding a fifth `none` branch means adding a row here — which is the point:
  * the enumeration is the contract the five prose surfaces describe.
  */
 const NONE_BRANCHES: NoneBranch[] = [
@@ -125,16 +128,6 @@ const NONE_BRANCHES: NoneBranch[] = [
   },
   {
     ordinal: 4,
-    name: 'a set of nothing but IMAGE-ONLY rows — pages came back, nothing measurable did',
-    results: [
-      row(1, { imageOnly: true }),
-      row(2, { imageOnly: true, imageTextSynthesized: true }),
-    ],
-    caveat: null,
-    expected: { score: null, basis: 'none' },
-  },
-  {
-    ordinal: 5,
     name: 'a KEYWORD-LED set — the grounding the prompt gets was never measured',
     results: [
       row(1, { keywordRank: 0.6 }),
@@ -146,12 +139,12 @@ const NONE_BRANCHES: NoneBranch[] = [
   },
 ];
 
-describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", () => {
+describe("#1521 computeRetrievalConfidence — the basis:'none' branches", () => {
   it.each(NONE_BRANCHES)('branch $ordinal: $name', ({ results, caveat, expected }) => {
     expect(computeRetrievalConfidence(results, caveat)).toEqual(expected);
   });
 
-  it('exactly ONE of the five carries a number, and that number is 0', () => {
+  it('exactly ONE branch carries a number, and that number is 0', () => {
     const verdicts = NONE_BRANCHES.map((branch) => ({
       ordinal: branch.ordinal,
       score: computeRetrievalConfidence(branch.results, branch.caveat).score,
@@ -168,7 +161,7 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
     // …stated the other way round too, because "0" and "null" are one typo
     // apart and `0` is falsy: a reader of the prose has to be able to rely on
     // "unmeasurable means there is no number", not "means the number is low".
-    expect(verdicts.filter((v) => v.score === null).map((v) => v.ordinal)).toEqual([1, 2, 4, 5]);
+    expect(verdicts.filter((v) => v.score === null).map((v) => v.ordinal)).toEqual([1, 2, 4]);
   });
 
   /**
@@ -176,17 +169,13 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
    * `coverage_unknown` is the arm that exists because health that could not be
    * VERIFIED must not be reported as a verified-empty corpus.
    *
-   * Every member of `RetrievalHealthCaveat` is listed — the four
+   * Every member of `RetrievalHealthCaveat` is listed — the three
    * `DegradedReason`s plus `coverage_unknown` — because the enumeration IS the
    * contract here too: the formula reads this field only as null-vs-non-null,
-   * so any future arm that special-cases one member (giving it a number, or
-   * the `image_leg_unavailable` reading that rag-service.ts's call-site
-   * comment calls "deliberate and inert") has to red a row rather than a
-   * reviewer's memory. `image_leg_unavailable` is the one that most invites
-   * such an arm: it is a bypass of the IMAGE leg, not an outage of the index
-   * the answer is grounded in, so "then it should still be measurable" is a
-   * plausible-sounding future change. It is not measurable — there is nothing
-   * to measure in an empty set — and this row is what says so.
+   * so any future arm that special-cases one member (giving it a number) has
+   * to red a row rather than a reviewer's memory. #1618 retired
+   * `image_leg_unavailable`, which was the member that most invited such an
+   * arm; the remaining three are all genuine outage symptoms.
    *
    * The table is a `Record<RetrievalHealthCaveat, …>` so the intent is stated
    * in the type, but the ENFORCEMENT is the source-derived cell below, not the
@@ -200,7 +189,6 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
     embedding_failed: null,
     no_embeddings: null,
     partial_embeddings: null,
-    image_leg_unavailable: null,
     coverage_unknown: null,
   };
 
@@ -220,8 +208,9 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
     const caveat = unionDeclaration('./retrieval-confidence.ts', 'RetrievalHealthCaveat');
     const declared = new Set(caveat.members);
     // The caveat union is `DegradedReason | 'coverage_unknown'` today; follow
-    // the reference so the four reasons count, and stay correct if a later
-    // edit inlines them here instead.
+    // the reference so the reasons count, and stay correct if a later edit
+    // inlines them here instead. #1618 retired `image_leg_unavailable` with
+    // the leg, so the union is one member shorter than #1521 left it.
     if (caveat.body.includes('DegradedReason')) {
       for (const member of unionDeclaration('./rag-service.ts', 'DegradedReason').members) {
         declared.add(member);
@@ -246,13 +235,13 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
    * their own basis names. Without this, every assertion above is satisfiable
    * by a formula that answers `{ score: null, basis: 'none' }` for everything.
    */
-  it('treats a DERIVED row as measured text, and still excludes an imageOnly one (ADR-027 D11)', () => {
-    // The two halves in one case, because the distinction is the whole point:
-    // a derived chunk carries a REAL `vectorScore` over text the analysis
-    // produced, so it belongs in the sample; ADR-025's `imageOnly` row
-    // carries a stand-in `chunkText` and no measurement, so it does not.
-    // Mixing them up in either direction moves an operator threshold without
-    // anyone changing one — which ADR-027 `:4302-4306` forbids.
+  it('treats a DERIVED row as measured text (ADR-027 D11)', () => {
+    // A derived chunk carries a REAL `vectorScore` over text the analysis
+    // produced, so it belongs in the sample. ADR-025's `imageOnly` row — a
+    // stand-in `chunkText` with no measurement — was the counter-case this
+    // used to be paired with; #1618 retired it, and with it the `measurable`
+    // filter, so a derived row must not be excluded by anything that survived
+    // (ADR-027 `:4302-4306`).
     expect(
       computeRetrievalConfidence([
         row(1, {
@@ -268,7 +257,6 @@ describe("#1521 computeRetrievalConfidence — the five basis:'none' branches", 
             parts: 1,
           },
         }),
-        row(2, { imageOnly: true, imageTextSynthesized: true }),
       ]),
     ).toEqual({ score: 0.61, basis: 'similarity' });
   });

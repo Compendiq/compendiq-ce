@@ -194,8 +194,10 @@ export interface PageImageUrlInput extends PageImageReference {
  * The `<img src>` a stored image row corresponds to — the exact INVERSE of
  * {@link extractImageReferencesFromHtml} (#1115 P3).
  *
- * The image leg answers with `(source, attachment_key)` and the ask route has
- * to give the browser a URL the authenticated attachment routes really serve.
+ * A stored image row answers with `(source, attachment_key)` and the ask route
+ * has to give the browser a URL the authenticated attachment routes really
+ * serve. It was the image leg's row shape first (#1115 P3, retired in #1618
+ * stage 2); it is now `derived-provenance.ts`'s `page_image_analyses` row.
  * Deriving that URL at the consumer is how it drifts: the store follows the
  * PREFIX, the Confluence directory follows `pageSource`, and the filename is
  * percent-encoded on the wire while the bytes sit on disk under the raw name

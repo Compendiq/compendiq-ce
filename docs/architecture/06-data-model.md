@@ -20,7 +20,6 @@ erDiagram
 
     pages ||--o{ page_versions : "versioned as"
     pages ||--o{ page_embeddings : "chunked into"
-    pages ||--o{ page_image_embeddings : "images indexed as (#1115; P0 schema, P1 typing, P2 rows, read by the P3 leg)"
     pages ||--o{ page_image_analyses : "#1615 (ADR-027, migration 115): one analysis row per referenced image; its text becomes derived page_embeddings rows (writer: #1616)"
     pages ||--o{ comments : "annotated by"
     pages ||--o{ page_relationships : "related via"
@@ -94,8 +93,7 @@ erDiagram
         text visibility "private | shared"
         uuid created_by_user_id FK
         bool embedding_dirty
-        bool image_embedding_dirty "attachments changed; re-embed IMAGES only (#1115, written in P2)"
-        bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by the same writers as image_embedding_dirty"
+        bool image_analysis_dirty "migration 116, #1616 (ADR-027 D4): re-enumerate this page's images; raised by every attachment and body writer"
         bigint image_analysis_revision "migration 116, #1616 (ADR-027 D6): bumped when the page's derived set changes; embedPage clears embedding_dirty only if unchanged"
         vector page_avg_embedding "materialized avg of chunk vectors, HNSW-indexed (#919)"
         timestamptz local_modified_at "non-null => local edit since last_synced (#305)"
@@ -138,19 +136,6 @@ erDiagram
         tsvector chunk_tsv "migration 116, #1616 (ADR-027 D10): per-chunk lexical document in the configured FTS language, trigger-maintained, GIN-indexed"
     }
 
-    page_image_embeddings {
-        bigint id PK
-        int page_id FK "ON DELETE CASCADE"
-        text source "confluence | local — which attachment store the key resolves in"
-        text attachment_key "filename inside that store"
-        text sha256 "content address of the embedded bytes; the re-scan skip"
-        text format "sniffed: png | jpeg | webp | gif"
-        int width "nullable; header-declared only"
-        int height "nullable; header-declared only"
-        text model "provider model id that produced the vector"
-        vector embedding "vector(n) or halfvec(n) — n is the probed IMAGE model's width; no HNSW until the probe"
-        timestamptz created_at
-    }
 
     page_image_analyses {
         bigint id PK "#1615 (ADR-027 D4, migration 115) — the derived-analysis store; rows are written by the #1616 worker"
@@ -345,7 +330,7 @@ erDiagram
     }
 
     llm_usecase_assignments {
-        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|image_embedding|inline_completion|image_analysis (the last since migration 115, #1615, ADR-027 D3 — non-inheriting, probe-gated before write)"
+        text usecase PK "chat|summary|quality|auto_tag|embedding|rerank|inline_completion|image_analysis (image_analysis since migration 115, #1615, ADR-027 D3 — non-inheriting, probe-gated before write; image_embedding DROPPED from the CHECK by migration 118, #1618 stage 2)"
         uuid provider_id FK
         text model "nullable; null = inherit provider default"
         timestamptz updated_at
@@ -452,7 +437,7 @@ empty cells, never as retention counts/days or fabricated zeroes.
 updated_at DESC, id DESC)` for the keyset-paged list (migration 094).
 
 `inline_completion` is one of three non-inheriting use cases, alongside
-`rerank` and `image_embedding`. Its seeded assignment has null provider/model,
+`rerank` and `image_analysis`. Its seeded assignment has null provider/model,
 which means the feature is disabled until an administrator explicitly assigns
 both a usable provider and model. The personal `user_settings` fields only
 control when an already-assigned feature may run; they cannot select or
@@ -651,78 +636,23 @@ together, which matters most for #1114's query-side prefix.
   destructive `enqueueReembedAll({newDimensions})` path refuses to run while
   that state row exists (and vice versa). Runbook:
   `docs/runbooks/shadow-reembed.md`.
-- **The image index is a separate table (#1115) — `P0 schema, typed at probe
-  time in P1, populated from P2`.** `page_image_embeddings` holds one vector per
-  referenced image per page, produced by a *different* model from a *different*
-  ADR-021 use case (`image_embedding`), and `pages.image_embedding_dirty` is its
-  own dirty flag. Migration `093` ships the shape, P1 gives it its real type and
-  index, and **P2 fills it**: `image-embedding-service.ts` upserts one row per
-  image the page's `body_html` references, keyed `(page_id, source,
-  attachment_key)` — where `source` follows the URL PREFIX in that body, never
-  `confluence_id IS NULL`, because a relocated page has no `confluence_id` and
-  its bytes in the local store. `sha256` is what makes a re-scan cheap: an
-  unchanged file keeps its row and costs no request. **P3 reads it** —
-  `image-leg-search.ts` kNN-searches this table under the same
-  `visiblePagesPredicate` the vector leg uses and fuses the result as a third
-  RRF leg; **P4 reads the BYTES behind it**, attaching up to
-  `rag_answer_max_images` of the matched pictures to the chat request. A row
-  never becomes a `SearchResult` itself: an image-reached page enters ranking as
-  its own `chunk_index 0` chunk, or as a title-synthesised one. Four properties
-  are deliberate:
-  - **Not rows in `page_embeddings`.** A `kind` discriminator would have made
-    `embedPage`'s `DELETE`, its `AVG(embedding)` for `page_avg_embedding`, the
-    `(page_id, chunk_index)` uniqueness, #1116's shadow columns, MMR, rerank and
-    sibling assembly all conditional. A separate table keeps every one of them
-    text-only by construction, and it is the only shape that can hold two
-    different probed widths at once.
-  - **The declared `vector(…)` width in the migration is a placeholder, and
-    the index is built at PROBE TIME.** The live type follows the image model's
-    probed width through the same tiering the text column uses
-    (`core/db/vector-column-tier.ts`, shared with the destructive re-embed, the
-    shadow path and the eval seeder), and **the migration ships no HNSW index at
-    all** — the opclass is unknown until the probe answers. Assigning the
-    `image_embedding` use case runs the probe and then
-    `ensureImageEmbeddingColumn(dims, {providerId, model, baseUrl,
-    targetDimensions})` (P1), which retypes the column and creates
-    `page_image_embeddings_embedding_hnsw_idx` under the same bounded-lock DDL
-    discipline as the shadow columns above. Above 4000 dimensions there is no
-    index and the settings panel says so — with the remedy beside it, since
-    `admin_settings.image_embedding_target_dimensions` is the MRL width the leg
-    *requests* (vLLM's `dimensions` is per-request, so nothing truncates unless
-    the client asks). `admin_settings.image_embedding_dimensions` and
-    `…_index_model` record what the live index was built for — the second as the
-    full identity string `provider:model@baseUrl#dims`, which is the only thing
-    that can tell two same-width spaces apart. `…_probe` holds the last probe's
-    verdict, and it is admin-only: its `error` is the provider's own body
-    (#1184's rule).
-  - **A model change here truncates and re-scans.** No shadow swap: the leg is
-    disabled while the index is empty, so text retrieval is never degraded, and
-    images are cheap to redo (content-addressed by `sha256`). The trigger is the
-    probed width **or** the recorded `provider:model@baseUrl#dims` changing — two
-    models at the same width are two incompatible spaces, and a column type
-    cannot tell them apart; the base URL is there because a provider row's
-    endpoint can move without its id changing, and the model is the *resolved*
-    one, pinned into the assignment row at probe time so it cannot follow
-    `provider.default_model` around.
-  - **`image_embedding_dirty` is separate from `embedding_dirty` on purpose.**
-    An attachment can change under an unchanged page version — sync's
-    version-unchanged branch is exactly that case — and then the images must be
-    re-embedded and the text must not. P2 raises it at every write that can move
-    an image, in two shapes: the ATTACHMENT writers call
-    `core/services/image-embedding-dirty.ts` (the two sync attachment writers,
-    `fetchAndCachePageImage`, `writeAttachmentCache`, `putLocalAttachment`,
-    `cleanPageAttachments`), while the BODY writers raise the column inline in
-    the UPDATE they already own, gated on `body_html` alone (the sync upsert,
-    the conflict-policy update, both relocate directions, the four `body_html`
-    writers in `routes/knowledge/pages-crud.ts`, `restoreVersion` and both
-    branches of `POST /llm/improvements/apply` — the last two matter because a
-    restore and an Apply are the two ways a page's `img` set moves with no
-    attachment write to notice it). It is CLEARED only
-    by a page whose scan had no failure, so the flag is the retry queue as well
-    as the work queue. Design of record: ADR-025. **This is the ACTIVE
-    design; ADR-027 supersedes it in part and the bullet below is the
-    CANDIDATE.**
-- **CANDIDATE (#1615 and #1616 merged; #1617–#1619 PLANNED, ADR-027) — image analysis in the text index.**
+- **The image index was a separate table (#1115) — RETIRED by #1618 stage 2.**
+  `page_image_embeddings` held one vector per referenced image per page,
+  produced by a *different* model from a *different* ADR-021 use case
+  (`image_embedding`), with `pages.image_embedding_dirty` as its own dirty
+  flag, a probe-time column type, an HNSW index built only once the probe
+  answered, and `admin_settings.image_embedding_{dimensions,index_model,probe,
+  target_dimensions}` recording what the live index was built for. **Migration
+  118 drops the table, the column, those settings rows, the
+  `rag_image_leg_enabled` row and the `image_embedding` assignment, and
+  narrows the `llm_usecase_assignments` CHECK to the eight surviving use
+  cases.** The basis was **"Remove it, nobody was using it in production."** —
+  unused in production plus maintenance burden, explicitly not a measurement
+  (ADR-027 A-5). Migration 093's history is retained, so a schema archaeology
+  pass still finds the shape; what to expect on a rollback is
+  `docs/runbooks/image-embedding-retirement.md`. The design of record, ADR-025,
+  is **superseded in full**; the surviving design is the bullet below.
+- **Image analysis in the text index (ADR-027; #1615–#1617 merged, #1618 stage 2 retired the legacy space).**
   #1615 landed the store, the use case and the settings rows (migration 115,
   `page_image_analyses`, the `image_analysis` assignment, the retained identity
   in `admin_settings.image_analysis_identity` — JSON `{providerId, model,
@@ -730,9 +660,10 @@ together, which matters most for #1114's query-side prefix.
   the capability re-check after a `true` probe, never cleared by an unassign
   — and `image_analysis_max_output_tokens`); #1616 landed migration 116, the
   worker, the reconcile, `embedPage` composition, derived FTS, coverage and
-  readiness. Retrieval over the derived rows (#1617), the operator surfaces
-  (#1618) and the legacy retirement (#1619) are still to come, so the legacy
-  table, flag and leg stay live beside them until #1618 retires them after
+  readiness. Retrieval over the derived rows landed in #1617 and the
+  operator surfaces in #1618 stage 1; **stage 2 removed the legacy table, flag
+  and leg** (migration 118), so this is now the only image design. The
+  pre-registered measurement it was once gated behind is described after
   the #1619 gate.
   A generative vision model (`image_analysis`, a non-inheriting use case
   probed with the tri-state vision probe BEFORE its row is written) reads
@@ -759,7 +690,7 @@ together, which matters most for #1114's query-side prefix.
   provenance, embedded by the ordinary text embedder, dual-written under a
   #1116 shadow, and **excluded from both page averages** by predicate
   (ADR-027 D2/D9). Migration **116** (#1616) adds `pages.image_analysis_dirty`
-  (raised by the same writer list as `image_embedding_dirty`, consumed by a
+  (raised by every attachment and body writer, consumed by a
   claim-first reconcile), `pages.image_analysis_revision` (the token
   `embedPage` checks before clearing `embedding_dirty`, so neither worker
   loses the other's update) and `page_embeddings.chunk_tsv` — a per-chunk
@@ -861,8 +792,8 @@ together, which matters most for #1114's query-side prefix.
   Confluence tree (non-image lazily-cached attachments have no enumerator),
   local rows whose FILE is missing are counted, never deleted, and a live run
   refuses against an empty-on-disk store the database still references. Files
-  a live run deletes take their `page_image_embeddings` rows with them and
-  re-raise `image_embedding_dirty` on the owning pages. State lives in two
+  a live run deletes take their `page_image_analyses` rows with them and
+  re-raise `image_analysis_dirty` on the owning pages. State lives in two
   `admin_settings` JSON rows (`attachment_sweep_last_run`,
   `attachment_storage_stats`) — no new table.
 - **Materialized page averages (#919).** `pages.page_avg_embedding` stores each

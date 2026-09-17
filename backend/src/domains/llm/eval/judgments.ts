@@ -1111,8 +1111,14 @@ export interface ArmVerdictReport {
   provenance: Record<EvalArm, ArmRunReport | null>;
   /** The answer runs behind the sheet, as re-read from `provenance-<runId>.json` at un-blinding. */
   answerRuns: AnswerRunProvenance[];
-  judged: { primary: JudgedPairEndpoints; secondary: JudgedPairEndpoints[] };
-  retrieval: { primary: ArmRetrievalComparison; others: ArmRetrievalComparison[] };
+  /**
+   * One pair, B vs C: the whole arm axis since ADR-027 A-1 re-registered the
+   * primary and #1618 stage 2 removed arm A. The re-registered secondaries
+   * (citation faithfulness and refusal rate, both B vs C) are fields OF that
+   * pair, so there is no second pairing to carry.
+   */
+  judged: { primary: JudgedPairEndpoints };
+  retrieval: { primary: ArmRetrievalComparison };
   controls: { bVsC: ControlEndpoints | null; legacyC: ControlEndpoints | null };
   decision: GateDecision;
   /** Every un-blinded item, for audit — after the verdict, never before. */
@@ -1149,24 +1155,21 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   const mapping = readMapping(mappingFile);
   const items = unblind(answers, judgments, mapping);
 
-  // The registered pair is B vs C (#1619 amendment A-1). Arm A stays a
-  // DEFINED arm — its report is still accepted and still scored as a
-  // secondary pairing where one exists — but it is no longer required, and a
-  // primary with no registered comparator is refused rather than scored
-  // against whatever else was passed.
+  // The registered pair is B vs C (#1619 amendment A-1). Arm A was removed
+  // from the harness entirely by #1618 stage 2 — its index no longer exists —
+  // so B and C are the whole arm axis and a primary with only one of them has
+  // no registered comparator to score against.
   const b = input.armReports.B;
   const c = input.armReports.C;
   if (!b || !c) {
     throw new Error(
       '--unblind needs the arm B and arm C retrieval reports (--arm-report B=…,C=…): the primary endpoint is ' +
-        'image-dependent answer correctness B vs C (ADR-027 amendment A-1). Arm A is permanently unobtainable — it ' +
-        'needs a real VL *embedding* endpoint — so it is optional here, and a run that supplies only one arm has no ' +
-        'registered comparator to score the primary against.',
+        'image-dependent answer correctness B vs C (ADR-027 amendment A-1). Arm A was retired with the legacy ' +
+        'image-embedding space (#1618 stage 2) and is reproducible only against its recorded revision.',
     );
   }
-  const a = input.armReports.A ?? null;
-  const reports: Partial<Record<EvalArm, ArmRunReport>> = { B: b, C: c, ...(a ? { A: a } : {}) };
-  for (const report of [b, c, ...(a ? [a] : [])]) {
+  const reports: Partial<Record<EvalArm, ArmRunReport>> = { B: b, C: c };
+  for (const report of [b, c]) {
     if (report.querySetSha !== input.querySetSha) {
       throw new Error(`Arm ${report.arm}'s report was measured on query set ${report.querySetSha}, but the fixture in this checkout hashes to ${input.querySetSha}`);
     }
@@ -1175,10 +1178,6 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     }
   }
   assertComparableArms(c, b, { baseline: 'C', candidate: 'B' });
-  if (a) {
-    assertComparableArms(a, b, { baseline: 'A', candidate: 'B' });
-    assertComparableArms(a, c, { baseline: 'A', candidate: 'C' });
-  }
 
   // The answer side of the provenance: every run behind the sheet, re-read
   // from `provenance-<runId>.json` in the artifacts directory, hashed to what
@@ -1196,7 +1195,7 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     assertAnswerRunMatches(provenance, source, report);
     answerRuns.push(provenance);
   }
-  for (const arm of [b.arm, c.arm, ...(a ? [a.arm] : [])]) {
+  for (const arm of [b.arm, c.arm]) {
     if (!sheet.sources.some((s) => s.arm === arm)) throw new Error(`--arm-report ${arm} was given but the sheet carries no arm ${arm} answers`);
   }
 
@@ -1216,14 +1215,7 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
   }
 
   const primary = scoreJudgedPair(items, fixture, { baseline: 'C', candidate: 'B' }, stats);
-  const secondary: JudgedPairEndpoints[] = [];
-  const others: ArmRetrievalComparison[] = [];
   const retrievalPrimary = compareArmRetrieval(c, b, stats);
-  if (a) {
-    secondary.push(scoreJudgedPair(items, fixture, { baseline: 'A', candidate: 'B' }, stats));
-    secondary.push(scoreJudgedPair(items, fixture, { baseline: 'A', candidate: 'C' }, stats));
-    others.push(compareArmRetrieval(a, b, stats), compareArmRetrieval(a, c, stats));
-  }
   const decision = decideGate({
     primary,
     // O7 as amended: an absolute cap on arm B's OWN leakage, read off B's
@@ -1244,10 +1236,10 @@ export function buildArmVerdict(input: ArmVerdictInput): ArmVerdictReport {
     judge: progress.judges[0]!,
     sheet,
     sample,
-    provenance: { A: a, B: b, C: c },
+    provenance: { B: b, C: c },
     answerRuns,
-    judged: { primary, secondary },
-    retrieval: { primary: retrievalPrimary, others },
+    judged: { primary },
+    retrieval: { primary: retrievalPrimary },
     controls,
     decision,
     items,

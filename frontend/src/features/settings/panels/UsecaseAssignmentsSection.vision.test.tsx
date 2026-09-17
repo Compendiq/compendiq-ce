@@ -27,6 +27,19 @@ const providerA: LlmProvider = {
   updatedAt: '2026-04-20T00:00:00.000Z',
 };
 
+const UNRESOLVED = {
+  providerId: null,
+  model: null,
+  resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
+};
+
+/**
+ * The eight surviving use cases (#1618 narrowed the CHECK and `LlmUsecaseSchema`
+ * to these). `image_analysis` stays UNASSIGNED here on purpose: its card gates
+ * its own vision badge on the saved assignment, so an unassigned row is what
+ * makes "exactly one badge" a statement about the chat row rather than about
+ * how many cards happen to be configured.
+ */
 function makeAssignments(): UsecaseAssignments {
   const base = {
     providerId: null,
@@ -43,26 +56,9 @@ function makeAssignments(): UsecaseAssignments {
       model: null,
       resolved: { providerId: providerA.id, providerName: providerA.name, model: 'bge-m3' },
     },
-    rerank: {
-      providerId: null,
-      model: null,
-      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
-    },
-    image_embedding: {
-      providerId: null,
-      model: null,
-      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
-    },
-    inline_completion: {
-      providerId: null,
-      model: null,
-      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
-    },
-    image_analysis: {
-      providerId: null,
-      model: null,
-      resolved: { providerId: '00000000-0000-0000-0000-000000000000', providerName: '', model: '' },
-    },
+    rerank: { ...UNRESOLVED },
+    inline_completion: { ...UNRESOLVED },
+    image_analysis: { ...UNRESOLVED },
   };
 }
 
@@ -74,8 +70,6 @@ function renderSection() {
         assignments={makeAssignments()}
         savedAssignments={makeAssignments()}
         providers={[providerA]}
-        imageTargetDimensions={null}
-        onImageTargetDimensionsChange={() => {}}
         imageAnalysisMaxOutputTokens={8192}
         onImageAnalysisMaxOutputTokensChange={() => {}}
         onChange={() => {}}
@@ -115,7 +109,12 @@ describe('UsecaseAssignmentsSection vision badge (#1154)', () => {
    */
   it('fetches usecase-default exactly once, not per model', async () => {
     renderSection();
-    await waitFor(() => expect(screen.getByTestId('vision-badge')).toBeInTheDocument());
+    // Waits on the lookup itself rather than on the badge, so this case reports
+    // only the call count: a badge rendered on every row is the case above and
+    // should not also fail here.
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith('/llm/usecase-default?usecase=chat'),
+    );
     const calls = mockApiFetch.mock.calls.filter(([p]) => String(p).includes('usecase-default'));
     expect(calls).toHaveLength(1);
   });

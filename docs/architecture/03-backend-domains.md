@@ -19,7 +19,7 @@ flowchart LR
     subgraph domains["domains/"]
         direction TB
         dC["<b>confluence</b><br/>confluence-client<br/>sync-service<br/>attachment-handler (download/cache)<br/>attachment-sweep-service (#1349 orphan sweep)<br/>subpage-context<br/>sync-overview-service"]
-        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>vl-embedding-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-embedding-probe<br/>image-embedding-index<br/>image-embedding-service<br/>image-leg-search<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance<br/>page-identity"]
+        dL["<b>llm</b><br/>openai-compatible-client<br/>inline-completion-client<br/>llm-provider-service<br/>llm-provider-resolver<br/>llm-provider-bootstrap<br/>embedding-service<br/>shadow-migration-service<br/>shadow-compare-service<br/>rag-service<br/>retrieval-confidence<br/>sibling-assembly<br/>identifier-shortcircuit<br/>rerank-client<br/>llm-cache + cache-bus<br/>vision-probe<br/>model-capabilities<br/>image-analysis-client<br/>image-analysis-worker<br/>image-analysis-compose<br/>image-intake<br/>retrieved-images<br/>lexical-chunk-resolution<br/>derived-provenance<br/>page-identity"]
         dK["<b>knowledge</b><br/>auto-tagger<br/>quality-worker<br/>summary-worker<br/>version-tracker<br/>duplicate-detector<br/>page-relocate-service<br/>notion-client<br/>notion-token-service<br/>notion-tree<br/>notion-block-converter<br/>notion-import-service (#1459)<br/>notion-import-job"]
     end
 
@@ -27,7 +27,7 @@ flowchart LR
         direction TB
         cDB["db/ — pg pool, migrations,<br/>vector-column-tier, with-lock-retry"]
         cPlug["plugins/ — auth, correlation-id, redis"]
-        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-embedding-dirty,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
+        cSvc["services/ — redis-cache, audit,<br/>error-tracker, content-converter,<br/>circuit-breaker, image-references,<br/>rbac, notifications, pdf,<br/>admin-settings, version-snapshot,<br/>sse-stream-limiter, queue-service,<br/>data-retention, rate-limit,<br/>ssrf-allowlist-bus, admin-user-service,<br/>image-validator, image-staging,<br/>local-attachment-service, attachment-store,<br/>page-icon-store, standalone-attachment-cleanup,<br/>image-analysis-dirty,<br/>backup-service/stream/manifest/restore,<br/>backup-settings/S3/worker/export-ticket,<br/>collab-room-service, collab-flag,<br/>collab-tombstone, collab-guard"]
         cUtil["utils/ — crypto (AES-GCM),<br/>logger (pino), sanitize-llm-input,<br/>ssrf-guard, tls-config, llm-config"]
         cEnt["enterprise/ — types, noop,<br/>loader, features"]
     end
@@ -323,72 +323,51 @@ is five more routes on `routes/llm/llm-embedding-shadow.ts`
 `POST/GET …/compare/:id/judgements`), all `requireAdmin`, all scoped to the
 admin who started the run, results carrying page ids and titles only.
 
-## The image-embedding leg (#1115 P1–P4)
+## The image-embedding leg — RETIRED (#1115 P1–P4, removed by #1618 stage 2)
 
-Six modules in `domains/llm/services`, two in `core/services`, and two rules
-hoisted into `core/db`:
+Six modules in `domains/llm/services`, two in `core/services` and two rules in
+`core/db` implemented ADR-025's separate image vector space:
+`vl-embedding-client.ts` (vLLM's chat-embeddings extension),
+`image-embedding-probe.ts`, `image-embedding-index.ts` (the runtime DDL that
+retyped `page_image_embeddings.embedding` to the probed width),
+`image-embedding-service.ts` (`embedPageImages`, the `image_embedding_dirty`
+backlog under `worker:lock:image-embedding-index`), `image-leg-search.ts` (the
+third RRF leg) and `core/services/image-embedding-target-dimensions.ts` (the
+MRL truncation width). **All of them are deleted** — migration 118 drops the
+table, the column, the two `admin_settings` rows and the `image_embedding`
+assignment — on the authorisation **"Remove it, nobody was using it in
+production."**: unused in production plus maintenance burden, explicitly not a
+measurement (ADR-027 A-5). `docs/runbooks/image-embedding-retirement.md` is
+the cutover and its rollback.
 
-- **`vl-embedding-client.ts`** — the only thing in the tree that speaks vLLM's
-  chat-embeddings extension: `POST {baseUrl}/embeddings` with a `messages`
-  array and a trailing empty `assistant` turn. It sits beside
-  `rerank-client.ts` for the same reason that one exists — a differently-shaped
-  endpoint that still inherits `providerRequestInfra` (queue, per-provider
-  breaker, bearer headers, TLS dispatcher) — and **not** as a branch inside
-  `openai-compatible-client.ts`'s `generateEmbedding`, whose `{model, input}`
-  body bypasses the chat template. Its module header carries the non-support
-  list (TEI, LM Studio, `llama-server`'s non-OpenAI route, the plain shape) and
-  the pinned-vLLM-version rule, so nobody re-derives them.
-- **`image-embedding-probe.ts`** — `vision-probe.ts`'s sibling. It embeds a
-  known image *and* a text through the client, requires equal widths, and
-  persists the verdict in `admin_settings.image_embedding_probe`. Its `error`
-  is the provider's own body, so it is admin-only (#1184's rule). It also
-  sends the configured MRL truncation width on both calls and requires it
-  back — see the core reader below — and it classifies a failure by status:
-  the four `VL_SHAPE_REFUSAL_STATUSES` are `shape_rejected`, everything else
-  with an HTTP answer is `provider_error`.
-- **`image-embedding-index.ts`** — `ensureImageEmbeddingColumn(dims, pair)`, the
-  runtime DDL migration 093 deliberately left out: it retypes
-  `page_image_embeddings.embedding` to the probed width, builds the HNSW index
-  for that tier, and truncates + re-dirties when the width or the assigned
-  `provider:model@baseUrl#dims` changes. The base URL is in the identity because
-  a provider row's endpoint can move without its id changing (ADR-025 D12), the
-  `#dims` half is the requested MRL truncation width, and the model half is the
-  **resolved** one, which `llm-usecases.ts` pins into
-  `llm_usecase_assignments.model` at probe time so it cannot drift with
-  `provider.default_model`.
-- **`image-embedding-service.ts` (P2)** — the consumer for all three.
-  `embedPageImages(pageId)` enumerates the page's `body_html`, resolves each
-  image's bytes through `core/services/attachment-store.ts`, skips-and-counts
-  what it cannot embed, reuses an unchanged file's row by sha256, upserts the
-  rest and reconciles away the rows the body no longer references — in one
-  transaction that re-reads the index identity after its DELETE, mirroring
-  `embedPage`'s shadow-epoch recheck. `processDirtyPageImages()` drives that
-  over the `image_embedding_dirty` backlog under its own
-  `worker:lock:image-embedding-index` — **not** the per-user
-  `embedding:lock:*`, whose holders `processDirtyPages` backs off from, so
-  borrowing it would have made an image scan block every text embed.
+Three things survive the deletion and are described below:
 
-Two `core` modules complete the P2 half. `core/services/image-embedding-dirty.ts`
-raises `pages.image_embedding_dirty` for the ATTACHMENT writers — the two sync
-attachment writers, `fetchAndCachePageImage`, `writeAttachmentCache`,
-`cleanPageAttachments` (all `domains/confluence`) and `putLocalAttachment`
-(`core`) — which is why it is in `core`: `core` may not import a domain, and one
-of its callers lives there. The **body** writers do not go through it; each is
-already issuing an UPDATE (or INSERT) on the row and raises the column inline as
-one more clause. **Unconditionally** where the statement is rewriting the body
-wholesale and has nothing to diff against: the sync upsert (`sync-service.ts`),
-both relocate directions (`page-relocate-service.ts`) and both create arms in
-`routes/knowledge/pages-crud.ts`. **Gated on `body_html IS DISTINCT FROM $n`**,
-so a title-only save costs nothing, on the edit paths: the conflict-policy
-update (`sync-service.ts`), the four `body_html` writers in
-`routes/knowledge/pages-crud.ts`, `restoreVersion`
-(`domains/knowledge/services/version-tracker.ts`) and both branches of
-`POST /llm/improvements/apply` (`routes/llm/llm-conversations.ts`). Audit the
-column, not this module's importers. And
-`core/services/image-references.ts` gained `extractImageReferencesFromHtml`,
-which reads the STORED body rather than Confluence's storage format, because a
-standalone page has no `body_storage` and a relocated one still carries a stale
-copy describing attachments its body no longer points at.
+- **`core/services/image-analysis-dirty.ts`** — the same module, renamed with
+  its column (`pages.image_analysis_dirty`, ADR-027 D6.2). It still exists in
+  `core` for the same reason: `core` may not import a domain, and its
+  ATTACHMENT-writer callers — the two sync attachment writers,
+  `fetchAndCachePageImage`, `writeAttachmentCache`, `cleanPageAttachments`
+  (all `domains/confluence`) and `putLocalAttachment` (`core`) — include one
+  that lives there. The **body** writers still do not go through it: each is
+  already issuing an UPDATE (or INSERT) on the row and raises the column
+  inline as one more clause — **unconditionally** where the statement rewrites
+  the body wholesale (the sync upsert in `sync-service.ts`, both relocate
+  directions in `page-relocate-service.ts`, both create arms in
+  `routes/knowledge/pages-crud.ts`), and **gated on
+  `body_html IS DISTINCT FROM $n`** so a title-only save costs nothing, on the
+  edit paths (the conflict-policy update, the four `body_html` writers in
+  `routes/knowledge/pages-crud.ts`, `restoreVersion` in
+  `domains/knowledge/services/version-tracker.ts`, and both branches of
+  `POST /llm/improvements/apply`). Audit the column, not this module's
+  importers.
+- **`core/services/image-references.ts`** — `extractImageReferencesFromHtml`
+  reads the STORED body rather than Confluence's storage format, because a
+  standalone page has no `body_storage` and a relocated one still carries a
+  stale copy describing attachments its body no longer points at. The image
+  analysis intake reads it exactly as the embedder did.
+- **`retrieved-images.ts` (P4)** — the answer-time byte pick, rewired by
+  #1617 to take its candidates from derived provenance; see below.
+
 
 ### Image analysis in the text index (ADR-027, #1616 — ingestion half)
 
@@ -478,31 +457,11 @@ it consumes are #1615's and reach it through one import point:
   already applied it (D14), so a reader must never be given a page id from a
   request.
 
-`core/services/image-embedding-dirty.ts` and every inline `image_embedding_dirty`
-writer raise `image_analysis_dirty` in the same statement; `rag-service.ts`'s
+`core/services/image-analysis-dirty.ts` and every inline `image_analysis_dirty`
+writer raise the flag in the same statement; `rag-service.ts`'s
 coverage query counts a page with a valid analysis and its sibling window never
 crosses the authored/derived boundary. The FTS-language PUT rebuilds
 `page_embeddings.chunk_tsv` in the same transaction as `pages.tsv`.
-
-`core/services/image-embedding-target-dimensions.ts` holds the MRL truncation
-width (`admin_settings.image_embedding_target_dimensions`), in `core` because
-`routes/foundation/admin.ts` writes it through `PUT /admin/settings` and
-`routes/foundation` may not import a domain. `dimensions` is a **per-request**
-vLLM parameter, so this is what makes the ≤ 4000 remedy the settings row and the
-422 both name actually performable — and one reader is what keeps the probe, the
-column type, the image embedder (P2) and — from P3 — the query side sending the
-same number.
-
-**`image-leg-search.ts` (P3)** is the reader the index had been waiting for:
-the gate, one VL query embed and one kNN over `page_image_embeddings`,
-answering a page-denominated hit list that `rag-service.ts` fuses as a third
-RRF leg. It is a sibling of `rag-service.ts` rather than part of it only
-because `hybridSearch` is already the longest function in the backend — every
-FUSION decision (how the ranks combine, what an image-only page gets as text,
-what the stable head reconstructs) stayed in `rag-service.ts`, beside the other
-two legs' ranking rules. Its visibility predicate is
-`core/services/page-visibility.ts`'s shared fragment, the same one the vector
-leg uses; an image row carries no ACL of its own.
 
 **`retrieved-images.ts` (P4, rewired by #1617)** turns the pictures the
 answer's rows came from into `image_url` parts on the user turn:
@@ -511,12 +470,9 @@ dedupe, re-runs `validateImage` unforked and stops at a derived base64 budget.
 Since #1617 its candidates come from `SearchResult.derived` through
 `derived-provenance.ts` (ADR-027 D11) — so it imports no `ImageHit` and there
 is no per-image score to order by: the carrying row's fused rank decides, then
-`part`. When NO row in the set carries provenance it falls back WHOLE-SET to
-ADR-025's `imageHits` (review r1; a structural `LegacyImageHit`, still no
-import of `image-leg-search.ts`), because the leg is live until #1618 and an
-instance with `image_embedding` assigned and nothing analyzed yet is exactly
-that set — the arm that keeps `image_only_context`'s "attached below"
-sentence true, and the one #1618 deletes with the leg. **The vision gate is the
+`part`. #1617's whole-set fallback to ADR-025's `imageHits` is **gone** (#1618 stage
+2 deleted it with the leg it read): a set with no derived provenance attaches
+no picture, and the module names no legacy hit type at all. **The vision gate is the
 CALLER's, not this module's** — `routes/llm/llm-ask.ts` reads the stored #1154
 verdict and calls the pick only on an exact `true` (09's "Four gates, cheapest
 first"). So the pick loads bytes unconditionally, and nothing that has not
@@ -537,11 +493,10 @@ in `core/db` because they are facts about Postgres and pgvector, not about LLMs,
 and because `domains/llm` may import `core` and nothing else.
 
 All arrows stay inside `llm → core`. Two admin surfaces, both `requireAdmin`
-throughout: `routes/llm/llm-usecases.ts` owns the leg's CONFIGURATION (the
-probe-gated assignment PUT plus `GET`/`POST`
-`/admin/llm-usecases/image_embedding/probe` / `…/reprobe`), and
-`routes/llm/llm-image-index.ts` owns its WORK (`GET
-/admin/embedding/image-index` for the status the Embeddings-tab card renders,
+throughout: `routes/llm/llm-usecases.ts` owns the CONFIGURATION (the
+probe-gated `image_analysis` assignment PUT), and
+`routes/llm/llm-image-analysis.ts` owns the WORK (`GET
+/admin/embedding/image-analysis` for the status the Embeddings-tab card renders,
 plus `…/rescan` and `…/process`, both of which start a detached scan and answer
 immediately — a corpus-wide run outlives every proxy timeout in the path).
 
@@ -555,12 +510,12 @@ a harness with its own copy measures its own copy. Recipe and report fields:
 `docs/runbooks/retrieval-eval.md`, "Image axis (`--images`)".
 
 The ADR-027 arm axis (#1614 PR2) adds three modules beside them and two
-entrypoints, still nothing the server loads: `arms.ts` (the `--arm A|B|C`
-flag and its B/C refusal of the VL environment, `ArmRunReportSchema` — the
-provenance the ADR refuses a report without — `assertComparableArms` over
-the "Held fixed" list, the per-arm evidence rule reading `imageHits` on A
-and D11's `derived.attachmentKey` on B, and the owner decisions O1–O7 as
-constants), `answers.ts` (one arm's answers through the real
+entrypoints, still nothing the server loads: `arms.ts` (the `--arm B|C`
+flag — arm A is refused like any unknown arm since #1618 stage 2 retired its
+index — `ArmRunReportSchema`, the provenance the ADR refuses a report
+without, `assertComparableArms` over the "Held fixed" list, the per-arm
+evidence rule reading D11's `derived.attachmentKey`, and the owner decisions
+O1–O7 as constants), `answers.ts` (one arm's answers through the real
 `POST /api/llm/ask` — `buildApp()` + `inject`, `rag_answer_max_images = 0`,
 SSE parsed — written arm-blinded with a structural key walk that refuses a
 leak) and `judgments.ts` (`JudgmentRowSchema`, the blinded sheet merge with
@@ -568,8 +523,8 @@ its pre-judging hashes, the `--unblind` refusal until every item carries
 exactly one judgment by one judge, and the paired verdict: McNemar exact,
 the page-cluster bootstrap from `metrics.ts`, the one-sided margins and the
 three-part decision rule, labelled single-judge). `runner-images.ts` gains
-the single-arm `runArmEval`; `seed-images.ts` gains `imageIndex: false` for
-the arms without an image leg. `scripts/run-arm-answers.ts` and
+the single-arm `runArmEval`; `seed-images.ts` seeds the text half and the
+attachment bytes only — the state both surviving arms start from. `scripts/run-arm-answers.ts` and
 `scripts/judge-arms.ts` are the entrypoints; `eval/artifacts/1611/` is where
 captured runs live (none yet — its README says why).
 
@@ -626,7 +581,7 @@ writes a `page_image_analyses` row (the worker, the reconcile and the sweep are
 `vision-probe.ts` / `model-capabilities.ts` gained an optional `timeoutMs`
 (`refreshVisionCapability(providerId, model, { timeoutMs })`): the assignment PUT
 runs the known-content probe synchronously inside an admin request and bounds it
-at the image-embedding probe's `IMAGE_PROBE_TIMEOUT_MS`; the chat path's
+at `vision-probe.ts`'s own `VISION_PROBE_TIMEOUT_MS`; the chat path's
 fire-and-forget refresh is unchanged. `core/services/admin-settings-service.ts`
 gained `getImageAnalysisMaxOutputTokens()` (`image_analysis_max_output_tokens`,
 default 8192, range [4096, 16384], strict-shape read — an unparseable or
@@ -656,8 +611,9 @@ the D8 class, and `valid` as D5's predicate evaluated against the retained
 identity and the running constants.
 
 **`routes/llm/llm-image-analysis.ts`** (#1618 stage 1) is the operator's
-processing surface, `requireAdmin` + the admin rate limit, mounted beside
-`llm-image-index.ts` and adding no SQL of its own — it is four HTTP routes over
+processing surface, `requireAdmin` + the admin rate limit, and it adds no SQL
+of its own (`llm-image-index.ts`, which it was mounted beside, went with the
+retired leg in stage 2) — it is four HTTP routes over
 reads and actions #1616 shipped without one. `GET /admin/embedding/image-analysis`
 (`ImageAnalysisStatusSchema`) composes `readImageAnalysisCorpusCounts()`, the
 retained identity, `resolveImageAnalysisIdentity()`, `readImageAnalysisLastRun()`

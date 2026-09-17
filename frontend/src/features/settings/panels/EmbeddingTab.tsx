@@ -6,7 +6,6 @@ import { apiFetch } from '../../../shared/lib/api';
 import { SkeletonFormFields } from '../../../shared/components/feedback/Skeleton';
 import { ActiveEmbeddingLocksBanner } from './ActiveEmbeddingLocksBanner';
 import { EmbeddingModelBenchmarks } from './EmbeddingModelBenchmarks';
-import { ImageIndexCard } from './ImageIndexCard';
 import { ImageAnalysisProgressCard } from './ImageAnalysisProgressCard';
 
 export function EmbeddingTab() {
@@ -89,20 +88,12 @@ export function EmbeddingTab() {
       <EmbeddingModelBenchmarks />
 
       {/*
-        #1115 P2 — the image index's status and its two actions. It sits on
-        this tab rather than beside the assignment row because the assignment
-        is a CHOICE and this is a PIPELINE: it belongs with the chunking knobs
-        and the re-embed controls that describe the same kind of work.
-      */}
-      <ImageIndexCard />
-
-      {/*
-        #1618 (ADR-027 Stage 1) — the image ANALYSIS card. It sits beside the
-        legacy index card above, not in place of it: while both designs are on
-        `dev` the legacy leg is still the only image retrieval that serves, and
-        an operator upgrading into the candidate has to be able to read both.
-        The destructive half removes the card above and this one takes its
-        slot (ADR-027 "Retirement plan", stage 2).
+        #1618 (ADR-027 "Retirement plan") — the image ANALYSIS card, in the
+        slot ADR-025's legacy image-index card held until stage 2 retired it.
+        It sits on this tab rather than beside the assignment row because the
+        assignment is a CHOICE and this is a PIPELINE: it belongs with the
+        chunking knobs and the re-embed controls that describe the same kind
+        of work.
       */}
       <ImageAnalysisProgressCard />
 

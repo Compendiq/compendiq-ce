@@ -71,7 +71,7 @@
  *    the HTML focus fixup rule has already blurred the admin to `<body>`
  *    before this dialog is consulted — and the fix for it is converting the
  *    control to `aria-disabled` + a refusing handler, as
- *    `AttachmentStorageCard`, `ImageIndexCard` and `SyncTab`'s Force Re-sync
+ *    `AttachmentStorageCard`, `ImageAnalysisProgressCard` and `SyncTab`'s Force Re-sync
  *    All now are. That last one is why this paragraph is not hypothetical: a
  *    real-browser pass at `a820e9b7` found the restore working on every
  *    dismiss path and dropping to `<body>` on exactly the one trigger whose

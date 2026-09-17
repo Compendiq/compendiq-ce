@@ -384,7 +384,7 @@ export function ProviderEditModal({ mode, initial, open, onClose, onSaved }: Pro
         {presetId !== 'custom' ? (
           <p className="text-[11px] text-muted-foreground">
             Saving does not assign use cases. Assign Chat after saving — do not assign a chat-only
-            host to Embedding, Rerank, or Image embedding.
+            host to Embedding, Rerank, or Image analysis.
           </p>
         ) : null}
         </div>

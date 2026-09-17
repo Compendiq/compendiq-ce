@@ -183,9 +183,10 @@ describe('toPersistedSources', () => {
   // review r2 #1 — the page entry for the SAME search result survives even
   // though its image entry is dropped, which is the fact that makes dropping
   // safe rather than lossy: `llm-ask.ts` builds the page entry from
-  // `searchResults` and the image entry from the same result's `imageHits`
-  // as two separate array elements, so losing the malformed image entry
-  // loses no page identity.
+  // `searchResults` and the image entry from the same result's derived
+  // `image_analysis` provenance (ADR-027 D12 — #1115's `imageHits` until #1618
+  // stage 2 retired the leg) as two separate array elements, so losing the
+  // malformed image entry loses no page identity.
   it('drops only the malformed image entry, keeping the page entry for the same result', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     const out = toPersistedSources([

@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — the legacy image-embedding path is retired (#1618 stage 2,
+  migration 118).** The authorisation, verbatim: **"Remove it, nobody was
+  using it in production."** The basis is that it was **unused in production**
+  and carried **standing maintenance cost**. It is explicitly **not** a
+  measurement, and nothing in #1619 justified it: the pre-registered primary
+  (B vs A) was **never measured** — arm A needs a vision-language *embedding*
+  endpoint the owner will not stand up — **no human answer-correctness
+  judgement was taken**, arm B stands at **100 of 187** images analysed, and
+  what #1619 did capture is arm C and the legacy-revision-C control, which
+  show #1617's lexical change to be a measured **no-op** on that corpus.
+  ADR-025 is **superseded in full**; AC-4's "passing verdict" route is
+  superseded in writing by ADR-027 amendment **A-5** plus the owner's explicit
+  go. Migration 118 drops `page_image_embeddings`, `pages.image_embedding_dirty`
+  and its partial index, the `image_embedding` assignment row, the
+  `image_embedding_*` and `rag_image_leg_enabled` / `image_index_last_run`
+  settings rows, and **narrows** the `llm_usecase_assignments` CHECK to the
+  eight surviving use cases — the first migration to narrow it. It removes no
+  page content and no attachment bytes. **Rollback is a restore**, not a down
+  migration: `docs/runbooks/image-embedding-retirement.md` carries the
+  `pg_dump` set, the two-arm restore procedure and its exercise record.
+  Pictures stay retrievable and citable through ADR-027's image *analysis*
+  (derived, provenance-marked `page_embeddings` chunks) — one index, one query
+  embed, no third RRF leg, and a text-only chat model can still cite a
+  diagram.
+
 - **The ADR-027 gate is re-registered B vs C, and no condition can be dropped
   in silence (#1619).** Arm A needs a real vision-language *embedding*
   endpoint; the owner declined to stand one up (the goal being to remove VL
@@ -43,6 +68,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer-correctness judgement was taken for #1619** (the owner declined the
   judging burden), so the figures on record are retrieval metrics only; the
   ADR says both plainly.
+
+### Removed
+
+- **#1618 stage 2 — everything the image-embedding leg owned.** Backend:
+  `vl-embedding-client.ts`, `image-embedding-probe.ts`,
+  `image-embedding-index.ts`, `image-embedding-service.ts`,
+  `image-leg-search.ts`, `image-embedding-target-dimensions.ts`,
+  `routes/llm/llm-image-index.ts` and the `image_embedding` probe/assignment
+  routes; `resolveImageEmbeddingUsecase`, `getRagImageLegEnabled`,
+  `ImageEmbeddingDimensionMismatchError`. Contracts: the `image_embedding`
+  member of `LlmUsecaseSchema`, `SearchResult.imageHits` / `imageOnly` /
+  `imageTextSynthesized`, the `image_only_context` refusal reason and
+  `degraded_reason = 'image_leg_unavailable'` (historical `search_analytics`
+  rows keep the text; no CHECK constrained that column). Settings UI: the
+  Image-leg toggle, the MRL truncation-width control, the image-embedding
+  probe chip and the Image-embedding assignment row. Eval: the paired
+  `--images` axis, `EVAL_IMAGE_EMBEDDING_*`, `eval/vl-stub-server.ts`,
+  `tools/vl-embedding-shim/` and its CI job; `--arm A` is refused like any
+  unknown arm. Docs: `docs/runbooks/image-index.md` (rewritten as
+  `image-analysis.md`) and `docs/runbooks/vl-embedding-dev.md`.
+  `core/services/image-embedding-dirty.ts` was **renamed**
+  `image-analysis-dirty.ts` with the column it writes, and
+  `IMAGE_PROBE_TIMEOUT_MS` became `VISION_PROBE_TIMEOUT_MS`.
 
 ### Fixed
 

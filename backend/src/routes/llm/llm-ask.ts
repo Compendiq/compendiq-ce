@@ -9,7 +9,7 @@ import {
   initialTitleFromQuestion,
 } from '../../domains/llm/services/conversation-title.js';
 import { contentToText } from '../../domains/llm/services/prompts.js';
-import { hybridSearch, buildRagContext, type RetrievalMeta, type SearchResult } from '../../domains/llm/services/rag-service.js';
+import { hybridSearch, buildRagContext, type RetrievalMeta } from '../../domains/llm/services/rag-service.js';
 // #1112: deep search's wrapper around hybridSearch. Its own module, not a
 // rag-service export, because expansion is a REQUEST-level stage: /api/search
 // paginates and must never reach it.
@@ -75,21 +75,7 @@ type StoredChatMessage = ChatMessage & { refused?: boolean; sources?: PersistedS
 type RefusalReason =
   | 'semantic_index_unavailable'
   | 'no_context'
-  | 'weak_match'
-  /**
-   * #1115 P4 — every returned row is an image-only page whose `chunkText` is
-   * a title P3 synthesised, AND not one of their pictures could be shown to
-   * the model. The prompt would carry a list of titles and a question.
-   *
-   * It is deliberately NOT one of the three above. `weak_match` is a measured
-   * verdict about relevance and this is not measured at all — the pages may
-   * be a perfect match; the request simply contains no evidence. `no_context`
-   * is false on its face, since retrieval DID find pages. And it is decided
-   * later than all three: it needs to know how many image parts were actually
-   * attached, which is only known after the pick step — still before any
-   * completion, which is the invariant that matters.
-   */
-  | 'image_only_context';
+  | 'weak_match';
 
 /**
  * #1115 P4 — the one sentence added to the system prompt when retrieved
@@ -112,8 +98,8 @@ const RETRIEVED_IMAGES_PROMPT_SENTENCE =
  * through the authenticated attachment route, so an answer over five
  * screenshot-heavy pages would otherwise open fifteen image requests on
  * render. Four is what fits beside a source list without turning it into a
- * gallery, and it is the whole-answer cap — `MAX_IMAGE_HITS_PER_PAGE` (3)
- * bounds any single page's contribution underneath it.
+ * gallery, and it is the whole-answer cap — `rag_images_per_page_max` bounds
+ * any single page's contribution underneath it.
  *
  * **It bounds requests, and the BYTES behind them are worth stating** (review
  * r2), because the citation chips render on every answer rather than behind
@@ -135,45 +121,6 @@ const RETRIEVED_IMAGES_PROMPT_SENTENCE =
 const MAX_IMAGE_SOURCES = 4;
 
 /**
- * ADR-025's `kind: 'image'` citations, kept as the fallback for the window in
- * which its leg is still live and nothing has been analyzed yet (review r1
- * finding 1). Verbatim the pre-#1617 append, and deleted with the leg in
- * #1618.
- *
- * It is reached only when {@link buildDerivedImageSources} produced NOTHING,
- * so the two arms never interleave and one attachment can never be cited
- * twice. No identity read: an `ImageHit` already carries the
- * `buildPageImageUrl` result, computed where the kNN had the page row. It also
- * carries no dedup key of its own, unlike its derived counterpart (review r2
- * finding 5): uniqueness comes from three upstream invariants — the
- * `page_image_embeddings` UNIQUE `(page_id, source, attachment_key)`,
- * `groupByPage`'s one entry per page, and one fused row per page.
- *
- * Ordering is the hit's own cross-modal cosine — the only per-IMAGE measure
- * the legacy leg has; the page order is a fused rank that says nothing about
- * which picture matched better. The cosine itself stays off the wire
- * (`similarity: null`, ADR-025 §8).
- */
-function legacyImageSources(results: SearchResult[]) {
-  return results
-    .flatMap((r) =>
-      (r.imageHits ?? []).map((hit) => ({
-        kind: 'image' as const,
-        pageId: r.pageId,
-        pageTitle: r.pageTitle,
-        spaceKey: r.spaceKey,
-        attachmentUrl: hit.attachmentUrl,
-        similarity: null,
-        score: r.score,
-        _rank: hit.similarity,
-      })),
-    )
-    .sort((a, b) => b._rank - a._rank)
-    .slice(0, MAX_IMAGE_SOURCES)
-    .map(({ _rank, ...source }) => source);
-}
-
-/**
  * The refusal sentence per reason. `semantic_index_unavailable` must NOT read
  * like `no_context`: one says the knowledge base has nothing on the question,
  * the other says we could not look properly. Telling a user the first when
@@ -188,16 +135,6 @@ const REFUSAL_TEXT: Record<RefusalReason, string> = {
     'I could not find any knowledge-base content related to this question, so I am not answering rather than guessing. Try rephrasing, or ask about something the knowledge base covers.',
   weak_match:
     'The knowledge-base passages I found are not a strong enough match to this question to ground an answer, so I am not answering rather than guessing.',
-  // #1115 P4. It says what happened, not what is wrong with the corpus: the
-  // matches exist and may well be the right ones, and the reason they were
-  // not used is a property of THIS deployment's chat model or its settings.
-  // The sentence naming the attachments is the live-only note below, for the
-  // same reason as the other three — the structured `sources` array persists
-  // on reload (#1361) but this prose sentence does not, so a persisted
-  // "attached below" would dangle rather than pointing at the client's own
-  // reload-derived heading.
-  image_only_context:
-    'The only matches for this question are images, and they were not shown to the assistant.',
 };
 
 /**
@@ -217,11 +154,6 @@ const REFUSAL_SOURCES_NOTE: Record<RefusalReason, string> = {
     ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
   weak_match:
     ' The closest partial matches are attached as sources for reference — none matched well enough to use.',
-  // #1115 P4: not "none matched well enough" — these matched fine. What the
-  // reader needs is that the pictures themselves are right there to open,
-  // which is the whole remedy this refusal can offer.
-  image_only_context:
-    ' They are attached below as the closest matches.',
 };
 
 export async function llmAskRoutes(fastify: FastifyInstance) {
@@ -582,22 +514,15 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // overlapping page sets; the reader memoizes per request and neither
     // re-applies a visibility predicate (D14 — retrieval already did).
     const pageIdentities = createPageIdentityReader();
-    // ADR-027 D12's image citations, with ADR-025's leg as the pre-#1618
-    // fallback (review r1 finding 1; D11's third erratum). Derived provenance
-    // is PREFERRED and the fallback is whole-set, so one attachment can never
-    // be cited twice and the two orderings never interleave. On an instance
-    // with `image_embedding` assigned and no analyses yet, the legacy arm is
-    // the only one with anything to say — and it is the arm that keeps
-    // `image_only_context`'s "attached below" sentence true, because every
-    // row that rule fires on carries `imageHits` by construction
-    // (`buildImageLegResults`). #1618 deletes this branch with the leg.
-    const derivedImageSources = await buildDerivedImageSources(
+    // ADR-027 D12's image citations. #1618 stage 2 retired ADR-025's leg and
+    // with it the whole-set `imageHits` fallback this line used to prefer
+    // derived provenance over: derived provenance is now the only source of a
+    // `kind: 'image'` citation, so one attachment can never be cited twice.
+    const imageSources = await buildDerivedImageSources(
       searchResults,
       MAX_IMAGE_SOURCES,
       pageIdentities,
     );
-    const imageSources =
-      derivedImageSources.length > 0 ? derivedImageSources : legacyImageSources(searchResults);
     const sources = [
       ...searchResults.map((r) => ({
         pageId: r.pageId,
@@ -650,10 +575,11 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
       })),
       // ADR-027 D12 (#1617) — one `kind: 'image'` entry per distinct
       // `(pageId, attachment_source, attachment_key)` among the answer's
-      // top-K DERIVED rows, or ADR-025's leg hits while it is still the only
-      // arm with images (built above). The page whose best hit is a derived
-      // chunk is still cited as a page source above (its `chunkText` is the
-      // evidence the model saw); this is the picture that evidence came from.
+      // top-K DERIVED rows (built above; ADR-025's leg hits were the other
+      // source of these entries until #1618 stage 2 retired the leg). The page
+      // whose best hit is a derived chunk is still cited as a page source
+      // above (its `chunkText` is the evidence the model saw); this is the
+      // picture that evidence came from.
       //
       // Five decisions, all deliberate:
       //
@@ -885,11 +811,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     );
     /**
      * Emit one refusal turn: persist it, frame it for the live surface, end
-     * the stream. Shared by the three retrieval-health reasons above and by
-     * #1115 P4's `image_only_context` below — the two are decided at
-     * different points (the second needs the pick step's result) but they are
-     * the same RESPONSE, and a hand-rolled twin is how the least-exercised
-     * branch becomes the differently-shaped one (`sendCachedSSE`'s own note).
+     * the stream. Shared by the three retrieval-health reasons above, and a
+     * hand-rolled twin is how the least-exercised branch becomes the
+     * differently-shaped one (`sendCachedSSE`'s own note).
      */
     const emitRefusal = async (reason: RefusalReason) => {
       // Persisted TEXT and live TEXT diverge DELIBERATELY, but the sources
@@ -991,13 +915,9 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
     // `otherGrounding` — see the note there.
     const answerMaxImages = await getRagAnswerMaxImages();
     // ADR-027 D11: "some returned row carries derived provenance", i.e. the
-    // answer is grounded in an image's description — plus ADR-025's leg hits
-    // while that leg is still live (review r1 finding 1; the pick prefers
-    // provenance and falls back whole-set). False on every deployment with
-    // neither, and on most questions where there are some.
-    const someImageEvidence = searchResults.some(
-      (r) => r.derived !== undefined || (r.imageHits?.length ?? 0) > 0,
-    );
+    // answer is grounded in an image's description. False on every deployment
+    // with no analyses, and on most questions where there are some.
+    const someImageEvidence = searchResults.some((r) => r.derived !== undefined);
     const chatVision =
       answerMaxImages > 0 && someImageEvidence
         ? (imagePart ? true : await getVisionCapability(chatConfig.providerId, resolvedModel))
@@ -1034,55 +954,6 @@ export async function llmAskRoutes(fastify: FastifyInstance) {
         // the request an operator is grepping for.
         '#1115 P4: retrieved-image pick',
       );
-    }
-
-    // ── The all-image-only rule (#1115 P4) ───────────────────────────────
-    //
-    // A row P3 marked `imageTextSynthesized` carries the page's TITLE as its
-    // `chunkText`, because the page has no text chunk at all — that is the
-    // sub-`MIN_EMBEDDABLE_TEXT_CHARS` page the image leg exists to reach. If
-    // EVERY returned row is one of those and not one picture was attached,
-    // the prompt is a list of titles and a question, and an answer from it is
-    // a guess wearing a source list.
-    //
-    // P3 pinned the opposite ("an image-only hit set never refuses") as an
-    // interim: its own reasoning was thin-evidence-not-absent-evidence, and
-    // the thing that made it thin rather than absent was P4 being about to
-    // show the model the picture. Where P4 cannot — no vision, cap at 0, or
-    // every candidate skipped — that justification is gone with it. Where P4
-    // can, the turn answers exactly as P3 said, which is why this is decided
-    // AFTER the pick.
-    //
-    // `otherGrounding` stands it down for the same reason it stands the other
-    // three down: an attached document, a sub-page tree, fetched URLs, web
-    // results, the user's own image or a substantive prior turn are all real
-    // evidence in the request, and refusing over the titles beside them would
-    // tell a user who has just attached a PDF that there is nothing to go on.
-    // And the rule is EVERY row, never any row — widened to "any", it would
-    // refuse ordinary answers whose fifth source happens to be a picture.
-    //
-    // #1617 review r1: the rule keeps its three DISCRIMINATING arms — no
-    // vision, cap 0, every candidate skipped — because the byte pick still
-    // falls back to `imageHits` for a set with no derived provenance, and
-    // every row this predicate can fire on carries them (a synthesised row
-    // is exactly a page with no `page_embeddings` row, so it has no
-    // provenance, and `buildImageLegResults` gives every such row its hits).
-    // Without that fallback the conjunct above would be vacuously true and
-    // `REFUSAL_SOURCES_NOTE`'s "they are attached below" would promise
-    // attachments this turn never produced. #1618 removes the flag, the leg
-    // and this rule together.
-    if (
-      searchResults.length > 0
-      && retrievedImages.parts.length === 0
-      && !otherGrounding
-      && searchResults.every((r) => r.imageTextSynthesized === true)
-    ) {
-      logger.info(
-        { userId, rows: searchResults.length, cap: answerMaxImages, chatVision },
-        'RAG refusal: image-only context with no image shown to the model',
-      );
-      await emitRefusal('image_only_context');
-      return;
     }
 
     // Check RAG cache with stampede protection (only for new conversations

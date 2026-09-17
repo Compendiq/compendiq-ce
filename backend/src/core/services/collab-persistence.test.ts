@@ -90,11 +90,11 @@ async function insertPage(opts: {
   const r = await query<{ id: number }>(
     `INSERT INTO pages (
         space_key, title, body_storage, body_html, body_text, version, source, visibility,
-        created_by_user_id, page_type, embedding_dirty, image_embedding_dirty,
+        created_by_user_id, page_type, embedding_dirty,
         summary_status, quality_status, local_modified_at, local_modified_by
      ) VALUES (
         '_standalone', $1, $2, $2, 'seed', 1, 'standalone', 'shared',
-        $3, 'page', FALSE, FALSE, 'summarized', 'analyzed', NULL, NULL
+        $3, 'page', FALSE, 'summarized', 'analyzed', NULL, NULL
      ) RETURNING id`,
     [opts.title ?? 'Persist page', opts.html, opts.ownerId],
   );
@@ -118,14 +118,13 @@ async function pageRow(pageId: number) {
     body_text: string;
     version: number;
     embedding_dirty: boolean;
-    image_embedding_dirty: boolean;
     image_analysis_dirty: boolean;
     local_modified_at: Date | null;
     local_modified_by: string | null;
     summary_status: string;
     quality_status: string;
   }>(
-    `SELECT body_html, body_text, version, embedding_dirty, image_embedding_dirty, image_analysis_dirty,
+    `SELECT body_html, body_text, version, embedding_dirty, image_analysis_dirty,
             local_modified_at, local_modified_by, summary_status, quality_status
        FROM pages WHERE id = $1`,
     [pageId],
@@ -290,7 +289,6 @@ describe.skipIf(!canRun)('collab BYTEA persist + snapshot (#1445)', () => {
     expect(page.summary_status).toBe('summarized');
     expect(page.quality_status).toBe('analyzed');
     expect(page.embedding_dirty).toBe(true);
-    expect(page.image_embedding_dirty).toBe(true);
     expect(page.image_analysis_dirty).toBe(true);
     expect(page.body_text.length).toBeGreaterThan(0);
     expect(yDocToHtml(room.doc)).toContain('SNAPSHOTTED');

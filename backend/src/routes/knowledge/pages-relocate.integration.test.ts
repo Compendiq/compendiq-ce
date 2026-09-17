@@ -1596,40 +1596,40 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
    *
    * The persisted body has its `img src` attributes rewritten onto the other
    * store's prefix, so every `(source, attachment_key)` in
-   * `page_image_embeddings` now names a row this page no longer references —
+   * `page_image_analyses` now names a row this page no longer references —
    * and `extractImageReferencesFromHtml` reads exactly that prefix. Only a
    * re-scan reconciles it, and the flag is what schedules one. Both directions
-   * were deletable with every suite green.
+   * were deletable with every suite green. (#1618 retired the legacy
+   * `image_embedding_dirty` half; ADR-027 D4's analysis flag is what is left.)
    */
-  describe('image_embedding_dirty across a relocate (#1115 P2)', () => {
-    /** Both flags — ADR-027 D4 raises the analysis flag beside the legacy one. */
-    async function imageDirty(id: number): Promise<{ image: boolean; analysis: boolean }> {
-      const r = await query<{ image_embedding_dirty: boolean; image_analysis_dirty: boolean }>(
-        'SELECT image_embedding_dirty, image_analysis_dirty FROM pages WHERE id = $1', [id],
+  describe('image_analysis_dirty across a relocate (#1115 P2, ADR-027 D4)', () => {
+    async function imageDirty(id: number): Promise<{ analysis: boolean }> {
+      const r = await query<{ image_analysis_dirty: boolean }>(
+        'SELECT image_analysis_dirty FROM pages WHERE id = $1', [id],
       );
-      return { image: r.rows[0]!.image_embedding_dirty, analysis: r.rows[0]!.image_analysis_dirty };
+      return { analysis: r.rows[0]!.image_analysis_dirty };
     }
 
     it('raises it on local → Confluence', async () => {
       const id = await createPage({ title: 'Moving up', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.createPage.mockResolvedValue(createdPage('900910'));
 
       expect((await toConfluence(id)).statusCode).toBe(200);
 
-      expect(await imageDirty(id)).toEqual({ image: true, analysis: true });
+      expect(await imageDirty(id)).toEqual({ analysis: true });
     });
 
     it('raises it on Confluence → local', async () => {
       const id = await createPage({
         title: 'Moving down', source: 'confluence', confluenceId: '700910', spaceKey: 'CONF',
       });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.deletePage.mockResolvedValue(undefined);
 
       expect((await toLocal(id, '700910')).statusCode).toBe(200);
 
-      expect(await imageDirty(id)).toEqual({ image: true, analysis: true });
+      expect(await imageDirty(id)).toEqual({ analysis: true });
     });
 
     it('restores it when the move is compensated', async () => {
@@ -1641,13 +1641,13 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       const id = await createPage({
         title: 'Reverted', source: 'confluence', confluenceId: '700911', spaceKey: 'CONF',
       });
-      await query('UPDATE pages SET image_embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [id]);
+      await query('UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1', [id]);
       h.client.deletePage.mockRejectedValue(new ConfluenceError('server error', 500));
       h.client.getPage.mockResolvedValue({ id: '700911', status: 'current' });
 
       expect((await toLocal(id, '700911')).statusCode).toBe(500);
 
-      expect(await imageDirty(id)).toEqual({ image: false, analysis: false });
+      expect(await imageDirty(id)).toEqual({ analysis: false });
     });
   });
 });

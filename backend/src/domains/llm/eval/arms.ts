@@ -1,24 +1,27 @@
 /**
- * #1614 PR2 — the ADR-027 arm axis: what `--arm A|B|C` selects, what one
- * arm's run records, and what a pair of arm runs is refused for.
+ * #1614 PR2 — the ADR-027 arm axis: what `--arm B|C` selects, what one arm's
+ * run records, and what a pair of arm runs is refused for.
  *
- * ADR-027 "Measurement plan" puts the three arms on different code revisions
- * and different index states (A: the legacy image leg on the pre-#1618
- * revision; B: the candidate with derived chunks; C: the same candidate
- * revision with `image_analysis` unassigned). They cannot share a process,
- * so — unlike the paired `--images` axis, which runs both legs of one query
- * in one loop — an arm run is ONE arm on the image corpus, written to its own
- * report, and the pairing happens later across files: `assertComparableArms`
- * for the retrieval endpoints here, `judge-arms.ts --unblind` for the
- * answer endpoints. Everything that must be held fixed across arms (the
- * ADR's "Held fixed" list) is a field of `ArmRunReportSchema` and a refusal
- * in `assertComparableArms` — the corpus and query-set hashes, the embedder,
- * the FTS configuration, the rerank and answer-model assignments, and every
+ * ADR-027 "Measurement plan" pre-registered three arms (A: ADR-025's legacy
+ * image-embedding leg; B: the candidate with derived chunks; C: the same
+ * candidate revision with `image_analysis` unassigned). **Arm A is gone from
+ * the shipped runtime**: its index was `page_image_embeddings`, which #1618
+ * stage 2 dropped, and the ADR's amendment A-1/A-5 re-registered the primary
+ * endpoint as B vs C for that reason. A's archived baseline stays reproducible
+ * by checking out its recorded `revisionSha` — never as an alternate runtime
+ * here.
+ *
+ * An arm run is ONE arm on the image corpus, written to its own report, and
+ * the pairing happens later across files: `assertComparableArms` for the
+ * retrieval endpoints here, `judge-arms.ts --unblind` for the answer
+ * endpoints. Everything that must be held fixed across arms (the ADR's "Held
+ * fixed" list) is a field of `ArmRunReportSchema` and a refusal in
+ * `assertComparableArms` — the corpus and query-set hashes, the embedder, the
+ * FTS configuration, the rerank and answer-model assignments, and every
  * retrieval knob the report records, key by key. What one arm carries and
- * another must not (A's VL endpoint and index identity, B's vision model and
- * output-token ceiling) is a per-arm rule of the schema itself
- * (`armProvenanceProblems`), so a B report without the ceiling or a C report
- * with one is not a report.
+ * another must not (B's vision model and output-token ceiling) is a per-arm
+ * rule of the schema itself (`armProvenanceProblems`), so a B report without
+ * the ceiling or a C report with one is not a report.
  *
  * The owner decisions O1–O7 are constants here (`ARM_MARGINS`,
  * `ARM_SAMPLE`), imported by the scorer and quoted by the runbook, so the
@@ -45,7 +48,7 @@ import {
 } from '../../../core/services/admin-settings-service.js';
 import { resolveImageAnalysisUsecase, resolveRerankUsecase, resolveUsecase } from '../services/llm-provider-resolver.js';
 import { flagValue } from './cli-flags.js';
-import { IMAGE_AXIS_ENV, readImageAxisEnv, wantsImageAxis, type ImageAxisEnv } from './images-axis.js';
+import { wantsImageAxis } from './images-axis.js';
 import { IMAGE_DEPENDENT_CLASSES, IMAGE_FIXTURE_PATH } from './fixture.js';
 import {
   clusterBootstrapCi,
@@ -58,7 +61,7 @@ import {
   type QueryRun,
 } from './metrics.js';
 
-export const EVAL_ARMS = ['A', 'B', 'C'] as const;
+export const EVAL_ARMS = ['B', 'C'] as const;
 export type EvalArm = (typeof EVAL_ARMS)[number];
 
 /** The flag, in one place so the usage text and the parser cannot disagree. */
@@ -79,29 +82,6 @@ export function parseArmFlag(argv: readonly string[]): EvalArm | null {
     );
   }
   return raw as EvalArm;
-}
-
-/**
- * The VL environment for an arm, or a refusal.
- *
- * Arm A is the legacy leg and REQUIRES `EVAL_IMAGE_EMBEDDING_*` — read
- * through `readImageAxisEnv`, so the refusal text and the width rules are the
- * paired axis's own. Arms B and C have no image leg by definition, so those
- * variables being SET is refused: a C run that quietly filled
- * `page_image_embeddings` would not be an ablation, and a B run that did
- * would be measuring both designs at once under the candidate's name.
- */
-export function readArmImageEnv(arm: EvalArm, env: NodeJS.ProcessEnv = process.env): ImageAxisEnv | null {
-  if (arm === 'A') return readImageAxisEnv(env);
-  const set = Object.values(IMAGE_AXIS_ENV).filter((name) => env[name] !== undefined && env[name] !== '');
-  if (set.length > 0) {
-    throw new Error(
-      `--arm ${arm} refuses ${set.join(', ')}: arm ${arm} has no image leg (ADR-027 "Arms and revisions" — ` +
-        `${arm === 'C' ? 'page_image_embeddings stays empty' : 'the candidate retrieves derived chunks, never image vectors'}), ` +
-        'so a VL endpoint here could only fill an index the arm must not have. Unset them, or run --arm A.',
-    );
-  }
-  return null;
 }
 
 /**
@@ -231,8 +211,8 @@ export type ProviderIdentity = z.infer<typeof ProviderIdentitySchema>;
  * counterpart for, and a revision can define a knob another revision does
  * not. Two arms on ONE revision must still record the SAME key set — a
  * one-sided knob there is a drift (`assertComparableArms`). Across
- * revisions — every pair containing arm A, which runs on the legacy
- * revision by design — a knob that exists on one revision only cannot be
+ * revisions — the `legacy-revision-C` control is such a pair by design — a
+ * knob that exists on one revision only cannot be
  * held fixed and no re-run could make it agree, so it is RECORDED as
  * revision-specific (`revisionSpecificKnobs`) instead of refused.
  */
@@ -270,7 +250,7 @@ const ArmRunReportObject = z.object({
    * A legacy-revision C (ADR-027: "a regression control for #1617's
    * authored-hit change, labelled as such, never substituted for C"). Set by
    * `--control legacy-revision-C`; a report carrying it is refused as the C
-   * of any B−C or C−A pair. The ONE pairing it is read in is against the
+   * of any B−C pair. The ONE pairing it is read in is against the
    * candidate C through `--baseline` (`isRegressionControlPair`), descriptive
    * only — no verdict reads it.
    */
@@ -292,10 +272,8 @@ const ArmRunReportObject = z.object({
   rerank: z.string().min(1),
   /** The `chat` assignment on the run's database, or null when none is assigned. */
   answerModel: ProviderIdentitySchema.nullable(),
-  /** Arm A: the VL embedding endpoint. Arm B: the `image_analysis` assignment the backfill ran under. C: null. */
+  /** Arm B: the `image_analysis` assignment the backfill ran under. C: null. */
   visionModel: ProviderIdentitySchema.nullable(),
-  /** Arm A only: `imageIndexIdentityFor`'s `provider:model@baseUrl#dims`. */
-  imageIndexIdentity: z.string().min(1).nullable(),
   /** Arm B only: `image_analysis_max_output_tokens` in force for the backfill (D8; recorded, not prescribed). */
   imageAnalysisMaxOutputTokens: z.number().int().positive().nullable(),
   /** Arm B only: the ONE (prompt, schema) version pair every analysed corpus row carries (D5). */
@@ -311,7 +289,7 @@ const ArmRunReportObject = z.object({
   rerankParticipatingQueries: z.number().int().nonnegative(),
   assemblyParticipatingQueries: z.number().int().nonnegative(),
   pinParticipatingQueries: z.number().int().nonnegative(),
-  /** Arm A: queries whose top-K carried a leg hit; B: a derived row; C: 0. */
+  /** Arm B: queries whose top-K carried a derived row; C: 0. */
   imageEvidenceParticipatingQueries: z.number().int().nonnegative(),
   recallAtK: z.record(z.string(), z.number()),
   mrr: z.number(),
@@ -325,12 +303,11 @@ const ArmRunReportObject = z.object({
 export type ArmRunReport = z.infer<typeof ArmRunReportObject>;
 
 /**
- * The per-arm half of "Report provenance (refused if absent)": what A must
- * carry (its VL endpoint and index identity), what B must carry (the vision
- * model and the ceiling its backfill ran under, plus the version pair), and
- * what C must NOT carry (any of them — C has no image leg and no derived
- * rows, so a vision model or a ceiling on a C report says the database was
- * not in C's state).
+ * The per-arm half of "Report provenance (refused if absent)": what B must
+ * carry (the vision model and the ceiling its backfill ran under, plus the
+ * version pair), and what C must NOT carry (any of them — C has no image
+ * leg and no derived rows, so a vision model or a ceiling on a C report says
+ * the database was not in C's state).
  */
 export function armProvenanceProblems(report: ArmRunReport): Array<{ field: keyof ArmRunReport; message: string }> {
   const problems: Array<{ field: keyof ArmRunReport; message: string }> = [];
@@ -339,21 +316,13 @@ export function armProvenanceProblems(report: ArmRunReport): Array<{ field: keyo
     if (has !== present) problems.push({ field, message: `arm ${report.arm} ${present ? 'must record' : 'must not carry'} ${field}: ${why}` });
   };
   switch (report.arm) {
-    case 'A':
-      want('visionModel', true, 'the legacy leg embeds through a VL endpoint (ADR-027 O8/"Report provenance")');
-      want('imageIndexIdentity', true, 'the index the leg searched is provenance');
-      want('imageAnalysisMaxOutputTokens', false, 'no vision analysis runs on the legacy revision');
-      want('imageAnalysisVersions', false, 'no vision analysis runs on the legacy revision');
-      break;
     case 'B':
       want('visionModel', true, 'the image_analysis assignment the backfill ran under — refused if absent (O8)');
       want('imageAnalysisMaxOutputTokens', true, 'image_analysis_max_output_tokens in force for the backfill — refused if absent (D8)');
       want('imageAnalysisVersions', true, 'the prompt and schema versions the analysed rows carry (D5)');
-      want('imageIndexIdentity', false, 'the candidate has no image leg');
       break;
     case 'C':
-      want('visionModel', false, 'the ablation has image_analysis unassigned and no image leg');
-      want('imageIndexIdentity', false, 'the ablation has no image leg');
+      want('visionModel', false, 'the ablation has image_analysis unassigned');
       want('imageAnalysisMaxOutputTokens', false, 'the ablation ran no backfill');
       want('imageAnalysisVersions', false, 'the ablation ran no backfill');
       break;
@@ -654,7 +623,7 @@ export async function assertArmCState(): Promise<void> {
   if (problems.length > 0) {
     throw new Error(
       `arm C: this database is not in the ablation's state (ADR-027 "Arms and revisions": image_analysis unassigned, ` +
-        `no derived chunks, page_image_embeddings empty) — ${problems.join('; ')}. Unassign it and re-seed; the run ` +
+        `no derived chunks) — ${problems.join('; ')}. Unassign it and re-seed; the run ` +
         'refuses rather than deleting what it did not write.',
     );
   }
@@ -667,21 +636,17 @@ export async function assertArmCState(): Promise<void> {
 /**
  * The slice of a `hybridSearch` row the evidence rule reads. `derived` is
  * D11's provenance object (#1617 — "an ordinary SearchResult with a `derived`
- * provenance object read from `metadata`"), typed structurally here because
- * that field does not exist on this revision: arm B is runnable only after
- * #1617, and until then every row reads as carrying none.
+ * provenance object read from `metadata`"), typed structurally here so the
+ * scorers stay independent of `rag-service`'s own row shape.
  */
 export interface EvidenceRow {
   pageId: number;
-  imageHits?: ReadonlyArray<{ key: string }> | undefined;
   derived?: { attachmentKey?: string | null | undefined } | null | undefined;
 }
 
-/** The ADR endpoint table's three rules, one per arm. */
+/** The ADR endpoint table's rules, one per arm. */
 export function evidenceKeysOf(arm: EvalArm, row: EvidenceRow): string[] {
   switch (arm) {
-    case 'A':
-      return (row.imageHits ?? []).map((hit) => hit.key);
     case 'B': {
       const key = row.derived?.attachmentKey;
       return typeof key === 'string' && key.length > 0 ? [key] : [];
@@ -782,8 +747,8 @@ export function isRegressionControlPair(baseline: ArmRunReport, candidate: ArmRu
 
 /**
  * The knobs only ONE of two reports records, when the two ran on different
- * revisions. Every pair containing arm A is such a pair by design (A is the
- * legacy revision), and a knob a revision does not define cannot be held
+ * revisions. The `legacy-revision-C` control is such a pair by design, and a
+ * knob a revision does not define cannot be held
  * fixed: there is no re-run that could make it agree, so the comparison
  * RECORDS it (`ArmRetrievalComparison.revisionSpecificKnobs`) instead of
  * refusing the pair (review r2 finding 4).
@@ -862,7 +827,7 @@ export function assertComparableArms(
     if (baseline.arm === candidate.arm) {
       throw new Error(
         `Both reports are arm ${baseline.arm} — two runs of one arm are a before/after on that arm, not an ` +
-          'arm comparison. Pair A, B and C against each other.',
+          'arm comparison. Pair B and C against each other.',
       );
     }
   }

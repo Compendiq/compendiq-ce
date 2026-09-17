@@ -118,7 +118,6 @@ export interface RelocatablePage {
    * above is not advisory: a column the move sets and the snapshot omits comes
    * back from a compensation still carrying the moved value.
    */
-  image_embedding_dirty: boolean;
   /** ADR-027 D4 (#1616) — the analysis flag, written and restored beside the legacy one. */
   image_analysis_dirty: boolean;
   embedding_status: string | null;
@@ -128,7 +127,7 @@ export interface RelocatablePage {
 export const RELOCATABLE_COLUMNS =
   'id, title, source, space_key, confluence_id, visibility, created_by_user_id, ' +
   'body_html, body_storage, version, inherit_perms, local_modified_at, ' +
-  'local_modified_by, embedding_dirty, image_embedding_dirty, image_analysis_dirty, embedding_status, embedded_at';
+  'local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at';
 
 /** A mirrored Confluence page restriction, as stored in `access_control_entries`. */
 interface PageAce {
@@ -618,7 +617,6 @@ async function relocateToConfluence(opts: {
              version = $7,
              last_synced = NOW(),
              embedding_dirty = TRUE,
-             image_embedding_dirty = TRUE,
              image_analysis_dirty = TRUE,
              embedding_status = 'not_embedded',
              embedded_at = NULL
@@ -803,11 +801,10 @@ async function relocateToLocal(opts: {
          -- standalone visibility model the only one in force (decision 4).
          inherit_perms = TRUE,
          embedding_dirty = TRUE,
-         -- #1115 P2 — see the matching note in relocateToConfluence. This is
+         -- ADR-027 D4 — see the matching note in relocateToConfluence. This is
          -- the direction the P0 record singles out, because the rewritten body
-         -- moves every image onto /api/local-attachments/ while the index
-         -- still keys them under source = 'confluence'.
-         image_embedding_dirty = TRUE,
+         -- moves every image onto /api/local-attachments/ while the stored
+         -- analyses still key them under source = 'confluence'.
          image_analysis_dirty = TRUE,
          embedding_status = 'not_embedded',
          embedded_at = NULL,
@@ -957,7 +954,7 @@ async function restorePreMoveState(
          source = $2, confluence_id = $3, space_key = $4, visibility = $5,
          created_by_user_id = $6, body_html = $7, body_storage = $8,
          inherit_perms = $9, local_modified_at = $10, local_modified_by = $11,
-         embedding_dirty = $12, image_embedding_dirty = $13, image_analysis_dirty = $16,
+         embedding_dirty = $12, image_analysis_dirty = $13,
          embedding_status = $14, embedded_at = $15
        WHERE id = $1`,
       [
@@ -973,10 +970,9 @@ async function restorePreMoveState(
         snapshot.local_modified_at,
         snapshot.local_modified_by,
         snapshot.embedding_dirty,
-        snapshot.image_embedding_dirty,
+        snapshot.image_analysis_dirty,
         snapshot.embedding_status,
         snapshot.embedded_at,
-        snapshot.image_analysis_dirty,
       ],
     );
     await invalidateCollabDocAfterBodyWrite(snapshot.id, txClient);

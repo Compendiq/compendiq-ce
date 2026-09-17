@@ -9,7 +9,7 @@
 -- over the chunk table (like 049's page rebuild) and must not be cut off by a
 -- deployment's PG_STATEMENT_TIMEOUT.
 --
--- Cost, stated once (docs/runbooks/image-index.md §5b carries the operator
+-- Cost, stated once (docs/runbooks/image-analysis.md §4 carries the operator
 -- line): `runMigrations` wraps the file in ONE transaction, so the backfill is
 -- a single rewrite of every chunk row that has no `chunk_tsv` yet — the heap
 -- carries the old tuple versions until (auto)vacuum reclaims them — followed
@@ -20,8 +20,9 @@
 -- re-run (or a manual replay) rewrites nothing that is already filled.
 
 -- The page-level backlog carrier (ADR-027 D4): "re-enumerate this page's
--- images". Raised by every writer that raises image_embedding_dirty (the two
--- coexist until #1618 retires the legacy flag); consumed by the reconcile step,
+-- images". Raised by every attachment and body writer (it coexisted with
+-- image_embedding_dirty until #1618 stage 2 retired that flag); consumed by
+-- the reconcile step,
 -- which CLAIMS it before enumerating (D6.2).
 ALTER TABLE pages ADD COLUMN IF NOT EXISTS image_analysis_dirty    BOOLEAN NOT NULL DEFAULT FALSE;
 -- The revision token embedPage compares before clearing embedding_dirty

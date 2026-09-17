@@ -7,7 +7,8 @@
  * could pair `running: false` with the PREVIOUS run's summary, and a second
  * run started inside that window could have its fresh record overwritten by
  * this run's stale one landing late. `persistSetting` swallows its own errors
- * (the image-index precedent), so holding the lock through it cannot wedge it.
+ * (the image-analysis worker's precedent), so holding the lock through it
+ * cannot wedge it.
  *
  * Mocked end to end (this cell is about call ORDER, not the walk): the root
  * is pointed at a path that does not exist, so `executeSweep` refuses without
@@ -77,7 +78,7 @@ vi.mock('../../../core/services/local-attachment-service.js', () => ({
   removeLocalAttachmentFileForSweep: vi.fn(),
 }));
 
-vi.mock('../../../core/services/image-embedding-dirty.js', () => ({
+vi.mock('../../../core/services/image-analysis-dirty.js', () => ({
   markPageImagesDirty: vi.fn(),
 }));
 
@@ -99,8 +100,8 @@ import {
 } from './attachment-sweep-service.js';
 // #1514 — type-only: the colliding constant's VALUE is resolved at runtime
 // with `vi.importActual` inside the cell (see the comment there), so this file
-// deliberately has no runtime import of the image-index module.
-import type * as ImageEmbeddingService from '../../llm/services/image-embedding-service.js';
+// deliberately has no runtime import of the image-analysis worker module.
+import type * as ImageAnalysisWorker from '../../llm/services/image-analysis-worker.js';
 
 /** The module's own `LOCK_REFRESH_MS`; restated because it is not exported. */
 const LOCK_REFRESH_MS_UNDER_TEST = 60_000;
@@ -242,8 +243,8 @@ describe('#1349 runAttachmentSweep epilogue ordering', () => {
  * `locked).toHaveBeenCalledWith('attachment-sweep')` against a literal it
  * supplies itself in its own module mock, so that expectation is satisfied by
  * the mock rather than by the production value. Swapping line 132 to
- * `'image-embedding-index'` therefore left 18 tests passing — while in
- * production the destructive sweep and the #1115 image-index worker would
+ * `'image-analysis'` therefore left 18 tests passing — while in
+ * production the destructive sweep and the image-analysis worker would
  * share one Redis key and each answer `alreadyRunning` for the other: the
  * operator presses Delete orphans, is told a sweep is already running, and
  * the real holder is a worker that has nothing to do with attachments.
@@ -253,13 +254,13 @@ describe('#1349 runAttachmentSweep epilogue ordering', () => {
  * claim are SEPARATE cells on purpose: in one cell the value assertion throws
  * first and the distinctness assertion is never reached, so the rename
  * mutation could only ever be shown to red one of the two. Split, the single
- * mutation `'attachment-sweep'` → `'image-embedding-index'` reds BOTH, and
+ * mutation `'attachment-sweep'` → `'image-analysis'` reds BOTH, and
  * renaming either side deliberately still has to keep them apart.
  *
  * The colliding constant is resolved with `vi.importActual` inside the cell
  * rather than by a top-level named import, for the same reason the reserved
  * dirnames above are: this file already mocks eight modules of the sweep's
- * graph, so a future `vi.mock` of the image-index module added for some
+ * graph, so a future `vi.mock` of the analysis-worker module added for some
  * unrelated reason would otherwise silently turn this comparison into
  * production-vs-mock-literal and a real rename INTO collision would pass
  * green. Read through `importActual`, that degradation reds instead.
@@ -269,11 +270,11 @@ describe('#1514 the attachment sweep worker-lock name', () => {
     expect(ATTACHMENT_SWEEP_WORKER_LOCK).toBe('attachment-sweep');
   });
 
-  it('never collides with the image-index worker lock', async () => {
-    const { IMAGE_INDEX_WORKER_LOCK } = await vi.importActual<typeof ImageEmbeddingService>(
-      '../../llm/services/image-embedding-service.js',
+  it('never collides with the image-analysis worker lock', async () => {
+    const { IMAGE_ANALYSIS_WORKER_LOCK } = await vi.importActual<typeof ImageAnalysisWorker>(
+      '../../llm/services/image-analysis-worker.js',
     );
 
-    expect(ATTACHMENT_SWEEP_WORKER_LOCK).not.toBe(IMAGE_INDEX_WORKER_LOCK);
+    expect(ATTACHMENT_SWEEP_WORKER_LOCK).not.toBe(IMAGE_ANALYSIS_WORKER_LOCK);
   });
 });

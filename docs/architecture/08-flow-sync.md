@@ -20,9 +20,9 @@ sequenceDiagram
     participant DB as Postgres (pages)
     participant ES as embedding-service
     participant OL as Ollama (/embed)
-    participant IW as image-embedding-service
+    participant IW as image-analysis-worker
     participant AS as attachment-store
-    participant VL as VL endpoint (vLLM)
+    participant VL as vision model (/chat/completions)
 
     T->>S: syncSpace(userId, spaceKey)
     S->>R: SETEX NX sync:worker:lock (TTL 600s)
@@ -48,8 +48,8 @@ sequenceDiagram
             S->>AH: downloadAttachments(page)
             AH->>CF: GET attachments
             AH->>AH: write to ATTACHMENTS_DIR
-            AH->>DB: on a real DOWNLOAD only:<br/>SET image_embedding_dirty = true (#35;1115)
-            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_embedding_dirty = true
+            AH->>DB: on a real DOWNLOAD only:<br/>SET image_analysis_dirty = true (ADR-027 D4)
+            S->>DB: INSERT/UPDATE pages<br/>SET embedding_dirty = true, image_analysis_dirty = true
             S->>R: HSET sync:status:{user} progress
         end
 
@@ -89,24 +89,25 @@ sequenceDiagram
         ES->>DB: UPDATE pages SET embedding_dirty = false
     end
 
-    Note over IW,VL: Image index worker (#35;1115 P2) — kicked beside the text pass,<br/>own worker lock, no-op when image_embedding is unassigned
-    IW->>DB: SELECT pages WHERE image_embedding_dirty = true LIMIT N
+    Note over IW,VL: Image analysis worker (#35;1616, ADR-027 D13) — its OWN repeatable job<br/>on the sync cadence, own worker lock, no-op when image_analysis is unassigned<br/>(#35;1618 stage 2 retired #35;1115 P2's image-EMBEDDING worker)
+    IW->>DB: SELECT pages WHERE image_analysis_dirty = true LIMIT N
     loop per page
         IW->>IW: enumerate body_html img src<br/>store follows the URL PREFIX
         IW->>AS: resolveAttachmentBytes(page, source, key)
         AS-->>IW: bytes + sniffed format (or null)
         alt unsupported / too large / oversized / missing
             IW->>IW: skip and COUNT — never resize (D10)
-        else sha256 unchanged
-            IW->>IW: reuse the existing row, no request
+        else content hash + identity unchanged
+            IW->>IW: reuse the existing analysis, no request
         else
-            IW->>VL: POST /v1/embeddings (chat-embeddings shape)
-            VL-->>IW: image vector
-            IW->>DB: UPSERT page_image_embeddings
+            IW->>VL: POST /chat/completions (image_url part)
+            VL-->>IW: bounded description text
+            IW->>DB: UPSERT page_image_analyses
         end
     end
-    IW->>DB: DELETE rows the body no longer references
-    IW->>DB: UPDATE pages SET image_embedding_dirty = false<br/>only when nothing FAILED
+    IW->>DB: reconcile away rows the body no longer references
+    IW->>DB: UPDATE pages SET image_analysis_dirty = false<br/>only when nothing FAILED
+    Note over IW,ES: the derived text becomes page_embeddings rows with<br/>metadata.source = 'image_analysis' on the next embedPage
 ```
 
 ## Triggers
@@ -693,23 +694,24 @@ embeds. A new embedding path can no longer inherit a policy by omission.
 
 ## The image index rides this cadence (#1115 P2)
 
-The image worker has **no repeatable job of its own**. It is kicked
-fire-and-forget from `syncUser`'s tail, beside `processDirtyPages` and not
-after it — the two share no lock, no table and no provider, and chaining them
-would make an image scan wait out a text re-embed of the corpus. That mirrors
-how the text embedder is scheduled: `queue-service.ts` schedules the SYNC, and
-the embedding pass runs off its tail.
+The image worker is ADR-027's analysis worker, and it **has a repeatable job
+of its own** on the sync cadence (`queue-service.ts`, queue `image-analysis`,
+concurrency 1; the interval worker stands in when BullMQ is off). #1115 P2's
+image-EMBEDDING worker, which was kicked fire-and-forget from `syncUser`'s
+tail instead, was retired with the leg by #1618 stage 2. The price of one
+cadence is latency: a page a sync writes waits up to one sync interval for its
+first reconcile.
 
 Several properties keep that cheap and safe on the instances that will never use
 it — deliberately unnumbered, because the count was wrong the first time the
 list grew and a reader who trusts it stops at the wrong bullet:
 
-- **A no-op fast path before the lock.** `resolveImageEmbeddingUsecase()` is
-  consulted first, so an unassigned leg — the default, and ADR-021's "the leg is
-  off" state — costs one query per sync and takes no Redis lock. The "idle"
+- **A no-op fast path before the inference.** `image_analysis` resolving to
+  nothing — the default, and ADR-021's non-inheriting state — means the sweep
+  and reconcile still run but no image byte leaves the host (ADR-027 D3). The "idle"
   notice is logged **once per process**, not once per tick, or it would be pure
   noise at whatever `SYNC_INTERVAL_MIN` is set to.
-- **Its own lock key.** `worker:lock:image-embedding-index`, never the per-user
+- **Its own lock key.** `worker:lock:image-analysis`, never the per-user
   `embedding:lock:*`: `processDirtyPages` backs off when it finds another holder
   of that key, so borrowing it would have silently blocked every text embed on
   the instance for the duration of an image scan.
@@ -738,7 +740,7 @@ The attachment writers close what P0 called the fact-base hole: sync's
 **version-unchanged** branch re-downloads missing attachments without touching
 the page row, so the page's images can change while `embedding_dirty` correctly
 stays put. `syncImageAttachments` / `syncDrawioAttachments` raise
-`image_embedding_dirty` there — but only on a real DOWNLOAD, because both
+`image_analysis_dirty` there — but only on a real DOWNLOAD, because both
 functions skip files already on disk and an unconditional flag would re-scan
 every page carrying a diagram on every sync. `fetchAndCachePageImage` — the
 per-request lazy fetch on `/api/attachments/:pageId/:filename` — raises it on
@@ -755,10 +757,10 @@ deliberately kept.
 
 **#1349's orphan sweep is the fourth caller of that module, and the only one
 that also DELETES index rows.** A live `attachment-sweep-service` run removes
-the `page_image_embeddings` rows of the files it deleted — a safety net that
+the `page_image_analyses` rows of the files it deleted — a safety net that
 normally finds none, since a `missing` row's file is still referenced by a body
 and is therefore in the sweep's global keep-set — and marks the affected pages
-`image_embedding_dirty` through `markPageImagesDirty`, which now answers
+`image_analysis_dirty` through `markPageImagesDirty`, which now answers
 `Promise<boolean>` (did the row move) so the run can report `pagesMarkedDirty`
 rather than guess at it. Same reasoning as `cleanPageAttachments` above: the
 flag re-queues a page for a re-read and never shrinks the index.
@@ -793,9 +795,9 @@ LLM. See [`11-content-pipeline.md`](./11-content-pipeline.md).
 - `backend/src/core/services/page-icon-store.ts` — `discardPageIconForDeletedPage`, called after `unsyncSpace`'s and `purgeDeletedPages`' committed deletes
 - `backend/src/domains/confluence/services/sync-overview-service.ts`
 - `backend/src/domains/llm/services/embedding-service.ts`
-- `backend/src/domains/llm/services/image-embedding-service.ts` — `embedPageImages`, `processDirtyPageImages` (#1115 P2)
-- `backend/src/core/services/image-embedding-dirty.ts` — `pages.image_embedding_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-025)
-- `backend/src/routes/llm/llm-image-index.ts` — status, re-scan, process (all `requireAdmin`)
+- `backend/src/domains/llm/services/image-analysis-worker.ts` — `runImageAnalysisBatch` (#1616, ADR-027 D13)
+- `backend/src/core/services/image-analysis-dirty.ts` — `pages.image_analysis_dirty` for the ATTACHMENT writers (the body writers raise it inline; see ADR-027)
+- `backend/src/routes/llm/llm-image-analysis.ts` — status, process, retry-failed, reanalyze-all (all `requireAdmin`)
 - `backend/src/routes/confluence/sync.ts`
 - `backend/src/routes/confluence/spaces.ts` — `DELETE /api/spaces/:key` (unsync)
 - `backend/src/routes/knowledge/pages-relocate.ts` — `POST /api/pages/:id/relocate` + preview

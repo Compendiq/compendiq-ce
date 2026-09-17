@@ -1,19 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX } from '@compendiq/contracts';
 import {
   columnTypeFor,
   HNSW_PARAMS,
-  VECTOR_MAX_DIMS,
   type VectorColumnTier,
 } from './vector-column-tier.js';
 
 /**
  * The tiering rule lived in four places by #1115 — `shadow-migration-service`,
- * `embedding-service`'s destructive re-embed, `eval/seed` and (about to be) the
- * image index. Three of them were byte-identical; the fourth was the same rule
- * spelled as an if/else over interpolated SQL. This is the one copy.
+ * `embedding-service`'s destructive re-embed, `eval/seed` and the legacy image
+ * index (retired in #1618). Three of them were byte-identical; the fourth was
+ * the same rule spelled as an if/else over interpolated SQL. This is the one
+ * copy.
  *
  * The boundary cases are the whole content of the rule, so they are the test:
  * 2000/2001 and 4000/4001 are where pgvector's HNSW limits sit.
@@ -54,21 +53,6 @@ describe('columnTypeFor', () => {
 
   it('exposes the HNSW build parameters migrations 011/048 use', () => {
     expect(HNSW_PARAMS).toBe('WITH (m = 16, ef_construction = 200)');
-  });
-
-  /**
-   * Final review, nit 4 — the same pgvector ceiling is stated twice: here, as
-   * the widest column `columnTypeFor` will plan, and in the contracts as the
-   * upper bound on the MRL truncation width an admin may ask for. They are one
-   * number, and they have to move together: a contracts bound raised above this
-   * one would let a width through `ImageEmbeddingTargetDimensionsSchema` that
-   * `columnTypeFor` then throws on *after* the probe has succeeded, and a lower
-   * one would refuse a width the column could hold. The equality lives on this
-   * side because `packages/contracts` cannot import the backend, while the
-   * backend imports contracts everywhere.
-   */
-  it('shares pgvector’s column ceiling with the contracts truncation bound', () => {
-    expect(VECTOR_MAX_DIMS).toBe(IMAGE_EMBEDDING_TARGET_DIMENSIONS_MAX);
   });
 });
 

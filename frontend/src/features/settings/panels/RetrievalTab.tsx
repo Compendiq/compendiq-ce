@@ -94,12 +94,10 @@ interface RetrievalValues {
   ragMmrLambda: number;
   ragRankingPriorWeight: number;
   /**
-   * #1115 — image retrieval. Three knobs across two halves of one feature:
-   * `ragImageLegEnabled` is the QUERY side (P3), the other two are the INTAKE
-   * side (P2) and their controls live here because this is where an operator
-   * reasons about what retrieval sees.
+   * #1115 — the image INTAKE side: how many of a page's images are taken and
+   * whether externally-hosted ones are. The controls live here because this is
+   * where an operator reasons about what retrieval sees.
    */
-  ragImageLegEnabled: boolean;
   ragImagesPerPageMax: number;
   ragImageIndexExternal: boolean;
   /**
@@ -285,7 +283,6 @@ const DEFAULTS: RetrievalValues = {
   ragMmrEnabled: false,
   ragMmrLambda: 0.7,
   ragRankingPriorWeight: 0,
-  ragImageLegEnabled: true,
   ragImagesPerPageMax: 20,
   ragImageIndexExternal: true,
   ragAnswerMaxImages: 2,
@@ -900,17 +897,15 @@ export function RetrievalTab() {
   const rerankActive =
     !!rerankRow && rerankRow.providerId !== null && rerankRow.resolved.providerId !== NIL_UUID;
 
-  // #1115 P3 — the same non-inheriting rule as `rerank`: `resolved` reports
-  // what WOULD serve if assigned, so the leg is live only on an explicit
+  // #1615 — the same non-inheriting rule as `rerank`: `resolved` reports what
+  // WOULD serve if assigned, so image analysis runs only on an explicit
   // `providerId`. Rendered as a NOTICE, never as a disabled control.
   //
   // `assignments === undefined` (the query has not answered, or failed) shows
-  // NOTHING rather than the notice: telling an operator their leg is off on
-  // evidence the panel has not collected is the mistake `usePageTree`'s
+  // NOTHING rather than the notice: telling an operator their pipeline is off
+  // on evidence the panel has not collected is the mistake `usePageTree`'s
   // three-state rule is about, one surface over.
-  const imageEmbeddingRow = assignments?.image_embedding;
-  const imageEmbeddingUnassigned = !!assignments && !imageEmbeddingRow?.providerId;
-
+  const imageAnalysisUnassigned = !!assignments && !assignments.image_analysis?.providerId;
   const { data: benchmark } = useQuery<BenchmarkRun>({
     queryKey: ['retrieval-benchmark', benchmarkRunId],
     queryFn: () => apiFetch(`/admin/retrieval-benchmark/${benchmarkRunId}`),
@@ -1648,47 +1643,29 @@ export function RetrievalTab() {
         </ToggleRow>
       </Section>
 
-      {/* ── Image retrieval (#1115) ─────────────────────────────────────── */}
+      {/* ── Image retrieval (#1115 intake, ADR-027) ─────────────────────── */}
       <Section
         title="Image retrieval"
-        description="Pictures in your pages are embedded into their own index and searched as a third retrieval leg beside the semantic and keyword ones."
+        description="Pictures in your pages are described by a vision model at ingestion time, and those descriptions are indexed as ordinary text beside the page's own."
       >
         {/*
           The unassigned notice is MUTED, not amber (ADR-010): on an instance
-          with no vision-language model this is the permanent, correct state —
-          not a warning — and amber that is always on is amber that stops
-          meaning anything. The controls stay ENABLED beside it: they are
-          settings, not actions, and an operator configuring the leg before
-          assigning the model is a reasonable order to work in.
+          with no vision model this is the permanent, correct state — not a
+          warning — and amber that is always on is amber that stops meaning
+          anything. The controls stay ENABLED beside it: they are settings, not
+          actions, and an operator configuring intake before assigning the
+          model is a reasonable order to work in.
         */}
-        {imageEmbeddingUnassigned && (
+        {imageAnalysisUnassigned && (
           <p className="text-xs text-muted-foreground" data-testid="retrieval-image-unassigned">
-            Image embedding is not assigned; the image leg does not run. Assign a
-            vision-language model under{' '}
+            Image analysis is not assigned; no new picture is described. Assign a
+            vision-capable model under{' '}
             <Link className="underline underline-offset-2 hover:text-foreground" to={LLM_PROVIDERS_PATH}>
               {SETTINGS_PANELS.models.label} → LLM providers
             </Link>
             .
           </p>
         )}
-
-        <ToggleRow
-          id="rag-image-leg-enabled"
-          label="Image leg"
-          checked={values.ragImageLegEnabled}
-          onChange={(v) => set('ragImageLegEnabled', v)}
-          defaultChecked={DEFAULTS.ragImageLegEnabled}
-        >
-          <p>
-            Fuses the image index into page ranking, so a page whose diagram answers the question
-            is found even when its text does not mention it. On by default.
-          </p>
-          <p>
-            It costs one extra embedding call per question — the question is embedded a second
-            time, by the vision-language model, alongside the ordinary retrieval. Turn it off to
-            stop paying that while leaving the index being built.
-          </p>
-        </ToggleRow>
 
         <NumberRow
           field={FIELDS.ragImagesPerPageMax}
@@ -2524,7 +2501,7 @@ function ToggleRow({
           // #1285, review r1 — the same wiring `NumberRow` gained, for the same
           // reason. Leaving it on the number rows alone meant that inside ONE
           // group a screen-reader user heard the caveat for `Images per page`
-          // and not the one for `Image leg` directly above it — and the toggles
+          // and not the one for the toggle directly above it — and the toggles
           // are where the sharpest caveats on this panel live ("It costs one
           // extra embedding call per question", the identifier-pinning
           // explanation, "No Recall@1 gain measured"). A caveat reachable by

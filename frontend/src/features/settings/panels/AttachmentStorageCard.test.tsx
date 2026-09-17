@@ -1,7 +1,8 @@
 /**
  * #1349 — Settings → Spaces & Sync: attachment storage + sweep.
  *
- * The rules under test mirror ImageIndexCard's (the named precedent):
+ * The rules under test mirror ImageAnalysisProgressCard's (the named
+ * precedent, ADR-025's ImageIndexCard until #1618 retired it):
  * a failed stats fetch renders as a FAILURE, never as zero bytes; "no run
  * yet" is an explicit state; the live delete sits behind a destructive
  * confirm dialog and never fires from the bare button; a trigger that found
@@ -780,6 +781,32 @@ describe('AttachmentStorageCard (#1349)', () => {
     expect(screen.queryByTestId('attachment-storage-measured-at')).not.toBeInTheDocument();
   });
 
+  /**
+   * #1618 (ADR-027 "Retirement plan") — the sweep's own prune moved table.
+   * It used to delete `page_image_embeddings` rows for a vanished attachment;
+   * it now deletes `page_image_analyses` rows, and this line is the only
+   * surface that reports it. Naming the retired index here would tell an
+   * operator that a table the release has dropped was pruned.
+   */
+  it('names the pruned rows as image-analysis rows, not image-index rows', async () => {
+    mockApi({
+      sweep: {
+        running: false,
+        lastRun: {
+          ...COMPLETED_RUN,
+          dryRun: false,
+          status: 'completed',
+          deleted: { directories: 1, files: 2, bytes: 87, imageAnalysisRows: 2, pagesMarkedDirty: 1 },
+        },
+      },
+    });
+    render(<AttachmentStorageCard />, { wrapper: createWrapper() });
+
+    const line = await screen.findByTestId('attachment-sweep-last-run');
+    expect(line.textContent).toMatch(/pruned 2 image-analysis rows/);
+    expect(line.textContent).not.toMatch(/image-index row/);
+  });
+
   // Review r1: a FAILED live run can abort mid-delete, and the backend now
   // records the partial totals — "No files were deleted." was a false claim
   // on a destructive operator surface.
@@ -793,7 +820,7 @@ describe('AttachmentStorageCard (#1349)', () => {
           status: 'failed',
           note: 'sweep failed — see the server logs',
           stores: null,
-          deleted: { directories: 1, files: 3, bytes: 87, imageEmbeddingRows: 1, pagesMarkedDirty: 1 },
+          deleted: { directories: 1, files: 3, bytes: 87, imageAnalysisRows: 1, pagesMarkedDirty: 1 },
         },
       },
     });
@@ -819,7 +846,7 @@ describe('AttachmentStorageCard (#1349)', () => {
           status: 'failed',
           note: 'sweep failed — see the server logs',
           stores: null,
-          deleted: { directories: 0, files: 0, bytes: 0, imageEmbeddingRows: 0, pagesMarkedDirty: 0 },
+          deleted: { directories: 0, files: 0, bytes: 0, imageAnalysisRows: 0, pagesMarkedDirty: 0 },
         },
       },
     });
@@ -1166,7 +1193,7 @@ describe('AttachmentStorageCard (#1349)', () => {
             { store: 'confluence', key: '12345', filename: null, bytes: 4096, reason: 'orphan_directory' },
             { store: 'local', key: '77', filename: 'gone.png', bytes: 2048, reason: 'orphan_file' },
           ],
-          deleted: { directories: 1, files: 1, bytes: 6144, imageEmbeddingRows: 0, pagesMarkedDirty: 1 },
+          deleted: { directories: 1, files: 1, bytes: 6144, imageAnalysisRows: 0, pagesMarkedDirty: 1 },
         },
       },
     });
@@ -1238,7 +1265,7 @@ describe('AttachmentStorageCard (#1349)', () => {
           ...COMPLETED_RUN,
           dryRun: false,
           note: 'confluence store has zero files while the database references attachments — refusing to delete',
-          deleted: { directories: 1, files: 2, bytes: 2048, imageEmbeddingRows: 0, pagesMarkedDirty: 0 },
+          deleted: { directories: 1, files: 2, bytes: 2048, imageAnalysisRows: 0, pagesMarkedDirty: 0 },
         },
       },
     });
@@ -1315,7 +1342,7 @@ describe('AttachmentStorageCard (#1349)', () => {
           at: new Date(Date.now() + 1000).toISOString(),
           dryRun: false,
           candidatesTotal: 2,
-          deleted: { files: 2, directories: 1, bytes: 2048, imageEmbeddingRows: 0, pagesMarkedDirty: 1 },
+          deleted: { files: 2, directories: 1, bytes: 2048, imageAnalysisRows: 0, pagesMarkedDirty: 1 },
         },
       },
     });
@@ -1351,7 +1378,7 @@ describe('AttachmentStorageCard (#1349)', () => {
           dryRun: false,
           status: 'failed',
           note: 'sweep failed — see the server logs',
-          deleted: { files: 3, directories: 1, bytes: 87, imageEmbeddingRows: 1, pagesMarkedDirty: 1 },
+          deleted: { files: 3, directories: 1, bytes: 87, imageAnalysisRows: 1, pagesMarkedDirty: 1 },
         },
       },
     });
@@ -1458,8 +1485,8 @@ describe('AttachmentStorageCard (#1349)', () => {
    * top. CLAUDE.md's Retrieval-panel ruling states the recipe: `aria-disabled`
    * (announced as disabled by NVDA, JAWS and VoiceOver, so nothing is lost on
    * that channel) plus a handler that refuses, because `aria-disabled` blocks
-   * no events. `ImageIndexCard` — this card's own named pattern of record — is
-   * converted in the same change.
+   * no events. `ImageAnalysisProgressCard` — this card's own named pattern of
+   * record — is converted in the same change.
    *
    * jsdom implements none of the fixup, which is why the suite could not see
    * it: `document.activeElement` stays on a disabled button here. So the
@@ -1566,8 +1593,8 @@ describe('AttachmentStorageCard (#1349)', () => {
   /**
    * Review r2: this is the card's only keyboard-reachable disclosure and it
    * opens the destructive review list, yet it fell back to the UA outline
-   * while both sibling settings disclosures (ChatVisionCapability,
-   * ImageEmbeddingCapability) ring theirs with the Steel token.
+   * while the sibling settings disclosure (ChatVisionCapability) rings
+   * theirs with the Steel token.
    *
    * External round 2 then MEASURED the ring away again: `focus-visible:ring-2`
    * compiles to `box-shadow` (verified against this repo's own Tailwind

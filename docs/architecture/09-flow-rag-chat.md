@@ -22,7 +22,6 @@ sequenceDiagram
     participant CACHE as llm-cache (Redis)
     participant PROV as chat provider<br/>(resolveUsecase('chat'))
     participant PROV2 as rerank provider<br/>(resolveRerankUsecase — null = stage off)
-    participant PROV3 as VL provider<br/>(resolveImageEmbeddingUsecase — null = image leg off)
     participant CONV as llm_conversations
 
     FE->>BE: POST /api/llm/ask<br/>{ question, model, conversationId,<br/>  includeSubPages, externalUrls, searchWeb, deepSearch }
@@ -43,7 +42,7 @@ sequenceDiagram
     BE->>RBAC: getUserAccessibleSpacesMemoized(userId)
     RBAC-->>BE: readableSpaceKeys[] (request-scoped)
     note right of BE: per-leg stage limit = fetch width (#35;1103)<br/>admin_settings 'rag_fetch_width' (default 10),<br/>floored at topK (+ 1.5x topK under EE ACL)
-    par vector + keyword + image
+    par vector + keyword
         BE->>RAG: vectorSearch(userId, q_vector, stageLimit)
         RAG->>PG: WHERE cp.space_key = ANY(readableSpaceKeys) ...
         PG-->>RAG: top fetch-width chunks
@@ -51,20 +50,8 @@ sequenceDiagram
         BE->>RAG: keywordSearch(userId, question, stageLimit)
         RAG->>PG: tsvector search (websearch_to_tsquery) WHERE same space filter
         PG-->>RAG: matches
-    and
-        note right of BE: IMAGE LEG (#35;1115 P3) — GATED#59; no embed, no kNN, no row when shut:<br/>imageLeg option not false, admin_settings 'rag_image_leg_enabled'<br/>(default on), image_embedding use case ASSIGNED (never inherits),<br/>and page_image_embeddings NON-EMPTY (uncached EXISTS per request —<br/>the answer flips on the first embed and on a rebuild's TRUNCATE)
-        BE->>RAG: searchImageLeg(userId, question, stageLimit)
-        RAG->>PROV3: POST /v1/embeddings — vLLM chat-embeddings shape,<br/>VL_QUERY_INSTRUCTION as system message, ONE call, 3s budget
-        PROV3-->>RAG: q_image_vector[M] (MRL width from admin_settings)
-        RAG->>PG: kNN over page_image_embeddings JOIN pages<br/>SAME visiblePagesPredicate as the vector leg + SET LOCAL hnsw.ef_search
-        PG-->>RAG: image rows -> page-denominated: a page's BEST image ranks it ONCE
-        note right of BE: ANY failure (timeout, open breaker, no assignment mid-flight,<br/>a gate READ that threw, kNN error) = leg BYPASSED, results identical<br/>to leg-off, degraded_reason 'image_leg_unavailable' — recorded only<br/>when the TEXT side is healthy (one column, worst outage wins)
     end
-    opt image leg reached a page NO text leg did
-        BE->>PG: ONE batched SELECT chunk_index 0 for those pages
-        PG-->>BE: lede rows (no chunk 0 = chunkText synthesised from the TITLE,<br/>flagged imageTextSynthesized)
-        note right of BE: this is how an image-only page becomes retrievable at all#59;<br/>the row is imageOnly and is EXCLUDED from #35;1105's confidence<br/>sample — cross-modal scores share no scale with text cosines.<br/>If THIS query throws the image-only pages drop and the same<br/>degraded_reason is recorded — a partial bypass is still a bypass
-    end
+    note right of BE: TWO legs (#35;1618 stage 2 retired #35;1115 P3's image leg).<br/>A picture is retrieved as its derived image_analysis chunk<br/>inside these two — provenance-marked page_embeddings rows,<br/>ordinary text embedder, no second query embed
     RAG-->>BE: merged + deduped + ranked (fetch-width wide)
     opt RAG_PERMISSION_ENFORCEMENT (EE)
         BE->>RBAC: filterAccessiblePages(userId, pageIds)<br/>one set-based query (#35;1104)
@@ -107,17 +94,14 @@ sequenceDiagram
         MCP-->>BE: top results (sanitized#59; detections audited — #35;835)
     end
     opt honest-refusal gate (#35;1105, widened by #35;1114's prerequisite)
-        note right of BE: THREE reasons decided HERE, only ONE of them a threshold<br/>verdict (a fourth, image_only_context, is decided after the pick — see below):<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all four stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
+        note right of BE: THREE reasons, all decided HERE, only ONE of them a threshold<br/>verdict (#35;1618 stage 2 retired the fourth, image_only_context):<br/>semantic_index_unavailable (degradedReason = embedding_failed) and<br/>no_context (nothing retrieved) refuse UNGATED — both knobs default<br/>to 0, so gating either would ship it dark#59;<br/>weak_match keeps its per-basis knob, on<br/>computeRetrievalConfidence(results, healthCaveat) —<br/>max rerank relevance (full coverage), else max cosine (vector-led)#59;<br/>all three stand down for grounding that MATERIALISED<br/>(assembled tree / fetched docs / web results / substantive turn)#59;<br/>refusal: honest SSE turn + weak sources + refusalReason on the final<br/>frame, no chat completion, cache never read or written#59;<br/>no_embeddings / partial_embeddings / coverage_unknown still ANSWER
     end
     opt retrieved images -> answer parts (#35;1115 P4)
-        note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned row carries derived provenance or (pre-#35;1618) imageHits#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
+        note right of BE: FOUR gates, cheapest first — a text-only deployment pays<br/>one cached settings read and stops:<br/>rag_answer_max_images > 0 (default 2, range 0-8, 0 IS the off switch)#59;<br/>some returned row carries derived image provenance (ADR-027 D11)#59;<br/>getVisionCapability(chatProvider, chatModel) === true — the STORED<br/>#35;1154 verdict, never a probe on the hot path#59; false and null both<br/>mean text-only#59; and the bytes must pass validateImage
         BE->>PG: ONE batched SELECT id, confluence_id, source<br/>for the candidate pages (pageSource is REQUIRED, never inferred)
         PG-->>BE: page identities
         BE->>BE: pickRetrievedImages — read bytes off disk (system reader,<br/>post-ACL set only)#59; ROUND-ROBIN: every page's best image before<br/>any page's second#59; validateImage (sniff, 5 MB, 4096px)#59;<br/>skip+count missing / invalid / duplicate bytes / over the base64 budget
         note right of BE: parts order: text, then the USER's own attachment,<br/>then the retrieved ones#59; ONE system sentence, and only when<br/>a picture really was attached#59; any gate failing = text-only and<br/>UNQUALIFIED (D8): no sentence, no caveat, no degradation copy#59;<br/>retrieved images NEVER join otherGrounding — the pick runs AFTER<br/>the refusal decision, so a refused turn reads no bytes
-    end
-    opt every row is imageTextSynthesized AND nothing was attached (#35;1115 P4)
-        note right of BE: refusalReason 'image_only_context' — the prompt would be a list<br/>of TITLES and a question. Supersedes P3's interim "an image-only hit<br/>set never refuses", which was justified by P4 being about to show the<br/>model the picture. Stands down on otherGrounding#59; never fires on a<br/>MIXED set#59; decided after the pick (it needs the attached count) and<br/>still before any completion#59; images ride as the weak sources
     end
     note right of BE: rag cache key folds in the deepSearch flag (#35;1112) —<br/>the doc-id list cannot see a RE-ORDERED set, so without it<br/>the two modes would serve each other's answers for the TTL.<br/>#35;1115 P4 adds the ATTACHED-IMAGE identity for the same reason:<br/>the doc-id list cannot see whether the model could SEE those pages
     note right of BE: response cache is consulted only PAST the gate<br/>(and only for history-free requests) — a low-confidence<br/>question cannot serve a stale cached answer
@@ -167,7 +151,6 @@ to a user.
 | `score` | whatever the producer used | cosine from `vectorSearch`, `ts_rank` from `keywordSearch`, RRF fusion from `reciprocalRankFusion` | **No** — ordering only |
 | `vectorScore` | cosine similarity, `[-1,1]` | the vector leg; `null` when the page was matched only by full-text | **Yes**, with care |
 | `keywordRank` | raw `ts_rank`, unbounded | the keyword leg; `null` when matched only by vector | No — corpus-dependent |
-| `imageHits[].similarity` | **cross-modal** cosine, `[-1,1]` | the image leg (#1115 P3); absent when the leg did not reach this page | **No** — see "The image leg" below |
 
 RRF fusion previously *overwrote* `score` with the fusion value and discarded
 the cosine. That value is ~0.016 for a single rank in one leg and ~0.033 for
@@ -181,15 +164,14 @@ defaults:
 | Path | topK | stage limit | worst-case fusion score |
 |---|---|---|---|
 | every path since #1106, two text legs | any | any (pool sizing only) | **~0.0328** (`rrfWorstCase(true)` = 2/61) — width-invariant |
-| with #1115 P3's image leg live (assigned + non-empty index) | any | any (pool sizing only) | **~0.0492** (`rrfWorstCase(true, 60, true)` = 3/61) — width-invariant |
+| *historical rows written while #1115 P3's image leg was live* | any | any (pool sizing only) | *~0.0492 (3/61) — the third leg is retired (#1618 stage 2), so this band is closed* |
 | *historical rows (pre-#1106 summed scale)* | | | *chat ~0.169; rerank pool assigned ~0.419; `/api/search`@20 ~0.302; past 1.0 at the width cap* |
 
-The image row raises the ceiling by a whole leg and nothing else: the leg is
-page-denominated from the start, so like the other two it contributes exactly
-`1/(k+1)` at rank 1 and the figure still does not track any width. `max_score`
-rows straddling the moment a VL model is first assigned are loosely comparable
-in the same way #1106's and #1103's straddling rows are — one band apart, in
-the growing direction.
+That third band is **historical**: #1618 stage 2 retired the image leg, so
+every row written since is two-leg. Rows straddling the retirement (or the
+moment a VL model was first assigned, back when one could be) are loosely
+comparable in the same way #1106's and #1103's straddling rows are — one band
+apart.
 
 Since #1106 the vector leg is page-denominated (the stage limit counts
 distinct pages; the leg fetches `min(4 × stageLimit, 500)` raw CHUNK rows)
@@ -258,7 +240,6 @@ own `rerank_score` column instead of ever overloading this one:
 | `hybrid_rerank` | RRF fusion value (`rerank_score` carries the rerank scale) | `hybridSearch` with a live #1104 rerank stage |
 | `hybrid_multi_query` | **summed weighted** multi-leg RRF value (≈ up to 0.036) — near the single-query ceiling and NOT comparable with it | `multiQuerySearch` (#1112), one row per gesture; the legs record none |
 | `keyword_fallback` | RRF fusion value (keyword-only leg) | `hybridSearch` (rag-service) |
-| — | *(the image leg adds no `search_type`)* | see "The image leg" — `searchTypeFinal` is unchanged, because whether an answer's pages came from two legs or three is not a different KIND of search |
 | `semantic` | cosine similarity | `/api/search` semantic mode |
 | `keyword` | raw `ts_rank` | `/api/search` keyword mode |
 | `faceted` | NULL | `POST /api/search/log` |
@@ -344,276 +325,49 @@ Key files: `domains/llm/services/lexical-chunk-resolution.ts` (the shared SQL
 fragments), `domains/llm/services/derived-provenance.ts` (the `metadata`
 reader, the `(pageId, store, key)` dedup and the D12 citations).
 
-## The image leg (#1115 P3)
+## The image leg — RETIRED (#1115 P3, removed by #1618 stage 2)
 
-A page whose only answer to "what does the turbine assembly look like" is a
-photograph is invisible to both text legs — the picture is not in `body_text`
-and its `alt` is usually empty. #1115 embeds page images into their own index
-(`page_image_embeddings`, filled by P2) and P3 makes that index **retrievable**
-as a third RRF leg, in `domains/llm/services/image-leg-search.ts`.
+**There is no third retrieval leg.** #1115 P3 shipped one: page images were
+embedded by a vision-language model into their own index
+(`page_image_embeddings`) and `image-leg-search.ts` fused a kNN over it beside
+the vector and keyword legs. **#1618 stage 2 removed it** (migration 118),
+because it was unused in production and carried standing maintenance cost —
+**"Remove it, nobody was using it in production."**, which is an
+authorisation and explicitly not a measurement (ADR-027 A-5). What went with
+the leg: the `image_embedding` use case and its MRL truncation width, the
+`rag_image_leg_enabled` toggle, `SearchResult.imageHits` / `imageOnly` /
+`imageTextSynthesized` and their synthesised title rows, the
+`image_only_context` refusal, `degraded_reason = 'image_leg_unavailable'` (the
+value is gone from the TypeScript union; historical `search_analytics` rows
+still carry the text, and no CHECK constrained that column), the
+`rag.image_leg` span and the `rag.image_pages` / `rag.image_only_pages`
+attributes, and the second vector-pool connection per hybrid search.
 
-> **Active versus candidate (ADR-027, epic #1611).** Everything in this
-> section and in "Image retrieval leg — configuration and probe" and "Answer
-> path" below describes the **active** release. ADR-027 records the
-> **candidate** that #1615–#1617 implement and #1619 measures before #1618
-> retires the leg: no image space and no third RRF leg at all. Page images
-> are analyzed once at ingestion by a generative vision model
-> (`image_analysis`, non-inheriting, probed before its row is written); the
-> text is one `page_embeddings` row per image with
-> `metadata.source = 'image_analysis'`, embedded by the ordinary text embedder
-> and indexed lexically through `page_embeddings.chunk_tsv`. The **vector
-> leg** retrieves derived rows like any chunk; the **lexical leg** unions
-> `pages.tsv` with derived `chunk_tsv` matches, ranks a page by the greater
-> of the two, and resolves every lexical or exact-identifier page hit to the
-> best-ranked chunk of that page (`ORDER BY (chunk_tsv @@ q) DESC, ts_rank DESC, chunk_index`)
-> instead of `substring(body_text, 1, 500)` — a change that reaches authored
-> keyword hits too, which is why the protocol runs arm C on the candidate
-> revision. Fusion stays page-denominated over two legs; MMR and rerank score
-> the derived text as-is; sibling assembly never crosses the authored/derived
-> boundary (a derived anchor returns only itself); the derived row is a
-> measured row for `computeRetrievalConfidence`, so `imageTextSynthesized`
-> and `image_only_context` retire with the leg. Sources keep the
-> `kind: 'image'` entry and add `attachmentStore`, `attachmentKey`,
-> `contentHash`, `analysisVersion` (ADR-027 D12); the optional retrieved-image
-> attachment for a vision-capable chat model survives, re-sourced from
-> derived-chunk provenance, with its gate still in `llm-ask.ts`. **#1615,
-> #1616 and #1617 have merged**, so the retrieval and citation halves are
-> live and are described in "Derived image-analysis chunks in retrieval"
-> above; the answer-time byte pick no longer consumes this leg's hits at all.
-> Until #1618 merges, the leg below still RUNS — it still contributes a page
-> rank, its `imageOnly` rows and its `degraded_reason` — and the shut gate
-> still costs what this section says it costs. Do not read the candidate as measured: better RAG is
-> the hypothesis the pre-registered A/B/C gate in ADR-027 tests.
+**A picture is still retrievable, and a text-only chat model can still cite
+it.** ADR-027's replacement was already live when the leg was removed: a
+generative vision model describes each raster at ingestion and the description
+is embedded by the ordinary text embedder as a provenance-marked
+`page_embeddings` row, which the two surviving legs retrieve like any other
+chunk — "Derived image-analysis chunks in retrieval (#1617, ADR-027 D10–D12)"
+above. The image SOURCE survives with it: `sources[]` still carries
+`kind: 'image'` entries, capped at `MAX_IMAGE_SOURCES` (4) and appended after
+the page and web entries, now sourced from the derived chunk's provenance
+(ADR-027 D12) rather than from the leg's hits — see "Retrieval details" below.
+The answer-time byte pick for a vision-capable chat model also survives, with
+its gate still in `llm-ask.ts` ("Answer path" below).
 
-**Dual space, fused by RANK.** The images are embedded by a vision-language
-model into a different vector space from the text (ADR-025 D1), and the query
-is embedded a second time by that same model for this leg only. The two spaces
-are never mixed: fusion is reciprocal-rank, so the absolute similarity band
-never has to be compared across modalities. That is not tidiness — the
-published worked examples put text→image similarities at 0.46–0.72 against
-text↔text ones as high as 0.81, with **no gap** between the bands (ADR-025 §8),
-so no scalar separates them and a threshold tuned on one is undefined on the
-other.
+**Consequences an implementer should know.** Fusion is two-leg and
+page-denominated, so `rrfWorstCase`'s three-leg 3/61 ceiling is a historical
+caveat for analytics rows written while the leg was live. A derived row is a
+MEASURED row for `computeRetrievalConfidence` — the P3/P4 exclusion of
+synthesised rows, and the refusal that existed because a set of image-only
+pages had no text to answer from, both died with the synthesised row itself.
+`/api/search?mode=hybrid`'s wire shape never named the leg and is unchanged.
 
-**The gate, in this order, and it does no RETRIEVAL work when shut** — no
-query embed, no kNN, no row. In THIS order and deliberately not cheapest-first
-(the paragraph after next is why the resolver goes in front of the `EXISTS`
-even though it costs more). All four must hold:
-`HybridSearchOptions.imageLeg` is not `false`; `rag_image_leg_enabled`
-(default on, skipped when the option forces `true`); the `image_embedding` use
-case is **assigned** (it never inherits — ADR-021's rule for the non-inheriting
-use cases, so unassigned means off, never "borrow the text embedder"); and
-`page_image_embeddings` is non-empty. The last is an uncached
-`SELECT EXISTS(...)` per request, deliberately: emptiness flips at the two
-moments the answer matters most — the first page the worker embeds, and a
-model change's `TRUNCATE` — and a 60-second cache would leave the leg dark for
-a minute after the index starts filling, or lit for a minute against a column
-whose type has just changed.
+Rollback, and what the migration drops, are
+`docs/runbooks/image-embedding-retirement.md`; the surviving path is operated
+through `docs/runbooks/image-analysis.md`.
 
-It is not literally free, and the standing cost is worth naming because every
-`/llm/ask`, every `/api/search?mode=hybrid` and deep search's original leg pays
-it on **every** deployment: one cached boolean, then
-`resolveImageEmbeddingUsecase`'s **uncached** two-table lookup. On the majority
-deployment — no VL model — that lookup answers `null` and returns, so the
-`EXISTS` above is not reached at all until a model is assigned. The resolver
-sits in front of it rather than behind it because the two verdicts are not
-interchangeable: a resolver THROW is a degradation this leg records (below),
-and an empty index short-circuiting ahead of it would report a broken
-assignment as "off". The extra round-trip is paid in exactly one state —
-assigned and not yet indexed.
-
-**One VL call per request, bounded at 3s** (`IMAGE_LEG_TIMEOUT_MS`, covering
-queue wait). Shorter than the rerank stage's and the reformulation's 5s
-because this leg runs in PARALLEL with the two text legs rather than in series
-after them: everything it spends past their few hundred milliseconds is added
-to every question, including the overwhelming majority no picture was going to
-answer. Deep search runs it on the **original question only** — see that
-section.
-
-**And one kNN, bounded separately at 2s** (`IMAGE_LEG_KNN_TIMEOUT_MS`, a `SET
-LOCAL statement_timeout` inside the transaction the leg already opens). The two
-budgets are separate numbers that COMPOSE — the leg's worst case is ~5s, not
-3 — and the second one is not belt-and-braces: the gate has no `indexed`
-condition, and above 4000 dimensions `ensureImageEmbeddingColumn` deliberately
-builds no HNSW index, so the leg legitimately runs a sequential scan of
-`page_image_embeddings` that `hybridSearchInner` awaits between the text legs
-and fusion. A lock wait reaches the same place, since the statement takes
-ACCESS SHARE on the table a rebuild holds ACCESS EXCLUSIVE on. Unbounded, an
-OPTIONAL leg could stall every answer on the instance; bounded, it becomes the
-ordinary `image_leg_unavailable` bypass. The text vector leg has no equivalent
-because its bypass is not equivalent — that one is `embedding_failed`, which
-`/llm/ask` refuses the turn on.
-
-**Also one extra vector-pool connection per hybrid search.** The leg is started
-so its transaction overlaps `vectorSearch`'s, so a request holds two of
-`PG_VECTOR_POOL_MAX` (default 5) rather than one and the pool's effective
-request concurrency roughly halves when the leg is live. The asymmetry above
-applies here too: losing the acquisition costs the image leg a bypass and the
-text leg a refused turn, so `PG_VECTOR_POOL_MAX` should be raised when the leg
-is enabled on a busy instance (`docs/runbooks/image-index.md` §6).
-
-**Page-denominated, like the other two (#1106).** The kNN is over image ROWS;
-a page's BEST image decides its rank and counts once. Without that, a page
-carrying five near-identical screenshots would occupy five of the leg's ranks
-and out-score a page whose single image matches better — image COUNT beating
-image QUALITY, the same head dilution best-chunk-only fusion exists to prevent.
-Up to three hits per page ride along on the `SearchResult` for the answer's
-source list; they buy no extra rank.
-
-Being page-denominated is also why the **stable head** (#1103) cannot take a
-plain prefix of this leg. The pages were denominated FROM a raw image-row
-stream, so a narrower request would have read only `imageRawLimit(rankWidth)`
-raw rows — 40 at the default width, which two pages carrying
-`rag_images_per_page_max` pictures fill between them. Each page therefore
-carries the raw position of its best image (`bestRawIndex`), and
-`fuseWithStableHead` reconstructs the narrow leg by filtering on that window
-before capping at `rankWidth` — the exact analogue of the
-`truncateAtDistinctPages(… vectorRawLimit(rankWidth) …)` the vector leg does
-one line above.
-
-**`IMAGE_PAGE_FANOUT` (4) is provisional BY ANALOGY, not measured** the way
-`PAGE_FANOUT` is. The density it guesses at is an admin knob here
-(`rag_images_per_page_max`, default 20), so two galleries can fill the 40-row
-narrow window between them at shipped defaults. Retuning it is what the
-`--images` axis is for, and the first run could not do it: the eval corpus's
-leg-off page recall@10 was already .9967, so the fan-out had nothing to move
-(ADR-025 **Measured** §B). It waits on the production run, together with
-`minImageLegParticipation` and `rag_answer_max_images`.
-
-**Visibility is the shared fragment, never a copy.** The kNN joins `pages` and
-applies the same `visiblePagesPredicate` the vector leg does, plus
-`deleted_at IS NULL` and the optional `spaceKey` narrow. An image row carries
-no ACL of its own, so that JOIN is the whole protection; the EE per-page ACL
-post-filter then runs over the fused set exactly as it does for the text legs.
-The vector cast is deliberately **absent** — the `<=>` operand type resolves
-from the column, so the parameter follows `ensureImageEmbeddingColumn`'s
-`vector`/`halfvec` tiering with nothing to keep in step.
-
-**An image-only page gets a text row, and P3 owns what that costs.** Every
-stage after fusion reads `chunkText`, so a page no text leg reached needs one:
-it takes its `chunk_index 0` row (one batched query for all such pages), or —
-when the page has no chunk at all, which is the image-only page below the
-20-character floor that this leg makes retrievable in the first place — its
-TITLE, flagged `imageTextSynthesized`. That text is what the cross-encoder
-scores and what MMR diffs, so a title-only row ranks poorly under rerank and
-looks maximally distinct under MMR. Both are accepted. Nothing else changes:
-rerank, the ranking prior, MMR, sibling assembly and the #1107 pin all keep
-scoring `chunkText`, and a `page_image_embeddings` row never becomes a
-`SearchResult`. The row carries no `chunkIndex`, because that field means "the
-chunk the vector leg matched" and is the sibling-assembly anchor — an
-image-reached page has no measured anchor.
-
-**The image similarity never feeds the confidence number (#1105), and an
-image-only row is excluded from the sample entirely.** ADR-025 §5 left P3 the
-ruling on whether a synthesised row may carry a `rerankScore` into
-`computeRetrievalConfidence`. It may not, in both directions: a rerank score
-over text no leg matched is a measurement of the wrong thing and could refuse a
-turn, and an UNRERANKED image-only row would flip `allReranked` false and
-silently demote a fully reranked set to the similarity basis. It cannot lift
-the number either — it carries no `vectorScore`, so it could only displace a
-measured row from position 0 and make a vector-led set unmeasurable. A set of
-nothing but image hits is therefore `basis: 'none'`, score `null` — the same
-verdict a keyword-only set gets, and **not** the empty-corpus `score: 0` that a
-threshold would refuse.
-
-**The arm of #1105 the leg DOES move is `no_context`, and that is the trade
-being made** (review r3). That refusal fires on `searchResults.length === 0`,
-so a page this leg made retrievable stands it down: a question that returned an
-honest refusal before P3 can now return an answer. It is intended — ADR-025
-§5's ruling — and it is the leg working, not a leak in the gate. `no_context`
-is never the reason for such a set, and that half is settled.
-
-**P4 supersedes the other half of P3's ruling — "an image-only hit set never
-refuses" — and the reason is P3's own argument.** P3 justified answering as
-thin-evidence-not-absent-evidence, and what made it *thin* rather than *absent*
-was that P4 was about to show the model the picture. Where P4 does, the turn
-answers exactly as P3 said. Where it cannot — no vision-capable chat model,
-`rag_answer_max_images` at 0, or every candidate skipped — the chat model
-receives that page's TEXT (its chunk 0, or the synthesised title) and never the
-picture, so on the sub-`MIN_EMBEDDABLE_TEXT_CHARS` page this leg exists for,
-the prompt is a list of titles and a question. That is absent evidence wearing
-a source list.
-
-So the rule is two-way, and it is decided in `llm-ask.ts` after the pick step:
-if **every** returned row is `imageTextSynthesized` **and** zero image parts
-were attached **and** nothing else grounds the turn, the request refuses with
-the new `image_only_context` reason and runs no completion, with the pictures
-beneath it as the closest matches. `every`, never `any`: one real text row is
-grounding, and widening it would refuse ordinary answers whose fifth source
-happens to be a picture. The `otherGrounding` stand-down is the same one the
-other three reasons take — refusing over titles beside a document the user just
-attached would be absurd. The reason is its own rather than one of the three:
-`weak_match` is a measured verdict about relevance and nothing here was
-measured (the pages may match perfectly), and `no_context` is false on its
-face, since retrieval did find pages.
-
-An operator who would rather those questions never reached the answer path at
-all turns the leg off; it is a retrieval decision, not a confidence one.
-`llm-ask.test.ts` pins both arms — attached-and-answers, and each way of
-reaching not-attached — with both confidence knobs at 0, so neither can be
-confused with the `weak_match` cases beside them.
-
-**Failure is a bypass, and it is recorded.** A timeout, an open breaker, an
-assignment pulled mid-flight, an assignment READ that threw, a non-empty PROBE
-that threw, or a kNN error all leave the leg out and everything else
-byte-identical to leg-off, with
-`degraded_reason = 'image_leg_unavailable'` on the analytics row. Unlike a
-rerank bypass it is recorded because it changes which PAGES come back, not
-merely their order. **A resolver `null` is not a failure** — that is
-"unassigned", which is off — and the two exits from that one call have their
-own paired tests, because folding the `catch` away is what makes a real outage
-invisible in `search_analytics`. Note what a throw is: `loadProviderFromRow`
-runs `decryptSafe`, so an undecryptable `api_key` yields a null key rather than
-an exception; what throws here is the database. **The `EXISTS` probe has the
-same shape and its own catch** (review r2): an unanswerable probe is not an
-empty index — the statement needs ACCESS SHARE on `page_image_embeddings`,
-which `ensureImageEmbeddingColumn`'s retype holds ACCESS EXCLUSIVE on — and
-outside a catch it also broke `searchImageLeg`'s "never throws" contract, after
-which the caller's own `.catch` recorded a live outage as a healthy search with
-the leg merely "off". **The LEDE fetch counts too**: when the one batched
-chunk-0 query throws, the leg has run but every image-ONLY page is dropped —
-exactly the pages it exists to make retrievable — so that partial bypass is
-OR'd into the same reason rather than writing a healthy row. **Precedence: a text-side reason always wins** — there is
-one column, and during an embedding outage `embedding_failed` is the value an
-operator needs; an image leg that also fell over in the same second is a
-footnote. `searchTypeFinal` is unchanged: two legs or three is not a different
-kind of search. The warn line carries the failure CATEGORY and never the
-provider's body (#1184's rule).
-
-**How to tell it ran.** `rag.image_pages` and `rag.image_only_pages` are on the
-`rag.hybrid_search` span, and are ABSENT (not zero) when the leg did not run at
-all — a trace has to separate "found nothing" from "there is no leg here". The
-per-leg span is `rag.image_leg`, whose `rag.image_leg` attribute is one of
-`disabled` / `unassigned` / `empty_index` / `ran` / `failed`.
-
-**Surfaces.** Every `hybridSearch` caller gets it: `/llm/ask`, deep search's
-original leg, and `/api/search?mode=hybrid` (whose wire shape is unchanged —
-page rows; the leg changes RANKING, not the response). `mode=semantic` is
-text-only *structurally*: that branch calls `vectorSearch` directly and never
-reaches `hybridSearch`, which is also the right answer — the mode names the
-text vector index.
-
-**On the wire, `/llm/ask` only.** `sources[]` gains `kind: 'image'` entries
-`{kind, pageId, pageTitle, spaceKey, attachmentUrl, similarity: null, score}`,
-best image first across the returned pages, capped at `MAX_IMAGE_SOURCES` = 4
-per answer and appended after the page and web entries (the model cites
-`[Source N]` from `buildRagContext`, so inserting in the middle would renumber
-sources an answer already referred to). `similarity` is always `null` — see the
-band argument above, and it is also what keeps `averageSourceSimilarity`
-from mixing two scales; `score` is the PAGE's fused value, like every other entry.
-The page and web shapes are untouched, so the frontend's `url`-keyed
-page-vs-web discriminator (#1125) is unchanged and an absent `kind` still means
-"a knowledge-base page". `attachmentUrl` is built by
-`buildPageImageUrl` in `core/services/image-references.ts`, the exact inverse
-of the enumerator that parses `<img src>` out of a page body, so the URL the
-browser gets is one the authenticated attachment routes really serve.
-
-**What P3 did not do, and P4 does:** the chat model now receives up to
-`rag_answer_max_images` of the matched pictures as `image_url` parts on the
-user turn, when the resolved chat pair has probed vision-capable — see
-["Answer path — retrieved images as model input (#1115 P4)"](#answer-path--retrieved-images-as-model-input-1115-p4)
-below. Everything above is unchanged by it: the sources, the fusion, the
-confidence exclusion and the `no_context` arm are all P3's and all still hold.
 
 ## Multi-query expansion — "deep search" (#1112)
 
@@ -637,17 +391,15 @@ at the call site.
 unable to lose on a lexically perfect query: the worst case is paraphrases
 that contribute nothing while the original's evidence carries the merge.
 
-**The image leg runs on the original leg only (#1115 P3)** — the paraphrase
-legs pass `imageLeg: false`, so one deep search costs exactly ONE VL call. Two
-reasons. Paraphrasing is a TEXT technique, so three calls would buy three
-near-identical query vectors at three times the latency against one
-`IMAGE_LEG_TIMEOUT_MS`. And because this merge SUMS weighted per-leg ranks, the
-same image evidence fed to all three legs would enter at 1 + 0.6 + 0.6 = 2.2 —
-as if three phrasings had independently agreed, when agreement across phrasings
-is precisely the signal this merge exists to read. On the original leg it
-enters once at weight 1, like that leg's text evidence, and the merged row
-keeps its `imageHits` because the merge keeps the object from the earliest leg
-a page appeared in.
+**There is no separate image leg to restrict here (#1618 stage 2).** #1115 P3
+ran one, and deep search deliberately ran it on the original leg only
+(`imageLeg: false` on the paraphrases) so the same image evidence could not
+enter the weighted sum three times as if three phrasings had independently
+agreed. The leg is retired: a picture now arrives as its derived
+`image_analysis` chunk inside the ordinary vector and keyword legs, which every
+paraphrase leg runs anyway, so derived evidence is agreed across phrasings on
+exactly the same terms as authored text — which is what this merge exists to
+read.
 
 **The merge SUMS each page's weighted reciprocal rank across the legs** —
 original 1.0, each paraphrase 0.6. Concatenating and de-duplicating by
@@ -1145,9 +897,8 @@ verdict rides the trace as `rag.confidence` / `rag.confidence_basis`.
 `/llm/ask` logs it on every question (`RAG retrieval confidence`, info,
 with the full meta and the resulting `refusalReason` — `aclEmptied` marks a
 healthy set the EE ACL filter emptied, a visibility fact the refusal
-wording deliberately does not distinguish), and refuses for **one of four
-reasons** — three decided here, of which only the third consults a knob, and a
-fourth decided later:
+wording deliberately does not distinguish), and refuses for **one of three
+reasons**, all decided here, of which only the third consults a knob:
 
 1. **`semantic_index_unavailable`** — `degradedReason === 'embedding_failed'`:
    the embedding leg THREW (provider outage, model still loading, 5xx,
@@ -1161,21 +912,14 @@ fourth decided later:
 3. **`weak_match`** — the #1105 verdict proper: a MEASURED score below the
    operator's threshold for this request's basis.
 
-A **fourth** reason joined them in #1115 P4, and it is deliberately last in
-this list because it is decided later than the other three:
+A **fourth** reason, `image_only_context`, joined them in #1115 P4 and was
+removed with the image leg by **#1618 stage 2**: it fired when every returned
+row was an image-only page whose context was a synthesised TITLE and not one
+of its pictures could be shown to the model. There is no synthesised title row
+any more — a picture's derived `image_analysis` description is ordinary
+retrieved text — so the set it refused on now has something to answer from.
 
-4. **`image_only_context`** — every returned row is an image-only page whose
-   context is a synthesised TITLE, and not one of its pictures could be shown
-   to the model. Ungated like 1 and 2, stands down on `otherGrounding` like
-   all of them, and decided AFTER the pick step (§ "The image leg" and
-   "Answer path" below) because it needs to know how many image parts were
-   actually attached — still before any completion, which is the invariant
-   that matters. Its wording says what happened rather than what is wrong with
-   the corpus: the matches exist and may be the right ones, and the reason
-   they went unused is a property of this deployment's chat model or its
-   settings.
-
-Reasons 1, 2 and 4 are **ungated by design**. Both knobs default to 0, so a
+Reasons 1 and 2 are **ungated by design**. Both knobs default to 0, so a
 threshold-gated version of either ships dark in every deployment that never
 opened Settings → Retrieval — including, for reason 1, during the #1116
 re-embed window it exists to disclose. Reason 3 keeps its knob because it
@@ -1200,7 +944,7 @@ strict-parsed ('' = unset),
 TTL-cached — the score is measurable (non-null) and below that threshold,
 and no other grounding **materialised**: an assembled sub-page tree,
 fetched external docs, web results that actually came back, or a prior
-**substantive** assistant turn. That stand-down covers **all four**
+**substantive** assistant turn. That stand-down covers **all three**
 reasons, the outage one included: a page tree, attached documents, web
 results and a substantive prior turn are real grounding, and the vector
 index being down takes nothing away from them. Request flags alone never stand the gate
@@ -1645,124 +1389,38 @@ the per-user mitigation, with `OOM` on the `SET` arriving only once BullMQ is
 already blocked. ADR-021's `#1183` paragraphs carry the reasoning; `.env.example`
 states the condition where an operator will meet it.
 
-## Image retrieval leg — configuration and probe (#1115, P1)
+## Image retrieval leg — configuration and probe — RETIRED (#1115 P1)
 
-**This section is the leg's CONFIGURATION half** — how an endpoint is assigned,
-proved and typed. What it retrieves is "The image leg (#1115 P3)" above, what
-fills it is `docs/architecture/08-flow-sync.md`, and what the model is shown is
-"Answer path — retrieved images as model input (#1115 P4)" below. Design of
-record: ADR-025 and
-`docs/superpowers/specs/2026-08-16-multimodal-image-retrieval-design.md`;
-operations: `docs/runbooks/image-index.md`.
+`image_embedding` was a use case like `chat` or `embedding`, assigned under
+Settings → AI Models, probed with a known 3-colour-band PNG before its row was
+written, carrying an MRL truncation width
+(`admin_settings.image_embedding_target_dimensions`) and a destructive
+re-type-and-re-queue path on a width or endpoint change. **#1618 stage 2
+removed all of it** (migration 118): the assignment row is deleted, the value
+is dropped from the `llm_usecase_assignments` CHECK, the width and the
+`rag_image_leg_enabled` rows are deleted, and `vl-embedding-client.ts`,
+`image-embedding-service.ts` and the probe route are gone.
 
-```
-Settings → AI Models → "Image embedding" row
-  |
-  |  PUT /api/admin/llm-usecases  { image_embedding: { providerId, model? } }
-  v
-resolve the pair the assignment WOULD produce
-  (assignment model, else provider.default_model, else refuse)
-  |
-  v
-read admin_settings.image_embedding_target_dimensions  (MRL width, or null)
-  |
-  v
-probeImageEmbedding(cfg, model, targetDimensions)  <- BLOCKING, before the row
-  |  embedImagesVl(...)  the known 3-colour-band PNG   is written
-  |  embedTextsVl(...)   one text, VL_QUERY_INSTRUCTION
-  |  both carry `dimensions: targetDimensions` when one is configured
-  |  require: both widths equal, 1..16000, and == targetDimensions when set
-  |
-  +-- failure --> answer 422 with the CATEGORY, as prose AND as `reason`
-  |               (shape_rejected | provider_error | unreachable |
-  |                width_mismatch | dimensions_ignored | unusable_width)
-  |               write NO assignment row
-  |               overwrite the stored probe ONLY when the refused pair IS the
-  |                 live pair (else a refused CHANGE would replace a working
-  |                 leg's verdict with "Not established")
-  |
-  +-- success --> persist the probe
-                  write the assignment row, with the RESOLVED model pinned
-                  ensureImageEmbeddingColumn(dims,
-                      { providerId, model, baseUrl, targetDimensions })
-                    width or provider:model@baseUrl#dims changed?
-                      yes -> DROP INDEX; TRUNCATE; ALTER TYPE; CREATE INDEX;
-                             record dims + provider:model@baseUrl#dims;
-                             mark every non-folder page image_embedding_dirty
-                      no  -> ensure the index exists, touch nothing else
-                    it throws? -> 200 + imageIndexWarning naming Re-check
-                                  (the row committed; a bare 500 would deny it)
-```
+The surviving configuration is ADR-027's `image_analysis` use case — a
+*generative* vision model on an ordinary `/chat/completions`, assigned under
+the same screen, with the assignment as the egress control (D3) — and it is
+documented in `docs/runbooks/image-analysis.md` §2 (assigning and probing) and
+§5 (the card and its routes). What fills it is
+`docs/architecture/08-flow-sync.md`; what retrieves it is "Derived
+image-analysis chunks in retrieval" above; what the model is shown is "Answer
+path — retrieved images as model input (#1115 P4)" below. The retirement
+itself, including rollback, is `docs/runbooks/image-embedding-retirement.md`.
 
-Eight things are load-bearing.
-
-1. **`image_embedding` never inherits** (`resolveImageEmbeddingUsecase`;
-   `resolveUsecase('image_embedding')` throws, exactly as it does for
-   `rerank`). Unassigned means the image leg is off. The reason is sharper than
-   rerank's: a default text embedder handed this request does not error, it
-   answers the plain `{model, input}` shape with a well-formed vector from the
-   wrong pooling position.
-2. **The probe gates the assignment**, unlike #1154's vision probe, which is
-   fire-and-forget after the save. A wrong vision verdict disables an optional
-   composer control; a wrong `image_embedding` assignment silently fills an
-   index with garbage. So it blocks, and a failure refuses.
-3. **The 422 names the category, never the provider's body.** The body can echo
-   request fragments and internal topology; it stays on
-   `GET /admin/llm-usecases/image_embedding/probe` (`requireAdmin`, truncated at
-   `PROBE_ERROR_MAX_CHARS`, rendered as plain JSX). `UsecaseDefaultSchema` —
-   authenticated but not admin-gated — must never gain it. Same rule as #1184.
-4. **Mismatched widths are a refusal, not a curiosity.** `mlx_vlm.server`
-   applies the chat template to images and skips it for text, which would put
-   two vector spaces into one column; a width disagreement is the only symptom
-   reachable from a client.
-5. **Unassigning is not probed and destroys nothing.** The leg goes off, and the
-   column and index survive, so re-assigning the same pair costs nothing.
-   `POST …/reprobe` re-runs the probe and, on success only, re-runs
-   `ensureImageEmbeddingColumn` — which is the remedy for an operator who
-   restarted the model server at a different width. A failed re-probe leaves the
-   column alone: an unreachable endpoint is not evidence that the existing index
-   is wrong.
-6. **The identity is `provider:model@baseUrl#dims`, and the model is PINNED at
-   assignment.** An assignment of `{provider, model: null}` re-resolves
-   `provider.default_model` on every read, so leaving it unpinned let a
-   `PATCH /admin/llm-providers/:id` repoint the live image model with no probe
-   and no rebuild; the base URL is in the identity for the same reason, one
-   layer out (that PATCH also moves the endpoint without changing the provider
-   id). A server upgraded **in place** at the same URL remains invisible — D12's
-   version pin is an operator step, not an automatic one.
-7. **Re-check is not merely diagnostic, so it says what it did.** On a width or
-   endpoint change it truncates `page_image_embeddings` and re-dirties every
-   non-folder page, so the reprobe route answers `rebuilt` + `dirtiedPages` and
-   the panel's toast names the emptied index. A probe that established no width
-   is announced as an error, not in the success treatment: it is a refusal or an
-   outage, and ADR-010 reserves green for succeeded.
-8. **MRL truncation is a REQUEST parameter, so the app has to send it.**
-   `--hf-overrides '{"is_matryoshka": true}'` only makes vLLM *accept*
-   `dimensions`; there is no serve-time flag that changes the default output
-   width, so an 8B answers 4096 — pgvector's unindexed tier — until a client
-   asks for less. The number lives in
-   `admin_settings.image_embedding_target_dimensions` (Settings → AI Models →
-   Image embedding), and **one reader**
-   (`getImageEmbeddingTargetDimensions`) serves the probe, the column type,
-   the rebuild identity and — from P2 — the image embedder and the query side.
-   The probe both sends it and requires it back: a server that ignores the
-   parameter answers 200 at its native width, and recording that would type
-   the column for a space nothing else writes into (`dimensions_ignored`).
-   The category split also matters here: `shape_rejected` is the four statuses
-   that prove the server is reachable and refusing the request
-   (400/404/405/422, `VL_SHAPE_REFUSAL_STATUSES`), while 401/403/429 and 5xx
-   are `provider_error` — a vLLM still loading a model answers 503, and
-   telling that operator their server is the wrong kind is the opposite of the
-   remedy.
 
 ## Answer path — retrieved images as model input (#1115 P4)
 
 P3 made a picture retrievable and put it on the wire as a `kind: 'image'`
-source. P4 puts it in the request. `domains/llm/services/retrieved-images.ts`
-turns the pictures the returned `SearchResult`s came from — their derived
-provenance since #1617, their `imageHits` where there is none — into
-`image_url`
-content parts, and `llm-ask.ts` appends them to the user turn.
+source. P4 puts it in the request, and **this half survives #1618 stage 2**:
+the leg that once produced the candidates is gone, so the candidates are the
+derived `image_analysis` provenance of the returned `SearchResult`s (ADR-027
+D11) and nothing else. `domains/llm/services/retrieved-images.ts` turns them
+into `image_url` content parts, and `llm-ask.ts` appends them to the user
+turn.
 
 **The service exists because of the P0 guard, not despite it.**
 `resolveAttachmentBytes` is the system reader — no page visibility, no space
@@ -1778,8 +1436,8 @@ store.
 
 **Four gates, cheapest first.** `rag_answer_max_images > 0` (a cached
 `admin_settings` read, default **2**, range 0–8); some returned row carries
-image evidence — derived provenance (ADR-027 D11), or an ADR-025 `imageHits`
-entry while that leg is live; `getVisionCapability(chatProvider, chatModel)
+image evidence, which since #1618 stage 2 means derived provenance
+(ADR-027 D11) and only that; `getVisionCapability(chatProvider, chatModel)
 === true`; and then
 the bytes themselves. The ordering is what keeps the standing cost on a
 text-only deployment to one cached settings read — the capability table is not
@@ -1832,7 +1490,8 @@ while being categorically unshowable to the model. Hitting the budget **skips
 that candidate and keeps going**, never `break`s: candidates come from
 different pages at arbitrary sizes, so stopping deleted a small picture that
 fits because a larger one outranked it — and on an all-image-only set that
-turned an answerable turn into an `image_only_context` refusal. The projected
+turned an answerable turn into what was then an `image_only_context` refusal
+(retired with the leg, #1618 stage 2). The projected
 length is computed arithmetically, so a candidate that does not fit costs no
 base64 encode.
 
@@ -1962,11 +1621,10 @@ test pins that.
   satisfies both needles and wants an entirely different format — the
   instruction as a **system message inside a chat template**, terminated by
   `<|im_start|>assistant\n`, not the flat `Instruct:/Query:` string. The two
-  conventions are unrelated and share no characters. VL formatting lives in
-  `vl-embedding-client.ts` and reaches a model only through the
-  `image_embedding` use case, never through `generateEmbedding`; the exclusion
-  here is for the operator who points the *text* `embedding` assignment at a VL
-  id by hand, which the model picker allows because it lists whatever the
+  conventions are unrelated and share no characters. The VL client that used
+  that format went with the `image_embedding` use case (#1618 stage 2), and
+  the exclusion stays because it never protected that client: it is for the
+  operator who points the *text* `embedding` assignment at a VL id by hand, which the model picker allows because it lists whatever the
   provider serves. It is a bare substring rather than a `-vl-` boundary match,
   because ids arrive in at least four spellings and the asymmetry above applies
   to the exclusion too: over-matching costs a bare query, under-matching
@@ -1982,9 +1640,9 @@ test pins that.
   `connectionTimeoutMillis`, soft-fails to the default floor and caches that
   for a TTL, while holding its own client for the whole stall. The value is
   `min(1000, max(floor, 2 × raw row count))`, one definition in
-  `domains/llm/services/hnsw-ef-search.ts` shared by all four kNN probes (the
-  vector leg, the image leg, `computePageRelationships` and the duplicate
-  detector). Since **#1285** the floor is `admin_settings.rag_ef_search`
+  `domains/llm/services/hnsw-ef-search.ts` shared by all three kNN probes (the
+  vector leg, `computePageRelationships` and the duplicate detector; a fourth,
+  the image leg, retired with #1618 stage 2). Since **#1285** the floor is `admin_settings.rag_ef_search`
   (default 100, range 1–1000, 60-second cached reader), edited in
   Settings → AI Models → Retrieval beside Fetch width. It sits there as
   CONTEXT for the width, not as a knob to move with it: the `2 ×` headroom
@@ -2205,18 +1863,13 @@ page visibility, so a revoked page's entry is annotated `unavailable`
 regardless of its hash: a shared `contentHash` is provenance, never an
 authorization shortcut.
 
-**The legacy arm is the fallback, not gone (#1617 review r1).** When NO row in
-the answer's set carries derived provenance, both the citation append and the
-byte pick fall back WHOLE-SET to ADR-025's `imageHits` — the pre-#1617 append,
-ordered by the leg's own cross-modal cosine, carrying `attachmentUrl` and none
-of the four provenance fields. That is the state of an instance with
-`image_embedding` assigned and nothing analyzed yet, which the ADR keeps live
-until #1618; consuming only the new shape would have taken its chips and its
-answer-time pictures away, and would have made `image_only_context`'s "They
-are attached below as the closest matches" false for the only set that
-reaches it. Whole-set rather than per-page, so the two ordering quantities
-never interleave and one attachment is never cited twice. #1618 deletes the
-fallback with the leg, the flag and the rule.
+**The legacy arm is GONE (#1618 stage 2).** #1617 kept a whole-set fallback
+to ADR-025's `imageHits` for the one state that needed it — an instance with
+`image_embedding` assigned and nothing analyzed yet — and #1618 deleted it
+with the leg, the flag and the rule, exactly as #1617 said it would. Derived
+provenance is now the only source of an image citation and of an answer-time
+picture; a set with no derived provenance cites no image and attaches none,
+and answers from its text rather than refusing.
 
 `frontend/src/features/ai/source-target.ts` is the single resolver: a `url`
 (or a URL found in `confluenceId`) opens in a new tab, otherwise navigation
@@ -2328,5 +1981,4 @@ All of these go through the same provider resolver and sanitization layer:
 - `backend/src/domains/llm/services/llm-cache.ts`
 - `backend/src/core/utils/sanitize-llm-input.ts`
 - `backend/src/domains/confluence/services/subpage-context.ts`
-- `backend/src/domains/llm/services/image-leg-search.ts` (#1115 P3 — the third RRF leg)
 - `backend/src/domains/llm/services/retrieved-images.ts` (#1115 P4 — pick, load and validate the images the chat model is shown; the sanctioned caller of the system attachment reader)
