@@ -9,6 +9,7 @@ import {
   type ChatMessage,
   type ProviderConfig,
 } from './openai-compatible-client.js';
+import { z } from 'zod';
 import { loadProviderConfig } from './llm-provider-resolver.js';
 import { logger } from '../../../core/utils/logger.js';
 
@@ -291,6 +292,18 @@ function observesImageOutsideDescription(payload: ImageAnalysisPayloadV1): boole
   );
 }
 
+/**
+ * Whether every validation issue sits inside `structured`.
+ *
+ * The `kind`/block mismatch the schema raises on `structured` (a `photo`
+ * carrying table rows) lands here too, and dropping the block is the right
+ * answer to it as well: the contradiction is between the block and the kind,
+ * and the kind is the part the rest of the payload agrees with.
+ */
+function isStructuredOnlyViolation(error: z.ZodError): boolean {
+  return error.issues.length > 0 && error.issues.every((issue) => issue.path[0] === 'structured');
+}
+
 function failure(
   cls: ImageAnalysisFailureClass,
   extra: Partial<Pick<ImageAnalysisFailure, 'httpStatus' | 'ceiling' | 'providerLevel'>> = {},
@@ -406,7 +419,43 @@ export async function analyzeImage(input: AnalyzeImageInput): Promise<AnalyzeIma
     return failure('malformed');
   }
 
-  const validated = imageAnalysisPayloadSchema(maxOutputTokens).safeParse(scrubStrings(parsed));
+  const schema = imageAnalysisPayloadSchema(maxOutputTokens);
+  const scrubbed = scrubStrings(parsed);
+  let validated = schema.safeParse(scrubbed);
+  // A violation confined to `structured` does not discard the analysis.
+  //
+  // `structured` is the one OPTIONAL block in the payload, and it is the
+  // least retrieval-critical part of it: `description` and `visibleText` are
+  // the evidence a question is answered from. Measured on the #1619 image
+  // corpus (187 images, qwen3.8-27b at the 16,384 ceiling): 9 images failed
+  // validation, EVERY one of them inside `structured` and none of them on a
+  // bound that matters for retrieval — `chart.trend` over 120 characters
+  // (6 images), a `diagram.nodes[]` entry over 50 (1), a `diagram.edges[]`
+  // entry over 70 (1), and 26 diagram nodes against a cap of 25 (1). Their
+  // descriptions and transcriptions were all within bounds. Discarding those
+  // analyses left 9 of 187 images (4.8 %) permanently unanalyzable — the page
+  // stays *partial* forever, because at this ceiling the bounds are already
+  // at their maximum (`imageAnalysisCeilingScale` is 1, so no ceiling raise
+  // can help) and the prompt cannot make a model count characters: stating
+  // every cap verbatim still left 2 of 4 re-probed images violating one.
+  //
+  // So the block is dropped and the payload re-validated. Nothing else is
+  // relaxed: a reply whose `description`, `visibleText`, `language` or
+  // `limitations` breaks its bound is still `malformed`, as is one that is
+  // not a JSON object, and the stored payload is then exactly what a model
+  // that emitted no structured block would have produced.
+  if (!validated.success && isStructuredOnlyViolation(validated.error)) {
+    const withoutStructured = { ...(scrubbed as Record<string, unknown>) };
+    delete withoutStructured.structured;
+    const retried = schema.safeParse(withoutStructured);
+    if (retried.success) {
+      logger.info(
+        { providerId: identity.providerId, model: identity.model, issues: validated.error.issues.length },
+        'Image analysis: dropped an out-of-bounds structured block and kept the analysis',
+      );
+      validated = retried;
+    }
+  }
   if (!validated.success) {
     logger.debug(
       { providerId: identity.providerId, model: identity.model, issues: validated.error.issues.length, replyChars: text.length },

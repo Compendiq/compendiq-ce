@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An analysis whose only schema violation is inside `structured` is kept
+  (#1615).** Measured while driving #1619's arm B backfill over the 187-image
+  corpus: 9 images produced a payload that broke a bound only in the OPTIONAL
+  `structured` block — `chart.trend` over 120 characters (6), a
+  `diagram.nodes[]` entry over 50 (1), a `diagram.edges[]` entry over 70 (1),
+  26 diagram nodes against a cap of 25 (1) — while their `description` and
+  `visibleText` were in bounds, and the client discarded the whole analysis as
+  `malformed`. That left **4.8 % of a real corpus permanently unanalyzable**
+  with its pages *partial* forever: the bounds are already maximal at the
+  16,384 ceiling (`imageAnalysisCeilingScale` returns 1), so no ceiling raise
+  widens them, and stating every cap in the prompt still left 2 of 4 re-probed
+  images violating one. The block is now dropped and the payload re-validated
+  — exactly what a model emitting no structured block would have produced.
+  Nothing else is relaxed: a violation in `description`, `visibleText`,
+  `language` or `limitations`, a reply with no JSON object, a mixed violation,
+  a refusal, an empty payload and a `length` finish all still fail.
+
+- **The ADR-027 B-vs-C retrieval pair is captured (#1619).** Both arms on
+  `a9f0fbb8`, DE image fixture, Qwen3-Embedding-4B Q8_0 at 2560 dims, FTS
+  `german`, rerank off; arm B analysed **187/187** images with `qwen3.8-27b`.
+  Page **R@1 .9320 → .9806** (+4.85 pp, 16 W / 1 L, McNemar exact
+  **p = 0.000275**, 95 % bootstrap CI [+2.34, +7.72] pp over 65 page
+  clusters), R@5 .9871 → **1.0000**, R@10 .9968 → **1.0000**, MRR
+  .9599 → .9903 (+3.04 pp, CI [+1.47, +4.84]), image-negative leakage@1
+  **0 of 24** on both arms, query cost p50 56.7 / p95 65.5 ms. So on this
+  corpus image analysis retrieves the expected page **better than no image
+  analysis** — and that is the whole claim: the pre-registered primary is
+  answer correctness, **no human judging was taken** (amendment A-5), so the
+  gate verdict stays **inconclusive by design** and nothing here says anything
+  about the retired ADR-025 image leg. Artifacts and full provenance:
+  `backend/src/domains/llm/eval/artifacts/1611/`.
+
 - **BREAKING — the legacy image-embedding path is retired (#1618 stage 2,
   migration 118).** The authorisation, verbatim: **"Remove it, nobody was
   using it in production."** The basis is that it was **unused in production**
@@ -41,7 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint that named it is re-registered or retired in writing — ADR-027
   "Amendment (2026-09-16, #1619)", drafted A-1…A-6. `--unblind` now requires
   `{B, C}` and refuses a primary with no registered comparator (an arm A
-  report is still accepted and scored as a secondary pairing); the primary,
+  report no longer parses at all — #1634 narrowed `EVAL_ARMS` to `[B, C]`,
+  correcting the claim this entry first made that it stayed accepted as a
+  secondary pairing); the primary,
   the secondary pairs, the pilot and the safety endpoints run C → B, and each
   condition names the arms it scored. **O5's image-evidence guardrail is
   retired**: under B vs C the paired endpoint is null by construction and

@@ -144,10 +144,52 @@ describe('analyzeImage — the five deterministic classes', () => {
     expect(await run()).toMatchObject({ ok: false, class: 'malformed', providerLevel: false });
   });
 
-  it('malformed: JSON that the schema rejects (a block that contradicts the kind)', async () => {
+  it('keeps the analysis and drops the block when a violation is confined to structured', async () => {
+    // The two shapes measured on the #1619 corpus: an over-long `chart.trend`
+    // (6 of 187 images) and a diagram node list one entry over the cap (1).
+    for (const structured of [
+      { chart: { trend: 'x'.repeat(121) } },
+      { diagram: { nodes: Array.from({ length: 26 }, (_, i) => `n${i}`) } },
+    ]) {
+      const kind = 'chart' in structured ? 'chart' : 'diagram';
+      respond = () => ({ status: 200, body: chatReply(JSON.stringify({ ...OK_PAYLOAD, kind, structured })) });
+      const r = await run();
+      expect(r.ok, JSON.stringify(structured).slice(0, 40)).toBe(true);
+      if (!r.ok) continue;
+      // The retrieval evidence survives whole; the block is simply absent.
+      expect(r.payload.structured).toBeUndefined();
+      expect(r.payload.description).toBe(OK_PAYLOAD.description);
+      expect(r.payload.visibleText).toBe(OK_PAYLOAD.visibleText);
+    }
+  });
+
+  it('drops a block that contradicts the kind rather than discarding the analysis', async () => {
+    // A `photo` carrying table rows: the contradiction is between the block
+    // and the kind, and every other field agrees with the kind.
     respond = () => ({
       status: 200,
       body: chatReply(JSON.stringify({ ...OK_PAYLOAD, kind: 'photo', structured: { tableRows: ['a | b'] } })),
+    });
+    const r = await run();
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.structured).toBeUndefined();
+  });
+
+  it('malformed: a violation outside structured, and one that is only partly inside it', async () => {
+    // `visibleText` over its bound is the evidence itself being wrong.
+    respond = () => ({ status: 200, body: chatReply(JSON.stringify({ ...OK_PAYLOAD, visibleText: 'x'.repeat(2_500) })) });
+    expect(await run({ maxOutputTokens: 4096 })).toMatchObject({ ok: false, class: 'malformed' });
+
+    // One issue inside `structured`, one outside: dropping the block cannot
+    // rescue it, and nothing else is relaxed.
+    respond = () => ({
+      status: 200,
+      body: chatReply(JSON.stringify({
+        ...OK_PAYLOAD,
+        kind: 'chart',
+        limitations: ['y'.repeat(121)],
+        structured: { chart: { trend: 'x'.repeat(121) } },
+      })),
     });
     expect(await run()).toMatchObject({ ok: false, class: 'malformed' });
   });

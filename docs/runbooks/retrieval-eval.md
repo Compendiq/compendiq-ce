@@ -874,16 +874,36 @@ must say the same thing. The tooling is in this checkout (**PR2 on #1614**):
 its provenance), `run-arm-answers.ts` (one arm's answers through the real
 ask route, arm-blinded) and `judge-arms.ts` (`--merge` the arms into one
 blinded sheet, `--check` the judging progress, `--unblind` and score). #1619
-executes it and does not build a second one. **What is on record so far is
-retrieval only**: arm C and legacy-revision C were captured on real models
-(2026-09-16, #1619), arm A is permanently unobtainable, arm B is NOT captured
-(100 of 187 images analysed when the driver refused the run — the interleaved
-re-embed pass could not load the text embedder, because this host serves one
-model at a time; the provider host went silent later, during the 43-second
-re-run, which is why the run has not been resumed since) and no
-human judging was taken — so no verdict document exists.
-`backend/src/domains/llm/eval/artifacts/1611/README.md` records what the two
-captures are, and what still is not.
+executes it and does not build a second one. **What is on record is retrieval
+only.** The **B-vs-C pair was captured on 2026-09-18** (#1619), both arms on
+revision `a9f0fbb8` with the same embedder: arm B analysed **187/187** images
+under `qwen3.8-27b` and beat arm C on page R@1 (.9806 against .9320, +4.85 pp,
+McNemar exact **p = 0.000275**, bootstrap CI [+2.34, +7.72] pp over 65 page
+clusters), saturated R@5/R@10 at 1.0000, moved MRR +3.04 pp and leaked 0 of 24
+image-negative queries. Arm A is permanently unobtainable (amendment A-1), the
+2026-09-16 arm C and legacy-revision C captures are **not pairable** with the
+new pair (different revision, and the embedder was re-downloaded between
+sessions), and **no human judging was taken** (A-5) — so the pre-registered
+primary is unmeasured and no verdict document exists.
+`backend/src/domains/llm/eval/artifacts/1611/README.md` records every capture,
+what the session had to change to reach 187/187, and what still is not there.
+
+**Three operational facts a rerun needs.** (1) `gemma-4-26b-a4b-it` is
+unusable for analysis on this host at either ceiling — `truncated:8192` at
+8,192, and at 16,384 the verbose images exceed the 120 s `ANALYSIS_TIMEOUT_MS`
+because 82–99 % of its output tokens are reasoning; `qwen3.8-27b` honours
+`enable_thinking: false` and analysed the same images in 21–46 s, at ctx
+20,480 (it cannot allocate at 36,096 on 24 GB). (2) This host serves **one
+model at a time**, does not auto-evict and exposes no HTTP load/unload, so the
+embedder and the VL model must be swapped around the backfill — the 2026-09-18
+run did that through LM Studio's SDK control plane (`ws://host:1234`,
+namespaces `/system`, `/llm`, `/embedding`), forwarding every inference
+request unchanged. (3) Re-running arm B from a wiped corpus costs the whole
+backfill again, because the seed truncates `pages` and every
+`page_image_analyses` row goes with it on CASCADE; snapshot the analysed rows
+first and restore them by `(source, attachment_key, content_hash)` after the
+seed — the product's own cache key — and the driver reuses them with zero
+vision calls.
 
 ### Running it (the recipe #1619 follows)
 
