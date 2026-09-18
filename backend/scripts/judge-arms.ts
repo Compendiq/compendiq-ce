@@ -185,7 +185,7 @@ function main(): void {
   for (const entry of list('arm-report')) {
     const [armRaw, file] = entry.split('=');
     if (!armRaw || !file || !(EVAL_ARMS as readonly string[]).includes(armRaw)) {
-      throw new Error(`--arm-report entries are <A|B|C>=<file>, got "${entry}"`);
+      throw new Error(`--arm-report entries are <${EVAL_ARMS.join('|')}>=<file>, got "${entry}"`);
     }
     armReports[armRaw as EvalArm] = parseArmRunReport(JSON.parse(readFileSync(file, 'utf8')), file);
   }

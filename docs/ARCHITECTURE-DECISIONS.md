@@ -5646,7 +5646,12 @@ never "better than image embeddings".
 
 **A-6 — the code changes this amendment authorises.** `--unblind`'s required
 set is `{B, C}` and it refuses a primary with no registered comparator (arm A
-stays accepted, optional, and scored as a secondary pairing);
+is refused like any unknown arm: `EVAL_ARMS` is `['B', 'C']` since #1618 stage
+2 narrowed it, and `ArmRunReportSchema.arm` is `z.enum(EVAL_ARMS)`, so an arm
+A report does not parse. *Erratum, 2026-09-18:* this paragraph and the
+CHANGELOG entry beside it said arm A "stays accepted, optional, and scored as
+a secondary pairing", which #1634 falsified when it removed the arm; no
+`secondary` scoring path exists in `judgments.ts` or `arms.ts`);
 `assertComparableArms(c, b, …)` is the load-bearing pair; `scoreJudgedPair`
 and `compareArmRetrieval` run C/B; `decideGate` takes an absolute leakage cap
 and emits the retired O5 condition explicitly; `pilotCheck` defaults to C/B;
@@ -5728,6 +5733,61 @@ nothing about them. The (b) column is therefore ten requests but **seven
 distinct generations**, and the repetition is the measurement rather than a
 transcription (the two ceilings were separate runs: `brandenburger-tor__1.jpg`
 differs by six tokens in (a), 483 against 489).
+
+### Measured (2026-09-18, #1619): the B-vs-C retrieval pair
+
+The first captured pair of the amended gate. **Retrieval only** — the
+pre-registered primary (answer correctness) was not measured, for A-5's
+reason, so nothing here decides the gate.
+
+Both arms on revision `a9f0fbb8`, DE image fixture (309 queries, 65 pages,
+187 images), text embedder Qwen3-Embedding-4B GGUF Q8_0 at 2560 dims, rerank
+off, FTS `german`, answer model `qwen3.8-27b`, `rag_answer_max_images` 2,
+RTX 3090 under LM Studio behind a local model-residency proxy. Arm B:
+`image_analysis` = `qwen3.8-27b`, **187/187** images analysed under one
+identity and one (prompt v1, schema v1) pair, 187 derived chunks, backfill
+67.3 min. Arm C: `image_analysis` unassigned, no derived rows.
+
+| endpoint | C | B | δ | discordant | McNemar p | 95 % CI (65 clusters) |
+|---|---|---|---|---|---|---|
+| page R@1 | .9320 | .9806 | **+4.85 pp** | 16 W / 1 L | **0.000275** | [+2.34, +7.72] pp |
+| page R@5 | .9871 | 1.0000 | +1.29 pp | 4 W / 0 L | 0.125 | [+0.32, +2.60] pp |
+| page R@10 | .9968 | 1.0000 | +0.32 pp | 1 W / 0 L | 1.0 | — |
+| MRR | .9599 | .9903 | +3.04 pp | — | — | [+1.47, +4.84] pp |
+| image-negative leakage@1 (O7) | 0 / 24 | **0 / 24** | 0 | 0 | 1.0 | [0, 0] |
+| query cost p50 / p95 | 55.8 / 63.7 ms | 56.7 / 65.5 ms | — | — | — | reported, never gated (O11) |
+
+Arm B's own `imageEvidenceRecallAt5` is **.6316** over the 248 of 309 queries
+whose top-5 carried derived provenance; A-2 retired the paired guardrail, so
+no condition reads it.
+
+*Concluded:* on this corpus and fixture, indexing ingestion-time image
+analysis as text retrieves the expected page **better than no image
+analysis**, significant at R@1, saturating R@5/R@10, with no added
+image-negative leakage and no material latency change. *Not concluded:*
+anything about answer quality (A-5) and anything about the retired ADR-025
+leg (A-5). O7's cap is met but its slice is 24 negatives, not O2's 48, so it
+reads `inconclusive` under A-4 rather than passing.
+
+**Three deployment facts this run establishes, none of them about the
+design.** (1) The candidate model matters more than the ceiling: `gemma-4-26b-a4b-it`
+is unusable here at either ceiling — `truncated:8192` at 8,192, and at 16,384
+the verbose images exceed the 120 s budget — while `qwen3.8-27b`, which
+honours `enable_thinking: false`, analysed the same images in 21–46 s. O8
+names the instance's assignment, and this instance assigned the latter.
+(2) A host that serves one model at a time needs the embedder and the VL model
+swapped around the backfill; the run drove that through LM Studio's SDK
+control plane, forwarding every inference request unchanged.
+(3) **The payload bounds were rejecting good analyses.** Nine of 187 images
+violated a bound only inside the optional `structured` block while their
+description and transcription were in bounds, and the client discarded the
+whole analysis — 4.8 % of the corpus permanently unanalyzable, its pages
+*partial* forever, with no lever available (the bounds are already maximal at
+16,384, and stating every cap in the prompt still left 2 of 4 re-probed
+images violating one). `a9f0fbb8` drops the offending optional block and
+keeps the analysis; nothing outside `structured` is relaxed. Both arms run on
+that revision. Full provenance and the file-level errata:
+`backend/src/domains/llm/eval/artifacts/1611/README.md`.
 
 ### D8 erratum (2026-09-16, #1619): the analysis request suppresses provider-side reasoning
 
