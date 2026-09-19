@@ -53,6 +53,10 @@ export async function fillVersionBody(
  * works for both Confluence-synced and standalone/local pages. Idempotent —
  * re-inserting an existing (page_id, version_number) is a no-op.
  *
+ * This is ordinary best-effort history, never baseline evidence. A baseline
+ * protects only the exact snapshot it explicitly links through
+ * `page_baselines.version_snapshot_id`; inserting here creates no such link.
+ *
  * Lives in core so both the confluence and knowledge domains can use it
  * without violating domain boundary rules.
  */

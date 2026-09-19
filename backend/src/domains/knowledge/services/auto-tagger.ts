@@ -3,9 +3,20 @@ import { chat } from '../../llm/services/openai-compatible-client.js';
 import { htmlToMarkdown } from '../../../core/services/content-converter.js';
 import { sanitizeLlmInput } from '../../../core/utils/sanitize-llm-input.js';
 import { query } from '../../../core/db/postgres.js';
-import { getUserAccessibleSpaces } from '../../../core/services/rbac-service.js';
+import { getUserAccessibleSpaces, userCanAccessPage } from '../../../core/services/rbac-service.js';
 import { logger } from '../../../core/utils/logger.js';
 import { getClientForUser } from '../../confluence/services/sync-service.js';
+import type { ConfluenceClient } from '../../confluence/services/confluence-client.js';
+import { pageWriteStaysLocal } from '../../confluence/services/standalone-mode.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  PageWriteError,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+} from '../../../core/services/page-write-admission.js';
+import { enqueuePageWriteInvalidation } from '../../../core/services/page-write-invalidation.js';
 
 export const ALLOWED_TAGS = [
   'architecture',
@@ -168,51 +179,185 @@ export async function autoTagPage(
   };
 }
 
+interface TagPage {
+  id: number;
+  confluence_id: string | null;
+  source: string;
+  space_key: string | null;
+  labels: string[];
+  content_revision: string;
+  lifecycle_revision: string;
+}
+
+function mergeLabels(current: readonly string[], add: readonly string[], remove: readonly string[]): string[] {
+  const removed = new Set(remove);
+  return Array.from(new Set([...current.filter((label) => !removed.has(label)), ...add]));
+}
+
 /**
- * Apply tags to a page's labels column.
- * Accepts integer PK (numeric string) or confluence_id (backward compat).
+ * Apply an authored label mutation through the lifecycle fence. Confluence
+ * mutations reserve a durable intent before the first remote call and settle
+ * only after the matching local row commits.
+ */
+export async function applyLabelChanges(
+  userId: string,
+  pageId: string,
+  changes: { add: readonly string[]; remove?: readonly string[] },
+): Promise<string[]> {
+  const isNumericId = /^\d+$/.test(pageId);
+  const params = [isNumericId ? parseInt(pageId, 10) : pageId];
+  const lookup = `SELECT id, confluence_id, source, space_key, labels,
+                         content_revision::text, lifecycle_revision::text
+                    FROM pages
+                   WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'}
+                     AND deleted_at IS NULL`;
+  const existing = await query<TagPage>(lookup, params);
+  const initial = existing.rows[0];
+  if (!initial) throw new Error(`Page not found: ${pageId}`);
+
+  if (await pageWriteStaysLocal(userId, initial.source)) {
+    return withPageWriteTransaction([initial.id], async (client) => {
+      const fresh = await client.query<TagPage>(
+        `SELECT id, confluence_id, source, space_key, labels,
+                content_revision::text, lifecycle_revision::text
+           FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        [initial.id],
+      );
+      const page = fresh.rows[0];
+      if (!page) throw new Error(`Page not found: ${pageId}`);
+      const labels = mergeLabels(page.labels ?? [], changes.add, changes.remove ?? []);
+      await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [page.id, labels]);
+      return labels;
+    });
+  }
+
+  if (!initial.confluence_id) throw new Error(`Page is missing confluence_id: ${pageId}`);
+
+  const intent = await reservePageWriteIntent({
+    pageIds: [initial.id],
+    kind: 'page.labels',
+    actorId: userId,
+    expectedRevisions: {
+      [initial.id]: {
+        contentRevision: initial.content_revision,
+        lifecycleRevision: initial.lifecycle_revision,
+      },
+    },
+    effect: {
+      effectClass: 'remote',
+      pageId: initial.id,
+      confluenceId: initial.confluence_id,
+      add: [...changes.add],
+      remove: [...(changes.remove ?? [])],
+      priorLabels: initial.labels ?? [],
+      targetLabels: mergeLabels(initial.labels ?? [], changes.add, changes.remove ?? []),
+    },
+  });
+
+  let admitted: { page: TagPage; confluence: ConfluenceClient };
+  try {
+    admitted = await withPageWriteTransaction(
+      [initial.id],
+      async (client) => {
+        const actor = await client.query(
+          'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+          [userId],
+        );
+        if (actor.rowCount !== 1) {
+          throw new PageWriteError(403, 'intent_actor_inactive', 'The original actor is no longer active');
+        }
+
+        const fresh = await client.query<TagPage>(
+          `SELECT id, confluence_id, source, space_key, labels,
+                  content_revision::text, lifecycle_revision::text
+             FROM pages
+            WHERE id = $1
+              AND deleted_at IS NULL
+            FOR UPDATE`,
+          [initial.id],
+        );
+        const page = fresh.rows[0];
+        const expected = intent.revisions[initial.id]!;
+        if (
+          !page
+          || page.source !== 'confluence'
+          || page.confluence_id !== initial.confluence_id
+          || page.space_key !== initial.space_key
+        ) {
+          throw new PageWriteError(
+            409,
+            'intent_page_identity_changed',
+            `Page changed before labels could be applied: ${pageId}`,
+          );
+        }
+        if (page.lifecycle_revision !== expected.lifecycleRevision) {
+          throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after label admission');
+        }
+        if (page.content_revision !== expected.contentRevision) {
+          throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after label admission');
+        }
+        const spaces = await getUserAccessibleSpaces(userId, client);
+        if (
+          !page.space_key
+          || !spaces.includes(page.space_key)
+          || !(await userCanAccessPage(userId, page.id, client))
+        ) {
+          throw new PageWriteError(
+            403,
+            'intent_access_changed',
+            'The original actor no longer has authority to change this page',
+          );
+        }
+
+        const confluence = await getClientForUser(userId, client);
+        if (!confluence) {
+          throw new PageWriteError(
+            403,
+            'intent_connection_changed',
+            'The original actor no longer has an active Confluence connection',
+          );
+        }
+        return { page, confluence };
+      },
+      { intent },
+    );
+  } catch (error) {
+    await cancelPageWriteIntentBeforeEffect(intent);
+    throw error;
+  }
+
+  const current = admitted.page.labels ?? [];
+  const labels = mergeLabels(current, changes.add, changes.remove ?? []);
+  const add = changes.add.filter((label) => !current.includes(label));
+  const remove = (changes.remove ?? []).filter((label) => current.includes(label));
+
+  // Every call below is idempotent at the provider boundary. A rejection or
+  // timeout after a call begins leaves the intent unresolved; reconciliation
+  // must read the remote label set before it may settle the operation.
+  await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, async () => {
+    if (add.length > 0) await admitted.confluence.addLabels(admitted.page.confluence_id!, add);
+    for (const label of remove) {
+      await admitted.confluence.removeLabel(admitted.page.confluence_id!, label);
+    }
+  });
+
+  return completePageWriteIntent(intent, async (client) => {
+    await client.query('UPDATE pages SET labels = $2 WHERE id = $1', [initial.id, labels]);
+    await enqueuePageWriteInvalidation(client, intent.id);
+    return labels;
+  });
+}
+
+/**
+ * Add auto-tags to a page's labels column.
+ * Accepts integer PK (numeric string) or confluence_id (backward compatibility).
  */
 export async function applyTags(
   userId: string,
   pageId: string,
   tags: AllowedTag[],
 ): Promise<string[]> {
-  // Merge with existing labels (avoid duplicates)
-  const isNumericId = /^\d+$/.test(pageId);
-  const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
-    `SELECT id, confluence_id, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-    [isNumericId ? parseInt(pageId, 10) : pageId],
-  );
-
-  if (existing.rows.length === 0) {
-    throw new Error(`Page not found: ${pageId}`);
-  }
-
-  const page = existing.rows[0]!;
-  const existingLabels = page.labels ?? [];
-  const mergedLabels = Array.from(new Set([...existingLabels, ...tags]));
-
-  await query(
-    'UPDATE pages SET labels = $2 WHERE id = $1',
-    [page.id, mergedLabels],
-  );
-
-  // Sync labels to Confluence (requires the Confluence page ID)
-  if (page.confluence_id) {
-    try {
-      const client = await getClientForUser(userId);
-      if (client) {
-        const newTags = tags.filter((t) => !existingLabels.includes(t));
-        if (newTags.length > 0) {
-          await client.addLabels(page.confluence_id, newTags);
-        }
-      }
-    } catch (err) {
-      logger.error({ err, pageId: page.id, confluenceId: page.confluence_id, userId }, 'Failed to sync labels to Confluence');
-    }
-  }
-
-  return mergedLabels;
+  return applyLabelChanges(userId, pageId, { add: tags });
 }
 
 /**

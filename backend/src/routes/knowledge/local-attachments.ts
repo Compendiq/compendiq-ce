@@ -13,14 +13,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
-  putLocalAttachment,
+  putLocalAttachments,
   getLocalAttachment,
   listLocalAttachments,
   LocalAttachmentError,
   MAX_LOCAL_ATTACHMENT_BYTES,
 } from '../../core/services/local-attachment-service.js';
 import { getMimeType } from '../../domains/confluence/services/attachment-handler.js';
-import { logger } from '../../core/utils/logger.js';
+import { readFrozenPageAttachment } from '../../core/services/page-baseline-service.js';
 
 /**
  * Upload-time MIME allowlist (#735). Local attachments exist for editor
@@ -108,6 +108,8 @@ function mapErrorToStatus(err: LocalAttachmentError): number {
       return 413;
     case 'INVALID_FILENAME':
       return 400;
+    case 'STORAGE_UNWRITABLE':
+      return 500;
   }
 }
 
@@ -142,6 +144,31 @@ export async function localAttachmentsRoutes(fastify: FastifyInstance): Promise<
   fastify.get('/local-attachments/:pageId/:filename', async (request, reply) => {
     const { pageId, filename } = PageIdAndFilenameParamSchema.parse(request.params);
     try {
+    const frozen = await readFrozenPageAttachment({
+      pageId,
+      actorId: request.userId,
+      locator: {
+        store: 'local',
+        pageKey: String(pageId),
+        filename,
+      },
+    });
+    if (frozen.state === 'frozen_missing') {
+      reply.code(404);
+      return { error: 'NOT_FOUND', message: 'Attachment not found' };
+    }
+    if (frozen.state === 'frozen') {
+      const mimeType = getMimeType(filename);
+      const inline = INLINE_SAFE_MIME_TYPES.has(mimeType);
+      reply
+        .header('content-type', mimeType)
+        .header('content-length', String(frozen.size))
+        .header('x-content-type-options', 'nosniff')
+        .header('cache-control', 'private, max-age=3600')
+        .header('content-disposition', inline ? 'inline' : 'attachment');
+      if (!inline) reply.header('content-security-policy', 'sandbox');
+      return reply.send(frozen.stream);
+    }
       const { data, record } = await getLocalAttachment(pageId, filename, request.userId);
       // #735: Content-Type is derived server-side from the filename
       // extension (`getMimeType`, unknown → application/octet-stream),
@@ -213,61 +240,36 @@ export async function localAttachmentsRoutes(fastify: FastifyInstance): Promise<
     }
 
     try {
-      const record = await putLocalAttachment({
-        pageId,
+      const attachments = [{
         filename,
         contentType: decoded.contentType,
         data: decoded.buffer,
+      }];
+      if (body.xml) {
+        attachments.push({
+          filename: filename.toLowerCase().endsWith('.png')
+            ? filename.slice(0, -4) + '.drawio'
+            : `${filename}.drawio`,
+          contentType: 'application/xml',
+          data: Buffer.from(body.xml, 'utf8'),
+        });
+      }
+      const { records: [record, xmlRecord] } = await putLocalAttachments({
+        pageId,
+        attachments,
         userId: request.userId,
       });
 
-      // When an XML sibling is supplied, persist it under the matching
-      // .drawio filename so the Confluence native-viewer parity shape
-      // (#302 Gap 2) works for local pages too.
-      let xmlRecord: Awaited<ReturnType<typeof putLocalAttachment>> | null = null;
-      let xmlWriteFailed = false;
-      let xmlWriteError: string | undefined;
-      if (body.xml) {
-        const xmlFilename = filename.toLowerCase().endsWith('.png')
-          ? filename.slice(0, -4) + '.drawio'
-          : `${filename}.drawio`;
-        try {
-          xmlRecord = await putLocalAttachment({
-            pageId,
-            filename: xmlFilename,
-            contentType: 'application/xml',
-            data: Buffer.from(body.xml, 'utf8'),
-            userId: request.userId,
-          });
-        } catch (xmlErr) {
-          logger.warn(
-            { err: xmlErr, pageId, filename: xmlFilename },
-            'local-attachments: XML sibling write failed (PNG still stored)',
-          );
-          // Surface the failure to the caller so the drain helper can
-          // retry. Previously this was silently swallowed, breaking
-          // Confluence parity without any signal to the client.
-          xmlWriteFailed = true;
-          xmlWriteError =
-            xmlErr instanceof LocalAttachmentError
-              ? xmlErr.code
-              : xmlErr instanceof Error
-                ? xmlErr.message
-                : 'unknown error';
-        }
-      }
-
-      // `success` narrows to whether the PNG write completed. When
-      // `xmlWriteFailed` is true the caller knows the on-disk state
-      // diverged from Confluence parity and can re-send the XML half.
+      // PNG and optional XML are one admitted logical mutation. The response
+      // is successful only after both live files, both metadata rows and the
+      // attachment-only content revision commit behind the same fence.
       return {
-        success: !xmlWriteFailed,
-        filename: record.filename,
-        size: record.sizeBytes,
-        sha256: record.sha256,
+        success: true,
+        filename: record!.filename,
+        size: record!.sizeBytes,
+        sha256: record!.sha256,
         xmlFilename: xmlRecord?.filename,
         xmlSize: xmlRecord?.sizeBytes,
-        ...(xmlWriteFailed ? { xmlWriteFailed: true, xmlWriteError } : {}),
       };
     } catch (err) {
       if (err instanceof LocalAttachmentError) {

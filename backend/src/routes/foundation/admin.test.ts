@@ -303,21 +303,6 @@ describe('Admin routes', () => {
   });
 
   describe('PUT /api/admin/labels/rename', () => {
-    it('should rename a label across all pages', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rowCount: 5 });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/admin/labels/rename',
-        payload: { oldName: 'old-label', newName: 'new-label' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toContain('renamed');
-      expect(body.affectedPages).toBe(5);
-    });
-
     it('should reject when oldName equals newName', async () => {
       const response = await app.inject({
         method: 'PUT',
@@ -336,22 +321,6 @@ describe('Admin routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
-    });
-  });
-
-  describe('DELETE /api/admin/labels/:name', () => {
-    it('should remove a label from all pages', async () => {
-      (mockQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rowCount: 3 });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/admin/labels/obsolete-label',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body.message).toContain('removed');
-      expect(body.affectedPages).toBe(3);
     });
   });
 

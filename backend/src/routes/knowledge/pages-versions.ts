@@ -6,10 +6,16 @@ import {
   getSemanticDiff,
   saveVersionSnapshotByPageId,
   restoreVersion,
+  type RestoreResult,
 } from '../../domains/knowledge/services/version-tracker.js';
 import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
 import { getClientForUser, isConfluenceEnabled } from '../../domains/confluence/services/sync-service.js';
 import { htmlToConfluence } from '../../core/services/content-converter.js';
+import {
+  describeConfluencePagePut,
+  publishConfluencePagePut,
+  registerConfluencePagePutIntentReconcilers,
+} from '../../domains/confluence/services/page-put-intent-reconciler.js';
 import {
   backfillVersionHistory,
   getHistoricalBody,
@@ -18,6 +24,13 @@ import { logAuditEvent } from '../../core/services/audit-service.js';
 import { emitWebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+} from '../../core/services/page-write-admission.js';
 import {
   RestoreVersionSchema,
   PageVersionsResponseSchema,
@@ -64,6 +77,7 @@ interface PageContext {
 }
 
 export async function pagesVersionRoutes(fastify: FastifyInstance) {
+  registerConfluencePagePutIntentReconcilers();
   fastify.addHook('onRequest', fastify.authenticate);
 
   const cache = new RedisCache(fastify.redis);
@@ -340,11 +354,12 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
   // POST /api/pages/:id/versions/:version/restore - revert to an older version
   //
-  // Confluence-style, non-destructive: snapshots the current live state, then
-  // applies the target snapshot as a NEW live version (older versions remain in
-  // history). For Confluence-sourced pages the restored content is pushed
-  // upstream as a new Confluence version, so the next sync doesn't clobber the
-  // revert. RBAC + optimistic-version guard mirror PUT /pages/:id.
+  // Confluence-style, non-destructive: the current live state becomes ordinary
+  // history and the target becomes a NEW live version. A Confluence-sourced
+  // restore writes upstream first under a durable intent, then atomically
+  // adopts the accepted version locally; an unknown remote outcome never
+  // advances local authored state or clears the intent. RBAC + the
+  // optimistic-version guard mirror PUT /pages/:id.
   fastify.post('/pages/:id/versions/:version/restore', async (request) => {
     const { id, version: targetVersion } = VersionParamSchema.parse(request.params);
     const { version: expectedVersion } = RestoreVersionSchema.parse(request.body ?? {});
@@ -352,86 +367,156 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
 
     const ctx = await resolveAndAuthorize(userId, id);
     if (!ctx) throw fastify.httpErrors.notFound('Page not found');
-
-    // Standalone pages additionally require edit rights (owner or shared),
-    // matching the PUT /pages/:id contract — read access alone isn't enough.
     if (ctx.source === 'standalone' && ctx.createdByUserId !== userId && ctx.visibility !== 'shared') {
       throw fastify.httpErrors.forbidden('Not authorized to edit this page');
     }
 
+    // Preserve the existing early UX error. The durable admission check below
+    // is authoritative and closes the cross-process/freeze race.
     await rejectIfLiveCollabRoom(ctx.id, (m) => fastify.httpErrors.conflict(m));
 
-    // Optimistic concurrency: refuse if the page advanced past what the client saw.
-    if (expectedVersion !== undefined && expectedVersion < ctx.version) {
-      throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
-    }
-
-    // Restoring the live version is a no-op the client shouldn't reach.
-    if (targetVersion === ctx.version) {
-      throw fastify.httpErrors.badRequest('Cannot restore the current version');
-    }
-
-    // #722/#724 CRITICAL: backfilled version rows are metadata-only
-    // (body_html IS NULL) until previewed. Restoring one as-is would blank the
-    // live page AND push an empty body upstream. Lazily fetch + persist the
-    // historical body BEFORE restoring so we restore real content.
+    // Metadata-only history rows may be filled by a remote READ. Analysis and
+    // historical reads remain available while frozen; no authored state is
+    // mutated here, and restore admission still happens before any remote write.
     const targetBody = await query<{ body_html: string | null }>(
       'SELECT body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
       [ctx.id, targetVersion],
     );
     if (targetBody.rows[0]?.body_html === null && ctx.confluenceId) {
-      const client = await getClientForUser(userId);
-      if (client) {
-        await getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, client);
+      const historyClient = await getClientForUser(userId);
+      if (historyClient) {
+        await getHistoricalBody(ctx.id, ctx.confluenceId, targetVersion, historyClient);
       }
     }
 
-    const result = await restoreVersion(ctx.id, targetVersion);
-    if (!result) {
-      throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
-    }
-
-    await invalidateCollabDocAfterBodyWrite(ctx.id);
-
-    // Push the restored content upstream for Confluence pages so a subsequent
-    // sync doesn't pull the newer remote content back and undo the revert.
+    const staysLocal = ctx.source !== 'confluence' || !(await isConfluenceEnabled(userId));
     let pushedToConfluence = false;
-    let finalVersion = result.newVersion;
-    if (ctx.source === 'confluence' && ctx.confluenceId) {
-      try {
-        const client = await getClientForUser(userId);
-        if (client) {
-          const storageBody = htmlToConfluence(result.bodyHtml ?? '');
-          // updatePage() increments internally, so pass the *previous* live
-          // version (newVersion - 1) — the version Confluence currently holds.
-          const confPage = await client.updatePage(ctx.confluenceId, result.title, storageBody, result.newVersion - 1);
-          pushedToConfluence = true;
-          // Best-effort reconciliation AFTER the restore transaction committed
-          // and the push succeeded: persist the storage Confluence accepted,
-          // and trust the API-returned version over our locally-computed bump
-          // (mirrors PUT /pages/:id) so local `version` can't drift and
-          // mis-trigger the next sync's conflict guard. Also clear local-edit
-          // markers — local state now matches the remote. If this UPDATE fails
-          // the local restore still stands and the next edit/sync self-heals.
-          finalVersion = confPage.version?.number ?? result.newVersion;
-          await query(
-            `UPDATE pages SET body_storage = $2, version = $3, last_synced = NOW(),
-               local_modified_at = NULL, local_modified_by = NULL
-             WHERE id = $1`,
-            [ctx.id, storageBody, finalVersion],
+    let result: RestoreResult | null;
+
+    if (staysLocal) {
+      result = await withPageWriteTransaction([ctx.id], async (client) => {
+        const current = await client.query<{ version: number }>(
+          'SELECT version FROM pages WHERE id = $1 AND deleted_at IS NULL',
+          [ctx.id],
+        );
+        const liveVersion = current.rows[0]?.version;
+        if (liveVersion === undefined) throw fastify.httpErrors.notFound('Page not found');
+        if (expectedVersion !== undefined && expectedVersion < liveVersion) {
+          throw fastify.httpErrors.conflict(
+            'Page has been modified since you loaded it. Please refresh and try again.',
           );
         }
-      } catch (err) {
-        // Local restore already committed; log but don't fail the request.
-        request.log.error({ err }, 'Failed to push restored version to Confluence');
+        if (targetVersion === liveVersion) {
+          throw fastify.httpErrors.badRequest('Cannot restore the current version');
+        }
+        return restoreVersion(ctx.id, targetVersion, { client, actorId: userId });
+      });
+    } else {
+      if (!ctx.confluenceId) throw fastify.httpErrors.badRequest('Page is missing confluence_id');
+      const client = await getClientForUser(userId);
+      if (!client) throw fastify.httpErrors.badRequest('Confluence not configured');
+
+      const intendedTarget = await query<{ title: string; body_html: string | null }>(
+        'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
+        [ctx.id, targetVersion],
+      );
+      const intendedHistorical = intendedTarget.rows[0];
+      if (!intendedHistorical) {
+        throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
       }
+      if (intendedHistorical.body_html === null) {
+        throw fastify.httpErrors.conflict('Historical version body is unavailable');
+      }
+      const storageBody = htmlToConfluence(intendedHistorical.body_html);
+      const publication = describeConfluencePagePut({
+        kind: 'page.version_restore',
+        actorId: userId,
+        pageId: ctx.id,
+        confluenceId: ctx.confluenceId,
+        title: intendedHistorical.title,
+        bodyStorage: storageBody,
+        expectedRemoteVersion: ctx.version,
+        targetVersion,
+      });
+
+      // Durable conditional recovery metadata commits before updatePage. It
+      // identifies the immutable history target and digest, never authored
+      // title/body payload.
+      const intent = await reservePageWriteIntent({
+        pageIds: [ctx.id],
+        kind: publication.kind,
+        actorId: userId,
+        effect: publication.effect,
+      });
+
+      const current = await query<{
+        version: number;
+        source: string;
+        confluence_id: string | null;
+      }>(
+        'SELECT version, source, confluence_id FROM pages WHERE id = $1 AND deleted_at IS NULL',
+        [ctx.id],
+      );
+      const fresh = current.rows[0];
+      if (
+        !fresh ||
+        fresh.source !== 'confluence' ||
+        fresh.confluence_id !== ctx.confluenceId ||
+        fresh.version !== ctx.version ||
+        (expectedVersion !== undefined && expectedVersion < fresh.version) ||
+        targetVersion === fresh.version
+      ) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        if (!fresh) throw fastify.httpErrors.notFound('Page not found');
+        if (targetVersion === fresh.version) {
+          throw fastify.httpErrors.badRequest('Cannot restore the current version');
+        }
+        throw fastify.httpErrors.conflict(
+          'Page has been modified since you loaded it. Please refresh and try again.',
+        );
+      }
+
+      const target = await query<{ title: string; body_html: string | null }>(
+        'SELECT title, body_html FROM page_versions WHERE page_id = $1 AND version_number = $2',
+        [ctx.id, targetVersion],
+      );
+      const historical = target.rows[0];
+      if (
+        !historical ||
+        historical.body_html !== intendedHistorical.body_html ||
+        historical.title !== intendedHistorical.title
+      ) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        throw fastify.httpErrors.conflict('Historical version changed before restore could begin');
+      }
+      // Remote-first: if this fails, no local authored state changed. The
+      // unresolved intent records that the remote outcome may be unknown.
+      const confPage = await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, () => client.updatePage(
+        ctx.confluenceId!,
+        historical.title,
+        storageBody,
+        fresh.version,
+      ));
+      result = await completePageWriteIntent(intent, (lockedClient) =>
+        publishConfluencePagePut(lockedClient, publication, {
+          confluenceId: confPage.id,
+          title: confPage.title,
+          bodyStorage: confPage.body?.storage?.value ?? storageBody,
+          remoteVersion: confPage.version?.number,
+        }, intent.id),
+      );
+      pushedToConfluence = true;
     }
 
-    await cache.invalidate(userId, 'pages');
+    if (!result) throw fastify.httpErrors.notFound(`Version ${targetVersion} not found`);
+    if (!pushedToConfluence) {
+      await invalidateCollabDocAfterBodyWrite(ctx.id);
+      await cache.invalidate(userId, 'pages');
+    }
 
     await logAuditEvent(userId, 'PAGE_VERSION_RESTORED', 'page', String(ctx.id), {
       restoredFrom: targetVersion,
-      newVersion: finalVersion,
+      newVersion: result.newVersion,
       title: result.title,
       source: ctx.source,
       pushedToConfluence,
@@ -450,7 +535,7 @@ export async function pagesVersionRoutes(fastify: FastifyInstance) {
     return {
       id: ctx.id,
       title: result.title,
-      version: finalVersion,
+      version: result.newVersion,
       restoredFrom: targetVersion,
       source: ctx.source,
       pushedToConfluence,

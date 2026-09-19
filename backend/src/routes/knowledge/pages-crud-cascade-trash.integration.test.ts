@@ -9,12 +9,13 @@
  * the children at all (`has_children` matched `parent_id = confluence_id` only,
  * and standalone rows have no `confluence_id`), so no dialog could warn.
  *
- * These tests drive the real routes against a REAL PostgreSQL. Only
- * infrastructure side-channels (Redis cache, audit log, webhook hook, collab
- * tombstones) are stubbed, so the cascade, the tree query, `hasChildren` and
- * the restore batch are all the production SQL.
+ * These tests drive the real routes against real PostgreSQL and Redis,
+ * including authoritative RBAC and persisted audit rows.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { createClient, type RedisClientType } from 'redis';
 import type { FastifyInstance } from 'fastify';
 import {
   setupTestDb,
@@ -22,7 +23,12 @@ import {
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { invalidateRbacCache } from '../../core/services/rbac-service.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import { pagesCrudRoutes } from './pages-crud.js';
 import {
   insertUser,
   insertLocalSpace,
@@ -31,52 +37,40 @@ import {
   buildKnowledgeTestApp,
 } from './pages.test-helpers.js';
 
-// --- Boundary mocks (everything else is real) ---
+const available = await isDbAvailable() && await isRedisAvailable();
 
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-  },
-}));
+async function setAccessibleSpaces(userId: string, spaceKeys: readonly string[]): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('cascade-reader', 'Cascade reader', FALSE, ARRAY['read','comment','edit','delete','manage'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `DELETE FROM space_role_assignments
+      WHERE principal_type = 'user' AND principal_id = $1`,
+    [userId],
+  );
+  for (const spaceKey of spaceKeys) {
+    await query(
+      `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       VALUES ($1, 'user', $2, $3)`,
+      [spaceKey, userId, role.rows[0]!.id],
+    );
+  }
+  await invalidateRbacCache(userId);
+}
 
-const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
+async function seedPageCache(redis: RedisClientType, userIds: readonly string[]): Promise<void> {
+  await Promise.all(userIds.map((userId) => redis.set(`kb:${userId}:pages:sentinel`, userId)));
+}
 
-const mockEmitWebhookEvent = vi.fn();
-vi.mock('../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
-}));
-
-// The collab tombstone publishes over Redis (absent in tests) and is not this
-// issue's subject — assert its CALL SITES, not its transport (#1444 owns it).
-const mockTombstone = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../core/services/collab-tombstone.js', () => ({
-  tombstoneCollabRoomAfterCommit: (...args: unknown[]) => mockTombstone(...args),
-}));
-
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-// Only `POST /api/pages` needs this boundary, and only to make the mixed-source
-// counterexample reachable through the real route (see the source-guard cases).
-const mockConfluenceClient = vi.hoisted(() => ({ createPage: vi.fn() }));
-vi.mock('../../domains/confluence/services/sync-service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../domains/confluence/services/sync-service.js')>()),
-  getClientForUser: vi.fn(async () => mockConfluenceClient),
-}));
-
-const dbAvailable = await isDbAvailable();
+async function cachedPageUsers(redis: RedisClientType, userIds: readonly string[]): Promise<string[]> {
+  const values = await Promise.all(
+    userIds.map(async (userId) => [userId, await redis.get(`kb:${userId}:pages:sentinel`)] as const),
+  );
+  return values.filter(([, value]) => value !== null).map(([userId]) => userId);
+}
 
 /**
  * A PK parked out of any sequence's reach, for the cases that need a page's id
@@ -149,44 +143,73 @@ async function treeItems(): Promise<Array<{ id: string; parentId: string | null 
   return res.json().items as Array<{ id: string; parentId: string | null }>;
 }
 
-function deletedPayloads(): Array<{ pageId: number; isHardDelete: boolean }> {
-  return mockEmitWebhookEvent.mock.calls
-    .filter((call) => (call[0] as { eventType: string }).eventType === 'page.deleted')
-    .map((call) => (call[0] as { payload: { pageId: number; isHardDelete: boolean } }).payload)
-    .sort((a, b) => a.pageId - b.pageId);
+interface PersistedAudit {
+  resource_id: string | null;
+  metadata: Record<string, unknown>;
 }
 
-async function auditCalls(action: string): Promise<unknown[][]> {
-  return mockLogAuditEvent.mock.calls.filter((call) => call[1] === action);
+async function auditRows(action: string): Promise<PersistedAudit[]> {
+  const result = await query<PersistedAudit>(
+    'SELECT resource_id, metadata FROM audit_log WHERE action = $1 ORDER BY created_at, id',
+    [action],
+  );
+  return result.rows;
 }
 
 let app: FastifyInstance;
 let userA: string;
 let userB: string;
 let currentUserId: string;
+let redis: RedisClientType;
+let confluenceServer: Server;
+let confluenceBaseUrl: string;
 
-describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real PostgreSQL', () => {
+describe.skipIf(!available)('cascading standalone trash (#1636) — real PostgreSQL', () => {
   beforeAll(async () => {
     await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    }) as RedisClientType;
+    await redis.connect();
+    setRedisClient(redis);
+    confluenceServer = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        id: '987654321',
+        title: 'Synced child',
+        version: { number: 1 },
+        body: { storage: { value: '<p>x</p>' } },
+      }));
+    });
+    await new Promise<void>((resolve) => confluenceServer.listen(0, '127.0.0.1', resolve));
+    const address = confluenceServer.address() as AddressInfo;
+    confluenceBaseUrl = `http://127.0.0.1:${address.port}`;
     app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
-      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      instance.redis = redis;
       await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
   });
 
   afterAll(async () => {
     await app.close();
+    await new Promise<void>((resolve, reject) => {
+      confluenceServer.close((error) => error ? reject(error) : resolve());
+    });
+    if (redis.isOpen) await redis.quit();
     await teardownTestDb();
   });
 
   beforeEach(async () => {
-    vi.clearAllMocks();
     await truncateAllTables();
+    await redis.flushDb();
     userA = await insertUser('cascade_a');
     userB = await insertUser('cascade_b');
     currentUserId = userA;
     await insertLocalSpace('NOTES', userA);
-    mockGetUserAccessibleSpaces.mockResolvedValue(['NOTES']);
+    await insertLocalSpace('OTHER', userA);
+    await setAccessibleSpaces(userA, ['NOTES']);
+    await setAccessibleSpaces(userB, ['NOTES']);
   });
 
   // ── GET /api/pages/:id — hasChildren + descendantCount ────────────────────
@@ -429,12 +452,12 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       await query('UPDATE pages SET space_key = NULL WHERE id = $1', [spaceless]);
 
       currentUserId = userB;
-      mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+      await setAccessibleSpaces(userB, ['OTHER']);
       expect(
         (await app.inject({ method: 'GET', url: `/api/pages/${synced}/has-children` })).statusCode,
       ).toBe(404);
 
-      mockGetUserAccessibleSpaces.mockResolvedValue(['NOTES']);
+      await setAccessibleSpaces(userB, ['NOTES']);
       expect(
         (await app.inject({ method: 'GET', url: `/api/pages/${spaceless}/has-children` })).statusCode,
       ).toBe(404);
@@ -496,6 +519,7 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
      * `confluence_id` arm, and is still scoped by that row's space.
      */
     it('still resolves a numeric confluence_id that matches no page PK', async () => {
+      currentUserId = userB;
       await insertConfluencePage('2200000000', 'Synced', 'NOTES');
       await insertConfluencePage('2200000000-child', 'Synced child', 'NOTES', { parentId: '2200000000' });
 
@@ -503,7 +527,7 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ hasChildren: true });
 
-      mockGetUserAccessibleSpaces.mockResolvedValue(['OTHER']);
+      await setAccessibleSpaces(userB, ['OTHER']);
       const denied = await app.inject({ method: 'GET', url: '/api/pages/2200000000/has-children' });
       expect(denied.statusCode).toBe(404);
     });
@@ -586,87 +610,35 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(await liveIds([a, b])).toEqual([]);
     });
 
-    it('emits one page.deleted webhook, one collab tombstone and one bounded audit row per request', async () => {
+    it('persists one bounded audit row for the whole cascade', async () => {
       const tree = await seedStandaloneTree(userA);
-
-      await app.inject({ method: 'DELETE', url: `/api/pages/${tree.root}` });
-
-      expect(deletedPayloads()).toEqual([
-        { pageId: tree.root, isHardDelete: false },
-        { pageId: tree.child, isHardDelete: false },
-        { pageId: tree.grandchild, isHardDelete: false },
-      ]);
-      expect(mockTombstone.mock.calls.map((call) => call[0]).sort()).toEqual(
-        [tree.root, tree.child, tree.grandchild].sort(),
-      );
-
-      // ONE audit row for the ROOT: audit rows are read by humans and must stay
-      // bounded, so the payload carries a count, never a list of ids.
-      const audits = await auditCalls('PAGE_DELETED');
-      expect(audits).toHaveLength(1);
-      expect(audits[0]![3]).toBe(String(tree.root));
-      expect(audits[0]![4]).toMatchObject({ source: 'standalone', permanent: false, cascadedCount: 2 });
-    });
-
-    /**
-     * The per-id side effects run through `Promise.allSettled` and a rejection
-     * is logged, never rethrown — because by the time they run the cascade has
-     * ALREADY COMMITTED, so nothing they do may abort what follows.
-     *
-     * A bare `await` in the loop meant one failing tombstone (`closeRoomSockets`
-     * and the Redis publish inside it are not best-effort) skipped every later
-     * id's tombstone and webhook AND jumped over the cache invalidation and the
-     * audit row — leaving a committed, destructive change with a stale cache, no
-     * audit trail, and a 500 for a request that had in fact succeeded.
-     */
-    it('reports a committed cascade even when a per-id side effect rejects', async () => {
-      const tree = await seedStandaloneTree(userA);
-      // Keyed on the ID, not on call order: the cascade is ONE statement and
-      // its `RETURNING` order is the CTE's scan order, so "the first call" is
-      // not a fixed row. The ROOT is the interesting one — under a sequential
-      // loop its failure is what skipped everything after it.
-      mockTombstone.mockImplementation(async (pageId: number) => {
-        if (pageId === tree.root) throw new Error('collab redis is down');
-      });
 
       const response = await app.inject({ method: 'DELETE', url: `/api/pages/${tree.root}` });
 
       expect(response.statusCode).toBe(200);
       expect(await liveIds([tree.root, tree.child, tree.grandchild])).toEqual([]);
-      // Every id was still attempted, and the ids AFTER the failure still got
-      // their webhook.
-      expect(mockTombstone.mock.calls.map((call) => call[0]).sort()).toEqual(
-        [tree.root, tree.child, tree.grandchild].sort(),
-      );
-      // The failing id's own webhook is skipped — the throw precedes the emit
-      // inside that one callback — and its SIBLINGS still got theirs, which is
-      // the whole difference between `allSettled` and a bare loop.
-      expect(deletedPayloads().map((payload) => payload.pageId)).toEqual(
-        [tree.child, tree.grandchild].sort((a, b) => a - b),
-      );
-      // …and the two things the old loop jumped over both happened.
-      expect(mockCacheInvalidate).toHaveBeenCalledTimes(1);
-      expect(await auditCalls('PAGE_DELETED')).toHaveLength(1);
-      // Restore the shared stub: `vi.clearAllMocks()` clears call history, not
-      // implementations, so the rejection would otherwise outlive this case.
-      mockTombstone.mockImplementation(async () => undefined);
+      const audits = await auditRows('PAGE_DELETED');
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.resource_id).toBe(String(tree.root));
+      expect(audits[0]!.metadata).toMatchObject({
+        source: 'standalone',
+        permanent: false,
+        cascadedCount: 2,
+      });
+      expect(audits[0]!.metadata).not.toHaveProperty('pageIds');
     });
 
-    it('invalidates the pages cache exactly once — across users for a shared root, per-user for a private one', async () => {
+
+    it('invalidates shared pages across users but private pages only for the owner', async () => {
       const shared = await seedStandaloneTree(userA, 'shared');
+      await seedPageCache(redis, [userA, userB]);
       await app.inject({ method: 'DELETE', url: `/api/pages/${shared.root}` });
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([]);
 
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledTimes(1);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
-
-      vi.clearAllMocks();
       const priv = await seedStandaloneTree(userA);
+      await seedPageCache(redis, [userA, userB]);
       await app.inject({ method: 'DELETE', url: `/api/pages/${priv.root}` });
-
-      expect(mockCacheInvalidate).toHaveBeenCalledTimes(1);
-      expect(mockCacheInvalidate).toHaveBeenCalledWith(userA, 'pages');
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([userB]);
     });
 
     /**
@@ -683,15 +655,12 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       const shared = await insertStandalonePage('Shared sub-article', 'shared', userA, 'NOTES', {
         parentId: String(root),
       });
+      await seedPageCache(redis, [userA, userB]);
 
       await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
 
-      // The shared row really was in the batch — otherwise this would pass for
-      // a route that read the target's visibility and got lucky.
       expect(await liveIds([root, shared])).toEqual([]);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledTimes(1);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([]);
     });
 
     it('clears the deleter’s pins across the cascade and leaves another user’s pin alone', async () => {
@@ -775,12 +744,11 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
      */
     it('leaves a Confluence-sourced child created under a standalone parent behind (stated limitation)', async () => {
       const root = await insertStandalonePage('Root', 'private', userA, 'NOTES');
-      mockConfluenceClient.createPage.mockResolvedValue({
-        id: '987654321',
-        title: 'Synced child',
-        version: { number: 1 },
-        body: { storage: { value: '<p>x</p>' } },
-      });
+      await query(
+        `INSERT INTO user_settings (user_id, confluence_url, confluence_pat)
+         VALUES ($1, $2, $3)`,
+        [userA, confluenceBaseUrl, encryptPat('cascade-test-pat')],
+      );
 
       const created = await app.inject({
         method: 'POST',
@@ -878,8 +846,8 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(await liveIds([theirs])).toEqual([theirs]);
       // The audit row's count follows the same set, so the trail does not claim
       // a row the request left alone.
-      const audits = await auditCalls('PAGE_DELETED');
-      expect(audits[0]![4]).toMatchObject({ cascadedCount: 1 });
+      const audits = await auditRows('PAGE_DELETED');
+      expect(audits[0]!.metadata).toMatchObject({ cascadedCount: 1 });
 
       // A's Trash lists only what A's request actually trashed. A row A cannot
       // restore must not be offered there either.
@@ -920,6 +888,7 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
         'NOTES',
         { parentId: String(PARKED_PK) },
       );
+      await seedPageCache(redis, [userA, userB]);
 
       const response = await app.inject({ method: 'DELETE', url: `/api/pages/${PARKED_PK}` });
 
@@ -939,9 +908,8 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect((await liveIds([PARKED_PK, child, decoy])).sort()).toEqual(
         [PARKED_PK, child, decoy].sort(),
       );
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(await auditCalls('PAGE_DELETED')).toHaveLength(0);
+      expect(await auditRows('PAGE_DELETED')).toHaveLength(0);
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([userA, userB]);
     });
 
     /**
@@ -999,9 +967,6 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(await liveIds([tree.root, tree.child, tree.grandchild, solo])).toEqual([]);
       // One statement → one batch stamp for the whole cascade.
       expect(await distinctDeleteStamps([tree.root, tree.child, tree.grandchild])).toBe(1);
-      expect(deletedPayloads().map((payload) => payload.pageId).sort()).toEqual(
-        [tree.root, tree.child, tree.grandchild, solo].sort(),
-      );
     });
 
     /**
@@ -1027,8 +992,6 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(response.statusCode).toBe(200);
       expect(await liveIds([root])).toEqual([]);
       expect(await liveIds([theirs])).toEqual([theirs]);
-      // …and nothing told anyone it went, either.
-      expect(deletedPayloads().map((payload) => payload.pageId)).toEqual([root]);
     });
 
     /**
@@ -1069,14 +1032,13 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect((await liveIds([root, PARKED_PK, leaf])).sort()).toEqual(
         [root, PARKED_PK, leaf].sort(),
       );
-      expect(deletedPayloads()).toEqual([]);
     });
   });
 
   // ── hard delete ───────────────────────────────────────────────────────────
 
   describe('DELETE /api/pages/:id?permanent=true', () => {
-    it('removes the whole subtree and emits one page.deleted per id', async () => {
+    it('removes the whole subtree and persists one bounded audit row', async () => {
       const tree = await seedStandaloneTree(userA);
       const unrelated = await insertStandalonePage('Unrelated', 'private', userA, 'NOTES');
 
@@ -1088,14 +1050,14 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
 
       expect(await existingIds([tree.root, tree.child, tree.grandchild])).toEqual([]);
       expect(await existingIds([unrelated])).toEqual([unrelated]);
-      expect(deletedPayloads()).toEqual([
-        { pageId: tree.root, isHardDelete: true },
-        { pageId: tree.child, isHardDelete: true },
-        { pageId: tree.grandchild, isHardDelete: true },
-      ]);
-      const audits = await auditCalls('PAGE_DELETED');
+      const audits = await auditRows('PAGE_DELETED');
       expect(audits).toHaveLength(1);
-      expect(audits[0]![4]).toMatchObject({ source: 'standalone', permanent: true, cascadedCount: 2 });
+      expect(audits[0]!.resource_id).toBe(String(tree.root));
+      expect(audits[0]!.metadata).toMatchObject({
+        source: 'standalone',
+        permanent: true,
+        cascadedCount: 2,
+      });
     });
 
     it('sees a trashed subtree too — the row and its descendants are gone for good', async () => {
@@ -1135,7 +1097,6 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
 
       expect(await existingIds([root, local])).toEqual([]);
       expect(await existingIds([synced])).toEqual([synced]);
-      expect(deletedPayloads().map((payload) => payload.pageId).sort()).toEqual([root, local].sort());
     });
 
     /**
@@ -1226,11 +1187,6 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       // …and B's row still EXISTS, not merely still live: the whole point of
       // this branch is that the row cannot be brought back.
       expect(await existingIds([theirs])).toEqual([theirs]);
-      // The side effects follow the RETURNING set, so nothing announced a
-      // delete of B's page either.
-      expect(deletedPayloads().map((payload) => payload.pageId).sort()).toEqual(
-        [root, mine].sort(),
-      );
     });
 
     /**
@@ -1261,7 +1217,6 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect((await existingIds([PARKED_PK, child, decoy])).sort()).toEqual(
         [PARKED_PK, child, decoy].sort(),
       );
-      expect(deletedPayloads()).toEqual([]);
     });
   });
 
@@ -1282,10 +1237,10 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       // The subtree is back UNDER its parent, not flattened to the root.
       expect(items.find((item) => item.id === String(tree.grandchild))?.parentId).toBe(String(tree.child));
 
-      const audits = await auditCalls('PAGE_RESTORED');
+      const audits = await auditRows('PAGE_RESTORED');
       expect(audits).toHaveLength(1);
-      expect(audits[0]![3]).toBe(String(tree.root));
-      expect(audits[0]![4]).toMatchObject({ source: 'standalone', restoredCount: 3 });
+      expect(audits[0]!.resource_id).toBe(String(tree.root));
+      expect(audits[0]!.metadata).toMatchObject({ source: 'standalone', restoredCount: 3 });
     });
 
     it('leaves a descendant that was trashed separately in the trash', async () => {
@@ -1479,6 +1434,7 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
         [String(PARKED_PK)],
       );
       expect(candidates.rows.map((row) => row.id)).toEqual([decoy, PARKED_PK].sort((a, b) => a - b));
+      await seedPageCache(redis, [userA, userB]);
 
       const response = await app.inject({ method: 'POST', url: `/api/pages/${child}/restore` });
 
@@ -1491,9 +1447,8 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
       expect(body.message).not.toContain('DECOY LEDGER');
       // Still trashed: the refusal is the whole point, a silent 200 was the bug.
       expect(await liveIds([child])).toEqual([]);
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(await auditCalls('PAGE_RESTORED')).toHaveLength(0);
+      expect(await auditRows('PAGE_RESTORED')).toHaveLength(0);
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([userA, userB]);
     });
 
     /**
@@ -1508,15 +1463,13 @@ describe.skipIf(!dbAvailable)('cascading standalone trash (#1636) — real Postg
         parentId: String(root),
       });
       await app.inject({ method: 'DELETE', url: `/api/pages/${root}` });
-      vi.clearAllMocks();
+      await seedPageCache(redis, [userA, userB]);
 
       const response = await app.inject({ method: 'POST', url: `/api/pages/${root}/restore` });
 
       expect(response.statusCode).toBe(200);
       expect((await liveIds([root, shared])).sort()).toEqual([root, shared].sort());
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledTimes(1);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalled();
+      expect(await cachedPageUsers(redis, [userA, userB])).toEqual([]);
     });
 
     it('is idempotent for a page the caller already restored', async () => {

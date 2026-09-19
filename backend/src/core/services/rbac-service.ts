@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query } from '../db/postgres.js';
 import { getRedisClient } from './redis-cache.js';
 import { logger } from '../utils/logger.js';
@@ -73,19 +74,22 @@ export async function invalidateRbacCache(userId?: string): Promise<void> {
 
 /**
  * Check if a user has system admin role.
- * Cached in Redis for RBAC_CACHE_TTL.
+ * Cached in Redis for RBAC_CACHE_TTL unless a transaction client is supplied.
+ * Transactional readers neither trust nor populate caches.
  */
-export async function isSystemAdmin(userId: string): Promise<boolean> {
+export async function isSystemAdmin(userId: string, client?: PoolClient): Promise<boolean> {
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
   const cacheKey = adminCacheKey(userId);
-  const cached = await getCached<boolean>(cacheKey);
-  if (cached !== null) return cached;
-
-  const adminCheck = await query(
+  if (!client) {
+    const cached = await getCached<boolean>(cacheKey);
+    if (cached !== null) return cached;
+  }
+  const adminCheck = await readQuery(
     `SELECT 1 FROM users u WHERE u.id = $1 AND u.role = 'admin'`,
     [userId],
   );
   const isAdmin = adminCheck.rows.length > 0;
-  await setCache(cacheKey, isAdmin);
+  if (!client) await setCache(cacheKey, isAdmin);
   return isAdmin;
 }
 
@@ -100,29 +104,31 @@ export async function isSystemAdmin(userId: string): Promise<boolean> {
  *  3. Direct user assignment in space_role_assignments.
  *  4. Group-based assignment via group_memberships + space_role_assignments.
  *
- * Results are cached in Redis with TTL of 60s.
+ * Results are cached in Redis with TTL of 60s unless a transaction client is supplied.
  */
 export async function userHasPermission(
   userId: string,
   permission: string,
   spaceKey?: string,
   pageId?: number,
+  client?: PoolClient,
 ): Promise<boolean> {
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
   // System admin bypass
-  if (await isSystemAdmin(userId)) return true;
+  if (await isSystemAdmin(userId, client)) return true;
 
   if (!spaceKey) return false;
 
   // Check page-level ACE override if pageId is provided
   if (pageId) {
-    const pageCheck = await query<{ inherit_perms: boolean }>(
+    const pageCheck = await readQuery<{ inherit_perms: boolean }>(
       'SELECT inherit_perms FROM pages WHERE id = $1',
       [pageId],
     );
     if (pageCheck.rows.length > 0 && !pageCheck.rows[0]!.inherit_perms) {
       // Page has custom ACEs -- check them. `group_memberships.user_id` is
       // UUID, so cast $2 inline; principal_id is TEXT and compared raw.
-      const aceCheck = await query<{ permission: string }>(
+      const aceCheck = await readQuery<{ permission: string }>(
         `SELECT ace.permission FROM access_control_entries ace
          WHERE ace.resource_type = 'page' AND ace.resource_id = $1
            AND (
@@ -143,16 +149,16 @@ export async function userHasPermission(
 
   // Check cached space-level permissions
   const cacheKey = permsCacheKey(userId, spaceKey);
-  const cached = await getCached<string[]>(cacheKey);
-  if (cached !== null) {
-    return cached.includes(permission);
+  if (!client) {
+    const cached = await getCached<string[]>(cacheKey);
+    if (cached !== null) return cached.includes(permission);
   }
 
   // Build the full permissions set for this user in this space
   const permissions = new Set<string>();
 
   // Check direct user assignment
-  const directCheck = await query<{ permissions: string[] }>(
+  const directCheck = await readQuery<{ permissions: string[] }>(
     `SELECT r.permissions FROM space_role_assignments sra
      JOIN roles r ON r.id = sra.role_id
      WHERE sra.space_key = $1 AND sra.principal_type = 'user' AND sra.principal_id = $2`,
@@ -164,7 +170,7 @@ export async function userHasPermission(
   }
 
   // Check group-based assignments
-  const groupCheck = await query<{ permissions: string[] }>(
+  const groupCheck = await readQuery<{ permissions: string[] }>(
     `SELECT r.permissions FROM space_role_assignments sra
      JOIN roles r ON r.id = sra.role_id
      JOIN group_memberships gm ON (sra.principal_id ~ '^\\d+$' AND gm.group_id = sra.principal_id::INTEGER)
@@ -179,7 +185,7 @@ export async function userHasPermission(
 
   // Cache the full permission set
   const permsArray = Array.from(permissions);
-  await setCache(cacheKey, permsArray);
+  if (!client) await setCache(cacheKey, permsArray);
 
   return permissions.has(permission);
 }
@@ -278,16 +284,17 @@ export async function getUserSpaceRole(
 /**
  * Get all space keys a user has access to via RBAC space_role_assignments.
  * System admins get all spaces.
- * Results are cached in Redis with TTL of 60s.
+ * Results are cached in Redis with TTL of 60s unless a transaction client is supplied.
  *
  * NOTE: This does NOT query user_space_selections. That table stores the
  * user's Confluence sync preferences (which spaces to sync), NOT access
  * control. RBAC space access is determined solely by space_role_assignments.
  */
-export async function getUserAccessibleSpaces(userId: string): Promise<string[]> {
+export async function getUserAccessibleSpaces(userId: string, client?: PoolClient): Promise<string[]> {
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
   const cacheKey = spacesAccessCacheKey(userId);
-  const admin = await isSystemAdmin(userId);
-  if (!admin) {
+  const admin = await isSystemAdmin(userId, client);
+  if (!admin && !client) {
     const cached = await getCached<string[]>(cacheKey);
     if (cached !== null) return cached;
   }
@@ -295,7 +302,7 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
   // Query RBAC assignments only (direct user + group-based)
   // Guard the ::int cast with a regex check to prevent crash when
   // principal_id contains a non-numeric value (e.g. UUID for user rows).
-  const result = await query<{ space_key: string }>(
+  const result = await readQuery<{ space_key: string }>(
     `SELECT DISTINCT sra.space_key
      FROM space_role_assignments sra
      JOIN roles r ON sra.role_id = r.id
@@ -310,13 +317,13 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
   const assignedSpaces = result.rows.map((r) => r.space_key);
 
   if (!admin) {
-    await setCache(cacheKey, assignedSpaces);
+    if (!client) await setCache(cacheKey, assignedSpaces);
     return assignedSpaces;
   }
 
   // Admins can access all known synced/local spaces, but must also retain
   // explicit assignments for newly selected spaces before their first sync.
-  const allSpaces = await query<{ space_key: string }>(
+  const allSpaces = await readQuery<{ space_key: string }>(
     'SELECT DISTINCT space_key FROM spaces WHERE space_key IS NOT NULL',
   );
   const spaceKeys = Array.from(
@@ -326,7 +333,7 @@ export async function getUserAccessibleSpaces(userId: string): Promise<string[]>
     ]),
   );
 
-  await setCache(cacheKey, spaceKeys);
+  if (!client) await setCache(cacheKey, spaceKeys);
   return spaceKeys;
 }
 
@@ -352,24 +359,30 @@ export async function getUserAccessibleSpacesMemoized(userId: string): Promise<s
 /**
  * Check if a user has access to a specific page based on RBAC and page-level ACEs.
  * Handles both confluence and standalone pages.
+ * A supplied client keeps all nested reads in that transaction and bypasses both caches.
+ * includeDeleted is for finishing an admitted deletion; ordinary reads exclude trash.
  */
 export async function userCanAccessPage(
   userId: string,
   pageId: number,
+  client?: PoolClient,
+  includeDeleted = false,
 ): Promise<boolean> {
+  const readQuery: typeof query = client ? client.query.bind(client) : query;
   // System admin bypass
-  if (await isSystemAdmin(userId)) return true;
+  if (await isSystemAdmin(userId, client)) return true;
 
   // Get the page's space key, source, and visibility
-  const pageResult = await query<{
+  const pageResult = await readQuery<{
     space_key: string | null;
     source: string;
     visibility: string | null;
     created_by_user_id: string | null;
     inherit_perms: boolean;
   }>(
-    `SELECT space_key, source, visibility, created_by_user_id, inherit_perms FROM pages WHERE id = $1 AND deleted_at IS NULL`,
-    [pageId],
+    `SELECT space_key, source, visibility, created_by_user_id, inherit_perms
+       FROM pages WHERE id = $1 AND ($2::boolean OR deleted_at IS NULL)`,
+    [pageId, includeDeleted],
   );
 
   if (pageResult.rows.length === 0) return false;
@@ -388,7 +401,7 @@ export async function userCanAccessPage(
     // is TEXT (it stores either a user UUID string or a group id string). Pass
     // userId as text once and cast inline to UUID for the group-membership
     // join so PostgreSQL picks the right operator in both branches.
-    const aceCheck = await query(
+    const aceCheck = await readQuery(
       `SELECT 1 FROM access_control_entries ace
        WHERE ace.resource_type = 'page' AND ace.resource_id = $1
          AND (
@@ -412,7 +425,9 @@ export async function userCanAccessPage(
   // post-filter reading one consistent space set. Falls back to the raw
   // resolver outside a scope.
   if (!page.space_key) return false;
-  const accessibleSpaces = await getUserAccessibleSpacesMemoized(userId);
+  const accessibleSpaces = client
+    ? await getUserAccessibleSpaces(userId, client)
+    : await getUserAccessibleSpacesMemoized(userId);
   return accessibleSpaces.includes(page.space_key);
 }
 

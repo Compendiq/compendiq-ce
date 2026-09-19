@@ -1,980 +1,808 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import type { PoolClient } from 'pg';
+import { Doc, encodeStateAsUpdate } from 'yjs';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import {
+  freezePage,
+  previewPageBaseline,
+  setPageBaselineCreationEnabled,
+} from '../../core/services/page-baseline-service.js';
+import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-const mockQuery = vi.fn();
-const mockTxQuery = vi.fn();
-const mockTxClient = { query: (...args: unknown[]) => mockTxQuery(...args), release: vi.fn() };
-const mockGetClientForUser = vi.fn();
-const mockHtmlToConfluence = vi.fn().mockReturnValue('<p>storage</p>');
-const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>converted</p>');
-const mockHtmlToText = vi.fn().mockReturnValue('plain text');
-const mockLogAuditEvent = vi.fn();
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-  getPool: () => ({ connect: () => Promise.resolve(mockTxClient) }),
-}));
+type ConfluencePayload = {
+  title: string;
+  version: { number: number };
+  body: { storage: { value: string } };
+};
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
+type ConfluenceRequest = { url: string; body: ConfluencePayload };
 
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let confluence: Server;
+let confluenceBaseUrl: string;
+let currentUserId: string;
+let ownerId: string;
+let otherUserId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+let confluenceRequests: ConfluenceRequest[] = [];
+let remoteVersion = 4;
+let compactPutReply = false;
+let readbackCount = 0;
+let publishedPage: (ConfluencePayload & { id: string }) | null = null;
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
-  htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
-  htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
-}));
+async function readRequestBody(request: IncomingMessage): Promise<ConfluencePayload> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as ConfluencePayload;
+}
+async function waitForBlockedLifecycleLock(minimumWaiters = 1): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: number }>(
+      `SELECT COUNT(*)::int AS waiting
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND wait_event = 'advisory'
+          AND query LIKE '%pg_advisory_xact_lock%'`,
+    );
+    if ((waiting.rows[0]?.waiting ?? 0) >= minimumWaiters) return;
+  }
+  throw new Error('stale draft writer did not reach the lifecycle lock barrier');
+}
 
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    // Publishing a draft to a shared/Confluence page clears every user's cache (#893).
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-  },
-}));
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
+async function seedStandalone(opts: {
+  owner?: string;
+  visibility?: 'private' | 'shared';
+  title?: string;
+  bodyHtml?: string;
+  version?: number;
+  draftHtml?: string | null;
+} = {}): Promise<number> {
+  const owner = opts.owner ?? ownerId;
+  const pageId = await insertStandalonePage(
+    opts.title ?? 'Article',
+    opts.visibility ?? 'private',
+    owner,
+    'LOCAL',
+  );
+  const bodyHtml = opts.bodyHtml ?? '<p>live content</p>';
+  await query(
+    `UPDATE pages SET body_html = $2, body_text = 'live content', version = $3,
+                      draft_body_html = $4,
+                      draft_body_text = CASE WHEN $4::text IS NULL THEN NULL ELSE 'draft content' END,
+                      draft_updated_at = CASE WHEN $4::text IS NULL THEN NULL ELSE NOW() END,
+                      draft_updated_by = CASE WHEN $4::text IS NULL THEN NULL ELSE $5::uuid END
+      WHERE id = $1`,
+    [pageId, bodyHtml, opts.version ?? 3, opts.draftHtml ?? null, owner],
+  );
+  return pageId;
+}
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
+async function seedConfluencePage(spaceKey = 'OPS', grant = true): Promise<number> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ($1, $1, 'confluence', NOW())`,
+    [spaceKey],
+  );
+  if (grant) {
+    await query(
+      `WITH editor_role AS (
+         INSERT INTO roles (name, display_name, permissions)
+         VALUES ('draft-editor', 'Draft editor', ARRAY['read', 'write'])
+         ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+         RETURNING id
+       )
+       INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+       SELECT $2, 'user', $1, id FROM editor_role`,
+      [currentUserId, spaceKey],
+    );
+  }
+  const page = await query<{ id: number }>(
+    `INSERT INTO pages
+       (confluence_id, source, space_key, title, body_html, body_storage, body_text,
+        version, visibility, draft_body_html, draft_body_text, draft_updated_at, draft_updated_by)
+     VALUES ('conf-123', 'confluence', $1, 'Confluence Article', '<p>live</p>',
+             '<p>live storage</p>', 'live', 3, 'shared', '<p>draft</p>', 'draft', NOW(), $2)
+     RETURNING id`,
+    [spaceKey, currentUserId],
+  );
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, TRUE)`,
+    [currentUserId, confluenceBaseUrl, encryptPat('draft-http-test-pat')],
+  );
+  return page.rows[0]!.id;
+}
 
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
+async function freeze(pageId: number, actorId: string): Promise<void> {
+  setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+  const admin = await insertUser(`draft-admin-${randomUUID()}`);
+  await query("UPDATE users SET role = 'admin' WHERE id = $1", [admin]);
+  await setPageBaselineCreationEnabled(admin, true);
+  const prepared = await previewPageBaseline(pageId, actorId);
+  await freezePage({
+    pageId,
+    actorId,
+    reason: 'Approved draft fixture',
+    expectedContentRevision: prepared.contentRevision,
+    expectedManifestDigest: prepared.manifestDigest,
+    reportedSignatories: [],
+  });
+}
 
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
+type StoredPage = {
+  title: string;
+  body_html: string;
+  body_text: string;
+  body_storage: string | null;
+  version: number;
+  draft_body_html: string | null;
+  draft_body_text: string | null;
+  draft_body_storage: string | null;
+  draft_updated_at: Date | null;
+  draft_updated_by: string | null;
+  embedding_dirty: boolean;
+  image_analysis_dirty: boolean;
+  local_modified_by: string | null;
+  content_revision: string;
+};
 
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue(''),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+async function storedPage(pageId: number): Promise<StoredPage> {
+  const result = await query<StoredPage>(
+    `SELECT title, body_html, body_text, body_storage, version,
+            draft_body_html, draft_body_text, draft_body_storage,
+            draft_updated_at, draft_updated_by, embedding_dirty,
+            image_analysis_dirty, local_modified_by,
+            content_revision::text AS content_revision
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0]!;
+}
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockResolvedValue(false),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-const TEST_USER = 'user-1';
-const OTHER_USER = 'user-2';
-
-describe('Draft-while-published routes', () => {
-  let app: ReturnType<typeof Fastify>;
-
+describe.skipIf(!dbAvailable || !redisAvailable)('Draft-while-published routes — real PostgreSQL and Redis', () => {
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = TEST_USER;
-    });
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
+    await setupTestDb();
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'pages-draft-real-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
 
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed', details: error.errors });
+    confluence = createServer(async (request, response) => {
+      if (request.method === 'GET' && request.url?.startsWith('/rest/api/content/conf-123?')) {
+        readbackCount += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(publishedPage));
+        return;
       }
-      const statusCode = error.statusCode ?? 500;
-      return reply.status(statusCode).send({ error: error.message });
+      if (request.method !== 'PUT' || request.url !== '/rest/api/content/conf-123') {
+        response.writeHead(404).end();
+        return;
+      }
+      const body = await readRequestBody(request);
+      confluenceRequests.push({ url: request.url, body });
+      publishedPage = {
+        id: 'conf-123',
+        title: body.title,
+        version: { number: remoteVersion },
+        body: { storage: { value: body.body.storage.value } },
+      };
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(compactPutReply
+        ? { id: publishedPage.id, version: publishedPage.version }
+        : publishedPage));
     });
+    await new Promise<void>((resolve) => confluence.listen(0, '127.0.0.1', resolve));
+    confluenceBaseUrl = `http://127.0.0.1:${(confluence.address() as AddressInfo).port}`;
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    });
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+      instance.redis = redis;
+      // The route graph reads attachment configuration at module load; install
+      // the suite sandbox before loading it.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
+    });
   });
 
   afterAll(async () => {
     await app.close();
+    setPageBaselineReadinessProvider(null);
+    if (redis.isOpen) await redis.quit();
+    await new Promise<void>((resolve, reject) => confluence.close((error) => error ? reject(error) : resolve()));
+    await teardownTestDb();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockHtmlToText.mockReturnValue('plain text');
-    mockHtmlToConfluence.mockReturnValue('<p>storage</p>');
-    // Default: user can reach DEV/OPS. Confluence-branch tests override per case.
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    confluenceRequests = [];
+    remoteVersion = 4;
+    compactPutReply = false;
+    readbackCount = 0;
+    publishedPage = null;
+    ownerId = await insertUser(`draft-owner-${randomUUID()}`);
+    otherUserId = await insertUser(`draft-other-${randomUUID()}`);
+    currentUserId = ownerId;
+    await insertLocalSpace('LOCAL', ownerId);
   });
 
-  // ---------- PUT /api/pages/:id/draft ----------
-
-  describe('PUT /api/pages/:id/draft', () => {
-    it('saves a draft for a standalone page owned by the user', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'standalone', created_by_user_id: TEST_USER,
-              visibility: 'private', deleted_at: null,
-            }],
-          });
-        }
-        // UPDATE
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
+  describe('save and read', () => {
+    it('stores a draft without changing the published content or version', async () => {
+      const pageId = await seedStandalone();
       const response = await app.inject({
         method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'Test Page', bodyHtml: '<p>draft content</p>' },
+        url: `/api/pages/${pageId}/draft`,
+        payload: { title: 'Article', bodyHtml: '<p>new <strong>draft</strong></p>' },
       });
 
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.id).toBe(10);
-      expect(body.hasDraft).toBe(true);
-      expect(body.draftUpdatedAt).toBeDefined();
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, hasDraft: true });
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>live content</p>',
+        body_text: 'live content',
+        version: 3,
+        draft_body_html: '<p>new <strong>draft</strong></p>',
+        draft_body_text: 'new draft',
+        draft_updated_by: ownerId,
+      });
     });
 
-    it('saves a draft for a shared standalone page by non-owner', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'standalone', created_by_user_id: OTHER_USER,
-              visibility: 'shared', deleted_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
-      const response = await app.inject({
+    it('allows a non-owner to save and read a draft on a shared standalone page', async () => {
+      const pageId = await seedStandalone({ visibility: 'shared' });
+      currentUserId = otherUserId;
+      const saved = await app.inject({
         method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'Test Page', bodyHtml: '<p>draft by another user</p>' },
+        url: `/api/pages/${pageId}/draft`,
+        payload: { title: 'Article', bodyHtml: '<p>shared draft</p>' },
       });
+      expect(saved.statusCode, saved.body).toBe(200);
 
-      expect(response.statusCode).toBe(200);
+      const read = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/draft` });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json()).toMatchObject({
+        id: pageId,
+        bodyHtml: '<p>shared draft</p>',
+        bodyText: 'shared draft',
+        updatedBy: otherUserId,
+      });
     });
 
-    it('returns 403 for a private standalone page not owned by the user', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'standalone', created_by_user_id: OTHER_USER,
-              visibility: 'private', deleted_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
+    it('does not expose or overwrite another user’s private draft', async () => {
+      const pageId = await seedStandalone({ draftHtml: '<p>secret draft</p>' });
+      currentUserId = otherUserId;
 
-      const response = await app.inject({
+      const read = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/draft` });
+      expect(read.statusCode).toBe(404);
+      const save = await app.inject({
         method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'Sneaky Title', bodyHtml: '<p>sneaky draft</p>' },
+        url: `/api/pages/${pageId}/draft`,
+        payload: { title: 'Article', bodyHtml: '<p>intruder</p>' },
       });
-
-      expect(response.statusCode).toBe(403);
+      expect(save.statusCode).toBe(403);
+      expect(await storedPage(pageId)).toMatchObject({ draft_body_html: '<p>secret draft</p>' });
     });
 
-    it('returns 404 for a nonexistent page', async () => {
-      mockQuery.mockResolvedValue({ rows: [] });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/999/draft',
-        payload: { title: 'Draft Title', bodyHtml: '<p>draft</p>' },
-      });
-
-      expect(response.statusCode).toBe(404);
+    it('returns 404 for missing pages and pages without drafts', async () => {
+      const pageId = await seedStandalone();
+      expect((await app.inject({ method: 'GET', url: `/api/pages/${pageId}/draft` })).statusCode).toBe(404);
+      expect((await app.inject({ method: 'GET', url: '/api/pages/2147483647/draft' })).statusCode).toBe(404);
     });
 
-    it('validates the request body (empty bodyHtml)', async () => {
+    it('validates the save payload before persistence', async () => {
+      const pageId = await seedStandalone();
       const response = await app.inject({
         method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { bodyHtml: '' },
+        url: `/api/pages/${pageId}/draft`,
+        payload: { bodyHtml: '<p>missing title</p>' },
       });
-
-      // Zod validation: bodyHtml must be min(1)
       expect(response.statusCode).toBe(400);
+      expect((await storedPage(pageId)).draft_body_html).toBeNull();
     });
   });
 
-  // ---------- GET /api/pages/:id/draft ----------
+  describe('publish', () => {
+    it('snapshots the live version, promotes the draft atomically, clears it, and re-queues indexing', async () => {
+      const pageId = await seedStandalone({ draftHtml: '<p>draft content</p>' });
+      await query('UPDATE pages SET embedding_dirty = FALSE, image_analysis_dirty = FALSE WHERE id = $1', [pageId]);
 
-  describe('GET /api/pages/:id/draft', () => {
-    it('returns draft content when a draft exists', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          id: 10, source: 'standalone', created_by_user_id: TEST_USER,
-          visibility: 'private', draft_body_html: '<p>my draft</p>',
-          draft_body_text: 'my draft', draft_updated_at: new Date('2026-01-01'),
-          draft_updated_by: TEST_USER,
-        }],
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, version: 4, published: true });
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>draft content</p>',
+        body_text: 'draft content',
+        version: 4,
+        draft_body_html: null,
+        draft_body_text: null,
+        draft_body_storage: null,
+        draft_updated_at: null,
+        draft_updated_by: null,
+        embedding_dirty: true,
+        image_analysis_dirty: true,
+        local_modified_by: ownerId,
       });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.bodyHtml).toBe('<p>my draft</p>');
-      expect(body.bodyText).toBe('my draft');
-      expect(body.updatedBy).toBe(TEST_USER);
-    });
-
-    it('returns 404 when no draft exists', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          id: 10, source: 'standalone', created_by_user_id: TEST_USER,
-          visibility: 'private', draft_body_html: null,
-          draft_body_text: null, draft_updated_at: null,
-          draft_updated_by: null,
-        }],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('returns 404 for a private page not owned by the user', async () => {
-      mockQuery.mockResolvedValue({
-        rows: [{
-          id: 10, source: 'standalone', created_by_user_id: OTHER_USER,
-          visibility: 'private', draft_body_html: '<p>secret draft</p>',
-          draft_body_text: 'secret', draft_updated_at: new Date(),
-          draft_updated_by: OTHER_USER,
-        }],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-  });
-
-  // ---------- POST /api/pages/:id/draft/publish ----------
-
-  describe('POST /api/pages/:id/draft/publish', () => {
-    it('publishes a draft: saves version, swaps content, clears draft', async () => {
-      const txCalls: string[] = [];
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'My Article',
-              body_html: '<p>live content</p>', body_text: 'live content',
-              body_storage: null, source: 'standalone',
-              created_by_user_id: TEST_USER, visibility: 'private',
-              confluence_id: null, draft_body_html: '<p>draft content</p>',
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-      mockTxQuery.mockImplementation((sql: string) => {
-        txCalls.push(sql.trim().substring(0, 30));
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.id).toBe(10);
-      expect(body.version).toBe(4);
-      expect(body.published).toBe(true);
-
-      // Verify transaction on dedicated client: BEGIN, INSERT, UPDATE, COMMIT
-      expect(txCalls).toContain('BEGIN');
-      expect(txCalls.some(c => c.includes('INSERT INTO page_version'))).toBe(true);
-      expect(txCalls.some(c => c.includes('UPDATE pages SET'))).toBe(true);
-      expect(txCalls).toContain('COMMIT');
-      expect(mockTxClient.release).toHaveBeenCalled();
-    });
-
-    it('re-queues the image index when the published draft changed the body (#1115 P2)', async () => {
-      // Publishing is the moment the draft body becomes the live one, so it
-      // is the first point at which an `<img>` the draft added or dropped is
-      // real. Both sides of the comparison read the OLD row, which is what
-      // makes the gate work — and it must be `body_html` vs `draft_body_html`,
-      // not an unconditional TRUE, or every title-only publish re-scans.
-      const txSql: string[] = [];
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'My Article',
-              body_html: '<p>live content</p>', body_text: 'live content',
-              body_storage: null, source: 'standalone',
-              created_by_user_id: TEST_USER, visibility: 'private',
-              confluence_id: null, draft_body_html: '<p>draft content</p>',
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-      mockTxQuery.mockImplementation((sql: string) => {
-        txSql.push(sql);
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const update = txSql.find((s) => s.includes('UPDATE pages SET'));
-      expect(update).toBeDefined();
-      // ADR-027 D4: the analysis flag carries the gate #1618 retired the
-      // legacy `image_embedding_dirty` half of.
-      expect(update).toMatch(
-        /image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM draft_body_html/,
+      const history = await query<{ version_number: number; body_html: string }>(
+        'SELECT version_number, body_html FROM page_versions WHERE page_id = $1',
+        [pageId],
       );
-      expect(update).not.toContain('image_embedding_dirty');
+      expect(history.rows).toEqual([{ version_number: 3, body_html: '<p>live content</p>' }]);
+    });
+    it('refreshes another reader’s cached list after publishing a shared draft', async () => {
+      const pageId = await seedStandalone({ visibility: 'shared', draftHtml: '<p>shared draft</p>' });
+      await query('UPDATE pages SET embedding_dirty = FALSE WHERE id = $1', [pageId]);
+      currentUserId = otherUserId;
+      const before = await app.inject({ method: 'GET', url: '/api/pages' });
+      const beforeItem = before.json<{
+        items: Array<{ id: string; embeddingDirty: boolean }>;
+      }>().items.find((item) => item.id === String(pageId));
+      expect(beforeItem?.embeddingDirty).toBe(false);
+
+      currentUserId = ownerId;
+      const published = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+      expect(published.statusCode, published.body).toBe(200);
+
+      currentUserId = otherUserId;
+      const after = await app.inject({ method: 'GET', url: '/api/pages' });
+      const afterItem = after.json<{
+        items: Array<{ id: string; embeddingDirty: boolean }>;
+      }>().items.find((item) => item.id === String(pageId));
+      expect(afterItem?.embeddingDirty).toBe(true);
     });
 
-    it('returns 400 when no draft exists', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'My Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: null, source: 'standalone',
-              created_by_user_id: TEST_USER, visibility: 'private',
-              confluence_id: null, draft_body_html: null,
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
+    it('returns 400 when no draft exists and 403 for a private non-owner without changing live content', async () => {
+      const noDraft = await seedStandalone();
+      expect((await app.inject({ method: 'POST', url: `/api/pages/${noDraft}/draft/publish` })).statusCode).toBe(400);
 
-      expect(response.statusCode).toBe(400);
+      const privatePage = await seedStandalone({ draftHtml: '<p>private draft</p>' });
+      currentUserId = otherUserId;
+      const denied = await app.inject({ method: 'POST', url: `/api/pages/${privatePage}/draft/publish` });
+      expect(denied.statusCode).toBe(403);
+      expect(await storedPage(privatePage)).toMatchObject({
+        body_html: '<p>live content</p>', version: 3, draft_body_html: '<p>private draft</p>',
+      });
     });
 
-    it('returns 403 for a private page not owned by the user', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'Secret Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: null, source: 'standalone',
-              created_by_user_id: OTHER_USER, visibility: 'private',
-              confluence_id: null, draft_body_html: '<p>draft</p>',
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
+    it('publishes a Confluence draft over real HTTP using the previous live version and persists the returned version', async () => {
+      const pageId = await seedConfluencePage();
 
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, version: 4, published: true });
+      expect(confluenceRequests).toHaveLength(1);
+      expect(confluenceRequests[0]!.body).toMatchObject({
+        title: 'Confluence Article',
+        version: { number: 4 },
+      });
+      expect(confluenceRequests[0]!.body.body.storage.value).toContain('draft');
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>draft</p>',
+        body_storage: expect.stringContaining('draft'),
+        version: 4,
+        draft_body_html: null,
+        local_modified_by: null,
+      });
     });
 
-    it('rolls back on transaction failure', async () => {
-      let insertCalled = false;
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'My Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: null, source: 'standalone',
-              created_by_user_id: TEST_USER, visibility: 'private',
-              confluence_id: null, draft_body_html: '<p>draft</p>',
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-      mockTxQuery.mockImplementation((sql: string) => {
-        if (sql === 'BEGIN') return Promise.resolve({ rows: [] });
-        if (sql.includes('INSERT INTO page_versions')) {
-          insertCalled = true;
-          return Promise.resolve({ rows: [] });
-        }
-        if (sql.includes('UPDATE pages SET') && insertCalled) {
-          return Promise.reject(new Error('simulated DB error'));
-        }
-        if (sql === 'ROLLBACK') return Promise.resolve({ rows: [] });
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
-
-      expect(response.statusCode).toBe(500);
-      expect(mockTxQuery).toHaveBeenCalledWith('ROLLBACK');
-      expect(mockTxClient.release).toHaveBeenCalled();
-    });
-
-    it('pushes to Confluence for confluence-sourced pages (best-effort)', async () => {
-      const mockUpdatePage = vi.fn().mockResolvedValue({
-        version: { number: 5 },
-        body: { storage: { value: '<p>updated</p>' } },
-      });
-      mockGetClientForUser.mockResolvedValue({ updatePage: mockUpdatePage });
-
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'Confluence Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: '<p>storage</p>', source: 'confluence',
-              created_by_user_id: null, visibility: 'shared',
-              confluence_id: 'conf-123', space_key: 'DEV',
-              draft_body_html: '<p>draft</p>',
-              draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-      mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockHtmlToConfluence).toHaveBeenCalledWith('<p>draft</p>');
-      // updatePage() increments internally, so it must receive the *previous*
-      // live version (page.version = 3), not page.version + 1 (4). Passing 4
-      // makes Confluence receive version 5 while it holds 3 → silent 409 (#863).
-      expect(mockUpdatePage).toHaveBeenCalledWith('conf-123', 'Confluence Article', '<p>storage</p>', 3);
-      // Trust the API-returned version (5) over the local bump (4)
-      expect(response.json().version).toBe(5);
-      // The API version is persisted back so local `version` can't drift
-      const persistCall = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string' && c[0].includes('version = $3') && c[0].includes('last_synced'),
+    it('rolls back draft publication when its collaborative snapshot cannot be invalidated', async () => {
+      const pageId = await seedConfluencePage();
+      const before = await storedPage(pageId);
+      const document = new Doc();
+      document.getText('draft').insert(0, 'Retained collaboration snapshot');
+      const snapshot = Buffer.from(encodeStateAsUpdate(document));
+      document.destroy();
+      await query(
+        'INSERT INTO page_collaborative_docs (page_id, doc_state) VALUES ($1, $2)',
+        [pageId, snapshot],
       );
-      expect(persistCall).toBeDefined();
-      expect(persistCall![1]).toEqual([10, '<p>storage</p>', 5]);
-    });
-
-    // #893 review follow-up: publishing a draft writes new live content — the
-    // same mutation class as PUT /pages/:id — so shared/Confluence pages must
-    // clear every user's cached lists/trees, not just the publisher's.
-    describe('cache invalidation (#893)', () => {
-      function mockPublishablePage(overrides: Record<string, unknown> = {}) {
-        mockQuery.mockImplementation((sql: string) => {
-          if (sql.includes('SELECT id, version, title')) {
-            return Promise.resolve({
-              rows: [{
-                id: 10, version: 3, title: 'My Article',
-                body_html: '<p>live</p>', body_text: 'live',
-                body_storage: null, source: 'standalone',
-                created_by_user_id: TEST_USER, visibility: 'private',
-                confluence_id: null, space_key: null,
-                draft_body_html: '<p>draft</p>', draft_body_storage: null,
-                ...overrides,
-              }],
-            });
-          }
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        });
-        mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+      try {
+        await query(`
+          CREATE FUNCTION refuse_draft_snapshot_removal() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            RAISE EXCEPTION 'Injected collaboration storage failure';
+          END $$;
+          CREATE TRIGGER refuse_draft_snapshot_removal
+            BEFORE DELETE ON page_collaborative_docs
+            FOR EACH ROW EXECUTE FUNCTION refuse_draft_snapshot_removal();
+        `);
+        const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+        expect(response.statusCode).toBe(500);
+        expect(await storedPage(pageId)).toEqual(before);
+        expect((await query('SELECT doc_state FROM page_collaborative_docs WHERE page_id = $1', [pageId])).rows)
+          .toEqual([{ doc_state: snapshot }]);
+        expect((await query('SELECT id FROM page_write_intents WHERE $1 = ANY(page_ids)', [pageId])).rows)
+          .toEqual([]);
+        expect((await query('SELECT version_number FROM page_versions WHERE page_id = $1', [pageId])).rows)
+          .toEqual([]);
+        expect(confluenceRequests).toHaveLength(0);
+      } finally {
+        await query('DROP TRIGGER IF EXISTS refuse_draft_snapshot_removal ON page_collaborative_docs');
+        await query('DROP FUNCTION IF EXISTS refuse_draft_snapshot_removal()');
       }
 
-      it('invalidates the pages cache across all users when publishing on a Confluence page', async () => {
-        mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({}) });
-        mockPublishablePage({
-          source: 'confluence', created_by_user_id: null, visibility: 'shared',
-          confluence_id: 'conf-123', space_key: 'DEV', body_storage: '<p>storage</p>',
-        });
+      const retried = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+      expect(retried.statusCode, retried.body).toBe(200);
+      expect(confluenceRequests).toHaveLength(1);
+      expect((await query('SELECT page_id FROM page_collaborative_docs WHERE page_id = $1', [pageId])).rows)
+        .toEqual([]);
+    });
 
-        const response = await app.inject({
-          method: 'POST',
-          url: '/api/pages/10/draft/publish',
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-        expect(mockCacheInvalidate).not.toHaveBeenCalledWith(TEST_USER, 'pages');
-      });
-
-      it('invalidates across users when publishing on a shared standalone page', async () => {
-        mockPublishablePage({ visibility: 'shared' });
-
-        const response = await app.inject({
-          method: 'POST',
-          url: '/api/pages/10/draft/publish',
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      });
-
-      it('keeps per-user invalidation when publishing on a private standalone page', async () => {
-        mockPublishablePage();
-
-        const response = await app.inject({
-          method: 'POST',
-          url: '/api/pages/10/draft/publish',
-        });
-
-        expect(response.statusCode).toBe(200);
-        expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-        expect(mockCacheInvalidate).toHaveBeenCalledWith(TEST_USER, 'pages');
+    it('confirms a compact provider acknowledgment without sending the draft twice', async () => {
+      const pageId = await seedConfluencePage();
+      compactPutReply = true;
+      const response = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ version: 4, published: true });
+      expect(confluenceRequests).toHaveLength(1);
+      expect(readbackCount).toBe(1);
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>draft</p>', body_storage: expect.stringContaining('draft'),
+        version: 4, draft_body_html: null, local_modified_by: null,
       });
     });
-  });
 
-  // ---------- DELETE /api/pages/:id/draft ----------
-
-  describe('DELETE /api/pages/:id/draft', () => {
-    it('discards the draft and clears all draft columns', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'standalone', created_by_user_id: TEST_USER,
-              visibility: 'private',
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.id).toBe(10);
-      expect(body.hasDraft).toBe(false);
-
-      // Verify the UPDATE nullifies all draft columns
-      const updateCall = mockQuery.mock.calls.find(
-        (call) => typeof call[0] === 'string' && call[0].includes('draft_body_html = NULL'),
+    it('publishes a synced draft locally when Confluence was already disabled', async () => {
+      const pageId = await seedConfluencePage();
+      await query(
+        'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+        [ownerId],
       );
-      expect(updateCall).toBeDefined();
-    });
-
-    it('returns 404 for a nonexistent page', async () => {
-      mockQuery.mockResolvedValue({ rows: [] });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/999/draft',
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it('returns 403 for a private page not owned by the user', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'standalone', created_by_user_id: OTHER_USER,
-              visibility: 'private',
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(403);
-    });
-  });
-
-  // ---------- GET /api/pages/:id includes hasDraft ----------
-
-  describe('GET /api/pages/:id (draft fields)', () => {
-    it('includes hasDraft=true and draftUpdatedAt when a draft exists', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        // #1636: GET /pages/:id counts the live descendants through the shared
-        // subtree walk after the row and access check.
-        if (sql.includes('COUNT(*)::text AS count FROM d')) {
-          return Promise.resolve({ rows: [{ count: '0' }] });
-        }
-        if (sql.includes('cp.id, cp.confluence_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, confluence_id: null, space_key: null,
-              title: 'Test Page', body_storage: '', body_html: '<p>live</p>',
-              body_text: 'live', version: 2, parent_id: null,
-              labels: [], author: null, last_modified_at: null,
-              last_synced: new Date(), embedding_dirty: false,
-              embedding_status: 'embedded', embedded_at: null,
-              embedding_error: null, has_children: false,
-              quality_score: null, quality_status: null,
-              quality_completeness: null, quality_clarity: null,
-              quality_structure: null, quality_accuracy: null,
-              quality_readability: null, quality_summary: null,
-              quality_analyzed_at: null, quality_error: null,
-              summary_html: null, summary_status: 'pending',
-              summary_generated_at: null, summary_model: null,
-              summary_error: null,
-              source: 'standalone', visibility: 'shared',
-              created_by_user_id: TEST_USER,
-              has_draft: true,
-              draft_updated_at: new Date('2026-03-01T12:00:00Z'),
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.hasDraft).toBe(true);
-      expect(body.draftUpdatedAt).toBe('2026-03-01T12:00:00.000Z');
-    });
-
-    it('includes hasDraft=false when no draft exists', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('COUNT(*)::text AS count FROM d')) {
-          return Promise.resolve({ rows: [{ count: '0' }] });
-        }
-        if (sql.includes('cp.id, cp.confluence_id')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, confluence_id: null, space_key: null,
-              title: 'Test Page', body_storage: '', body_html: '<p>live</p>',
-              body_text: 'live', version: 2, parent_id: null,
-              labels: [], author: null, last_modified_at: null,
-              last_synced: new Date(), embedding_dirty: false,
-              embedding_status: 'embedded', embedded_at: null,
-              embedding_error: null, has_children: false,
-              quality_score: null, quality_status: null,
-              quality_completeness: null, quality_clarity: null,
-              quality_structure: null, quality_accuracy: null,
-              quality_readability: null, quality_summary: null,
-              quality_analyzed_at: null, quality_error: null,
-              summary_html: null, summary_status: 'pending',
-              summary_generated_at: null, summary_model: null,
-              summary_error: null,
-              source: 'standalone', visibility: 'shared',
-              created_by_user_id: TEST_USER,
-              has_draft: false,
-              draft_updated_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10',
-      });
-
-      expect(response.statusCode).toBe(200);
-      const body = response.json();
-      expect(body.hasDraft).toBe(false);
-      expect(body.draftUpdatedAt).toBeNull();
-    });
-  });
-
-  // ---------- Confluence-page RBAC space access (IDOR fix) ----------
-  // Confluence-sourced drafts must be gated on getUserAccessibleSpaces, exactly
-  // like GET /pages/:id and DELETE /pages/:id. Without this, any authenticated
-  // user could read/overwrite/publish/discard the draft of a page in a space
-  // they have no RBAC assignment in.
-
-  describe('Confluence-page RBAC space access', () => {
-    // PUT /draft — overwrite the draft
-    it('PUT /draft returns 403 for a Confluence page in an inaccessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'confluence', created_by_user_id: null,
-              visibility: 'shared', space_key: 'HR', deleted_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'Sneaky', bodyHtml: '<p>sneaky draft</p>' },
-      });
-
-      expect(response.statusCode).toBe(403);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-      // The draft UPDATE must never run.
-      const updateCall = mockQuery.mock.calls.find(
-        (call) => typeof call[0] === 'string' && call[0].includes('draft_body_html = $1'),
-      );
-      expect(updateCall).toBeUndefined();
-    });
-
-    it('PUT /draft saves the draft for a Confluence page in an accessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'confluence', created_by_user_id: null,
-              visibility: 'shared', space_key: 'DEV', deleted_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'OK', bodyHtml: '<p>authorized draft</p>' },
-      });
-
-      expect(response.statusCode).toBe(200);
-    });
-
-    // GET /draft — read the draft (404, no existence oracle)
-    it('GET /draft returns 404 for a Confluence page in an inaccessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockResolvedValue({
-        rows: [{
-          id: 10, source: 'confluence', created_by_user_id: null,
-          visibility: 'shared', space_key: 'HR',
-          draft_body_html: '<p>secret draft</p>', draft_body_text: 'secret',
-          draft_updated_at: new Date(), draft_updated_by: 'someone',
-        }],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(404);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-    });
-
-    it('GET /draft returns the draft for a Confluence page in an accessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockResolvedValue({
-        rows: [{
-          id: 10, source: 'confluence', created_by_user_id: null,
-          visibility: 'shared', space_key: 'OPS',
-          draft_body_html: '<p>visible draft</p>', draft_body_text: 'visible',
-          draft_updated_at: new Date('2026-01-01'), draft_updated_by: 'author',
-        }],
-      });
-
-      const response = await app.inject({
-        method: 'GET',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json().bodyHtml).toBe('<p>visible draft</p>');
-    });
-
-    // POST /draft/publish — promote the draft to live
-    it('POST /draft/publish returns 403 for a Confluence page in an inaccessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      const txCalls: string[] = [];
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'Secret Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: '<p>storage</p>', source: 'confluence',
-              created_by_user_id: null, visibility: 'shared',
-              confluence_id: 'conf-123', space_key: 'HR',
-              draft_body_html: '<p>draft</p>', draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-      mockTxQuery.mockImplementation((sql: string) => {
-        txCalls.push(sql.trim().substring(0, 30));
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/10/draft/publish',
+        url: `/api/pages/${pageId}/draft/publish`,
       });
 
-      expect(response.statusCode).toBe(403);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-      // No content swap may occur for an unauthorized space.
-      expect(txCalls).not.toContain('BEGIN');
-    });
-
-    it('POST /draft/publish publishes for a Confluence page in an accessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({}) });
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, title')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, version: 3, title: 'Authorized Article',
-              body_html: '<p>live</p>', body_text: 'live',
-              body_storage: '<p>storage</p>', source: 'confluence',
-              created_by_user_id: null, visibility: 'shared',
-              confluence_id: 'conf-123', space_key: 'OPS',
-              draft_body_html: '<p>draft</p>', draft_body_storage: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [], rowCount: 1 });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, version: 4, published: true });
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>draft</p>',
+        body_storage: '<p>live storage</p>',
+        version: 4,
+        draft_body_html: null,
+        local_modified_by: ownerId,
       });
-      mockTxQuery.mockResolvedValue({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/10/draft/publish',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json().published).toBe(true);
-    });
-
-    // DELETE /draft — discard the draft
-    it('DELETE /draft returns 403 for a Confluence page in an inaccessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'confluence', created_by_user_id: null,
-              visibility: 'shared', space_key: 'HR',
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10/draft',
-      });
-
-      expect(response.statusCode).toBe(403);
-      expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith(TEST_USER);
-      // The discard UPDATE must never run.
-      const updateCall = mockQuery.mock.calls.find(
-        (call) => typeof call[0] === 'string' && call[0].includes('draft_body_html = NULL'),
+      expect(confluenceRequests).toHaveLength(0);
+      const intents = await query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM page_write_intents`,
       );
-      expect(updateCall).toBeUndefined();
+      expect(intents.rows[0]!.count).toBe('0');
     });
 
-    it('DELETE /draft discards the draft for a Confluence page in an accessible space', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'confluence', created_by_user_id: null,
-              visibility: 'shared', space_key: 'DEV',
-            }],
+    it.each([
+      {
+        change: 'integration mode is disabled',
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+            [ownerId],
+          );
+        },
+        error: 'Confluence integration is disabled',
+      },
+      {
+        change: 'credentials are revoked',
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            `UPDATE user_settings
+                SET confluence_url = NULL, confluence_pat = NULL
+              WHERE user_id = $1`,
+            [ownerId],
+          );
+        },
+        error: 'Confluence credentials changed before the remote write',
+      },
+    ])(
+      'keeps the authorized local publication and settles its undispatched intent when $change',
+      async ({ mutate, error }) => {
+        const pageId = await seedConfluencePage();
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        try {
+          const pending = app.inject({
+            method: 'POST',
+            url: `/api/pages/${pageId}/draft/publish`,
           });
+          await waitForBlockedLifecycleLock();
+          await mutate(blocker);
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(409);
+          expect(response.json().error).toContain(error);
+          expect(await storedPage(pageId)).toMatchObject({
+            body_html: '<p>draft</p>',
+            body_storage: '<p>live storage</p>',
+            version: 4,
+            draft_body_html: null,
+            local_modified_by: ownerId,
+          });
+          expect(confluenceRequests).toHaveLength(0);
+          const intents = await query<{
+            status: string;
+            remote_effect_started_at: Date | null;
+          }>(
+            `SELECT status, remote_effect_started_at
+               FROM page_write_intents
+              WHERE kind = 'pages.draft.publish.confluence'
+                AND $1 = ANY(page_ids)`,
+            [pageId],
+          );
+          expect(intents.rows).toEqual([{
+            status: 'cancelled',
+            remote_effect_started_at: null,
+          }]);
+        } catch (caught) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw caught;
+        } finally {
+          blocker.release();
         }
-        return Promise.resolve({ rows: [], rowCount: 1 });
-      });
+      },
+    );
 
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/10/draft',
-      });
+    it('keeps the local publication and settles its undispatched intent when space authority is revoked between phases', async () => {
+      const pageId = await seedConfluencePage();
+      const blocker = await getPool().connect();
+      const interphaseBlocker = await getPool().connect();
+      let interphaseLock: Promise<void> | undefined;
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      try {
+        const pending = app.inject({
+          method: 'POST',
+          url: `/api/pages/${pageId}/draft/publish`,
+        });
+        await waitForBlockedLifecycleLock();
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json().hasDraft).toBe(false);
+        await interphaseBlocker.query('BEGIN');
+        interphaseLock = lockPageLifecycle(interphaseBlocker, [pageId]);
+        await waitForBlockedLifecycleLock(2);
+        await blocker.query('COMMIT');
+        await interphaseLock;
+
+        expect(await storedPage(pageId)).toMatchObject({
+          body_html: '<p>draft</p>',
+          body_storage: '<p>live storage</p>',
+          version: 4,
+          draft_body_html: null,
+          local_modified_by: ownerId,
+        });
+        const pendingIntent = await query<{
+          status: string;
+          remote_effect_started_at: Date | null;
+        }>(
+          `SELECT status, remote_effect_started_at
+             FROM page_write_intents
+            WHERE kind = 'pages.draft.publish.confluence'
+              AND $1 = ANY(page_ids)`,
+          [pageId],
+        );
+        expect(pendingIntent.rows).toEqual([{
+          status: 'pending',
+          remote_effect_started_at: null,
+        }]);
+
+        await interphaseBlocker.query(
+          `DELETE FROM space_role_assignments
+            WHERE principal_type = 'user' AND principal_id = $1 AND space_key = 'OPS'`,
+          [ownerId],
+        );
+        await interphaseBlocker.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode, response.body).toBe(403);
+        expect(await storedPage(pageId)).toMatchObject({
+          body_html: '<p>draft</p>',
+          body_storage: '<p>live storage</p>',
+          version: 4,
+          draft_body_html: null,
+          local_modified_by: ownerId,
+        });
+        expect(confluenceRequests).toHaveLength(0);
+        const settledIntent = await query<{
+          status: string;
+          remote_effect_started_at: Date | null;
+        }>(
+          `SELECT status, remote_effect_started_at
+             FROM page_write_intents
+            WHERE kind = 'pages.draft.publish.confluence'
+              AND $1 = ANY(page_ids)`,
+          [pageId],
+        );
+        expect(settledIntent.rows).toEqual([{
+          status: 'cancelled',
+          remote_effect_started_at: null,
+        }]);
+      } catch (caught) {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        await interphaseLock?.catch(() => undefined);
+        await interphaseBlocker.query('ROLLBACK').catch(() => undefined);
+        throw caught;
+      } finally {
+        blocker.release();
+        interphaseBlocker.release();
+      }
+    });
+  });
+
+  describe('discard and detail', () => {
+    it('clears every draft field without changing live content', async () => {
+      const pageId = await seedStandalone({ draftHtml: '<p>discard me</p>' });
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/draft` });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ id: pageId, hasDraft: false });
+      expect(await storedPage(pageId)).toMatchObject({
+        body_html: '<p>live content</p>', version: 3,
+        draft_body_html: null, draft_body_text: null, draft_body_storage: null,
+        draft_updated_at: null, draft_updated_by: null,
+      });
     });
 
-    // A Confluence page with no space_key is unreachable (defensive): treated as denied.
-    it('PUT /draft returns 403 for a Confluence page with a null space_key', async () => {
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, source')) {
-          return Promise.resolve({
-            rows: [{
-              id: 10, source: 'confluence', created_by_user_id: null,
-              visibility: 'shared', space_key: null, deleted_at: null,
-            }],
-          });
-        }
-        return Promise.resolve({ rows: [] });
-      });
+    it('reports draft presence on page detail from persisted state', async () => {
+      const withDraft = await seedStandalone({ visibility: 'shared', draftHtml: '<p>draft</p>' });
+      const withoutDraft = await seedStandalone({ visibility: 'shared' });
+      const present = await app.inject({ method: 'GET', url: `/api/pages/${withDraft}` });
+      const absent = await app.inject({ method: 'GET', url: `/api/pages/${withoutDraft}` });
+      expect(present.statusCode, present.body).toBe(200);
+      expect(present.json()).toMatchObject({ hasDraft: true });
+      expect(present.json().draftUpdatedAt).toEqual(expect.any(String));
+      expect(absent.statusCode, absent.body).toBe(200);
+      expect(absent.json()).toMatchObject({ hasDraft: false, draftUpdatedAt: null });
+    });
 
+    it('returns 404 for a missing discard and 403 for a private non-owner', async () => {
+      expect((await app.inject({ method: 'DELETE', url: '/api/pages/2147483647/draft' })).statusCode).toBe(404);
+      const pageId = await seedStandalone({ draftHtml: '<p>keep</p>' });
+      currentUserId = otherUserId;
+      expect((await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/draft` })).statusCode).toBe(403);
+      expect((await storedPage(pageId)).draft_body_html).toBe('<p>keep</p>');
+    });
+  });
+
+  describe('Confluence page space authority', () => {
+    it('denies save, read, publish, and discard outside the user’s RBAC spaces without mutating the row or calling Confluence', async () => {
+      const pageId = await seedConfluencePage('HR', false);
+      const before = await storedPage(pageId);
+      const attempts = [
+        await app.inject({
+          method: 'PUT', url: `/api/pages/${pageId}/draft`,
+          payload: { title: 'Denied', bodyHtml: '<p>denied</p>' },
+        }),
+        await app.inject({ method: 'GET', url: `/api/pages/${pageId}/draft` }),
+        await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` }),
+        await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/draft` }),
+      ];
+
+      expect(attempts.map((response) => response.statusCode)).toEqual([403, 404, 403, 403]);
+      expect(await storedPage(pageId)).toMatchObject(before);
+      expect(confluenceRequests).toHaveLength(0);
+    });
+
+    it('treats a Confluence page with no space key as inaccessible', async () => {
+      const pageId = await seedConfluencePage();
+      await query('UPDATE pages SET space_key = NULL WHERE id = $1', [pageId]);
       const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/10/draft',
-        payload: { title: 'X', bodyHtml: '<p>x</p>' },
+        method: 'PUT', url: `/api/pages/${pageId}/draft`,
+        payload: { title: 'Denied', bodyHtml: '<p>denied</p>' },
       });
-
       expect(response.statusCode).toBe(403);
+    });
+  });
+
+  describe('authority recheck after lifecycle admission', () => {
+    it.each([
+      { operation: 'save' },
+      { operation: 'publish' },
+      { operation: 'discard' },
+    ] as const)(
+      'rejects a stale shared-page $operation after the owner makes the page private',
+      async ({ operation }) => {
+        const pageId = await seedStandalone({
+          visibility: 'shared',
+          draftHtml: '<p>retained draft</p>',
+        });
+        currentUserId = otherUserId;
+        const before = await storedPage(pageId);
+
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        try {
+          const pending = operation === 'save'
+            ? app.inject({
+                method: 'PUT',
+                url: `/api/pages/${pageId}/draft`,
+                payload: { title: 'Article', bodyHtml: '<p>stale replacement</p>' },
+              })
+            : operation === 'publish'
+              ? app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` })
+              : app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/draft` });
+
+          await waitForBlockedLifecycleLock();
+          await blocker.query("UPDATE pages SET visibility = 'private' WHERE id = $1", [pageId]);
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode).toBe(403);
+          expect(await storedPage(pageId)).toMatchObject({
+            body_html: before.body_html,
+            version: before.version,
+            draft_body_html: before.draft_body_html,
+            draft_updated_by: before.draft_updated_by,
+            content_revision: before.content_revision,
+          });
+          expect(confluenceRequests).toHaveLength(0);
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+      },
+    );
+  });
+
+  it('uses real frozen lifecycle state to deny save, publish, and discard while retaining the draft and live version', async () => {
+    const pageId = await seedStandalone({ draftHtml: '<p>retained draft</p>' });
+    await freeze(pageId, ownerId);
+    const before = await storedPage(pageId);
+
+    const save = await app.inject({
+      method: 'PUT', url: `/api/pages/${pageId}/draft`,
+      payload: { title: 'Article', bodyHtml: '<p>new draft</p>' },
+    });
+    const publish = await app.inject({ method: 'POST', url: `/api/pages/${pageId}/draft/publish` });
+    const discard = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}/draft` });
+
+    expect([save.statusCode, publish.statusCode, discard.statusCode]).toEqual([423, 423, 423]);
+    expect(await storedPage(pageId)).toMatchObject({
+      body_html: before.body_html,
+      version: before.version,
+      draft_body_html: before.draft_body_html,
+      content_revision: before.content_revision,
     });
   });
 });

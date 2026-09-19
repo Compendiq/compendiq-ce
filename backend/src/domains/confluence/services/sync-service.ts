@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { query, getPool } from '../../../core/db/postgres.js';
 import {
@@ -259,12 +260,17 @@ async function tryClaimSpaceReconcile(spaceKey: string): Promise<boolean> {
  * This is the single source of truth for the toggle on the backend: callers
  * that keep working locally must distinguish "integration off" from "not
  * configured" here rather than inferring it from a null client.
+ * Supply the current transaction client when already inside admission; a
+ * second pool lease can deadlock a saturated bulk writer.
  */
-export async function isConfluenceEnabled(userId: string): Promise<boolean> {
-  const result = await query<{ confluence_enabled: boolean }>(
-    'SELECT confluence_enabled FROM user_settings WHERE user_id = $1',
-    [userId],
-  );
+export async function isConfluenceEnabled(
+  userId: string,
+  dbClient?: PoolClient,
+): Promise<boolean> {
+  const statement = 'SELECT confluence_enabled FROM user_settings WHERE user_id = $1';
+  const result = dbClient
+    ? await dbClient.query<{ confluence_enabled: boolean }>(statement, [userId])
+    : await query<{ confluence_enabled: boolean }>(statement, [userId]);
   return result.rows[0]?.confluence_enabled !== false;
 }
 
@@ -274,16 +280,27 @@ export async function isConfluenceEnabled(userId: string): Promise<boolean> {
  * Returns `null` both when the integration is switched off and when it is on
  * but unconfigured — the two are NOT interchangeable for callers that must
  * keep serving the user locally; those ask `isConfluenceEnabled` as well.
+ *
+ * A caller already holding a transaction client may supply it so credential
+ * resolution does not acquire another connection from the same pool.
  */
-export async function getClientForUser(userId: string): Promise<ConfluenceClient | null> {
-  const result = await query<{
-    confluence_url: string | null;
-    confluence_pat: string | null;
-    confluence_enabled: boolean | null;
-  }>(
-    'SELECT confluence_url, confluence_pat, confluence_enabled FROM user_settings WHERE user_id = $1',
-    [userId],
-  );
+export async function getClientForUser(
+  userId: string,
+  dbClient?: PoolClient,
+): Promise<ConfluenceClient | null> {
+  const statement =
+    'SELECT confluence_url, confluence_pat, confluence_enabled FROM user_settings WHERE user_id = $1';
+  const result = dbClient
+    ? await dbClient.query<{
+        confluence_url: string | null;
+        confluence_pat: string | null;
+        confluence_enabled: boolean | null;
+      }>(statement, [userId])
+    : await query<{
+        confluence_url: string | null;
+        confluence_pat: string | null;
+        confluence_enabled: boolean | null;
+      }>(statement, [userId]);
 
   const row = result.rows[0];
   // Switched off → standalone mode, so nothing may leave the box. Compared to
@@ -1863,7 +1880,7 @@ async function purgeDeletedPages(client: ConfluenceClient, spaceKey: string): Pr
       // cache below this is the page's own content with no re-fetch behind it
       // — and the #1349 sweep is forbidden to walk that store, so nothing else
       // would ever collect it.
-      await discardPageIconForDeletedPage(id);
+      await discardPageIconForDeletedPage({ id });
       await tombstoneCollabRoomAfterCommit(id);
       if (!confluence_id) continue;
       await cleanPageAttachments(confluence_id);
@@ -1975,7 +1992,7 @@ export async function unsyncSpace(spaceKey: string): Promise<{ pagesDeleted: num
     // row alive with `icon_kind = 'image'`. Best-effort and never-throwing, so
     // a filesystem hiccup cannot fail a unsync whose rows are already gone.
     for (const { id } of del.rows) {
-      await discardPageIconForDeletedPage(id);
+      await discardPageIconForDeletedPage({ id });
     }
 
     logger.info({ spaceKey, pagesDeleted: del.rowCount ?? 0 }, 'unsyncSpace: purged synced space');

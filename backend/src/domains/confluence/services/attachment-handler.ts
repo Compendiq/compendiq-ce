@@ -3,6 +3,7 @@ import path from 'path';
 import { JSDOM } from 'jsdom';
 import { request } from 'undici';
 import type { RedisClientType } from 'redis';
+import type { PoolClient } from 'pg';
 import { ConfluenceClient, ConfluenceAttachment } from './confluence-client.js';
 import { logger } from '../../../core/utils/logger.js';
 import { assertNonSsrfUrl } from '../../../core/utils/ssrf-guard.js';
@@ -605,6 +606,7 @@ export async function writeAttachmentCache(
   pageId: string,
   filename: string,
   data: Buffer,
+  client?: PoolClient,
 ): Promise<string> {
   const dir = attachmentDir(pageId);
   await fs.mkdir(dir, { recursive: true });
@@ -616,7 +618,7 @@ export async function writeAttachmentCache(
   // unconditionally rather than by diffing: the page's own reconcile pass is
   // what decides whether anything is actually re-embedded, and an unchanged
   // file reuses its row by sha256 for the cost of one file read.
-  await markPageImagesDirtyByAttachmentKey(pageId);
+  await markPageImagesDirtyByAttachmentKey(pageId, client);
   logger.debug({ userId, pageId, filename, size: data.length }, 'Wrote attachment to local cache');
   return filePath;
 }
@@ -675,12 +677,16 @@ export async function getMissingAttachments(
  * Clean up all attachments for a page.
  * Also clears any Redis failure counters so re-synced attachments get a fresh start.
  */
-export async function cleanPageAttachments(pageId: string): Promise<void> {
-  const dir = attachmentDir(pageId);
+export async function cleanPageAttachments(
+  pageId: string,
+  options?: { client?: PoolClient; strict?: boolean },
+): Promise<void> {
+  const dir = attachmentCacheDir(pageId);
   try {
     await fs.rm(dir, { recursive: true, force: true });
-  } catch {
-    // Directory may not exist
+  } catch (error) {
+    if (options?.strict) throw error;
+    // Legacy sync cleanup remains best-effort; admitted writes require removal.
   }
   // Clear Redis failure counters — after a sync the failures are stale
   await clearAttachmentFailures(getRedisClient(), pageId);
@@ -693,7 +699,7 @@ export async function cleanPageAttachments(pageId: string): Promise<void> {
   // same miss. The re-read is the point: on the sync path these bytes are about
   // to be downloaded again and may differ, and on a delete path the page row
   // (and its rows, by CASCADE) is going anyway.
-  await markPageImagesDirtyByAttachmentKey(pageId);
+  await markPageImagesDirtyByAttachmentKey(pageId, options?.client);
 }
 
 /**

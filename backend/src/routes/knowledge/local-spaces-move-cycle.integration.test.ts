@@ -76,6 +76,96 @@ async function setPath(id: number, path: string | null, depth: number): Promise<
   await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [path, depth, id]);
 }
 
+async function baselineFixtureIds(
+  pageId: number,
+  actorId: string,
+): Promise<{ baselineId: string; intentId: string }> {
+  await query(
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+     VALUES ('baseline-fixture', '{"kind":"test"}'::jsonb)
+     ON CONFLICT (runtime_id) DO NOTHING`,
+  );
+  const result = await query<{ id: string; baseline_id: string }>(
+    `WITH ids AS (
+       SELECT gen_random_uuid() AS id, gen_random_uuid() AS baseline_id
+     )
+     INSERT INTO page_write_intents (
+       id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode,
+       effect, status, settled_at, settlement_reason, settlement_proof
+     )
+     SELECT ids.id, 'baseline-fixture', 'baseline.prepare', $2,
+            ARRAY[p.id], jsonb_build_object(
+              p.id::text,
+              jsonb_build_object(
+                'contentRevision', p.content_revision::text,
+                'lifecycleRevision', p.lifecycle_revision::text
+              )
+            ),
+            'local_verified',
+            jsonb_build_object('effectClass', 'local', 'baselineId', ids.baseline_id::text),
+            'completed', NOW(), 'effect_committed', '{}'::jsonb
+       FROM ids
+       JOIN pages p ON p.id = $1
+     RETURNING id, (effect->>'baselineId')::uuid::text AS baseline_id`,
+    [pageId, actorId],
+  );
+  return {
+    baselineId: result.rows[0]!.baseline_id,
+    intentId: result.rows[0]!.id,
+  };
+}
+
+async function freezePage(pageId: number, actorId: string): Promise<void> {
+  const page = await query<{
+    version: number;
+    title: string;
+    body_html: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT version, title, body_html, content_revision::text, lifecycle_revision::text
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  const row = page.rows[0]!;
+  const fixture = await baselineFixtureIds(pageId, actorId);
+  const baseline = await query<{ id: string }>(
+    `INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version,
+       content_revision, lifecycle_revision, manifest_digest, manifest,
+       manifest_bytes, title, body_html, total_bytes, reserved_bytes,
+       status, prepared_by_user_id, prepared_by_name, preparation_intent_id,
+       published_by_user_id, published_by_name, published_at, provenance, freeze_reason
+     ) VALUES (
+       $9, $1, $1, '[]'::jsonb, $2,
+       $3::bigint, $4::bigint, $5, '[]'::jsonb,
+       convert_to('[]', 'UTF8'), $6, $7, 0, 0,
+       'published', $8, 'Move admin', $10,
+       $8, 'Move admin', NOW(), 'manual_assertion', 'Regression freeze'
+     ) RETURNING id`,
+    [
+      pageId,
+      row.version,
+      row.content_revision,
+      row.lifecycle_revision,
+      '2'.repeat(64),
+      row.title,
+      row.body_html,
+      actorId,
+      fixture.baselineId,
+      fixture.intentId,
+    ],
+  );
+  await query(
+    `UPDATE pages SET baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+       frozen_by_user_id = $3, frozen_by_name = 'Move admin',
+       freeze_reason = 'Regression freeze', freeze_provenance = 'manual_assertion',
+       freeze_reported_signatories = '[]'::jsonb
+     WHERE id = $1`,
+    [pageId, baseline.rows[0]!.id, actorId],
+  );
+}
+
 async function getPageRow(id: number): Promise<{
   parent_id: string | null;
   path: string | null;
@@ -256,6 +346,21 @@ describe.skipIf(!dbAvailable)('PUT /api/pages/:id/move — cycle guard against r
       payload: { parentId },
     });
   }
+
+  it('refuses moving a frozen page before mutating its hierarchy', async () => {
+    const [root, child] = await createStandaloneChain(2, 'frozen');
+    const otherParent = await createPage({ title: 'other-parent' });
+    await setPath(otherParent, `/${otherParent}`, 0);
+    await freezePage(child!, userId);
+
+    const before = await getPageRow(child!);
+    const response = await movePage(child!, otherParent);
+
+    expect(response.statusCode).toBe(423);
+    expect(response.json().error).toContain('frozen');
+    expect(await getPageRow(child!)).toEqual(before);
+    expect(await walkParents(child!)).toEqual([child!, root!]);
+  });
 
   // ── (a) self-parent ───────────────────────────────────────────────────────
 

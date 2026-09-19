@@ -169,7 +169,11 @@ export type AuditAction =
   | 'BACKUP_S3_TESTED'
   | 'TEMPLATE_CREATED'
   | 'TEMPLATE_UPDATED'
-  | 'TEMPLATE_DELETED';
+  | 'TEMPLATE_DELETED'
+  | 'PAGE_FROZEN'
+  | 'PAGE_THAWED'
+  | 'PAGE_BASELINE_ACTIVATION_CHANGED'
+  | 'PAGE_GOVERNANCE_POLICY_CHANGED';
 
 interface AuditLogEntry {
   id: string;

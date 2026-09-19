@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import fs from 'node:fs/promises';
@@ -10,6 +10,7 @@ import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../db/advisory-locks.js';
 import {
   canStoreLocalFilename,
   putLocalAttachment,
+  putLocalAttachments,
   getLocalAttachment,
   listLocalAttachments,
   removeLocalAttachmentDirectory,
@@ -19,6 +20,14 @@ import {
   MAX_LOCAL_ATTACHMENT_BYTES,
 } from './local-attachment-service.js';
 import { exportPostgresSnapshot } from './backup-service.js';
+import {
+  advancePageWriteIntent,
+  fencePageWriterRuntime,
+  reconcilePageWriteIntent,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+} from './page-write-admission.js';
+import { PAGE_ICON_STORE_DIRNAME } from './page-icon-store.js';
 
 const dbAvailable = await isDbAvailable();
 const EXPECTED_ATTACHMENT_SNAPSHOT_LOCK_ID = 1_420_001;
@@ -56,8 +65,9 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
   async function seedUserAndPage(opts?: { visibility?: 'private' | 'shared' }): Promise<{ userId: string; pageId: number }> {
     const u = await query<{ id: string }>(
       `INSERT INTO users (username, password_hash, role)
-       VALUES ('alice', 'hash', 'user')
+       VALUES ($1, 'hash', 'user')
        RETURNING id`,
+      [`attachment-owner-${randomUUID()}`],
     );
     const userId = u.rows[0]!.id;
     const p = await query<{ id: number }>(
@@ -126,6 +136,28 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
       [pageId],
     );
     expect(row.rows).toHaveLength(1);
+    const revision = await query<{ content_revision: string }>(
+      'SELECT content_revision::text FROM pages WHERE id = $1',
+      [pageId],
+    );
+    expect(revision.rows[0]?.content_revision).toBe('1');
+  });
+
+  it('rejects an invalid sibling before publishing either attachment', async () => {
+    const { userId, pageId } = await seedUserAndPage();
+    const stem = 'a'.repeat(251);
+    const filename = `${stem}.png`;
+    await expect(putLocalAttachments({
+      pageId,
+      userId,
+      attachments: [
+        { filename, contentType: 'image/png', data: Buffer.from('png') },
+        { filename: `${stem}.drawio`, contentType: 'application/xml', data: Buffer.from('<mxfile/>') },
+      ],
+    })).rejects.toMatchObject({ code: 'INVALID_FILENAME' });
+    expect(await listLocalAttachments(pageId, userId)).toEqual([]);
+    await expect(fs.access(path.join(tempBase, 'local', String(pageId), filename)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('upsert on (page_id, filename) replaces the content and bumps updated_at', async () => {
@@ -521,5 +553,441 @@ describe.skipIf(!dbAvailable)('local-attachment-service (#302 Gap 4)', () => {
         connect.mockRestore();
       }
     });
+  });
+
+  it('repairs staged and partial local effects while mismatched bytes remain pending', async () => {
+    const appliedPage = await seedUserAndPage();
+    const mismatchPage = await seedUserAndPage();
+    const stagedPage = await seedUserAndPage();
+    const partialPage = await seedUserAndPage();
+    const deniedRepairPage = await seedUserAndPage();
+
+    async function leaveAdvancedIntent(
+      pageId: number,
+      userId: string,
+      filename: string,
+      intended: Buffer,
+      observed: Buffer,
+    ) {
+      const sha256 = createHash('sha256').update(intended).digest('hex');
+      const intent = await reservePageWriteIntent({
+        pageIds: [pageId],
+        kind: 'attachment.local.put',
+        actorId: userId,
+        effect: {
+          effectClass: 'local',
+          pageId,
+          files: [{
+            filename,
+            contentType: 'text/plain',
+            stageIndex: 0,
+            size: intended.length,
+            sha256,
+          }],
+        },
+      });
+      await runPageWriteIntentEffect(intent, { kind: 'local' }, async () => {
+        const dir = path.join(tempBase, 'local', String(pageId));
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, filename), observed);
+      });
+      await advancePageWriteIntent(intent, async (client) => {
+        await client.query(
+          `INSERT INTO local_attachments
+             (page_id, filename, content_type, size_bytes, sha256, created_by)
+           VALUES ($1, $2, 'text/plain', $3, $4, $5)`,
+          [pageId, filename, intended.length, sha256, userId],
+        );
+        await client.query(
+          'UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1',
+          [pageId],
+        );
+      });
+      return intent;
+    }
+    async function leaveAdvancedIconIntent(
+      pageId: number,
+      userId: string,
+      intended: Buffer,
+      observed: Buffer,
+    ) {
+      const sha256 = createHash('sha256').update(intended).digest('hex');
+      const intent = await reservePageWriteIntent({
+        pageIds: [pageId],
+        kind: 'icon.image.put',
+        actorId: userId,
+        effect: {
+          effectClass: 'local',
+          pageId,
+          sha256,
+          size: intended.length,
+          format: 'png',
+          expectsMetadata: true,
+        },
+      });
+      await runPageWriteIntentEffect(intent, { kind: 'local' }, async () => {
+        const dir = path.join(tempBase, PAGE_ICON_STORE_DIRNAME, String(pageId));
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, `${sha256}.png`), observed);
+      });
+      await advancePageWriteIntent(intent, async (client) => {
+        await client.query(
+          `UPDATE pages
+              SET icon_kind = 'image', icon_value = $2,
+                  content_revision = content_revision + 1
+            WHERE id = $1`,
+          [pageId, sha256],
+        );
+      });
+      return intent;
+    }
+
+    const appliedIconPage = await seedUserAndPage();
+    const mismatchIconPage = await seedUserAndPage();
+    const stagedIconPage = await seedUserAndPage();
+    const partialIconPage = await seedUserAndPage();
+    const stagedAttachmentBytes = Buffer.from('staged attachment');
+    const stagedAttachmentSha = createHash('sha256').update(stagedAttachmentBytes).digest('hex');
+    const stagedAttachment = await reservePageWriteIntent({
+      pageIds: [stagedPage.pageId],
+      kind: 'attachment.local.put',
+      actorId: stagedPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: stagedPage.pageId,
+        files: [
+          {
+            filename: 'already-cleaned.txt',
+            contentType: 'text/plain',
+            stageIndex: 0,
+            size: stagedAttachmentBytes.length,
+            sha256: stagedAttachmentSha,
+          },
+          {
+            filename: 'staged.txt',
+            contentType: 'text/plain',
+            stageIndex: 1,
+            size: stagedAttachmentBytes.length,
+            sha256: stagedAttachmentSha,
+          },
+        ],
+      },
+    });
+    await runPageWriteIntentEffect(stagedAttachment, { kind: 'local' }, async () => {
+      const dir = path.join(tempBase, 'local', String(stagedPage.pageId));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, `.page-write-${stagedAttachment.id}-1.stage`),
+        stagedAttachmentBytes,
+      );
+    });
+    const stagedIconBytes = Buffer.from('staged icon');
+    const stagedIconSha = createHash('sha256').update(stagedIconBytes).digest('hex');
+    const stagedIcon = await reservePageWriteIntent({
+      pageIds: [stagedIconPage.pageId],
+      kind: 'icon.image.put',
+      actorId: stagedIconPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: stagedIconPage.pageId,
+        sha256: stagedIconSha,
+        size: stagedIconBytes.length,
+        format: 'png',
+        expectsMetadata: true,
+      },
+    });
+    await runPageWriteIntentEffect(stagedIcon, { kind: 'local' }, async () => {
+      const dir = path.join(
+        tempBase,
+        PAGE_ICON_STORE_DIRNAME,
+        '.staging',
+        String(stagedIconPage.pageId),
+      );
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${stagedIcon.id}.png.stage`), stagedIconBytes);
+    });
+    const partialFirst = Buffer.from('partial first');
+    const partialSecond = Buffer.from('partial second');
+    const partialAttachment = await reservePageWriteIntent({
+      pageIds: [partialPage.pageId],
+      kind: 'attachment.local.put',
+      actorId: partialPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: partialPage.pageId,
+        files: [
+          {
+            filename: 'first.txt',
+            contentType: 'text/plain',
+            stageIndex: 0,
+            size: partialFirst.length,
+            sha256: createHash('sha256').update(partialFirst).digest('hex'),
+          },
+          {
+            filename: 'second.txt',
+            contentType: 'text/plain',
+            stageIndex: 1,
+            size: partialSecond.length,
+            sha256: createHash('sha256').update(partialSecond).digest('hex'),
+          },
+        ],
+      },
+    });
+    await runPageWriteIntentEffect(partialAttachment, { kind: 'local' }, async () => {
+      const dir = path.join(tempBase, 'local', String(partialPage.pageId));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'first.txt'), partialFirst);
+      await fs.writeFile(
+        path.join(dir, `.page-write-${partialAttachment.id}-1.stage`),
+        partialSecond,
+      );
+    });
+    const partialIconBytes = Buffer.from('partial icon activation');
+    const partialIconSha = createHash('sha256').update(partialIconBytes).digest('hex');
+    const partialIcon = await reservePageWriteIntent({
+      pageIds: [partialIconPage.pageId],
+      kind: 'icon.image.put',
+      actorId: partialIconPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: partialIconPage.pageId,
+        sha256: partialIconSha,
+        size: partialIconBytes.length,
+        format: 'png',
+        expectsMetadata: true,
+      },
+    });
+    await runPageWriteIntentEffect(partialIcon, { kind: 'local' }, async () => {
+      const dir = path.join(
+        tempBase,
+        PAGE_ICON_STORE_DIRNAME,
+        '.staging',
+        String(partialIconPage.pageId),
+      );
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${partialIcon.id}.png.stage`), partialIconBytes);
+      await fs.writeFile(path.join(dir, `${partialIcon.id}.activating`), 'activating');
+    });
+    const deniedBytes = Buffer.from('denied after activation');
+    const deniedRepair = await reservePageWriteIntent({
+      pageIds: [deniedRepairPage.pageId],
+      kind: 'attachment.local.put',
+      actorId: deniedRepairPage.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: deniedRepairPage.pageId,
+        files: [{
+          filename: 'denied.txt',
+          contentType: 'text/plain',
+          stageIndex: 0,
+          size: deniedBytes.length,
+          sha256: createHash('sha256').update(deniedBytes).digest('hex'),
+        }],
+      },
+    });
+    await runPageWriteIntentEffect(deniedRepair, { kind: 'local' }, async () => {
+      const dir = path.join(tempBase, 'local', String(deniedRepairPage.pageId));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'denied.txt'), deniedBytes);
+    });
+    await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [
+      deniedRepairPage.userId,
+    ]);
+    const appliedIcon = await leaveAdvancedIconIntent(
+      appliedIconPage.pageId,
+      appliedIconPage.userId,
+      Buffer.from('exact icon bytes'),
+      Buffer.from('exact icon bytes'),
+    );
+    const mismatchIcon = await leaveAdvancedIconIntent(
+      mismatchIconPage.pageId,
+      mismatchIconPage.userId,
+      Buffer.from('intended icon'),
+      Buffer.from('corrupt icon'),
+    );
+
+    const applied = await leaveAdvancedIntent(
+      appliedPage.pageId,
+      appliedPage.userId,
+      'applied.txt',
+      Buffer.from('exact recovered bytes'),
+      Buffer.from('exact recovered bytes'),
+    );
+    const mismatch = await leaveAdvancedIntent(
+      mismatchPage.pageId,
+      mismatchPage.userId,
+      'mismatch.txt',
+      Buffer.from('intended bytes'),
+      Buffer.from('different bytes'),
+    );
+    const oldRuntimeId = randomUUID();
+    const acknowledgmentId = randomUUID();
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
+       VALUES ($1, $2::jsonb, NOW(), $3)`,
+      [
+        oldRuntimeId,
+        JSON.stringify({ host: 'retired-file-writer', pid: 42, startedAt: new Date().toISOString() }),
+        acknowledgmentId,
+      ],
+    );
+    const recoveryIds = [
+      applied.id,
+      mismatch.id,
+      appliedIcon.id,
+      mismatchIcon.id,
+      stagedAttachment.id,
+      stagedIcon.id,
+      partialAttachment.id,
+      partialIcon.id,
+      deniedRepair.id,
+    ];
+    await query(
+      'UPDATE page_write_intents SET runtime_id = $1 WHERE id = ANY($2::uuid[])',
+      [oldRuntimeId, recoveryIds],
+    );
+    await fencePageWriterRuntime({
+      runtimeId: oldRuntimeId,
+      mode: 'owner_ack',
+      acknowledgmentId,
+      actorId: appliedPage.userId,
+      reason: 'Test retired writer epoch acknowledged quiescence before local recovery',
+    });
+
+    await expect(reconcilePageWriteIntent(applied.id, {
+      actorId: appliedPage.userId,
+      reason: 'Exact attachment bytes and metadata match the durable descriptor',
+    })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    await expect(reconcilePageWriteIntent(mismatch.id, {
+      actorId: mismatchPage.userId,
+      reason: 'Mismatched attachment bytes must remain unresolved for operator action',
+    })).rejects.toThrow('incomplete or does not match');
+    await expect(reconcilePageWriteIntent(appliedIcon.id, {
+      actorId: appliedIconPage.userId,
+      reason: 'Exact icon bytes and metadata match the durable descriptor',
+    })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    await expect(reconcilePageWriteIntent(mismatchIcon.id, {
+      actorId: mismatchIconPage.userId,
+      reason: 'Mismatched icon bytes must remain unresolved for operator action',
+    })).rejects.toThrow('incomplete or does not match');
+    await expect(reconcilePageWriteIntent(stagedAttachment.id, {
+      actorId: stagedPage.userId,
+      reason: 'Intent-owned attachment staging is safely removed before settlement',
+    })).resolves.toMatchObject({ status: 'reconciled_not_applied' });
+    await expect(reconcilePageWriteIntent(stagedIcon.id, {
+      actorId: stagedIconPage.userId,
+      reason: 'Intent-owned icon staging is safely removed before settlement',
+    })).resolves.toMatchObject({ status: 'reconciled_not_applied' });
+    await expect(reconcilePageWriteIntent(partialAttachment.id, {
+      actorId: partialPage.userId,
+      reason: 'Partial attachment activation deterministically finishes exact remaining stages',
+    })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    await expect(reconcilePageWriteIntent(partialIcon.id, {
+      actorId: partialIconPage.userId,
+      reason: 'Started icon activation deterministically finishes its exact stage',
+    })).resolves.toMatchObject({ status: 'reconciled_applied' });
+    await expect(
+      fs.readFile(path.join(tempBase, 'local', String(partialPage.pageId), 'second.txt')),
+    ).resolves.toEqual(partialSecond);
+    await expect(
+      fs.readFile(
+        path.join(
+          tempBase,
+          PAGE_ICON_STORE_DIRNAME,
+          String(partialIconPage.pageId),
+          `${partialIconSha}.png`,
+        ),
+      ),
+    ).resolves.toEqual(partialIconBytes);
+    await expect(reconcilePageWriteIntent(deniedRepair.id, {
+      actorId: appliedPage.userId,
+      reason: 'Deactivated original actor cannot authorize completing a live attachment repair',
+    })).rejects.toThrow('no longer active');
+    const pending = await query<{ id: string; status: string }>(
+      'SELECT id, status FROM page_write_intents WHERE id = ANY($1::uuid[]) ORDER BY id',
+      [[mismatch.id, mismatchIcon.id, deniedRepair.id]],
+    );
+    expect(pending.rows).toHaveLength(3);
+  });
+
+  it('preserves unrelated icon bytes when repair authority is denied after the old icon vanished', async () => {
+    const owner = await seedUserAndPage();
+    const recoveryActor = await seedUserAndPage();
+    const previousBytes = Buffer.from('previous uploaded icon');
+    const previousSha = createHash('sha256').update(previousBytes).digest('hex');
+    const iconDir = path.join(tempBase, PAGE_ICON_STORE_DIRNAME, String(owner.pageId));
+    const unrelated = path.join(iconDir, 'unrelated-retained-byte.bin');
+    await fs.mkdir(iconDir, { recursive: true });
+    await fs.writeFile(path.join(iconDir, `${previousSha}.png`), previousBytes);
+    await fs.writeFile(unrelated, 'must survive');
+    await query(
+      `UPDATE pages
+          SET icon_kind = 'image', icon_value = $2, icon_color = NULL, icon_filled = FALSE
+        WHERE id = $1`,
+      [owner.pageId, previousSha],
+    );
+    const intent = await reservePageWriteIntent({
+      pageIds: [owner.pageId],
+      kind: 'icon.metadata.patch',
+      actorId: owner.userId,
+      effect: {
+        effectClass: 'local',
+        pageId: owner.pageId,
+        iconKind: 'emoji',
+        iconValue: 'x',
+        iconColor: null,
+        iconFilled: false,
+        removesUploadedImage: true,
+        previousSha256: previousSha,
+      },
+    });
+    await runPageWriteIntentEffect(intent, { kind: 'local' }, () =>
+      fs.rm(path.join(iconDir, `${previousSha}.png`)));
+    await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [owner.userId]);
+
+    const oldRuntimeId = randomUUID();
+    const acknowledgmentId = randomUUID();
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, quiesced_at, quiescence_ack)
+       VALUES ($1, $2::jsonb, NOW(), $3)`,
+      [
+        oldRuntimeId,
+        JSON.stringify({
+          host: 'retired-icon-metadata-writer',
+          pid: 43,
+          startedAt: new Date().toISOString(),
+        }),
+        acknowledgmentId,
+      ],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $1 WHERE id = $2', [
+      oldRuntimeId,
+      intent.id,
+    ]);
+    await fencePageWriterRuntime({
+      runtimeId: oldRuntimeId,
+      mode: 'owner_ack',
+      acknowledgmentId,
+      actorId: recoveryActor.userId,
+      reason: 'Test retired icon metadata writer before authority-denied recovery',
+    });
+
+    await expect(reconcilePageWriteIntent(intent.id, {
+      actorId: recoveryActor.userId,
+      reason: 'Recovery must preserve unknown icon bytes when the original actor is inactive',
+    })).rejects.toThrow('no longer authorized');
+    await expect(fs.readFile(unrelated, 'utf8')).resolves.toBe('must survive');
+    const page = await query<{ icon_kind: string; icon_value: string }>(
+      'SELECT icon_kind, icon_value FROM pages WHERE id = $1',
+      [owner.pageId],
+    );
+    expect(page.rows[0]).toMatchObject({ icon_kind: 'image', icon_value: previousSha });
+    const pending = await query<{ status: string }>(
+      'SELECT status FROM page_write_intents WHERE id = $1',
+      [intent.id],
+    );
+    expect(pending.rows[0]?.status).toBe('pending');
   });
 });

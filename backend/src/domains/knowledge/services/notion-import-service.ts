@@ -15,6 +15,7 @@
  * Existing bodies stay intact unless overwrite is requested. Every discovered
  * outcome is returned for audit, cache invalidation and failure reporting.
  */
+import { createHash } from 'node:crypto';
 import {
   NOTION_BOARD_REASON,
   NOTION_UNSUPPORTED_LABEL,
@@ -22,10 +23,28 @@ import {
   type NotionImportItem,
 } from '@compendiq/contracts';
 import pLimit from 'p-limit';
+import type { PoolClient, QueryResultRow } from 'pg';
 import { query } from '../../../core/db/postgres.js';
 import { htmlToText } from '../../../core/services/content-converter.js';
-import { putLocalAttachment } from '../../../core/services/local-attachment-service.js';
-import { cleanupStandalonePageAttachmentDirs } from '../../../core/services/standalone-attachment-cleanup.js';
+import {
+  LocalAttachmentError,
+  putLocalAttachments,
+  type LocalAttachmentWrite,
+} from '../../../core/services/local-attachment-service.js';
+import {
+  advancePageWriteIntent,
+  completePageWriteIntent,
+  reservePageWriteIntent,
+  registerPageWriteIntentReconciler,
+  runPageWriteIntentEffect,
+  type PageWriteIntent,
+  type PageRevision,
+  type PageWriteRecoveryIntent,
+} from '../../../core/services/page-write-admission.js';
+import {
+  cleanupStandalonePageAttachmentDirs,
+  deletedStandaloneNamespacesAbsent,
+} from '../../../core/services/standalone-attachment-cleanup.js';
 import { logger } from '../../../core/utils/logger.js';
 import { withNotionImportLocks } from './notion-import-lock.js';
 import { NotionClient, NotionError, isNotionObjectMissing } from './notion-client.js';
@@ -159,6 +178,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       parentNotionId,
       reuseId: existing?.id,
       reuseComplete: existing?.complete === true,
+      expectedRevisions: existing?.revisions,
       boardContainer: true,
       boardTitle,
       blocks: [],
@@ -171,6 +191,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         localPageId: existing.id,
         parentNotionId,
         page: hostPage,
+        expectedRevisions: existing.revisions,
       });
     }
     return hostId;
@@ -192,6 +213,10 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       items.set(id, { notionPageId: id, status: 'skip', reason: NOTION_DISCOVERY_LIMIT_REASON });
       return;
     }
+    // Observe a pre-existing target before any remote classification work. Its
+    // exact revision pair is the import's fence; a later SELECT must never
+    // adopt an intervening local edit as permission to delete or overwrite.
+    const initiallyExisting = await findImportedPage(input.userId, id);
     let classified: Classified = page
       ? page.object === 'database' ? { kind: 'database', database: page } : { kind: 'page', page }
       : await classifySelection(input.client, id);
@@ -204,13 +229,20 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       return;
     }
     if (classified.kind === 'fail' || classified.kind === 'skip') {
-      const existing = await findImportedPage(input.userId, id);
-      if (existing?.complete && !input.overwriteExisting) {
-        importedPages.set(key, existing.id);
-        items.set(id, { notionPageId: id, status: 'already_imported', localPageId: existing.id });
+      if (initiallyExisting?.complete && !input.overwriteExisting) {
+        importedPages.set(key, initiallyExisting.id);
+        items.set(id, { notionPageId: id, status: 'already_imported', localPageId: initiallyExisting.id });
         return;
       }
-      if (existing && !existing.complete) await abandonPage(existing.id, destination.parentId);
+      if (initiallyExisting && !initiallyExisting.complete) {
+        await abandonPage({
+          pageId: initiallyExisting.id,
+          notionPageId: id,
+          destinationParentId: destination.parentId,
+          userId: input.userId,
+          expectedRevisions: initiallyExisting.revisions,
+        });
+      }
       items.set(id, { notionPageId: id, status: classified.kind, reason: classified.reason });
       return;
     }
@@ -222,17 +254,27 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       items.set(id, { notionPageId: id, status: 'skip', reason: 'Parent database is excluded from import' });
       return;
     }
-    const existing = await findImportedPage(input.userId, id);
+    // A row absent before classification may legitimately have appeared since;
+    // observe it once. A row already observed above always keeps that original
+    // pair through the remaining read-only Notion walk.
+    const existing = initiallyExisting ?? await findImportedPage(input.userId, id);
     const job: ImportJob = {
       id, page: object, title: extractTitle(object), parentNotionId,
       reuseId: existing?.id, reuseComplete: existing?.complete === true,
+      expectedRevisions: existing?.revisions,
       ...(classified.kind === 'database' ? { database: classified.database } : {}),
     };
     jobs.push(job);
     if (existing?.complete && !input.overwriteExisting) {
       importedPages.set(key, existing.id);
       items.set(id, { notionPageId: id, status: 'already_imported', localPageId: existing.id });
-      alreadyImported.push({ notionPageId: id, localPageId: existing.id, parentNotionId, page: object });
+      alreadyImported.push({
+        notionPageId: id,
+        localPageId: existing.id,
+        parentNotionId,
+        page: object,
+        expectedRevisions: existing.revisions,
+      });
     }
     // A later request batch may contain only a row of an inline table. Recover
     // its database and an already imported host before deciding to make an
@@ -357,7 +399,22 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         await discover(job.blocks ?? [], job.id);
         await planDatabase(job);
       } catch (err) {
-        if (job.reuseId && !job.reuseComplete) await abandonPage(job.reuseId, destination.parentId);
+        if (job.reuseId && !job.reuseComplete && job.expectedRevisions) {
+          try {
+            await abandonPage({
+              pageId: job.reuseId,
+              notionPageId: job.id,
+              destinationParentId: destination.parentId,
+              userId: input.userId,
+              expectedRevisions: job.expectedRevisions,
+            });
+          } catch (cleanupError) {
+            logger.warn(
+              { err: cleanupError, pageId: job.reuseId },
+              'notion-import: could not safely remove an incomplete placeholder',
+            );
+          }
+        }
         if (!job.reuseComplete || input.overwriteExisting) {
           items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
         }
@@ -456,7 +513,13 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   // rewrites are deterministic, and the enclosing batch lock keeps every
   // selected page exclusively owned until finalization or cleanup.
   for (const job of ordered) {
-    const existing = await findImportedPage(input.userId, job.id);
+    const existing = job.reuseId === undefined
+      ? null
+      : {
+          id: job.reuseId,
+          complete: job.reuseComplete === true,
+          revisions: job.expectedRevisions!,
+        };
     if (existing?.complete && !input.overwriteExisting) {
       importedPages.set(normalizeNotionId(job.id), existing.id);
       items.set(job.id, {
@@ -469,6 +532,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         localPageId: existing.id,
         parentNotionId: job.parentNotionId,
         page: job.page,
+        expectedRevisions: existing.revisions,
       });
       continue;
     }
@@ -488,22 +552,25 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
         destination.parentId,
         input.userId,
       );
-      const wikiProps = extractWikiPageProperties(job.page);
-      await persistStandalonePage({
-        id: localPageId,
-        reuse: Boolean(existing),
-        userId: input.userId,
-        title: job.title,
-        spaceKey: destination.spaceKey,
-        parentId: parentLocal,
-        visibility: destination.visibility,
-        notionPageId: job.id,
-        bodyHtml: '',
-        bodyText: '',
-        labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
-        author: wikiProps.author,
-        verifiedAt: wikiProps.verifiedAt,
-      });
+      if (!existing) {
+        const wikiProps = extractWikiPageProperties(job.page);
+        const revision = await persistStandalonePage({
+          id: localPageId,
+          reuse: false,
+          userId: input.userId,
+          title: job.title,
+          spaceKey: destination.spaceKey,
+          parentId: parentLocal,
+          visibility: destination.visibility,
+          notionPageId: job.id,
+          bodyHtml: '',
+          bodyText: '',
+          labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
+          author: wikiProps.author,
+          verifiedAt: wikiProps.verifiedAt,
+        });
+        job.expectedRevisions = { [localPageId]: revision };
+      }
       job.localPageId = localPageId;
       job.createdPlaceholder = !existing;
       importedPages.set(normalizeNotionId(job.id), localPageId);
@@ -519,9 +586,10 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
               status: 'already_imported',
               localPageId: concurrent.id,
             });
-          } else if (concurrent.complete && input.overwriteExisting) {
+          } else {
             job.createdPlaceholder = false;
-            job.reuseComplete = true;
+            job.reuseComplete = concurrent.complete;
+            job.expectedRevisions = concurrent.revisions;
           }
           continue;
         }
@@ -534,44 +602,61 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   // pages leave the mention map before any final body is written.
   for (const job of ordered) {
     if (!job.localPageId || items.has(job.id)) continue;
-    const existing = await findImportedPage(input.userId, job.id);
-    if (existing?.complete && !job.reuseComplete) {
-      importedPages.set(normalizeNotionId(job.id), existing.id);
+    if (!job.expectedRevisions) {
       items.set(job.id, {
         notionPageId: job.id,
-        status: 'already_imported',
-        localPageId: existing.id,
-      });
-      alreadyImported.push({
-        notionPageId: job.id,
-        localPageId: existing.id,
-        parentNotionId: job.parentNotionId,
-        page: job.page,
+        status: 'fail',
+        reason: 'Notion import lost its original page revision fence',
       });
       continue;
     }
-
-    if (existing && existing.id !== job.localPageId) {
-      job.localPageId = existing.id;
-      job.createdPlaceholder = false;
-      importedPages.set(normalizeNotionId(job.id), existing.id);
-    }
+    const converted = convertNotionBlocks(job.blocks ?? [], {
+      localPageId: job.localPageId,
+      importedPages,
+    });
+    let files: LocalAttachmentWrite[];
     try {
-      const converted = convertNotionBlocks(job.blocks ?? [], {
-        localPageId: job.localPageId,
-        importedPages,
-      });
-      job.attachmentWarning = await storeAttachments(
-        input.client, input.userId, job.localPageId, converted.attachments,
-      );
-      job.prepared = true;
+      files = await downloadAttachments(input.client, job.localPageId, converted.attachments);
     } catch (err) {
       if (job.createdPlaceholder) {
-        const placeholder = await findImportedPage(input.userId, job.id);
-        if (placeholder?.id === job.localPageId && !placeholder.complete) {
-          await abandonPage(job.localPageId, destination.parentId);
-        }
+        await abandonPage({
+          pageId: job.localPageId,
+          notionPageId: job.id,
+          destinationParentId: destination.parentId,
+          userId: input.userId,
+          expectedRevisions: job.expectedRevisions,
+        }).catch(() => undefined);
       }
+      importedPages.delete(normalizeNotionId(job.id));
+      items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
+      continue;
+    }
+    try {
+      if (files.length > 0) {
+        const stored = await putLocalAttachments({
+          pageId: job.localPageId,
+          attachments: files,
+          userId: input.userId,
+          expectedRevisions: job.expectedRevisions,
+        });
+        job.expectedRevisions = stored.revisions;
+      }
+      job.prepared = true;
+    } catch (err) {
+      if (err instanceof LocalAttachmentError && err.code === 'STORAGE_UNWRITABLE') {
+        // This verdict is emitted only by the read-only, pre-admission check.
+        // Preserve the existing text-import fallback without settling or
+        // bypassing a child whose filesystem effects may already have begun.
+        const reason = failReason(err);
+        job.attachmentWarning = files.length === 1
+          ? `Could not save attachment ${files[0]!.filename}: ${reason}`
+          : `Could not save ${files.length} attachments (${files[0]!.filename}: ${reason})`;
+        job.prepared = true;
+        continue;
+      }
+      // Once the attachment child has reserved its exact plan, its reconciler
+      // owns every stage/final crash state. Do not bypass that unresolved
+      // intent with placeholder deletion or filesystem rollback.
       importedPages.delete(normalizeNotionId(job.id));
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
     }
@@ -581,27 +666,8 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
   // batch critical section observed by every completed-page fast path.
   for (const job of [...ordered].reverse()) {
     if (!job.prepared || !job.localPageId || items.has(job.id)) continue;
-    const existing = await findImportedPage(input.userId, job.id);
-    if (existing?.complete && !job.reuseComplete) {
-      importedPages.set(normalizeNotionId(job.id), existing.id);
-      items.set(job.id, {
-        notionPageId: job.id,
-        status: 'already_imported',
-        localPageId: existing.id,
-      });
-      alreadyImported.push({
-        notionPageId: job.id,
-        localPageId: existing.id,
-        parentNotionId: job.parentNotionId,
-        page: job.page,
-      });
-      continue;
-    }
-
+    let finalIntent: PageWriteIntent | undefined;
     try {
-      if (!existing || existing.id !== job.localPageId) {
-        throw new Error('Notion import placeholder disappeared before finalization');
-      }
       const childPageIds = directChildIds(job);
       const converted = convertNotionBlocks(job.blocks ?? [], {
         localPageId: job.localPageId,
@@ -626,58 +692,92 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       if (childPageIds.size > 0 && !converted.childrenMacroRendered) {
         bodyHtml += NOTION_CHILDREN_MACRO_HTML;
       }
-      if (job.reuseComplete) {
-        const parentLocal = await resolveParentLocalId(
-          job.parentNotionId,
-          importedPages,
-          destination.parentId,
-          input.userId,
-        );
-        await persistStandalonePage({
-          id: job.localPageId,
-          reuse: true,
-          userId: input.userId,
-          title: job.title,
-          spaceKey: destination.spaceKey,
-          parentId: parentLocal,
-          visibility: destination.visibility,
+      if (!job.expectedRevisions) {
+        throw new Error('Notion import lost its original page revision fence');
+      }
+      const reusesExistingPage = job.createdPlaceholder === false;
+      const parentLocal = reusesExistingPage
+        ? await resolveParentLocalId(
+            job.parentNotionId,
+            importedPages,
+            destination.parentId,
+            input.userId,
+          )
+        : null;
+      finalIntent = await reservePageWriteIntent({
+        pageIds: [job.localPageId],
+        kind: job.reuseComplete ? 'import.notion.overwrite' : 'import.notion.publish',
+        actorId: input.userId,
+        expectedRevisions: job.expectedRevisions,
+        effect: notionBodyEffect({
+          pageId: job.localPageId,
           notionPageId: job.id,
           bodyHtml,
           bodyText,
-          labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
-          author: wikiProps.author,
-          verifiedAt: wikiProps.verifiedAt,
+          ...(reusesExistingPage ? { title: job.title, parentId: parentLocal } : {}),
+        }),
+      });
+      await completePageWriteIntent(finalIntent, async (client) => {
+        await assertNotionTargetAuthority(client, {
+          pageId: job.localPageId!,
+          userId: input.userId,
+          notionPageId: job.id,
+          expectedState: job.reuseComplete ? 'complete' : 'incomplete',
         });
-      } else {
-        await query(
-          'UPDATE pages SET body_html = $2, body_text = $3 WHERE id = $1',
-          [job.localPageId, bodyHtml, bodyText],
-        );
-      }
+        if (reusesExistingPage) {
+          await persistStandalonePage({
+            id: job.localPageId!,
+            reuse: true,
+            userId: input.userId,
+            title: job.title,
+            spaceKey: destination.spaceKey,
+            parentId: parentLocal,
+            visibility: destination.visibility,
+            notionPageId: job.id,
+            bodyHtml,
+            bodyText,
+            labels: job.database ? ['notion-import', 'database'] : wikiProps.labels,
+            author: wikiProps.author,
+            verifiedAt: wikiProps.verifiedAt,
+          }, client);
+        } else {
+          await client.query(
+            `UPDATE pages
+                SET body_html = $2, body_text = $3,
+                    content_revision = content_revision + 1
+              WHERE id = $1`,
+            [job.localPageId, bodyHtml, bodyText],
+          );
+        }
+      });
       // A row page carries its properties as a metadata callout, which is what
       // makes it an article rather than a bare page.
       const rowParent = isRecord(job.page.parent) ? job.page.parent : null;
       const isRow = rowParent?.type === 'database_id' || rowParent?.type === 'data_source_id';
       const reasons = [
-        job.flatten?.kind === 'row-bodies' && (modes.get(normalizeNotionId(job.id)) ?? 'table') === 'table'
+        job.flatten?.kind === 'row-bodies' &&
+        (modes.get(normalizeNotionId(job.id)) ?? 'table') === 'table'
           ? NOTION_TABLE_DOWNGRADE_REASON
           : undefined,
         job.attachmentWarning,
-      ].filter((value): value is string => Boolean(value));
+      ].filter((value): value is string => value !== undefined);
       items.set(job.id, {
         notionPageId: job.id,
         status: 'success',
         localPageId: job.localPageId,
         importedAs: job.flatten?.kind === 'table' ? 'table' : isRow ? 'article' : 'page',
-        ...(reasons.length > 0 ? { reason: reasons.join(' ') } : {}),
+        ...(reasons.length === 0 ? {} : { reason: reasons.join('; ') }),
         ...(job.reuseComplete ? { updated: true } : {}),
       });
     } catch (err) {
-      if (job.createdPlaceholder) {
-        const placeholder = await findImportedPage(input.userId, job.id);
-        if (placeholder?.id === job.localPageId && !placeholder.complete) {
-          await abandonPage(job.localPageId, destination.parentId);
-        }
+      if (job.createdPlaceholder && !finalIntent && job.expectedRevisions) {
+        await abandonPage({
+          pageId: job.localPageId!,
+          notionPageId: job.id,
+          destinationParentId: destination.parentId,
+          userId: input.userId,
+          expectedRevisions: job.expectedRevisions,
+        }).catch(() => undefined);
       }
       importedPages.delete(normalizeNotionId(job.id));
       items.set(job.id, { notionPageId: job.id, status: 'fail', reason: failReason(err) });
@@ -689,6 +789,7 @@ async function runLockedNotionImport(input: RunNotionImportInput): Promise<Notio
       !byKey.get(normalizeNotionId(row.notionPageId))?.foldedInto),
     importedPages,
     input.userId,
+    items,
   );
   for (const job of jobs) {
     if (!job.foldedInto || items.get(job.id)?.status === 'fail') continue;
@@ -729,6 +830,7 @@ interface ImportJob {
   createdPlaceholder?: boolean;
   prepared?: boolean;
   attachmentWarning?: string;
+  expectedRevisions?: Readonly<Record<number, PageRevision>>;
   database?: Record<string, unknown>;
   flatten?: FlattenAttempt;
   foldedInto?: string;
@@ -742,6 +844,7 @@ interface AlreadyImported {
   localPageId: number;
   parentNotionId: string | null;
   page: Record<string, unknown> | null;
+  expectedRevisions: Readonly<Record<number, PageRevision>>;
 }
 
 interface Destination {
@@ -781,6 +884,24 @@ async function nextPageId(): Promise<number> {
   const result = await query<{ id: string }>('SELECT nextval(\'pages_id_seq\')::text AS id');
   return Number.parseInt(result.rows[0]!.id, 10);
 }
+interface RevisionRow {
+  content_revision: string;
+  lifecycle_revision: string;
+}
+
+interface ImportedPage {
+  id: number;
+  complete: boolean;
+  revisions: Readonly<Record<number, PageRevision>>;
+}
+
+function pageRevisionFromRow(row: RevisionRow | undefined): PageRevision {
+  if (!row) throw new Error('Notion import target disappeared during persistence');
+  return {
+    contentRevision: row.content_revision,
+    lifecycleRevision: row.lifecycle_revision,
+  };
+}
 
 async function persistStandalonePage(opts: {
   id: number;
@@ -796,10 +917,14 @@ async function persistStandalonePage(opts: {
   labels?: string[];
   author?: string | null;
   verifiedAt?: Date | null;
-}): Promise<void> {
+}, client?: PoolClient): Promise<PageRevision> {
+  const runQuery = <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ) => client ? client.query<T>(text, values) : query<T>(text, values);
   let parentPath: string | null = null;
   if (opts.parentId) {
-    const parentResult = await query<{ path: string | null }>(
+    const parentResult = await runQuery<{ path: string | null }>(
       'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [opts.parentId],
     );
@@ -809,25 +934,27 @@ async function persistStandalonePage(opts: {
   const depth = newPath.split('/').filter(Boolean).length - 1;
 
   if (opts.reuse) {
-    await rehomePage(opts.id, opts.parentId);
-    await query(
+    await rehomePage(opts.id, opts.parentId, client);
+    const updated = await runQuery<RevisionRow>(
       `UPDATE pages
           SET title = $2, body_html = $3, body_text = $4, space_key = $5, parent_id = $6,
               visibility = $7, path = $8, depth = $9, labels = $10,
               author = COALESCE($11, author),
               verified_at = COALESCE($12, verified_at),
-              embedding_dirty = TRUE, image_analysis_dirty = TRUE
-        WHERE id = $1 AND deleted_at IS NULL`,
+              embedding_dirty = TRUE, image_analysis_dirty = TRUE,
+              content_revision = content_revision + 1
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING content_revision::text, lifecycle_revision::text`,
       [
         opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.spaceKey,
         opts.parentId, opts.visibility, newPath, depth,
         opts.labels ?? [], opts.author ?? null, opts.verifiedAt ?? null,
       ],
     );
-    return;
+    return pageRevisionFromRow(updated.rows[0]);
   }
 
-  await query(
+  const inserted = await runQuery<RevisionRow>(
     `INSERT INTO pages
        (id, title, body_html, body_text, body_storage, source, created_by_user_id,
         visibility, version, space_key, confluence_id, parent_id,
@@ -835,7 +962,8 @@ async function persistStandalonePage(opts: {
         last_synced, labels, author, verified_at, notion_page_id, path, depth)
      VALUES ($1, $2, $3, $4, NULL, 'standalone', $5, $6, 1, $7, NULL, $8,
              'page', TRUE, TRUE, 'not_embedded',
-             NOW(), $9, $10, $11, $12, $13, $14)`,
+             NOW(), $9, $10, $11, $12, $13, $14)
+     RETURNING content_revision::text, lifecycle_revision::text`,
     [
       opts.id, opts.title, opts.bodyHtml, opts.bodyText, opts.userId,
       opts.visibility, opts.spaceKey, opts.parentId,
@@ -843,59 +971,398 @@ async function persistStandalonePage(opts: {
       opts.notionPageId, newPath, depth,
     ],
   );
+  return pageRevisionFromRow(inserted.rows[0]);
 }
 
 async function findImportedPage(
   userId: string,
   notionPageId: string,
-): Promise<{ id: number; complete: boolean } | null> {
-  const result = await query<{ id: number; body_html: string | null }>(
-    `SELECT id, body_html FROM pages
-      WHERE created_by_user_id = $1
-        AND deleted_at IS NULL
-        AND notion_page_id IS NOT NULL
-        AND lower(replace(notion_page_id, '-', '')) = $2
+): Promise<ImportedPage | null> {
+  const result = await query<{
+    id: number;
+    body_html: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT p.id, p.body_html,
+            p.content_revision::text, p.lifecycle_revision::text
+       FROM pages p
+       JOIN users u ON u.id = $1
+      WHERE p.created_by_user_id = $1
+        AND p.source = 'standalone'
+        AND p.deleted_at IS NULL
+        AND p.notion_page_id IS NOT NULL
+        AND lower(replace(p.notion_page_id, '-', '')) = $2
       LIMIT 1`,
     [userId, normalizeNotionId(notionPageId)],
   );
   const row = result.rows[0];
   if (!row) return null;
-  return { id: row.id, complete: Boolean(row.body_html && row.body_html.trim().length > 0) };
+  return {
+    id: row.id,
+    complete: Boolean(row.body_html && row.body_html.trim().length > 0),
+    revisions: {
+      [row.id]: pageRevisionFromRow(row),
+    },
+  };
+}
+type NotionTargetState = 'complete' | 'incomplete';
+
+async function assertNotionTargetAuthority(
+  client: PoolClient,
+  input: {
+    pageId: number;
+    userId: string;
+    notionPageId: string;
+    expectedState: NotionTargetState;
+  },
+): Promise<void> {
+  const result = await client.query<{ body_html: string | null }>(
+    `SELECT p.body_html
+       FROM pages p
+       JOIN users u ON u.id = $2
+      WHERE p.id = $1
+        AND p.created_by_user_id = $2
+        AND p.source = 'standalone'
+        AND p.deleted_at IS NULL
+        AND p.notion_page_id IS NOT NULL
+        AND lower(replace(p.notion_page_id, '-', '')) = $3
+      FOR UPDATE OF p, u`,
+    [input.pageId, input.userId, normalizeNotionId(input.notionPageId)],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error('Notion import target authority changed before mutation');
+  }
+  const complete = Boolean(row.body_html && row.body_html.trim().length > 0);
+  if ((input.expectedState === 'complete') !== complete) {
+    throw new Error(
+      input.expectedState === 'complete'
+        ? 'Notion overwrite target is no longer complete'
+        : 'Notion import target is no longer an incomplete placeholder',
+    );
+  }
 }
 
-async function abandonPage(pageId: number, destinationParentId: string | null): Promise<void> {
-  const page = await query<{ path: string | null }>(
-    'SELECT path FROM pages WHERE id = $1',
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function notionBodyEffect(input: {
+  pageId: number;
+  notionPageId: string;
+  bodyHtml: string;
+  bodyText: string;
+  title?: string;
+  parentId?: string | null;
+}): Record<string, unknown> {
+  return {
+    effectClass: 'local',
+    operation: 'write-notion-body',
+    pageId: input.pageId,
+    notionPageId: normalizeNotionId(input.notionPageId),
+    bodyHtmlSha256: sha256(input.bodyHtml),
+    bodyTextSha256: sha256(input.bodyText),
+    bodyHtmlBytes: Buffer.byteLength(input.bodyHtml),
+    bodyTextBytes: Buffer.byteLength(input.bodyText),
+    ...(input.title === undefined ? {} : { titleSha256: sha256(input.title) }),
+    ...(input.parentId === undefined ? {} : { parentId: input.parentId }),
+  };
+}
+
+function recoveryPageId(intent: PageWriteRecoveryIntent): number {
+  const pageId = intent.effect.pageId;
+  if (
+    typeof pageId !== 'number' ||
+    !Number.isSafeInteger(pageId) ||
+    pageId <= 0 ||
+    intent.pageIds.length !== 1 ||
+    intent.pageIds[0] !== pageId
+  ) {
+    throw new Error('Notion recovery descriptor has an invalid page id');
+  }
+  return pageId;
+}
+
+function revisionMatches(
+  row: { content_revision: string; lifecycle_revision: string },
+  revision: PageRevision | undefined,
+): boolean {
+  return revision !== undefined &&
+    row.content_revision === revision.contentRevision &&
+    row.lifecycle_revision === revision.lifecycleRevision;
+}
+
+async function reconcileNotionBodyWrite(
+  client: PoolClient,
+  intent: PageWriteRecoveryIntent,
+) {
+  const pageId = recoveryPageId(intent);
+  const effect = intent.effect;
+  const bodyHtmlSha256 = effect.bodyHtmlSha256;
+  const bodyTextSha256 = effect.bodyTextSha256;
+  const titleSha256 = effect.titleSha256;
+  const parentId = effect.parentId;
+  const bodyHtmlBytes = effect.bodyHtmlBytes;
+  const bodyTextBytes = effect.bodyTextBytes;
+  const digestPattern = /^[0-9a-f]{64}$/;
+  if (
+    effect.operation !== 'write-notion-body' ||
+    typeof bodyHtmlSha256 !== 'string' ||
+    !digestPattern.test(bodyHtmlSha256) ||
+    typeof bodyTextSha256 !== 'string' ||
+    !digestPattern.test(bodyTextSha256) ||
+    (titleSha256 !== undefined &&
+      (typeof titleSha256 !== 'string' || !digestPattern.test(titleSha256))) ||
+    (parentId !== undefined && parentId !== null && typeof parentId !== 'string') ||
+    typeof bodyHtmlBytes !== 'number' ||
+    !Number.isSafeInteger(bodyHtmlBytes) ||
+    bodyHtmlBytes < 0 ||
+    typeof bodyTextBytes !== 'number' ||
+    !Number.isSafeInteger(bodyTextBytes) ||
+    bodyTextBytes < 0
+  ) {
+    throw new Error('Notion body recovery descriptor is invalid');
+  }
+  const result = await client.query<{
+    title: string;
+    body_html: string | null;
+    body_text: string | null;
+    parent_id: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT title, body_html, body_text, parent_id,
+            content_revision::text, lifecycle_revision::text
+       FROM pages WHERE id = $1`,
     [pageId],
   );
-  const oldPath = page.rows[0]?.path ?? `/${pageId}`;
-  let destPath = '';
-  if (destinationParentId) {
-    const dest = await query<{ path: string | null }>(
-      'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
-      [destinationParentId],
-    );
-    destPath = dest.rows[0]?.path ?? `/${destinationParentId}`;
+  const row = result.rows[0];
+  if (
+    !intent.effectStartedAt &&
+    row &&
+    revisionMatches(row, intent.revisions[pageId])
+  ) {
+    return {
+      outcome: 'not_applied' as const,
+      proof: {
+        kind: 'local_effect_absence_verified' as const,
+        observedAt: new Date().toISOString(),
+        reference: `notion-body:${pageId}`,
+        details: { syscallSettled: true as const, observedAbsent: true as const },
+      },
+      result: { pageId },
+    };
   }
-  const descendants = await query<{ id: number; parent_id: string | null; path: string }>(
-    `SELECT id, parent_id, path FROM pages
-      WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
-    [`${oldPath}/%`],
+  const bodyHtml = row?.body_html ?? '';
+  const bodyText = row?.body_text ?? '';
+  const matches = intent.effectStartedAt !== null &&
+    row !== undefined &&
+    sha256(bodyHtml) === bodyHtmlSha256 &&
+    sha256(bodyText) === bodyTextSha256 &&
+    (titleSha256 === undefined || sha256(row.title) === titleSha256) &&
+    (parentId === undefined || row.parent_id === parentId);
+  if (!matches) {
+    throw new Error('Notion body state does not match its durable recovery descriptor');
+  }
+  const intendedStateDigest = sha256(
+    [bodyHtmlSha256, bodyTextSha256, titleSha256 ?? '', parentId ?? ''].join(':'),
   );
-  for (const kid of descendants.rows) {
-    const suffix = kid.path.slice(oldPath.length);
-    const newPath = `${destPath}${suffix}` || `/${kid.id}`;
-    const depth = newPath.split('/').filter(Boolean).length - 1;
-    const parentId = kid.parent_id === String(pageId) ? destinationParentId : kid.parent_id;
-    await query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
-      parentId,
-      newPath,
-      depth,
-      kid.id,
-    ]);
+  const intendedSize = bodyHtmlBytes + bodyTextBytes;
+  return {
+    outcome: 'applied' as const,
+    proof: {
+      kind: 'local_bytes_verified' as const,
+      observedAt: new Date().toISOString(),
+      reference: `notion-body:${pageId}`,
+      details: {
+        syscallSettled: true as const,
+        intendedStateDigest,
+        observedStateDigest: intendedStateDigest,
+        intendedSize,
+        observedSize: intendedSize,
+      },
+    },
+    result: { pageId },
+  };
+}
+
+async function reconcileNotionAtomicSql(
+  client: PoolClient,
+  intent: PageWriteRecoveryIntent,
+) {
+  const pageId = recoveryPageId(intent);
+  if (
+    intent.kind !== 'import.notion.reparent' ||
+    intent.effect.operation !== 'reparent-notion-page' ||
+    typeof intent.effect.parentId !== 'string'
+  ) {
+    throw new Error('Notion reparent recovery descriptor is invalid');
   }
-  await query('DELETE FROM pages WHERE id = $1', [pageId]);
-  await cleanupStandalonePageAttachmentDirs(pageId);
+  const result = await client.query<{
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
+    [pageId],
+  );
+  const row = result.rows[0];
+  if (!intent.effectStartedAt && row && revisionMatches(row, intent.revisions[pageId])) {
+    return {
+      outcome: 'not_applied' as const,
+      proof: {
+        kind: 'local_effect_absence_verified' as const,
+        observedAt: new Date().toISOString(),
+        reference: `notion-sql:${pageId}:${intent.kind}`,
+        details: { syscallSettled: true as const, observedAbsent: true as const },
+      },
+      result: { pageId },
+    };
+  }
+  throw new Error('Notion SQL state cannot be proven from its durable descriptor');
+}
+
+
+async function reconcileNotionPlaceholderDelete(
+  client: PoolClient,
+  intent: PageWriteRecoveryIntent,
+) {
+  const pageId = recoveryPageId(intent);
+  if (
+    intent.effect.operation !== 'delete-standalone-namespaces' ||
+    !intent.deletedPageIds.includes(pageId)
+  ) {
+    const page = await client.query('SELECT 1 FROM pages WHERE id = $1', [pageId]);
+    if (
+      !intent.effectStartedAt &&
+      page.rowCount === 1
+    ) {
+      const revisions = await client.query<{
+        content_revision: string;
+        lifecycle_revision: string;
+      }>(
+        'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
+        [pageId],
+      );
+      const row = revisions.rows[0];
+      if (row && revisionMatches(row, intent.revisions[pageId])) {
+        return {
+          outcome: 'not_applied' as const,
+          proof: {
+            kind: 'local_effect_absence_verified' as const,
+            observedAt: new Date().toISOString(),
+            reference: `notion-placeholder-delete:${pageId}`,
+            details: { syscallSettled: true as const, observedAbsent: true as const },
+          },
+          result: { pageId },
+        };
+      }
+    }
+    throw new Error('Notion deletion has no durable committed-page tombstone');
+  }
+  const absent = await deletedStandaloneNamespacesAbsent({ id: pageId }, client);
+  if (!absent) {
+    return { outcome: 'repair_required' as const, observedState: 'partially_applied' as const };
+  }
+  return {
+    outcome: 'applied' as const,
+    proof: {
+      kind: 'local_intended_absence_verified' as const,
+      observedAt: new Date().toISOString(),
+      reference: `notion-placeholder-delete:${pageId}`,
+      details: {
+        syscallSettled: true as const,
+        observedAbsent: true as const,
+        intendedIdentity: `deleted-page:${pageId}`,
+      },
+    },
+    result: { pageId },
+  };
+}
+
+async function repairNotionPlaceholderDelete(intent: PageWriteRecoveryIntent): Promise<void> {
+  const pageId = recoveryPageId(intent);
+  if (!intent.deletedPageIds.includes(pageId)) {
+    throw new Error('Notion deletion repair has no durable committed-page tombstone');
+  }
+  await advancePageWriteIntent(intent, async (client) => {
+    const deletion = { id: pageId };
+    await cleanupStandalonePageAttachmentDirs(deletion, client);
+    if (!await deletedStandaloneNamespacesAbsent(deletion, client)) {
+      throw new Error('Notion deletion repair did not remove the intended namespaces');
+    }
+  });
+}
+async function abandonPage(input: {
+  pageId: number;
+  notionPageId: string;
+  destinationParentId: string | null;
+  userId: string;
+  expectedRevisions: Readonly<Record<number, PageRevision>>;
+}): Promise<void> {
+  const { pageId, notionPageId, destinationParentId, userId, expectedRevisions } = input;
+  const intent = await reservePageWriteIntent({
+    pageIds: [pageId],
+    kind: 'import.notion.placeholder.delete',
+    actorId: userId,
+    expectedRevisions,
+    effect: {
+      effectClass: 'local',
+      pageId,
+      notionPageId: normalizeNotionId(notionPageId),
+      operation: 'delete-standalone-namespaces',
+      namespaces: ['local-attachments', 'page-icons'],
+    },
+  });
+  const deletion = await advancePageWriteIntent(intent, async (client) => {
+    await assertNotionTargetAuthority(client, {
+      pageId,
+      userId,
+      notionPageId,
+      expectedState: 'incomplete',
+    });
+    const page = await client.query<{ path: string | null }>(
+      'SELECT path FROM pages WHERE id = $1',
+      [pageId],
+    );
+    const oldPath = page.rows[0]?.path ?? `/${pageId}`;
+    let destPath = '';
+    if (destinationParentId) {
+      const dest = await client.query<{ path: string | null }>(
+        'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
+        [destinationParentId],
+      );
+      destPath = dest.rows[0]?.path ?? `/${destinationParentId}`;
+    }
+    const descendants = await client.query<{ id: number; parent_id: string | null; path: string }>(
+      `SELECT id, parent_id, path FROM pages
+        WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
+      [`${oldPath}/%`],
+    );
+    for (const kid of descendants.rows) {
+      const suffix = kid.path.slice(oldPath.length);
+      const newPath = `${destPath}${suffix}` || `/${kid.id}`;
+      const depth = newPath.split('/').filter(Boolean).length - 1;
+      const parentId = kid.parent_id === String(pageId) ? destinationParentId : kid.parent_id;
+      await client.query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
+        parentId,
+        newPath,
+        depth,
+        kid.id,
+      ]);
+    }
+    const deleted = await client.query<{ id: number }>(
+      'DELETE FROM pages WHERE id = $1 RETURNING id',
+      [pageId],
+    );
+    const row = deleted.rows[0];
+    if (!row) {
+      throw new Error('Notion import placeholder disappeared before cleanup');
+    }
+    return row;
+  });
+  await runPageWriteIntentEffect(intent, { kind: 'local' }, () => cleanupStandalonePageAttachmentDirs(deletion));
+  await completePageWriteIntent(intent, async () => undefined);
 }
 
 
@@ -952,43 +1419,30 @@ async function fetchBlocksDeep(client: NotionClient, blockId: string): Promise<N
   return blocks.filter((block): block is NotionBlock => block !== null);
 }
 
-async function storeAttachments(
+async function downloadAttachments(
   client: NotionClient,
-  userId: string,
   pageId: number,
   attachments: Array<{ filename: string; sourceUrl: string }>,
-): Promise<string | undefined> {
-  const failed: Array<{ filename: string; reason: string }> = [];
-  for (const att of attachments) {
+): Promise<LocalAttachmentWrite[]> {
+  const files: LocalAttachmentWrite[] = [];
+  for (const attachment of attachments) {
     try {
-      const media = await client.fetchMedia(att.sourceUrl);
-      await putLocalAttachment({
-        pageId,
-        filename: att.filename,
+      const media = await client.fetchMedia(attachment.sourceUrl);
+      files.push({
+        filename: attachment.filename,
         contentType: media.contentType || 'application/octet-stream',
         data: media.bytes,
-        userId,
       });
     } catch (err) {
       const reason = failReason(err);
-      logger.warn({ pageId, filename: att.filename, err: reason }, 'notion-import: attachment download failed');
-      const code = err && typeof err === 'object' && 'code' in err
-        ? (err as NodeJS.ErrnoException).code
-        : undefined;
-      // Local store unwritable (Docker volume owned by root) must not drop the
-      // page — that orphans every child that already imported. Notion 404s
-      // still fail the item so we do not publish a body with broken img srcs.
-      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
-        failed.push({ filename: att.filename, reason });
-        continue;
-      }
+      logger.warn(
+        { pageId, filename: attachment.filename, err: reason },
+        'notion-import: attachment download failed before page mutation',
+      );
       throw err instanceof Error ? err : new Error(reason);
     }
   }
-  if (failed.length === 0) return undefined;
-  const first = failed[0]!;
-  if (failed.length === 1) return `Could not save attachment ${first.filename}: ${first.reason}`;
-  return `Could not save ${failed.length} attachments (${first.filename}: ${first.reason})`;
+  return files;
 }
 
 async function resolveParentLocalId(
@@ -1362,6 +1816,7 @@ async function rehomeAlreadyImported(
   already: AlreadyImported[],
   importedPages: Map<string, number>,
   userId: string,
+  items: Map<string, NotionImportItem>,
 ): Promise<void> {
   for (const row of already) {
     if (!row.parentNotionId) continue;
@@ -1374,22 +1829,63 @@ async function rehomeAlreadyImported(
       }
     }
     if (typeof parentLocal !== 'number') continue;
-    await rehomePage(row.localPageId, String(parentLocal));
+    try {
+      const intent = await reservePageWriteIntent({
+        pageIds: [row.localPageId],
+        kind: 'import.notion.reparent',
+        actorId: userId,
+        expectedRevisions: row.expectedRevisions,
+        effect: {
+          effectClass: 'local',
+          operation: 'reparent-notion-page',
+          pageId: row.localPageId,
+          parentId: String(parentLocal),
+        },
+      });
+      await completePageWriteIntent(intent, async (client) => {
+        await assertNotionTargetAuthority(client, {
+          pageId: row.localPageId,
+          userId,
+          notionPageId: row.notionPageId,
+          expectedState: 'complete',
+        });
+        if (await rehomePage(row.localPageId, String(parentLocal), client)) {
+          await client.query(
+            'UPDATE pages SET content_revision = content_revision + 1 WHERE id = $1',
+            [row.localPageId],
+          );
+        }
+      });
+    } catch (err) {
+      items.set(row.notionPageId, {
+        notionPageId: row.notionPageId,
+        status: 'fail',
+        localPageId: row.localPageId,
+        reason: failReason(err),
+      });
+    }
   }
 }
 
-async function rehomePage(pageId: number, parentId: string | null): Promise<void> {
-  const current = await query<{ parent_id: string | null; path: string | null }>(
+async function rehomePage(
+  pageId: number,
+  parentId: string | null,
+  client?: PoolClient,
+): Promise<boolean> {
+  const runQuery = <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ) => client ? client.query<T>(text, values) : query<T>(text, values);
+  const current = await runQuery<{ parent_id: string | null; path: string | null }>(
     'SELECT parent_id, path FROM pages WHERE id = $1 AND deleted_at IS NULL',
     [pageId],
   );
   const row = current.rows[0];
-  if (!row) return;
-  if ((row.parent_id ?? null) === (parentId ?? null)) return;
+  if (!row || (row.parent_id ?? null) === (parentId ?? null)) return false;
 
   let parentPath: string | null = null;
   if (parentId) {
-    const parent = await query<{ path: string | null }>(
+    const parent = await runQuery<{ path: string | null }>(
       'SELECT path FROM pages WHERE id = $1 AND deleted_at IS NULL',
       [parentId],
     );
@@ -1398,13 +1894,13 @@ async function rehomePage(pageId: number, parentId: string | null): Promise<void
   const oldPath = row.path ?? `/${pageId}`;
   const newPath = parentPath ? `${parentPath}/${pageId}` : `/${pageId}`;
   const depth = newPath.split('/').filter(Boolean).length - 1;
-  await query('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
+  await runQuery('UPDATE pages SET parent_id = $1, path = $2, depth = $3 WHERE id = $4', [
     parentId,
     newPath,
     depth,
     pageId,
   ]);
-  const descendants = await query<{ id: number; path: string }>(
+  const descendants = await runQuery<{ id: number; path: string }>(
     `SELECT id, path FROM pages WHERE deleted_at IS NULL AND path IS NOT NULL AND path LIKE $1`,
     [`${oldPath}/%`],
   );
@@ -1412,8 +1908,13 @@ async function rehomePage(pageId: number, parentId: string | null): Promise<void
     const suffix = kid.path.slice(oldPath.length);
     const kidPath = `${newPath}${suffix}`;
     const kidDepth = kidPath.split('/').filter(Boolean).length - 1;
-    await query('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [kidPath, kidDepth, kid.id]);
+    await runQuery('UPDATE pages SET path = $1, depth = $2 WHERE id = $3', [
+      kidPath,
+      kidDepth,
+      kid.id,
+    ]);
   }
+  return true;
 }
 
 function extractTitle(item: Record<string, unknown>): string {
@@ -1460,3 +1961,12 @@ function isUniqueViolation(err: unknown): boolean {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
+
+registerPageWriteIntentReconciler('import.notion.publish', reconcileNotionBodyWrite);
+registerPageWriteIntentReconciler('import.notion.overwrite', reconcileNotionBodyWrite);
+registerPageWriteIntentReconciler('import.notion.reparent', reconcileNotionAtomicSql);
+registerPageWriteIntentReconciler(
+  'import.notion.placeholder.delete',
+  reconcileNotionPlaceholderDelete,
+  repairNotionPlaceholderDelete,
+);

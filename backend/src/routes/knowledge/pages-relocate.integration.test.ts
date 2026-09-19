@@ -8,35 +8,45 @@
  * dual-arm join production uses (`p.parent_id = COALESCE(t.confluence_id,
  * t.id::text)`) — a mocked DB would not execute it at all.
  *
- * Only the two real boundaries are stubbed: the Confluence HTTP client (via
- * `getClientForUser`) and the infrastructure side-channels (Redis cache
- * wrapper, audit log). RBAC, the transaction, the advisory lock, the attachment
- * stores and the content converters are all real.
+ * PostgreSQL, Redis, RBAC, audit persistence, transactions, advisory locks,
+ * attachment stores and converters are real. Only authentication and the
+ * outbound Confluence HTTP transport are controlled.
  */
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import sensible from '@fastify/sensible';
 import { ZodError } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
-import type { Pool, PoolClient } from 'pg';
+import type { PoolClient } from 'pg';
+import { createClient, type RedisClientType } from 'redis';
+import type * as Undici from 'undici';
 import {
   setupTestDb,
   truncateAllTables,
   teardownTestDb,
   isDbAvailable,
 } from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { query, getPool } from '../../core/db/postgres.js';
 import {
   ATTACHMENT_SNAPSHOT_LOCK_ID,
   PAGE_MOVE_ADVISORY_LOCK_ID,
 } from '../../core/db/advisory-locks.js';
+import {
+  lockPageLifecycle,
+  reconcilePageWriteIntent,
+} from '../../core/services/page-write-admission.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { encryptPat } from '../../core/utils/crypto.js';
 import { userHasGlobalPermission } from '../../core/services/rbac-service.js';
 import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { registerPageRelocateReconciler } from '../../domains/knowledge/services/page-relocate-service.js';
 
-type PoolConnectCallback = Parameters<Pool['connect']>[0];
 
 // The attachment stores resolve their root from ATTACHMENTS_DIR at call time,
 // so pointing it at a temp dir before the route is imported keeps every file
@@ -46,50 +56,137 @@ process.env.ATTACHMENTS_DIR = attachmentsRoot;
 
 // --- Boundary mocks (everything else is real) ---
 
-const h = vi.hoisted(() => ({
-  client: {
-    createPage: vi.fn(),
-    updatePage: vi.fn(),
-    updateAttachment: vi.fn(),
-    deletePage: vi.fn(),
-    getPage: vi.fn(),
-  },
-  syncRunning: { value: false },
-}));
+const h = vi.hoisted(() => {
+  process.env.CONFLUENCE_RATE_LIMIT_RPM = '100000';
+  return {
+    createAuthorization: vi.fn(),
+    getAuthorization: vi.fn(),
+    client: {
+      createPage: vi.fn(),
+      updatePage: vi.fn(),
+      updateAttachment: vi.fn(),
+      deletePage: vi.fn(),
+      getPage: vi.fn(),
+      getPageAttachments: vi.fn(),
+      downloadAttachment: vi.fn(),
+    },
+  };
+});
 
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
-}));
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof Undici>();
+  return {
+    ...actual,
+    request: vi.fn(async (url: string | URL, options: Record<string, unknown> = {}) => {
+      const parsed = new URL(String(url));
+      const method = String(options.method ?? 'GET');
+      const match = parsed.pathname.match(/^\/rest\/api\/content\/([^/]+)$/);
+      const attachmentMatch = parsed.pathname.match(/^\/rest\/api\/content\/([^/]+)\/child\/attachment$/);
+      try {
+        let value: unknown;
+        let statusCode = 200;
+        if (method === 'POST' && parsed.pathname === '/rest/api/content') {
+          const body = JSON.parse(String(options.body)) as {
+            space: { key: string };
+            title: string;
+            body: { storage: { value: string } };
+            ancestors?: Array<{ id: string }>;
+          };
+          h.createAuthorization(
+            (options.headers as Record<string, string> | undefined)?.Authorization,
+          );
+          value = await h.client.createPage(
+            body.space.key,
+            body.title,
+            body.body.storage.value,
+            body.ancestors?.[0]?.id,
+          );
+        } else if (method === 'POST' && attachmentMatch) {
+          const pageId = decodeURIComponent(attachmentMatch[1]!);
+          const multipart = Buffer.from(options.body as Uint8Array).toString('binary');
+          const filename = /filename="([^"]+)"/.exec(multipart)?.[1] ?? '';
+          const attachment = await h.client.updateAttachment(pageId, filename);
+          value = { results: [attachment] };
+        } else if (method === 'DELETE' && match) {
+          await h.client.deletePage(decodeURIComponent(match[1]!));
+          value = undefined;
+          statusCode = 204;
+        } else if (method === 'GET' && attachmentMatch) {
+          const inventory = await h.client.getPageAttachments(
+            decodeURIComponent(attachmentMatch[1]!),
+          ) as { results: unknown[] };
+          const start = Number(parsed.searchParams.get('start') ?? 0);
+          const limit = Number(parsed.searchParams.get('limit') ?? 100);
+          const results = inventory.results.slice(start, start + limit);
+          value = { ...inventory, results, start, limit, size: results.length };
+        } else if (method === 'GET' && match) {
+          h.getAuthorization(
+            (options.headers as Record<string, string> | undefined)?.Authorization,
+          );
+          value = await h.client.getPage(decodeURIComponent(match[1]!));
+        } else if (method === 'GET' && parsed.pathname.startsWith('/download/attachments/')) {
+          const bytes = await h.client.downloadAttachment(parsed.pathname);
+          return {
+            statusCode: 200,
+            headers: {},
+            body: {
+              text: async () => bytes.toString(),
+              async *[Symbol.asyncIterator]() {
+                yield bytes;
+              },
+            },
+          };
+        } else {
+          throw new Error(`Unexpected Confluence request: ${method} ${parsed.pathname}`);
+        }
+        const text = value === undefined ? '' : JSON.stringify(value);
+        return {
+          statusCode,
+          headers: {},
+          body: { text: async () => text },
+        };
+      } catch (error) {
+        let errorStatusCode: number | undefined;
+        if (
+          error !== null &&
+          typeof error === 'object' &&
+          'statusCode' in error &&
+          typeof error.statusCode === 'number'
+        ) {
+          errorStatusCode = error.statusCode;
+        }
+        if (errorStatusCode === undefined) throw error;
+        return {
+          statusCode: errorStatusCode,
+          headers: {},
+          body: { text: async () => JSON.stringify({ message: error instanceof Error ? error.message : String(error) }) },
+        };
+      }
+    }),
+  };
+});
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../domains/confluence/services/sync-service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../domains/confluence/services/sync-service.js')>()),
-  getClientForUser: vi.fn(async () => h.client),
-  isSyncRunning: vi.fn(async () => h.syncRunning.value),
-}));
-
-const dbAvailable = await isDbAvailable();
 
 // --- Fixtures ---
 
 let userId: string;
 let userRole: string;
+let redis: RedisClientType;
 
 async function createUser(username: string, role: string): Promise<string> {
   const res = await query<{ id: string }>(
     'INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3) RETURNING id',
     [username, 'x', role],
   );
-  return res.rows[0]!.id;
+  const id = res.rows[0]!.id;
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, 'https://confluence.test', $2, TRUE)`,
+    [id, encryptPat('relocate-test-pat')],
+  );
+  return id;
 }
 
 async function createSpace(key: string, source: 'confluence' | 'local'): Promise<void> {
@@ -155,6 +252,143 @@ async function addVersions(pageId: number, count: number): Promise<void> {
   }
 }
 
+async function baselineFixtureIds(
+  pageId: number,
+  actorId: string | null,
+): Promise<{ baselineId: string; intentId: string }> {
+  await query(
+    `INSERT INTO page_writer_runtimes (runtime_id, deployment_identity)
+     VALUES ('baseline-fixture', '{"kind":"test"}'::jsonb)
+     ON CONFLICT (runtime_id) DO NOTHING`,
+  );
+  const result = await query<{ id: string; baseline_id: string }>(
+    `WITH ids AS (
+       SELECT gen_random_uuid() AS id, gen_random_uuid() AS baseline_id
+     )
+     INSERT INTO page_write_intents (
+       id, runtime_id, kind, actor_id, page_ids, revisions, recovery_mode,
+       effect, status, settled_at, settlement_reason, settlement_proof
+     )
+     SELECT ids.id, 'baseline-fixture', 'baseline.prepare', $2,
+            ARRAY[p.id], jsonb_build_object(
+              p.id::text,
+              jsonb_build_object(
+                'contentRevision', p.content_revision::text,
+                'lifecycleRevision', p.lifecycle_revision::text
+              )
+            ),
+            'local_verified',
+            jsonb_build_object('effectClass', 'local', 'baselineId', ids.baseline_id::text),
+            'completed', NOW(), 'effect_committed', '{}'::jsonb
+       FROM ids
+       JOIN pages p ON p.id = $1
+     RETURNING id, (effect->>'baselineId')::uuid::text AS baseline_id`,
+    [pageId, actorId],
+  );
+  return {
+    baselineId: result.rows[0]!.baseline_id,
+    intentId: result.rows[0]!.id,
+  };
+}
+
+async function protectVersionSnapshot(pageId: number, versionNumber: number): Promise<string> {
+  const snapshot = await query<{
+    id: string;
+    title: string;
+    body_html: string | null;
+    body_text: string | null;
+  }>(
+    `SELECT id, title, body_html, body_text
+       FROM page_versions
+      WHERE page_id = $1 AND version_number = $2`,
+    [pageId, versionNumber],
+  );
+  const page = await query<{ content_revision: string; lifecycle_revision: string }>(
+    'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
+    [pageId],
+  );
+  const row = snapshot.rows[0]!;
+  const fixture = await baselineFixtureIds(pageId, null);
+  await query(
+    `INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version,
+       content_revision, lifecycle_revision, manifest_digest, manifest,
+       manifest_bytes, title, body_html, body_text, total_bytes, reserved_bytes,
+       prepared_by_name, preparation_intent_id, version_snapshot_id
+     ) VALUES (
+       $10, $1, $1, '[]'::jsonb, $2,
+       $3::bigint, $4::bigint, $5, '[]'::jsonb,
+       convert_to('[]', 'UTF8'), $6, $7, $8, 0, 0,
+       'Relocate retention test', $11, $9
+     )`,
+    [
+      pageId,
+      versionNumber,
+      page.rows[0]!.content_revision,
+      page.rows[0]!.lifecycle_revision,
+      '0'.repeat(64),
+      row.title,
+      row.body_html,
+      row.body_text,
+      row.id,
+      fixture.baselineId,
+      fixture.intentId,
+    ],
+  );
+  return row.id;
+}
+
+async function freezePage(pageId: number, actorId: string): Promise<void> {
+  const page = await query<{
+    version: number;
+    title: string;
+    body_html: string | null;
+    content_revision: string;
+    lifecycle_revision: string;
+  }>(
+    `SELECT version, title, body_html, content_revision::text, lifecycle_revision::text
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  const row = page.rows[0]!;
+  const fixture = await baselineFixtureIds(pageId, actorId);
+  const baseline = await query<{ id: string }>(
+    `INSERT INTO page_baselines (
+       id, page_id, original_page_id, page_identity, version,
+       content_revision, lifecycle_revision, manifest_digest, manifest,
+       manifest_bytes, title, body_html, total_bytes, reserved_bytes,
+       status, prepared_by_user_id, prepared_by_name, preparation_intent_id,
+       published_by_user_id, published_by_name, published_at, provenance, freeze_reason
+     ) VALUES (
+       $9, $1, $1, '[]'::jsonb, $2,
+       $3::bigint, $4::bigint, $5, '[]'::jsonb,
+       convert_to('[]', 'UTF8'), $6, $7, 0, 0,
+       'published', $8, 'Relocator', $10,
+       $8, 'Relocator', NOW(), 'manual_assertion', 'Regression freeze'
+     ) RETURNING id`,
+    [
+      pageId,
+      row.version,
+      row.content_revision,
+      row.lifecycle_revision,
+      '1'.repeat(64),
+      row.title,
+      row.body_html,
+      actorId,
+      fixture.baselineId,
+      fixture.intentId,
+    ],
+  );
+  await query(
+    `UPDATE pages SET baseline_id = $2, frozen_version = version, frozen_at = NOW(),
+       frozen_by_user_id = $3, frozen_by_name = 'Relocator',
+       freeze_reason = 'Regression freeze', freeze_provenance = 'manual_assertion',
+       freeze_reported_signatories = '[]'::jsonb
+     WHERE id = $1`,
+    [pageId, baseline.rows[0]!.id, actorId],
+  );
+}
+
 async function getRow(id: number) {
   const res = await query<{
     id: number;
@@ -173,6 +407,223 @@ async function getRow(id: number) {
     [id],
   );
   return res.rows[0]!;
+}
+
+async function latestRelocateIntent(pageId: number) {
+  const result = await query<{
+    id: string;
+    runtime_id: string;
+    status: string;
+    effect_started_at: string | null;
+    effect_finished_at: string | null;
+    remote_effect_started_at: string | null;
+    remote_effects_completed_at: string | null;
+    remote_terminal_result: Record<string, unknown> | null;
+    settled_at: string | null;
+  }>(
+    `SELECT id, runtime_id, status, effect_started_at::text, effect_finished_at::text,
+            remote_effect_started_at::text, remote_effects_completed_at::text,
+            remote_terminal_result, settled_at::text
+       FROM page_write_intents
+      WHERE kind = 'page.relocate' AND page_ids && ARRAY[$1]::integer[]
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [pageId],
+  );
+  return result.rows[0];
+}
+async function relocationProgress(intentId: string) {
+  const result = await query<{
+    created_confluence_id: string | null;
+    created_page_receipt: Record<string, unknown> | null;
+    attachment_receipts: Array<Record<string, unknown>>;
+  }>(
+    `SELECT created_confluence_id, created_page_receipt, attachment_receipts
+       FROM page_relocation_preparations
+      WHERE intent_id = $1`,
+    [intentId],
+  );
+  return result.rows[0];
+}
+
+
+async function withFencedIntentRuntime<T>(
+  intent: { id: string; runtime_id: string },
+  operation: () => Promise<T>,
+): Promise<T> {
+  const retiredRuntime = `retired-relocation-${randomUUID()}`;
+  await query(
+    `INSERT INTO page_writer_runtimes
+       (runtime_id, deployment_identity, fenced_at, fence_reason, fence_proof)
+     SELECT $2, '{"fixture":"terminated relocation writer"}'::jsonb, NOW(),
+            'Integration test simulates a terminated relocation writer',
+            '{"kind":"verified_local_termination"}'::jsonb
+       FROM page_write_intents
+      WHERE id = $1 AND recovery_started_at IS NULL`,
+    [intent.id, retiredRuntime],
+  );
+  await query(
+    `UPDATE page_write_intents
+        SET runtime_id = $2
+      WHERE id = $1 AND recovery_started_at IS NULL`,
+    [intent.id, retiredRuntime],
+  );
+  return operation();
+}
+
+async function seedInterruptedLocalCutover(
+  pageId: number,
+  confluenceId: string,
+  actorId: string,
+): Promise<string> {
+  const original = (await query<{
+    title: string;
+    source: string;
+    confluence_id: string | null;
+    space_key: string | null;
+    body_html: string | null;
+    body_storage: string | null;
+    body_text: string | null;
+    version: number;
+    visibility: string;
+    created_by_user_id: string | null;
+    inherit_perms: boolean;
+    local_modified_at: Date | null;
+    local_modified_by: string | null;
+    embedding_dirty: boolean;
+    image_analysis_dirty: boolean;
+    embedding_status: string | null;
+    embedded_at: Date | null;
+  }>(
+    `SELECT title, source, confluence_id, space_key, body_html, body_storage, body_text,
+            version, visibility, created_by_user_id, inherit_perms, local_modified_at,
+            local_modified_by, embedding_dirty, image_analysis_dirty, embedding_status, embedded_at
+       FROM pages WHERE id = $1`,
+    [pageId],
+  )).rows[0]!;
+  const attachmentBytes = Buffer.from('crash-bytes');
+  await writeStoreB(pageId, 'crash.png', attachmentBytes.toString(), actorId);
+  await query(
+    `UPDATE pages SET
+       source = 'standalone',
+       confluence_id = NULL,
+       space_key = 'LOCAL',
+       visibility = 'shared',
+       created_by_user_id = $2,
+       body_html = REPLACE(body_html, $3, $4),
+       inherit_perms = TRUE,
+       embedding_dirty = TRUE,
+       image_analysis_dirty = TRUE,
+       embedding_status = 'not_embedded',
+       embedded_at = NULL,
+       local_modified_at = NOW(),
+       local_modified_by = $2
+     WHERE id = $1`,
+    [
+      pageId,
+      actorId,
+      `/api/attachments/${confluenceId}/`,
+      `/api/local-attachments/${pageId}/`,
+    ],
+  );
+  const revisions = (await query<{ content_revision: string; lifecycle_revision: string }>(
+    'SELECT content_revision::text, lifecycle_revision::text FROM pages WHERE id = $1',
+    [pageId],
+  )).rows[0]!;
+  const runtimeId = `relocate-crash-${pageId}`;
+  await query(
+    `INSERT INTO page_writer_runtimes (
+       runtime_id, deployment_identity, fenced_at, fence_reason, fence_proof
+     ) VALUES (
+       $1, '{"kind":"test"}'::jsonb, NOW(),
+       'Integration test simulates a terminated relocation writer',
+       '{"kind":"verified_local_termination"}'::jsonb
+     )`,
+    [runtimeId],
+  );
+  const intent = await query<{ id: string }>(
+    `INSERT INTO page_write_intents (
+       runtime_id, kind, actor_id, page_ids, revisions, recovery_mode, effect,
+       effect_started_at, effect_finished_at
+     ) VALUES (
+       $1, 'page.relocate', $2, ARRAY[$3]::integer[], $4::jsonb,
+       'remote_terminal_only', $5::jsonb, NOW(), NOW()
+     ) RETURNING id`,
+    [
+      runtimeId,
+      actorId,
+      pageId,
+      JSON.stringify({
+        [pageId]: {
+          contentRevision: revisions.content_revision,
+          lifecycleRevision: revisions.lifecycle_revision,
+        },
+      }),
+      JSON.stringify({
+        effectClass: 'remote',
+        pageId,
+        target: 'local',
+        fromSource: 'confluence',
+        fromConfluenceId: confluenceId,
+        fromSpaceKey: 'CONF',
+        targetSpaceKey: 'LOCAL',
+        affectedPageIds: [pageId],
+      }),
+    ],
+  );
+  await query(
+    `INSERT INTO page_relocation_preparations (
+       intent_id, page_id, direction, actor_id, target_space_key, target_visibility,
+       original_source, original_confluence_id, original_space_key, original_title,
+       original_body_html, original_body_storage, original_body_text, original_version,
+       original_visibility, original_created_by_user_id, original_inherit_perms,
+       original_local_modified_at, original_local_modified_by, original_embedding_dirty,
+       original_image_analysis_dirty, original_embedding_status, original_embedded_at,
+       original_key, child_ids, access_control_entries, attachments,
+       expected_remote_title_sha256, expected_remote_body_storage_sha256, parent_confluence_id
+     ) VALUES (
+       $1, $2, 'to_local', $3, 'LOCAL', 'shared',
+       $4, $5, $6, $7,
+       $8, $9, $10, $11,
+       $12, $13, $14,
+       $15, $16, $17,
+       $18, $19, $20,
+       $5, '{}'::integer[], '[]'::jsonb, $21::jsonb,
+       $22, $23, NULL
+     )`,
+    [
+      intent.rows[0]!.id,
+      pageId,
+      actorId,
+      original.source,
+      original.confluence_id,
+      original.space_key,
+      original.title,
+      original.body_html,
+      original.body_storage,
+      original.body_text,
+      original.version,
+      original.visibility,
+      original.created_by_user_id,
+      original.inherit_perms,
+      original.local_modified_at,
+      original.local_modified_by,
+      original.embedding_dirty,
+      original.image_analysis_dirty,
+      original.embedding_status,
+      original.embedded_at,
+      JSON.stringify([{
+        sourceName: 'crash.png',
+        targetName: 'crash.png',
+        contentType: 'image/png',
+        size: attachmentBytes.length,
+        sha256: createHash('sha256').update(attachmentBytes).digest('hex'),
+      }]),
+      createHash('sha256').update(original.title).digest('hex'),
+      createHash('sha256').update(original.body_storage ?? '').digest('hex'),
+    ],
+  );
+  return intent.rows[0]!.id;
 }
 
 /**
@@ -249,11 +700,18 @@ async function storeBFiles(pageId: number): Promise<string[]> {
 
 // --- Suite ---
 
-describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
+  let app: FastifyInstance;
 
   beforeAll(async () => {
     await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    });
+    await redis.connect();
+    registerPageRelocateReconciler();
+    setRedisClient(redis);
 
     app = Fastify({ logger: false });
     await app.register(sensible);
@@ -274,7 +732,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         return false;
       };
     });
-    app.decorate('redis', {});
+    app.decorate('redis', redis);
     const { pagesRelocateRoutes } = await import('./pages-relocate.js');
     await app.register(pagesRelocateRoutes, { prefix: '/api' });
     await app.ready();
@@ -282,6 +740,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
     await teardownTestDb();
     await fs.rm(attachmentsRoot, { recursive: true, force: true });
   });
@@ -289,14 +748,30 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     await truncateAllTables();
+    await redis.flushDb();
     await fs.rm(attachmentsRoot, { recursive: true, force: true });
     await fs.mkdir(attachmentsRoot, { recursive: true });
-    h.syncRunning.value = false;
+    await redis.del('sync:worker:lock');
     h.client.createPage.mockReset();
     h.client.updatePage.mockReset();
-    h.client.updateAttachment.mockReset().mockResolvedValue({ id: 'att-1' });
+    h.client.updateAttachment.mockReset().mockImplementation(
+      async (_pageId: string, filename: string) => ({
+        id: `att-${filename}`,
+        title: filename,
+        mediaType: 'image/png',
+        extensions: { fileSize: 0 },
+        version: { number: 1 },
+      }),
+    );
     h.client.deletePage.mockReset().mockResolvedValue(undefined);
     h.client.getPage.mockReset();
+    h.client.getPageAttachments.mockReset().mockResolvedValue({
+      results: [],
+      start: 0,
+      limit: 100,
+      size: 0,
+    });
+    h.client.downloadAttachment.mockReset();
 
     userRole = 'admin';
     userId = await createUser('relocator', 'admin');
@@ -333,8 +808,15 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
     });
   }
 
-  function createdPage(id: string, storage = '<p>body</p>') {
-    return { id, title: 'T', status: 'current', type: 'page', version: { number: 1, when: '' }, body: { storage: { value: storage } } };
+  function createdPage(id: string, storage = '<p>body</p>', title = 'A') {
+    return { id, title, status: 'current', type: 'page', version: { number: 1, when: '' }, body: { storage: { value: storage } } };
+  }
+
+  function resolveCreatedPage(id: string): void {
+    h.client.createPage.mockImplementation(
+      async (_space: string, title: string, storage: string) =>
+        createdPage(id, storage, title),
+    );
   }
 
   // ── local → Confluence ────────────────────────────────────────────────────
@@ -348,7 +830,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
          VALUES ($1, 0, 'chunk', $2)`,
         [id, `[${Array(1024).fill(0).join(',')}]`],
       );
-      h.client.createPage.mockResolvedValue(createdPage('900001'));
+      h.client.createPage.mockResolvedValue(createdPage('900001', '<p>body</p>', 'Article'));
 
       const res = await toConfluence(id, { acknowledgeDiscardedVersions: 3 });
       expect(res.statusCode).toBe(200);
@@ -366,6 +848,55 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       const versions = await query('SELECT 1 FROM page_versions WHERE page_id = $1', [id]);
       expect(versions.rowCount).toBe(0);
       expect(res.json()).toMatchObject({ versionsDiscarded: 3, confluenceId: '900001' });
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'completed',
+        effect_started_at: expect.any(String),
+        effect_finished_at: expect.any(String),
+        settled_at: expect.any(String),
+      });
+    });
+
+    it('retains a baseline-protected version while discarding ordinary local history', async () => {
+      const id = await createPage({
+        title: 'Protected history',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      await addVersions(id, 3);
+      const protectedId = await protectVersionSnapshot(id, 1);
+      h.client.createPage.mockResolvedValue(createdPage('900011', '<p>body</p>', 'Protected history'));
+
+      const res = await toConfluence(id, { acknowledgeDiscardedVersions: 3 });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ versionsDiscarded: 2 });
+
+      const versions = await query<{ id: string; version_number: number }>(
+        'SELECT id, version_number FROM page_versions WHERE page_id = $1',
+        [id],
+      );
+      expect(versions.rows).toEqual([{ id: protectedId, version_number: 1 }]);
+      const link = await query<{ version_snapshot_id: string | null }>(
+        'SELECT version_snapshot_id FROM page_baselines WHERE original_page_id = $1',
+        [id],
+      );
+      expect(link.rows[0]!.version_snapshot_id).toBe(protectedId);
+    });
+
+    it('refuses relocating a frozen page before any remote create or attachment write', async () => {
+      const id = await createPage({
+        title: 'Frozen',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      await freezePage(id, userId);
+
+      const res = await toConfluence(id);
+      expect(res.statusCode).toBe(423);
+      expect(h.client.createPage).not.toHaveBeenCalled();
+      expect(h.client.updateAttachment).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
     });
 
     it('rewrites every child parent_id to the new confluence_id so the tree still resolves', async () => {
@@ -379,7 +910,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       const grandchild = await createPage({
         title: 'Grandchild', source: 'standalone', spaceKey: 'LOCAL', parentRef: String(childA), ownerId: userId,
       });
-      h.client.createPage.mockResolvedValue(createdPage('900002'));
+      h.client.createPage.mockResolvedValue(createdPage('900002', '<p>body</p>', 'Parent'));
 
       expect(await childrenViaTreeJoin(parent)).toEqual([childA, childB]);
 
@@ -415,8 +946,8 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       ]);
       await writeStoreA(String(id), 'pasted.png', 'pasted-bytes');
       await writeStoreB(id, 'diagram.png', 'diagram-bytes', userId);
-      h.client.createPage.mockImplementation(async (_s: string, _t: string, storage: string) =>
-        createdPage('900003', storage),
+      h.client.createPage.mockImplementation(async (_s: string, title: string, storage: string) =>
+        createdPage('900003', storage, title),
       );
 
       const res = await toConfluence(id);
@@ -450,100 +981,131 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(localRows.rowCount).toBe(0);
     });
 
-    it('holds the attachment snapshot barrier through the committed local-store cleanup', async () => {
+
+    it('never deletes the committed upstream page when protected filesystem cleanup fails', async () => {
       const id = await createPage({
-        title: 'Barrier cleanup',
+        title: 'Committed cleanup failure',
         source: 'standalone',
         spaceKey: 'LOCAL',
         ownerId: userId,
+        bodyHtml: '<p><img src="/api/attachments/PLACEHOLDER/pic.png" /></p>',
       });
-      await writeStoreB(id, 'diagram.png', 'diagram-bytes', userId);
-      h.client.createPage.mockResolvedValue(createdPage('900099'));
-
-      const localDir = path.join(attachmentsRoot, 'local', String(id));
-      const realRm = fs.rm.bind(fs);
-      const cleanupStarted = Promise.withResolvers<void>();
-      const cleanupGate = Promise.withResolvers<void>();
-      const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
-        if (path.resolve(String(target)) === path.resolve(localDir)) {
-          cleanupStarted.resolve();
-          await cleanupGate.promise;
-        }
-        return realRm(target, options);
-      });
-
-      const waiter = await getPool().connect();
-      let response: { statusCode: number } | undefined;
-      let acquired = false;
-      try {
-        const pending = toConfluence(id);
-        await cleanupStarted.promise;
-        const lock = await waiter.query<{ acquired: boolean }>(
-          'SELECT pg_try_advisory_lock($1) AS acquired',
-          [ATTACHMENT_SNAPSHOT_LOCK_ID],
-        );
-        acquired = lock.rows[0]!.acquired;
-        if (acquired) {
-          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
-        }
-        cleanupGate.resolve();
-        response = await pending;
-      } finally {
-        cleanupGate.resolve();
-        rmSpy.mockRestore();
-        waiter.release();
-      }
-
-      expect(response?.statusCode).toBe(200);
-      expect(acquired).toBe(false);
-    });
-
-    it.each([
-      ['advisory unlock', 'SELECT pg_advisory_unlock_shared($1)'],
-      ['statement-timeout reset', 'RESET statement_timeout'],
-    ])('never deletes the committed upstream page when barrier %s fails', async (_failure, failingSql) => {
-      const id = await createPage({
-        title: 'Committed barrier failure',
-        source: 'standalone',
-        spaceKey: 'LOCAL',
-        ownerId: userId,
-      });
-      h.client.createPage.mockResolvedValue(createdPage('900100'));
-
-      const pool = getPool();
-      const originalConnect = pool.connect.bind(pool);
-      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
-        ((callback?: PoolConnectCallback) => {
-          if (callback) return originalConnect(callback);
-          return originalConnect().then((client) => {
-            const originalQuery = client.query;
-            const query = originalQuery.bind(client);
-            // This test seam only wraps the promise/string query form used by
-            // the mutation barrier and its relocation callback.
-            client.query = ((text: string, values?: unknown[]) => {
-              if (text === failingSql) {
-                return Promise.reject(new Error(`injected ${_failure} failure`));
-              }
-              return query(text, values);
-            }) as unknown as typeof client.query;
-            return client;
-          });
-        }) as typeof pool.connect,
+      await query('UPDATE pages SET body_html = REPLACE(body_html, $2, $3) WHERE id = $1', [
+        id, 'PLACEHOLDER', String(id),
+      ]);
+      await writeStoreA(String(id), 'pic.png', 'bytes');
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) =>
+        createdPage('900100', storage, title),
       );
+
+      const oldCacheDir = path.resolve(attachmentsRoot, String(id));
+      await fs.chmod(oldCacheDir, 0o500);
 
       let response: { statusCode: number } | undefined;
       try {
         response = await toConfluence(id);
       } finally {
-        connectSpy.mockRestore();
+        await fs.chmod(oldCacheDir, 0o700);
       }
 
       expect(response?.statusCode).toBe(500);
       expect(h.client.deletePage).not.toHaveBeenCalled();
       expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+      });
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
+        status: 'pending',
+        effect_started_at: expect.any(String),
+        remote_effect_started_at: expect.any(String),
+        remote_effects_completed_at: expect.any(String),
+        settled_at: null,
+      });
+
+      const acceptedStorage = h.client.createPage.mock.calls[0]![2] as string;
+      const terminalAttachments = (
+        (await relocationProgress(intent!.id))!.attachment_receipts as Array<{
+          id: string;
+          title: string;
+          version: number;
+          mediaType: string | null;
+          fileSize: number | null;
+        }>
+      );
+      h.client.getPageAttachments.mockResolvedValue({
+        results: terminalAttachments.map((attachment) => ({
+          id: attachment.id,
+          title: attachment.title,
+          mediaType: attachment.mediaType,
+          extensions: { fileSize: attachment.fileSize },
+          version: { number: attachment.version },
+        })),
+        start: 0,
+        limit: 100,
+        size: terminalAttachments.length,
+      });
+      h.client.getPage.mockResolvedValue({
+        ...createdPage('900100', `${acceptedStorage}<p>changed</p>`, 'Committed cleanup failure'),
+        version: { number: 2, when: '' },
+      });
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Changed provider page content must retain the interrupted relocation',
+        })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
+      );
+
+      h.client.getPage.mockResolvedValue(
+        createdPage('900100', acceptedStorage, 'Committed cleanup failure'),
+      );
+      h.client.getPageAttachments.mockResolvedValue({
+        results: [],
+        start: 0,
+        limit: 100,
+        size: 0,
+      });
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Missing provider attachment receipt must retain the interrupted relocation',
+        })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' }),
+      );
+      expect(await latestRelocateIntent(id)).toMatchObject({ status: 'pending', settled_at: null });
+      expect((await query(
+        'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+        [intent!.id],
+      )).rowCount).toBe(1);
+
+      h.client.getPageAttachments.mockResolvedValue({
+        results: terminalAttachments.map((attachment) => ({
+          id: attachment.id,
+          title: attachment.title,
+          mediaType: attachment.mediaType,
+          extensions: { fileSize: attachment.fileSize },
+          version: { number: attachment.version },
+        })),
+        start: 0,
+        limit: 100,
+        size: terminalAttachments.length,
+      });
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Exact provider receipts permit the interrupted local publication',
+        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+      );
+      expect(await getRow(id)).toMatchObject({
         source: 'confluence',
         confluence_id: '900100',
+        space_key: 'CONF',
       });
+      expect(await storeAFiles(String(id))).toEqual([]);
+      expect(await storeAFiles('900100')).toEqual(['pic.png']);
+      expect((await query(
+        'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+        [intent!.id],
+      )).rowCount).toBe(0);
     });
 
     it('rejects a confirmation whose version count is stale, changing nothing', async () => {
@@ -591,22 +1153,16 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // app.ts masks to "Internal Server Error" (#1626 review r3).
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await writeStoreB(id, 'locked.png', 'locked-bytes', userId);
-      h.client.createPage.mockResolvedValue(createdPage('900200'));
+      resolveCreatedPage('900200');
 
       const lockedPath = path.resolve(attachmentsRoot, 'local', String(id), 'locked.png');
-      const realReadFile = fs.readFile.bind(fs);
-      const readSpy = vi.spyOn(fs, 'readFile').mockImplementation(async (target, options) => {
-        if (path.resolve(String(target)) === lockedPath) {
-          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-        }
-        return realReadFile(target, options);
-      });
+      await fs.chmod(lockedPath, 0o000);
 
       let res;
       try {
         res = await toConfluence(id);
       } finally {
-        readSpy.mockRestore();
+        await fs.chmod(lockedPath, 0o600);
       }
 
       expect(res.statusCode).toBe(400);
@@ -622,6 +1178,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // The *file* cannot exist at this length on any real filesystem, but the
       // *row* can, and the row is what the guard reasons about: gating on the
       // Confluence rule alone let this warn past as "missing on disk".
+
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       const longName = `${'a'.repeat(300)}.png`;
       await query(
@@ -631,7 +1188,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       );
       // Let the upstream create succeed, so a failure here is the guard's doing
       // and not a half-configured mock.
-      h.client.createPage.mockResolvedValue(createdPage('900030'));
+      resolveCreatedPage('900030');
 
       const res = await toConfluence(id);
 
@@ -639,6 +1196,56 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(res.json().error).toContain(longName);
       expect(h.client.createPage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('standalone');
+    });
+    it('preserves the standalone source cache when Confluence reuses its numeric key', async () => {
+      const id = await createPage({
+        title: 'Same numeric key',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+        bodyHtml: '<p><img src="/api/attachments/PLACEHOLDER/pic.png" /></p>',
+      });
+      await query('UPDATE pages SET body_html = REPLACE(body_html, $2, $3) WHERE id = $1', [
+        id,
+        'PLACEHOLDER',
+        String(id),
+      ]);
+      await writeStoreA(String(id), 'pic.png', 'source-bytes');
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) =>
+        createdPage(String(id), storage, title),
+      );
+      h.client.updateAttachment.mockRejectedValue(new ConfluenceError('upload failed', 500));
+
+      const response = await toConfluence(id);
+
+      expect(response.statusCode).toBe(500);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({ source: 'standalone', confluence_id: null });
+      expect(await storeAFiles(String(id))).toEqual(['pic.png']);
+      expect(await fs.readFile(path.join(attachmentsRoot, String(id), 'pic.png'), 'utf8'))
+        .toBe('source-bytes');
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
+        status: 'pending',
+        remote_effect_started_at: expect.any(String),
+        remote_effects_completed_at: null,
+      });
+      expect(await relocationProgress(intent!.id)).toMatchObject({
+        created_confluence_id: String(id),
+        created_page_receipt: {
+          id: String(id),
+          version: 1,
+        },
+        attachment_receipts: [],
+      });
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'An unknown attachment upload cannot be inferred from current provider state',
+        })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
+      );
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(1);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
     });
 
     it('leaves nothing changed when the upstream create fails', async () => {
@@ -660,31 +1267,275 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       const versions = await query('SELECT 1 FROM page_versions WHERE page_id = $1', [id]);
       expect(versions.rowCount).toBe(2);
     });
+    it.each([false, true])(
+      'does not read back a compact create after integration is disabled (attachments remaining: %s)',
+      async (withAttachment) => {
+        const id = await createPage({
+          title: 'Disabled compact create', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+        });
+        if (withAttachment) await writeStoreB(id, 'proof.png', 'proof-bytes', userId);
+        h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) => {
+          h.client.getPage.mockResolvedValue(createdPage('900006', storage, title));
+          await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [userId]);
+          return { id: '900006' };
+        });
 
-    it('deletes the page it just created upstream when a later step fails', async () => {
+        const response = await toConfluence(id);
+        expect(response.statusCode).toBe(409);
+        expect(h.client.getPage).not.toHaveBeenCalled();
+        expect(h.client.updateAttachment).not.toHaveBeenCalled();
+        expect(h.client.deletePage).not.toHaveBeenCalled();
+        expect(await getRow(id)).toMatchObject({ source: 'standalone', confluence_id: null });
+        const intent = await latestRelocateIntent(id);
+        expect(intent?.status).toBe('pending');
+        expect(await relocationProgress(intent!.id)).toMatchObject({ created_confluence_id: '900006' });
+      },
+    );
+
+    it.each([false, true])(
+      'uses a rotated PAT for compact-create readback (attachments remaining: %s)',
+      async (withAttachment) => {
+        const id = await createPage({
+          title: 'Rotated compact create', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+        });
+        if (withAttachment) await writeStoreB(id, 'proof.png', 'proof-bytes', userId);
+        h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) => {
+          h.client.getPage.mockResolvedValue(createdPage('900007', storage, title));
+          await query('UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1', [
+            userId, encryptPat('rotated-compact-pat'),
+          ]);
+          return { id: '900007' };
+        });
+
+        const response = await toConfluence(id);
+        expect(response.statusCode).toBe(200);
+        expect(h.createAuthorization).toHaveBeenCalledWith('Bearer relocate-test-pat');
+        expect(h.getAuthorization).toHaveBeenCalledTimes(1);
+        expect(h.getAuthorization).toHaveBeenCalledWith('Bearer rotated-compact-pat');
+        expect(await getRow(id)).toMatchObject({ source: 'confluence', confluence_id: '900007' });
+      },
+    );
+
+    it('retains and recovers a receipt inventory larger than generic intent metadata', async () => {
       const id = await createPage({
-        title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
-        bodyHtml: '<p><img src="/api/attachments/PLACEHOLDER/x.png" /></p>',
+        title: 'Large receipt inventory', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+      });
+      const filenames = Array.from({ length: 128 }, (_, index) =>
+        `attachment-${String(index).padStart(3, '0')}-${'x'.repeat(210)}.png`);
+      for (const filename of filenames) {
+        await writeStoreB(id, filename, 'image-bytes', userId);
+      }
+      const uploadedReceipts: Array<{
+        id: string; title: string; mediaType: string;
+        extensions: { fileSize: number }; version: { number: number };
+      }> = [];
+      h.client.updateAttachment.mockImplementation(async (_pageId: string, filename: string) => {
+        const receipt = {
+          id: String(9000000 + uploadedReceipts.length),
+          title: filename,
+          mediaType: 'image/png',
+          extensions: { fileSize: 11 },
+          version: { number: 1 },
+        };
+        uploadedReceipts.push(receipt);
+        return receipt;
+      });
+      let acceptedStorage = '';
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) => {
+        acceptedStorage = storage;
+        return createdPage('900008', storage, title);
+      });
+      await query(`ALTER TABLE pages ADD CONSTRAINT fail_large_receipt_publication
+        CHECK (id <> ${id} OR source <> 'confluence')`);
+      try {
+        const response = await toConfluence(id);
+        expect(response.statusCode).toBe(500);
+      } finally {
+        await query('ALTER TABLE pages DROP CONSTRAINT fail_large_receipt_publication');
+      }
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(filenames.length);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
+        status: 'pending', remote_effects_completed_at: expect.any(String),
+      });
+      const inventory = await relocationProgress(intent!.id);
+      expect(inventory!.attachment_receipts).toHaveLength(filenames.length);
+      expect(Buffer.byteLength(JSON.stringify(inventory!.attachment_receipts))).toBeGreaterThan(32768);
+      expect(Buffer.byteLength(JSON.stringify(intent!.remote_terminal_result))).toBeLessThan(32768);
+      h.client.getPage.mockResolvedValue(createdPage('900008', acceptedStorage, 'Large receipt inventory'));
+      h.client.getPageAttachments.mockResolvedValue({
+        results: uploadedReceipts,
+        start: 0,
+        limit: filenames.length,
+        size: filenames.length,
+      });
+
+      // Matching current provider state cannot rewrite the acknowledged receipt.
+      uploadedReceipts[0]!.version.number = 2;
+      await query(
+        `UPDATE page_relocation_preparations
+            SET attachment_receipts = jsonb_set(attachment_receipts, '{0,version}', '2'::jsonb)
+          WHERE intent_id = $1`,
+        [intent!.id],
+      );
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'A changed durable receipt cannot be adopted from matching current provider state',
+        })).rejects.toMatchObject({ reason: 'intent_terminal_result_invalid' }),
+      );
+      expect((await getRow(id)).source).toBe('standalone');
+      uploadedReceipts[0]!.version.number = 1;
+      await query(
+        `UPDATE page_relocation_preparations
+            SET attachment_receipts = jsonb_set(attachment_receipts, '{0,version}', '1'::jsonb)
+          WHERE intent_id = $1`,
+        [intent!.id],
+      );
+
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Recover all acknowledged attachments without the generic metadata size limit',
+        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+      );
+      expect(h.client.createPage).toHaveBeenCalledTimes(1);
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(filenames.length);
+      expect(await getRow(id)).toMatchObject({ source: 'confluence', confluence_id: '900008' });
+      expect(await relocationProgress(intent!.id)).toBeUndefined();
+    });
+
+    it('recovers a compact create readback failure when no provider mutation remains', async () => {
+      const id = await createPage({
+        title: 'Compact create',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      let acceptedStorage = '';
+      h.client.createPage.mockImplementation(async (_space: string, _title: string, storage: string) => {
+        acceptedStorage = storage;
+        return { id: '900004' };
+      });
+      h.client.getPage.mockRejectedValue(new ConfluenceError('readback unavailable', 503));
+
+      const response = await toConfluence(id);
+
+      expect(response.statusCode).toBe(503);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(h.client.updateAttachment).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+        space_key: 'LOCAL',
+      });
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
+        status: 'pending',
+        remote_effect_started_at: expect.any(String),
+        remote_effects_completed_at: expect.any(String),
+        remote_terminal_result: {
+          outcome: 'committed',
+          createdConfluenceId: '900004',
+          page: null,
+        },
+      });
+      expect(await relocationProgress(intent!.id)).toEqual({
+        created_confluence_id: '900004',
+        created_page_receipt: null,
+        attachment_receipts: [],
+      });
+
+      h.client.getPage.mockResolvedValue(
+        createdPage('900004', acceptedStorage, 'Compact create'),
+      );
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Read-only verification can publish an acknowledged compact create',
+        })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_applied' }),
+      );
+
+      expect(h.client.createPage).toHaveBeenCalledTimes(1);
+      expect(h.client.updateAttachment).not.toHaveBeenCalled();
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({
+        source: 'confluence',
+        confluence_id: '900004',
+        space_key: 'CONF',
+      });
+      expect(await relocationProgress(intent!.id)).toBeUndefined();
+    });
+
+
+    it('retains each acknowledged attachment receipt and blocks after a later unknown upload', async () => {
+      const id = await createPage({
+        title: 'Partial attachments', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId,
+        bodyHtml:
+          '<p><img src="/api/attachments/PLACEHOLDER/a.png" />' +
+          '<img src="/api/attachments/PLACEHOLDER/b.png" /></p>',
       });
       await query('UPDATE pages SET body_html = REPLACE(body_html, $2, $3) WHERE id = $1', [
         id, 'PLACEHOLDER', String(id),
       ]);
-      await writeStoreA(String(id), 'x.png', 'bytes');
-      h.client.createPage.mockResolvedValue(createdPage('900004'));
-      h.client.updateAttachment.mockRejectedValue(new ConfluenceError('upload failed', 500));
+      await writeStoreA(String(id), 'a.png', 'a-bytes');
+      await writeStoreA(String(id), 'b.png', 'b-bytes');
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) =>
+        createdPage('900005', storage, title),
+      );
+      h.client.updateAttachment
+        .mockImplementationOnce(async (_pageId: string, filename: string) => ({
+          id: `att-${filename}`,
+          title: filename,
+          mediaType: 'image/png',
+          extensions: { fileSize: 7 },
+          version: { number: 1 },
+        }))
+        .mockRejectedValueOnce(new ConfluenceError('upload outcome unavailable', 504));
 
-      const res = await toConfluence(id);
+      const response = await toConfluence(id);
 
-      expect(res.statusCode).toBe(500);
-      // Publishing an article whose ri:attachment refs point at files that were
-      // never uploaded is the corruption we refuse to commit.
-      expect(h.client.deletePage).toHaveBeenCalledWith('900004');
+      expect(response.statusCode).toBe(504);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(2);
       const row = await getRow(id);
       expect(row.source).toBe('standalone');
       expect(row.confluence_id).toBeNull();
-      expect(row.body_html).toContain(`/api/attachments/${id}/x.png`);
-      // The originals are untouched — the copy was staged, never moved.
-      expect(await storeAFiles(String(id))).toEqual(['x.png']);
+      expect(row.body_html).toContain(`/api/attachments/${id}/a.png`);
+      expect(row.body_html).toContain(`/api/attachments/${id}/b.png`);
+      expect(await storeAFiles(String(id))).toEqual(['a.png', 'b.png']);
+
+      const intent = await latestRelocateIntent(id);
+      expect(intent).toMatchObject({
+        status: 'pending',
+        remote_effect_started_at: expect.any(String),
+        remote_effects_completed_at: null,
+      });
+      const firstUploadedName = h.client.updateAttachment.mock.calls[0]![1] as string;
+      expect(await relocationProgress(intent!.id)).toMatchObject({
+        created_confluence_id: '900005',
+        created_page_receipt: {
+          id: '900005',
+          version: 1,
+        },
+        attachment_receipts: [{
+          id: `att-${firstUploadedName}`,
+          title: firstUploadedName,
+          version: 1,
+        }],
+      });
+
+      await withFencedIntentRuntime(intent!, () =>
+        expect(reconcilePageWriteIntent(intent!.id, {
+          actorId: userId,
+          reason: 'Partial receipts cannot authorize replay or infer the later upload outcome',
+        })).rejects.toMatchObject({ reason: 'intent_outcome_unrecoverable' }),
+      );
+      expect(h.client.updateAttachment).toHaveBeenCalledTimes(2);
+      expect(h.client.getPage).not.toHaveBeenCalled();
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({ source: 'standalone', confluence_id: null });
     });
 
     it('never commits a confluence_id the upstream create did not produce', async () => {
@@ -722,6 +1573,12 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(row.created_by_user_id).toBe(userId);
       expect(h.client.deletePage).toHaveBeenCalledWith('700001');
       expect(res.json().upstreamDeleted).toBe(true);
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'completed',
+        effect_started_at: expect.any(String),
+        effect_finished_at: expect.any(String),
+        settled_at: expect.any(String),
+      });
     });
 
     it('rewrites every child parent_id to the numeric id so the tree still resolves', async () => {
@@ -757,7 +1614,6 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         bodyStorage: storage,
       });
       await writeStoreA('700005', 'chart.png', 'chart-bytes');
-
       const res = await toLocal(id, '700005');
       expect(res.statusCode).toBe(200);
       expect(res.json().attachmentsMigrated).toBe(1);
@@ -778,6 +1634,40 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(rows.rows.map((r) => r.filename)).toEqual(['chart.png']);
     });
 
+    it('keeps a committed local move pending when protected cache cleanup fails', async () => {
+      const id = await createPage({
+        title: 'Committed local cleanup failure',
+        source: 'confluence',
+        confluenceId: '700501',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700501/chart.png" /></p>',
+      });
+      await writeStoreA('700501', 'chart.png', 'chart-bytes');
+      const oldCacheDir = path.resolve(attachmentsRoot, '700501');
+      await fs.chmod(oldCacheDir, 0o500);
+
+      let response: { statusCode: number } | undefined;
+      try {
+        response = await toLocal(id, '700501');
+      } finally {
+        await fs.chmod(oldCacheDir, 0o700);
+      }
+
+      expect(response?.statusCode).toBe(500);
+      expect(h.client.deletePage).toHaveBeenCalledWith('700501');
+      expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+      });
+      expect(await storeBFiles(id)).toEqual(['chart.png']);
+      expect(await storeAFiles('700501')).toEqual(['chart.png']);
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'pending',
+        effect_started_at: expect.any(String),
+        settled_at: null,
+      });
+    });
+
     it('refuses the move with a named 400 when a cached attachment cannot be read, staging nothing', async () => {
       const id = await createPage({
         title: 'Locked cache',
@@ -789,19 +1679,13 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       await writeStoreA('700500', 'locked.png', 'locked-bytes');
 
       const lockedPath = path.resolve(attachmentsRoot, '700500', 'locked.png');
-      const realReadFile = fs.readFile.bind(fs);
-      const readSpy = vi.spyOn(fs, 'readFile').mockImplementation(async (target, options) => {
-        if (path.resolve(String(target)) === lockedPath) {
-          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-        }
-        return realReadFile(target, options);
-      });
+      await fs.chmod(lockedPath, 0o000);
 
       let res;
       try {
         res = await toLocal(id, '700500');
       } finally {
-        readSpy.mockRestore();
+        await fs.chmod(lockedPath, 0o600);
       }
 
       // The staging loop's own cleanup still runs, so the abort leaves no
@@ -815,121 +1699,28 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(h.client.deletePage).not.toHaveBeenCalled();
     });
 
-    it('holds one shared barrier from local-file staging through transaction commit', async () => {
-      const id = await createPage({
-        title: 'Barrier staging',
-        source: 'confluence',
-        confluenceId: '700099',
-        spaceKey: 'CONF',
-        bodyHtml: '<p><img src="/api/attachments/700099/chart.png" /></p>',
-      });
-      await writeStoreA('700099', 'chart.png', 'chart-bytes');
 
-      const rowHolder = await getPool().connect();
-      const waiter = await getPool().connect();
-      await rowHolder.query('BEGIN');
-      await rowHolder.query('SELECT id FROM pages WHERE id = $1 FOR UPDATE', [id]);
-      const stagedPath = path.join(attachmentsRoot, 'local', String(id), 'chart.png');
-      const stagedSignal = Promise.withResolvers<void>();
-      const realWriteFile = fs.writeFile.bind(fs);
-      const writeSpy = vi.spyOn(fs, 'writeFile').mockImplementation(async (target, data, options) => {
-        await realWriteFile(target, data, options);
-        if (path.resolve(String(target)) === path.resolve(stagedPath)) stagedSignal.resolve();
-      });
-      let response: { statusCode: number } | undefined;
-      let acquired = false;
-      try {
-        const pending = toLocal(id, '700099');
-        await stagedSignal.promise;
-        const blockerPid = await rowHolder
-          .query<{ pid: number }>('SELECT pg_backend_pid() AS pid')
-          .then((result) => result.rows[0]!.pid);
-        expect(await waitForDatabaseBlocker(blockerPid)).toBe(true);
-
-        const lock = await waiter.query<{ acquired: boolean }>(
-          'SELECT pg_try_advisory_lock($1) AS acquired',
-          [ATTACHMENT_SNAPSHOT_LOCK_ID],
-        );
-        acquired = lock.rows[0]!.acquired;
-        if (acquired) {
-          await waiter.query('SELECT pg_advisory_unlock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
-        }
-
-        await rowHolder.query('COMMIT');
-        response = await pending;
-      } finally {
-        writeSpy.mockRestore();
-        await rowHolder.query('ROLLBACK').catch(() => undefined);
-        rowHolder.release();
-        waiter.release();
-      }
-
-      expect(response?.statusCode).toBe(200);
-      expect(acquired).toBe(false);
-      expect((await getRow(id)).source).toBe('standalone');
-    });
-
-    it('does not make a second pool checkout for identifier prechecks while holding the barrier', async () => {
+    it('finishes relocation with only one pool connection available', async () => {
       const id = await createPage({
         title: 'Saturated pool',
         source: 'confluence',
         confluenceId: '700100',
         spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700100/chart.png" /></p>',
       });
+      await writeStoreA('700100', 'chart.png', 'chart-bytes');
 
       const pool = getPool();
-      const originalConnect = pool.connect.bind(pool);
-      const lockAcquired = Promise.withResolvers<void>();
-      const continueAfterSaturation = Promise.withResolvers<void>();
       const holders: PoolClient[] = [];
-      let lockActive = false;
-      let poolCheckoutsWhileLocked = 0;
+      while (holders.length < pool.options.max - 1) {
+        holders.push(await pool.connect());
+      }
 
-      const connectSpy = vi.spyOn(pool, 'connect').mockImplementation(
-        ((callback?: PoolConnectCallback) => {
-          if (callback) {
-            if (lockActive) poolCheckoutsWhileLocked += 1;
-            return originalConnect(callback);
-          }
-          return originalConnect().then((client) => {
-            const originalQuery = client.query;
-            const originalRelease = client.release;
-            const query = originalQuery.bind(client);
-            const release = originalRelease.bind(client);
-            client.query = (async (text: string, values?: unknown[]) => {
-              const result = await query(text, values);
-              if (text === 'SELECT pg_advisory_lock_shared($1)') {
-                lockActive = true;
-                lockAcquired.resolve();
-                await continueAfterSaturation.promise;
-              } else if (text === 'SELECT pg_advisory_unlock_shared($1)') {
-                lockActive = false;
-              }
-              return result;
-            }) as unknown as typeof client.query;
-            client.release = (error?: Error | boolean) => {
-              client.query = originalQuery;
-              client.release = originalRelease;
-              release(error);
-            };
-            return client;
-          });
-        }) as typeof pool.connect,
-      );
-
-      const pending = toLocal(id, '700100');
       let settled = false;
       let outcome: 'completed' | 'second-checkout';
       let response: { statusCode: number } | undefined;
+      const pending = toLocal(id, '700100');
       try {
-        await lockAcquired.promise;
-        while (pool.idleCount > 0 || pool.totalCount < pool.options.max) {
-          holders.push(await originalConnect());
-        }
-        expect(pool.idleCount).toBe(0);
-        expect(pool.totalCount).toBe(pool.options.max);
-
-        continueAfterSaturation.resolve();
         const completion = pending.then((result) => {
           settled = true;
           response = result;
@@ -942,14 +1733,11 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         outcome = await Promise.race([completion, secondCheckout]);
       } finally {
         settled = true;
-        continueAfterSaturation.resolve();
         for (const holder of holders) holder.release();
         response ??= await pending;
-        connectSpy.mockRestore();
       }
 
       expect(outcome).toBe('completed');
-      expect(poolCheckoutsWhileLocked).toBe(0);
       expect(response?.statusCode).toBe(200);
       expect((await getRow(id)).source).toBe('standalone');
     });
@@ -1083,6 +1871,161 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect(await storeBFiles(parent)).toEqual([]);
       // The originals are untouched — this path must never cost the user data.
       expect(await storeAFiles('700007')).toEqual(['pic.png']);
+      expect(await latestRelocateIntent(parent)).toMatchObject({
+        status: 'completed',
+        effect_started_at: expect.any(String),
+        effect_finished_at: expect.any(String),
+        settled_at: expect.any(String),
+      });
+    });
+
+    it('keeps the local safe outcome and a pending intent when remote deletion cannot be reconciled', async () => {
+      const id = await createPage({
+        title: 'Unknown remote outcome',
+        source: 'confluence',
+        confluenceId: '700060',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700060/pic.png" /></p>',
+      });
+      await writeStoreA('700060', 'pic.png', 'bytes');
+      h.client.deletePage.mockRejectedValue(new ConfluenceError('gateway timeout', 504));
+      h.client.getPage.mockRejectedValue(new ConfluenceError('service unavailable', 503));
+
+      const res = await toLocal(id, '700060');
+      expect(res.statusCode).toBe(504);
+
+      const row = await getRow(id);
+      expect(row.source).toBe('standalone');
+      expect(row.confluence_id).toBeNull();
+      expect(row.space_key).toBe('LOCAL');
+      expect(row.body_html).toContain(`/api/local-attachments/${id}/pic.png`);
+      expect(await storeBFiles(id)).toEqual(['pic.png']);
+      expect(await storeAFiles('700060')).toEqual(['pic.png']);
+
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'pending',
+        effect_started_at: expect.any(String),
+        effect_finished_at: null,
+        settled_at: null,
+      });
+    });
+
+    it('recovers a crash after local cutover but before delete without inventing remote dispatch', async () => {
+      const id = await createPage({
+        title: 'Crash before delete',
+        source: 'confluence',
+        confluenceId: '700061',
+        spaceKey: 'CONF',
+        bodyHtml: '<p><img src="/api/attachments/700061/crash.png" /></p>',
+        bodyStorage: '<p>remote crash body</p>',
+      });
+      await writeStoreA('700061', 'crash.png', 'crash-bytes');
+      const intentId = await seedInterruptedLocalCutover(id, '700061', userId);
+      expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+        space_key: 'LOCAL',
+      });
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        id: intentId,
+        remote_effect_started_at: null,
+        remote_effects_completed_at: null,
+      });
+
+      h.client.getPage.mockResolvedValue({
+        id: '700061',
+        title: 'Crash before delete',
+        status: 'current',
+        type: 'page',
+        version: { number: 1, when: '' },
+        body: { storage: { value: '<p>remote crash body</p>' } },
+      });
+      h.client.getPageAttachments.mockResolvedValue({
+        results: [{
+          id: 'remote-crash-attachment',
+          title: 'crash.png',
+          mediaType: 'image/png',
+          extensions: { fileSize: 11 },
+          version: { number: 1 },
+          _links: { download: '/download/attachments/700061/crash.png' },
+        }],
+        start: 0,
+        limit: 100,
+        size: 1,
+      });
+      h.client.downloadAttachment.mockResolvedValue(Buffer.from('crash-bytes'));
+
+      await expect(reconcilePageWriteIntent(intentId, {
+        actorId: userId,
+        reason: 'Restore exact admitted state after crash before remote deletion dispatch',
+      })).resolves.toEqual({ intentId, status: 'reconciled_not_applied' });
+
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(await getRow(id)).toMatchObject({
+        source: 'confluence',
+        confluence_id: '700061',
+        space_key: 'CONF',
+        body_html: '<p><img src="/api/attachments/700061/crash.png" /></p>',
+        body_storage: '<p>remote crash body</p>',
+      });
+      expect(await storeBFiles(id)).toEqual([]);
+      expect(await storeAFiles('700061')).toEqual(['crash.png']);
+      expect((await query(
+        'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+        [intentId],
+      )).rowCount).toBe(0);
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'reconciled_not_applied',
+        remote_effect_started_at: null,
+        settled_at: expect.any(String),
+      });
+    });
+
+    it('retains a terminal delete intent when the provider page is live again', async () => {
+      const id = await createPage({
+        title: 'Restored upstream',
+        source: 'confluence',
+        confluenceId: '700062',
+        spaceKey: 'CONF',
+        bodyStorage: '<p>restored upstream body</p>',
+      });
+      const intentId = await seedInterruptedLocalCutover(id, '700062', userId);
+      await query(
+        `UPDATE page_write_intents
+            SET remote_effect_started_at = NOW(),
+                remote_effects_completed_at = NOW(),
+                remote_terminal_result = '{"outcome":"gone","confluenceId":"700062"}'::jsonb
+          WHERE id = $1`,
+        [intentId],
+      );
+      h.client.getPage.mockResolvedValue({
+        id: '700062',
+        title: 'Restored upstream',
+        status: 'current',
+        type: 'page',
+        version: { number: 1, when: '' },
+        body: { storage: { value: '<p>restored upstream body</p>' } },
+      });
+
+      await expect(reconcilePageWriteIntent(intentId, {
+        actorId: userId,
+        reason: 'A restored provider page must keep the relocation pending',
+      })).rejects.toMatchObject({ reason: 'intent_terminal_evidence_mismatch' });
+
+      expect(await getRow(id)).toMatchObject({
+        source: 'standalone',
+        confluence_id: null,
+        space_key: 'LOCAL',
+      });
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'pending',
+        remote_effects_completed_at: expect.any(String),
+        settled_at: null,
+      });
+      expect((await query(
+        'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+        [intentId],
+      )).rowCount).toBe(1);
     });
 
     // An ambiguous identifier does NOT reach the staging cleanup, and it is
@@ -1185,7 +2128,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       userId = await createUser('proper_editor', 'user');
       userRole = 'user';
       await grantRole(userId, 'CONF', 'relocator', ['read', 'pages:relocate']);
-      h.client.createPage.mockResolvedValue(createdPage('900010'));
+      resolveCreatedPage('900010');
 
       const res = await toConfluence(id);
 
@@ -1193,9 +2136,239 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       expect((await getRow(id)).confluence_id).toBe('900010');
     });
 
+    it('rechecks actor authority after reservation waits and starts no upstream effect', async () => {
+      const id = await createPage({
+        title: 'Revoked while waiting',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      resolveCreatedPage('900011');
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await lockPageLifecycle(holder, [id]);
+        const backendPid = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+        const pending = toConfluence(id);
+        expect(await waitForDatabaseBlocker(backendPid.rows[0]!.pid)).toBe(true);
+        await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+        await holder.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(403);
+        expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(await latestRelocateIntent(id)).toMatchObject({
+          status: 'cancelled',
+          effect_started_at: null,
+          effect_finished_at: null,
+          settled_at: expect.any(String),
+        });
+        expect((await getRow(id)).source).toBe('standalone');
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('rechecks integration mode after preparation waits and creates nothing upstream', async () => {
+      const id = await createPage({
+        title: 'Disabled during preparation',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      resolveCreatedPage('900013');
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+        const backendPid = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+        const pending = toConfluence(id);
+        expect(await waitForDatabaseBlocker(backendPid.rows[0]!.pid)).toBe(true);
+        await query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+        await holder.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(409);
+        expect(h.client.createPage).not.toHaveBeenCalled();
+        expect(h.client.updateAttachment).not.toHaveBeenCalled();
+        expect(await getRow(id)).toMatchObject({
+          source: 'standalone',
+          confluence_id: null,
+          space_key: 'LOCAL',
+        });
+        const intent = await latestRelocateIntent(id);
+        expect(intent).toMatchObject({
+          status: 'cancelled',
+          effect_started_at: null,
+          remote_effect_started_at: null,
+          settled_at: expect.any(String),
+        });
+        expect((await query(
+          'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+          [intent!.id],
+        )).rowCount).toBe(0);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('uses credentials re-resolved after preparation instead of the route snapshot', async () => {
+      const id = await createPage({
+        title: 'Rotated during preparation',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      resolveCreatedPage('900014');
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
+        const backendPid = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+        const pending = toConfluence(id);
+        expect(await waitForDatabaseBlocker(backendPid.rows[0]!.pid)).toBe(true);
+        await query(
+          'UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1',
+          [userId, encryptPat('rotated-relocate-pat')],
+        );
+        await holder.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(200);
+        expect(h.createAuthorization).toHaveBeenCalledWith('Bearer rotated-relocate-pat');
+        expect(await getRow(id)).toMatchObject({
+          source: 'confluence',
+          confluence_id: '900014',
+        });
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('keeps a local publication recoverable when integration mode changes before delete', async () => {
+      const id = await createPage({
+        title: 'Disabled before delete',
+        source: 'confluence',
+        confluenceId: '700063',
+        spaceKey: 'CONF',
+        bodyStorage: '<p>provider body</p>',
+      });
+      const holder = await getPool().connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+        const backendPid = await holder.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+        const pending = toLocal(id, '700063');
+        expect(await waitForDatabaseBlocker(backendPid.rows[0]!.pid)).toBe(true);
+        await query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+        await holder.query('COMMIT');
+
+        const response = await pending;
+        expect(response.statusCode).toBe(409);
+        expect(h.client.deletePage).not.toHaveBeenCalled();
+        expect(await getRow(id)).toMatchObject({
+          source: 'standalone',
+          confluence_id: null,
+          space_key: 'LOCAL',
+        });
+        const intent = await latestRelocateIntent(id);
+        expect(intent).toMatchObject({
+          status: 'pending',
+          effect_started_at: expect.any(String),
+          effect_finished_at: expect.any(String),
+          remote_effect_started_at: null,
+          remote_effects_completed_at: null,
+          settled_at: null,
+        });
+        expect((await query(
+          'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+          [intent!.id],
+        )).rowCount).toBe(1);
+
+        await query(
+          'UPDATE user_settings SET confluence_enabled = TRUE WHERE user_id = $1',
+          [userId],
+        );
+        h.client.getPage.mockResolvedValue(
+          createdPage('700063', '<p>provider body</p>', 'Disabled before delete'),
+        );
+        await withFencedIntentRuntime(intent!, () =>
+          expect(reconcilePageWriteIntent(intent!.id, {
+            actorId: userId,
+            reason: 'Restore the admitted provider state without replaying an undispatched delete',
+          })).resolves.toEqual({ intentId: intent!.id, status: 'reconciled_not_applied' }),
+        );
+
+        expect(h.client.deletePage).not.toHaveBeenCalled();
+        expect(await getRow(id)).toMatchObject({
+          source: 'confluence',
+          confluence_id: '700063',
+          space_key: 'CONF',
+        });
+        expect((await query(
+          'SELECT 1 FROM page_relocation_preparations WHERE intent_id = $1',
+          [intent!.id],
+        )).rowCount).toBe(0);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('retains terminal remote creation when authority is revoked before local publication', async () => {
+      const id = await createPage({
+        title: 'Revoked during upstream create',
+        source: 'standalone',
+        spaceKey: 'LOCAL',
+        ownerId: userId,
+      });
+      let notifyCreateStarted!: () => void;
+      let releaseCreate!: () => void;
+      const createStarted = new Promise<void>((resolve) => {
+        notifyCreateStarted = resolve;
+      });
+      const createRelease = new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) => {
+        notifyCreateStarted();
+        await createRelease;
+        return createdPage('900012', storage, title);
+      });
+
+      const pending = toConfluence(id);
+      await createStarted;
+      await query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [userId]);
+      releaseCreate();
+
+      const response = await pending;
+      expect(response.statusCode).toBe(403);
+      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect((await getRow(id)).source).toBe('standalone');
+      expect(await latestRelocateIntent(id)).toMatchObject({
+        status: 'pending',
+        remote_effect_started_at: expect.any(String),
+        remote_effects_completed_at: expect.any(String),
+        settled_at: null,
+      });
+    });
+
     it('409s while a Confluence sync is in flight', async () => {
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      h.syncRunning.value = true;
+      await redis.set('sync:worker:lock', 'relocate-test-lock');
 
       const res = await toConfluence(id);
 
@@ -1210,14 +2383,17 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // Confluence hands back an id that is already some other page's numeric
       // id — children stored under it would resolve to two different parents.
       const other = await createPage({ title: 'Other', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      h.client.createPage.mockResolvedValue(createdPage(String(other)));
+      resolveCreatedPage(String(other));
 
       const res = await toConfluence(id);
 
       expect(res.statusCode).toBe(409);
-      expect(res.json().error).toContain('ambiguous');
-      expect(h.client.deletePage).toHaveBeenCalledWith(String(other));
+      expect(h.client.deletePage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('standalone');
+      const intent = await latestRelocateIntent(id);
+      expect(intent?.status).toBe('pending');
+      expect(await relocationProgress(intent!.id)).toMatchObject({ created_confluence_id: String(other) });
+      expect(await getRow(other)).toMatchObject({ source: 'standalone', confluence_id: null });
     });
 
     it('serializes on the same advisory lock as PUT /pages/:id/move', async () => {
@@ -1225,7 +2401,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       // parent_id in the flavour the parent has *now*, and relocate changes
       // exactly that flavour. Both take PAGE_MOVE_ADVISORY_LOCK_ID.
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      h.client.createPage.mockResolvedValue(createdPage('900020'));
+      resolveCreatedPage('900020');
 
       const holder = await getPool().connect();
       try {
@@ -1421,8 +2597,8 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
         id, 'PLACEHOLDER', String(id),
       ]);
       await writeStoreB(id, synthetic, 'chart-bytes', userId);
-      h.client.createPage.mockImplementation(async (_s: string, _t: string, storage: string) =>
-        createdPage('900030', storage),
+      h.client.createPage.mockImplementation(async (_space: string, title: string, storage: string) =>
+        createdPage('900030', storage, title),
       );
 
       const res = await toConfluence(id);
@@ -1511,14 +2687,20 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
       await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [trashed]);
 
       const id = await createPage({ title: 'A', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
-      h.client.createPage.mockResolvedValue(createdPage('900040'));
+      resolveCreatedPage('900040');
 
       const res = await toConfluence(id);
 
       expect(res.statusCode).toBe(409);
-      expect(res.json().error).toContain('ambiguous');
-      expect(h.client.deletePage).toHaveBeenCalledWith('900040');
+      expect(h.client.deletePage).not.toHaveBeenCalled();
       expect((await getRow(id)).source).toBe('standalone');
+      const intent = await latestRelocateIntent(id);
+      expect(intent?.status).toBe('pending');
+      expect(await relocationProgress(intent!.id)).toMatchObject({ created_confluence_id: '900040' });
+      expect((await query(
+        'SELECT confluence_id, deleted_at IS NOT NULL AS trashed FROM pages WHERE id = $1',
+        [trashed],
+      )).rows).toEqual([{ confluence_id: '900040', trashed: true }]);
     });
 
     it('clears mirrored Confluence restrictions on a move to local (R4)', async () => {
@@ -1613,7 +2795,7 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
     it('raises it on local → Confluence', async () => {
       const id = await createPage({ title: 'Moving up', source: 'standalone', spaceKey: 'LOCAL', ownerId: userId });
       await query('UPDATE pages SET image_analysis_dirty = FALSE WHERE id = $1', [id]);
-      h.client.createPage.mockResolvedValue(createdPage('900910'));
+      h.client.createPage.mockResolvedValue(createdPage('900910', '<p>body</p>', 'Moving up'));
 
       expect((await toConfluence(id)).statusCode).toBe(200);
 
@@ -1655,14 +2837,13 @@ describe.skipIf(!dbAvailable)('POST /api/pages/:id/relocate (#1123)', () => {
   // upstream), so it is the one page operation that refuses while the
   // integration is off instead of falling back to a local write. Committing
   // only the local half would leave a live Confluence page for the next sync to
-  // re-import as a duplicate. Real `isConfluenceEnabled`, real user_settings
-  // row — only the client factory is stubbed in this suite.
+  // re-import as a duplicate. `isConfluenceEnabled` and user settings are
+  // real; the request is refused before the outbound HTTP boundary.
   describe('Confluence integration off (#1623)', () => {
     beforeEach(async () => {
-      await query(
-        'INSERT INTO user_settings (user_id, confluence_enabled) VALUES ($1, FALSE)',
-        [userId],
-      );
+      await query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [
+        userId,
+      ]);
     });
 
     it('refuses a local → Confluence move by naming the integration, changing nothing', async () => {

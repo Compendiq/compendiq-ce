@@ -1,376 +1,506 @@
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
-import { pagesIconRoutes } from './pages-icon.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import {
+  freezePage,
+  previewPageBaseline,
+  setPageBaselineCreationEnabled,
+} from '../../core/services/page-baseline-service.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  REAL_JPEG_40x30_BASE64,
+  REAL_PNG_40x30_BASE64,
+} from '../../core/services/test-image-fixtures.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-const mockInvalidate = vi.fn().mockResolvedValue(undefined);
-const mockInvalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    invalidate = mockInvalidate;
-    invalidateAcrossUsers = mockInvalidateAcrossUsers;
-  },
-}));
+const PNG_BYTES = Buffer.from(REAL_PNG_40x30_BASE64, 'base64');
+const JPEG_BYTES = Buffer.from(REAL_JPEG_40x30_BASE64, 'base64');
+const PNG_SHA = createHash('sha256').update(PNG_BYTES).digest('hex');
+const JPEG_SHA = createHash('sha256').update(JPEG_BYTES).digest('hex');
+const PNG_DATA_URI = `data:image/png;base64,${REAL_PNG_40x30_BASE64}`;
+const JPEG_DATA_URI = `data:image/jpeg;base64,${REAL_JPEG_40x30_BASE64}`;
 
-const mockLogAuditEvent = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+interface StoredIconRow {
+  icon_kind: string | null;
+  icon_value: string | null;
+  icon_color: string | null;
+  icon_filled: boolean | null;
+  content_revision: string;
+}
 
-const mockGetUserAccessibleSpaces = vi.fn().mockResolvedValue(['DEV']);
-const mockUserCanAccessPage = vi.fn().mockResolvedValue(true);
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-  userCanAccessPage: (...args: unknown[]) => mockUserCanAccessPage(...args),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+let userId: string;
 
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-}));
+function iconDirectory(pageId: number): string {
+  return join(attachmentsDir, 'page-icons', String(pageId));
+}
 
-const mockLockedQuery = vi.fn();
-const lockedClient = { query: mockLockedQuery };
-const mockWithLocalAttachmentMutationLock = vi.fn();
-vi.mock('../../core/services/attachment-snapshot-lock.js', () => ({
-  withLocalAttachmentMutationLock: (
-    operation: (client: typeof lockedClient) => Promise<unknown>,
-  ) => mockWithLocalAttachmentMutationLock(operation),
-}));
+function iconPath(pageId: number, sha: string, extension: 'png' | 'jpg' | 'webp'): string {
+  return join(iconDirectory(pageId), `${sha}.${extension}`);
+}
 
-const mockWrite = vi.fn();
-const mockDelete = vi.fn().mockResolvedValue(undefined);
-const mockRead = vi.fn();
-vi.mock('../../core/services/page-icon-store.js', () => ({
-  writePageIconImage: (...args: unknown[]) => mockWrite(...args),
-  deletePageIconImage: (...args: unknown[]) => mockDelete(...args),
-  readPageIconImage: (...args: unknown[]) => mockRead(...args),
-  MAX_ICON_BYTES: 512 * 1024,
-  PageIconStoreError: class PageIconStoreError extends Error {
-    constructor(
-      public readonly code: string,
-      message: string,
-    ) {
-      super(message);
-      this.name = 'PageIconStoreError';
-    }
-  },
-}));
-
-const pageRow = {
-  id: 42,
-  source: 'standalone',
-  created_by_user_id: 'test-user-id',
-  visibility: 'shared',
-  space_key: 'NOTES',
-  deleted_at: null,
-  icon_kind: null,
-  icon_value: null,
-  icon_color: null,
-  icon_filled: null,
-};
-
-describe('page icon mutation routes', () => {
-  let app: ReturnType<typeof Fastify>;
-
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({
-        error: error.message,
-        statusCode: error.statusCode ?? 500,
-      });
-    });
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'test-user-id';
-    });
-    app.decorateRequest('userId', '');
-    app.decorate('redis', {});
-    await app.register(pagesIconRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockInvalidate.mockReset();
-    mockInvalidate.mockResolvedValue(undefined);
-    mockInvalidateAcrossUsers.mockReset();
-    mockInvalidateAcrossUsers.mockResolvedValue(undefined);
-    mockLogAuditEvent.mockReset();
-    mockLogAuditEvent.mockResolvedValue(undefined);
-    mockWrite.mockReset();
-    mockDelete.mockReset();
-    mockDelete.mockResolvedValue(undefined);
-    mockRead.mockReset();
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('SELECT id, source')) {
-        return { rows: [pageRow] };
-      }
-      return { rows: [], rowCount: 1 };
-    });
-    mockLockedQuery.mockReset();
-    mockLockedQuery.mockResolvedValue({ rows: [], rowCount: 1 });
-    mockWithLocalAttachmentMutationLock.mockReset();
-    mockWithLocalAttachmentMutationLock.mockImplementation(
-      (operation: (client: typeof lockedClient) => Promise<unknown>) => operation(lockedClient),
-    );
-  });
-
-  it('sets an emoji mark and invalidates the pages cache', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'emoji', value: '🚀' } },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ icon: { kind: 'emoji', value: '🚀' } });
-    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
-    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
-    expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5 WHERE id = $1',
-      [42, 'emoji', '🚀', null, false],
-    );
-    expect(mockInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-  });
-
-  it('clears the mark', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: null },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ icon: null });
-    expect(mockDelete).toHaveBeenCalledWith(42, lockedClient);
-  });
-
-  it('writes an image and its pages row through the same barrier-owning client', async () => {
-    mockWrite.mockResolvedValueOnce({ sha: 'a'.repeat(64), format: 'png' });
-
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/pages/42/icon-image',
-      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockWithLocalAttachmentMutationLock).toHaveBeenCalledOnce();
-    expect(mockWrite).toHaveBeenCalledWith(42, Buffer.from('png'), lockedClient);
-    expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5 WHERE id = $1',
-      [42, 'image', 'a'.repeat(64), null, false],
-    );
-  });
-
-  it.each([
-    {
-      route: 'upload/replace',
-      method: 'POST',
-      url: '/api/pages/42/icon-image',
-      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
-      expected: { icon: { kind: 'image', value: 'b'.repeat(64) } },
-    },
-    {
-      route: 'delete',
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: null },
-      expected: { icon: null },
-    },
-  ] as const)(
-    'releases the saturated one-client pool before auditing an icon $route',
-    async ({ method, url, payload, expected }) => {
-      const events: string[] = [];
-      let checkedOutClients = 0;
-
-      mockWithLocalAttachmentMutationLock.mockImplementationOnce(
-        async (operation: (client: typeof lockedClient) => Promise<unknown>) => {
-          checkedOutClients += 1;
-          events.push('barrier:acquired');
-          try {
-            return await operation(lockedClient);
-          } finally {
-            checkedOutClients -= 1;
-            events.push('barrier:released');
-          }
-        },
-      );
-      mockWrite.mockImplementationOnce(async () => {
-        events.push('filesystem:write');
-        return { sha: 'b'.repeat(64), format: 'png' };
-      });
-      mockDelete.mockImplementationOnce(async () => {
-        events.push('filesystem:delete');
-      });
-      mockLockedQuery.mockImplementationOnce(async () => {
-        events.push('pages:update');
-        return { rows: [], rowCount: 1 };
-      });
-      mockInvalidateAcrossUsers.mockImplementationOnce(async () => {
-        events.push('cache:invalidate');
-      });
-      mockLogAuditEvent.mockImplementationOnce(async () => {
-        events.push('audit:checkout');
-        if (checkedOutClients === 1) {
-          // Model logAuditEvent's best-effort handling when PG_POOL_MAX=1:
-          // its global query cannot check out a second client.
-          events.push('audit:dropped-pool-saturated');
-          return;
-        }
-        checkedOutClients += 1;
-        events.push('audit:query');
-        checkedOutClients -= 1;
-        events.push('audit:released');
-      });
-
-      const response = await app.inject({ method, url, payload });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual(expected);
-      expect(checkedOutClients).toBe(0);
-      expect(events).toEqual([
-        'barrier:acquired',
-        method === 'POST' ? 'filesystem:write' : 'filesystem:delete',
-        'pages:update',
-        'barrier:released',
-        'cache:invalidate',
-        'audit:checkout',
-        'audit:query',
-        'audit:released',
-      ]);
-    },
+async function storedIcon(pageId: number): Promise<StoredIconRow> {
+  const result = await query<StoredIconRow>(
+    `SELECT icon_kind, icon_value, icon_color, icon_filled, content_revision::text
+       FROM pages WHERE id = $1`,
+    [pageId],
   );
+  return result.rows[0]!;
+}
 
-  it.each([
-    {
-      route: 'upload/replace',
-      method: 'POST',
-      url: '/api/pages/42/icon-image',
-      payload: { dataUri: `data:image/png;base64,${Buffer.from('png').toString('base64')}` },
-    },
-    {
-      route: 'delete',
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: null },
-    },
-  ] as const)('does not audit a failed icon $route mutation', async ({ method, url, payload }) => {
-    const failure = new Error('filesystem mutation failed');
-    if (method === 'POST') {
-      mockWrite.mockRejectedValueOnce(failure);
-    } else {
-      mockDelete.mockRejectedValueOnce(failure);
-    }
+async function expectMissing(path: string): Promise<void> {
+  await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+}
 
-    const response = await app.inject({ method, url, payload });
+async function seedPage(
+  visibility: 'private' | 'shared' = 'private',
+  ownerId = userId,
+): Promise<number> {
+  const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
+  const spaceKey = `ICON_${suffix}`;
+  await insertLocalSpace(spaceKey, ownerId);
+  return insertStandalonePage(`Icon page ${suffix}`, visibility, ownerId, spaceKey);
+}
 
-    expect(response.statusCode).toBe(500);
-    expect(mockLockedQuery).not.toHaveBeenCalled();
-    expect(mockLogAuditEvent).not.toHaveBeenCalled();
+async function uploadIcon(pageId: number, dataUri = PNG_DATA_URI) {
+  return app.inject({
+    method: 'POST',
+    url: `/api/pages/${pageId}/icon-image`,
+    payload: { dataUri },
   });
+}
 
-  it('accepts a catalogue brand slug', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'brand', value: 'docker' } },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ icon: { kind: 'brand', value: 'docker' } });
+async function freezeCurrentPage(pageId: number, actorId = userId): Promise<string> {
+  const preview = await previewPageBaseline(pageId, actorId);
+  const state = await freezePage({
+    pageId,
+    actorId,
+    reason: 'Approved icon evidence',
+    expectedContentRevision: preview.contentRevision,
+    expectedManifestDigest: preview.manifestDigest,
+    reportedSignatories: [],
   });
+  return state.baselineId!;
+}
 
-  it('persists a lucide mark with a text-palette colour', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'lucide', value: 'rocket', color: '#3b82f6' } },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
-      icon: { kind: 'lucide', value: 'rocket', color: '#3b82f6' },
-    });
-    expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5 WHERE id = $1',
-      [42, 'lucide', 'rocket', '#3b82f6', false],
-    );
+async function expectCompletedEffect(pageId: number, kind: string): Promise<void> {
+  const result = await query<{
+    status: string;
+    effect_started_at: Date | null;
+    effect_finished_at: Date | null;
+    settled_at: Date | null;
+  }>(
+    `SELECT status, effect_started_at, effect_finished_at, settled_at
+       FROM page_write_intents
+      WHERE kind = $1 AND $2 = ANY(page_ids)
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [kind, pageId],
+  );
+  expect(result.rows[0]).toMatchObject({
+    status: 'completed',
+    effect_started_at: expect.any(Date),
+    effect_finished_at: expect.any(Date),
+    settled_at: expect.any(Date),
   });
+}
 
-  it('persists a lucide mark with filled option and indigo colour', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'lucide', value: 'camera', color: '#6366f1', filled: true } },
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'page icon routes — real PostgreSQL, Redis, admission, authority and files',
+  () => {
+    beforeAll(async () => {
+      await setupTestDb();
+      await truncateAllTables();
+      originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+      attachmentsDir = await mkdtemp(join(tmpdir(), 'page-icons-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        const { pagesIconRoutes } = await import('./pages-icon.js');
+        await instance.register(pagesIconRoutes, { prefix: '/api' });
+      });
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
-      icon: { kind: 'lucide', value: 'camera', color: '#6366f1', filled: true },
-    });
-    expect(mockLockedQuery).toHaveBeenCalledWith(
-      'UPDATE pages SET icon_kind = $2, icon_value = $3, icon_color = $4, icon_filled = $5 WHERE id = $1',
-      [42, 'lucide', 'camera', '#6366f1', true],
-    );
-  });
 
-  it('rejects an unknown icon colour', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'lucide', value: 'rocket', color: '#ffffff' } },
+    afterAll(async () => {
+      await app.close();
+      setPageBaselineReadinessProvider(null);
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
     });
-    expect(response.statusCode).toBe(400);
-  });
 
-  it('rejects an unknown lucide id', async () => {
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'lucide', value: 'globe' } },
+    beforeEach(async () => {
+      await truncateAllTables();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      await mkdir(attachmentsDir, { recursive: true });
+      setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+      const adminId = await insertUser(`icon-admin-${randomUUID()}`);
+      await query("UPDATE users SET role = 'admin' WHERE id = $1", [adminId]);
+      await setPageBaselineCreationEnabled(adminId, true);
+      userId = await insertUser(`icon-user-${randomUUID()}`);
     });
-    expect(response.statusCode).toBe(400);
-  });
 
-  it('returns 404 when the page is missing', async () => {
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/99/icon',
-      payload: { icon: { kind: 'emoji', value: '📚' } },
-    });
-    expect(response.statusCode).toBe(404);
-  });
+    it('sets an emoji and invalidates every consumer page cache for a shared page', async () => {
+      const pageId = await seedPage('shared');
+      const observerId = randomUUID();
+      const callerPageKey = `kb:${userId}:pages:list`;
+      const observerPageKey = `kb:${observerId}:pages:tree`;
+      const unrelatedKey = `kb:${userId}:spaces:list`;
+      await redis.mSet({
+        [callerPageKey]: 'caller-pages',
+        [observerPageKey]: 'observer-pages',
+        [unrelatedKey]: 'caller-spaces',
+      });
+      const beforeRevision = BigInt((await storedIcon(pageId)).content_revision);
 
-  it('forbids editing someone else’s private page', async () => {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('SELECT id, source')) {
-        return {
-          rows: [{ ...pageRow, visibility: 'private', created_by_user_id: 'other-user' }],
-        };
-      }
-      return { rows: [], rowCount: 1 };
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '🚀' } },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ icon: { kind: 'emoji', value: '🚀' } });
+      expect(await storedIcon(pageId)).toEqual({
+        icon_kind: 'emoji',
+        icon_value: '🚀',
+        icon_color: null,
+        icon_filled: false,
+        content_revision: expect.any(String),
+      });
+      expect(BigInt((await storedIcon(pageId)).content_revision)).toBeGreaterThan(beforeRevision);
+      expect(await redis.mGet([callerPageKey, observerPageKey, unrelatedKey])).toEqual([
+        null,
+        null,
+        'caller-spaces',
+      ]);
     });
-    const response = await app.inject({
-      method: 'PATCH',
-      url: '/api/pages/42/icon',
-      payload: { icon: { kind: 'emoji', value: '📚' } },
+
+    it('clears an existing mark in the response and database', async () => {
+      const pageId = await seedPage();
+      const set = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '📚' } },
+      });
+      expect(set.statusCode, set.body).toBe(200);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: null },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ icon: null });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: null,
+        icon_value: null,
+        icon_color: null,
+        icon_filled: false,
+      });
     });
-    expect(response.statusCode).toBe(403);
-  });
-});
+
+    it('stores genuine uploaded bytes, commits metadata, and serves the current icon', async () => {
+      const pageId = await seedPage();
+
+      const response = await uploadIcon(pageId);
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ icon: { kind: 'image', value: PNG_SHA } });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'image',
+        icon_value: PNG_SHA,
+        icon_color: null,
+        icon_filled: false,
+      });
+      expect(await readFile(iconPath(pageId, PNG_SHA, 'png'))).toEqual(PNG_BYTES);
+      await expectCompletedEffect(pageId, 'icon.image.put');
+
+      const read = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${pageId}/icon-image?v=${PNG_SHA}`,
+      });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.headers['content-type']).toBe('image/png');
+      expect(read.headers['cache-control']).toBe('private, max-age=86400');
+      expect(read.rawPayload).toEqual(PNG_BYTES);
+    });
+
+    it('replaces an uploaded icon atomically and no longer serves the prior bytes', async () => {
+      const pageId = await seedPage();
+      const first = await uploadIcon(pageId);
+      expect(first.statusCode, first.body).toBe(200);
+
+      const replacement = await uploadIcon(pageId, JPEG_DATA_URI);
+
+      expect(replacement.statusCode, replacement.body).toBe(200);
+      expect(replacement.json()).toEqual({ icon: { kind: 'image', value: JPEG_SHA } });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'image',
+        icon_value: JPEG_SHA,
+      });
+      await expectMissing(iconPath(pageId, PNG_SHA, 'png'));
+      expect(await readFile(iconPath(pageId, JPEG_SHA, 'jpg'))).toEqual(JPEG_BYTES);
+      const priorRead = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${pageId}/icon-image?v=${PNG_SHA}`,
+      });
+      expect(priorRead.statusCode).toBe(404);
+    });
+
+    it('removes uploaded bytes and metadata through a completed durable effect', async () => {
+      const pageId = await seedPage();
+      const uploaded = await uploadIcon(pageId);
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: null },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toEqual({ icon: null });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: null,
+        icon_value: null,
+        icon_color: null,
+        icon_filled: false,
+      });
+      await expectMissing(iconPath(pageId, PNG_SHA, 'png'));
+      await expectCompletedEffect(pageId, 'icon.metadata.patch');
+      const read = await app.inject({ method: 'GET', url: `/api/pages/${pageId}/icon-image` });
+      expect(read.statusCode).toBe(404);
+    });
+
+    it('persists catalogue brand and Lucide options as observable page state', async () => {
+      const pageId = await seedPage();
+      const brand = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'brand', value: 'docker' } },
+      });
+      expect(brand.statusCode, brand.body).toBe(200);
+      expect(brand.json()).toEqual({ icon: { kind: 'brand', value: 'docker' } });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'brand',
+        icon_value: 'docker',
+        icon_color: null,
+        icon_filled: false,
+      });
+
+      const lucide = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'lucide', value: 'camera', color: '#6366f1', filled: true } },
+      });
+      expect(lucide.statusCode, lucide.body).toBe(200);
+      expect(lucide.json()).toEqual({
+        icon: { kind: 'lucide', value: 'camera', color: '#6366f1', filled: true },
+      });
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'lucide',
+        icon_value: 'camera',
+        icon_color: '#6366f1',
+        icon_filled: true,
+      });
+    });
+
+    it.each([
+      ['an unknown icon colour', { kind: 'lucide', value: 'rocket', color: '#ffffff' }],
+      ['an unknown Lucide id', { kind: 'lucide', value: 'globe' }],
+      ['an unsafe emoji value', { kind: 'emoji', value: 'a<script>' }],
+    ])('rejects %s without changing page state', async (_label, icon) => {
+      const pageId = await seedPage();
+      const before = await storedIcon(pageId);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(await storedIcon(pageId)).toEqual(before);
+    });
+
+    it('rejects bytes that are not a supported image without staging or metadata', async () => {
+      const pageId = await seedPage();
+      const response = await uploadIcon(
+        pageId,
+        `data:image/png;base64,${Buffer.from('not a PNG').toString('base64')}`,
+      );
+
+      expect(response.statusCode).toBe(422);
+      expect(await storedIcon(pageId)).toMatchObject({ icon_kind: null, icon_value: null });
+      await expectMissing(iconDirectory(pageId));
+    });
+
+    it('rejects uploaded icon bytes above 512 KiB before staging', async () => {
+      const pageId = await seedPage();
+      const oversized = Buffer.alloc(512 * 1024 + 1, 0x61);
+      const response = await uploadIcon(
+        pageId,
+        `data:image/png;base64,${oversized.toString('base64')}`,
+      );
+
+      expect(response.statusCode).toBe(413);
+      expect(await storedIcon(pageId)).toMatchObject({ icon_kind: null, icon_value: null });
+      await expectMissing(iconDirectory(pageId));
+    });
+
+    it('returns 404 for a missing page without creating an icon namespace', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/api/pages/999999999/icon',
+        payload: { icon: { kind: 'emoji', value: '📚' } },
+      });
+
+      expect(response.statusCode).toBe(404);
+      await expectMissing(iconDirectory(999999999));
+    });
+
+    it('enforces private ownership for mutation and reads through real authority', async () => {
+      const pageId = await seedPage('private');
+      const uploaded = await uploadIcon(pageId);
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+      userId = await insertUser(`icon-reader-${randomUUID()}`);
+
+      const mutation = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '📚' } },
+      });
+      const read = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${pageId}/icon-image?v=${PNG_SHA}`,
+      });
+
+      expect(mutation.statusCode).toBe(403);
+      expect(read.statusCode).toBe(404);
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'image',
+        icon_value: PNG_SHA,
+      });
+      expect(await readFile(iconPath(pageId, PNG_SHA, 'png'))).toEqual(PNG_BYTES);
+    });
+
+    it('retains the existing shared-page edit permission for a non-owner', async () => {
+      const ownerId = await insertUser(`icon-owner-${randomUUID()}`);
+      const pageId = await seedPage('shared', ownerId);
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '📖' } },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'emoji',
+        icon_value: '📖',
+      });
+    });
+
+    it('rejects both icon mutation paths on a frozen page without changing bytes or metadata', async () => {
+      const pageId = await seedPage();
+      const uploaded = await uploadIcon(pageId);
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+      await freezeCurrentPage(pageId);
+      const filesBefore = await readdir(iconDirectory(pageId));
+
+      const metadataMutation = await app.inject({
+        method: 'PATCH',
+        url: `/api/pages/${pageId}/icon`,
+        payload: { icon: { kind: 'emoji', value: '🔒' } },
+      });
+      const imageMutation = await uploadIcon(pageId, JPEG_DATA_URI);
+
+      expect(metadataMutation.statusCode, metadataMutation.body).toBe(423);
+      expect(imageMutation.statusCode, imageMutation.body).toBe(423);
+      expect(await storedIcon(pageId)).toMatchObject({
+        icon_kind: 'image',
+        icon_value: PNG_SHA,
+      });
+      expect(await readdir(iconDirectory(pageId))).toEqual(filesBefore);
+      expect(await readFile(iconPath(pageId, PNG_SHA, 'png'))).toEqual(PNG_BYTES);
+      await expectMissing(iconPath(pageId, JPEG_SHA, 'jpg'));
+    });
+
+    it('serves retained frozen icon bytes after the mutable copy is gone', async () => {
+      const pageId = await seedPage();
+      const uploaded = await uploadIcon(pageId);
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+      const baselineId = await freezeCurrentPage(pageId);
+      await rm(iconPath(pageId, PNG_SHA, 'png'));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${pageId}/icon-image?v=${PNG_SHA}`,
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.headers['content-type']).toBe('image/png');
+      expect(response.headers['content-length']).toBe(String(PNG_BYTES.length));
+      expect(response.rawPayload).toEqual(PNG_BYTES);
+      const retained = await query<{
+        attachments: Array<{ store: string; sha256: string; retainedPath: string }>;
+      }>('SELECT attachments FROM page_baselines WHERE id = $1', [baselineId]);
+      const retainedIcon = retained.rows[0]!.attachments.find(
+        (attachment) => attachment.store === 'icon' && attachment.sha256 === PNG_SHA,
+      );
+      expect(retainedIcon).toBeDefined();
+      expect(
+        await readFile(join(attachmentsDir, ...retainedIcon!.retainedPath.split('/'))),
+      ).toEqual(PNG_BYTES);
+    });
+
+    it('does not fall back to mutable icon bytes when the frozen baseline lacks that identity', async () => {
+      const pageId = await seedPage();
+      const uploaded = await uploadIcon(pageId);
+      expect(uploaded.statusCode, uploaded.body).toBe(200);
+      await freezeCurrentPage(pageId);
+      await writeFile(iconPath(pageId, JPEG_SHA, 'jpg'), JPEG_BYTES);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/pages/${pageId}/icon-image?v=${JPEG_SHA}`,
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(await readFile(iconPath(pageId, JPEG_SHA, 'jpg'))).toEqual(JPEG_BYTES);
+    });
+  },
+);

@@ -116,6 +116,14 @@ export async function truncateAllTables(): Promise<void> {
       LOOP
         EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
       END LOOP;
+      -- Restore mandatory singleton state exactly as a freshly migrated DB has
+      -- it. Ordinary users/content remain empty; creation remains disabled.
+      IF to_regclass('public.page_baseline_feature_state') IS NOT NULL THEN
+        INSERT INTO page_baseline_feature_state (singleton, creation_enabled) VALUES (TRUE, FALSE);
+      END IF;
+      IF to_regclass('public.page_baseline_capacity') IS NOT NULL THEN
+        INSERT INTO page_baseline_capacity (singleton, reserved_bytes) VALUES (TRUE, 0);
+      END IF;
     END $$;
   `;
   // Parallel files on one worker DB are gone, but a leftover collab persist

@@ -1,302 +1,157 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createClient, type RedisClientType } from 'redis';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
 import { pagesCrudRoutes } from './pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertConfluencePage,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = vi.fn().mockResolvedValue(null);
-      set = vi.fn().mockResolvedValue(undefined);
-      invalidate = vi.fn().mockResolvedValue(undefined);
-    },
-  };
-});
+const available = await isDbAvailable() && await isRedisAvailable();
 
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
+async function grantRead(userId: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, is_system, permissions)
+     VALUES ('tree-reader', 'Tree reader', FALSE, ARRAY['read'])
+     ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, userId, role.rows[0]!.id],
+  );
+}
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-describe('GET /api/pages/tree', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!available)('GET /api/pages/tree — real persistence and authority', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
+  let userId: string;
 
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
-        return;
-      }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    }) as RedisClientType;
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+      instance.redis = redis;
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
     });
-
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
-
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    if (redis.isOpen) await redis.quit();
+    await teardownTestDb();
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    userId = await insertUser('tree_reader');
+    await query(
+      `INSERT INTO spaces (space_key, space_name, source, last_synced)
+       VALUES ('DEV', 'DEV', 'confluence', NOW())`,
+    );
+    await insertLocalSpace('OPS', userId);
+    await grantRead(userId, 'DEV');
+    await grantRead(userId, 'OPS');
   });
 
-  it('should return all pages with minimal fields and numeric IDs', async () => {
-    // First query: local spaces lookup
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Second query: tree pages
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 10,
-          confluence_id: 'root-1',
-          space_key: 'DEV',
-          title: 'Root Page',
-          parent_numeric_id: null,
-          sort_order: 0,
-          labels: ['architecture'],
-          last_modified_at: new Date('2026-03-01'),
-          embedding_dirty: false,
-          embedding_status: 'embedded',
-          embedded_at: new Date('2026-03-01'),
-        },
-        {
-          id: 20,
-          confluence_id: 'child-1',
-          space_key: 'DEV',
-          title: 'Child Page',
-          parent_numeric_id: 10,
-          labels: [],
-          last_modified_at: new Date('2026-03-02'),
-          embedding_dirty: true,
-          embedding_status: 'not_embedded',
-          embedded_at: null,
-        },
-      ],
+  it('returns minimal rows with string IDs and source-aware parent relationships', async () => {
+    const confluenceRoot = await insertConfluencePage('conf-root', 'Confluence root', 'DEV');
+    const confluenceChild = await insertConfluencePage('conf-child', 'Confluence child', 'DEV', {
+      parentId: 'conf-root',
     });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/tree',
+    const localRoot = await insertStandalonePage('Local root', 'private', userId, 'OPS');
+    const localChild = await insertStandalonePage('Local child', 'private', userId, 'OPS', {
+      parentId: String(localRoot),
     });
+    await query(
+      `UPDATE pages
+          SET labels = CASE WHEN id = $1 THEN ARRAY['architecture']::text[] ELSE labels END,
+              embedding_dirty = FALSE,
+              embedding_status = 'embedded',
+              embedded_at = '2026-03-01T00:00:00Z'
+        WHERE id = ANY($2::int[])`,
+      [confluenceRoot, [confluenceRoot, confluenceChild]],
+    );
 
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.items).toHaveLength(2);
-    expect(body.total).toBe(2);
-    expect(body.items[0]).toEqual({
-      id: '10',
-      spaceKey: 'DEV',
-      title: 'Root Page',
-      pageType: 'page',
+    const items = response.json().items as Array<Record<string, unknown>>;
+    expect(response.json().total).toBe(4);
+
+    const byId = new Map(items.map((item) => [item.id, item]));
+    expect(byId.get(String(confluenceRoot))).toMatchObject({
+      title: 'Confluence root',
       parentId: null,
-      sortOrder: 0,
       labels: ['architecture'],
-      lastModifiedAt: '2026-03-01T00:00:00.000Z',
       embeddingDirty: false,
       embeddingStatus: 'embedded',
       embeddedAt: '2026-03-01T00:00:00.000Z',
-      icon: null,
     });
-    expect(body.items[1].parentId).toBe('10');
+    expect(byId.get(String(confluenceChild))?.parentId).toBe(String(confluenceRoot));
+    expect(byId.get(String(localChild))?.parentId).toBe(String(localRoot));
+    for (const item of items) {
+      expect(typeof item.id).toBe('string');
+      expect(item).not.toHaveProperty('bodyHtml');
+      expect(item).not.toHaveProperty('bodyText');
+      expect(item).not.toHaveProperty('bodyStorage');
+    }
   });
 
-  it('should return sort_order and order siblings by it (#959)', async () => {
-    // Local spaces lookup returns a local space
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ space_key: 'MY_NOTES' }] });
-    // Tree pages: two siblings whose stored sort_order (B before A) deliberately
-    // contradicts alphabetical order, mirroring a user drag-reorder.
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 2, confluence_id: null, space_key: 'MY_NOTES', title: 'Page B', page_type: 'page', parent_numeric_id: null, sort_order: 1, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-        { id: 1, confluence_id: null, space_key: 'MY_NOTES', title: 'Page A', page_type: 'page', parent_numeric_id: null, sort_order: 2, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-      ],
-    });
+  it('orders siblings by persisted sort order rather than title', async () => {
+    const pageA = await insertStandalonePage('Page A', 'private', userId, 'DEV');
+    const pageB = await insertStandalonePage('Page B', 'private', userId, 'DEV');
+    await query('UPDATE pages SET sort_order = 2 WHERE id = $1', [pageA]);
+    await query('UPDATE pages SET sort_order = 1 WHERE id = $1', [pageB]);
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree?spaceKey=DEV' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items.map((item: { id: string; sortOrder: number }) => [item.id, item.sortOrder])).toEqual([
+      [String(pageB), 1],
+      [String(pageA), 2],
+    ]);
+  });
+
+  it('filters by space without leaking rows from another accessible space', async () => {
+    const dev = await insertStandalonePage('Dev', 'private', userId, 'DEV');
+    await insertStandalonePage('Ops', 'private', userId, 'OPS');
+
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree?spaceKey=DEV' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items.map((item: { id: string }) => item.id)).toEqual([String(dev)]);
+  });
+
+  it('returns an empty contract when no pages exist', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ items: [], total: 0 });
+  });
+
+  it('merges owned local spaces with role-authorized Confluence spaces', async () => {
+    const local = await insertStandalonePage('Local note', 'private', userId, 'OPS');
+    const synced = await insertConfluencePage('conf-dev', 'Dev page', 'DEV');
 
     const response = await app.inject({ method: 'GET', url: '/api/pages/tree' });
-
     expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-
-    // (a) The SQL must select and order by sort_order so a persisted drag
-    //     reorder survives the tree refetch instead of snapping back to title.
-    const sql = mockQueryFn.mock.calls[1][0] as string;
-    expect(sql).toContain('sort_order');
-    expect(sql).toMatch(/ORDER BY[\s\S]*sort_order/i);
-
-    // (b) Each item exposes sortOrder so the frontend can honour the order.
-    expect(body.items[0].sortOrder).toBe(1);
-    expect(body.items[1].sortOrder).toBe(2);
-  });
-
-  it('should filter by spaceKey', async () => {
-    // Local spaces lookup
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Tree pages
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/tree?spaceKey=DEV',
-    });
-
-    expect(response.statusCode).toBe(200);
-    // Verify the SQL includes space_key filter (second query after local spaces lookup)
-    const sqlArg = mockQueryFn.mock.calls[1][0] as string;
-    expect(sqlArg).toContain('space_key');
-    expect(mockQueryFn.mock.calls[1][1]).toContain('DEV');
-  });
-
-  it('should return empty items when no pages exist', async () => {
-    // Local spaces lookup
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Tree pages
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/tree',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.items).toHaveLength(0);
-    expect(body.total).toBe(0);
-  });
-
-  it('should return pages with parent-child relationships using numeric IDs', async () => {
-    // Local spaces lookup
-    mockQueryFn.mockResolvedValueOnce({ rows: [] });
-    // Tree pages
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 1, confluence_id: 'root', space_key: 'DEV', title: 'Root', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { id: 2, confluence_id: 'child-a', space_key: 'DEV', title: 'Child A', parent_numeric_id: 1, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { id: 3, confluence_id: 'child-b', space_key: 'DEV', title: 'Child B', parent_numeric_id: 1, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-        { id: 4, confluence_id: 'grandchild', space_key: 'DEV', title: 'Grandchild', parent_numeric_id: 2, labels: [], last_modified_at: null, embedding_dirty: true, embedding_status: 'not_embedded', embedded_at: null },
-      ],
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/tree',
-    });
-
-    const body = JSON.parse(response.payload);
-    expect(body.items).toHaveLength(4);
-
-    const root = body.items.find((p: { id: string }) => p.id === '1');
-    const childA = body.items.find((p: { id: string }) => p.id === '2');
-    const grandchild = body.items.find((p: { id: string }) => p.id === '4');
-
-    expect(root.parentId).toBeNull();
-    expect(childA.parentId).toBe('1');
-    expect(grandchild.parentId).toBe('2');
-  });
-
-  it('should include local space pages in the tree (#527/#528)', async () => {
-    // Local spaces lookup returns a local space
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [{ space_key: 'MY_NOTES' }],
-    });
-    // Tree pages (includes pages from both RBAC spaces and local spaces)
-    mockQueryFn.mockResolvedValueOnce({
-      rows: [
-        { id: 1, confluence_id: null, space_key: 'MY_NOTES', title: 'Local Note', page_type: 'page', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-        { id: 2, confluence_id: 'conf-1', space_key: 'DEV', title: 'Dev Page', page_type: 'page', parent_numeric_id: null, labels: [], last_modified_at: null, embedding_dirty: false, embedding_status: 'not_embedded', embedded_at: null, embedding_error: null },
-      ],
-    });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages/tree',
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = JSON.parse(response.payload);
-    expect(body.items).toHaveLength(2);
-
-    const spaceKeys = body.items.map((p: { spaceKey: string }) => p.spaceKey);
-    expect(spaceKeys).toContain('MY_NOTES');
-    expect(spaceKeys).toContain('DEV');
-
-    // Verify the tree query received merged space keys (RBAC + local)
-    const treeQueryArgs = mockQueryFn.mock.calls[1][1] as unknown[];
-    const spaceKeysArg = treeQueryArgs[0] as string[];
-    expect(spaceKeysArg).toContain('MY_NOTES');
-    expect(spaceKeysArg).toContain('DEV');
-    expect(spaceKeysArg).toContain('OPS');
+    const ids = response.json().items.map((item: { id: string }) => item.id);
+    expect(ids).toEqual(expect.arrayContaining([String(local), String(synced)]));
   });
 });

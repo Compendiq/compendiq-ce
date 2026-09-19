@@ -131,20 +131,23 @@ const PG_INT4_MAX = 2_147_483_647;
  * sync is the worse failure by a wide margin. `String(parsed) === key` also
  * refuses a zero-padded `007`, which would otherwise mark page 7.
  */
-export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string): Promise<void> {
+export async function markPageImagesDirtyByAttachmentKey(
+  attachmentKey: string,
+  client?: Pick<PoolClient, 'query'>,
+): Promise<void> {
   if (!attachmentKey) return;
   try {
-    const byConfluenceId = await query<{ existed: boolean }>(
-      `WITH marked AS (
+    const confluenceStatement = `WITH marked AS (
          UPDATE pages SET image_analysis_dirty = TRUE
            WHERE confluence_id = $1
              AND deleted_at IS NULL
              AND COALESCE(page_type, 'page') != 'folder'
         RETURNING 1
        )
-       SELECT EXISTS (SELECT 1 FROM pages WHERE confluence_id = $1) AS existed`,
-      [attachmentKey],
-    );
+       SELECT EXISTS (SELECT 1 FROM pages WHERE confluence_id = $1) AS existed`;
+    const byConfluenceId = client
+      ? await client.query<{ existed: boolean }>(confluenceStatement, [attachmentKey])
+      : await query<{ existed: boolean }>(confluenceStatement, [attachmentKey]);
     if (byConfluenceId.rows[0]?.existed) return;
 
     const asId = Number(attachmentKey);
@@ -156,14 +159,16 @@ export async function markPageImagesDirtyByAttachmentKey(attachmentKey: string):
     ) {
       return;
     }
-    await query(
-      `UPDATE pages SET image_analysis_dirty = TRUE
+    const numericStatement = `UPDATE pages SET image_analysis_dirty = TRUE
         WHERE id = $1
           AND source <> 'confluence'
           AND deleted_at IS NULL
-          AND COALESCE(page_type, 'page') != 'folder'`,
-      [asId],
-    );
+          AND COALESCE(page_type, 'page') != 'folder'`;
+    if (client) {
+      await client.query(numericStatement, [asId]);
+    } else {
+      await query(numericStatement, [asId]);
+    }
   } catch (err) {
     logger.warn({ err, attachmentKey }, 'Could not mark a page image_analysis_dirty by attachment key');
   }

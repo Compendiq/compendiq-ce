@@ -2,8 +2,14 @@ import { FastifyInstance } from 'fastify';
 import { query } from '../../core/db/postgres.js';
 import { RedisCache } from '../../core/services/redis-cache.js';
 import { userCanAccessPage } from '../../core/services/rbac-service.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
-import { autoTagPage, applyTags, autoTagAllPages, ALLOWED_TAGS, AllowedTag } from '../../domains/knowledge/services/auto-tagger.js';
+import {
+  autoTagPage,
+  applyTags,
+  applyLabelChanges,
+  autoTagAllPages,
+  ALLOWED_TAGS,
+  AllowedTag,
+} from '../../domains/knowledge/services/auto-tagger.js';
 import { resolveUsecase } from '../../domains/llm/services/llm-provider-resolver.js';
 import { z } from 'zod';
 import { logger } from '../../core/utils/logger.js';
@@ -130,72 +136,22 @@ export async function pagesTagRoutes(fastify: FastifyInstance) {
   fastify.put('/pages/:id/labels', async (request) => {
     const { id } = IdParamSchema.parse(request.params);
     const userId = request.userId;
-    const { addLabels: labelsToAdd, removeLabels: labelsToRemove } = UpdateLabelsBodySchema.parse(request.body);
+    const { addLabels, removeLabels } = UpdateLabelsBodySchema.parse(request.body);
 
-    if (labelsToAdd.length === 0 && labelsToRemove.length === 0) {
+    if (addLabels.length === 0 && removeLabels.length === 0) {
       throw fastify.httpErrors.badRequest('At least one of addLabels or removeLabels must be provided');
     }
 
-    // Fetch existing labels — use integer PK for numeric IDs, confluence_id for strings
-    const isNumericId = /^\d+$/.test(id);
-    const existing = await query<{ id: number; confluence_id: string | null; labels: string[] }>(
-      `SELECT id, confluence_id, labels FROM pages WHERE ${isNumericId ? 'id = $1' : 'confluence_id = $1'} AND deleted_at IS NULL`,
-      [isNumericId ? parseInt(id, 10) : id],
-    );
+    // Authority remains source-aware and is checked before reserving a remote
+    // effect. The service re-resolves the page and performs the mutation under
+    // the shared lifecycle fence.
+    await assertPageAccess(fastify, userId, id);
+    const labels = await applyLabelChanges(userId, id, {
+      add: addLabels,
+      remove: removeLabels,
+    });
 
-    if (existing.rows.length === 0) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
-
-    const page = existing.rows[0]!;
-
-    // #733: RBAC — reject before mutating labels or pushing them upstream.
-    if (!(await userCanAccessPage(userId, page.id))) {
-      throw fastify.httpErrors.notFound('Page not found');
-    }
-
-    let labels = page.labels || [];
-
-    // Remove labels
-    if (labelsToRemove.length > 0) {
-      const removeSet = new Set(labelsToRemove);
-      labels = labels.filter((l) => !removeSet.has(l));
-    }
-
-    // Add labels (deduplicating)
-    if (labelsToAdd.length > 0) {
-      const labelSet = new Set(labels);
-      for (const label of labelsToAdd) {
-        labelSet.add(label);
-      }
-      labels = [...labelSet];
-    }
-
-    await query(
-      'UPDATE pages SET labels = $2 WHERE id = $1',
-      [page.id, labels],
-    );
-
-    // Sync to Confluence (requires the Confluence page ID, not the integer PK)
-    if (page.confluence_id) {
-      const client = await getClientForUser(userId);
-      if (client) {
-        try {
-          if (labelsToAdd.length > 0) {
-            await client.addLabels(page.confluence_id, labelsToAdd);
-          }
-          for (const label of labelsToRemove) {
-            await client.removeLabel(page.confluence_id, label);
-          }
-        } catch (err) {
-          logger.error({ err, pageId: page.id, confluenceId: page.confluence_id, userId }, 'Failed to sync labels to Confluence');
-        }
-      }
-    }
-
-    // Invalidate cache
     await cache.invalidate(userId, 'pages');
-
     return { labels };
   });
 

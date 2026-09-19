@@ -1,511 +1,287 @@
-/**
- * Webhook emit-call-site tests for pages-crud (#114).
- *
- * Verifies that `emitWebhookEvent` fires with the expected event shape on the
- * success path AND is NOT called when the route bails before the canonical
- * mutation (validation, RBAC, not-found, conflict). The hook itself is a
- * no-op in CE — these tests just check that the route is wired to it.
- */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  _resetWebhookEmitHookForTests,
+  setWebhookEmitHook,
+} from '../../core/services/webhook-emit-hook.js';
+import type { WebhookEvent } from '../../core/services/webhook-emit-hook.js';
 import { pagesCrudRoutes } from './pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// --- Mocks (mirror pages-crud-create.test.ts so imports resolve identically) ---
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    // Shared/Confluence mutations clear every user's cache (#893).
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-const mockGetClientForUser = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn((html: string) => html),
-  confluenceToHtml: vi.fn((html: string) => html),
-  htmlToText: vi.fn((html: string) => html.replace(/<[^>]*>/g, '')),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-}));
-
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
-
-const mockEmitWebhookEvent = vi.fn();
-vi.mock('../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
-}));
-
-const mockQueryFn = vi.fn();
-// Transaction client returned by getPool().connect() — since #766 the delete
-// route finishes local cleanup in a BEGIN…COMMIT on a dedicated client.
-const mockTxQueryFn = vi.fn();
-/**
- * Empty by default. The standalone permanent-delete case below overrides this
- * to model #1636's walk-then-delete inside the transaction, so it has to be
- * restored between tests — otherwise the Confluence cleanup inherits its
- * RETURNING and starts discarding marks for rows nobody destroyed.
- */
-function resetTxQuery(): void {
-  mockTxQueryFn.mockResolvedValue({ rows: [], rowCount: 0 });
+interface PersistedEvent {
+  event_type: string;
+  payload: Record<string, unknown>;
+  status: string;
 }
-resetTxQuery();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({
-    connect: () =>
-      Promise.resolve({
-        query: (...args: unknown[]) => mockTxQueryFn(...args),
-        release: vi.fn(),
-      }),
-  }),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
 
-const TEST_USER = 'user-1';
+let app: FastifyInstance;
+let redis: RedisClientType;
+let currentUserId: string;
+let subscriptionId: string;
 
-describe('pages-crud webhook emit call-sites', () => {
-  let app: ReturnType<typeof Fastify>;
+async function persistEvent(event: WebhookEvent): Promise<void> {
+  const subscriptions = await query<{ id: string }>(
+    `SELECT id
+       FROM webhook_subscriptions
+      WHERE active = TRUE AND $1 = ANY(event_types)
+      ORDER BY id`,
+    [event.eventType],
+  );
+  const payload = JSON.stringify(event.payload);
+  const insertSql = `INSERT INTO webhook_outbox
+                       (subscription_id, event_type, payload, payload_bytes, status, next_dispatch_at)
+                     VALUES ($1, $2, $3::jsonb, $4, 'pending', NOW())`;
+  for (const subscription of subscriptions.rows) {
+    const params = [
+      subscription.id,
+      event.eventType,
+      payload,
+      Buffer.byteLength(payload),
+    ];
+    if (event.tx) {
+      await event.tx.query(insertSql, params);
+    } else {
+      await query(insertSql, params);
+    }
+  }
+}
 
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed', details: error.issues });
-      }
-      const statusCode = error.statusCode ?? 500;
-      return reply.status(statusCode).send({ error: error.message });
-    });
-
-    app.decorate(
-      'authenticate',
-      async (request: { userId: string; username: string; userRole: string }) => {
-        request.userId = TEST_USER;
-        request.username = 'testuser';
-        request.userRole = 'user';
-      },
+async function readEvents(expectedCount: number): Promise<PersistedEvent[]> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await query<PersistedEvent>(
+      `SELECT event_type, payload, status
+         FROM webhook_outbox
+        WHERE subscription_id = $1
+        ORDER BY created_at, id`,
+      [subscriptionId],
     );
-    app.decorate(
-      'requireAdmin',
-      async (request: { userId: string; username: string; userRole: string }) => {
-        request.userId = TEST_USER;
-        request.username = 'testuser';
-        request.userRole = 'admin';
-      },
-    );
-    app.decorate('redis', {});
+    if (result.rows.length >= expectedCount) return result.rows;
+    await nextEventLoopTurn();
+  }
+  throw new Error(`Expected ${expectedCount} persisted webhook event(s)`);
+}
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
+async function persistedPage(pageId: number): Promise<{
+  title: string;
+  body_html: string;
+  deleted_at: Date | null;
+} | null> {
+  const result = await query<{
+    title: string;
+    body_html: string;
+    deleted_at: Date | null;
+  }>('SELECT title, body_html, deleted_at FROM pages WHERE id = $1', [pageId]);
+  return result.rows[0] ?? null;
+}
 
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetTxQuery();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-  });
-
-  // ── page.created ────────────────────────────────────────────────────────────
-
-  describe('POST /api/pages — page.created', () => {
-    it('emits page.created with isLocal=true on standalone create success', async () => {
-      // INSERT returns new page
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 42, title: 'Hello', version: 1 }] });
-      // Path/depth UPDATE
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: { title: 'Hello', bodyHtml: '<p>Hello</p>', source: 'standalone' },
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'pages CRUD webhook outbox behavior — real PostgreSQL and Redis',
+  () => {
+    beforeAll(async () => {
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
       });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.created');
-      expect(event.payload).toMatchObject({
-        pageId: 42,
-        title: 'Hello',
-        isLocal: true,
-        spaceKey: null,
-      });
-      expect(typeof event.payload.createdAt).toBe('string');
-    });
-
-    it('emits page.created with isLocal=false on Confluence create success', async () => {
-      // Space lookup: confluence
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ source: 'confluence' }] });
-      // INSERT (cache row) — UPDATE doesn't return rows for INSERT ... ON CONFLICT
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-      mockGetClientForUser.mockResolvedValue({
-        createPage: vi.fn().mockResolvedValue({
-          id: 'conf-1',
-          title: 'Hello',
-          version: { number: 1 },
-          body: { storage: { value: '<p>Hello</p>' } },
-        }),
-      });
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: { title: 'Hello', bodyHtml: '<p>Hello</p>', spaceKey: 'DEV', source: 'confluence' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.created');
-      expect(event.payload).toMatchObject({
-        pageId: 'conf-1',
-        title: 'Hello',
-        isLocal: false,
-        spaceKey: 'DEV',
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
+      app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+        instance.redis = redis;
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
       });
     });
 
-    it('does NOT emit page.created when validation fails', async () => {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages',
-        payload: { /* missing title */ bodyHtml: '<p>Hello</p>' },
-      });
-
-      expect(response.statusCode).toBe(400);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
+    afterAll(async () => {
+      _resetWebhookEmitHookForTests();
+      await app.close();
+      setRedisClient(null as unknown as RedisClientType);
+      if (redis.isOpen) await redis.quit();
+      await teardownTestDb();
     });
 
-    it('does NOT emit page.created when parentId does not exist', async () => {
-      // Parent lookup returns nothing
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      currentUserId = await insertUser(`webhook-route-${randomUUID()}`);
+      await insertLocalSpace('LOCAL', currentUserId);
+      const subscription = await query<{ id: string }>(
+        `INSERT INTO webhook_subscriptions
+           (user_id, label, url, secret_enc, event_types, active)
+         VALUES ($1, 'route integration', 'https://receiver.example.test/hooks', $2,
+                 ARRAY['page.created', 'page.updated', 'page.deleted'], TRUE)
+         RETURNING id`,
+        [currentUserId, Buffer.from('encrypted-test-secret')],
+      );
+      subscriptionId = subscription.rows[0]!.id;
+      _resetWebhookEmitHookForTests();
+      setWebhookEmitHook(persistEvent);
+    });
 
+    it('persists page.created only after the standalone page exists', async () => {
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages',
         payload: {
-          title: 'Child',
+          title: 'Created article',
           bodyHtml: '<p>Hello</p>',
           source: 'standalone',
-          parentId: '999',
+          spaceKey: 'LOCAL',
+          visibility: 'private',
         },
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── page.updated ────────────────────────────────────────────────────────────
-
-  describe('PUT /api/pages/:id — page.updated', () => {
-    it('emits page.updated on standalone update success', async () => {
-      // SELECT existing page (standalone)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 7, version: 3, space_key: null, source: 'standalone',
-          created_by_user_id: TEST_USER, visibility: 'shared',
-          confluence_id: null, deleted_at: null, page_type: 'page',
-        }],
+      expect(response.statusCode, response.body).toBe(200);
+      const pageId = response.json<{ id: number }>().id;
+      expect(await persistedPage(pageId)).toMatchObject({
+        title: 'Created article',
+        body_html: '<p>Hello</p>',
+        deleted_at: null,
       });
-      // UPDATE — #926 guards the write with `AND version = <read version>` and
-      // treats rowCount 0 as a lost update (409). The version matches here, so
-      // the row is written: rowCount 1 = success.
-      mockQueryFn.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'New title', bodyHtml: '<p>updated</p>', version: 3 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.updated');
-      expect(event.payload).toMatchObject({
-        pageId: 7,
-        title: 'New title',
-        spaceKey: null,
-      });
-      expect(typeof event.payload.updatedAt).toBe('string');
-    });
-
-    it('emits page.updated on Confluence update success', async () => {
-      // SELECT existing page (confluence)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 9, version: 5, space_key: 'OPS', source: 'confluence',
-          created_by_user_id: null, visibility: 'shared',
-          confluence_id: 'conf-9', deleted_at: null, page_type: 'page',
-        }],
-      });
-      // UPDATE local cache after Confluence push
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-      mockGetClientForUser.mockResolvedValue({
-        updatePage: vi.fn().mockResolvedValue({
-          version: { number: 6 },
-          body: { storage: { value: '<p>updated</p>' } },
+      const events = await readEvents(1);
+      expect(events).toEqual([{
+        event_type: 'page.created',
+        status: 'pending',
+        payload: expect.objectContaining({
+          pageId,
+          title: 'Created article',
+          spaceKey: 'LOCAL',
+          isLocal: true,
+          createdAt: expect.any(String),
         }),
-      });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/conf-9',
-        payload: { title: 'New title', bodyHtml: '<p>updated</p>', version: 5 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.updated');
-      expect(event.payload).toMatchObject({
-        pageId: 9,
-        title: 'New title',
-        spaceKey: 'OPS',
-      });
+      }]);
     });
 
-    it('does NOT emit page.updated when version conflict occurs', async () => {
-      // SELECT existing page with newer version than supplied
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 7, version: 10, space_key: null, source: 'standalone',
-          created_by_user_id: TEST_USER, visibility: 'shared',
-          confluence_id: null, deleted_at: null, page_type: 'page',
-        }],
+    it('does not persist page.created when validation or parent validation refuses the mutation', async () => {
+      const invalid = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: { bodyHtml: '<p>Missing title</p>', source: 'standalone' },
       });
+      const missingParent = await app.inject({
+        method: 'POST',
+        url: '/api/pages',
+        payload: {
+          title: 'Child',
+          bodyHtml: '<p>Child</p>',
+          source: 'standalone',
+          spaceKey: 'LOCAL',
+          parentId: '999999',
+        },
+      });
+
+      expect(invalid.statusCode).toBe(400);
+      expect(missingParent.statusCode).toBe(400);
+      const events = await query('SELECT 1 FROM webhook_outbox WHERE subscription_id = $1', [subscriptionId]);
+      const pages = await query("SELECT 1 FROM pages WHERE title = 'Child'");
+      expect(events.rowCount).toBe(0);
+      expect(pages.rowCount).toBe(0);
+    });
+
+    it('persists page.updated with the committed title and body', async () => {
+      const pageId = await insertStandalonePage('Before', 'private', currentUserId, 'LOCAL');
 
       const response = await app.inject({
         method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Stale', bodyHtml: '<p>stale</p>', version: 3 },
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'After', bodyHtml: '<p>After body</p>', version: 1 },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await persistedPage(pageId)).toMatchObject({
+        title: 'After',
+        body_html: '<p>After body</p>',
+        deleted_at: null,
+      });
+      const events = await readEvents(1);
+      expect(events).toEqual([{
+        event_type: 'page.updated',
+        status: 'pending',
+        payload: expect.objectContaining({
+          pageId,
+          title: 'After',
+          spaceKey: 'LOCAL',
+          updatedAt: expect.any(String),
+        }),
+      }]);
+    });
+
+    it('does not persist page.updated for a version conflict', async () => {
+      const pageId = await insertStandalonePage('Current', 'private', currentUserId, 'LOCAL');
+      await query('UPDATE pages SET version = 10 WHERE id = $1', [pageId]);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Stale', bodyHtml: '<p>Stale</p>', version: 3 },
       });
 
       expect(response.statusCode).toBe(409);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
+      expect(await persistedPage(pageId)).toMatchObject({
+        title: 'Current',
+        body_html: '<p>x</p>',
+        deleted_at: null,
+      });
+      const events = await query('SELECT 1 FROM webhook_outbox WHERE subscription_id = $1', [subscriptionId]);
+      expect(events.rowCount).toBe(0);
     });
 
-    it('does NOT emit page.updated when page is not found', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
+    it('persists one page.deleted event per row after a standalone cascade commits', async () => {
+      const parent = await insertStandalonePage('Parent', 'private', currentUserId, 'LOCAL');
+      const child = await insertStandalonePage(
+        'Child',
+        'shared',
+        currentUserId,
+        'LOCAL',
+        { parentId: String(parent) },
+      );
 
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/99',
-        payload: { title: 'Whatever', bodyHtml: '<p>x</p>' },
-      });
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${parent}` });
 
-      expect(response.statusCode).toBe(404);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-    });
-  });
-
-  // ── page.deleted ────────────────────────────────────────────────────────────
-
-  describe('DELETE /api/pages/:id — page.deleted', () => {
-    it('emits page.deleted with isHardDelete=false on standalone soft-delete', async () => {
-      // SELECT existing page
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 11, source: 'standalone', created_by_user_id: TEST_USER,
-          confluence_id: null, space_key: null,
-        }],
-      });
-      // #1636's pre-flight: `findSubtreeKeyAmbiguity` runs before the cascade
-      // and ZERO rows is "the subtree is safe to act on". A row here would be
-      // a 409 and no webhook at all.
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-      // The cascade UPDATE … RETURNING: one row here, the page itself. Since
-      // #1636 the webhook is emitted per RETURNING id, not per request, so a
-      // mock that answers with nothing would emit nothing.
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }] });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/11',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.deleted');
-      expect(event.payload).toEqual({ pageId: 11, isHardDelete: false });
-    });
-
-    it('emits one page.deleted per id the cascade trashed (#1636)', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 11, source: 'standalone', created_by_user_id: TEST_USER,
-          confluence_id: null, space_key: null,
-        }],
-      });
-      // The pre-flight ambiguity check — see the case above.
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-      // The cascade trashed the page and two sub-articles in one statement.
-      mockQueryFn.mockResolvedValueOnce({ rows: [{ id: 11 }, { id: 12 }, { id: 13 }] });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/11',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(3);
-      expect(mockEmitWebhookEvent.mock.calls.map(([event]) => event.payload)).toEqual([
-        { pageId: 11, isHardDelete: false },
-        { pageId: 12, isHardDelete: false },
-        { pageId: 13, isHardDelete: false },
+      expect(response.statusCode, response.body).toBe(200);
+      expect((await persistedPage(parent))?.deleted_at).toBeInstanceOf(Date);
+      expect((await persistedPage(child))?.deleted_at).toBeInstanceOf(Date);
+      const events = await readEvents(2);
+      expect(events.map((event) => event.event_type)).toEqual(['page.deleted', 'page.deleted']);
+      expect(
+        events
+          .map((event) => event.payload)
+          .sort((left, right) => Number(left.pageId) - Number(right.pageId)),
+      ).toEqual([
+        { pageId: parent, isHardDelete: false },
+        { pageId: child, isHardDelete: false },
       ]);
     });
 
-    it('emits page.deleted with isHardDelete=true on standalone permanent delete', async () => {
-      // SELECT existing page
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 12, source: 'standalone', created_by_user_id: TEST_USER,
-          confluence_id: null, space_key: null,
-        }],
-      });
-      // The pre-flight ambiguity check on the pool, then the pinned_pages
-      // sweep: zero rows either way.
-      mockQueryFn.mockResolvedValue({ rows: [] });
-      // Since #1636 the permanent branch is ONE statement on the transaction
-      // client — `WITH RECURSIVE d AS (…) DELETE FROM pages WHERE id IN (SELECT
-      // id FROM d WHERE …) RETURNING id, visibility` — and the webhook is
-      // emitted per RETURNING row. The ambiguity is re-checked under the
-      // attachment lock, on this same client, and must answer zero rows.
-      mockTxQueryFn.mockImplementation((sql: unknown) => {
-        const text = typeof sql === 'string' ? sql : '';
-        if (/conflicting_page_id/.test(text)) {
-          return Promise.resolve({ rows: [], rowCount: 0 });
-        }
-        if (/DELETE FROM pages\b/i.test(text) && /RETURNING/i.test(text)) {
-          return Promise.resolve({ rows: [{ id: 12, visibility: 'private' }], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [], rowCount: 0 });
-      });
+    it('does not persist page.deleted when a non-owner is refused', async () => {
+      const owner = await insertUser(`webhook-owner-${randomUUID()}`);
+      const pageId = await insertStandalonePage('Not mine', 'private', owner, 'LOCAL');
 
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/12?permanent=true',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.deleted');
-      expect(event.payload).toEqual({ pageId: 12, isHardDelete: true });
-    });
-
-    it('emits page.deleted with isHardDelete=true on Confluence delete success', async () => {
-      // SELECT existing page (confluence)
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 13, source: 'confluence', created_by_user_id: null,
-          confluence_id: 'conf-13', space_key: 'DEV',
-        }],
-      });
-      // DELETE FROM pinned_pages, DELETE FROM pages
-      mockQueryFn.mockResolvedValue({ rows: [] });
-
-      mockGetClientForUser.mockResolvedValue({
-        deletePage: vi.fn().mockResolvedValue(undefined),
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/conf-13',
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockEmitWebhookEvent).toHaveBeenCalledTimes(1);
-      const event = mockEmitWebhookEvent.mock.calls[0]![0];
-      expect(event.eventType).toBe('page.deleted');
-      expect(event.payload).toEqual({ pageId: 13, isHardDelete: true });
-    });
-
-    it('does NOT emit page.deleted when page is not found', async () => {
-      mockQueryFn.mockResolvedValueOnce({ rows: [] });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/999',
-      });
-
-      expect(response.statusCode).toBe(404);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-    });
-
-    it('does NOT emit page.deleted when caller is not the standalone owner', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 15, source: 'standalone', created_by_user_id: 'someone-else',
-          confluence_id: null, space_key: null,
-        }],
-      });
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/15',
-      });
+      const response = await app.inject({ method: 'DELETE', url: `/api/pages/${pageId}` });
 
       expect(response.statusCode).toBe(403);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
+      expect(await persistedPage(pageId)).toMatchObject({ deleted_at: null });
+      const events = await query('SELECT 1 FROM webhook_outbox WHERE subscription_id = $1', [subscriptionId]);
+      expect(events.rowCount).toBe(0);
     });
-
-    it('does NOT emit page.deleted when Confluence space access is denied', async () => {
-      mockQueryFn.mockResolvedValueOnce({
-        rows: [{
-          id: 16, source: 'confluence', created_by_user_id: null,
-          confluence_id: 'conf-16', space_key: 'HR',
-        }],
-      });
-      mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-
-      const response = await app.inject({
-        method: 'DELETE',
-        url: '/api/pages/conf-16',
-      });
-
-      expect(response.statusCode).toBe(403);
-      expect(mockEmitWebhookEvent).not.toHaveBeenCalled();
-    });
-  });
-});
+  },
+);

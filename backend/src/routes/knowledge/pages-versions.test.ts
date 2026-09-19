@@ -1,752 +1,476 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import sensible from '@fastify/sensible';
+import { createClient, type RedisClientType } from 'redis';
 import { ZodError } from 'zod';
-
-// --- Mock: rbac-service ---
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
-
-// --- Mock: postgres query ---
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-// --- Mock: version-tracker ---
-const mockGetVersionHistory = vi.fn();
-const mockGetVersion = vi.fn();
-const mockGetSemanticDiff = vi.fn();
-const mockSaveVersionSnapshotByPageId = vi.fn();
-const mockRestoreVersion = vi.fn();
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: (...args: unknown[]) => mockGetVersionHistory(...args),
-  getVersion: (...args: unknown[]) => mockGetVersion(...args),
-  getSemanticDiff: (...args: unknown[]) => mockGetSemanticDiff(...args),
-  saveVersionSnapshotByPageId: (...args: unknown[]) => mockSaveVersionSnapshotByPageId(...args),
-  restoreVersion: (...args: unknown[]) => mockRestoreVersion(...args),
-}));
-
-// --- Mock: confluence client (HTTP boundary) ---
-const mockUpdatePage = vi.fn();
-const mockGetClientForUser = vi.fn();
-// #1623: the route asks whether the integration is on BEFORE it asks for a
-// client, so the flag has to be mockable independently of the credentials.
-const mockIsConfluenceEnabled = vi.fn().mockResolvedValue(true);
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
-}));
-
-// --- Mock: content converter ---
-const mockHtmlToConfluence = vi.fn().mockReturnValue('<p>storage</p>');
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
-}));
-
-// --- Mock: version-backfill ---
-const mockBackfillVersionHistory = vi.fn().mockResolvedValue({ imported: 0 });
-const mockGetHistoricalBody = vi.fn();
-vi.mock('../../domains/confluence/services/version-backfill.js', () => ({
-  backfillVersionHistory: (...args: unknown[]) => mockBackfillVersionHistory(...args),
-  getHistoricalBody: (...args: unknown[]) => mockGetHistoricalBody(...args),
-}));
-
-// --- Mock: audit + webhook + cache ---
-const mockLogAuditEvent = vi.fn();
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
-const mockEmitWebhookEvent = vi.fn();
-vi.mock('../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: (...args: unknown[]) => mockEmitWebhookEvent(...args),
-}));
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-  },
-}));
-
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { bumpProviderCacheVersion } from '../../domains/llm/services/cache-bus.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { pagesVersionRoutes } from './pages-versions.js';
 
-const TEST_USER = 'test-user-id';
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
-/** Build a ready Fastify app with the version routes and a stub auth decorator. */
-async function buildVersionApp(opts: { authed?: boolean } = { authed: true }) {
-  const app = Fastify({ logger: false });
-  await app.register(sensible);
-  app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-    if (error instanceof ZodError) {
-      return reply.status(400).send({ error: 'Validation failed' });
-    }
-    reply.status(error.statusCode ?? 500).send({ error: error.message });
-  });
-  if (opts.authed) {
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = TEST_USER;
-    });
-  } else {
-    app.decorate('authenticate', async () => {
-      throw app.httpErrors.unauthorized('Missing or invalid token');
-    });
-  }
-  app.decorate('redis', {});
-  app.decorateRequest('userId', '');
-  await app.register(pagesVersionRoutes, { prefix: '/api' });
-  await app.ready();
-  return app;
+async function readRequestBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
 }
 
-/**
- * Mock the page-resolution query (`SELECT id, confluence_id, space_key, ...`)
- * plus the current-version queries. `kind` chooses the page shape.
- */
-function mockResolvedPage(page: {
-  id: number;
-  confluence_id?: string | null;
-  space_key?: string | null;
-  source?: string;
-  visibility?: string;
-  created_by_user_id?: string | null;
+function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(body));
+}
+
+type SeedPageOptions = {
+  source?: 'standalone' | 'confluence';
+  confluenceId?: string | null;
+  spaceKey?: string | null;
+  visibility?: 'private' | 'shared';
+  ownerId?: string | null;
   version?: number;
-  body_html?: string;
-  body_text?: string;
   title?: string;
-}) {
-  const row = {
-    id: page.id,
-    confluence_id: page.confluence_id ?? null,
-    space_key: page.space_key ?? null,
-    source: page.source ?? 'confluence',
-    visibility: page.visibility ?? 'shared',
-    created_by_user_id: page.created_by_user_id ?? null,
-    version: page.version ?? 3,
-  };
-  mockQueryFn.mockImplementation((sql: string) => {
-    if (typeof sql === 'string' && sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
-      return Promise.resolve({ rows: [row] });
-    }
-    if (typeof sql === 'string' && sql.includes('version, title, last_modified_at')) {
-      return Promise.resolve({ rows: [{ version: row.version, title: page.title ?? 'Test Page', last_modified_at: new Date('2026-03-01') }] });
-    }
-    if (typeof sql === 'string' && sql.includes('version, title, body_html, body_text')) {
-      return Promise.resolve({ rows: [{ version: row.version, title: page.title ?? 'Test Page', body_html: page.body_html ?? '<p>current</p>', body_text: page.body_text ?? 'current' }] });
-    }
-    return Promise.resolve({ rows: [] });
-  });
-}
+  bodyHtml?: string;
+  bodyText?: string;
+  lastModifiedAt?: Date | null;
+};
 
-// =============================================================================
-// Auth
-// =============================================================================
+describe.skipIf(!dbAvailable || !redisAvailable)('page version routes with real PostgreSQL and Redis', () => {
+  let app: FastifyInstance;
+  let redis: RedisClientType;
+  let llmServer: Server;
+  let llmBaseUrl = '';
+  let userId = '';
+  let otherUserId = '';
+  let llmRequests: Array<Record<string, unknown>> = [];
+  const ownedRedisKeys = new Set<string>();
+  const ownedUserIds = new Set<string>();
 
-describe('pages-versions routes - auth required', () => {
-  let app: ReturnType<typeof Fastify>;
-  beforeAll(async () => { app = await buildVersionApp({ authed: false }); });
-  afterAll(async () => { await app.close(); });
-
-  it('401 for GET /versions', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(401);
-  });
-  it('401 for GET /versions/:version', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions/1' });
-    expect(r.statusCode).toBe(401);
-  });
-  it('401 for POST /versions/semantic-diff', async () => {
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
-    expect(r.statusCode).toBe(401);
-  });
-  it('401 for POST /versions/:version/restore', async () => {
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore' });
-    expect(r.statusCode).toBe(401);
-  });
-});
-
-// =============================================================================
-// GET /versions
-// =============================================================================
-
-describe('GET /api/pages/:id/versions', () => {
-  let app: ReturnType<typeof Fastify>;
-  beforeAll(async () => { app = await buildVersionApp(); });
-  afterAll(async () => { await app.close(); });
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV', 'OPS']);
-    mockIsConfluenceEnabled.mockResolvedValue(true);
-  });
-
-  it('returns history with the current version included', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetVersionHistory.mockResolvedValue([
-      { versionNumber: 4, title: 'v4', syncedAt: new Date('2026-02-15'), editedAt: null, author: null, message: null },
-      { versionNumber: 3, title: 'v3', syncedAt: new Date('2026-02-01'), editedAt: null, author: null, message: null },
-    ]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.pageId).toBe('page-1');
-    expect(body.versions).toHaveLength(3);
-    expect(body.versions[0].isCurrent).toBe(true);
-    expect(body.versions[0].versionNumber).toBe(5);
-    // version-tracker queried by internal page_id, not confluence_id
-    expect(mockGetVersionHistory).toHaveBeenCalledWith(7);
-  });
-
-  it('resolves a NUMERIC page id (the id the frontend uses) to history', async () => {
-    mockResolvedPage({ id: 42, confluence_id: 'abc', space_key: 'DEV', version: 2 });
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/42/versions' });
-    expect(r.statusCode).toBe(200);
-    expect(mockGetVersionHistory).toHaveBeenCalledWith(42);
-  });
-
-  it('de-duplicates a snapshot row that matches the live version', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetVersionHistory.mockResolvedValue([
-      { versionNumber: 5, title: 'dup', syncedAt: new Date(), editedAt: null, author: null, message: null },
-      { versionNumber: 4, title: 'v4', syncedAt: new Date(), editedAt: null, author: null, message: null },
-    ]);
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    const body = r.json();
-    // current(5) + historical(4) only — the duplicate 5 is dropped
-    expect(body.versions.map((v: { versionNumber: number }) => v.versionNumber)).toEqual([5, 4]);
-  });
-
-  it('403 for a page in an inaccessible space', async () => {
-    mockResolvedPage({ id: 9, confluence_id: 'restricted', space_key: 'HR', version: 1 });
-    const r = await app.inject({ method: 'GET', url: '/api/pages/restricted/versions' });
-    expect(r.statusCode).toBe(403);
-  });
-
-  it('returns empty list (not 500) when the page is missing', async () => {
-    mockQueryFn.mockResolvedValue({ rows: [] });
-    const r = await app.inject({ method: 'GET', url: '/api/pages/nope/versions' });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().versions).toEqual([]);
-  });
-
-  it('allows the owner of a private standalone page', async () => {
-    mockResolvedPage({ id: 11, source: 'standalone', visibility: 'private', created_by_user_id: TEST_USER, version: 1 });
-    mockGetVersionHistory.mockResolvedValue([]);
-    const r = await app.inject({ method: 'GET', url: '/api/pages/11/versions' });
-    expect(r.statusCode).toBe(200);
-  });
-
-  it('403 for a private standalone page owned by another user', async () => {
-    mockResolvedPage({ id: 12, source: 'standalone', visibility: 'private', created_by_user_id: 'other', version: 1 });
-    const r = await app.inject({ method: 'GET', url: '/api/pages/12/versions' });
-    expect(r.statusCode).toBe(403);
-  });
-
-  it('returns real edited_at/author/message for historical rows (#722)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn() });
-    mockGetVersionHistory.mockResolvedValue([
-      {
-        versionNumber: 4,
-        title: 'v4',
-        syncedAt: new Date('2026-03-01'),
-        editedAt: new Date('2026-02-28T10:00:00Z'),
-        author: 'alice',
-        message: 'Updated intro',
-      },
-    ]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    const v4 = body.versions.find((v: { versionNumber: number }) => v.versionNumber === 4);
-    expect(v4.editedAt).toBe('2026-02-28T10:00:00.000Z');
-    expect(v4.author).toBe('alice');
-    expect(v4.message).toBe('Updated intro');
-  });
-
-  it('current row has editedAt:null when last_modified_at is null — no page-load time (#724)', async () => {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
-        return Promise.resolve({ rows: [{ id: 7, confluence_id: null, space_key: null, source: 'standalone', visibility: 'shared', created_by_user_id: TEST_USER, version: 1 }] });
-      }
-      if (sql.includes('version, title, last_modified_at')) {
-        return Promise.resolve({ rows: [{ version: 1, title: 'Fresh Page', last_modified_at: null }] });
-      }
-      return Promise.resolve({ rows: [] });
+  beforeAll(async () => {
+    await setupTestDb();
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false },
     });
-    mockGetVersionHistory.mockResolvedValue([]);
+    await redis.connect();
+    setRedisClient(redis);
 
-    const r = await app.inject({ method: 'GET', url: '/api/pages/7/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.versions[0].editedAt).toBeNull();
-    expect(body.versions[0].syncedAt).toBeNull();
+    llmServer = createServer(async (request, response) => {
+      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
+        sendJson(response, 404, { error: 'unexpected test endpoint' });
+        return;
+      }
+      llmRequests.push(JSON.parse(await readRequestBody(request)) as Record<string, unknown>);
+      sendJson(response, 200, {
+        choices: [{ message: { role: 'assistant', content: '- The introduction was expanded.' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 7 },
+      });
+    });
+    await new Promise<void>((resolve) => llmServer.listen(0, '127.0.0.1', resolve));
+    const address = llmServer.address() as AddressInfo;
+    llmBaseUrl = `http://127.0.0.1:${address.port}/v1`;
+
+    app = Fastify({ logger: false });
+    await app.register(sensible);
+    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+      if (error instanceof ZodError) {
+        return reply.status(400).send({ error: 'Validation failed' });
+      }
+      return reply.status(error.statusCode ?? 500).send({ error: error.message });
+    });
+    app.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
+      const identity = request.headers['x-test-user'];
+      if (typeof identity !== 'string') {
+        return reply.code(401).send({ error: 'Unauthenticated' });
+      }
+      request.userId = identity;
+    });
+    app.decorateRequest('userId', '');
+    app.decorate('redis', redis);
+    await app.register(pagesVersionRoutes, { prefix: '/api' });
+    await app.ready();
   });
 
-  it('triggers backfill for Confluence-sourced pages on open (#722)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    const mockClient = {};
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    mockBackfillVersionHistory.mockResolvedValue({ imported: 3 });
-    mockGetVersionHistory.mockResolvedValue([]);
+  beforeEach(async () => {
+    await truncateAllTables();
+    await bumpProviderCacheVersion();
+    llmRequests = [];
+    ownedRedisKeys.clear();
+    ownedUserIds.clear();
 
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    expect(mockBackfillVersionHistory).toHaveBeenCalledWith(7, 'page-1', mockClient);
-  });
-
-  it('backfill failure is swallowed — dialog still opens (#722)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({});
-    mockBackfillVersionHistory.mockRejectedValue(new Error('Confluence down'));
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-  });
-
-  // ── #763: backfillStatus — distinguish "complete" / "never ran" / "failed" ──
-
-  it('reports backfillStatus "ok" when the backfill ran (#763)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({});
-    mockBackfillVersionHistory.mockResolvedValue({ imported: 2 });
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('ok');
-    expect(body.backfillDetail).toBeUndefined();
-  });
-
-  it('reports "skipped_no_credentials" AND still returns the current row when the user has no PAT (#763)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue(null); // no stored Confluence credentials
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('skipped_no_credentials');
-    expect(body.backfillDetail).toMatch(/Settings/);
-    // The synthetic current row is still returned — the list is never empty
-    // for a resolvable page.
-    expect(body.versions).toHaveLength(1);
-    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
-    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
-  });
-
-  it('reports "skipped_confluence_off" without constructing a client when the integration is off (#1623)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    // Credentials are RETAINED across a toggle, so a usable client is exactly
-    // what a flag-off account still has — the flag, not the credentials, is
-    // what stops the import.
-    mockGetClientForUser.mockResolvedValue({});
-    mockIsConfluenceEnabled.mockResolvedValue(false);
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('skipped_confluence_off');
-    // Standalone mode is a choice, not a gap: the detail must never send the
-    // user off to paste a URL or a PAT.
-    expect(body.backfillDetail).not.toMatch(/PAT/i);
-    expect(body.backfillDetail).not.toMatch(/credential/i);
-    expect(body.backfillDetail).not.toMatch(/Confluence URL/i);
-    // Confluence is not touched at all — not even the stored-credential lookup.
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
-    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
-    // The page stays fully usable: its local history is still returned.
-    expect(body.versions).toHaveLength(1);
-    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
-  });
-
-  it('reports "failed" AND still returns the current row when the backfill throws (#763)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({});
-    mockBackfillVersionHistory.mockRejectedValue(new Error('Confluence down'));
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('failed');
-    expect(body.backfillDetail).toMatch(/incomplete/i);
-    // Confluence WAS contacted here — the detail blames the import, not the
-    // stored credentials (distinct from the client-construction failure below).
-    expect(body.backfillDetail).toMatch(/Importing historical versions from Confluence failed/);
-    expect(body.backfillDetail).not.toMatch(/credentials could not be used/i);
-    expect(body.versions).toHaveLength(1);
-    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
-  });
-
-  it('collapses a multi-line backfill error to a single line in backfillDetail (#780 review)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({});
-    mockBackfillVersionHistory.mockRejectedValue(
-      new Error('Confluence call failed:\n  upstream said\n\nHTTP 502'),
+    const users = await query<{ id: string; username: string }>(
+      `INSERT INTO users (username, email, password_hash, role)
+       VALUES ('versions-owner', 'versions-owner@test', 'x', 'user'),
+              ('versions-other', 'versions-other@test', 'x', 'user')
+       RETURNING id, username`,
     );
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('failed');
-    // Dialog-safe: whitespace runs (incl. newlines) collapse to single spaces.
-    expect(body.backfillDetail).not.toMatch(/\n/);
-    expect(body.backfillDetail).toContain('(Confluence call failed: upstream said HTTP 502)');
+    userId = users.rows.find((row) => row.username === 'versions-owner')!.id;
+    otherUserId = users.rows.find((row) => row.username === 'versions-other')!.id;
+    ownedUserIds.add(userId);
+    ownedUserIds.add(otherUserId);
   });
 
-  it('truncates an over-long backfill error with a trailing ellipsis (#780 review)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetClientForUser.mockResolvedValue({});
-    mockBackfillVersionHistory.mockRejectedValue(new Error('x'.repeat(500)));
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('failed');
-    // Capped for the dialog: 200 chars of reason + '…', never the raw 500.
-    expect(body.backfillDetail).toContain(`(${'x'.repeat(200)}…)`);
-    expect(body.backfillDetail).not.toContain('x'.repeat(201));
-    // The generic hint still leads the sentence.
-    expect(body.backfillDetail).toMatch(/Importing historical versions from Confluence failed/);
+  afterEach(async () => {
+    const keys = [
+      ...ownedRedisKeys,
+      ...[...ownedUserIds].flatMap((id) => [
+        `rbac:admin:${id}`,
+        `rbac:spaces:${id}`,
+        `rbac:global:${id}`,
+      ]),
+    ];
+    if (keys.length > 0) await redis.del(keys);
   });
 
-  it('reports "failed" with a credentials-specific detail when client construction throws — Confluence never contacted (#763 follow-up)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    // e.g. PAT decryption failure after a PAT_ENCRYPTION_KEY change.
-    mockGetClientForUser.mockRejectedValue(new Error('Invalid encrypted PAT format'));
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBe('failed');
-    expect(body.backfillDetail).toMatch(/credentials could not be used/i);
-    expect(body.backfillDetail).not.toMatch(/Importing historical versions from Confluence failed/);
-    // The import itself never ran.
-    expect(mockBackfillVersionHistory).not.toHaveBeenCalled();
-    expect(body.versions).toHaveLength(1);
-    expect(body.versions[0]).toMatchObject({ versionNumber: 5, isCurrent: true });
-  });
-
-  it('omits backfillStatus for standalone pages — no Confluence backfill applies (#763)', async () => {
-    mockResolvedPage({ id: 11, source: 'standalone', visibility: 'shared', created_by_user_id: TEST_USER, version: 1 });
-    mockGetVersionHistory.mockResolvedValue([]);
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/11/versions' });
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    expect(body.backfillStatus).toBeUndefined();
-    expect(body.backfillDetail).toBeUndefined();
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
-  });
-});
-
-// =============================================================================
-// GET /versions/:version
-// =============================================================================
-
-describe('GET /api/pages/:id/versions/:version', () => {
-  let app: ReturnType<typeof Fastify>;
-  beforeAll(async () => { app = await buildVersionApp(); });
-  afterAll(async () => { await app.close(); });
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-  });
-
-  it('returns the current version when the number matches', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3, body_html: '<p>current</p>' });
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions/3' });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().isCurrent).toBe(true);
-    expect(r.json().bodyHtml).toBe('<p>current</p>');
-  });
-
-  it('returns a historical version from the tracker', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetVersion.mockResolvedValue({
-      confluenceId: 'page-1', versionNumber: 2, title: 'v2',
-      bodyHtml: '<p>old</p>', bodyText: 'old', syncedAt: new Date('2026-01-15'),
-      editedAt: null, author: null, message: null,
+  afterAll(async () => {
+    await app.close();
+    await redis.quit();
+    llmServer.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      llmServer.close((error) => error ? reject(error) : resolve());
     });
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions/2' });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().isCurrent).toBe(false);
-    expect(r.json().versionNumber).toBe(2);
-    expect(mockGetVersion).toHaveBeenCalledWith(7, 2);
+    await teardownTestDb();
   });
 
-  it('404 when the version does not exist', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetVersion.mockResolvedValue(null);
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions/99' });
-    expect(r.statusCode).toBe(404);
-  });
-
-  it('fetches body lazily when body_html is null for a Confluence page (#722)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockGetVersion.mockResolvedValue({
-      confluenceId: 'page-1', versionNumber: 2, title: 'v2',
-      bodyHtml: null, bodyText: null, syncedAt: new Date('2026-01-15'),
-      editedAt: null, author: null, message: null,
-    });
-    const mockClient = {};
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    mockGetHistoricalBody.mockResolvedValue({ bodyHtml: '<p>fetched</p>', bodyText: 'fetched' });
-
-    const r = await app.inject({ method: 'GET', url: '/api/pages/page-1/versions/2' });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().bodyHtml).toBe('<p>fetched</p>');
-    expect(mockGetHistoricalBody).toHaveBeenCalledWith(7, 'page-1', 2, mockClient);
-  });
-});
-
-// =============================================================================
-// POST /versions/semantic-diff
-// =============================================================================
-
-describe('POST /api/pages/:id/versions/semantic-diff', () => {
-  let app: ReturnType<typeof Fastify>;
-  beforeAll(async () => { app = await buildVersionApp(); });
-  afterAll(async () => { await app.close(); });
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-  });
-
-  it('returns a semantic diff between two versions and passes the Confluence client for lazy body resolution (#722/#724)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
-    mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
-    mockGetSemanticDiff.mockResolvedValue('Section A was updated.');
-    const mockClient = {};
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().diff).toContain('updated');
-    // Combined contract (#718/#725 + #722/#724): with no `model` in the body the
-    // route must NOT inject a hardcoded legacy model — it passes `undefined` so
-    // getSemanticDiff resolves the `chat` use-case server-side (ADR-021) — AND it
-    // forwards the confluenceId + resolved client so backfilled rows resolve.
-    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, undefined, 'page-1', mockClient);
-  });
-
-  it('does not force the hardcoded qwen3:32b model when none is supplied', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
-    mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
-    mockGetSemanticDiff.mockResolvedValue('diff');
-    await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
-    const modelArg = mockGetSemanticDiff.mock.calls[0]?.[3];
-    expect(modelArg).not.toBe('qwen3:32b');
-  });
-
-  it('passes an explicit client-supplied model through as an override', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 3 });
-    mockSaveVersionSnapshotByPageId.mockResolvedValue(undefined);
-    mockGetSemanticDiff.mockResolvedValue('diff');
-    const mockClient = {};
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2, model: 'custom-model' } });
-    expect(r.statusCode).toBe(200);
-    // Explicit override forwarded untouched, alongside the lazy-body-resolution args.
-    expect(mockGetSemanticDiff).toHaveBeenCalledWith(7, 1, 2, 'custom-model', 'page-1', mockClient);
-  });
-
-  it('403 (not 500) when the user lacks access — no service calls', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'FINANCE', version: 3 });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: { v1: 1, v2: 2 } });
-    expect(r.statusCode).toBe(403);
-    expect(mockSaveVersionSnapshotByPageId).not.toHaveBeenCalled();
-    expect(mockGetSemanticDiff).not.toHaveBeenCalled();
-  });
-
-  it('400 when version numbers are missing', async () => {
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/semantic-diff', payload: {} });
-    expect(r.statusCode).toBe(400);
-  });
-});
-
-// =============================================================================
-// POST /versions/:version/restore
-// =============================================================================
-
-describe('POST /api/pages/:id/versions/:version/restore', () => {
-  let app: ReturnType<typeof Fastify>;
-  beforeAll(async () => { app = await buildVersionApp(); });
-  afterAll(async () => { await app.close(); });
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-    mockHtmlToConfluence.mockReturnValue('<p>storage</p>');
-  });
-
-  it('restores a Confluence page, pushes upstream, and emits audit + webhook', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockRestoreVersion.mockResolvedValue({
-      pageId: 7, title: 'Old Title', newVersion: 6,
-      bodyHtml: '<p>old</p>', bodyText: 'old',
-    });
-    // Confluence reports version 8 — different from our local bump (6) — to
-    // prove the route trusts the API-returned version (defends against drift).
-    mockUpdatePage.mockResolvedValue({ version: { number: 8 } });
-    mockGetClientForUser.mockResolvedValue({ updatePage: mockUpdatePage });
-
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
-
-    expect(r.statusCode).toBe(200);
-    const body = r.json();
-    // Response reports the API-returned version (8), not the local bump (6).
-    expect(body).toMatchObject({ id: 7, version: 8, restoredFrom: 2, source: 'confluence', pushedToConfluence: true });
-
-    expect(mockRestoreVersion).toHaveBeenCalledWith(7, 2);
-    // Pushes the PREVIOUS live version (newVersion-1 = 5); client.updatePage bumps internally.
-    expect(mockUpdatePage).toHaveBeenCalledWith('page-1', 'Old Title', '<p>storage</p>', 5);
-    // On successful push, local body_storage + the API version are persisted and
-    // local-edit markers cleared.
-    const storageUpdate = mockQueryFn.mock.calls.find(
-      ([sql]) => typeof sql === 'string' && sql.includes('body_storage = $2') && sql.includes('version = $3') && sql.includes('local_modified_at = NULL'),
+  async function seedPage(options: SeedPageOptions = {}): Promise<number> {
+    const source = options.source ?? 'standalone';
+    const result = await query<{ id: number }>(
+      `INSERT INTO pages
+         (confluence_id, source, space_key, title, body_storage, body_html, body_text,
+          version, visibility, created_by_user_id, last_modified_at,
+          embedding_dirty, embedding_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, FALSE, 'not_embedded')
+       RETURNING id`,
+      [
+        options.confluenceId ?? null,
+        source,
+        options.spaceKey ?? null,
+        options.title ?? 'Current title',
+        options.bodyHtml ?? '<p>Current body</p>',
+        options.bodyHtml ?? '<p>Current body</p>',
+        options.bodyText ?? 'Current body',
+        options.version ?? 3,
+        options.visibility ?? 'private',
+        options.ownerId === undefined ? userId : options.ownerId,
+        options.lastModifiedAt === undefined ? new Date('2026-03-01T12:00:00Z') : options.lastModifiedAt,
+      ],
     );
-    expect(storageUpdate).toBeDefined();
-    expect((storageUpdate as [string, unknown[]])[1]).toEqual([7, '<p>storage</p>', 8]);
-    expect(mockLogAuditEvent).toHaveBeenCalledWith(
-      TEST_USER, 'PAGE_VERSION_RESTORED', 'page', '7',
-      expect.objectContaining({ restoredFrom: 2, newVersion: 8, pushedToConfluence: true }),
-      expect.anything(),
+    return result.rows[0]!.id;
+  }
+
+  async function seedVersion(
+    pageId: number,
+    versionNumber: number,
+    title: string,
+    bodyHtml: string | null,
+    bodyText: string | null,
+    metadata: { editedAt?: Date | null; author?: string | null; message?: string | null } = {},
+  ): Promise<void> {
+    await query(
+      `INSERT INTO page_versions
+         (page_id, version_number, title, body_html, body_text, synced_at, edited_at, author, message)
+       VALUES ($1, $2, $3, $4, $5, '2026-03-02T12:00:00Z', $6, $7, $8)`,
+      [
+        pageId,
+        versionNumber,
+        title,
+        bodyHtml,
+        bodyText,
+        metadata.editedAt ?? null,
+        metadata.author ?? null,
+        metadata.message ?? null,
+      ],
     );
-    expect(mockEmitWebhookEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'page.updated' }));
+  }
+
+  it.each([
+    ['GET', '/api/pages/1/versions', undefined],
+    ['GET', '/api/pages/1/versions/1', undefined],
+    ['POST', '/api/pages/1/versions/semantic-diff', { v1: 1, v2: 2 }],
+    ['POST', '/api/pages/1/versions/1/restore', { version: 2 }],
+  ] as const)('requires authentication for %s %s', async (method, url, payload) => {
+    const response = await app.inject({ method, url, payload });
+    expect(response.statusCode).toBe(401);
   });
 
-  it('restores a standalone page WITHOUT calling Confluence', async () => {
-    mockResolvedPage({ id: 20, source: 'standalone', visibility: 'shared', created_by_user_id: TEST_USER, version: 4 });
-    mockRestoreVersion.mockResolvedValue({
-      pageId: 20, title: 'Local Old', newVersion: 5,
-      bodyHtml: '<p>x</p>', bodyText: 'x',
+  it('lists real local history newest-first, de-duplicates the live version, and keeps null live timestamps', async () => {
+    const pageId = await seedPage({ version: 3, lastModifiedAt: null });
+    await seedVersion(pageId, 3, 'Duplicate live snapshot', '<p>duplicate</p>', 'duplicate');
+    await seedVersion(pageId, 2, 'Earlier title', '<p>Earlier body</p>', 'Earlier body', {
+      editedAt: new Date('2026-02-28T10:00:00Z'),
+      author: 'Alice',
+      message: 'Updated introduction',
     });
 
-    const r = await app.inject({ method: 'POST', url: '/api/pages/20/versions/1/restore', payload: { version: 4 } });
-
-    expect(r.statusCode).toBe(200);
-    expect(r.json().pushedToConfluence).toBe(false);
-    expect(mockGetClientForUser).not.toHaveBeenCalled();
-    expect(mockEmitWebhookEvent).toHaveBeenCalled();
-  });
-
-  it('still succeeds (pushedToConfluence=false) when the Confluence push fails', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockRestoreVersion.mockResolvedValue({
-      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>old</p>', bodyText: 'old',
-    });
-    mockUpdatePage.mockRejectedValue(new Error('Confluence 500'));
-    mockGetClientForUser.mockResolvedValue({ updatePage: mockUpdatePage });
-
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().pushedToConfluence).toBe(false);
-  });
-
-  it('409 when the page advanced past the client-supplied version (optimistic guard)', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 6 });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
-    expect(r.statusCode).toBe(409);
-    expect(mockRestoreVersion).not.toHaveBeenCalled();
-  });
-
-  it('400 when attempting to restore the current version', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/5/restore', payload: {} });
-    expect(r.statusCode).toBe(400);
-    expect(mockRestoreVersion).not.toHaveBeenCalled();
-  });
-
-  it('404 when the target snapshot does not exist', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'DEV', version: 5 });
-    mockRestoreVersion.mockResolvedValue(null);
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/99/restore', payload: {} });
-    expect(r.statusCode).toBe(404);
-  });
-
-  it('403 when the user lacks space access — restore is never attempted', async () => {
-    mockResolvedPage({ id: 7, confluence_id: 'page-1', space_key: 'SECRET', version: 5 });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: {} });
-    expect(r.statusCode).toBe(403);
-    expect(mockRestoreVersion).not.toHaveBeenCalled();
-  });
-
-  it('403 when a non-owner restores a private standalone page', async () => {
-    mockResolvedPage({ id: 20, source: 'standalone', visibility: 'private', created_by_user_id: 'other', version: 4 });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/20/versions/1/restore', payload: {} });
-    expect(r.statusCode).toBe(403);
-    expect(mockRestoreVersion).not.toHaveBeenCalled();
-  });
-
-  it('404 when the page does not exist', async () => {
-    mockQueryFn.mockResolvedValue({ rows: [] });
-    const r = await app.inject({ method: 'POST', url: '/api/pages/nope/versions/1/restore', payload: {} });
-    expect(r.statusCode).toBe(404);
-  });
-
-  it('lazy-fetches the historical body BEFORE restoring when the target row body is NULL (#722/#724 data-loss)', async () => {
-    // Page resolution + a target page_versions row whose body_html IS NULL
-    // (a backfilled, never-previewed version).
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
-        return Promise.resolve({ rows: [{ id: 7, confluence_id: 'page-1', space_key: 'DEV', source: 'confluence', visibility: 'shared', created_by_user_id: null, version: 5 }] });
-      }
-      // The new pre-restore "is the target body NULL?" probe.
-      if (typeof sql === 'string' && sql.includes('SELECT body_html FROM page_versions')) {
-        return Promise.resolve({ rows: [{ body_html: null }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-    const mockClient = { updatePage: vi.fn().mockResolvedValue({ version: { number: 7 } }) };
-    mockGetClientForUser.mockResolvedValue(mockClient);
-    mockGetHistoricalBody.mockResolvedValue({ bodyHtml: '<p>fetched</p>', bodyText: 'fetched' });
-    mockRestoreVersion.mockResolvedValue({
-      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>fetched</p>', bodyText: 'fetched',
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/versions`,
+      headers: { 'x-test-user': userId },
     });
 
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
-
-    expect(r.statusCode).toBe(200);
-    // The body was lazily fetched + persisted BEFORE the restore ran.
-    expect(mockGetHistoricalBody).toHaveBeenCalledWith(7, 'page-1', 2, mockClient);
-    const fetchOrder = mockGetHistoricalBody.mock.invocationCallOrder[0]!;
-    const restoreOrder = mockRestoreVersion.mock.invocationCallOrder[0]!;
-    expect(fetchOrder).toBeLessThan(restoreOrder);
-    expect(mockRestoreVersion).toHaveBeenCalledWith(7, 2);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      pageId: String(pageId),
+      versions: [
+        {
+          versionNumber: 3,
+          title: 'Current title',
+          editedAt: null,
+          syncedAt: null,
+          isCurrent: true,
+        },
+        {
+          versionNumber: 2,
+          title: 'Earlier title',
+          editedAt: '2026-02-28T10:00:00.000Z',
+          author: 'Alice',
+          message: 'Updated introduction',
+          isCurrent: false,
+        },
+      ],
+    });
+    expect(response.json().backfillStatus).toBeUndefined();
   });
 
-  it('does NOT lazy-fetch when the target row already has a body', async () => {
-    mockQueryFn.mockImplementation((sql: string) => {
-      if (typeof sql === 'string' && sql.includes('confluence_id, space_key, source, visibility, created_by_user_id, version')) {
-        return Promise.resolve({ rows: [{ id: 7, confluence_id: 'page-1', space_key: 'DEV', source: 'confluence', visibility: 'shared', created_by_user_id: null, version: 5 }] });
-      }
-      if (typeof sql === 'string' && sql.includes('SELECT body_html FROM page_versions')) {
-        return Promise.resolve({ rows: [{ body_html: '<p>already here</p>' }] });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-    mockGetClientForUser.mockResolvedValue({ updatePage: vi.fn().mockResolvedValue({ version: { number: 6 } }) });
-    mockRestoreVersion.mockResolvedValue({
-      pageId: 7, title: 'Old', newVersion: 6, bodyHtml: '<p>already here</p>', bodyText: 'already here',
+  it('returns an empty list for a missing page and enforces private-page and space RBAC', async () => {
+    const privatePageId = await seedPage();
+    await query(
+      `INSERT INTO spaces (space_key, space_name)
+       VALUES ('SECRET', 'Restricted space')`,
+    );
+    const restrictedPageId = await seedPage({
+      source: 'confluence',
+      confluenceId: 'restricted-page',
+      spaceKey: 'SECRET',
+      visibility: 'shared',
+      ownerId: null,
     });
 
-    const r = await app.inject({ method: 'POST', url: '/api/pages/page-1/versions/2/restore', payload: { version: 5 } });
+    const missing = await app.inject({
+      method: 'GET',
+      url: '/api/pages/not-present/versions',
+      headers: { 'x-test-user': userId },
+    });
+    const privateDenied = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${privatePageId}/versions`,
+      headers: { 'x-test-user': otherUserId },
+    });
+    const spaceDenied = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${restrictedPageId}/versions`,
+      headers: { 'x-test-user': userId },
+    });
 
-    expect(r.statusCode).toBe(200);
-    expect(mockGetHistoricalBody).not.toHaveBeenCalled();
+    expect(missing.statusCode).toBe(200);
+    expect(missing.json().versions).toEqual([]);
+    expect(privateDenied.statusCode).toBe(403);
+    expect(spaceDenied.statusCode).toBe(403);
+  });
+
+  it('returns current and historical detail from persisted rows and reports a missing version', async () => {
+    const pageId = await seedPage({ version: 4 });
+    await seedVersion(pageId, 2, 'Historical title', '<p>Historical body</p>', 'Historical body');
+
+    const current = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/versions/4`,
+      headers: { 'x-test-user': userId },
+    });
+    const historical = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/versions/2`,
+      headers: { 'x-test-user': userId },
+    });
+    const missing = await app.inject({
+      method: 'GET',
+      url: `/api/pages/${pageId}/versions/99`,
+      headers: { 'x-test-user': userId },
+    });
+
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).toMatchObject({ versionNumber: 4, bodyHtml: '<p>Current body</p>', isCurrent: true });
+    expect(historical.statusCode).toBe(200);
+    expect(historical.json()).toMatchObject({
+      versionNumber: 2,
+      title: 'Historical title',
+      bodyHtml: '<p>Historical body</p>',
+      isCurrent: false,
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it('produces a semantic diff through the configured external HTTP provider and snapshots the live version', async () => {
+    const pageId = await seedPage({ version: 3, bodyHtml: '<p>Expanded introduction</p>', bodyText: 'Expanded introduction' });
+    await seedVersion(pageId, 1, 'First title', '<p>Short introduction</p>', 'Short introduction');
+    const provider = await query<{ id: string }>(
+      `INSERT INTO llm_providers
+         (name, base_url, auth_type, verify_ssl, is_default, default_model)
+       VALUES ('versions-diff', $1, 'none', TRUE, TRUE, 'diff-model')
+       RETURNING id`,
+      [llmBaseUrl],
+    );
+    await query(
+      `INSERT INTO llm_usecase_assignments (usecase, provider_id, model)
+       VALUES ('chat', $1, 'diff-model')
+       ON CONFLICT (usecase) DO UPDATE SET provider_id = EXCLUDED.provider_id, model = EXCLUDED.model`,
+      [provider.rows[0]!.id],
+    );
+    await bumpProviderCacheVersion();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/semantic-diff`,
+      headers: { 'x-test-user': userId },
+      payload: { v1: 1, v2: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      diff: '- The introduction was expanded.',
+      v1: 1,
+      v2: 3,
+      pageId: String(pageId),
+    });
+    expect(llmRequests).toHaveLength(1);
+    expect(llmRequests[0]).toMatchObject({ model: 'diff-model' });
+    expect(JSON.stringify(llmRequests[0])).toContain('Short introduction');
+    expect(JSON.stringify(llmRequests[0])).toContain('Expanded introduction');
+    expect((await query(
+      'SELECT version_number, body_html FROM page_versions WHERE page_id = $1 AND version_number = 3',
+      [pageId],
+    )).rows).toEqual([{ version_number: 3, body_html: '<p>Expanded introduction</p>' }]);
+  });
+
+  it('restores a standalone snapshot transactionally and records the superseded state and audit', async () => {
+    const pageId = await seedPage({
+      version: 3,
+      title: 'Live title',
+      bodyHtml: '<p>Live body</p>',
+      bodyText: 'Live body',
+    });
+    await seedVersion(pageId, 1, 'Restored title', '<p>Restored body</p>', 'Restored body');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      id: pageId,
+      title: 'Restored title',
+      version: 4,
+      restoredFrom: 1,
+      source: 'standalone',
+      pushedToConfluence: false,
+    });
+    expect((await query(
+      `SELECT title, body_html, body_text, version, embedding_dirty,
+              local_modified_by::text AS local_modified_by
+         FROM pages WHERE id = $1`,
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Restored title',
+      body_html: '<p>Restored body</p>',
+      body_text: 'Restored body',
+      version: 4,
+      embedding_dirty: true,
+      local_modified_by: userId,
+    }]);
+    expect((await query(
+      `SELECT title, body_html, body_text FROM page_versions
+        WHERE page_id = $1 AND version_number = 3`,
+      [pageId],
+    )).rows).toEqual([{
+      title: 'Live title',
+      body_html: '<p>Live body</p>',
+      body_text: 'Live body',
+    }]);
+    expect((await query<{ action: string; metadata: Record<string, unknown> }>(
+      `SELECT action, metadata FROM audit_log
+        WHERE resource_id = $1 AND action = 'PAGE_VERSION_RESTORED'`,
+      [String(pageId)],
+    )).rows).toEqual([{
+      action: 'PAGE_VERSION_RESTORED',
+      metadata: expect.objectContaining({ restoredFrom: 1, newVersion: 4, pushedToConfluence: false }),
+    }]);
+  });
+
+  it('refuses stale, collaborative, and unauthorized restores without changing authored state', async () => {
+    const pageId = await seedPage({ version: 3 });
+    await seedVersion(pageId, 1, 'Target', '<p>Target</p>', 'Target');
+
+    const stale = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 2 },
+    });
+    expect(stale.statusCode).toBe(409);
+
+    const collabKey = `collab:active:${pageId}`;
+    ownedRedisKeys.add(collabKey);
+    await redis.sAdd(collabKey, 'versions-route-test-socket');
+    const collaborative = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+    expect(collaborative.statusCode).toBe(409);
+    expect(collaborative.json()).toMatchObject({ error: 'Collaborative editing session is active' });
+
+    await redis.del(collabKey);
+    const denied = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/1/restore`,
+      headers: { 'x-test-user': otherUserId },
+      payload: { version: 3 },
+    });
+    expect(denied.statusCode).toBe(403);
+
+    expect((await query(
+      'SELECT title, body_html, version FROM pages WHERE id = $1',
+      [pageId],
+    )).rows).toEqual([{ title: 'Current title', body_html: '<p>Current body</p>', version: 3 }]);
+    expect((await query(
+      'SELECT id FROM page_write_intents WHERE page_ids @> ARRAY[$1]::integer[]',
+      [pageId],
+    )).rows).toEqual([]);
+  });
+
+  it('reports current-version and missing-target restore errors without producing history', async () => {
+    const pageId = await seedPage({ version: 3 });
+
+    const current = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/3/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+    const missing = await app.inject({
+      method: 'POST',
+      url: `/api/pages/${pageId}/versions/99/restore`,
+      headers: { 'x-test-user': userId },
+      payload: { version: 3 },
+    });
+
+    expect(current.statusCode).toBe(400);
+    expect(missing.statusCode).toBe(404);
+    expect((await query('SELECT id FROM page_versions WHERE page_id = $1', [pageId])).rows).toEqual([]);
   });
 });

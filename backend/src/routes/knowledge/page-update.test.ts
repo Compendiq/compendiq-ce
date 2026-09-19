@@ -1,546 +1,651 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { pagesCrudRoutes } from './pages-crud.js';
+import { randomUUID } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { setPageBaselineReadinessProvider } from '../../core/services/page-baseline-governance.js';
+import {
+  freezePage,
+  previewPageBaseline,
+  setPageBaselineCreationEnabled,
+} from '../../core/services/page-baseline-service.js';
+import { lockPageLifecycle, reconcilePageWriteIntent } from '../../core/services/page-write-admission.js';
+import { registerOrdinaryPageWriteReconcilers } from '../../domains/confluence/services/ordinary-page-write-reconciler.js';
+import { encryptPat } from '../../core/utils/crypto.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertStandalonePage,
+  insertUser,
+} from './pages.test-helpers.js';
 
-const mockQuery = vi.fn();
-const mockGetClientForUser = vi.fn();
-const mockConfluenceToHtml = vi.fn().mockReturnValue('<p>converted</p>');
-const mockHtmlToConfluence = vi.fn().mockReturnValue('<p>storage</p>');
-const mockHtmlToText = vi.fn().mockReturnValue('converted');
-const mockLogAuditEvent = vi.fn();
+const [dbAvailable, redisAvailable] = await Promise.all([isDbAvailable(), isRedisAvailable()]);
 
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
-}));
+type ConfluencePayload = {
+  title: string;
+  version: { number: number };
+  body: { storage: { value: string } };
+};
 
-const mockIsConfluenceEnabled = vi.fn();
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: (...args: unknown[]) => mockIsConfluenceEnabled(...args),
-  getClientForUser: (...args: unknown[]) => mockGetClientForUser(...args),
-}));
+type ConfluenceRequest = {
+  method: string;
+  url: string;
+  body: ConfluencePayload;
+  authorization: string | undefined;
+};
 
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-}));
+let app: FastifyInstance;
+let redis: RedisClientType;
+let confluence: Server;
+let confluenceBaseUrl: string;
+let currentUserId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+let remoteVersion = 8;
+let confluenceRequests: ConfluenceRequest[] = [];
+let compactPutReply = false;
+let readbackStatus = 200;
+let readbackCalls = 0;
+let providerPage: (ConfluencePayload & { id: string; status: string }) | null = null;
 
-vi.mock('../../core/services/content-converter.js', () => ({
-  confluenceToHtml: (...args: unknown[]) => mockConfluenceToHtml(...args),
-  htmlToConfluence: (...args: unknown[]) => mockHtmlToConfluence(...args),
-  htmlToText: (...args: unknown[]) => mockHtmlToText(...args),
-}));
+async function readRequestBody(request: IncomingMessage): Promise<ConfluencePayload> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as ConfluencePayload;
+}
+async function waitForBlockedLifecycleLock(): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const waiting = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND query LIKE '%pg_advisory_xact_lock%'
+       ) AS waiting`,
+    );
+    if (waiting.rows[0]?.waiting) return;
+  }
+  throw new Error('stale writer did not reach the lifecycle lock barrier');
+}
 
-const mockCacheInvalidate = vi.fn();
-const mockCacheInvalidateAcrossUsers = vi.fn();
 
-vi.mock('../../core/services/redis-cache.js', () => ({
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = (...args: unknown[]) => mockCacheInvalidate(...args);
-    invalidateAcrossUsers = (...args: unknown[]) => mockCacheInvalidateAcrossUsers(...args);
-  },
-}));
+async function insertConfluenceSpace(spaceKey: string): Promise<void> {
+  await query(
+    `INSERT INTO spaces (space_key, space_name, source, last_synced)
+     VALUES ($1, $1, 'confluence', NOW())`,
+    [spaceKey],
+  );
+}
 
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
 
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: (...args: unknown[]) => mockLogAuditEvent(...args),
-}));
+async function seedConfluencePage(userId: string, opts: { enabled?: boolean; credentials?: boolean } = {}): Promise<number> {
+  const enabled = opts.enabled ?? true;
+  const credentials = opts.credentials ?? true;
+  await insertConfluenceSpace('OPS');
+  await query(
+    `WITH editor_role AS (
+       INSERT INTO roles (name, display_name, permissions)
+       VALUES ('update-editor', 'Update editor', ARRAY['read', 'write'])
+       ON CONFLICT (name) DO UPDATE SET permissions = EXCLUDED.permissions
+       RETURNING id
+     )
+     INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     SELECT 'OPS', 'user', $1, id FROM editor_role`,
+    [userId],
+  );
+  const page = await query<{ id: number }>(
+    `INSERT INTO pages
+       (confluence_id, source, space_key, title, body_html, body_storage, body_text,
+        version, visibility, summary_status, summary_retry_count, quality_status,
+        quality_retry_count, embedding_dirty, image_analysis_dirty)
+     VALUES ('page-1', 'confluence', 'OPS', 'Original', '<p>original</p>',
+             '<p>original</p>', 'original', 7, 'shared', 'summarized', 3,
+             'failed', 4, FALSE, FALSE)
+     RETURNING id`,
+  );
+  await query(
+    `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+     VALUES ($1, $2, $3, $4)`,
+    [
+      userId,
+      credentials ? confluenceBaseUrl : null,
+      credentials ? encryptPat('real-http-test-pat') : null,
+      enabled,
+    ],
+  );
+  return page.rows[0]!.id;
+}
 
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
+async function freeze(pageId: number, actorId: string): Promise<void> {
+  setPageBaselineReadinessProvider(async () => ({ ready: true, blockers: [] }));
+  const admin = await insertUser(`page-update-admin-${randomUUID()}`);
+  await query("UPDATE users SET role = 'admin' WHERE id = $1", [admin]);
+  await setPageBaselineCreationEnabled(admin, true);
+  const prepared = await previewPageBaseline(pageId, actorId);
+  await freezePage({
+    pageId,
+    actorId,
+    reason: 'Approved update fixture',
+    expectedContentRevision: prepared.contentRevision,
+    expectedManifestDigest: prepared.manifestDigest,
+    reportedSignatories: [],
+  });
+}
 
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
+type StoredPage = {
+  title: string;
+  body_html: string;
+  body_storage: string | null;
+  body_text: string;
+  version: number;
+  visibility: string;
+  summary_status: string;
+  summary_retry_count: number;
+  quality_status: string;
+  quality_retry_count: number;
+  embedding_dirty: boolean;
+  image_analysis_dirty: boolean;
+  local_modified_at: Date | null;
+  local_modified_by: string | null;
+  content_revision: string;
+};
 
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue(''),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
+async function pageRow(pageId: number): Promise<StoredPage> {
+  const result = await query<StoredPage>(
+    `SELECT title, body_html, body_storage, body_text, version, visibility,
+            summary_status, summary_retry_count, quality_status, quality_retry_count,
+            embedding_dirty, image_analysis_dirty, local_modified_at, local_modified_by,
+            content_revision::text AS content_revision
+       FROM pages WHERE id = $1`,
+    [pageId],
+  );
+  return result.rows[0]!;
+}
 
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockResolvedValue(false),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-describe('PUT /api/pages/:id', () => {
-  let app: ReturnType<typeof Fastify>;
-
+describe.skipIf(!dbAvailable || !redisAvailable)('PUT /api/pages/:id — real PostgreSQL and Redis', () => {
   beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = 'user-1';
-    });
-    app.decorate('requireAdmin', async () => {});
-    app.decorate('redis', {});
-    app.decorateRequest('userId', '');
+    await setupTestDb();
+    originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+    attachmentsDir = await mkdtemp(join(tmpdir(), 'page-update-real-'));
+    process.env.ATTACHMENTS_DIR = attachmentsDir;
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
+    confluence = createServer(async (request, response) => {
+      if (request.method === 'GET' && request.url?.startsWith('/rest/api/content/page-1?')) {
+        readbackCalls += 1;
+        response.writeHead(readbackStatus, { 'content-type': 'application/json' });
+        response.end(JSON.stringify(readbackStatus === 200 ? providerPage : { message: 'Readback denied' }));
+        return;
+      }
+      if (request.method !== 'PUT' || !request.url?.startsWith('/rest/api/content/')) {
+        response.writeHead(404).end();
+        return;
+      }
+      const body = await readRequestBody(request);
+      confluenceRequests.push({
+        method: request.method, url: request.url, body, authorization: request.headers.authorization,
+      });
+      providerPage = {
+        id: decodeURIComponent(request.url.split('/').at(-1)!),
+        status: 'current',
+        title: body.title,
+        version: { number: remoteVersion },
+        body: { storage: { value: body.body.storage.value } },
+      };
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(compactPutReply
+        ? { id: providerPage.id, version: providerPage.version }
+        : providerPage));
+    });
+    await new Promise<void>((resolve) => confluence.listen(0, '127.0.0.1', resolve));
+    confluenceBaseUrl = `http://127.0.0.1:${(confluence.address() as AddressInfo).port}`;
+
+    redis = createClient({
+      url: process.env.REDIS_URL,
+      socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+    });
+    await redis.connect();
+    setRedisClient(redis);
+    app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+      instance.redis = redis;
+      // The route graph reads attachment configuration at module load; install
+      // the suite sandbox before loading it.
+      const { pagesCrudRoutes } = await import('./pages-crud.js');
+      await instance.register(pagesCrudRoutes, { prefix: '/api' });
+    });
+    registerOrdinaryPageWriteReconcilers();
   });
 
   afterAll(async () => {
     await app.close();
+    setPageBaselineReadinessProvider(null);
+    if (redis.isOpen) await redis.quit();
+    await new Promise<void>((resolve, reject) => confluence.close((error) => error ? reject(error) : resolve()));
+    await teardownTestDb();
+    await rm(attachmentsDir, { recursive: true, force: true });
+    if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+    else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
   });
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockConfluenceToHtml.mockReturnValue('<p>converted</p>');
-    mockHtmlToConfluence.mockReturnValue('<p>storage</p>');
-    mockHtmlToText.mockReturnValue('converted');
-    // Default: the test user can reach the OPS space used by the Confluence fixture.
-    mockGetUserAccessibleSpaces.mockResolvedValue(['OPS']);
-    // Default: the integration is on (the pre-#1623 behaviour of every case
-    // in this file).
-    mockIsConfluenceEnabled.mockResolvedValue(true);
-
-    mockQuery.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id, version, space_key')) {
-        return Promise.resolve({
-          rows: [{
-            id: 42, version: 7, space_key: 'OPS', source: 'confluence',
-            created_by_user_id: null, visibility: 'shared',
-            confluence_id: 'page-1', deleted_at: null,
-          }],
-        });
-      }
-      return Promise.resolve({ rows: [] });
-    });
-
-    mockGetClientForUser.mockResolvedValue({
-      updatePage: vi.fn().mockResolvedValue({
-        version: { number: 8 },
-        body: { storage: { value: '<p>updated from confluence</p>' } },
-      }),
-    });
+  beforeEach(async () => {
+    await truncateAllTables();
+    await redis.flushDb();
+    confluenceRequests = [];
+    remoteVersion = 8;
+    compactPutReply = false;
+    readbackStatus = 200;
+    readbackCalls = 0;
+    providerPage = null;
+    currentUserId = await insertUser(`page-update-${randomUUID()}`);
   });
 
-  it('passes the cached space key back into confluenceToHtml', async () => {
-    const response = await app.inject({
-      method: 'PUT',
-      url: '/api/pages/page-1',
-      payload: {
-        title: 'Updated title',
-        bodyHtml: '<p>updated body</p>',
-        version: 7,
-      },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockConfluenceToHtml).toHaveBeenCalledWith(
-      '<p>updated from confluence</p>',
-      'page-1',
-      'OPS',
+  it('persists a standalone edit, advances the version, and re-queues derived work', async () => {
+    await insertLocalSpace('LOCAL', currentUserId);
+    const pageId = await insertStandalonePage('Original', 'private', currentUserId, 'LOCAL');
+    await query(
+      `UPDATE pages SET summary_status = 'summarized', summary_retry_count = 3,
+                        quality_status = 'failed', quality_retry_count = 4,
+                        embedding_dirty = FALSE, image_analysis_dirty = FALSE
+        WHERE id = $1`,
+      [pageId],
     );
-  });
-
-  it('returns 403 and does not push to Confluence when the page is in a space the user cannot access', async () => {
-    // Page lives in OPS but the user only has DEV — mirrors DELETE /pages/:id RBAC.
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-    const updatePage = vi.fn();
-    mockGetClientForUser.mockResolvedValue({ updatePage });
 
     const response = await app.inject({
       method: 'PUT',
-      url: '/api/pages/page-1',
-      payload: {
-        title: 'Should not happen',
-        bodyHtml: '<p>unauthorized edit</p>',
-        version: 7,
-      },
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Changed', bodyHtml: '<p>Changed <strong>text</strong></p>', version: 1 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ id: pageId, title: 'Changed', version: 2, source: 'standalone' });
+    expect(await pageRow(pageId)).toMatchObject({
+      title: 'Changed',
+      body_html: '<p>Changed <strong>text</strong></p>',
+      body_text: 'Changed text',
+      version: 2,
+      summary_status: 'pending',
+      summary_retry_count: 0,
+      quality_status: 'pending',
+      quality_retry_count: 0,
+      embedding_dirty: true,
+      image_analysis_dirty: true,
+      local_modified_by: currentUserId,
+    });
+  });
+
+  it('rejects a stale standalone version without changing persisted content', async () => {
+    await insertLocalSpace('LOCAL', currentUserId);
+    const pageId = await insertStandalonePage('Current', 'private', currentUserId, 'LOCAL');
+    await query('UPDATE pages SET version = 4 WHERE id = $1', [pageId]);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Stale', bodyHtml: '<p>stale</p>', version: 3 },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(await pageRow(pageId)).toMatchObject({ title: 'Current', body_html: '<p>x</p>', version: 4 });
+  });
+
+  it('makes a visibility-only update visible through another user’s already-cached tree without bumping content', async () => {
+    await insertLocalSpace('LOCAL', currentUserId);
+    const pageId = await insertStandalonePage('Private page', 'private', currentUserId, 'LOCAL');
+    const otherUser = await insertUser(`page-update-other-${randomUUID()}`);
+    currentUserId = otherUser;
+    const before = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(before.json<{ items: Array<{ id: string }> }>().items.some((item) => item.id === String(pageId))).toBe(false);
+
+    currentUserId = (await query<{ created_by_user_id: string }>(
+      'SELECT created_by_user_id FROM pages WHERE id = $1', [pageId],
+    )).rows[0]!.created_by_user_id;
+    const original = await pageRow(pageId);
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Private page', bodyHtml: '<p>x</p>', version: 1, visibility: 'shared' },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+
+    const changed = await pageRow(pageId);
+    expect(changed).toMatchObject({
+      visibility: 'shared',
+      version: original.version,
+      content_revision: original.content_revision,
+    });
+    currentUserId = otherUser;
+    const after = await app.inject({ method: 'GET', url: '/api/pages/tree' });
+    expect(after.json<{ items: Array<{ id: string }> }>().items.some((item) => item.id === String(pageId))).toBe(true);
+  });
+  it('rechecks current authority after the lifecycle lock before accepting a stale shared-page writer', async () => {
+    const owner = currentUserId;
+    await insertLocalSpace('LOCAL', owner);
+    const pageId = await insertStandalonePage('Shared page', 'shared', owner, 'LOCAL');
+    currentUserId = await insertUser(`page-update-stale-${randomUUID()}`);
+
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [pageId]);
+    try {
+      const staleWrite = app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Shared page', bodyHtml: '<p>x</p>', version: 1 },
+      });
+      await waitForBlockedLifecycleLock();
+      await blocker.query("UPDATE pages SET visibility = 'private' WHERE id = $1", [pageId]);
+      await blocker.query('COMMIT');
+
+      const response = await staleWrite;
+      expect(response.statusCode).toBe(403);
+      expect(await pageRow(pageId)).toMatchObject({
+        title: 'Shared page', body_html: '<p>x</p>', visibility: 'private', version: 1,
+      });
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+
+  it('refuses an owner deactivated while an authored update waits for admission', async () => {
+    await insertLocalSpace('LOCAL', currentUserId);
+    const pageId = await insertStandalonePage('Original', 'private', currentUserId, 'LOCAL');
+    const blocker = await getPool().connect();
+    await blocker.query('BEGIN');
+    await lockPageLifecycle(blocker, [pageId]);
+    try {
+      const pending = app.inject({
+        method: 'PUT',
+        url: `/api/pages/${pageId}`,
+        payload: { title: 'Unauthorized change', bodyHtml: '<p>changed</p>', version: 1 },
+      });
+      await waitForBlockedLifecycleLock();
+      await blocker.query('UPDATE users SET deactivated_at = NOW() WHERE id = $1', [currentUserId]);
+      await blocker.query('COMMIT');
+
+      const response = await pending;
+      expect(response.statusCode).toBe(403);
+      expect(await pageRow(pageId)).toMatchObject({
+        title: 'Original', body_html: '<p>x</p>', version: 1,
+      });
+      expect(confluenceRequests).toHaveLength(0);
+    } catch (error) {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      blocker.release();
+    }
+  });
+
+  it('denies a private standalone edit by a non-owner', async () => {
+    const owner = currentUserId;
+    await insertLocalSpace('LOCAL', owner);
+    const pageId = await insertStandalonePage('Private', 'private', owner, 'LOCAL');
+    currentUserId = await insertUser(`page-update-intruder-${randomUUID()}`);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Taken', bodyHtml: '<p>taken</p>', version: 1 },
     });
 
     expect(response.statusCode).toBe(403);
-    expect(mockGetUserAccessibleSpaces).toHaveBeenCalledWith('user-1');
-    // Critical: no upstream edit must occur for an unauthorized space.
-    expect(updatePage).not.toHaveBeenCalled();
+    expect(await pageRow(pageId)).toMatchObject({ title: 'Private', body_html: '<p>x</p>', version: 1 });
   });
 
-  // #828 — an edit changes content, so the summary/quality workers must
-  // re-process the page. The workers exclude retry-exhausted 'failed' pages,
-  // so if the edit path leaves a stale 'failed'/'summarized' status the page
-  // keeps a stale (or absent) summary/quality forever. Both app-side edit
-  // paths must reset status + retry count (mirroring the sync-service
-  // convention that resets on upstream changes).
-  describe('re-queues summary/quality analysis after an edit (#828)', () => {
-    function findUpdatePagesCall(marker: string): string {
-      const call = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET') && (c[0] as string).includes(marker),
-      );
-      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
-      return call[0] as string;
-    }
+  it('denies an inaccessible Confluence space before making an HTTP request', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    await query('DELETE FROM space_role_assignments WHERE principal_id = $1', [currentUserId]);
+    await redis.flushDb();
 
-    it('resets summary + quality status on a standalone edit', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, space_key')) {
-          return Promise.resolve({
-            rows: [{
-              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
-              created_by_user_id: 'user-1', visibility: 'shared',
-              confluence_id: null, deleted_at: null, page_type: 'page',
-            }],
-          });
-        }
-        // A matching, guarded UPDATE affects exactly one row (#926).
-        if (sql.includes('UPDATE pages SET')) {
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const sql = findUpdatePagesCall('local_modified_by');
-      expect(sql).toContain("summary_status = 'pending'");
-      expect(sql).toContain('summary_retry_count = 0');
-      expect(sql).toContain("quality_status = 'pending'");
-      expect(sql).toContain('quality_retry_count = 0');
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Denied', bodyHtml: '<p>denied</p>', version: 7 },
     });
 
-    it('resets summary + quality status and stamps last_modified_at on a Confluence-push edit', async () => {
-      // Default beforeEach mock resolves a Confluence-backed page (id 42).
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/page-1',
-        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
-      });
+    expect(response.statusCode).toBe(403);
+    expect(confluenceRequests).toHaveLength(0);
+    expect(await pageRow(pageId)).toMatchObject({ title: 'Original', version: 7 });
+  });
 
-      expect(response.statusCode).toBe(200);
-      const sql = findUpdatePagesCall('body_storage');
-      expect(sql).toContain("summary_status = 'pending'");
-      expect(sql).toContain('summary_retry_count = 0');
-      expect(sql).toContain("quality_status = 'pending'");
-      expect(sql).toContain('quality_retry_count = 0');
-      // The Confluence-push UPDATE previously omitted last_modified_at entirely,
-      // so downstream last_modified_at-based change detection never fired.
-      expect(sql).toContain('last_modified_at = NOW()');
+  it('pushes a Confluence edit over HTTP and persists the remote version and converted body', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Remote title', bodyHtml: '<p>Remote body</p>', version: 7 },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ id: pageId, title: 'Remote title', version: 8, source: 'confluence' });
+    expect(confluenceRequests).toHaveLength(1);
+    expect(confluenceRequests[0]).toMatchObject({ method: 'PUT', url: '/rest/api/content/page-1' });
+    expect(confluenceRequests[0]!.body).toMatchObject({ title: 'Remote title', version: { number: 8 } });
+    const row = await pageRow(pageId);
+    expect(row).toMatchObject({
+      title: 'Remote title',
+      version: 8,
+      body_storage: expect.stringContaining('Remote body'),
+      body_html: expect.stringContaining('Remote body'),
+      body_text: 'Remote body',
+      summary_status: 'pending',
+      quality_status: 'pending',
+      embedding_dirty: true,
+      image_analysis_dirty: true,
+      local_modified_at: null,
+      local_modified_by: null,
     });
   });
 
-  /**
-   * #1115 P2 (review r1) — a body writer is an image-reference writer.
-   *
-   * Nothing else notices an `<img>` the editor DELETED: no attachment write
-   * happens, so without this the index keeps a row for a picture the page no
-   * longer shows and the reconcile pass this feature ships can never fire for
-   * a locally-edited page. The ADD side has a race of its own — paste stages
-   * the bytes (raising the flag) BEFORE the body that references them is
-   * saved, so a scan landing in between clears the flag against the old body.
-   *
-   * Gated on `body_html` alone, so a title-only save costs nothing.
-   */
-  describe('re-queues the image index after a body edit (#1115 P2)', () => {
-    function findUpdatePagesCall(marker: string): string {
-      const call = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes('UPDATE pages SET') && (c[0] as string).includes(marker),
-      );
-      if (!call) throw new Error(`no UPDATE pages call containing ${marker}`);
-      return call[0] as string;
-    }
+  it('recovers a compact acknowledged PUT after readback fails without replaying the mutation', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    compactPutReply = true;
+    readbackStatus = 403;
+    const before = await pageRow(pageId);
 
-    it('raises image_analysis_dirty on a standalone edit, gated on body_html', async () => {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, space_key')) {
-          return Promise.resolve({
-            rows: [{
-              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
-              created_by_user_id: 'user-1', visibility: 'shared',
-              confluence_id: null, deleted_at: null, page_type: 'page',
-            }],
-          });
-        }
-        if (sql.includes('UPDATE pages SET')) {
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note <img src="/api/attachments/7/a.png"></p>', version: 3 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const sql = findUpdatePagesCall('local_modified_by');
-      expect(sql).toContain('image_analysis_dirty');
-      // `body_html`, never `body_text`: the src attributes live in the HTML,
-      // and a flattener-only difference cannot move an image.
-      expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$3/);
-      // #1618 retired the legacy flag this gate was written for; writing a
-      // dropped column would fail against a migrated database, and this suite
-      // mocks the query, so the absence is asserted rather than discovered.
-      expect(sql).not.toContain('image_embedding_dirty');
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Acknowledged title', bodyHtml: '<p>acknowledged body</p>', version: 7 },
     });
 
-    it('raises image_analysis_dirty on the app-side Confluence push', async () => {
-      // This path especially: its own comment notes the follow-up sync
-      // short-circuits on an already-current version, so `syncPage`'s image
-      // flag never runs for it.
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/page-1',
-        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      const sql = findUpdatePagesCall('body_storage');
-      expect(sql).toMatch(/image_analysis_dirty = CASE[\s\S]*?body_html IS DISTINCT FROM \$4/);
-      expect(sql).not.toContain('image_embedding_dirty');
+    expect(response.statusCode).toBe(403);
+    expect(readbackCalls).toBe(1);
+    expect(confluenceRequests).toHaveLength(1);
+    expect(await pageRow(pageId)).toMatchObject({
+      title: before.title, body_html: before.body_html, version: before.version,
     });
+    const pending = await query<{ id: string; status: string; remote_effects_completed_at: Date | null }>(
+      `SELECT id, status, remote_effects_completed_at
+         FROM page_write_intents WHERE kind = 'pages.update.confluence' AND page_ids = ARRAY[$1]::integer[]`,
+      [pageId],
+    );
+    expect(pending.rows[0]).toMatchObject({
+      status: 'pending', remote_effects_completed_at: expect.any(Date),
+    });
+
+    const retiredRuntime = `retired-compact-put-${randomUUID()}`;
+    await query(
+      `INSERT INTO page_writer_runtimes
+         (runtime_id, deployment_identity, fenced_at, fence_reason, fence_proof)
+       VALUES ($1, '{"fixture":"terminated PUT owner"}', NOW(),
+               'Fixture simulates termination after acknowledged PUT',
+               '{"kind":"verified_local_termination"}')`,
+      [retiredRuntime],
+    );
+    await query('UPDATE page_write_intents SET runtime_id = $2 WHERE id = $1', [
+      pending.rows[0]!.id, retiredRuntime,
+    ]);
+    readbackStatus = 200;
+    await expect(reconcilePageWriteIntent(pending.rows[0]!.id, {
+      actorId: currentUserId, reason: 'Recover known provider success without another page mutation',
+    })).resolves.toEqual({ intentId: pending.rows[0]!.id, status: 'reconciled_applied' });
+    expect(await pageRow(pageId)).toMatchObject({
+      title: 'Acknowledged title', body_text: 'acknowledged body', version: 8,
+      summary_status: 'pending', quality_status: 'pending',
+    });
+    expect(readbackCalls).toBe(2);
+    expect(confluenceRequests).toHaveLength(1);
   });
 
-  describe('standalone visibility change — cache invalidation', () => {
-    function mockStandalonePage(visibility: 'private' | 'shared') {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, space_key')) {
-          return Promise.resolve({
-            rows: [{
-              id: 7, version: 3, space_key: 'NOTES', source: 'standalone',
-              created_by_user_id: 'user-1', visibility,
-              confluence_id: null, deleted_at: null, page_type: 'page',
-            }],
-          });
-        }
-        // A matching, guarded UPDATE affects exactly one row (#926).
-        if (sql.includes('UPDATE pages SET')) {
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-    }
-
-    it('invalidates the pages cache across all users when the update changes visibility', async () => {
-      mockStandalonePage('private');
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3, visibility: 'shared' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      // Other users' cached trees/lists would otherwise serve stale data
-      // for up to the cache TTL after a private → shared flip (and vice versa).
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
+  it('retains a conflicting acknowledgment instead of publishing an unrelated provider version', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    remoteVersion = 11;
+    const response = await app.inject({
+      method: 'PUT', url: `/api/pages/${pageId}`,
+      payload: { title: 'Unconfirmed', bodyHtml: '<p>unconfirmed</p>', version: 7 },
     });
-
-    it('invalidates across users when a shared page is edited with the same visibility (#893)', async () => {
-      // A shared page's list rows (title/snippet) are visible to every user, so
-      // an edit that keeps visibility='shared' must still clear every user's
-      // cache — not just the editor's — or others see the stale title for 15 min.
-      mockStandalonePage('shared');
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3, visibility: 'shared' },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-    });
-
-    it('invalidates across users when a shared page is edited and the payload omits visibility (#893)', async () => {
-      mockStandalonePage('shared');
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-    });
-
-    it('keeps per-user invalidation when the payload omits visibility', async () => {
-      mockStandalonePage('private');
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 3 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).not.toHaveBeenCalled();
-      expect(mockCacheInvalidate).toHaveBeenCalledWith('user-1', 'pages');
-    });
+    expect(response.statusCode).toBe(409);
+    expect(await pageRow(pageId)).toMatchObject({ title: 'Original', version: 7 });
+    expect((await query(
+      `SELECT 1 FROM page_write_intents
+        WHERE page_ids = ARRAY[$1]::integer[] AND status = 'pending'
+          AND remote_effects_completed_at IS NOT NULL`,
+      [pageId],
+    )).rowCount).toBe(1);
+    expect(readbackCalls).toBe(0);
   });
 
-  // #926 — the standalone update read the current version, computed
-  // newVersion = version + 1, then wrote with a bare `WHERE id = $1`. Two
-  // concurrent writers that both read version N both write N+1, and the
-  // slower one silently clobbers the faster one's edit (last-write-wins,
-  // no 409). The JS pre-check only rejects a client that sends a STALE
-  // body.version; it can't see a write that landed after the SELECT. The
-  // UPDATE must carry an atomic `AND version = <read version>` guard and
-  // return 409 when it matches no row.
-  describe('standalone update — atomic version guard (#926)', () => {
-    function mockStandalonePageWithUpdate(updateResult: { rows: unknown[]; rowCount: number }) {
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, space_key')) {
-          return Promise.resolve({
-            rows: [{
-              id: 7, version: 5, space_key: 'NOTES', source: 'standalone',
-              created_by_user_id: 'user-1', visibility: 'private',
-              confluence_id: null, deleted_at: null, page_type: 'page',
-            }],
-          });
-        }
-        if (sql.includes('UPDATE pages SET')) {
-          return Promise.resolve(updateResult);
-        }
-        return Promise.resolve({ rows: [] });
+  it('refuses stale Confluence mode after the request waits for admission', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    const blocker = await getPool().connect();
+    try {
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      const pending = app.inject({
+        method: 'PUT', url: `/api/pages/${pageId}`,
+        payload: { title: 'Stale mode', bodyHtml: '<p>must not leave</p>', version: 7 },
       });
-    }
-
-    it('returns 409 when the UPDATE matches no row because a concurrent writer bumped the version', async () => {
-      // A concurrent writer already advanced the row from 5 to 6, so the
-      // guarded UPDATE (`AND version = 5`) matches nothing → rowCount 0.
-      mockStandalonePageWithUpdate({ rows: [], rowCount: 0 });
-
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        // body.version === current read version, so the JS pre-check passes
-        // and only the atomic guard can catch the lost-update race.
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 5 },
-      });
-
+      await waitForBlockedLifecycleLock();
+      await blocker.query('UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1', [
+        currentUserId,
+      ]);
+      await blocker.query('COMMIT');
+      const response = await pending;
       expect(response.statusCode).toBe(409);
-    });
-
-    it('locks the read version into the UPDATE WHERE clause as a bound parameter', async () => {
-      mockStandalonePageWithUpdate({ rows: [], rowCount: 1 });
-
-      await app.inject({
-        method: 'PUT',
-        url: '/api/pages/7',
-        payload: { title: 'Note', bodyHtml: '<p>note</p>', version: 5 },
-      });
-
-      const call = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string'
-          && (c[0] as string).includes('UPDATE pages SET')
-          && (c[0] as string).includes('local_modified_by'),
-      );
-      if (!call) throw new Error('no standalone UPDATE pages call');
-      const sql = call[0] as string;
-      const params = call[1] as unknown[];
-      // Guard predicate present and parameterised (never string-interpolated).
-      expect(sql).toMatch(/version\s*=\s*\$\d+/);
-      // The bound value is the version read from the SELECT (5).
-      expect(params).toContain(5);
-    });
+      expect(confluenceRequests).toEqual([]);
+      expect(await pageRow(pageId)).toMatchObject({ title: 'Original', version: 7 });
+      expect((await query(
+        `SELECT 1 FROM page_write_intents WHERE page_ids = ARRAY[$1]::integer[] AND status = 'pending'`,
+        [pageId],
+      )).rowCount).toBe(0);
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      blocker.release();
+    }
   });
 
-  describe('Confluence-push edit — cache invalidation (#893)', () => {
-    it('invalidates the pages cache across all users after a Confluence-push edit', async () => {
-      // Default beforeEach mock resolves a Confluence-backed page (id 42),
-      // which every user with space access can see — so its cached list rows
-      // must be cleared for all users, not just the editor's.
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/page-1',
-        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
+  it('uses the current PAT rather than credentials captured before admission', async () => {
+    const pageId = await seedConfluencePage(currentUserId);
+    const blocker = await getPool().connect();
+    try {
+      await blocker.query('BEGIN');
+      await lockPageLifecycle(blocker, [pageId]);
+      const pending = app.inject({
+        method: 'PUT', url: `/api/pages/${pageId}`,
+        payload: { title: 'Fresh credentials', bodyHtml: '<p>current PAT</p>', version: 7 },
       });
-
-      expect(response.statusCode).toBe(200);
-      expect(mockCacheInvalidateAcrossUsers).toHaveBeenCalledWith('pages');
-      expect(mockCacheInvalidate).not.toHaveBeenCalledWith('user-1', 'pages');
-    });
+      await waitForBlockedLifecycleLock();
+      await blocker.query('UPDATE user_settings SET confluence_pat = $2 WHERE user_id = $1', [
+        currentUserId, encryptPat('replacement-fixture-pat'),
+      ]);
+      await blocker.query('COMMIT');
+      const response = await pending;
+      expect(response.statusCode, response.body).toBe(200);
+      expect(confluenceRequests).toHaveLength(1);
+      expect(confluenceRequests[0]!.authorization).toBe('Bearer replacement-fixture-pat');
+      expect(await pageRow(pageId)).toMatchObject({ title: 'Fresh credentials', version: 8 });
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      blocker.release();
+    }
   });
 
-  // #1623 — with the integration off the app is standalone: an already-synced
-  // article keeps working, and nothing may reach Confluence.
-  describe('Confluence integration off (#1623)', () => {
-    it('updates the local row and calls no Confluence client for a synced page', async () => {
-      // The Confluence fixture from beforeEach (id 42, source 'confluence'),
-      // plus the guarded local UPDATE matching its one row (#926).
-      mockQuery.mockImplementation((sql: string) => {
-        if (sql.includes('SELECT id, version, space_key')) {
-          return Promise.resolve({
-            rows: [{
-              id: 42, version: 7, space_key: 'OPS', source: 'confluence',
-              created_by_user_id: null, visibility: 'shared',
-              confluence_id: 'page-1', deleted_at: null, page_type: 'page',
-            }],
-          });
-        }
-        if (sql.includes('UPDATE pages SET')) {
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        }
-        return Promise.resolve({ rows: [] });
-      });
-      mockIsConfluenceEnabled.mockResolvedValue(false);
+  it('keeps a synced-page edit local while Confluence is disabled and retains credentials', async () => {
+    const pageId = await seedConfluencePage(currentUserId, { enabled: false });
 
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/page-1',
-        payload: { title: 'Edited offline', bodyHtml: '<p>local edit</p>', version: 7 },
-      });
-
-      expect(response.statusCode).toBe(200);
-      // The page is still a Confluence article, and the local version moved on.
-      expect(JSON.parse(response.payload)).toMatchObject({
-        id: 42,
-        source: 'confluence',
-        version: 8,
-      });
-      // The write went to the local row, stamped as a local edit (#305) so the
-      // next sync's existing conflict handling sees the divergence.
-      const localWrite = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string'
-          && (c[0] as string).includes('UPDATE pages SET')
-          && (c[0] as string).includes('local_modified_at = NOW()'),
-      );
-      expect(localWrite).toBeDefined();
-      // Nothing upstream was attempted — not even a client was asked for, so
-      // there is no code path left that could push or prompt for credentials.
-      expect(mockGetClientForUser).not.toHaveBeenCalled();
-      expect(mockHtmlToConfluence).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Local divergence', bodyHtml: '<p>local only</p>', version: 7 },
     });
 
-    it('keeps the credential error for an ENABLED user with no credentials', async () => {
-      // The regression this guards: `Confluence not configured` is a credential
-      // prompt and must stay reachable ONLY while the integration is on.
-      mockGetClientForUser.mockResolvedValue(null);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(confluenceRequests).toHaveLength(0);
+    expect(await pageRow(pageId)).toMatchObject({
+      title: 'Local divergence', body_html: '<p>local only</p>', version: 8,
+      local_modified_by: currentUserId,
+    });
+    const settings = await query<{ confluence_url: string | null; confluence_pat: string | null }>(
+      'SELECT confluence_url, confluence_pat FROM user_settings WHERE user_id = $1',
+      [currentUserId],
+    );
+    expect(settings.rows[0]!.confluence_url).toBe(confluenceBaseUrl);
+    expect(settings.rows[0]!.confluence_pat).not.toBeNull();
+  });
 
-      const response = await app.inject({
-        method: 'PUT',
-        url: '/api/pages/page-1',
-        payload: { title: 'Updated title', bodyHtml: '<p>updated body</p>', version: 7 },
-      });
+  it('keeps the credential error for an enabled user with no Confluence credentials', async () => {
+    const pageId = await seedConfluencePage(currentUserId, { credentials: false });
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'No credentials', bodyHtml: '<p>x</p>', version: 7 },
+    });
 
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(response.payload).message).toBe('Confluence not configured');
+    expect(response.statusCode).toBe(400);
+    expect(response.json<{ error: string }>().error).toContain('Confluence not configured');
+    expect(confluenceRequests).toHaveLength(0);
+  });
+
+  it('uses real frozen lifecycle state to deny authored changes while allowing visibility-only changes', async () => {
+    await insertLocalSpace('LOCAL', currentUserId);
+    const pageId = await insertStandalonePage('Frozen', 'private', currentUserId, 'LOCAL');
+    await freeze(pageId, currentUserId);
+    const before = await pageRow(pageId);
+
+    const denied = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Frozen', bodyHtml: '<p>changed</p>', version: 1, visibility: 'shared' },
+    });
+    expect(denied.statusCode).toBe(423);
+    expect(await pageRow(pageId)).toMatchObject({
+      body_html: before.body_html,
+      visibility: before.visibility,
+      version: before.version,
+      content_revision: before.content_revision,
+    });
+
+    const visibilityOnly = await app.inject({
+      method: 'PUT',
+      url: `/api/pages/${pageId}`,
+      payload: { title: 'Frozen', bodyHtml: '<p>x</p>', version: 1, visibility: 'shared' },
+    });
+    expect(visibilityOnly.statusCode, visibilityOnly.body).toBe(200);
+    expect(await pageRow(pageId)).toMatchObject({
+      body_html: before.body_html,
+      visibility: 'shared',
+      version: before.version,
+      content_revision: before.content_revision,
     });
   });
 });

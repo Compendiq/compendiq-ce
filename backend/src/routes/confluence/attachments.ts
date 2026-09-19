@@ -1,14 +1,37 @@
-import { FastifyInstance } from 'fastify';
-import { z } from 'zod';
+import crypto from 'node:crypto';
+import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { readdir, stat } from 'node:fs/promises';
-import { query } from '../../core/db/postgres.js';
-import { readAttachment, fetchAndCachePageImage, getMimeType, writeAttachmentCache } from '../../domains/confluence/services/attachment-handler.js';
-import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import type { PoolClient } from 'pg';
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { ATTACHMENT_SNAPSHOT_LOCK_ID } from '../../core/db/advisory-locks.js';
+import { getPool, query } from '../../core/db/postgres.js';
+import { getPageBaselineGovernanceHook } from '../../core/services/page-baseline-governance.js';
+import { readFrozenPageAttachment } from '../../core/services/page-baseline-service.js';
 import { getRedisClient } from '../../core/services/redis-cache.js';
-import { getUserAccessibleSpaces } from '../../core/services/rbac-service.js';
-import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import { getUserAccessibleSpaces, userCanAccessPage } from '../../core/services/rbac-service.js';
 import { logger } from '../../core/utils/logger.js';
+import { readAttachment, fetchAndCachePageImage, getMimeType } from '../../domains/confluence/services/attachment-handler.js';
+import { ConfluenceError } from '../../domains/confluence/services/confluence-client.js';
+import type { ConfluenceClient } from '../../domains/confluence/services/confluence-client.js';
+import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
+import {
+  advancePageWriteIntent,
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  getPageWriterRuntimeId,
+  lockPageLifecycle,
+  lockPageWriterRuntime,
+  PageWriteError,
+  registerPageWriteIntentReconciler,
+  reservePageWriteIntentInTransaction,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+  type PageRevision,
+  type PageWriteIntent,
+  type PageWriteIntentReconciler,
+} from '../../core/services/page-write-admission.js';
+import { enqueuePageWriteInvalidation } from '../../core/services/page-write-invalidation.js';
 
 const UpdateAttachmentBodySchema = z.object({
   dataUri: z.string().min(1, 'dataUri is required'),
@@ -42,7 +65,498 @@ function isAttachmentValidationError(err: unknown): err is Error {
   return err instanceof Error && ATTACHMENT_VALIDATION_MESSAGES.has(err.message);
 }
 
+interface ConfluenceCacheStage {
+  filename: string;
+  data: Buffer;
+  stagePath: string;
+}
+
+function confluenceCacheFilePath(pageKey: string, filename: string): string {
+  if (
+    path.basename(pageKey) !== pageKey ||
+    path.basename(filename) !== filename ||
+    pageKey.includes('\\') ||
+    filename.includes('\\') ||
+    !pageKey ||
+    !filename ||
+    filename.startsWith('.')
+  ) {
+    throw new Error('Invalid attachment path');
+  }
+  const base = path.resolve(ATTACHMENTS_BASE);
+  const resolved = path.resolve(base, pageKey, filename);
+  if (!resolved.startsWith(`${base}${path.sep}`)) {
+    throw new Error('Invalid attachment path');
+  }
+  return resolved;
+}
+
+type AttachmentAuthority = PageRevision & {
+  id: number;
+  source: string;
+  confluenceId: string | null;
+  spaceKey: string | null;
+};
+
+async function loadAttachmentAuthority(
+  client: PoolClient,
+  input: {
+    actorId: string;
+    pageId: number;
+    remotePageId: string;
+    spaceKey: string;
+    expected: PageRevision;
+  },
+): Promise<AttachmentAuthority> {
+  const actor = await client.query(
+    'SELECT 1 FROM users WHERE id = $1 AND deactivated_at IS NULL',
+    [input.actorId],
+  );
+  if (actor.rowCount !== 1) {
+    throw new PageWriteError(403, 'intent_actor_inactive', 'The original actor is no longer active');
+  }
+  const result = await client.query<AttachmentAuthority>(
+    `SELECT id, source, confluence_id AS "confluenceId", space_key AS "spaceKey",
+            content_revision::text AS "contentRevision",
+            lifecycle_revision::text AS "lifecycleRevision"
+       FROM pages
+      WHERE id = $1
+        AND deleted_at IS NULL
+      FOR UPDATE`,
+    [input.pageId],
+  );
+  const page = result.rows[0];
+  if (
+    !page ||
+    page.source !== 'confluence' ||
+    page.confluenceId !== input.remotePageId ||
+    page.spaceKey !== input.spaceKey
+  ) {
+    throw new PageWriteError(409, 'intent_page_identity_changed', 'The attachment page identity changed');
+  }
+  if (page.lifecycleRevision !== input.expected.lifecycleRevision) {
+    throw new PageWriteError(409, 'stale_lifecycle', 'The page lifecycle changed after attachment admission');
+  }
+  if (page.contentRevision !== input.expected.contentRevision) {
+    throw new PageWriteError(409, 'stale_content_revision', 'The page content changed after attachment admission');
+  }
+  const spaces = await getUserAccessibleSpaces(input.actorId, client);
+  const pageAccessible = await userCanAccessPage(input.actorId, input.pageId, client);
+  if (!pageAccessible || !spaces.includes(input.spaceKey)) {
+    throw new PageWriteError(403, 'intent_access_changed', 'Attachment publication authority changed');
+  }
+  return page;
+}
+
+async function currentAttachmentClient(
+  intent: PageWriteIntent,
+  input: {
+    actorId: string;
+    pageId: number;
+    remotePageId: string;
+    spaceKey: string;
+  },
+): Promise<ConfluenceClient> {
+  return withPageWriteTransaction(
+    [input.pageId],
+    async (client) => {
+      await loadAttachmentAuthority(client, {
+        ...input,
+        expected: intent.revisions[input.pageId]!,
+      });
+      const confluence = await getClientForUser(input.actorId, client);
+      if (!confluence) {
+        throw new PageWriteError(
+          403,
+          'intent_connection_changed',
+          'The original actor no longer has an active Confluence connection',
+        );
+      }
+      return confluence;
+    },
+    { intent },
+  );
+}
+
+
+async function stageConfluenceCacheFiles(
+  pageKey: string,
+  intent: PageWriteIntent,
+  files: readonly { filename: string; data: Buffer }[],
+): Promise<ConfluenceCacheStage[]> {
+  const stages: ConfluenceCacheStage[] = [];
+  for (const [index, file] of files.entries()) {
+    const livePath = confluenceCacheFilePath(pageKey, file.filename);
+    await mkdir(path.dirname(livePath), { recursive: true });
+    const stagePath = path.join(
+      path.dirname(livePath),
+      `.page-write-${intent.id}-${index}.stage`,
+    );
+    const handle = await open(stagePath, 'wx', 0o600);
+    try {
+      await handle.writeFile(file.data);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    stages.push({ ...file, stagePath });
+  }
+  return stages;
+}
+type RecoverableAttachment = {
+  filename: string;
+  size: number;
+  sha256: string;
+};
+
+type AttachmentReceipt = {
+  filename: string;
+  serverId: string;
+  versionNumber: number | null;
+  versionWhen: string | null;
+};
+
+function attachmentReceipt(
+  expected: RecoverableAttachment,
+  value: {
+    id?: unknown;
+    title?: unknown;
+    version?: { number?: unknown; when?: unknown };
+  },
+): AttachmentReceipt {
+  const versionNumber = value.version?.number;
+  const versionWhen = value.version?.when;
+  if (
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    value.id.length > 1024 ||
+    value.title !== expected.filename ||
+    (versionNumber !== undefined &&
+      (typeof versionNumber !== 'number' || !Number.isSafeInteger(versionNumber) || versionNumber < 1)) ||
+    (versionWhen !== undefined &&
+      (typeof versionWhen !== 'string' || versionWhen.length === 0 || versionWhen.length > 256))
+  ) {
+    throw new PageWriteError(
+      502,
+      'attachment_receipt_invalid',
+      `Confluence returned an incomplete identity for ${expected.filename}`,
+    );
+  }
+  return {
+    filename: expected.filename,
+    serverId: value.id,
+    versionNumber: versionNumber === undefined ? null : versionNumber as number,
+    versionWhen: versionWhen === undefined ? null : versionWhen as string,
+  };
+}
+
+function terminalAttachmentReceipts(
+  terminal: Record<string, unknown> | null,
+  expected: readonly RecoverableAttachment[],
+): AttachmentReceipt[] {
+  const values = terminal?.receipts;
+  if (!Array.isArray(values) || values.length !== expected.length) {
+    throw new PageWriteError(
+      409,
+      'intent_terminal_result_invalid',
+      'Every remote attachment receipt is required for recovery',
+    );
+  }
+  return values.map((value, index) => {
+    if (value === null || Array.isArray(value) || typeof value !== 'object') {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'An attachment receipt is invalid');
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.filename !== 'string' ||
+      typeof record.serverId !== 'string' ||
+      (record.versionNumber !== null &&
+        (typeof record.versionNumber !== 'number' ||
+          !Number.isSafeInteger(record.versionNumber) ||
+          record.versionNumber < 1)) ||
+      (record.versionWhen !== null && typeof record.versionWhen !== 'string')
+    ) {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'An attachment receipt is invalid');
+    }
+    try {
+      return attachmentReceipt(expected[index]!, {
+        id: record.serverId,
+        title: record.filename,
+        version: {
+          ...(record.versionNumber === null ? {} : { number: record.versionNumber }),
+          ...(record.versionWhen === null ? {} : { when: record.versionWhen }),
+        },
+      });
+    } catch {
+      throw new PageWriteError(409, 'intent_terminal_result_invalid', 'An attachment receipt is invalid');
+    }
+  });
+}
+
+
+function exactAttachmentBytes(bytes: Buffer, expected: RecoverableAttachment): boolean {
+  return bytes.length === expected.size &&
+    crypto.createHash('sha256').update(bytes).digest('hex') === expected.sha256;
+}
+
+async function verifyRemoteAttachmentReceipts(
+  confluence: ConfluenceClient,
+  remotePageId: string,
+  expected: readonly RecoverableAttachment[],
+  receipts: readonly AttachmentReceipt[],
+): Promise<void> {
+  const current = await confluence.getPageAttachments(remotePageId);
+  for (let index = 0; index < expected.length; index++) {
+    const file = expected[index]!;
+    const receipt = receipts[index]!;
+    const attachment = current.results.find(
+      (candidate) => candidate.id === receipt.serverId && candidate.title === file.filename,
+    );
+    if (!attachment) {
+      throw new PageWriteError(
+        409,
+        'intent_remote_evidence_conflict',
+        `The current remote identity for ${file.filename} no longer matches the upload receipt`,
+      );
+    }
+    const currentVersion = attachment.version as
+      | { number?: unknown; when?: unknown }
+      | undefined;
+    if (
+      receipt.versionNumber !== null &&
+      typeof currentVersion?.number === 'number'
+    ) {
+      if (currentVersion.number !== receipt.versionNumber) {
+        throw new PageWriteError(
+          409,
+          'intent_remote_evidence_conflict',
+          `The current remote version for ${file.filename} no longer matches the upload receipt`,
+        );
+      }
+      continue;
+    }
+    if (
+      receipt.versionWhen !== null &&
+      typeof currentVersion?.when === 'string'
+    ) {
+      if (currentVersion.when !== receipt.versionWhen) {
+        throw new PageWriteError(
+          409,
+          'intent_remote_evidence_conflict',
+          `The current remote version for ${file.filename} no longer matches the upload receipt`,
+        );
+      }
+      continue;
+    }
+    const downloadPath = attachment._links?.download;
+    if (!downloadPath) {
+      throw new PageWriteError(
+        409,
+        'intent_remote_evidence_incomplete',
+        `The current remote bytes for ${file.filename} cannot be verified`,
+      );
+    }
+    const bytes = await confluence.downloadAttachment(downloadPath);
+    if (!exactAttachmentBytes(bytes, file)) {
+      throw new PageWriteError(
+        409,
+        'intent_remote_evidence_conflict',
+        `The current remote bytes for ${file.filename} conflict with the admitted upload`,
+      );
+    }
+  }
+}
+
+function recoverableAttachments(effect: Record<string, unknown>): {
+  pageId: number;
+  remotePageId: string;
+  spaceKey: string;
+  files: RecoverableAttachment[];
+} {
+  if (
+    typeof effect.pageId !== 'number' ||
+    !Number.isSafeInteger(effect.pageId) ||
+    typeof effect.remotePageId !== 'string' ||
+    typeof effect.spaceKey !== 'string' ||
+    effect.spaceKey.length === 0 ||
+    !Array.isArray(effect.files)
+  ) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Attachment recovery metadata is incomplete');
+  }
+  const files = effect.files.map((value) => {
+    if (
+      value === null ||
+      Array.isArray(value) ||
+      typeof value !== 'object' ||
+      typeof value.filename !== 'string' ||
+      typeof value.size !== 'number' ||
+      !Number.isSafeInteger(value.size) ||
+      value.size < 0 ||
+      typeof value.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(value.sha256)
+    ) {
+      throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Attachment identity is invalid');
+    }
+    return { filename: value.filename, size: value.size, sha256: value.sha256 };
+  });
+  return {
+    pageId: effect.pageId,
+    remotePageId: effect.remotePageId,
+    spaceKey: effect.spaceKey,
+    files,
+  };
+}
+
+async function readExactAttachment(pathname: string, expected: RecoverableAttachment): Promise<Buffer | null> {
+  try {
+    const bytes = await readFile(pathname);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (bytes.length !== expected.size || digest !== expected.sha256) {
+      throw new PageWriteError(
+        409,
+        'intent_local_evidence_mismatch',
+        `The staged bytes for ${expected.filename} do not match the admitted attachment`,
+      );
+    }
+    return bytes;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+const reconcileConfluenceAttachmentPut: PageWriteIntentReconciler = async (client, intent) => {
+  const metadata = recoverableAttachments(intent.effect);
+  if (intent.pageIds.length !== 1 || intent.pageIds[0] !== metadata.pageId) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Attachment page identity changed');
+  }
+  const stagePaths = metadata.files.map((file, index) =>
+    path.join(
+      path.dirname(confluenceCacheFilePath(metadata.remotePageId, file.filename)),
+      `.page-write-${intent.id}-${index}.stage`,
+    ));
+
+  if (intent.remoteEffectStartedAt === null) {
+    for (const stagePath of stagePaths) await rm(stagePath, { force: true });
+    for (const stagePath of stagePaths) {
+      try {
+        await stat(stagePath);
+        throw new PageWriteError(409, 'intent_local_cleanup_incomplete', 'An intent-owned stage file remains');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return {
+      outcome: 'not_applied',
+      proof: {
+        kind: 'remote_effect_not_started',
+        observedAt: new Date().toISOString(),
+        reference: `attachment-stage:${intent.id}:absent`,
+        details: { syscallSettled: true, remoteEffectStarted: false, observedAbsent: true },
+      },
+      result: { removedStages: stagePaths.length },
+    };
+  }
+
+  if (intent.remoteEffectsCompletedAt === null || !intent.actorId) {
+    throw new PageWriteError(409, 'intent_outcome_unrecoverable', 'The remote attachment outcome is unknown');
+  }
+  const currentRevision = intent.revisions[metadata.pageId];
+  if (!currentRevision) {
+    throw new PageWriteError(409, 'intent_recovery_metadata_invalid', 'Attachment revision identity is unavailable');
+  }
+  await loadAttachmentAuthority(client, {
+    actorId: intent.actorId,
+    pageId: metadata.pageId,
+    remotePageId: metadata.remotePageId,
+    spaceKey: metadata.spaceKey,
+    expected: currentRevision,
+  });
+  const confluence = await getClientForUser(intent.actorId, client);
+  if (!confluence) {
+    throw new PageWriteError(
+      403,
+      'intent_connection_changed',
+      'The original actor no longer has an active Confluence connection',
+    );
+  }
+  const receipts = terminalAttachmentReceipts(intent.remoteTerminalResult, metadata.files);
+  await verifyRemoteAttachmentReceipts(
+    confluence,
+    metadata.remotePageId,
+    metadata.files,
+    receipts,
+  );
+
+  const localEvidence: Array<{ stagePath: string; livePath: string; staged: boolean }> = [];
+  for (let index = 0; index < metadata.files.length; index++) {
+    const expected = metadata.files[index]!;
+    const stagePath = stagePaths[index]!;
+    const livePath = confluenceCacheFilePath(metadata.remotePageId, expected.filename);
+    const staged = await readExactAttachment(stagePath, expected);
+    if (!staged && !(await readExactAttachment(livePath, expected))) {
+      throw new PageWriteError(
+        409,
+        'intent_local_evidence_missing',
+        `Neither staged nor published bytes exist for ${expected.filename}`,
+      );
+    }
+    localEvidence.push({ stagePath, livePath, staged: staged !== null });
+  }
+  let stagedBytesPublished = false;
+  for (const evidence of localEvidence) {
+    if (!evidence.staged) continue;
+    await rename(evidence.stagePath, evidence.livePath);
+    stagedBytesPublished = true;
+  }
+
+  const terminalRevision = intent.remoteTerminalResult?.publicationContentRevision;
+  const currentContentRevision = currentRevision.contentRevision;
+  if (typeof terminalRevision !== 'string') {
+    throw new PageWriteError(409, 'intent_terminal_result_invalid', 'Attachment publication revision is unavailable');
+  }
+  if (stagedBytesPublished || currentContentRevision === terminalRevision) {
+    const updated = await client.query<{ content_revision: string }>(
+      `UPDATE pages
+          SET image_analysis_dirty = TRUE,
+              content_revision = content_revision + 1
+        WHERE id = $1
+        RETURNING content_revision::text`,
+      [metadata.pageId],
+    );
+    await getPageBaselineGovernanceHook()?.invalidateProposalForMutation?.({
+      client,
+      pageId: metadata.pageId,
+      contentRevision: updated.rows[0]!.content_revision,
+    });
+  }
+  await enqueuePageWriteInvalidation(client, intent.id);
+  const evidence = crypto.createHash('sha256')
+    .update(JSON.stringify({ files: metadata.files, receipts }))
+    .digest('hex');
+  return {
+    outcome: 'applied',
+    proof: {
+      kind: 'remote_terminal_effect_verified',
+      observedAt: new Date().toISOString(),
+      reference: `confluence-attachments:${metadata.remotePageId}:${evidence}`,
+      details: { remoteEffectsCompleted: true, terminalEvidence: evidence },
+    },
+    result: { files: metadata.files.length },
+  };
+};
+
+let attachmentReconcilerRegistered = false;
+
+export function registerAttachmentReconciler(): void {
+  if (attachmentReconcilerRegistered) return;
+  registerPageWriteIntentReconciler('attachment.confluence.put', reconcileConfluenceAttachmentPut);
+  attachmentReconcilerRegistered = true;
+}
+
+
 export async function attachmentRoutes(fastify: FastifyInstance) {
+  registerAttachmentReconciler();
   fastify.addHook('onRequest', fastify.authenticate);
 
   // GET /api/attachments/:pageId/list - list all cached attachments for a page
@@ -104,8 +618,13 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
 
     const attachSpaces = await getUserAccessibleSpaces(userId);
     // Look up by confluence_id (Confluence pages) in accessible spaces
-    let pageResult = await query<{ body_storage: string | null; space_key: string; source: string }>(
-      `SELECT cp.body_storage, cp.space_key, cp.source
+    let pageResult = await query<{
+      id: number;
+      body_storage: string | null;
+      space_key: string;
+      source: string;
+    }>(
+      `SELECT cp.id, cp.body_storage, cp.space_key, cp.source
        FROM pages cp
        WHERE cp.space_key = ANY($1::text[])
          AND cp.confluence_id = $2`,
@@ -115,8 +634,13 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
     // Deliberately NOT visiblePagesPredicate(): this branch is standalone-only
     // by construction (Confluence pages were handled by the query above).
     if (pageResult.rows.length === 0 && /^\d+$/.test(pageId)) {
-      pageResult = await query<{ body_storage: string | null; space_key: string; source: string }>(
-        `SELECT cp.body_storage, cp.space_key, cp.source
+      pageResult = await query<{
+        id: number;
+        body_storage: string | null;
+        space_key: string;
+        source: string;
+      }>(
+        `SELECT cp.id, cp.body_storage, cp.space_key, cp.source
          FROM pages cp
          WHERE cp.id = $1
            AND cp.source = 'standalone'
@@ -134,6 +658,35 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
         message: 'Attachment not found',
         reason: 'page_not_in_selected_spaces',
       });
+    }
+
+    const frozen = await readFrozenPageAttachment({
+      pageId: cachedPage.id,
+      actorId: userId,
+      locator: {
+        store: 'confluence',
+        pageKey: pageId,
+        filename,
+      },
+    });
+    if (frozen.state === 'frozen_missing') {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Attachment not found',
+      });
+    }
+    if (frozen.state === 'frozen') {
+      const mimeType = getMimeType(filename);
+      reply
+        .header('Content-Type', mimeType)
+        .header('Content-Length', String(frozen.size))
+        .header('Cache-Control', 'private, max-age=3600');
+      if (mimeType === 'image/svg+xml') {
+        reply.header('Content-Security-Policy', 'sandbox');
+        reply.header('Content-Disposition', 'attachment');
+      }
+      return reply.send(frozen.stream);
     }
 
     // Try local cache first. `readAttachment` (and the on-demand
@@ -336,16 +889,54 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Verify the page belongs to the user's accessible spaces (RBAC)
+    let xmlFilename: string | undefined;
+    let xmlBuffer: Buffer | undefined;
+    if (xml) {
+      xmlFilename = filename.toLowerCase().endsWith('.png')
+        ? filename.slice(0, -4) + '.drawio'
+        : `${filename}.drawio`;
+      xmlBuffer = Buffer.from(xml, 'utf8');
+      if (xmlBuffer.length > MAX_XML_BYTES) {
+        return reply.status(413).send({
+          statusCode: 413,
+          error: 'Payload Too Large',
+          message: `XML exceeds maximum size of ${MAX_XML_BYTES / (1024 * 1024)} MB`,
+        });
+      }
+    }
+
+    // Reject unsafe names before durable admission or remote I/O.
+    try {
+      confluenceCacheFilePath(pageId, filename);
+      if (xmlFilename) confluenceCacheFilePath(pageId, xmlFilename);
+    } catch {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Invalid attachment path',
+      });
+    }
+
     const putSpaces = await getUserAccessibleSpaces(userId);
-    const pageResult = await query<{ body_storage: string | null; space_key: string }>(
-      `SELECT cp.body_storage, cp.space_key
-       FROM pages cp
-       WHERE cp.space_key = ANY($1::text[])
-         AND cp.confluence_id = $2`,
+    const pageResult = await query<{
+      id: number;
+      source: string;
+      confluence_id: string | null;
+      space_key: string;
+      content_revision: string;
+      lifecycle_revision: string;
+    }>(
+      `SELECT cp.id, cp.source, cp.confluence_id, cp.space_key,
+              cp.content_revision::text, cp.lifecycle_revision::text
+         FROM pages cp
+        WHERE cp.space_key = ANY($1::text[])
+          AND cp.confluence_id = $2
+          AND cp.source = 'confluence'
+          AND cp.deleted_at IS NULL`,
       [putSpaces, pageId],
     );
-    if (pageResult.rows.length === 0) {
+    const page = pageResult.rows[0];
+    if (!page || !page.confluence_id) {
       return reply.status(404).send({
         statusCode: 404,
         error: 'Not Found',
@@ -353,76 +944,196 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // Get Confluence client for the user
-    const client = await getClientForUser(userId);
-    if (!client) {
-      return reply.status(400).send({
-        statusCode: 400,
-        error: 'Bad Request',
-        message: 'No Confluence connection configured. Please set up your PAT in settings.',
+
+    const files = [
+      { filename, data: pngBuffer, contentType: 'image/png' },
+      ...(xmlFilename && xmlBuffer
+        ? [{ filename: xmlFilename, data: xmlBuffer, contentType: 'application/xml' }]
+        : []),
+    ];
+    const recoverableFiles = files.map((file) => ({
+      filename: file.filename,
+      size: file.data.length,
+      sha256: crypto.createHash('sha256').update(file.data).digest('hex'),
+    }));
+    const expectedRevision: PageRevision = {
+      contentRevision: page.content_revision,
+      lifecycleRevision: page.lifecycle_revision,
+    };
+    const runtimeId = await getPageWriterRuntimeId();
+    const reservationClient = await getPool().connect();
+    let intent: PageWriteIntent;
+    try {
+      await reservationClient.query('BEGIN');
+      await lockPageWriterRuntime(reservationClient, runtimeId);
+      await lockPageLifecycle(reservationClient, [page.id]);
+      intent = await reservePageWriteIntentInTransaction(reservationClient, {
+        pageIds: [page.id],
+        kind: 'attachment.confluence.put',
+        actorId: userId,
+        expectedRevisions: { [page.id]: expectedRevision },
+        effect: {
+          effectClass: 'remote',
+          pageId: page.id,
+          remotePageId: page.confluence_id,
+          spaceKey: page.space_key,
+          files: recoverableFiles,
+          receipts: [],
+        },
       });
+      await loadAttachmentAuthority(reservationClient, {
+        actorId: userId,
+        pageId: page.id,
+        remotePageId: page.confluence_id,
+        spaceKey: page.space_key,
+        expected: expectedRevision,
+      });
+      if (!(await getClientForUser(userId, reservationClient))) {
+        throw new PageWriteError(
+          400,
+          'confluence_not_configured',
+          'No Confluence connection configured. Please set up your PAT in settings.',
+        );
+      }
+      await reservationClient.query('COMMIT');
+    } catch (error) {
+      await reservationClient.query('ROLLBACK');
+      throw error;
+    } finally {
+      reservationClient.release();
     }
-
-    // Optionally prepare the `.drawio` XML sibling attachment. This is what
-    // makes the diagram re-openable in Confluence's native draw.io viewer
-    // (#302 Gap 2). The rendered PNG alone is useless for editing.
-    //
-    // All XML handling (encoding, size check, upload) is non-fatal: any
-    // failure on the sibling path logs + skips, while the PNG upload
-    // proceeds. See the per-step comments in the try block below.
-    let xmlFilename: string | null = null;
-    if (xml) {
-      // Swap `.png` for `.drawio` to match Confluence's draw.io plugin
-      // naming convention. Non-.png filenames get the .drawio suffix.
-      xmlFilename = filename.toLowerCase().endsWith('.png')
-        ? filename.slice(0, -4) + '.drawio'
-        : `${filename}.drawio`;
-    }
-
-    let uploadedXmlSize: number | undefined;
 
     try {
-      // Upload the PNG to Confluence
-      await client.updateAttachment(pageId, filename, pngBuffer, 'image/png');
+      try {
+        await withPageWriteTransaction(
+          [page.id],
+          (client) => loadAttachmentAuthority(client, {
+            actorId: userId,
+            pageId: page.id,
+            remotePageId: page.confluence_id!,
+            spaceKey: page.space_key,
+            expected: intent.revisions[page.id]!,
+          }),
+          { intent },
+        );
+      } catch (error) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        throw error;
+      }
+      const staged = await runPageWriteIntentEffect(
+        intent,
+        { kind: 'local' },
+        () => stageConfluenceCacheFiles(page.confluence_id!, intent, files),
+      );
 
-      // Update local cache so the image is served immediately without re-sync
-      await writeAttachmentCache(userId, pageId, filename, pngBuffer);
-
-      // Upload the .drawio XML sibling when provided. A failure here (size
-      // cap, encoding, network) must NOT fail the whole request — the PNG
-      // is already uploaded and the UI gets visual parity. Log and continue.
-      if (xml && xmlFilename) {
-        try {
-          const xmlBuffer = Buffer.from(xml, 'utf8');
-          if (xmlBuffer.length > MAX_XML_BYTES) {
-            // Oversized XML is non-fatal (matches the "XML failure is
-            // non-fatal" principle): skip the sibling and leave the PNG
-            // intact. Zod already caps string length at 25 MB, so this
-            // path only trips when multi-byte UTF-8 inflates past the cap.
-            logger.warn(
-              { userId, pageId, xmlFilename, xmlSize: xmlBuffer.length, limit: MAX_XML_BYTES },
-              'Skipping .drawio XML sibling: payload exceeds size cap after UTF-8 encoding',
+      // Re-resolve the original actor's current credentials on the same
+      // authoritative DB snapshot used for the phase authorization.
+      const remoteClient = await currentAttachmentClient(intent, {
+        actorId: userId,
+        pageId: page.id,
+        remotePageId: page.confluence_id,
+        spaceKey: page.space_key,
+      });
+      const receipts = await runPageWriteIntentEffect(
+        intent,
+        {
+          kind: 'remote',
+          completesRemoteWork: true,
+          terminalResult: (completed) => ({
+            remotePageId: page.confluence_id,
+            publicationContentRevision: intent.revisions[page.id]!.contentRevision,
+            receipts: completed,
+          }),
+        },
+        async () => {
+          const completed: AttachmentReceipt[] = [];
+          for (let index = 0; index < files.length; index++) {
+            const file = files[index]!;
+            const phaseClient = index === 0
+              ? remoteClient
+              : await currentAttachmentClient(intent, {
+                  actorId: userId,
+                  pageId: page.id,
+                  remotePageId: page.confluence_id!,
+                  spaceKey: page.space_key,
+                });
+            const uploaded = await phaseClient.updateAttachment(
+              page.confluence_id!,
+              file.filename,
+              file.data,
+              file.contentType,
             );
-          } else {
-            await client.updateAttachment(pageId, xmlFilename, xmlBuffer, 'application/xml');
-            await writeAttachmentCache(userId, pageId, xmlFilename, xmlBuffer);
-            uploadedXmlSize = xmlBuffer.length;
-            logger.info(
-              { userId, pageId, xmlFilename, xmlSize: xmlBuffer.length },
-              'Diagram .drawio XML attachment uploaded alongside PNG (#302)',
+            const receipt = attachmentReceipt(recoverableFiles[index]!, uploaded);
+            await advancePageWriteIntent(intent, async (client) => {
+              await client.query(
+                `UPDATE page_write_intents
+                    SET effect = jsonb_set(
+                      effect,
+                      '{receipts}',
+                      COALESCE(effect->'receipts', '[]'::jsonb) || $2::jsonb
+                    )
+                  WHERE id = $1
+                    AND status = 'pending'`,
+                [intent.id, JSON.stringify([receipt])],
+              );
+            });
+            completed.push(receipt);
+          }
+          return completed;
+        },
+      );
+
+      const publicationClient = await currentAttachmentClient(intent, {
+        actorId: userId,
+        pageId: page.id,
+        remotePageId: page.confluence_id,
+        spaceKey: page.space_key,
+      });
+      await verifyRemoteAttachmentReceipts(
+        publicationClient,
+        page.confluence_id,
+        recoverableFiles,
+        receipts,
+      );
+      await runPageWriteIntentEffect(
+        intent,
+        { kind: 'local' },
+        () => advancePageWriteIntent(intent, async (lockedClient) => {
+          await loadAttachmentAuthority(lockedClient, {
+            actorId: userId,
+            pageId: page.id,
+            remotePageId: page.confluence_id!,
+            spaceKey: page.space_key,
+            expected: intent.revisions[page.id]!,
+          });
+          await lockedClient.query(
+            'SELECT pg_advisory_xact_lock_shared($1)',
+            [ATTACHMENT_SNAPSHOT_LOCK_ID],
+          );
+          for (const stage of staged) {
+            await rename(
+              stage.stagePath,
+              confluenceCacheFilePath(page.confluence_id!, stage.filename),
             );
           }
-        } catch (xmlErr) {
-          logger.warn(
-            { err: xmlErr, userId, pageId, xmlFilename },
-            'Failed to upload .drawio XML sibling; PNG uploaded successfully',
+          const updated = await lockedClient.query<{ content_revision: string }>(
+            `UPDATE pages
+                SET image_analysis_dirty = TRUE,
+                    content_revision = content_revision + 1
+              WHERE id = $1
+              RETURNING content_revision::text`,
+            [page.id],
           );
-        }
-      }
+          await getPageBaselineGovernanceHook()?.invalidateProposalForMutation?.({
+            client: lockedClient,
+            pageId: page.id,
+            contentRevision: updated.rows[0]!.content_revision,
+          });
+          await enqueuePageWriteInvalidation(lockedClient, intent.id);
+        }),
+      );
+      await completePageWriteIntent(intent, async () => undefined);
 
-      // Invalidate Redis page cache so other users get the updated diagram.
-      // Uses a SCAN cursor loop (not KEYS) to avoid blocking the single-threaded
-      // Redis server — mirrors the established pattern in redis-cache.ts.
       try {
         const redis = getRedisClient();
         if (redis) {
@@ -431,30 +1142,30 @@ export async function attachmentRoutes(fastify: FastifyInstance) {
           do {
             const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
             cursor = String(result.cursor);
-            if (result.keys.length > 0) {
-              await redis.del(result.keys);
-            }
+            if (result.keys.length > 0) await redis.del(result.keys);
           } while (cursor !== '0');
         }
       } catch {
-        // Redis may be unavailable — non-fatal, cache will expire naturally
+        // Cache delivery is derived and may recover by expiry.
       }
 
-      logger.info({ userId, pageId, filename, size: pngBuffer.length }, 'Diagram attachment updated');
-
-      // Only surface xmlFilename when the sibling actually persisted —
-      // clients use its presence as a success signal. Preserving the
-      // legacy contract: xmlSize is only set when the upload succeeded.
-      const xmlSucceeded = uploadedXmlSize !== undefined;
+      logger.info(
+        { userId, pageId, files: files.map((file) => file.filename), intentId: intent.id },
+        'Diagram attachment mutation committed',
+      );
       return reply.status(200).send({
         success: true,
         filename,
         size: pngBuffer.length,
-        xmlFilename: xmlSucceeded ? xmlFilename ?? undefined : undefined,
-        xmlSize: uploadedXmlSize,
+        xmlFilename,
+        xmlSize: xmlBuffer?.length,
       });
     } catch (err) {
-      logger.error({ err, userId, pageId, filename }, 'Failed to update attachment');
+      if (err instanceof PageWriteError) throw err;
+      logger.error(
+        { err, userId, pageId, filename, intentId: intent.id },
+        'Attachment mutation left unresolved for reconciliation',
+      );
       const message = err instanceof Error ? err.message : 'Unknown error';
       throw fastify.httpErrors.internalServerError(`Failed to update attachment: ${message}`);
     }

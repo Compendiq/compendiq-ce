@@ -11,13 +11,25 @@ import {
   type TitleSource,
   UpdateConversationSchema,
 } from '@compendiq/contracts';
-import { confluenceToHtml, htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
+import { htmlToConfluence, htmlToText, markdownToHtml, protectMedia, restoreMedia, extractLayoutSkeleton, LayoutRecoveryError } from '../../core/services/content-converter.js';
 import { getClientForUser } from '../../domains/confluence/services/sync-service.js';
 import { pageWriteStaysLocal } from '../../domains/confluence/services/standalone-mode.js';
+import {
+  describeConfluencePagePut,
+  publishConfluencePagePut,
+  registerConfluencePagePutIntentReconcilers,
+} from '../../domains/confluence/services/page-put-intent-reconciler.js';
 import { logAuditEvent } from '../../core/services/audit-service.js';
 import { getUserAccessibleSpacesMemoized } from '../../core/services/rbac-service.js';
 import { visiblePagesPredicate } from '../../core/services/page-visibility.js';
 import { invalidateCollabDocAfterBodyWrite, rejectIfLiveCollabRoom } from '../../core/services/collab-guard.js';
+import {
+  cancelPageWriteIntentBeforeEffect,
+  completePageWriteIntent,
+  reservePageWriteIntent,
+  runPageWriteIntentEffect,
+  withPageWriteTransaction,
+} from '../../core/services/page-write-admission.js';
 import { selectReplayableHistory } from '../../domains/llm/services/history-budget.js';
 import { ImprovementsQuerySchema } from './_helpers.js';
 
@@ -111,6 +123,7 @@ async function annotateUnavailableSources(messages: StoredChatMessage[], userId:
 }
 
 export async function llmConversationRoutes(fastify: FastifyInstance) {
+  registerConfluencePagePutIntentReconcilers();
   fastify.addHook('onRequest', fastify.authenticate);
 
   // GET /api/llm/conversations?limit&cursor — the user's list, newest first (#1361)
@@ -282,6 +295,22 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
 
     const currentVersion = existingPage.version;
     const pageTitle = title ?? existingPage.title;
+    // The public apply request predates improvement ids. Bind its status side
+    // effect now, before conversion/remote latency can make a newer unrelated
+    // improvement look like the row this request accepted. An exact content
+    // match preserves direct/manual Apply calls, which have no history row.
+    const linkedImprovement = await query<{ id: string }>(
+      `SELECT id
+         FROM llm_improvements
+        WHERE user_id = $1
+          AND page_id = $2
+          AND status IN ('streaming', 'completed')
+          AND improved_content = $3
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [userId, existingPage.id, improvedMarkdown.slice(0, 50000)],
+    );
+    const improvementId = linkedImprovement.rows[0]?.id ?? null;
 
     if (version !== undefined && version < currentVersion) {
       throw fastify.httpErrors.conflict('Page has been modified since you loaded it. Please refresh and try again.');
@@ -345,91 +374,119 @@ export async function llmConversationRoutes(fastify: FastifyInstance) {
     const cache = new RedisCache(fastify.redis);
     let newVersion: number;
 
-    // #1623 — ONE rule: a page with no upstream, and a synced page whose owner
-    // switched the integration off, take the SAME local write. Nothing is
-    // pushed to Confluence while it is off.
+    // #1623 — a standalone page and a synced page while Confluence is off use
+    // the same local-only fenced transaction. No upstream call is made.
     if (await pageWriteStaysLocal(userId, existingPage.source)) {
-      // --- Local write: update local DB only (no Confluence sync) ---
-      newVersion = currentVersion + 1;
-      await query(
-        `UPDATE pages SET
-           title = $2, body_html = $3, body_text = $4,
-           version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
-           -- #1115 P2 (review r2) — Apply rewrites the body, so it queues the
-           -- image index like every other body writer. It is safe today only
-           -- through protectMedia/restoreMedia and #723's drop-guard keeping
-           -- the img set intact across the markdown round trip — an invariant
-           -- of a different module that nothing on either side pins. One
-           -- reconcile pass per Apply, every row reused by content hash.
-           image_analysis_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $3 THEN TRUE
-             ELSE image_analysis_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           -- Stamp local-edit markers (#305): chat write-back is a local
-           -- AI edit. Previously the write was invisible to sync, which
-           -- would overwrite the AI-improved content on the next pull.
-           local_modified_at = NOW(), local_modified_by = $6
-         WHERE id = $1`,
-        [existingPage.id, pageTitle, bodyHtml, bodyText, newVersion, userId],
-      );
+      newVersion = await withPageWriteTransaction([existingPage.id], async (client) => {
+        const fresh = await client.query<PageRow>(
+          `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+          [existingPage.id],
+        );
+        const page = fresh.rows[0];
+        if (!page) throw fastify.httpErrors.notFound('Page not found');
+        if (page.version !== currentVersion || page.body_html !== existingPage.body_html) {
+          throw fastify.httpErrors.conflict(
+            'Page has been modified since you loaded it. Please refresh and try again.',
+          );
+        }
+        const nextVersion = page.version + 1;
+        await client.query(
+          `UPDATE pages SET
+             title = $2, body_html = $3, body_text = $4,
+             version = $5, last_modified_at = NOW(), embedding_dirty = TRUE,
+             image_analysis_dirty = CASE
+               WHEN body_html IS DISTINCT FROM $3 THEN TRUE
+               ELSE image_analysis_dirty
+             END,
+             embedding_status = 'not_embedded', embedded_at = NULL,
+             local_modified_at = NOW(), local_modified_by = $6
+           WHERE id = $1`,
+          [existingPage.id, pageTitle, bodyHtml, bodyText, nextVersion, userId],
+        );
+        if (improvementId !== null) {
+          const marked = await client.query(
+            `UPDATE llm_improvements
+                SET status = 'applied'
+              WHERE id = $1
+                AND user_id = $2
+                AND page_id = $3
+                AND status IN ('streaming', 'completed')`,
+            [improvementId, userId, existingPage.id],
+          );
+          if (marked.rowCount !== 1) {
+            throw fastify.httpErrors.conflict(
+              'The AI improvement changed before it could be marked applied.',
+            );
+          }
+        }
+        return nextVersion;
+      });
       await invalidateCollabDocAfterBodyWrite(existingPage.id);
+      await cache.invalidate(userId, 'pages');
     } else {
-      // --- Confluence page: sync to Confluence ---
       if (!existingPage.confluence_id) {
         throw fastify.httpErrors.badRequest('Page is missing confluence_id');
       }
       const client = await getClientForUser(userId);
-      if (!client) {
-        throw fastify.httpErrors.badRequest('Confluence not configured');
-      }
+      if (!client) throw fastify.httpErrors.badRequest('Confluence not configured');
 
       const confluenceId = existingPage.confluence_id;
       const storageBody = htmlToConfluence(bodyHtml);
-      const page = await client.updatePage(confluenceId, pageTitle, storageBody, currentVersion);
-
-      const updatedBodyHtml = confluenceToHtml(
-        page.body?.storage?.value ?? storageBody,
+      const publication = describeConfluencePagePut({
+        kind: 'page.ai_apply',
+        actorId: userId,
+        pageId: existingPage.id,
         confluenceId,
-        existingPage.space_key,
-      );
-      const updatedBodyText = htmlToText(updatedBodyHtml);
-      newVersion = page.version.number;
+        title: pageTitle,
+        bodyStorage: storageBody,
+        expectedRemoteVersion: currentVersion,
+        improvementId,
+      });
+      const intent = await reservePageWriteIntent({
+        pageIds: [existingPage.id],
+        kind: publication.kind,
+        actorId: userId,
+        effect: publication.effect,
+      });
 
-      await query(
-        `UPDATE pages SET
-           title = $2, body_storage = $3, body_html = $4, body_text = $5,
-           version = $6, last_synced = NOW(), embedding_dirty = TRUE,
-           -- #1115 P2 (review r2) — see the standalone branch above. Gated on
-           -- body_html alone: that is where the src attributes are.
-           image_analysis_dirty = CASE
-             WHEN body_html IS DISTINCT FROM $4 THEN TRUE
-             ELSE image_analysis_dirty
-           END,
-           embedding_status = 'not_embedded', embedded_at = NULL,
-           -- Clear local-edit markers (#305): the Confluence push for
-           -- the AI-improved content has succeeded, so the local state
-           -- is now in sync with the remote.
-           local_modified_at = NULL, local_modified_by = NULL
-         WHERE id = $1`,
-        [existingPage.id, pageTitle, page.body?.storage?.value ?? storageBody, updatedBodyHtml, updatedBodyText, newVersion],
+      // The conversion above is pure, but it was derived from the pre-admission
+      // row. Refuse and safely cancel before effect if that row changed before
+      // the durable reservation won the lifecycle lock.
+      const fresh = await query<PageRow>(
+        `SELECT ${PAGE_COLUMNS} FROM pages WHERE id = $1 AND deleted_at IS NULL`,
+        [existingPage.id],
       );
+      const current = fresh.rows[0];
+      if (
+        !current ||
+        current.version !== currentVersion ||
+        current.body_html !== existingPage.body_html ||
+        current.source !== 'confluence' ||
+        current.confluence_id !== confluenceId
+      ) {
+        await cancelPageWriteIntentBeforeEffect(intent);
+        if (!current) throw fastify.httpErrors.notFound('Page not found');
+        throw fastify.httpErrors.conflict(
+          'Page has been modified since you loaded it. Please refresh and try again.',
+        );
+      }
+
+      // Remote-first. The durable effect stores only a payload digest and
+      // expected version; unknown outcomes remain pending for exact E+1 proof.
+      const page = await runPageWriteIntentEffect(intent, { kind: 'remote', completesRemoteWork: true }, () =>
+        client.updatePage(confluenceId, pageTitle, storageBody, currentVersion),
+      );
+      const published = await completePageWriteIntent(intent, (lockedClient) =>
+        publishConfluencePagePut(lockedClient, publication, {
+          confluenceId: page.id,
+          title: page.title,
+          bodyStorage: page.body?.storage?.value ?? storageBody,
+          remoteVersion: page.version?.number,
+        }, intent.id),
+      );
+      newVersion = published.newVersion;
     }
 
-    await invalidateCollabDocAfterBodyWrite(existingPage.id);
-
-    // Mark the most recent improvement record for this page as applied
-    await query(
-      `UPDATE llm_improvements SET status = 'applied'
-       WHERE id = (
-         SELECT li.id FROM llm_improvements li
-         WHERE li.user_id = $1 AND li.page_id = $2 AND li.status IN ('streaming', 'completed')
-         ORDER BY li.created_at DESC LIMIT 1
-       )`,
-      [userId, existingPage.id],
-    );
-
-    await cache.invalidate(userId, 'pages');
     await logAuditEvent(userId, 'PAGE_UPDATED', 'page', String(existingPage.id), { title: pageTitle, source: 'ai_improvement' }, request);
 
     return { id: existingPage.id, title: pageTitle, version: newVersion };

@@ -1,435 +1,231 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { query } from '../../core/db/postgres.js';
+import { RedisCache, setRedisClient } from '../../core/services/redis-cache.js';
+import {
+  isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
+} from '../../test-db-helper.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
 import { pagesCrudRoutes } from './pages-crud.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertUser,
+} from './pages.test-helpers.js';
 
-// Track cache calls so we can assert on TTL and keys
-const mockCacheGet = vi.fn().mockResolvedValue(null);
-const mockCacheSet = vi.fn().mockResolvedValue(undefined);
-const mockCacheInvalidate = vi.fn().mockResolvedValue(undefined);
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
-vi.mock('../../core/services/redis-cache.js', () => {
-  return {
-    RedisCache: class MockRedisCache {
-      get = mockCacheGet;
-      set = mockCacheSet;
-      invalidate = mockCacheInvalidate;
-    },
-  };
-});
-
-vi.mock('../../core/services/fts-language.js', () => ({
-  getFtsLanguage: vi.fn().mockResolvedValue('simple'),
-}));
-
-vi.mock('../../domains/confluence/services/sync-service.js', () => ({
-  // #1623: the toggle helper the page/AI write paths consult.
-  isConfluenceEnabled: vi.fn().mockResolvedValue(true),
-  getClientForUser: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock('../../core/services/content-converter.js', () => ({
-  htmlToConfluence: vi.fn().mockReturnValue('<p>content</p>'),
-  confluenceToHtml: vi.fn().mockReturnValue('<p>content</p>'),
-  htmlToText: vi.fn().mockReturnValue('content'),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/knowledge/services/duplicate-detector.js', () => ({
-  findDuplicates: vi.fn().mockResolvedValue([]),
-  scanAllDuplicates: vi.fn().mockResolvedValue([]),
-}));
-
-vi.mock('../../domains/knowledge/services/auto-tagger.js', () => ({
-  autoTagPage: vi.fn().mockResolvedValue({ tags: [] }),
-  applyTags: vi.fn().mockResolvedValue([]),
-  autoTagAllPages: vi.fn().mockResolvedValue(undefined),
-  ALLOWED_TAGS: ['architecture', 'howto', 'troubleshooting'],
-}));
-
-vi.mock('../../domains/knowledge/services/version-tracker.js', () => ({
-  getVersionHistory: vi.fn().mockResolvedValue([]),
-  getVersion: vi.fn().mockResolvedValue(null),
-  getSemanticDiff: vi.fn().mockResolvedValue('no diff'),
-  saveVersionSnapshot: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue({ processed: 0, errors: 0 }),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-}));
-
-vi.mock('../../core/utils/logger.js', () => ({
-  logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
-
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: vi.fn().mockResolvedValue(['DEV', 'OPS']),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockQueryFn = vi.fn();
-vi.mock('../../core/db/postgres.js', () => ({
-  query: (...args: unknown[]) => mockQueryFn(...args),
-  getPool: vi.fn().mockReturnValue({}),
-  runMigrations: vi.fn(),
-  closePool: vi.fn(),
-}));
-
-/** Stub DB responses for a page list query (count + rows).
- *  When total=0 the route skips the data query (performance optimisation),
- *  so we only stub the count response to avoid leaking stubs into the next test. */
-function stubPageListQuery(rows: Record<string, unknown>[] = [], total = 0) {
-  // First call: COUNT query
-  mockQueryFn.mockResolvedValueOnce({ rows: [{ count: String(total) }] });
-  // Second call: SELECT query (only when total > 0)
-  if (total > 0) {
-    mockQueryFn.mockResolvedValueOnce({ rows });
-  }
-}
-
-const sampleRow = {
-  id: 1,
-  confluence_id: 'page-1',
-  space_key: 'DEV',
-  title: 'Test Page',
-  version: 1,
-  parent_id: null,
-  labels: [],
-  author: 'admin',
-  last_modified_at: new Date('2026-03-01'),
-  last_synced: new Date('2026-03-01'),
-  embedding_dirty: false,
-  embedding_status: 'embedded',
-  embedded_at: new Date('2026-03-01'),
-  embedding_error: null,
+type PageSeed = {
+  author?: string;
+  labels?: string[];
+  modifiedAt?: string;
+  bodyText?: string;
 };
 
-describe('GET /api/pages — filtered query caching (#195)', () => {
-  let app: ReturnType<typeof Fastify>;
+async function insertPrivatePage(
+  ownerId: string,
+  title: string,
+  seed: PageSeed = {},
+): Promise<number> {
+  const result = await query<{ id: number }>(
+    `INSERT INTO pages (
+       source, space_key, title, body_html, body_text, labels, author,
+       last_modified_at, last_synced, visibility, created_by_user_id,
+       embedding_dirty, embedding_status
+     ) VALUES (
+       'standalone', 'CACHE', $1, '<p>cache fixture</p>', $2, $3, $4,
+       $5::timestamptz, NOW(), 'private', $6, FALSE, 'embedded'
+     ) RETURNING id`,
+    [
+      title,
+      seed.bodyText ?? title,
+      seed.labels ?? [],
+      seed.author ?? null,
+      seed.modifiedAt ?? '2026-01-01T00:00:00Z',
+      ownerId,
+    ],
+  );
+  return result.rows[0]!.id;
+}
 
-  beforeAll(async () => {
-    app = Fastify({ logger: false });
-    await app.register(sensible);
+async function removeUserRedisState(redis: RedisClientType, userId: string): Promise<void> {
+  for (const pattern of [`kb:${userId}:*`, `rbac:*:${userId}*`]) {
+    let cursor = '0';
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = String(result.cursor);
+      if (result.keys.length > 0) await redis.del(result.keys);
+    } while (cursor !== '0');
+  }
+  await redis.del([
+    `kb-cache-generation:pages:user:${userId}`,
+    `kb-cache-generation:search:user:${userId}`,
+  ]);
+}
 
-    app.setErrorHandler((error, _request, reply) => {
-      if (error instanceof ZodError) {
-        reply.status(400).send({
-          error: 'ValidationError',
-          message: error.issues.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-          statusCode: 400,
-        });
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'GET /api/pages cache behavior — real PostgreSQL and Redis',
+  () => {
+    let app: FastifyInstance;
+    let redis: RedisClientType;
+    let currentUserId: string;
+    let firstUserId: string;
+    let secondUserId: string;
+    const ownedUserIds: string[] = [];
 
-        return;
+    beforeAll(async () => {
+      await setupTestDb();
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      }) as RedisClientType;
+      redis.on('error', () => undefined);
+      await redis.connect();
+      setRedisClient(redis);
+
+      app = await buildKnowledgeTestApp(() => currentUserId, async (instance) => {
+        instance.redis = redis;
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      });
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      firstUserId = await insertUser(`pages-cache-first-${randomUUID()}`);
+      secondUserId = await insertUser(`pages-cache-second-${randomUUID()}`);
+      ownedUserIds.push(firstUserId, secondUserId);
+      currentUserId = firstUserId;
+      await insertLocalSpace('CACHE', firstUserId);
+    });
+
+    afterAll(async () => {
+      if (app) await app.close();
+      setRedisClient(null);
+      if (redis?.isOpen) {
+        for (const userId of ownedUserIds) await removeUserRedisState(redis, userId);
+        await redis.quit();
       }
-      reply.status(error.statusCode ?? 500).send({ error: error.message, statusCode: error.statusCode ?? 500 });
+      await truncateAllTables();
+      await teardownTestDb();
     });
 
-    app.decorate('authenticate', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'user';
-    });
-    app.decorate('requireAdmin', async (request: { userId: string; username: string; userRole: string }) => {
-      request.userId = 'test-user-id';
-      request.username = 'testuser';
-      request.userRole = 'admin';
-    });
-    app.decorate('redis', {});
+    it('replays a cached list until its real namespace is invalidated', async () => {
+      const pageId = await insertPrivatePage(firstUserId, 'Before database change', {
+        author: 'Cache author',
+      });
+      const url = '/api/pages?author=Cache%20author';
 
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
+      const initial = await app.inject({ method: 'GET', url });
+      expect(initial.statusCode).toBe(200);
+      expect(initial.json().items[0].title).toBe('Before database change');
 
-  afterAll(async () => {
-    await app.close();
-  });
+      await query('UPDATE pages SET title = $1 WHERE id = $2', ['After database change', pageId]);
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+      const replay = await app.inject({ method: 'GET', url });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().items[0].title).toBe('Before database change');
 
-  // ---------- Unfiltered queries ----------
-
-  it('should cache unfiltered queries with 15-minute TTL', async () => {
-    stubPageListQuery([sampleRow], 1);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages',
+      await new RedisCache(redis).invalidate(firstUserId, 'pages');
+      const refreshed = await app.inject({ method: 'GET', url });
+      expect(refreshed.statusCode).toBe(200);
+      expect(refreshed.json().items[0].title).toBe('After database change');
     });
 
-    expect(response.statusCode).toBe(200);
+    it('keeps author and label filter results isolated when both are replayed', async () => {
+      await insertPrivatePage(firstUserId, 'Alice article', {
+        author: 'Alice',
+        labels: ['red'],
+      });
+      await insertPrivatePage(firstUserId, 'Blue article', {
+        author: 'Bob',
+        labels: ['blue'],
+      });
 
-    // cache.set should have been called with TTL 900 (15 min)
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [userId, type, cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(userId).toBe('test-user-id');
-    expect(type).toBe('pages');
-    expect(cacheKeyArg).toContain('list:');
-    expect(ttl).toBe(900);
-  });
+      const alice = await app.inject({ method: 'GET', url: '/api/pages?author=Alice' });
+      const blue = await app.inject({ method: 'GET', url: '/api/pages?labels=blue' });
+      const aliceReplay = await app.inject({ method: 'GET', url: '/api/pages?author=Alice' });
+      const blueReplay = await app.inject({ method: 'GET', url: '/api/pages?labels=blue' });
 
-  it('should return cached result for unfiltered query on cache hit', async () => {
-    const cachedResponse = { items: [], total: 0, page: 1, limit: 50, totalPages: 0 };
-    mockCacheGet.mockResolvedValueOnce(cachedResponse);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages',
+      expect(alice.statusCode).toBe(200);
+      expect(alice.json().items.map((item: { title: string }) => item.title)).toEqual(['Alice article']);
+      expect(blue.statusCode).toBe(200);
+      expect(blue.json().items.map((item: { title: string }) => item.title)).toEqual(['Blue article']);
+      expect(aliceReplay.json()).toEqual(alice.json());
+      expect(blueReplay.json()).toEqual(blue.json());
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload)).toEqual(cachedResponse);
-    // DB should NOT have been queried
-    expect(mockQueryFn).not.toHaveBeenCalled();
-    // cache.set should NOT have been called (returned from cache)
-    expect(mockCacheSet).not.toHaveBeenCalled();
-  });
+    it('keeps pagination and sort variants isolated when they are replayed', async () => {
+      await insertPrivatePage(firstUserId, 'Alpha', { modifiedAt: '2025-01-01T00:00:00Z' });
+      await insertPrivatePage(firstUserId, 'Bravo', { modifiedAt: '2026-03-01T00:00:00Z' });
+      await insertPrivatePage(firstUserId, 'Charlie', { modifiedAt: '2024-01-01T00:00:00Z' });
 
-  // ---------- Filtered queries — search ----------
+      const firstPageUrl = '/api/pages?page=1&limit=1&sort=title';
+      const secondPageUrl = '/api/pages?page=2&limit=1&sort=title';
+      const modifiedUrl = '/api/pages?page=1&limit=1&sort=modified';
+      const firstPage = await app.inject({ method: 'GET', url: firstPageUrl });
+      const secondPage = await app.inject({ method: 'GET', url: secondPageUrl });
+      const modified = await app.inject({ method: 'GET', url: modifiedUrl });
 
-  it('should cache search-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([sampleRow], 1);
+      expect(firstPage.statusCode).toBe(200);
+      expect(firstPage.json()).toMatchObject({ total: 3, page: 1, limit: 1, totalPages: 3 });
+      expect(firstPage.json().items[0].title).toBe('Alpha');
+      expect(secondPage.json().items[0].title).toBe('Bravo');
+      expect(modified.json().items[0].title).toBe('Bravo');
 
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?search=kubernetes',
+      expect((await app.inject({ method: 'GET', url: firstPageUrl })).json()).toEqual(firstPage.json());
+      expect((await app.inject({ method: 'GET', url: secondPageUrl })).json()).toEqual(secondPage.json());
+      expect((await app.inject({ method: 'GET', url: modifiedUrl })).json()).toEqual(modified.json());
     });
 
-    expect(response.statusCode).toBe(200);
+    it('never replays one authenticated user private list to another user', async () => {
+      await insertPrivatePage(firstUserId, 'First user private');
+      await insertPrivatePage(secondUserId, 'Second user private');
 
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(cacheKeyArg).toContain('kubernetes');
-    expect(ttl).toBe(120);
-  });
+      currentUserId = firstUserId;
+      const first = await app.inject({ method: 'GET', url: '/api/pages' });
+      currentUserId = secondUserId;
+      const second = await app.inject({ method: 'GET', url: '/api/pages' });
 
-  it('should return cached result for search-filtered query on cache hit', async () => {
-    const cachedResponse = { items: [{ id: 'page-1', title: 'K8s Guide' }], total: 1, page: 1, limit: 50, totalPages: 1 };
-    mockCacheGet.mockResolvedValueOnce(cachedResponse);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?search=kubernetes',
+      expect(first.statusCode).toBe(200);
+      expect(first.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'First user private',
+      ]);
+      expect(second.statusCode).toBe(200);
+      expect(second.json().items.map((item: { title: string }) => item.title)).toEqual([
+        'Second user private',
+      ]);
+      expect((await app.inject({ method: 'GET', url: '/api/pages' })).json()).toEqual(second.json());
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.payload)).toEqual(cachedResponse);
-    expect(mockQueryFn).not.toHaveBeenCalled();
-  });
+    it('treats percent and underscore as literals in fallback search', async () => {
+      await insertPrivatePage(firstUserId, 'xxneedle%markyy');
+      await insertPrivatePage(firstUserId, 'xxneedleZZmarkyy');
+      await insertPrivatePage(firstUserId, 'xxneedle_varmarkyy');
+      await insertPrivatePage(firstUserId, 'xxneedleXvarmarkyy');
 
-  // ---------- Filtered queries — author ----------
+      const percent = await app.inject({
+        method: 'GET',
+        url: `/api/pages?search=${encodeURIComponent('needle%mark')}`,
+      });
+      const underscore = await app.inject({
+        method: 'GET',
+        url: `/api/pages?search=${encodeURIComponent('needle_var')}`,
+      });
 
-  it('should cache author-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?author=johndoe',
+      expect(percent.statusCode).toBe(200);
+      expect(percent.json()).toMatchObject({ fuzzyMatch: true, total: 1 });
+      expect(percent.json().items[0].title).toBe('xxneedle%markyy');
+      expect(underscore.statusCode).toBe(200);
+      expect(underscore.json()).toMatchObject({ fuzzyMatch: true, total: 1 });
+      expect(underscore.json().items[0].title).toBe('xxneedle_varmarkyy');
     });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(cacheKeyArg).toContain('johndoe');
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Filtered queries — labels ----------
-
-  it('should cache label-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?labels=architecture,howto',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(cacheKeyArg).toContain('architecture,howto');
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Filtered queries — freshness ----------
-
-  it('should cache freshness-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?freshness=stale',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , , , ttl] = mockCacheSet.mock.calls[0];
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Filtered queries — embeddingStatus ----------
-
-  it('should cache embeddingStatus-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?embeddingStatus=pending',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , , , ttl] = mockCacheSet.mock.calls[0];
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Filtered queries — date range ----------
-
-  it('should cache date-range-filtered queries with 2-minute TTL', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?dateFrom=2026-01-01&dateTo=2026-03-01',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(cacheKeyArg).toContain('2026-01-01');
-    expect(cacheKeyArg).toContain('2026-03-01');
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Combined filters ----------
-
-  it('should cache combined-filter queries with 2-minute TTL', async () => {
-    stubPageListQuery([sampleRow], 1);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?spaceKey=DEV&search=test&author=admin&freshness=fresh',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , cacheKeyArg, , ttl] = mockCacheSet.mock.calls[0];
-    expect(cacheKeyArg).toContain('DEV');
-    expect(cacheKeyArg).toContain('test');
-    expect(cacheKeyArg).toContain('admin');
-    expect(cacheKeyArg).toContain('fresh');
-    expect(ttl).toBe(120);
-  });
-
-  // ---------- Cache key differentiation ----------
-
-  it('should produce different cache keys for different filter combinations', async () => {
-    // First: search=foo — FTS returns 0, then ILIKE fallback also returns 0
-    stubPageListQuery([], 0); // FTS count
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
-    await app.inject({ method: 'GET', url: '/api/pages?search=foo' });
-
-    // Second: search=bar — same pattern
-    stubPageListQuery([], 0); // FTS count
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // ILIKE fallback count
-    await app.inject({ method: 'GET', url: '/api/pages?search=bar' });
-
-    expect(mockCacheSet).toHaveBeenCalledTimes(2);
-    const key1 = mockCacheSet.mock.calls[0][2];
-    const key2 = mockCacheSet.mock.calls[1][2];
-    expect(key1).not.toBe(key2);
-  });
-
-  it('should produce different cache keys for different pagination', async () => {
-    stubPageListQuery([], 0);
-    await app.inject({ method: 'GET', url: '/api/pages?page=1&limit=10' });
-
-    stubPageListQuery([], 0);
-    await app.inject({ method: 'GET', url: '/api/pages?page=2&limit=10' });
-
-    expect(mockCacheSet).toHaveBeenCalledTimes(2);
-    const key1 = mockCacheSet.mock.calls[0][2];
-    const key2 = mockCacheSet.mock.calls[1][2];
-    expect(key1).not.toBe(key2);
-  });
-
-  // ---------- ILIKE metacharacter escaping ----------
-
-  it('should escape ILIKE metacharacters in fallback search so "100%" does not match all rows', async () => {
-    // FTS returns 0 results, triggering ILIKE fallback
-    stubPageListQuery([], 0);
-    // ILIKE fallback count query
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-
-    await app.inject({
-      method: 'GET',
-      url: '/api/pages?search=100%25',  // URL-encoded "100%"
-    });
-
-    // The ILIKE fallback query should have been issued (3rd call: FTS count, ILIKE count)
-    // Find the ILIKE count query — it contains 'ILIKE' in the SQL
-    const ilikeCalls = mockQueryFn.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
-    );
-    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
-
-    // The parameter value should have escaped the '%' character
-    const ilikeCall = ilikeCalls[0];
-    const params = ilikeCall[1] as unknown[];
-    // Find the ILIKE term parameter (contains the search pattern)
-    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('100'));
-    expect(ilikeTerm).toBeDefined();
-    // "100%" should become "%100\%%" — the user's % is escaped with backslash
-    expect(ilikeTerm).toBe('%100\\%%');
-  });
-
-  it('should escape underscore in ILIKE fallback search', async () => {
-    // FTS returns 0 results, triggering ILIKE fallback
-    stubPageListQuery([], 0);
-    // ILIKE fallback count query
-    mockQueryFn.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-
-    await app.inject({
-      method: 'GET',
-      url: '/api/pages?search=my_var',
-    });
-
-    const ilikeCalls = mockQueryFn.mock.calls.filter(
-      (c: unknown[]) => typeof c[0] === 'string' && (c[0] as string).includes('ILIKE'),
-    );
-    expect(ilikeCalls.length).toBeGreaterThanOrEqual(1);
-
-    const params = ilikeCalls[0][1] as unknown[];
-    const ilikeTerm = params.find((p) => typeof p === 'string' && (p as string).includes('my'));
-    expect(ilikeTerm).toBeDefined();
-    // "my_var" should become "%my\_var%" — the underscore is escaped
-    expect(ilikeTerm).toBe('%my\\_var%');
-  });
-
-  // ---------- spaceKey-only is not a "filter" ----------
-
-  it('should use 15-minute TTL when only spaceKey is provided (not a filter)', async () => {
-    stubPageListQuery([], 0);
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/pages?spaceKey=DEV',
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(mockCacheSet).toHaveBeenCalledTimes(1);
-    const [, , , , ttl] = mockCacheSet.mock.calls[0];
-    expect(ttl).toBe(900);
-  });
-});
+  },
+);

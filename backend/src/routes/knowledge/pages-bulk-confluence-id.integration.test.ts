@@ -1,250 +1,276 @@
 /**
- * Integration tests for bulk-selection id addressing against a REAL PostgreSQL.
+ * Bulk-selection identity tests against real PostgreSQL, Redis, RBAC,
+ * admission, audit, attachment cleanup, and Confluence client wiring.
  *
- * `resolveBulkSelection` splits the caller's ids across two arms. The
- * `confluence_id` arm used to be fed `ids.filter((id) => !/^\d+$/.test(id))` —
- * it *excluded* all-digit ids. Confluence DC content ids are numeric strings,
- * so no real one ever reached it, at any magnitude: a synced page was not
- * addressable by its `confluence_id` in any of the six bulk routes. That is the
- * wire shape the UI sends (`bulkWireId` maps every non-standalone row to
- * `confluenceId ?? id`), so the ordinary bulk delete/sync/embed/quality buttons
- * resolved zero rows for synced pages.
- *
- * Feeding numeric ids to both arms makes one string able to name two different
- * pages — one by `pages.id`, another by `confluence_id`. On a path that
- * includes bulk DELETE that must not be guessed at, so the resolver refuses the
- * id (the same call `/move` and `/relocate` make for the identical collision,
- * #1166) and the batch continues without it.
- *
- * These must run against real Postgres: a mocked `query()` returns whatever the
- * test tells it to and cannot demonstrate which rows the predicate matches, nor
- * that a delete stopped where it was supposed to.
- *
- * Only the real boundaries are stubbed — the Confluence HTTP client, Redis,
- * audit log, webhooks, the attachment filesystem and the background workers.
- * The DB, the resolver and the delete path are real.
+ * Confluence is represented by a loopback HTTP server: it is the only external
+ * system in this suite. Numeric Confluence ids must reach the mixed-id resolver,
+ * while an id that names two visible rows must be refused rather than guessed.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
-import Fastify from 'fastify';
-import sensible from '@fastify/sensible';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { FastifyInstance } from 'fastify';
+import type { PoolClient } from 'pg';
+import { createClient, type RedisClientType } from 'redis';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { getPool, query } from '../../core/db/postgres.js';
+import { setRedisClient } from '../../core/services/redis-cache.js';
+import { lockPageLifecycle } from '../../core/services/page-write-admission.js';
+import { encryptPat } from '../../core/utils/crypto.js';
 import {
-  setupTestDb,
-  truncateAllTables,
-  teardownTestDb,
   isDbAvailable,
+  setupTestDb,
+  teardownTestDb,
+  truncateAllTables,
 } from '../../test-db-helper.js';
-import { query } from '../../core/db/postgres.js';
+import { isRedisAvailable } from '../../test-redis-helper.js';
+import {
+  buildKnowledgeTestApp,
+  insertLocalSpace,
+  insertUser,
+} from './pages.test-helpers.js';
 
-/**
- * A plain Confluence DC content id — all digits, comfortably inside int4. The
- * defect under test is not about magnitude (that was #1167): this id was
- * unreachable because of its *shape*.
- */
 const NUMERIC_CONFLUENCE_ID = '12345';
-
-/**
- * The colliding value. One page gets it as its `pages.id`, a different page as
- * its `confluence_id`. Chosen far above any serial this suite allocates so the
- * two never overlap by accident.
- */
 const COLLIDING_ID = 777777;
+const [dbAvailable, redisAvailable] = await Promise.all([
+  isDbAvailable(),
+  isRedisAvailable(),
+]);
 
-// --- Boundary mocks (everything else is real) ---
+type ExternalRequest = {
+  method: string;
+  url: string;
+  authorization: string | undefined;
+  body: string;
+};
 
-const h = vi.hoisted(() => ({
-  client: {
-    deletePage: vi.fn(),
-    addLabels: vi.fn(),
-    removeLabel: vi.fn(),
-  },
-}));
-
-vi.mock('../../core/services/redis-cache.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../core/services/redis-cache.js')>()),
-  RedisCache: class MockRedisCache {
-    get = vi.fn().mockResolvedValue(null);
-    set = vi.fn().mockResolvedValue(undefined);
-    invalidate = vi.fn().mockResolvedValue(undefined);
-    invalidateAcrossUsers = vi.fn().mockResolvedValue(undefined);
-  },
-}));
-
-vi.mock('../../core/services/audit-service.js', () => ({
-  logAuditEvent: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../core/services/webhook-emit-hook.js', () => ({
-  emitWebhookEvent: vi.fn(),
-}));
-
-vi.mock('../../domains/confluence/services/attachment-handler.js', () => ({
-  cleanPageAttachments: vi.fn().mockResolvedValue(undefined),
-  syncDrawioAttachments: vi.fn().mockResolvedValue(undefined),
-  syncImageAttachments: vi.fn().mockResolvedValue(undefined),
-  getMissingAttachments: vi.fn().mockResolvedValue([]),
-  writeAttachmentCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-// Not merely an LLM boundary: left real, the embedding worker races these tests
-// by clearing `embedding_dirty` on the rows they just asserted about.
-// A factory mock replaces the whole module, so anything the routes import has
-// to be listed. `assertShadowRollbackWindowClear` (#1116) guards
-// POST /pages/bulk/embed, which this file exercises; omitting it made the route
-// throw "not a function" and every cell here fail on a bare 500.
-vi.mock('../../domains/llm/services/embedding-service.js', () => ({
-  processDirtyPages: vi.fn().mockResolvedValue(undefined),
-  isProcessingUser: vi.fn().mockReturnValue(false),
-  computePageRelationships: vi.fn().mockResolvedValue(0),
-  assertShadowRollbackWindowClear: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/knowledge/services/quality-worker.js', () => ({
-  triggerQualityBatch: vi.fn().mockResolvedValue(undefined),
-}));
-
-const mockGetUserAccessibleSpaces = vi.fn();
-vi.mock('../../core/services/rbac-service.js', () => ({
-  getUserAccessibleSpaces: (...args: unknown[]) => mockGetUserAccessibleSpaces(...args),
-  invalidateRbacCache: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../../domains/confluence/services/sync-service.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../domains/confluence/services/sync-service.js')>()),
-  getClientForUser: vi.fn(async () => h.client),
-}));
-
-const dbAvailable = await isDbAvailable();
-
-// --- Fixtures ---
-
+let app: FastifyInstance;
+let redis: RedisClientType;
+let confluence: Server;
+let confluenceBaseUrl: string;
+let externalRequests: ExternalRequest[] = [];
 let userId: string;
+let attachmentsDir: string;
+let originalAttachmentsDir: string | undefined;
+let originalPatEncryptionKey: string | undefined;
 
-/** A Confluence-sourced page in the DEV space. `id` may be forced. */
+async function readBody(request: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function assignSpace(user: string, spaceKey: string): Promise<void> {
+  const role = await query<{ id: number }>(
+    `INSERT INTO roles (name, display_name, permissions)
+     VALUES ($1, 'Bulk identity editor', ARRAY['read', 'comment', 'edit', 'delete'])
+     RETURNING id`,
+    [`bulk-identity-${randomUUID()}`],
+  );
+  await query(
+    `INSERT INTO space_role_assignments (space_key, principal_type, principal_id, role_id)
+     VALUES ($1, 'user', $2, $3)`,
+    [spaceKey, user, role.rows[0]!.id],
+  );
+}
+
 async function insertSynced(opts: {
   confluenceId: string;
   title?: string;
   id?: number;
 }): Promise<number> {
-  const res = await query<{ id: number }>(
+  const result = await query<{ id: number }>(
     `INSERT INTO pages (${opts.id !== undefined ? 'id, ' : ''}confluence_id, source, space_key,
-                        title, body_text, body_storage, body_html, inherit_perms, version)
+                        title, body_text, body_storage, body_html, inherit_perms, version,
+                        embedding_dirty, image_analysis_dirty)
      VALUES (${opts.id !== undefined ? `${opts.id}, ` : ''}$1, 'confluence', 'DEV', $2,
-             'text', '', '<p>x</p>', TRUE, 1)
+             'text', '<p>x</p>', '<p>x</p>', TRUE, 1, FALSE, FALSE)
      RETURNING id`,
     [opts.confluenceId, opts.title ?? `Synced ${opts.confluenceId}`],
   );
-  return res.rows[0]!.id;
+  return result.rows[0]!.id;
 }
 
-/** A standalone page owned by `userId`. `id` may be forced. */
 async function insertStandalone(opts: { title: string; id?: number }): Promise<number> {
-  const res = await query<{ id: number }>(
-    `INSERT INTO pages (${opts.id !== undefined ? 'id, ' : ''}source, title, body_text,
+  const result = await query<{ id: number }>(
+    `INSERT INTO pages (${opts.id !== undefined ? 'id, ' : ''}source, space_key, title, body_text,
                         body_storage, body_html, created_by_user_id, visibility, version,
                         page_type, embedding_dirty, embedding_status, last_synced)
-     VALUES (${opts.id !== undefined ? `${opts.id}, ` : ''}'standalone', $1, 'text', NULL,
-             '<p>x</p>', $2, 'private', 1, 'page', TRUE, 'not_embedded', NOW())
+     VALUES (${opts.id !== undefined ? `${opts.id}, ` : ''}'standalone', 'LOCAL', $1, 'text', NULL,
+             '<p>x</p>', $2, 'private', 1, 'page', FALSE, 'not_embedded', NOW())
      RETURNING id`,
     [opts.title, userId],
   );
-  return res.rows[0]!.id;
+  return result.rows[0]!.id;
 }
 
-/** Ids of every row still visible to the app (all readers filter `deleted_at`). */
 async function liveIds(): Promise<number[]> {
-  const res = await query<{ id: number }>(
+  const result = await query<{ id: number }>(
     'SELECT id FROM pages WHERE deleted_at IS NULL ORDER BY id',
   );
-  return res.rows.map((r) => r.id);
+  return result.rows.map((row) => row.id);
 }
 
-/** Confluence ids of the rows this request marked for re-embedding. */
-async function dirtyConfluenceIds(): Promise<string[]> {
-  const res = await query<{ confluence_id: string }>(
-    'SELECT confluence_id FROM pages WHERE embedding_dirty = TRUE ORDER BY confluence_id',
+function providerDeleteIds(): string[] {
+  return externalRequests.flatMap((request) => {
+    if (request.method !== 'DELETE') return [];
+    const match = request.url.match(/^\/rest\/api\/content\/([^/]+)$/);
+    return match ? [decodeURIComponent(match[1]!)] : [];
+  });
+}
+
+async function auditMetadata(action: string): Promise<Record<string, unknown>[]> {
+  const result = await query<{ metadata: Record<string, unknown> }>(
+    'SELECT metadata FROM audit_log WHERE action = $1 ORDER BY created_at, id',
+    [action],
   );
-  return res.rows.map((r) => r.confluence_id);
+  return result.rows.map((row) => row.metadata);
 }
 
-async function clearDirty(): Promise<void> {
-  await query('UPDATE pages SET embedding_dirty = FALSE');
+async function waitForBlockedLifecycleLock(holderPid: number): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const result = await query<{ waiting: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM pg_locks held
+           JOIN pg_locks waiting
+             ON waiting.locktype = held.locktype
+            AND waiting.database IS NOT DISTINCT FROM held.database
+            AND waiting.classid IS NOT DISTINCT FROM held.classid
+            AND waiting.objid IS NOT DISTINCT FROM held.objid
+            AND waiting.objsubid IS NOT DISTINCT FROM held.objsubid
+          WHERE held.pid = $1
+            AND held.locktype = 'advisory'
+            AND held.granted
+            AND NOT waiting.granted
+       ) AS waiting`,
+      [holderPid],
+    );
+    if (result.rows[0]?.waiting) return;
+  }
+  throw new Error('bulk delete did not reach the held page lifecycle lock');
 }
 
-// --- Suite ---
+async function pageState(id: number): Promise<{
+  source: string;
+  confluence_id: string | null;
+  space_key: string | null;
+  body_html: string;
+  labels: string[];
+  deleted_at: Date | null;
+} | undefined> {
+  return (
+    await query<{
+      source: string;
+      confluence_id: string | null;
+      space_key: string | null;
+      body_html: string;
+      labels: string[];
+      deleted_at: Date | null;
+    }>(
+      `SELECT source, confluence_id, space_key, body_html, labels, deleted_at
+         FROM pages WHERE id = $1`,
+      [id],
+    )
+  ).rows[0];
+}
 
-describe.skipIf(!dbAvailable)('bulk selection addressing by confluence_id', () => {
-  let app: ReturnType<typeof Fastify>;
+describe.skipIf(!dbAvailable || !redisAvailable)(
+  'bulk selection addressing by confluence_id — real infrastructure',
+  () => {
+    beforeAll(async () => {
+      originalAttachmentsDir = process.env.ATTACHMENTS_DIR;
+      originalPatEncryptionKey = process.env.PAT_ENCRYPTION_KEY;
+      attachmentsDir = await mkdtemp(join(tmpdir(), 'bulk-confluence-id-'));
+      process.env.ATTACHMENTS_DIR = attachmentsDir;
+      process.env.PAT_ENCRYPTION_KEY = 'bulk-identity-encryption-key-at-least-32-bytes';
 
-  beforeAll(async () => {
-    await setupTestDb();
-
-    app = Fastify({ logger: false });
-    await app.register(sensible);
-    app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-      if (error instanceof ZodError) {
-        return reply.status(400).send({ error: 'Validation failed' });
-      }
-      return reply.status(error.statusCode ?? 500).send({ error: error.message });
-    });
-    app.decorate('authenticate', async (request: { userId: string }) => {
-      request.userId = userId;
-    });
-    app.decorate('requireAdmin', async (request: { userId: string }) => {
-      request.userId = userId;
-    });
-    app.decorate('redis', {});
-    const { pagesCrudRoutes } = await import('./pages-crud.js');
-    await app.register(pagesCrudRoutes, { prefix: '/api' });
-    await app.ready();
-  });
-
-  afterAll(async () => {
-    await app.close();
-    await teardownTestDb();
-  });
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    await truncateAllTables();
-    h.client.deletePage.mockReset().mockResolvedValue(undefined);
-    h.client.addLabels.mockReset().mockResolvedValue(undefined);
-    h.client.removeLabel.mockReset().mockResolvedValue(undefined);
-
-    const res = await query<{ id: string }>(
-      "INSERT INTO users (username, password_hash, role) VALUES ('bulk_id_user', 'x', 'admin') RETURNING id",
-    );
-    userId = res.rows[0]!.id;
-    await query(
-      "INSERT INTO spaces (space_key, space_name, source) VALUES ('DEV', 'DEV', 'confluence') ON CONFLICT (space_key) DO NOTHING",
-    );
-    mockGetUserAccessibleSpaces.mockResolvedValue(['DEV']);
-  });
-
-  // ── The fix: a numeric confluence_id resolves ────────────────────────────
-
-  describe('a synced page addressed by its numeric confluence_id', () => {
-    it('resolves on POST /pages/bulk/embed', async () => {
-      await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
-      await clearDirty();
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: [NUMERIC_CONFLUENCE_ID] },
+      await setupTestDb();
+      confluence = createServer(async (request, response) => {
+        const body = await readBody(request);
+        externalRequests.push({
+          method: request.method ?? 'GET',
+          url: request.url ?? '/',
+          authorization: typeof request.headers.authorization === 'string'
+            ? request.headers.authorization
+            : undefined,
+          body,
+        });
+        if (
+          request.url?.startsWith('/rest/api/content/') &&
+          (request.method === 'DELETE' || request.method === 'POST')
+        ) {
+          response.writeHead(204).end();
+          return;
+        }
+        response.writeHead(404, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ message: 'unexpected test request' }));
       });
+      await new Promise<void>((resolve) => confluence.listen(0, '127.0.0.1', resolve));
+      confluenceBaseUrl = `http://127.0.0.1:${(confluence.address() as AddressInfo).port}`;
 
-      expect(response.statusCode).toBe(200);
-      // Before the fix: the all-digit id was excluded from the confluence arm
-      // and compared against `pages.id` instead, so it matched nothing —
-      // `{ succeeded: 0, failed: 1, errors: ['Page 12345 not found'] }`.
-      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      expect(await dirtyConfluenceIds()).toEqual([NUMERIC_CONFLUENCE_ID]);
+      redis = createClient({
+        url: process.env.REDIS_URL,
+        socket: { reconnectStrategy: false, connectTimeout: 1_000 },
+      });
+      await redis.connect();
+      setRedisClient(redis);
+
+      app = await buildKnowledgeTestApp(() => userId, async (instance) => {
+        instance.redis = redis;
+        // This integration test intentionally loads the route graph only after
+        // its call-time filesystem sandbox and real Redis client are installed.
+        const { pagesCrudRoutes } = await import('./pages-crud.js');
+        await instance.register(pagesCrudRoutes, { prefix: '/api' });
+      });
     });
 
-    it('resolves on POST /pages/bulk/delete and deletes exactly that page', async () => {
+    afterAll(async () => {
+      await app.close();
+      if (redis.isOpen) await redis.quit();
+      await new Promise<void>((resolve, reject) => {
+        confluence.close((error) => error ? reject(error) : resolve());
+      });
+      await teardownTestDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      if (originalAttachmentsDir === undefined) delete process.env.ATTACHMENTS_DIR;
+      else process.env.ATTACHMENTS_DIR = originalAttachmentsDir;
+      if (originalPatEncryptionKey === undefined) delete process.env.PAT_ENCRYPTION_KEY;
+      else process.env.PAT_ENCRYPTION_KEY = originalPatEncryptionKey;
+    });
+
+    beforeEach(async () => {
+      await truncateAllTables();
+      await redis.flushDb();
+      await rm(attachmentsDir, { recursive: true, force: true });
+      await mkdir(attachmentsDir, { recursive: true });
+      externalRequests = [];
+
+      userId = await insertUser(`bulk-identity-${randomUUID()}`);
+      await insertLocalSpace('LOCAL', userId);
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source, last_synced)
+         VALUES ('DEV', 'Development', 'confluence', NOW())`,
+      );
+      await assignSpace(userId, 'DEV');
+      await query(
+        `INSERT INTO user_settings (user_id, confluence_url, confluence_pat, confluence_enabled)
+         VALUES ($1, $2, $3, TRUE)`,
+        [userId, confluenceBaseUrl, encryptPat('bulk-identity-test-pat')],
+      );
+    });
+
+    it('deletes a page addressed by its numeric Confluence id and leaves adjacent state alone', async () => {
       const target = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
       const bystander = await insertSynced({ confluenceId: '54321' });
+      const attachmentPath = join(attachmentsDir, NUMERIC_CONFLUENCE_ID);
+      await mkdir(attachmentPath, { recursive: true });
+      await writeFile(join(attachmentPath, 'evidence.png'), 'real attachment bytes');
+      await redis.set('kb:another-user:pages:list', 'stale');
+      await redis.set('kb:another-user:spaces:list', 'stale');
 
       const response = await app.inject({
         method: 'POST',
@@ -252,103 +278,60 @@ describe.skipIf(!dbAvailable)('bulk selection addressing by confluence_id', () =
         payload: { ids: [NUMERIC_CONFLUENCE_ID] },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      // Upstream was asked to delete that page and only that page.
-      expect(h.client.deletePage.mock.calls).toEqual([[NUMERIC_CONFLUENCE_ID]]);
-      // Confluence-sourced bulk delete is a hard delete once upstream succeeds.
+      expect(providerDeleteIds()).toEqual([NUMERIC_CONFLUENCE_ID]);
+      expect(externalRequests[0]?.authorization).toBe('Bearer bulk-identity-test-pat');
       expect(await liveIds()).toEqual([bystander]);
       expect(target).not.toBe(bystander);
+      await expect(access(attachmentPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await redis.exists('kb:another-user:pages:list')).toBe(0);
+      expect(await redis.exists('kb:another-user:spaces:list')).toBe(0);
+      expect(await auditMetadata('PAGE_DELETED')).toEqual([
+        expect.objectContaining({ affectedCount: 1, succeeded: 1, failed: 0 }),
+      ]);
     });
 
-    it('is still addressable by its PK, and no longer double-counted', async () => {
-      // The old row→id reverse map assumed a synced row could only have been
-      // named by `confluence_id`, so addressing one by PK acted on it and
-      // *still* reported it in `failed`/`errors`.
-      const pk = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
-      await clearDirty();
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: [String(pk)] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      expect(await dirtyConfluenceIds()).toEqual([NUMERIC_CONFLUENCE_ID]);
-    });
-
-    it('counts a page named twice, by both of its identifiers, once', async () => {
-      const pk = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
+    it('deduplicates repeated input and the same page named by both identifiers', async () => {
+      const pageId = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
       const other = await insertSynced({ confluenceId: '54321' });
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/delete',
-        payload: { ids: [String(pk), NUMERIC_CONFLUENCE_ID] },
+        payload: {
+          ids: [NUMERIC_CONFLUENCE_ID, NUMERIC_CONFLUENCE_ID, String(pageId), String(pageId)],
+        },
       });
 
-      expect(response.statusCode).toBe(200);
-      // One page, one delete — not two successes and not two upstream calls.
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      expect(h.client.deletePage.mock.calls).toEqual([[NUMERIC_CONFLUENCE_ID]]);
+      expect(providerDeleteIds()).toEqual([NUMERIC_CONFLUENCE_ID]);
       expect(await liveIds()).toEqual([other]);
     });
 
-    it('treats a page whose PK equals its own confluence_id as one target', async () => {
-      // Both arms hit, but they hit the SAME row — that is not a conflict.
+    it('treats a page whose PK equals its numeric Confluence id as one target', async () => {
       await insertSynced({ id: COLLIDING_ID, confluenceId: String(COLLIDING_ID) });
-      await clearDirty();
 
       const response = await app.inject({
         method: 'POST',
-        url: '/api/pages/bulk/embed',
+        url: '/api/pages/bulk/delete',
         payload: { ids: [String(COLLIDING_ID)] },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
+      expect(providerDeleteIds()).toEqual([String(COLLIDING_ID)]);
+      expect(await liveIds()).toEqual([]);
     });
-  });
 
-  // ── The hazard the fix creates, and its resolution ───────────────────────
-
-  describe('an id naming two different pages', () => {
-    /**
-     * A standalone page with `id = 777777` and a synced page with
-     * `confluence_id = '777777'`. Indistinguishable to every reader — the exact
-     * collision `/move` refuses with 409 (#1166).
-     */
     async function seedCollision(): Promise<{ byPk: number; byConfluenceId: number }> {
-      const byPk = await insertStandalone({ title: 'Standalone 777777', id: COLLIDING_ID });
+      const byPk = await insertStandalone({ title: 'Standalone collision', id: COLLIDING_ID });
       const byConfluenceId = await insertSynced({ confluenceId: String(COLLIDING_ID) });
       return { byPk, byConfluenceId };
     }
 
-    it('is refused rather than resolved to either page', async () => {
-      const { byPk, byConfluenceId } = await seedCollision();
-      await clearDirty();
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: [String(COLLIDING_ID)] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
-      // Named as ambiguous, not as "not found" — the pages plainly exist, and
-      // telling the caller otherwise invites a destructive retry elsewhere.
-      expect(response.json().errors).toEqual([
-        `Page ${COLLIDING_ID}: ambiguous identifier — it is one page's id and another page's Confluence id; no action taken`,
-      ]);
-      // Neither candidate was touched.
-      expect(await dirtyConfluenceIds()).toEqual([]);
-      expect(await liveIds()).toEqual([byConfluenceId, byPk].sort((a, b) => a - b));
-    });
-
-    it('is refused on bulk delete, leaving both pages live and untouched', async () => {
+    it('refuses an ambiguous visible identifier without deleting either candidate', async () => {
       const { byPk, byConfluenceId } = await seedCollision();
 
       const response = await app.inject({
@@ -357,18 +340,18 @@ describe.skipIf(!dbAvailable)('bulk selection addressing by confluence_id', () =
         payload: { ids: [String(COLLIDING_ID)] },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
-      expect(response.json().errors[0]).toMatch(/ambiguous identifier/);
-      // The two failure modes this refusal exists to prevent: deleting both,
-      // and deleting the wrong one while reporting success.
-      expect(h.client.deletePage).not.toHaveBeenCalled();
+      expect(response.json().errors).toEqual([
+        `Page ${COLLIDING_ID}: ambiguous identifier — it is one page's id and another page's Confluence id; no action taken`,
+      ]);
+      expect(providerDeleteIds()).toEqual([]);
       expect(await liveIds()).toEqual([byConfluenceId, byPk].sort((a, b) => a - b));
     });
 
-    it('does not sink the rest of the batch (#1167 partial success holds)', async () => {
+    it('keeps partial success when an ambiguous member accompanies a valid member', async () => {
       const { byPk, byConfluenceId } = await seedCollision();
-      const doomed = await insertSynced({ confluenceId: '54321' });
+      await insertSynced({ confluenceId: '54321' });
 
       const response = await app.inject({
         method: 'POST',
@@ -376,156 +359,455 @@ describe.skipIf(!dbAvailable)('bulk selection addressing by confluence_id', () =
         payload: { ids: [String(COLLIDING_ID), '54321'] },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
-      expect(h.client.deletePage.mock.calls).toEqual([['54321']]);
+      expect(response.json().errors[0]).toMatch(/ambiguous identifier/);
+      expect(providerDeleteIds()).toEqual(['54321']);
       expect(await liveIds()).toEqual([byConfluenceId, byPk].sort((a, b) => a - b));
-      expect(doomed).not.toBe(byPk);
     });
 
-    it('is not triggered by a soft-deleted competitor', async () => {
-      // Divergence from #1166, which deliberately counts trashed rows: the
-      // `parent_id` it writes outlives the request and a restore puts the
-      // trashed row back in contention. Here the resolver acts within the
-      // request and every bulk route filters `deleted_at IS NULL`, so a trashed
-      // row can never be a target — vetoing on it would be a refusal with no
-      // hazard behind it.
-      await insertStandalone({ title: 'Trashed 777777', id: COLLIDING_ID });
+    it('does not treat a soft-deleted row as an ambiguity candidate', async () => {
+      await insertStandalone({ title: 'Trashed collision', id: COLLIDING_ID });
       await query('UPDATE pages SET deleted_at = NOW() WHERE id = $1', [COLLIDING_ID]);
-      const live = await insertSynced({ confluenceId: String(COLLIDING_ID) });
-      await clearDirty();
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: [String(COLLIDING_ID)] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      expect(await liveIds()).toEqual([live]);
-    });
-
-    it('is not triggered by a competitor outside the caller\'s RBAC scope', async () => {
-      // Same reasoning, plus: refusing here would disclose that a page the
-      // caller cannot see exists.
-      await query(
-        "INSERT INTO spaces (space_key, space_name, source) VALUES ('SECRET', 'SECRET', 'confluence') ON CONFLICT (space_key) DO NOTHING",
-      );
-      await query(
-        `INSERT INTO pages (id, confluence_id, source, space_key, title, body_text,
-                            body_storage, body_html, inherit_perms, version)
-         VALUES ($1, 'conf-secret', 'confluence', 'SECRET', 'Hidden', 'text', '', '<p>x</p>', TRUE, 1)`,
-        [COLLIDING_ID],
-      );
-      const visible = await insertSynced({ confluenceId: String(COLLIDING_ID) });
-      await clearDirty();
-
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/pages/bulk/embed',
-        payload: { ids: [String(COLLIDING_ID)] },
-      });
-
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
-      expect(await dirtyConfluenceIds()).toEqual([String(COLLIDING_ID)]);
-      expect(visible).not.toBe(COLLIDING_ID);
-    });
-  });
-
-  // ── Blast radius of the widened predicate, on delete specifically ────────
-
-  describe('bulk delete blast radius', () => {
-    it('deletes exactly the named pages and nothing adjacent', async () => {
-      // A deliberately hostile fixture: every row here is reachable by *some*
-      // id in the request under a sloppier predicate.
-      const namedSynced = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
-      const namedStandalone = await insertStandalone({ title: 'Mine' });
-      // Same digits as the synced page's PK, in the other id space.
-      const decoyByConfluenceId = await insertSynced({
-        confluenceId: String(namedStandalone),
-        title: 'Decoy',
-      });
-      const untouchedSynced = await insertSynced({ confluenceId: '99999' });
-      const untouchedStandalone = await insertStandalone({ title: 'Also mine' });
+      await insertSynced({ confluenceId: String(COLLIDING_ID) });
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/delete',
-        // Exactly the wire shape `bulkWireId` produces: confluence_id for the
-        // synced page, PK for the standalone one.
+        payload: { ids: [String(COLLIDING_ID)] },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
+      expect(providerDeleteIds()).toEqual([String(COLLIDING_ID)]);
+      expect(await liveIds()).toEqual([]);
+    });
+
+    it('does not disclose an ambiguity candidate outside the actor RBAC scope', async () => {
+      await query(
+        `INSERT INTO spaces (space_key, space_name, source, last_synced)
+         VALUES ('SECRET', 'Secret', 'confluence', NOW())`,
+      );
+      await query(
+        `INSERT INTO pages (id, confluence_id, source, space_key, title, body_text,
+                            body_storage, body_html, inherit_perms, version)
+         VALUES ($1, 'secret-page', 'confluence', 'SECRET', 'Hidden', 'text',
+                 '<p>x</p>', '<p>x</p>', TRUE, 1)`,
+        [COLLIDING_ID],
+      );
+      const visible = await insertSynced({ confluenceId: String(COLLIDING_ID) });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
+        payload: { ids: [String(COLLIDING_ID)] },
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ succeeded: 1, failed: 0, errors: [] });
+      expect(providerDeleteIds()).toEqual([String(COLLIDING_ID)]);
+      expect(await pageState(visible)).toBeUndefined();
+      expect(await liveIds()).toEqual([COLLIDING_ID]);
+    });
+
+    it('bounds deletion blast radius to one resolved page per supplied identifier', async () => {
+      const namedSynced = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
+      const namedStandalone = await insertStandalone({ title: 'Named standalone' });
+      const decoyByConfluenceId = await insertSynced({
+        confluenceId: String(namedStandalone),
+        title: 'Decoy by Confluence id',
+      });
+      const untouchedSynced = await insertSynced({ confluenceId: '99999' });
+      const untouchedStandalone = await insertStandalone({ title: 'Untouched standalone' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/pages/bulk/delete',
         payload: { ids: [NUMERIC_CONFLUENCE_ID, String(namedStandalone)] },
       });
 
-      expect(response.statusCode).toBe(200);
-      // `String(namedStandalone)` is ambiguous — it is that page's PK *and* the
-      // decoy's confluence_id — so it is refused, not applied to both.
+      expect(response.statusCode, response.body).toBe(200);
       expect(response.json()).toMatchObject({ succeeded: 1, failed: 1 });
       expect(response.json().errors).toEqual([
         `Page ${namedStandalone}: ambiguous identifier — it is one page's id and another page's Confluence id; no action taken`,
       ]);
-
-      // One upstream delete, for the one unambiguous synced page.
-      expect(h.client.deletePage.mock.calls).toEqual([[NUMERIC_CONFLUENCE_ID]]);
+      expect(providerDeleteIds()).toEqual([NUMERIC_CONFLUENCE_ID]);
       expect(await liveIds()).toEqual(
         [namedStandalone, decoyByConfluenceId, untouchedSynced, untouchedStandalone].sort(
-          (a, b) => a - b,
+          (left, right) => left - right,
         ),
       );
       expect(namedSynced).not.toBe(decoyByConfluenceId);
     });
 
-    it('resolves at most one page per supplied id', async () => {
-      // The property that bounds the widening: the predicate now matches more
-      // *rows* across the table, but each input id still contributes at most
-      // one target, so a request can never delete more pages than it names.
+    it('never deletes more live rows than the distinct identifiers supplied', async () => {
       await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
       await insertSynced({ confluenceId: '54321' });
-      const standalone = await insertStandalone({ title: 'Mine' });
+      const standalone = await insertStandalone({ title: 'Named standalone' });
 
       const response = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/delete',
-        payload: { ids: [NUMERIC_CONFLUENCE_ID, '54321', String(standalone)] },
+        payload: {
+          ids: [NUMERIC_CONFLUENCE_ID, '54321', String(standalone), NUMERIC_CONFLUENCE_ID],
+        },
       });
 
-      expect(response.statusCode).toBe(200);
-      const { succeeded, failed } = response.json();
-      expect(succeeded + failed).toBe(3);
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({ succeeded: 3, failed: 0, errors: [] });
+      expect(providerDeleteIds().sort()).toEqual(['12345', '54321']);
       expect(await liveIds()).toEqual([]);
     });
-  });
 
-  // ── The narrower surface stays narrow ────────────────────────────────────
+    it.each([
+      {
+        name: 'content revision',
+        mutate: async (client: PoolClient, pageId: number) => {
+          await client.query(
+            "UPDATE pages SET body_html = '<p>replacement body</p>' WHERE id = $1",
+            [pageId],
+          );
+        },
+        error: /page content changed/i,
+        expected: {
+          source: 'confluence',
+          confluence_id: '707070',
+          space_key: 'DEV',
+          body_html: '<p>replacement body</p>',
+          labels: [],
+          deleted_at: null,
+        },
+      },
+      {
+        name: 'source and Confluence identity',
+        mutate: async (client: PoolClient, pageId: number) => {
+          await client.query(
+            `UPDATE pages
+                SET source = 'standalone', confluence_id = 'replacement-707070',
+                    space_key = 'LOCAL', created_by_user_id = $2, visibility = 'private'
+              WHERE id = $1`,
+            [pageId, userId],
+          );
+        },
+        error: /page content changed/i,
+        expected: {
+          source: 'standalone',
+          confluence_id: 'replacement-707070',
+          space_key: 'LOCAL',
+          body_html: '<p>x</p>',
+          labels: [],
+          deleted_at: null,
+        },
+      },
+      {
+        name: 'actor space authority',
+        mutate: async (client: PoolClient, _pageId: number) => {
+          await client.query(
+            `DELETE FROM space_role_assignments
+              WHERE principal_type = 'user' AND principal_id = $1 AND space_key = 'DEV'`,
+            [userId],
+          );
+        },
+        error: /access denied|not authorized/i,
+        expected: {
+          source: 'confluence',
+          confluence_id: '707070',
+          space_key: 'DEV',
+          body_html: '<p>x</p>',
+          labels: [],
+          deleted_at: null,
+        },
+      },
+    ])(
+      'refuses a stale numeric selection when $name changes behind lifecycle admission',
+      async ({ mutate, error, expected }) => {
+        const pageId = await insertSynced({ confluenceId: '707070', title: 'Original target' });
+        const attachmentPath = join(attachmentsDir, '707070');
+        await mkdir(attachmentPath, { recursive: true });
+        await writeFile(join(attachmentPath, 'keep.txt'), 'must survive stale selection');
 
-  describe("idMode 'numeric-only' is unchanged", () => {
-    it('still refuses to address a page by confluence_id on POST /pages/bulk/tag', async () => {
-      // `/bulk/tag` and `/bulk/replace-tags` key their work by `String(row.id)`
-      // and write `WHERE id = $1`; nothing in the app addresses them by
-      // `confluence_id`, so they keep the narrower surface — and with it, no
-      // ambiguity case at all.
-      const pk = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        const holder = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        try {
+          const pendingDelete = app.inject({
+            method: 'POST',
+            url: '/api/pages/bulk/delete',
+            payload: { ids: ['707070'] },
+          });
+          await waitForBlockedLifecycleLock(holder.rows[0]!.pid);
+          await mutate(blocker, pageId);
+          await blocker.query('COMMIT');
+
+          const response = await pendingDelete;
+          expect(response.statusCode, response.body).toBe(200);
+          expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
+          expect(response.json().errors[0]).toMatch(error);
+          expect(await pageState(pageId)).toEqual(expected);
+          expect(providerDeleteIds()).toEqual([]);
+          const unresolved = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count
+               FROM page_write_intents
+              WHERE settled_at IS NULL`,
+          );
+          expect(unresolved.rows[0]!.count).toBe('0');
+          await expect(access(join(attachmentPath, 'keep.txt'))).resolves.toBeUndefined();
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+      },
+    );
+
+    it.each([
+      {
+        surface: 'add/remove',
+        url: '/api/pages/bulk/tag',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          addTags: ['new'],
+          removeTags: ['old'],
+        }),
+        expected: ['new'],
+      },
+      {
+        surface: 'replacement',
+        url: '/api/pages/bulk/replace-tags',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          tags: ['replacement'],
+        }),
+        expected: ['replacement'],
+      },
+    ])(
+      'keeps the $surface label operation local when Confluence was already disabled',
+      async ({ url, payload, expected }) => {
+        const pageId = await insertSynced({ confluenceId: '797979', title: 'Local labels' });
+        await query("UPDATE pages SET labels = ARRAY['old'] WHERE id = $1", [pageId]);
+        await query(
+          'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+          [userId],
+        );
+
+        const response = await app.inject({
+          method: 'POST',
+          url,
+          payload: payload(pageId),
+        });
+
+        expect(response.statusCode, response.body).toBe(200);
+        expect(response.json()).toMatchObject({ succeeded: 1, failed: 0 });
+        expect((await pageState(pageId))?.labels).toEqual(expected);
+        expect(externalRequests).toEqual([]);
+        const intents = await query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+             FROM page_write_intents`,
+        );
+        expect(intents.rows[0]!.count).toBe('0');
+      },
+    );
+
+    it.each([
+      {
+        surface: 'add/remove',
+        change: 'integration mode is disabled',
+        url: '/api/pages/bulk/tag',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          addTags: ['new'],
+          removeTags: ['old'],
+        }),
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+            [userId],
+          );
+        },
+        error: 'Confluence integration is disabled',
+      },
+      {
+        surface: 'replacement',
+        change: 'integration mode is disabled',
+        url: '/api/pages/bulk/replace-tags',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          tags: ['replacement'],
+        }),
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            'UPDATE user_settings SET confluence_enabled = FALSE WHERE user_id = $1',
+            [userId],
+          );
+        },
+        error: 'Confluence integration is disabled',
+      },
+      {
+        surface: 'add/remove',
+        change: 'credentials are revoked',
+        url: '/api/pages/bulk/tag',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          addTags: ['new'],
+          removeTags: ['old'],
+        }),
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            `UPDATE user_settings
+                SET confluence_url = NULL, confluence_pat = NULL
+              WHERE user_id = $1`,
+            [userId],
+          );
+        },
+        error: 'Confluence credentials changed before the remote write',
+      },
+      {
+        surface: 'replacement',
+        change: 'credentials are revoked',
+        url: '/api/pages/bulk/replace-tags',
+        payload: (pageId: number) => ({
+          ids: [String(pageId)],
+          tags: ['replacement'],
+        }),
+        mutate: async (client: PoolClient) => {
+          await client.query(
+            `UPDATE user_settings
+                SET confluence_url = NULL, confluence_pat = NULL
+              WHERE user_id = $1`,
+            [userId],
+          );
+        },
+        error: 'Confluence credentials changed before the remote write',
+      },
+    ])(
+      'keeps $surface labels unchanged and settles the unused intent when $change',
+      async ({ url, payload, mutate, error }) => {
+        const pageId = await insertSynced({ confluenceId: '808080', title: 'Label admission' });
+        await query("UPDATE pages SET labels = ARRAY['old'] WHERE id = $1", [pageId]);
+
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        const holder = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        try {
+          const pending = app.inject({
+            method: 'POST',
+            url,
+            payload: payload(pageId),
+          });
+          await waitForBlockedLifecycleLock(holder.rows[0]!.pid);
+          await mutate(blocker);
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(200);
+          expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
+          expect(response.json().errors[0]).toContain(error);
+          expect((await pageState(pageId))?.labels).toEqual(['old']);
+          expect(externalRequests).toEqual([]);
+          const unresolved = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count
+               FROM page_write_intents
+              WHERE settled_at IS NULL`,
+          );
+          expect(unresolved.rows[0]!.count).toBe('0');
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+      },
+    );
+
+    it.each([
+      {
+        surface: 'add/remove',
+        url: '/api/pages/bulk/tag',
+        payload: (pageId: number) => ({ ids: [String(pageId)], addTags: ['new'] }),
+      },
+      {
+        surface: 'replacement',
+        url: '/api/pages/bulk/replace-tags',
+        payload: (pageId: number) => ({ ids: [String(pageId)], tags: ['replacement'] }),
+      },
+    ])(
+      'keeps $surface labels unchanged and settles the unused intent when space authority is revoked',
+      async ({ url, payload }) => {
+        const pageId = await insertSynced({ confluenceId: '818181', title: 'Label authority' });
+        await query("UPDATE pages SET labels = ARRAY['old'] WHERE id = $1", [pageId]);
+
+        const blocker = await getPool().connect();
+        await blocker.query('BEGIN');
+        await lockPageLifecycle(blocker, [pageId]);
+        const holder = await blocker.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        try {
+          const pending = app.inject({
+            method: 'POST',
+            url,
+            payload: payload(pageId),
+          });
+          await waitForBlockedLifecycleLock(holder.rows[0]!.pid);
+          await blocker.query(
+            `DELETE FROM space_role_assignments
+              WHERE principal_type = 'user' AND principal_id = $1 AND space_key = 'DEV'`,
+            [userId],
+          );
+          await blocker.query('COMMIT');
+
+          const response = await pending;
+          expect(response.statusCode, response.body).toBe(200);
+          expect(response.json()).toMatchObject({ succeeded: 0, failed: 1 });
+          expect(response.json().errors[0]).toMatch(/access denied|not authorized/i);
+          expect((await pageState(pageId))?.labels).toEqual(['old']);
+          expect(externalRequests).toEqual([]);
+          const unresolved = await query<{ count: string }>(
+            `SELECT COUNT(*)::text AS count
+               FROM page_write_intents
+              WHERE settled_at IS NULL`,
+          );
+          expect(unresolved.rows[0]!.count).toBe('0');
+        } catch (error) {
+          await blocker.query('ROLLBACK').catch(() => undefined);
+          throw error;
+        } finally {
+          blocker.release();
+        }
+      },
+    );
+
+    it("keeps the numeric-only tag surface keyed by the page PK", async () => {
+      const pageId = await insertSynced({ confluenceId: NUMERIC_CONFLUENCE_ID });
 
       const byConfluenceId = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
-        payload: { ids: [NUMERIC_CONFLUENCE_ID], addTags: ['x'] },
+        payload: { ids: [NUMERIC_CONFLUENCE_ID], addTags: ['wrong'] },
       });
       const byPk = await app.inject({
         method: 'POST',
         url: '/api/pages/bulk/tag',
-        payload: { ids: [String(pk)], addTags: ['y'] },
+        payload: { ids: [String(pageId)], addTags: ['right'] },
       });
 
+      expect(byConfluenceId.statusCode, byConfluenceId.body).toBe(200);
       expect(byConfluenceId.json()).toMatchObject({ succeeded: 0, failed: 1 });
       expect(byConfluenceId.json().errors).toEqual([`Page ${NUMERIC_CONFLUENCE_ID} not found`]);
+      expect(byPk.statusCode, byPk.body).toBe(200);
       expect(byPk.json()).toMatchObject({ succeeded: 1, failed: 0 });
-
-      const labels = await query<{ labels: string[] }>('SELECT labels FROM pages WHERE id = $1', [
-        pk,
+      const labels = await query<{ labels: string[] }>(
+        'SELECT labels FROM pages WHERE id = $1',
+        [pageId],
+      );
+      expect(labels.rows[0]!.labels).toEqual(['right']);
+      expect(externalRequests).toEqual([
+        expect.objectContaining({
+          method: 'POST',
+          url: `/rest/api/content/${NUMERIC_CONFLUENCE_ID}/label`,
+        }),
       ]);
-      expect(labels.rows[0]!.labels).toEqual(['y']);
     });
-  });
-});
+  },
+);
