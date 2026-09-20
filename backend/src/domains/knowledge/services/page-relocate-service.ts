@@ -1771,6 +1771,10 @@ async function restorePreMoveStateOnClient(
 ): Promise<void> {
   await client.query('SELECT pg_advisory_xact_lock($1)', [PAGE_MOVE_ADVISORY_LOCK_ID]);
   await client.query('SELECT pg_advisory_xact_lock_shared($1)', [ATTACHMENT_SNAPSHOT_LOCK_ID]);
+  // Restriction sync writes ACEs before updating the page. Take this relation
+  // lock before the page row too, or each transaction can wait on the other.
+  // Direct admin grants/revocations also serialize here, including absent ACEs.
+  await client.query('LOCK TABLE access_control_entries IN SHARE ROW EXCLUSIVE MODE');
   const current = await lockAndReload(client, prep.id);
   const isOriginal =
     current.source === prep.source &&
@@ -1785,13 +1789,8 @@ async function restorePreMoveStateOnClient(
     throw new PageWriteError(409, 'intent_local_evidence_mismatch', 'The local relocation state cannot be restored exactly');
   }
   if (!isOriginal) {
-    // The relocation publication removes every page ACE.  A later grant is
-    // therefore evidence that the ACL changed after cutover, not stale state
-    // that compensation may overwrite.  The admin ACE routes use direct
-    // INSERT/DELETE statements without a page lock, so take a relation lock:
-    // it waits for their ROW EXCLUSIVE locks and prevents a new grant/revoke
-    // between this exact-state check and the snapshot restoration.
-    await client.query('LOCK TABLE access_control_entries IN SHARE ROW EXCLUSIVE MODE');
+    // Only the still-empty ACL produced by cutover may be restored. A later
+    // grant is intervening authority, not relocation state to overwrite.
     const currentAces = await client.query<PageAce>(
       `SELECT principal_type, principal_id, permission
          FROM access_control_entries

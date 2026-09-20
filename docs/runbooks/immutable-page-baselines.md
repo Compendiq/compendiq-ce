@@ -717,6 +717,12 @@ and the intent starts a new one in the same locked claim transaction.
 Archived segments are append-only, retain actor identities after account
 deletion, and prevent deletion of their parent intent. No accepted attempt is
 discarded; a transient failure cannot permanently exhaust recovery attempts.
+A lost claim-COMMIT acknowledgment still returns a failure and runs no verifier.
+The same active process may retry a claim that actually committed; a claim that
+rolled back still follows the original owner's verified-fence path. Every retry
+rechecks durable ownership and current administration. Connection loss before
+acknowledged completion fails the request and discards the broken connection,
+rather than escaping as an unhandled client-error event.
 
 ### `local_verified`
 
@@ -845,8 +851,10 @@ untouched: intervening grants and revocations are not relocation effects.
 After an actual cutover, recovery restores the snapshot only while the current
 ACL remains the empty set produced by that cutover. It serializes that check
 and restoration with ordinary ACL writers using a short
-`SHARE ROW EXCLUSIVE` lock on `access_control_entries`; changed ACLs refuse
-recovery rather than being overwritten.
+`SHARE ROW EXCLUSIVE` lock on `access_control_entries` **before locking the
+page row**. Restriction refresh writes ACEs and then updates the page, so the
+opposite order would deadlock. Changed ACLs refuse recovery rather than being
+overwritten.
 The acknowledged create ID is committed before readback or uploads; each
 acknowledged attachment is committed before the next provider call. The receipt
 array is bounded by the admitted inventory, while the generic terminal result

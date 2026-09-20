@@ -626,6 +626,10 @@ segment commit atomically before callbacks. Archived rows reject UPDATE and
 DELETE and restrict parent-intent deletion; their actor identities are JSON
 evidence, not nullable live-user foreign keys. There is no lifetime attempt
 limit and no discarded attribution.
+The process retains retry eligibility once the claim UPDATE succeeds, before
+awaiting COMMIT acknowledgment. Durable ownership distinguishes a committed
+claim from a rolled-back one on the next attempt; callbacks still wait for an
+acknowledged claim.
 
 The page-table publication trigger writes one
 `page_cache_invalidation_queue` row per affected page in the same transaction.
@@ -649,8 +653,9 @@ Exact unchanged local state plus absent remote-start evidence permits an active
 recovery administrator to remove a to-Confluence preparation after original-actor
 revocation or deletion; it authorizes no publication or to-local restoration.
 A to-local recovery with no cutover leaves current grants and revocations intact.
-After a cutover, a `SHARE ROW EXCLUSIVE` lock on `access_control_entries`
-serializes ordinary grant/revoke writers with verification of the still-empty
+During rollback, a `SHARE ROW EXCLUSIVE` lock on `access_control_entries`
+precedes the page row lock, matching restriction refresh's ACE-then-page order.
+It serializes ordinary grant/revoke writers with verification of the still-empty
 cutover ACL and exact snapshot restoration. A changed ACL refuses restoration.
 The create identity is recorded before readback or uploads, and every successful
 upload appends its own bounded receipt before the next provider call. Receipt

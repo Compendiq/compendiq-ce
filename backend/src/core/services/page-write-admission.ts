@@ -502,14 +502,19 @@ async function inTransaction<T>(operation: (client: PoolClient) => Promise<T>): 
   const client = await getPool().connect();
   let discard: Error | undefined;
   let began = false;
+  // pg rejects the active query AND emits an error on a checked-out client.
+  // Preserve that failure for the caller and discard its unusable connection.
+  const recordConnectionError = (error: Error) => { discard = error; };
+  client.on('error', recordConnectionError);
   try {
     await client.query('BEGIN');
     began = true;
     const result = await operation(client);
+    if (discard) throw discard;
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    if (began) {
+    if (began && !discard) {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackError) {
@@ -519,6 +524,7 @@ async function inTransaction<T>(operation: (client: PoolClient) => Promise<T>): 
     throw error;
   } finally {
     client.release(discard);
+    client.off('error', recordConnectionError);
   }
 }
 
@@ -1807,9 +1813,12 @@ export async function reconcilePageWriteIntent(
       if (claimed.rowCount !== 1) {
         throw new PageWriteError(409, 'intent_transfer_conflict', 'The recovery intent was transferred concurrently');
       }
+      // COMMIT may succeed while its acknowledgement is lost. Retain local
+      // retry eligibility before awaiting it; a real rollback still leaves the
+      // old durable owner, so the next attempt must take the fenced-transfer path.
+      recoveryClaimed = true;
       return recoveryIntentFromRow(claimed.rows[0]!);
     });
-    recoveryClaimed = true;
     // The durable claim survives a connection loss or process death while a
     // verifier publishes files. Original phase markers remain evidence, not
     // invented starts; recovery_started_at independently prevents a no-start fence.

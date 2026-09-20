@@ -401,11 +401,12 @@ async function getRow(id: number) {
     parent_id: string | null;
     visibility: string;
     created_by_user_id: string | null;
+    inherit_perms: boolean;
     body_html: string | null;
     body_storage: string | null;
   }>(
     `SELECT id, source, space_key, confluence_id, parent_id, visibility,
-            created_by_user_id, body_html, body_storage
+            created_by_user_id, inherit_perms, body_html, body_storage
        FROM pages WHERE id = $1`,
     [id],
   );
@@ -2257,7 +2258,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       )).rows).toEqual([{ principal_id: grantedPrincipal, permission: 'read' }]);
     });
 
-    it('refuses cutover restoration after a concurrent ACE grant and leaves page and ACL unchanged', async () => {
+    it('preserves a concurrent restriction grant without deadlocking its subsequent page update', async () => {
       const originalPrincipal = await createUser(`original-cutover-ace-${randomUUID()}`, 'user');
       const grantedPrincipal = await createUser(`concurrent-cutover-ace-${randomUUID()}`, 'user');
       const id = await createPage({
@@ -2281,6 +2282,7 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
       );
 
       const aceWriter = await getPool().connect();
+      let recovery: Promise<unknown> | undefined;
       try {
         await aceWriter.query('BEGIN');
         await aceWriter.query(
@@ -2292,25 +2294,31 @@ describe.skipIf(!dbAvailable || !redisAvailable)('POST /api/pages/:id/relocate (
         const writerPid = (await aceWriter.query<{ pid: number }>(
           'SELECT pg_backend_pid() AS pid',
         )).rows[0]!.pid;
-        const recovery = expect(reconcilePageWriteIntent(intentId, {
+        recovery = reconcilePageWriteIntent(intentId, {
           actorId: recoveryAdminId,
           reason: 'Refuse to overwrite an ACL grant committed after local cutover',
-        })).rejects.toMatchObject({
-          reason: 'intent_local_evidence_mismatch',
-        });
+        }).catch(error => error);
         expect(await waitForBlockedDatabasePid(writerPid)).not.toBeNull();
+        // syncPageRestrictions holds its ACE write lock while updating the
+        // page. Recovery must not already own that row while waiting on ACEs.
+        await aceWriter.query(
+          'UPDATE pages SET inherit_perms = FALSE, restrictions_synced_at = NOW() WHERE id = $1',
+          [id],
+        );
         await aceWriter.query('COMMIT');
 
-        await recovery;
+        expect(await recovery).toMatchObject({ reason: 'intent_local_evidence_mismatch' });
       } finally {
         await aceWriter.query('ROLLBACK').catch(() => undefined);
         aceWriter.release();
+        await recovery;
       }
 
       expect(await getRow(id)).toMatchObject({
         source: 'standalone',
         confluence_id: null,
         space_key: 'LOCAL',
+        inherit_perms: false,
       });
       expect((await query<{
         principal_id: string;

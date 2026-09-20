@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { type AddressInfo, createConnection, createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,7 +11,7 @@ import {
   truncateAllTables,
   waitForDatabaseCondition,
 } from '../../test-db-helper.js';
-import { getPool, query } from '../db/postgres.js';
+import { closePool, getPool, query } from '../db/postgres.js';
 import {
   type PageWriteIntent,
   PageWriteError,
@@ -129,6 +130,66 @@ async function intentState(intentId: string): Promise<{
     [intentId],
   );
   return result.rows[0]!;
+}
+
+/** Drop the real PostgreSQL COMMIT response, without replacing any SQL result. */
+async function withLostCommitAcknowledgment(operation: () => Promise<void>): Promise<void> {
+  const originalUrl = process.env.POSTGRES_URL!;
+  const upstreamUrl = new URL(originalUrl);
+  const sockets = new Set<Socket>();
+  let dropped = false;
+  const proxy = createServer((downstream) => {
+    const upstream = createConnection({
+      host: upstreamUrl.hostname,
+      port: Number(upstreamUrl.port || 5432),
+    });
+    sockets.add(downstream);
+    sockets.add(upstream);
+    downstream.pipe(upstream);
+    let buffered: Buffer = Buffer.alloc(0);
+    upstream.on('data', (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      while (buffered.length >= 5) {
+        const size = 1 + buffered.readUInt32BE(1);
+        if (buffered.length < size) break;
+        const message = buffered.subarray(0, size);
+        buffered = buffered.subarray(size);
+        // CommandComplete proves that PostgreSQL committed, but neither that
+        // message nor ReadyForQuery reaches the application connection.
+        if (!dropped && message[0] === 0x43 && message.subarray(5).toString() === 'COMMIT\0') {
+          dropped = true;
+          downstream.destroy();
+          upstream.destroy();
+          return;
+        }
+        downstream.write(message);
+      }
+    });
+    downstream.on('error', () => upstream.destroy());
+    upstream.on('error', () => downstream.destroy());
+    downstream.on('close', () => { sockets.delete(downstream); upstream.destroy(); });
+    upstream.on('close', () => { sockets.delete(upstream); downstream.destroy(); });
+  });
+  await new Promise<void>((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(0, '127.0.0.1', resolve);
+  });
+  const proxyUrl = new URL(originalUrl);
+  proxyUrl.hostname = '127.0.0.1';
+  proxyUrl.port = String((proxy.address() as AddressInfo).port);
+  try {
+    await closePool();
+    process.env.POSTGRES_URL = proxyUrl.toString();
+    await operation();
+    expect(dropped).toBe(true);
+  } finally {
+    await closePool();
+    process.env.POSTGRES_URL = originalUrl;
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve, reject) => {
+      proxy.close(error => error ? reject(error) : resolve());
+    });
+  }
 }
 
 describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => {
@@ -632,11 +693,13 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
     const claimantAdministrator = await insertUser('admin');
     const retryingAdministrator = await insertUser('admin');
     let observedState: 'partial' | 'applied' = 'partial';
+    let verificationRuns = 0;
     let repairRuns = 0;
     let failingRepairFixture: string | null = null;
     registerPageWriteIntentReconciler(
       'icon.image.put',
       async () => {
+        verificationRuns += 1;
         if (observedState === 'partial') {
           return { outcome: 'repair_required' as const, observedState: 'partially_applied' as const };
         }
@@ -808,6 +871,43 @@ describe.skipIf(!dbAvailable)('page-write-admission — real PostgreSQL', () => 
       archived_segments: 0,
     });
     expect(repairRuns).toBe(1);
+
+    const ambiguousClaimPage = await insertPage(originalWriter, 'Lost recovery claim acknowledgement');
+    const ambiguousClaim = await createFencedIntent(ambiguousClaimPage);
+    const verificationRunsBeforeClaim = verificationRuns;
+    observedState = 'applied';
+    await withLostCommitAcknowledgment(async () => {
+      await expect(reconcilePageWriteIntent(ambiguousClaim.id, {
+        actorId: claimantAdministrator,
+        reason: 'Claim recovery before a deliberately lost PostgreSQL COMMIT acknowledgement',
+      })).rejects.toThrow('Connection terminated unexpectedly');
+      const durableClaim = (await query<{
+        runtime_id: string;
+        status: string;
+        recovery_history: Array<{ actorId: string }>;
+      }>(
+        'SELECT runtime_id, status, recovery_history FROM page_write_intents WHERE id = $1',
+        [ambiguousClaim.id],
+      )).rows[0]!;
+      expect(durableClaim.runtime_id).not.toBe(ambiguousClaim.runtimeId);
+      expect(durableClaim.status).toBe('pending');
+      expect(durableClaim.recovery_history.map(attempt => attempt.actorId)).toEqual([claimantAdministrator]);
+      expect(verificationRuns).toBe(verificationRunsBeforeClaim);
+      await expect(reconcilePageWriteIntent(ambiguousClaim.id, {
+        actorId: retryingAdministrator,
+        reason: 'Retry the durably committed claim on its current active runtime',
+      })).resolves.toEqual({ intentId: ambiguousClaim.id, status: 'reconciled_applied' });
+      expect((await query<{ runtime_id: string; recovery_history: Array<{ actorId: string }> }>(
+        'SELECT runtime_id, recovery_history FROM page_write_intents WHERE id = $1',
+        [ambiguousClaim.id],
+      )).rows[0]).toMatchObject({
+        runtime_id: durableClaim.runtime_id,
+        recovery_history: [
+          expect.objectContaining({ actorId: claimantAdministrator }),
+          expect.objectContaining({ actorId: retryingAdministrator }),
+        ],
+      });
+    });
 
     const repairFixtureDirectory = await mkdtemp(join(tmpdir(), 'page-write-recovery-attribution-'));
     try {

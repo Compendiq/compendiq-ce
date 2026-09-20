@@ -1289,6 +1289,12 @@ with a durable `recovery_started_at` marker and local drain ownership covering
 verification through settlement/publication. No-start fencing must inspect that
 marker too. A fully failed callback may retry on the same owner; concurrent
 callbacks and recovery on a quiesced/fenced process are refused.
+Retain local retry eligibility after a successful claim UPDATE, before awaiting
+COMMIT: its acknowledgment can be lost after ownership committed. The next
+attempt still checks durable ownership, so a real rollback cannot bypass the
+original-runtime fence. Handle checked-out pg client errors and discard broken
+connections; an unacknowledged transaction fails to its caller, never as an
+uncaught event.
 Recovery administration is checked on the mutation client at fencing, claim,
 verification, repair and settlement. Quiescence authorizes and audits before
 closing the gate, then rechecks after draining; revocation leaves the gate
@@ -1337,7 +1343,8 @@ only for that exact no-remote-start cleanup, never publication or to-local
 rollback. With no local cutover, recovery leaves current ACLs untouched.
 After a cutover, restore the snapshot only from the still-empty cutover ACL,
 serializing the check and write with ordinary grant/revoke statements using
-the relation lock; a changed ACL must refuse rather than be overwritten.
+the ACE relation lock **before the page row lock**, matching restriction sync.
+A changed ACL must refuse rather than be overwritten.
 Local delete recovery uses exact tombstones and retries committed cleanup
 without repeating deletion.
 Persist the create identity and each upload receipt before further provider work.
